@@ -21,6 +21,21 @@ export interface CallStackFrame {
   line: number;
 }
 
+export type RuntimeTraceAccessKind =
+  | 'indexed-read'
+  | 'indexed-write'
+  | 'cell-read'
+  | 'cell-write'
+  | 'mutating-call';
+
+export interface RuntimeTraceAccessEvent {
+  variable: string;
+  kind: RuntimeTraceAccessKind;
+  indices?: number[];
+  method?: string;
+  pathDepth?: 1 | 2;
+}
+
 // Raw trace data from Python sys.settrace
 export interface RawTraceStep {
   line: number;
@@ -28,6 +43,7 @@ export interface RawTraceStep {
   variables: Record<string, unknown>;
   function: string;
   callStack?: CallStackFrame[];
+  accesses?: RuntimeTraceAccessEvent[];
   returnValue?: unknown;
   stdoutLineCount?: number;
   visualization?: RuntimeVisualizationPayload;
@@ -64,6 +80,7 @@ export interface ProcessedStep {
   output?: string;
   event?: 'line' | 'call' | 'return' | 'exception' | 'timeout' | 'stdout';
   callStack?: CallStackFrame[];
+  accesses?: RuntimeTraceAccessEvent[];
   returnValue?: unknown;
   stdoutLineCount?: number;
   visualization?: RuntimeVisualizationPayload;

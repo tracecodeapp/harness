@@ -3,6 +3,8 @@ import type {
   CallStackFrame,
   ExecutionResult,
   RawTraceStep,
+  RuntimeTraceAccessEvent,
+  RuntimeTraceAccessKind,
   RuntimeObjectKind,
   RuntimeVisualizationPayload,
 } from './types';
@@ -13,7 +15,7 @@ import type {
  * Bump this when payload shape/normalization semantics change in a way that
  * should invalidate golden fixtures.
  */
-export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-02-28';
+export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-03-07';
 
 export type RuntimeTraceContractEvent =
   | 'line'
@@ -54,6 +56,7 @@ export interface RuntimeTraceContractStep {
   function: string;
   variables: Record<string, unknown>;
   callStack?: RuntimeTraceContractCallStackFrame[];
+  accesses?: RuntimeTraceAccessEvent[];
   returnValue?: unknown;
   stdoutLineCount?: number;
   visualization?: RuntimeTraceContractVisualization;
@@ -83,6 +86,14 @@ const TRACE_EVENTS: ReadonlySet<string> = new Set([
   'stdout',
 ]);
 
+const TRACE_ACCESS_KINDS: ReadonlySet<RuntimeTraceAccessKind> = new Set([
+  'indexed-read',
+  'indexed-write',
+  'cell-read',
+  'cell-write',
+  'mutating-call',
+]);
+
 function normalizeLineNumber(value: unknown, fallback = 1): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   const normalized = Math.floor(value);
@@ -100,6 +111,13 @@ function normalizeEvent(value: unknown): RuntimeTraceContractEvent {
     return value as RuntimeTraceContractEvent;
   }
   return 'line';
+}
+
+function normalizeAccessKind(value: unknown): RuntimeTraceAccessKind | null {
+  if (typeof value === 'string' && TRACE_ACCESS_KINDS.has(value as RuntimeTraceAccessKind)) {
+    return value as RuntimeTraceAccessKind;
+  }
+  return null;
 }
 
 function normalizeFunctionName(value: unknown): string {
@@ -173,6 +191,56 @@ function normalizeUnknown(value: unknown, depth = 0, seen = new WeakSet<object>(
   return String(value);
 }
 
+function normalizeAccesses(
+  accesses: RuntimeTraceAccessEvent[] | undefined
+): RuntimeTraceAccessEvent[] | undefined {
+  if (!Array.isArray(accesses) || accesses.length === 0) {
+    return undefined;
+  }
+
+  const normalized = accesses
+    .map((access) => {
+      const variable =
+        typeof access?.variable === 'string' && access.variable.length > 0 ? access.variable : '';
+      const kind = normalizeAccessKind(access?.kind);
+      if (!variable || !kind) {
+        return null;
+      }
+
+      const indices = Array.isArray(access?.indices)
+        ? access.indices
+            .map((index) =>
+              typeof index === 'number' && Number.isFinite(index) ? Math.floor(index) : null
+            )
+            .filter((index): index is number => index !== null)
+        : undefined;
+      const pathDepth =
+        access?.pathDepth === 1 || access?.pathDepth === 2 ? access.pathDepth : undefined;
+      const method =
+        typeof access?.method === 'string' && access.method.length > 0 ? access.method : undefined;
+
+      const payload: RuntimeTraceAccessEvent = {
+        variable,
+        kind,
+      };
+
+      if (indices && indices.length > 0) {
+        payload.indices = indices;
+      }
+      if (pathDepth !== undefined) {
+        payload.pathDepth = pathDepth;
+      }
+      if (method) {
+        payload.method = method;
+      }
+
+      return payload;
+    })
+    .filter((access): access is RuntimeTraceAccessEvent => access !== null);
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function normalizeRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return normalizeUnknown(value) as Record<string, unknown>;
@@ -235,6 +303,7 @@ function normalizeVisualizationPayload(
 function normalizeTraceStep(step: RawTraceStep): RuntimeTraceContractStep {
   const normalizedStdoutCount = normalizeOutputLineCount(step?.stdoutLineCount);
   const normalizedVisualization = normalizeVisualizationPayload(step?.visualization);
+  const normalizedAccesses = normalizeAccesses(step?.accesses);
 
   return {
     event: normalizeEvent(step?.event),
@@ -244,6 +313,7 @@ function normalizeTraceStep(step: RawTraceStep): RuntimeTraceContractStep {
     ...(Array.isArray(step?.callStack) && step.callStack.length > 0
       ? { callStack: step.callStack.map(normalizeCallStackFrame) }
       : {}),
+    ...(normalizedAccesses ? { accesses: normalizedAccesses } : {}),
     ...(step?.returnValue !== undefined ? { returnValue: normalizeUnknown(step.returnValue) } : {}),
     ...(normalizedStdoutCount !== undefined ? { stdoutLineCount: normalizedStdoutCount } : {}),
     ...(normalizedVisualization ? { visualization: normalizedVisualization } : {}),

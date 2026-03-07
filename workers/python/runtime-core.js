@@ -28,6 +28,7 @@ function generateTracingCode(deps, userCode, functionName, inputs, executionStyl
 import sys
 import json
 import math
+import ast
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 
@@ -63,12 +64,14 @@ print = _custom_print
 ${deps.PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET}
 
 _call_stack = []
+_pending_accesses = {}
 _prev_hashmap_snapshots = {}
-_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert'}
+_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '__tracecode_read_index', '__tracecode_write_index', '__tracecode_augassign_index', '__tracecode_mutating_call', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
-    '_call_stack', '_prev_hashmap_snapshots', '_internal_funcs', '_internal_locals', '_max_trace_steps',
+    '_call_stack', '_pending_accesses', '_prev_hashmap_snapshots', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
@@ -76,10 +79,16 @@ _internal_locals = {
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta',
     '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result',
+    '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_normalize_indices',
+    '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value',
+    '__tracecode_apply_augmented_value', '__tracecode_read_index', '__tracecode_write_index',
+    '__tracecode_augassign_index', '__tracecode_mutating_call', '__tracecode_attach_parents',
+    '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
     '_error_line', '_solver', '_ops', '_args', '_cls', '_instance', '_out',
     '_i', '_op', '_call_args', '_method', '_user_code_str', '_textwrap',
-    '_globals_dict', '_k', '_preserve', '_real_globals', '_real_list'
+    '_globals_dict', '_k', '_preserve', '_real_globals', '_real_list',
+    '__tracecode_tree', '__tracecode_compiled'
 }
 _max_trace_steps = ${maxTraceSteps}
 _trace_limit_exceeded = False
@@ -137,6 +146,269 @@ def _snapshot_locals(frame):
         }
     except Exception:
         return {}
+
+def __tracecode_record_access(frame, event):
+    if frame is None or not isinstance(event, dict):
+        return
+    frame_key = id(frame)
+    _pending_accesses.setdefault(frame_key, []).append(event)
+
+def __tracecode_flush_accesses(frame):
+    if frame is None:
+        return []
+    return _pending_accesses.pop(id(frame), [])
+
+def __tracecode_normalize_indices(indices, max_depth=2):
+    if not isinstance(indices, (list, tuple)) or len(indices) == 0 or len(indices) > max_depth:
+        return None
+    normalized = []
+    for index in indices:
+        if not isinstance(index, int):
+            return None
+        normalized.append(int(index))
+    return normalized
+
+def __tracecode_make_access_event(var_name, kind, indices=None, method_name=None):
+    event = {
+        'variable': var_name,
+        'kind': kind,
+    }
+    if indices is not None:
+        event['indices'] = list(indices)
+        event['pathDepth'] = len(indices)
+    if method_name is not None:
+        event['method'] = method_name
+    return event
+
+def __tracecode_read_value(container, indices):
+    current = container
+    for index in indices:
+        current = current[index]
+    return current
+
+def __tracecode_write_value(container, indices, value):
+    if len(indices) == 1:
+        container[indices[0]] = value
+        return value
+    parent = container
+    for index in indices[:-1]:
+        parent = parent[index]
+    parent[indices[-1]] = value
+    return value
+
+def __tracecode_apply_augmented_value(current, op_name, rhs):
+    if op_name == 'add':
+        return current + rhs
+    if op_name == 'sub':
+        return current - rhs
+    if op_name == 'mul':
+        return current * rhs
+    if op_name == 'div':
+        return current / rhs
+    if op_name == 'floordiv':
+        return current // rhs
+    if op_name == 'mod':
+        return current % rhs
+    if op_name == 'pow':
+        return current ** rhs
+    if op_name == 'lshift':
+        return current << rhs
+    if op_name == 'rshift':
+        return current >> rhs
+    if op_name == 'bitand':
+        return current & rhs
+    if op_name == 'bitor':
+        return current | rhs
+    if op_name == 'bitxor':
+        return current ^ rhs
+    return rhs
+
+def __tracecode_read_index(var_name, container, indices):
+    normalized = __tracecode_normalize_indices(indices)
+    if normalized is not None:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(
+                var_name,
+                'cell-read' if len(normalized) == 2 else 'indexed-read',
+                normalized,
+            ),
+        )
+    return __tracecode_read_value(container, list(indices))
+
+def __tracecode_write_index(var_name, container, indices, value):
+    effective_indices = list(indices)
+    result = __tracecode_write_value(container, effective_indices, value)
+    normalized = __tracecode_normalize_indices(effective_indices)
+    if normalized is not None:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(
+                var_name,
+                'cell-write' if len(normalized) == 2 else 'indexed-write',
+                normalized,
+            ),
+        )
+    return result
+
+def __tracecode_augassign_index(var_name, container, indices, op_name, rhs):
+    effective_indices = list(indices)
+    current = __tracecode_read_value(container, effective_indices)
+    normalized = __tracecode_normalize_indices(effective_indices)
+    if normalized is not None:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(
+                var_name,
+                'cell-read' if len(normalized) == 2 else 'indexed-read',
+                normalized,
+            ),
+        )
+    next_value = __tracecode_apply_augmented_value(current, op_name, rhs)
+    __tracecode_write_value(container, effective_indices, next_value)
+    if normalized is not None:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(
+                var_name,
+                'cell-write' if len(normalized) == 2 else 'indexed-write',
+                normalized,
+            ),
+        )
+    return next_value
+
+def __tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
+    result = getattr(container, method_name)(*args, **kwargs)
+    if method_name in _TRACE_MUTATING_METHODS:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name),
+        )
+    return result
+
+def __tracecode_attach_parents(node, parent=None):
+    for child in ast.iter_child_nodes(node):
+        setattr(child, '__trace_parent__', node)
+        __tracecode_attach_parents(child, node)
+
+def _tracecode_extract_named_subscript(node):
+    indices = []
+    current = node
+    while isinstance(current, ast.Subscript) and len(indices) < 3:
+        indices.insert(0, current.slice)
+        current = current.value
+    if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > 2:
+        return None
+    return current.id, indices
+
+class __TracecodeAccessTransformer(ast.NodeTransformer):
+    def visit_Subscript(self, node):
+        parent = getattr(node, '__trace_parent__', None)
+        if isinstance(parent, ast.Subscript) and getattr(parent, 'value', None) is node:
+            return self.generic_visit(node)
+        if isinstance(parent, ast.Assign) and node in getattr(parent, 'targets', []):
+            return self.generic_visit(node)
+        if isinstance(parent, ast.AugAssign) and getattr(parent, 'target', None) is node:
+            return self.generic_visit(node)
+
+        node = self.generic_visit(node)
+        extracted = _tracecode_extract_named_subscript(node)
+        if extracted is None or not isinstance(node.ctx, ast.Load):
+            return node
+
+        var_name, indices = extracted
+        call = ast.Call(
+            func=ast.Name(id='__tracecode_read_index', ctx=ast.Load()),
+            args=[
+                ast.Constant(value=var_name),
+                ast.Name(id=var_name, ctx=ast.Load()),
+                ast.List(elts=indices, ctx=ast.Load()),
+            ],
+            keywords=[],
+        )
+        return ast.copy_location(call, node)
+
+    def visit_Assign(self, node):
+        if len(node.targets) == 1:
+            extracted = _tracecode_extract_named_subscript(node.targets[0])
+            if extracted is not None:
+                var_name, indices = extracted
+                value = self.visit(node.value)
+                call = ast.Call(
+                    func=ast.Name(id='__tracecode_write_index', ctx=ast.Load()),
+                    args=[
+                        ast.Constant(value=var_name),
+                        ast.Name(id=var_name, ctx=ast.Load()),
+                        ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
+                        value,
+                    ],
+                    keywords=[],
+                )
+                return ast.copy_location(ast.Expr(value=call), node)
+        return self.generic_visit(node)
+
+    def visit_AugAssign(self, node):
+        extracted = _tracecode_extract_named_subscript(node.target)
+        if extracted is None:
+            return self.generic_visit(node)
+
+        op_names = {
+            ast.Add: 'add',
+            ast.Sub: 'sub',
+            ast.Mult: 'mul',
+            ast.Div: 'div',
+            ast.FloorDiv: 'floordiv',
+            ast.Mod: 'mod',
+            ast.Pow: 'pow',
+            ast.LShift: 'lshift',
+            ast.RShift: 'rshift',
+            ast.BitAnd: 'bitand',
+            ast.BitOr: 'bitor',
+            ast.BitXor: 'bitxor',
+        }
+        op_name = op_names.get(type(node.op))
+        if op_name is None:
+            return self.generic_visit(node)
+
+        var_name, indices = extracted
+        rhs = self.visit(node.value)
+        call = ast.Call(
+            func=ast.Name(id='__tracecode_augassign_index', ctx=ast.Load()),
+            args=[
+                ast.Constant(value=var_name),
+                ast.Name(id=var_name, ctx=ast.Load()),
+                ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
+                ast.Constant(value=op_name),
+                rhs,
+            ],
+            keywords=[],
+        )
+        return ast.copy_location(ast.Expr(value=call), node)
+
+    def visit_Call(self, node):
+        node = self.generic_visit(node)
+        if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            method_name = node.func.attr
+            if method_name in _TRACE_MUTATING_METHODS:
+                call = ast.Call(
+                    func=ast.Name(id='__tracecode_mutating_call', ctx=ast.Load()),
+                    args=[
+                        ast.Constant(value=node.func.value.id),
+                        ast.Name(id=node.func.value.id, ctx=ast.Load()),
+                        ast.Constant(value=method_name),
+                        *node.args,
+                    ],
+                    keywords=node.keywords,
+                )
+                return ast.copy_location(call, node)
+        return node
+
+def __tracecode_compile_user_code(source):
+    tree = ast.parse(source, filename='<user_code>', mode='exec')
+    __tracecode_attach_parents(tree)
+    tree = __TracecodeAccessTransformer().visit(tree)
+    ast.fix_missing_locations(tree)
+    return compile(tree, '<user_code>', 'exec')
 
 def _stable_token(value):
     try:
@@ -395,7 +667,8 @@ def _tracer(frame, event, arg):
                     'variables': {'timeoutReason': _timeout_reason},
                     'function': func_name,
                     'callStack': _snapshot_call_stack(),
-                    'stdoutLineCount': len(_console_output)
+                    'stdoutLineCount': len(_console_output),
+                    'accesses': __tracecode_flush_accesses(frame),
                 })
                 sys.settrace(None)
                 raise _InfiniteLoopDetected(f"Exceeded {_max_line_events} line events")
@@ -417,6 +690,7 @@ def _tracer(frame, event, arg):
                     'function': func_name,
                     'callStack': _snapshot_call_stack(),
                     'stdoutLineCount': len(_console_output),
+                    'accesses': __tracecode_flush_accesses(frame),
                     'visualization': _build_runtime_visualization(local_vars, frame)
                 })
                 sys.settrace(None)
@@ -434,7 +708,8 @@ def _tracer(frame, event, arg):
                 'variables': {'timeoutReason': _timeout_reason},
                 'function': func_name,
                 'callStack': _snapshot_call_stack(),
-                'stdoutLineCount': len(_console_output)
+                'stdoutLineCount': len(_console_output),
+                'accesses': __tracecode_flush_accesses(frame),
             })
             sys.settrace(None)
             raise _InfiniteLoopDetected(f"Exceeded {_max_trace_steps} trace steps")
@@ -456,6 +731,7 @@ def _tracer(frame, event, arg):
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
+            'accesses': __tracecode_flush_accesses(frame),
             'visualization': _build_runtime_visualization(local_vars, frame)
         })
     elif event == 'line':
@@ -469,6 +745,7 @@ def _tracer(frame, event, arg):
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
+            'accesses': __tracecode_flush_accesses(frame),
             'visualization': _build_runtime_visualization(local_vars, frame)
         })
     elif event == 'return':
@@ -482,9 +759,11 @@ def _tracer(frame, event, arg):
                 'returnValue': _serialize(arg),
                 'callStack': _snapshot_call_stack(),
                 'stdoutLineCount': len(_console_output),
+                'accesses': __tracecode_flush_accesses(frame),
                 'visualization': _build_runtime_visualization(local_vars, frame)
             })
         _clear_frame_hashmap_snapshots(frame)
+        _pending_accesses.pop(id(frame), None)
         if _call_stack and _call_stack[-1]['function'] == func_name:
             _call_stack.pop()
 
@@ -495,7 +774,7 @@ def _tracer(frame, event, arg):
 _real_globals = __builtins__['globals'] if isinstance(__builtins__, dict) else getattr(__builtins__, 'globals')
 _real_list = __builtins__['list'] if isinstance(__builtins__, dict) else getattr(__builtins__, 'list')
 _globals_dict = _real_globals()
-_preserve = {"TreeNode", "ListNode", 'sys', 'json', 'math', 'print', '__builtins__', '__name__', '__doc__', '__package__', '__loader__', '__spec__'}
+_preserve = {"TreeNode", "ListNode", 'sys', 'json', 'math', 'ast', 'print', '__builtins__', '__name__', '__doc__', '__package__', '__loader__', '__spec__'}
 for _k in _real_list(_globals_dict.keys()):
     if not _k.startswith('_') and _k not in _preserve:
         _globals_dict.pop(_k, None)
@@ -504,12 +783,9 @@ del _preserve, _real_globals, _real_list
 # Ensure print remains routed through the tracer harness after global cleanup
 print = _custom_print
 
-# User code starts here
 `;
 
-  const userCodeStartLine = functionName 
-    ? harnessPrefix.split('\n').length
-    : 1;
+  const userCodeStartLine = 1;
 
   // Separate tree inputs (have left/right) from list inputs (have next)
   const treeInputKeys = [];
@@ -586,20 +862,21 @@ print = _custom_print
         ].join('\n')
         : `    _result = ${functionName}(${argList})`
     : [
-      `    exec(_user_code_str, _globals_dict)`,
+      `    exec(__tracecode_compiled, _globals_dict)`,
       `    _result = _globals_dict.get('result', None)`,
     ].join('\n');
 
-  const userCodeForExec = !functionName
-    ? [
-      `\n_user_code_str = """${escapedCode}"""`,
-      `import textwrap as _textwrap`,
-      `_user_code_str = _textwrap.dedent(_user_code_str.lstrip("\\n"))\n`,
-    ].join('\n')
-    : '';
+  const userCodeTraceSetup = [
+    `\n_user_code_str = """${escapedCode}"""`,
+    `import textwrap as _textwrap`,
+    `_user_code_str = _textwrap.dedent(_user_code_str.lstrip("\\n"))`,
+    `__tracecode_compiled = __tracecode_compile_user_code(_user_code_str)`,
+    ].join('\n');
+
+  const preloadUserDefinitions = functionName ? `exec(__tracecode_compiled, _globals_dict)\n` : '';
 
   const harnessSuffix = `
-${userCodeForExec}
+${userCodeTraceSetup}
 ${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
 
 def _resolve_inplace_result():
@@ -613,6 +890,8 @@ ${inputSetup}
 ${treeConversions}
 
 ${listConversions}
+
+${preloadUserDefinitions}
 
 sys.settrace(_tracer)
 _trace_failed = False
@@ -646,7 +925,8 @@ except Exception as e:
         },
         'function': 'error',
         'callStack': _snapshot_call_stack(),
-        'stdoutLineCount': len(_console_output)
+        'stdoutLineCount': len(_console_output),
+        'accesses': __tracecode_flush_accesses(None)
     })
 
 if (not _trace_failed) and _result is None:
@@ -671,9 +951,7 @@ json.dumps({
 })
 `;
 
-  const code = functionName 
-    ? harnessPrefix + escapedCode + harnessSuffix
-    : harnessPrefix + harnessSuffix;
+  const code = harnessPrefix + harnessSuffix;
 
   return { code, userCodeStartLine };
 }

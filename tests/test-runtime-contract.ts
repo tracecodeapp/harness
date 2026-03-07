@@ -12,6 +12,10 @@ import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/r
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
 import type { Language, LanguageRuntimeProfile, RuntimeCapabilities } from '../packages/harness-core/src/runtime-types';
+import {
+  normalizeRuntimeTraceContract,
+  RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION,
+} from '../packages/harness-core/src/trace-contract';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -220,7 +224,60 @@ function runPythonCase(
   return parsed;
 }
 
+function testRuntimeTraceContractAccessNormalization(): void {
+  const normalized = normalizeRuntimeTraceContract('javascript', {
+    success: true,
+    output: 3,
+    trace: [
+      {
+        line: 2,
+        event: 'line',
+        function: 'solve',
+        variables: {
+          arr: [1, 2, 3],
+        },
+        accesses: [
+          {
+            variable: 'arr',
+            kind: 'indexed-read',
+            indices: [1.8],
+            pathDepth: 1,
+          },
+          {
+            variable: 'grid',
+            kind: 'cell-write',
+            indices: [2, 3],
+            pathDepth: 2,
+          },
+          {
+            variable: '',
+            kind: 'indexed-read',
+          },
+        ],
+      },
+    ],
+    executionTimeMs: 1,
+    consoleOutput: [],
+  });
+
+  assertCondition(
+    normalized.schemaVersion === RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION,
+    'normalized runtime traces should use the latest schema version'
+  );
+  assertCondition(normalized.trace[0]?.accesses?.length === 2, 'normalization should preserve valid access events');
+  assertCondition(
+    normalized.trace[0]?.accesses?.[0]?.indices?.[0] === 1,
+    'normalization should floor numeric access indices'
+  );
+  assertCondition(
+    normalized.trace[0]?.accesses?.[1]?.kind === 'cell-write',
+    'normalization should preserve cell access kinds'
+  );
+  console.log('PASS: runtime trace contract preserves access metadata');
+}
+
 async function main(): Promise<void> {
+  testRuntimeTraceContractAccessNormalization();
   const profiles = getSupportedLanguageProfiles();
 
   assertCondition(SUPPORTED_LANGUAGES.includes('python'), 'SUPPORTED_LANGUAGES should include python');

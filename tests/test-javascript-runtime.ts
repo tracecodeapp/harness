@@ -11,6 +11,14 @@ interface WorkerMessage {
   payload?: unknown;
 }
 
+type RuntimeAccessEvent = {
+  variable?: string;
+  kind?: string;
+  indices?: number[];
+  method?: string;
+  pathDepth?: number;
+};
+
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
@@ -352,6 +360,60 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-with-tracing typescript line mapping contract');
 
+  const executeTypeScriptAccessTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{ accesses?: RuntimeAccessEvent[] }>;
+  }>('execute-with-tracing', {
+    code: `function inspect(arr: number[], matrix: number[][]): number {
+  const value = arr[0];
+  matrix[0][1] = value;
+  arr[0]--;
+  matrix[0][1]++;
+  return matrix[0][1] + arr[0];
+}`,
+    functionName: 'inspect',
+    inputs: {
+      arr: [3, 5],
+      matrix: [
+        [0, 0],
+        [0, 0],
+      ],
+    },
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(executeTypeScriptAccessTracing.success === true, 'TypeScript tracing with access metadata should succeed');
+  const flatTsAccesses = executeTypeScriptAccessTracing.trace.flatMap((step) => step.accesses ?? []);
+  assertCondition(
+    flatTsAccesses.some(
+      (access) =>
+        access.variable === 'matrix' &&
+        access.kind === 'cell-write' &&
+        access.indices?.[0] === 0 &&
+        access.indices?.[1] === 1 &&
+        access.pathDepth === 2
+    ),
+    'TypeScript tracing should emit cell-write access events'
+  );
+  assertCondition(
+    flatTsAccesses.some(
+      (access) =>
+        access.variable === 'arr' &&
+        access.kind === 'indexed-read' &&
+        access.indices?.[0] === 0 &&
+        access.pathDepth === 1
+    ) &&
+      flatTsAccesses.some(
+        (access) =>
+          access.variable === 'arr' &&
+          access.kind === 'indexed-write' &&
+          access.indices?.[0] === 0 &&
+          access.pathDepth === 1
+      ),
+    'TypeScript tracing should emit indexed read/write access events for compound assignments'
+  );
+  console.log('PASS: execute-with-tracing TypeScript access metadata');
+
   const executeTypeScriptSyntaxError = await harness.sendMessage<{
     success: boolean;
     error?: string;
@@ -425,6 +487,80 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   assertCondition((loopTracing.lineEventCount ?? 0) > 1, 'Loop tracing should include multiple line events');
   assertCondition(loopTracing.output !== undefined, 'Loop tracing should include output');
   console.log('PASS: execute-with-tracing multi-step loop contract');
+
+  const tracingAccesses = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{ accesses?: RuntimeAccessEvent[] }>;
+  }>('execute-with-tracing', {
+    code: `function inspect(arr, matrix) {
+  const x = arr[1];
+  arr[1]++;
+  matrix[1][0] = x;
+  matrix[1][0]--;
+  const queue = [];
+  queue.push(x);
+  queue.pop();
+  return matrix[1][0] + arr[1];
+}`,
+    functionName: 'inspect',
+    inputs: {
+      arr: [4, 7, 9],
+      matrix: [
+        [0, 0],
+        [0, 0],
+      ],
+    },
+    executionStyle: 'function',
+  });
+  assertCondition(tracingAccesses.success === true, 'JavaScript tracing with access metadata should succeed');
+  const flatAccesses = tracingAccesses.trace.flatMap((step) => step.accesses ?? []);
+  assertCondition(
+    flatAccesses.some(
+      (access) =>
+        access.variable === 'arr' &&
+        access.kind === 'indexed-read' &&
+        access.indices?.[0] === 1 &&
+        access.pathDepth === 1
+    ),
+    'JavaScript tracing should emit indexed-read access events'
+  );
+  assertCondition(
+    flatAccesses.some(
+      (access) =>
+        access.variable === 'arr' &&
+        access.kind === 'indexed-write' &&
+        access.indices?.[0] === 1 &&
+        access.pathDepth === 1
+    ),
+    'JavaScript tracing should emit indexed-write access events for compound assignments'
+  );
+  assertCondition(
+    flatAccesses.some(
+      (access) =>
+        access.variable === 'matrix' &&
+        access.kind === 'cell-write' &&
+        access.indices?.[0] === 1 &&
+        access.indices?.[1] === 0 &&
+        access.pathDepth === 2
+    ),
+    'JavaScript tracing should emit cell-write access events for nested element assignments'
+  );
+  assertCondition(
+    flatAccesses.some(
+      (access) =>
+        access.variable === 'queue' &&
+        access.kind === 'mutating-call' &&
+        access.method === 'push'
+    ) &&
+      flatAccesses.some(
+        (access) =>
+          access.variable === 'queue' &&
+          access.kind === 'mutating-call' &&
+          access.method === 'pop'
+      ),
+    'JavaScript tracing should emit mutating-call access events for worklists'
+  );
+  console.log('PASS: execute-with-tracing JavaScript access metadata');
 
   const scriptTracing = await harness.sendMessage<{
     success: boolean;

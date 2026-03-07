@@ -26,6 +26,7 @@ function denormalizeTraceStep(step: RuntimeTraceContractStep): RawTraceStep {
     variables: step.variables,
     function: step.function,
     ...(step.callStack ? { callStack: step.callStack.map(denormalizeCallStackFrame) } : {}),
+    ...(step.accesses ? { accesses: step.accesses } : {}),
     ...(step.returnValue !== undefined ? { returnValue: step.returnValue } : {}),
     ...(step.stdoutLineCount !== undefined ? { stdoutLineCount: step.stdoutLineCount } : {}),
     ...(step.visualization ? { visualization: step.visualization as RuntimeVisualizationPayload } : {}),
