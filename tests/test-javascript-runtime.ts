@@ -405,6 +405,79 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-with-tracing typescript line mapping contract');
 
+  const executeTypeScriptBfsLineMapping = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{
+      line?: number;
+      accesses?: RuntimeAccessEvent[];
+    }>;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  canSplitTeams(n: number, conflicts: number[][]): boolean {
+    const graph: number[][] = Array.from({ length: n }, () => []);
+
+    for (const [a, b] of conflicts) {
+      graph[a].push(b);
+      graph[b].push(a);
+    }
+
+    const color: number[] = new Array(n).fill(-1);
+
+    for (let start = 0; start < n; start++) {
+      if (color[start] !== -1) continue;
+
+      const queue: number[] = [start];
+      color[start] = 0;
+
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+
+        for (const nei of graph[node]) {
+          if (color[nei] === -1) {
+            color[nei] = 1 - color[node];
+            queue.push(nei);
+          } else if (color[nei] === color[node]) {
+            return false;
+          }
+        }
+      }
+    }
+
+    return true;
+  }
+}`,
+    functionName: 'canSplitTeams',
+    className: 'Solution',
+    inputs: { n: 5, conflicts: [[0, 1], [1, 2], [2, 3], [3, 4]] },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(executeTypeScriptBfsLineMapping.success === true, 'TypeScript BFS tracing should succeed');
+  const bfsTrace = executeTypeScriptBfsLineMapping.trace;
+  const queuePushLines = bfsTrace
+    .filter((step) =>
+      (step.accesses ?? []).some(
+        (access) => access.variable === 'queue' && access.kind === 'mutating-call' && access.method === 'push'
+      )
+    )
+    .map((step) => step.line);
+  assertCondition(
+    queuePushLines.length > 0 && queuePushLines.every((line) => line !== 16 && line !== 17 && line !== 18),
+    'TypeScript BFS tracing should not attach queue.push effects to stale queue setup or blank lines'
+  );
+  const graphReadLines = bfsTrace
+    .filter((step) =>
+      (step.accesses ?? []).some(
+        (access) => access.variable === 'graph' && access.kind === 'indexed-read'
+      )
+    )
+    .map((step) => step.line);
+  assertCondition(
+    graphReadLines.length > 0 && graphReadLines.every((line) => line !== 18 && line !== 21),
+    'TypeScript BFS tracing should not attach graph neighbor reads to blank separator lines'
+  );
+  console.log('PASS: execute-with-tracing typescript BFS line alignment contract');
+
   const executeTypeScriptArgOrderTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;

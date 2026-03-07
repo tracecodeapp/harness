@@ -1715,6 +1715,39 @@ function createTraceLineStatement(ts, sourceFile, statement, variableNames, line
   );
 }
 
+function instrumentStatementList(
+  ts,
+  sourceFile,
+  originalStatements,
+  visitedStatements,
+  variableNames,
+  lineFunctionMap,
+  defaultFunctionName
+) {
+  const nextStatements = [];
+  for (let index = 0; index < visitedStatements.length; index += 1) {
+    const visitedStatement = visitedStatements[index];
+    const originalStatement =
+      originalStatements[index] ??
+      ts.getOriginalNode(visitedStatement) ??
+      visitedStatement;
+    if (shouldTraceStatement(ts, visitedStatement)) {
+      nextStatements.push(
+        createTraceLineStatement(
+          ts,
+          sourceFile,
+          originalStatement,
+          variableNames,
+          lineFunctionMap,
+          defaultFunctionName
+        )
+      );
+    }
+    nextStatements.push(visitedStatement);
+  }
+  return ts.factory.createNodeArray(nextStatements);
+}
+
 function collectFunctionParameterNames(ts, functionLikeNode) {
   const names = new Set();
   for (const parameter of functionLikeNode.parameters ?? []) {
@@ -2047,86 +2080,67 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
 
       if (ts.isSourceFile(node)) {
         const visited = ts.visitEachChild(node, visit, context);
-        const nextStatements = [];
-        for (const statement of visited.statements) {
-          if (shouldTraceStatement(ts, statement)) {
-            nextStatements.push(
-              createTraceLineStatement(
-                ts,
-                sourceFile,
-                statement,
-                variableNames,
-                lineFunctionMap,
-                effectiveFunctionName
-              )
-            );
-          }
-          nextStatements.push(statement);
-        }
-        return ts.factory.updateSourceFile(visited, ts.factory.createNodeArray(nextStatements));
+        return ts.factory.updateSourceFile(
+          visited,
+          instrumentStatementList(
+            ts,
+            sourceFile,
+            node.statements,
+            visited.statements,
+            variableNames,
+            lineFunctionMap,
+            effectiveFunctionName
+          )
+        );
       }
 
       if (ts.isBlock(node)) {
         const visited = ts.visitEachChild(node, visit, context);
-        const nextStatements = [];
-        for (const statement of visited.statements) {
-          if (shouldTraceStatement(ts, statement)) {
-            nextStatements.push(
-              createTraceLineStatement(
-                ts,
-                sourceFile,
-                statement,
-                variableNames,
-                lineFunctionMap,
-                effectiveFunctionName
-              )
-            );
-          }
-          nextStatements.push(statement);
-        }
-        return ts.factory.updateBlock(visited, ts.factory.createNodeArray(nextStatements));
+        return ts.factory.updateBlock(
+          visited,
+          instrumentStatementList(
+            ts,
+            sourceFile,
+            node.statements,
+            visited.statements,
+            variableNames,
+            lineFunctionMap,
+            effectiveFunctionName
+          )
+        );
       }
 
       if (ts.isCaseClause(node)) {
         const visited = ts.visitEachChild(node, visit, context);
-        const nextStatements = [];
-        for (const statement of visited.statements) {
-          if (shouldTraceStatement(ts, statement)) {
-            nextStatements.push(
-              createTraceLineStatement(
-                ts,
-                sourceFile,
-                statement,
-                variableNames,
-                lineFunctionMap,
-                effectiveFunctionName
-              )
-            );
-          }
-          nextStatements.push(statement);
-        }
-        return ts.factory.updateCaseClause(visited, visited.expression, ts.factory.createNodeArray(nextStatements));
+        return ts.factory.updateCaseClause(
+          visited,
+          visited.expression,
+          instrumentStatementList(
+            ts,
+            sourceFile,
+            node.statements,
+            visited.statements,
+            variableNames,
+            lineFunctionMap,
+            effectiveFunctionName
+          )
+        );
       }
 
       if (ts.isDefaultClause(node)) {
         const visited = ts.visitEachChild(node, visit, context);
-        const nextStatements = [];
-        for (const statement of visited.statements) {
-          if (shouldTraceStatement(ts, statement)) {
-            nextStatements.push(
-              createTraceLineStatement(
-                ts,
-                sourceFile,
-                statement,
-                variableNames,
-                lineFunctionMap,
-                effectiveFunctionName
-              )
-            );
-          }
-          nextStatements.push(statement);
-        }
-        return ts.factory.updateDefaultClause(visited, ts.factory.createNodeArray(nextStatements));
+        return ts.factory.updateDefaultClause(
+          visited,
+          instrumentStatementList(
+            ts,
+            sourceFile,
+            node.statements,
+            visited.statements,
+            variableNames,
+            lineFunctionMap,
+            effectiveFunctionName
+          )
+        );
       }
 
       return ts.visitEachChild(node, visit, context);
