@@ -1,9 +1,17 @@
 {
-  "name": "tracecode-harness",
-  "private": true,
+  "name": "@tracecode/harness",
   "version": "0.1.0",
   "license": "GPL-3.0-only",
   "packageManager": "pnpm@10.4.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./core": "./packages/harness-core/src/index.ts",
+    "./browser": "./packages/harness-browser/src/index.ts",
+    "./python": "./packages/harness-python/src/index.ts",
+    "./javascript": "./packages/harness-javascript/src/index.ts",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "generate:python-harness": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts",
     "typecheck": "pnpm typecheck:packages",
