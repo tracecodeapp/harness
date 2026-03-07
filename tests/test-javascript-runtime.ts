@@ -478,6 +478,93 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-with-tracing typescript BFS line alignment contract');
 
+  const executeTypeScriptTopoLineMapping = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{
+      line?: number;
+      accesses?: RuntimeAccessEvent[];
+    }>;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  findOrder(numCourses: number, prerequisites: number[][]): number[] {
+    const graph: number[][] = Array.from({ length: numCourses }, () => []);
+    const indegree: number[] = new Array(numCourses).fill(0);
+
+    for (const [a, b] of prerequisites) {
+      graph[b].push(a);
+      indegree[a]++;
+    }
+
+    const queue: number[] = [];
+    for (let i = 0; i < numCourses; i++) {
+      if (indegree[i] === 0) {
+        queue.push(i);
+      }
+    }
+
+    const order: number[] = [];
+    let head = 0;
+
+    while (head < queue.length) {
+      const course = queue[head++];
+      order.push(course);
+
+      for (const next of graph[course]) {
+        indegree[next]--;
+        if (indegree[next] === 0) {
+          queue.push(next);
+        }
+      }
+    }
+
+    return order.length === numCourses ? order : [];
+  }
+}`,
+    functionName: 'findOrder',
+    className: 'Solution',
+    inputs: { numCourses: 4, prerequisites: [[1, 0], [2, 0], [3, 1], [3, 2]] },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(executeTypeScriptTopoLineMapping.success === true, 'TypeScript topological-sort tracing should succeed');
+  const topoTrace = executeTypeScriptTopoLineMapping.trace;
+  const queuePushTopoLines = topoTrace
+    .filter((step) =>
+      (step.accesses ?? []).some(
+        (access) => access.variable === 'queue' && access.kind === 'mutating-call' && access.method === 'push'
+      )
+    )
+    .map((step) => step.line);
+  assertCondition(
+    queuePushTopoLines.length > 0 &&
+      queuePushTopoLines.every((line) => line !== 11 && line !== 18 && line !== 19 && line !== 20),
+    'TypeScript topological-sort tracing should not attach queue.push effects to stale queue/order setup lines'
+  );
+  const orderPushLines = topoTrace
+    .filter((step) =>
+      (step.accesses ?? []).some(
+        (access) => access.variable === 'order' && access.kind === 'mutating-call' && access.method === 'push'
+      )
+    )
+    .map((step) => step.line);
+  assertCondition(
+    orderPushLines.length > 0 && orderPushLines.every((line) => line === 25),
+    'TypeScript topological-sort tracing should attach order.push effects to the neighbor-loop line that executes next'
+  );
+  const graphNeighborReadLines = topoTrace
+    .filter((step) =>
+      (step.accesses ?? []).some(
+        (access) => access.variable === 'graph' && access.kind === 'indexed-read'
+      )
+    )
+    .map((step) => step.line);
+  assertCondition(
+    graphNeighborReadLines.length > 0 &&
+      graphNeighborReadLines.every((line) => line !== 18 && line !== 19 && line !== 20),
+    'TypeScript topological-sort tracing should not attach graph neighbor reads to stale order/head setup lines'
+  );
+  console.log('PASS: execute-with-tracing typescript topological-sort line alignment contract');
+
   const executeTypeScriptArgOrderTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;

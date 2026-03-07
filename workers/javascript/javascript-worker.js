@@ -2632,11 +2632,16 @@ async function executeWithTracing(payload) {
     }
 
     const executableCode = await prepareExecutableCode(code, language);
-    traceLineBounds = determineTraceLineBounds(executableCode, functionName, executionStyle);
+    traceLineBounds = determineTraceLineBounds(code, functionName, executionStyle);
 
     let instrumentedCode = null;
     try {
-      instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName);
+      if (language === 'typescript') {
+        const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName);
+        instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
+      } else {
+        instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName);
+      }
     } catch (instrumentationError) {
       if (WORKER_DEBUG) {
         const message =
