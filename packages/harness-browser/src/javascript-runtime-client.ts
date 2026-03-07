@@ -4,29 +4,20 @@ import {
   type JavaScriptWorkerLanguage,
 } from './javascript-worker-client';
 import type {
-  RuntimeCapabilities,
   RuntimeClient,
   RuntimeExecutionStyle,
   TraceExecutionOptions,
 } from '../../harness-core/src/runtime-types';
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { adaptJavaScriptTraceExecutionResult } from '../../harness-core/src/trace-adapters/javascript';
-
-const JAVASCRIPT_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
-  supportsTracing: true,
-  supportsStepVisualization: true,
-  supportsScriptMode: true,
-};
+import { assertRuntimeRequestSupported } from './runtime-capability-guards';
+import { getLanguageRuntimeProfile } from './runtime-profiles';
 
 class JavaScriptRuntimeClient implements RuntimeClient {
   constructor(private readonly runtimeLanguage: JavaScriptWorkerLanguage) {}
 
   private getClient() {
     return getJavaScriptWorkerClient();
-  }
-
-  getCapabilities(): RuntimeCapabilities {
-    return JAVASCRIPT_RUNTIME_CAPABILITIES;
   }
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
@@ -40,6 +31,11 @@ class JavaScriptRuntimeClient implements RuntimeClient {
     options?: TraceExecutionOptions,
     executionStyle: RuntimeExecutionStyle = 'function'
   ): Promise<ExecutionResult> {
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
+      request: 'trace',
+      executionStyle,
+      functionName,
+    });
     const rawResult = await this.getClient().executeWithTracing(
       code,
       functionName,
@@ -57,6 +53,11 @@ class JavaScriptRuntimeClient implements RuntimeClient {
     inputs: Record<string, unknown>,
     executionStyle: RuntimeExecutionStyle = 'function'
   ): Promise<CodeExecutionResult> {
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
+      request: 'execute',
+      executionStyle,
+      functionName,
+    });
     return this.getClient().executeCode(
       code,
       functionName,
@@ -72,6 +73,11 @@ class JavaScriptRuntimeClient implements RuntimeClient {
     inputs: Record<string, unknown>,
     executionStyle: RuntimeExecutionStyle = 'function'
   ): Promise<CodeExecutionResult> {
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile(this.runtimeLanguage), {
+      request: 'interview',
+      executionStyle,
+      functionName,
+    });
     return this.getClient().executeCodeInterviewMode(
       code,
       functionName,

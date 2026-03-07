@@ -3,27 +3,18 @@ import {
   type ExecutionStyle,
 } from './pyodide-worker-client';
 import type {
-  RuntimeCapabilities,
   RuntimeClient,
   RuntimeExecutionStyle,
   TraceExecutionOptions,
 } from '../../harness-core/src/runtime-types';
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { adaptPythonTraceExecutionResult } from '../../harness-core/src/trace-adapters/python';
-
-const PYTHON_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
-  supportsTracing: true,
-  supportsStepVisualization: true,
-  supportsScriptMode: true,
-};
+import { assertRuntimeRequestSupported } from './runtime-capability-guards';
+import { getLanguageRuntimeProfile } from './runtime-profiles';
 
 class PythonRuntimeClient implements RuntimeClient {
   private getClient() {
     return getPyodideWorkerClient();
-  }
-
-  getCapabilities(): RuntimeCapabilities {
-    return PYTHON_RUNTIME_CAPABILITIES;
   }
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
@@ -37,6 +28,11 @@ class PythonRuntimeClient implements RuntimeClient {
     options?: TraceExecutionOptions,
     executionStyle: RuntimeExecutionStyle = 'function'
   ): Promise<ExecutionResult> {
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+      request: 'trace',
+      executionStyle,
+      functionName,
+    });
     const rawResult = await this.getClient().executeWithTracing(
       code,
       functionName,
@@ -53,6 +49,11 @@ class PythonRuntimeClient implements RuntimeClient {
     inputs: Record<string, unknown>,
     executionStyle: RuntimeExecutionStyle = 'function'
   ): Promise<CodeExecutionResult> {
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+      request: 'execute',
+      executionStyle,
+      functionName,
+    });
     return this.getClient().executeCode(
       code,
       functionName,
@@ -67,6 +68,11 @@ class PythonRuntimeClient implements RuntimeClient {
     inputs: Record<string, unknown>,
     executionStyle: RuntimeExecutionStyle = 'function'
   ): Promise<CodeExecutionResult> {
+    assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+      request: 'interview',
+      executionStyle,
+      functionName,
+    });
     return this.getClient().executeCodeInterviewMode(
       code,
       functionName,

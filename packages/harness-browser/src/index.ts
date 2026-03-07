@@ -1,4 +1,6 @@
 export * from './runtime-client';
+export * from './runtime-profiles';
+export * from './runtime-capability-guards';
 export * from './runtime-language-gate';
 export * from './runtime-worker-isolation';
 export * from './python-runtime-client';

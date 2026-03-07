@@ -1,14 +1,36 @@
 #!/usr/bin/env npx tsx
 
 import { spawnSync } from 'node:child_process';
-import { SUPPORTED_LANGUAGES, getRuntimeClient } from '../packages/harness-browser/src/runtime-client';
+import {
+  SUPPORTED_LANGUAGES,
+  getLanguageRuntimeProfile,
+  getRuntimeClient,
+  getSupportedLanguageProfiles,
+  isLanguageSupported,
+} from '../packages/harness-browser/src/runtime-client';
+import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
+import type { Language, LanguageRuntimeProfile, RuntimeCapabilities } from '../packages/harness-core/src/runtime-types';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function expectThrows(fn: () => void, expectedMessage: string): void {
+  let thrown: unknown;
+  try {
+    fn();
+  } catch (error) {
+    thrown = error;
+  }
+  assertCondition(thrown instanceof Error, `Expected error containing "${expectedMessage}"`);
+  assertCondition(
+    String((thrown as Error).message).includes(expectedMessage),
+    `Expected error containing "${expectedMessage}", received "${String((thrown as Error).message)}"`
+  );
 }
 
 function stableStringify(value: unknown): string {
@@ -22,6 +44,149 @@ function stableStringify(value: unknown): string {
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
   return '{' + keys.map((key) => JSON.stringify(key) + ':' + stableStringify(obj[key])).join(',') + '}';
+}
+
+function collectEnabledCapabilityPaths(
+  value: RuntimeCapabilities | Record<string, unknown>,
+  prefix = ''
+): string[] {
+  return Object.entries(value).flatMap(([key, nestedValue]) => {
+    const nextPath = prefix ? `${prefix}.${key}` : key;
+    if (typeof nestedValue === 'boolean') {
+      return nestedValue ? [nextPath] : [];
+    }
+    if (nestedValue && typeof nestedValue === 'object' && !Array.isArray(nestedValue)) {
+      return collectEnabledCapabilityPaths(nestedValue as Record<string, unknown>, nextPath);
+    }
+    return [];
+  });
+}
+
+const COMMON_STABLE_COVERAGE = [
+  'execution.styles.function',
+  'execution.styles.solutionMethod',
+  'execution.styles.opsClass',
+  'execution.styles.script',
+  'execution.styles.interviewMode',
+  'execution.timeouts.clientTimeouts',
+  'tracing.supported',
+  'tracing.events.line',
+  'tracing.events.call',
+  'tracing.events.return',
+  'tracing.events.exception',
+  'tracing.events.timeout',
+  'tracing.controls.maxTraceSteps',
+  'tracing.controls.maxLineEvents',
+  'tracing.controls.maxSingleLineHits',
+  'tracing.controls.minimalTrace',
+  'tracing.fidelity.preciseLineMapping',
+  'tracing.fidelity.stableFunctionNames',
+  'tracing.fidelity.callStack',
+  'diagnostics.runtimeErrors',
+  'structures.treeNodeRefs',
+  'structures.listNodeRefs',
+  'structures.mapSerialization',
+  'structures.setSerialization',
+  'structures.graphSerialization',
+  'structures.cycleReferences',
+  'visualization.runtimePayloads',
+  'visualization.objectKinds',
+  'visualization.hashMaps',
+  'visualization.stepVisualization',
+] as const satisfies readonly string[];
+
+const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
+  python: [
+    ...COMMON_STABLE_COVERAGE,
+    'execution.timeouts.runtimeTimeouts',
+    'tracing.events.stdout',
+    'diagnostics.mappedErrorLines',
+  ],
+  javascript: [...COMMON_STABLE_COVERAGE],
+  typescript: [
+    ...COMMON_STABLE_COVERAGE,
+    'diagnostics.compileErrors',
+    'diagnostics.mappedErrorLines',
+  ],
+};
+
+function assertProfileCoverageAlignment(profile: LanguageRuntimeProfile): void {
+  const declaredCapabilities = new Set(collectEnabledCapabilityPaths(profile.capabilities));
+  const coveredCapabilities = new Set(LANGUAGE_CONFORMANCE_COVERAGE[profile.language] ?? []);
+
+  for (const capabilityPath of declaredCapabilities) {
+    assertCondition(
+      coveredCapabilities.has(capabilityPath),
+      `${profile.language} declares capability "${capabilityPath}" without matching conformance coverage`
+    );
+  }
+}
+
+function createUnsupportedProfile(
+  overrides: Partial<LanguageRuntimeProfile['capabilities']> = {}
+): LanguageRuntimeProfile {
+  return {
+    language: 'javascript',
+    maturity: 'experimental',
+    capabilities: {
+      execution: {
+        styles: {
+          function: true,
+          solutionMethod: false,
+          opsClass: false,
+          script: false,
+          interviewMode: false,
+        },
+        timeouts: {
+          clientTimeouts: true,
+          runtimeTimeouts: false,
+        },
+      },
+      tracing: {
+        supported: false,
+        events: {
+          line: false,
+          call: false,
+          return: false,
+          exception: false,
+          stdout: false,
+          timeout: false,
+        },
+        controls: {
+          maxTraceSteps: false,
+          maxLineEvents: false,
+          maxSingleLineHits: false,
+          minimalTrace: false,
+        },
+        fidelity: {
+          preciseLineMapping: false,
+          stableFunctionNames: false,
+          callStack: false,
+        },
+      },
+      diagnostics: {
+        compileErrors: false,
+        runtimeErrors: true,
+        mappedErrorLines: false,
+        stackTraces: false,
+      },
+      structures: {
+        treeNodeRefs: false,
+        listNodeRefs: false,
+        mapSerialization: false,
+        setSerialization: false,
+        graphSerialization: false,
+        cycleReferences: false,
+      },
+      visualization: {
+        runtimePayloads: false,
+        objectKinds: false,
+        hashMaps: false,
+        stepVisualization: false,
+      },
+      ...overrides,
+    },
+  };
 }
 
 function runPythonCase(
@@ -56,10 +221,23 @@ function runPythonCase(
 }
 
 async function main(): Promise<void> {
+  const profiles = getSupportedLanguageProfiles();
+
   assertCondition(SUPPORTED_LANGUAGES.includes('python'), 'SUPPORTED_LANGUAGES should include python');
   assertCondition(SUPPORTED_LANGUAGES.includes('javascript'), 'SUPPORTED_LANGUAGES should include javascript');
   assertCondition(SUPPORTED_LANGUAGES.includes('typescript'), 'SUPPORTED_LANGUAGES should include typescript');
-  console.log('PASS: runtime language registry');
+  assertCondition(
+    stableStringify(SUPPORTED_LANGUAGES) === stableStringify(profiles.map((profile) => profile.language)),
+    'SUPPORTED_LANGUAGES should stay aligned with the runtime profile registry'
+  );
+  for (const language of SUPPORTED_LANGUAGES) {
+    assertCondition(isLanguageSupported(language), `${language} should be reported as supported`);
+    assertCondition(
+      getLanguageRuntimeProfile(language).language === language,
+      `${language} should resolve a matching runtime profile`
+    );
+  }
+  console.log('PASS: runtime language/profile registry');
 
   const pythonClient = getRuntimeClient('python');
   const javascriptClient = getRuntimeClient('javascript');
@@ -70,8 +248,8 @@ async function main(): Promise<void> {
     ['typescript', typescriptClient],
   ] as const) {
     assertCondition(
-      typeof client.getCapabilities === 'function',
-      `${name} client should implement getCapabilities`
+      typeof (client as { getCapabilities?: unknown }).getCapabilities === 'undefined',
+      `${name} client should not expose getCapabilities`
     );
     assertCondition(typeof client.init === 'function', `${name} client should implement init`);
     assertCondition(typeof client.executeCode === 'function', `${name} client should implement executeCode`);
@@ -86,27 +264,79 @@ async function main(): Promise<void> {
   }
   console.log('PASS: runtime adapter surface contract');
 
-  const pythonCapabilities = pythonClient.getCapabilities();
-  const javascriptCapabilities = javascriptClient.getCapabilities();
-  const typescriptCapabilities = typescriptClient.getCapabilities();
-  assertCondition(pythonCapabilities.supportsTracing === true, 'Python should support tracing');
+  const pythonProfile = getLanguageRuntimeProfile('python');
+  const javascriptProfile = getLanguageRuntimeProfile('javascript');
+  const typescriptProfile = getLanguageRuntimeProfile('typescript');
+  for (const profile of profiles) {
+    assertCondition(profile.maturity === 'stable', `${profile.language} should be marked stable in this release`);
+    assertProfileCoverageAlignment(profile);
+  }
+  assertCondition(pythonProfile.capabilities.tracing.supported, 'Python should support tracing');
   assertCondition(
-    pythonCapabilities.supportsStepVisualization === true,
+    pythonProfile.capabilities.visualization.stepVisualization,
     'Python should support step visualization'
   );
-  assertCondition(javascriptCapabilities.supportsTracing === true, 'JavaScript tracing should be enabled');
   assertCondition(
-    javascriptCapabilities.supportsStepVisualization === true,
-    'JavaScript step visualization should be enabled'
+    pythonProfile.capabilities.execution.timeouts.runtimeTimeouts,
+    'Python should advertise runtime-side timeouts'
   );
-  assertCondition(typescriptCapabilities.supportsTracing === true, 'TypeScript tracing should be enabled');
   assertCondition(
-    typescriptCapabilities.supportsStepVisualization === true,
-    'TypeScript step visualization should be enabled'
+    javascriptProfile.capabilities.execution.styles.script,
+    'JavaScript should support script mode execution'
   );
-  assertCondition(javascriptCapabilities.supportsScriptMode === true, 'JavaScript should support script mode');
-  assertCondition(typescriptCapabilities.supportsScriptMode === true, 'TypeScript should support script mode');
-  console.log('PASS: runtime capability matrix');
+  assertCondition(
+    javascriptProfile.capabilities.structures.listNodeRefs,
+    'JavaScript should advertise linked-list ref hydration'
+  );
+  assertCondition(
+    javascriptProfile.capabilities.visualization.runtimePayloads,
+    'JavaScript should advertise runtime visualization payloads'
+  );
+  assertCondition(typescriptProfile.capabilities.diagnostics.compileErrors, 'TypeScript should support compile errors');
+  assertCondition(
+    typescriptProfile.capabilities.diagnostics.mappedErrorLines,
+    'TypeScript should preserve mapped compile error lines'
+  );
+  console.log('PASS: runtime capability profile matrix');
+
+  const unsupportedProfile = createUnsupportedProfile();
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(unsupportedProfile, {
+        request: 'trace',
+        executionStyle: 'function',
+        functionName: 'solve',
+      }),
+    'does not support tracing'
+  );
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(unsupportedProfile, {
+        request: 'execute',
+        executionStyle: 'solution-method',
+        functionName: 'solve',
+      }),
+    'does not support execution style "solution-method"'
+  );
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(unsupportedProfile, {
+        request: 'execute',
+        executionStyle: 'function',
+        functionName: null,
+      }),
+    'does not support script mode execution'
+  );
+  expectThrows(
+    () =>
+      assertRuntimeRequestSupported(unsupportedProfile, {
+        request: 'interview',
+        executionStyle: 'function',
+        functionName: 'solve',
+      }),
+    'does not support interview execution'
+  );
+  console.log('PASS: unsupported capability guards');
 
   const functionCase = {
     functionName: 'compute',
@@ -176,7 +406,7 @@ function compute(nums: number[], delta: number): number[] {
     typeof javascriptError.error === 'string' && javascriptError.error.length > 0,
     'JavaScript missing function case should include error'
   );
-  console.log('PASS: cross-runtime error contract');
+  console.log('PASS: cross-runtime diagnostics contract');
 
   const opsClassCode = `
 class Counter {
@@ -218,7 +448,7 @@ class Counter {
     stableStringify(tsOpsClass.output) === stableStringify([null, 3, 6, 6]),
     `TypeScript ops-class output mismatch: ${stableStringify(tsOpsClass.output)}`
   );
-  console.log('PASS: runtime ops-class capability contract');
+  console.log('PASS: runtime execution style contract');
 
   const linkedListCycleRefInput = {
     head: {
