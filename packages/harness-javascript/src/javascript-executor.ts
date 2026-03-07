@@ -256,6 +256,133 @@ function normalizeInputs(inputs: Record<string, unknown>): Record<string, unknow
   return hydrated as Record<string, unknown>;
 }
 
+type FunctionLikeNode =
+  | import('typescript').FunctionDeclaration
+  | import('typescript').FunctionExpression
+  | import('typescript').ArrowFunction
+  | import('typescript').MethodDeclaration;
+
+function collectSimpleParameterNames(
+  ts: TypeScriptModule,
+  functionLikeNode: FunctionLikeNode
+): string[] | null {
+  const names: string[] = [];
+
+  for (const parameter of functionLikeNode.parameters ?? []) {
+    if (!ts.isIdentifier(parameter.name)) {
+      return null;
+    }
+    if (parameter.name.text === 'this') {
+      continue;
+    }
+    names.push(parameter.name.text);
+  }
+
+  return names;
+}
+
+function getPropertyNameText(ts: TypeScriptModule, name: import('typescript').PropertyName | undefined): string | null {
+  if (!name) return null;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return null;
+}
+
+function findFunctionLikeNode(
+  ts: TypeScriptModule,
+  sourceFile: import('typescript').SourceFile,
+  functionName: string,
+  executionStyle: RuntimeExecutionStyle
+): FunctionLikeNode | null {
+  let found: FunctionLikeNode | null = null;
+
+  const visit = (node: import('typescript').Node): void => {
+    if (found) return;
+
+    if (executionStyle === 'solution-method' && ts.isClassDeclaration(node) && node.name?.text === 'Solution') {
+      for (const member of node.members) {
+        if (found) break;
+
+        if (ts.isMethodDeclaration(member) && getPropertyNameText(ts, member.name) === functionName) {
+          found = member;
+          break;
+        }
+
+        if (
+          ts.isPropertyDeclaration(member) &&
+          getPropertyNameText(ts, member.name) === functionName &&
+          member.initializer &&
+          (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))
+        ) {
+          found = member.initializer;
+          break;
+        }
+      }
+      return;
+    }
+
+    if (executionStyle === 'function') {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === functionName) {
+        found = node;
+        return;
+      }
+
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === functionName &&
+        node.initializer &&
+        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      ) {
+        found = node.initializer;
+        return;
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return found;
+}
+
+async function resolveOrderedInputKeys(
+  code: string,
+  functionName: string,
+  inputs: Record<string, unknown>,
+  executionStyle: RuntimeExecutionStyle
+): Promise<string[]> {
+  const fallbackKeys = Object.keys(inputs);
+  if (!functionName || executionStyle === 'ops-class' || fallbackKeys.length <= 1) {
+    return fallbackKeys;
+  }
+
+  try {
+    const ts = await getTypeScriptModule();
+    const sourceFile = ts.createSourceFile('runtime-input.js', code, ts.ScriptTarget.ES2020, true, ts.ScriptKind.JS);
+    const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
+    if (!target) {
+      return fallbackKeys;
+    }
+
+    const parameterNames = collectSimpleParameterNames(ts, target);
+    if (!parameterNames || parameterNames.length === 0) {
+      return fallbackKeys;
+    }
+
+    const matchedKeys = parameterNames.filter((name) => Object.prototype.hasOwnProperty.call(inputs, name));
+    if (matchedKeys.length === 0) {
+      return fallbackKeys;
+    }
+
+    const extras = fallbackKeys.filter((key) => !matchedKeys.includes(key));
+    return [...matchedKeys, ...extras];
+  } catch {
+    return fallbackKeys;
+  }
+}
+
 function buildRunner(code: string, executionStyle: RuntimeExecutionStyle, argNames: string[]): DynamicRunner {
   if (executionStyle === 'function') {
     return new Function(
@@ -416,7 +543,7 @@ export async function executeJavaScriptCode(
       const runner = buildRunner(code, executionStyle, []);
       output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
     } else {
-      const inputKeys = Object.keys(normalizedInputs);
+      const inputKeys = await resolveOrderedInputKeys(code, functionName, normalizedInputs, executionStyle);
       const argNames = inputKeys.map((_, index) => `__arg${index}`);
       const argValues = inputKeys.map((key) => normalizedInputs[key]);
       const runner = buildRunner(code, executionStyle, argNames);

@@ -314,6 +314,119 @@ function normalizeInputs(inputs) {
   return hydrated;
 }
 
+function collectSimpleParameterNames(ts, functionLikeNode) {
+  const names = [];
+
+  for (const parameter of functionLikeNode.parameters ?? []) {
+    if (!ts.isIdentifier(parameter.name)) {
+      return null;
+    }
+    if (parameter.name.text === 'this') {
+      continue;
+    }
+    names.push(parameter.name.text);
+  }
+
+  return names;
+}
+
+function getPropertyNameText(ts, name) {
+  if (!name) return null;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  return null;
+}
+
+function findFunctionLikeNode(ts, sourceFile, functionName, executionStyle) {
+  let found = null;
+
+  const visit = (node) => {
+    if (found) return;
+
+    if (executionStyle === 'solution-method' && ts.isClassDeclaration(node) && node.name?.text === 'Solution') {
+      for (const member of node.members) {
+        if (found) break;
+
+        if (ts.isMethodDeclaration(member) && getPropertyNameText(ts, member.name) === functionName) {
+          found = member;
+          break;
+        }
+
+        if (
+          ts.isPropertyDeclaration(member) &&
+          getPropertyNameText(ts, member.name) === functionName &&
+          member.initializer &&
+          (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))
+        ) {
+          found = member.initializer;
+          break;
+        }
+      }
+      return;
+    }
+
+    if (executionStyle === 'function') {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === functionName) {
+        found = node;
+        return;
+      }
+
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === functionName &&
+        node.initializer &&
+        (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+      ) {
+        found = node.initializer;
+        return;
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return found;
+}
+
+async function resolveOrderedInputKeys(code, functionName, inputs, executionStyle) {
+  const fallbackKeys = Object.keys(inputs ?? {});
+  if (!functionName || executionStyle === 'ops-class' || fallbackKeys.length <= 1) {
+    return fallbackKeys;
+  }
+
+  try {
+    await ensureTypeScriptCompiler();
+    const ts = getTypeScriptCompiler();
+    if (!ts) {
+      return fallbackKeys;
+    }
+
+    const sourceFile = ts.createSourceFile('runtime-input.js', code, ts.ScriptTarget.ES2020, true, ts.ScriptKind.JS);
+    const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
+    if (!target) {
+      return fallbackKeys;
+    }
+
+    const parameterNames = collectSimpleParameterNames(ts, target);
+    if (!parameterNames || parameterNames.length === 0) {
+      return fallbackKeys;
+    }
+
+    const matchedKeys = parameterNames.filter((name) => Object.prototype.hasOwnProperty.call(inputs, name));
+    if (matchedKeys.length === 0) {
+      return fallbackKeys;
+    }
+
+    const extras = fallbackKeys.filter((key) => !matchedKeys.includes(key));
+    return [...matchedKeys, ...extras];
+  } catch (_error) {
+    return fallbackKeys;
+  }
+}
+
 function stripEngineSuggestionHints(message) {
   if (typeof message !== 'string' || message.length === 0) {
     return String(message ?? '');
@@ -2446,7 +2559,7 @@ async function executeCode(payload) {
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, []);
         output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
       } else {
-        const inputKeys = Object.keys(normalizedInputs);
+        const inputKeys = await resolveOrderedInputKeys(executableCode, functionName, normalizedInputs, executionStyle);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
         const argValues = inputKeys.map((key) => normalizedInputs[key]);
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames);
@@ -2568,7 +2681,7 @@ async function executeWithTracing(payload) {
           )
         );
       } else {
-        const inputKeys = Object.keys(normalizedInputs);
+        const inputKeys = await resolveOrderedInputKeys(executableCode, functionName, normalizedInputs, executionStyle);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
         const argValues = inputKeys.map((key) => normalizedInputs[key]);
         const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames);

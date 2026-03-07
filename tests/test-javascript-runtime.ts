@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 
 interface WorkerMessage {
   id?: string;
@@ -298,6 +299,26 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   assertCondition(executeTypeScript.output === 10, 'TypeScript output should equal 10');
   console.log('PASS: execute-code typescript transpilation');
 
+  const packageExecutorArgOrder = await executeTypeScriptCode(
+    `class Solution {
+  canSplitTeams(n: number, conflicts: number[][]): boolean {
+    return typeof n === 'number' && Array.isArray(conflicts);
+  }
+}`,
+    'canSplitTeams',
+    {
+      conflicts: [[0, 1]],
+      n: 7,
+    },
+    'solution-method'
+  );
+  assertCondition(packageExecutorArgOrder.success === true, 'Package executor arg-order case should succeed');
+  assertCondition(
+    packageExecutorArgOrder.output === true,
+    'Package executor should bind solution-method args by signature order, not object key order'
+  );
+  console.log('PASS: package executor solution-method arg order contract');
+
   const executeTypeScriptLinkedListCycleRefs = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -335,6 +356,30 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-code typescript linked-list ref hydration contract');
 
+  const executeTypeScriptArgOrder = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+  }>('execute-code', {
+    code: `class Solution {
+  canSplitTeams(n: number, conflicts: number[][]): boolean {
+    return typeof n === 'number' && Array.isArray(conflicts);
+  }
+}`,
+    functionName: 'canSplitTeams',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: {
+      conflicts: [[0, 1]],
+      n: 7,
+    },
+  });
+  assertCondition(executeTypeScriptArgOrder.success === true, 'TypeScript arg-order execution should succeed');
+  assertCondition(
+    executeTypeScriptArgOrder.output === true,
+    'TypeScript worker should bind solution-method args by signature order'
+  );
+  console.log('PASS: execute-code typescript solution-method arg order contract');
+
   const executeTypeScriptTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
@@ -359,6 +404,37 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     'TypeScript tracing should preserve return-line mapping from source'
   );
   console.log('PASS: execute-with-tracing typescript line mapping contract');
+
+  const executeTypeScriptArgOrderTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    trace: Array<{ event?: string; function?: string; returnValue?: unknown }>;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  canSplitTeams(n: number, conflicts: number[][]): boolean {
+    return typeof n === 'number' && Array.isArray(conflicts);
+  }
+}`,
+    functionName: 'canSplitTeams',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: {
+      conflicts: [[0, 1]],
+      n: 7,
+    },
+  });
+  assertCondition(executeTypeScriptArgOrderTracing.success === true, 'TypeScript arg-order tracing should succeed');
+  assertCondition(
+    executeTypeScriptArgOrderTracing.output === true,
+    'TypeScript traced execution should bind solution-method args by signature order'
+  );
+  assertCondition(
+    executeTypeScriptArgOrderTracing.trace.some(
+      (step) => step.event === 'return' && step.function === 'canSplitTeams' && step.returnValue === true
+    ),
+    'TypeScript traced execution should preserve the successful return value for arg-order cases'
+  );
+  console.log('PASS: execute-with-tracing typescript solution-method arg order contract');
 
   const executeTypeScriptAccessTracing = await harness.sendMessage<{
     success: boolean;
