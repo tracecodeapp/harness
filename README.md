@@ -29,6 +29,52 @@ The root package is `@tracecode/harness` and exposes these subpaths:
 - `@tracecode/harness/javascript`
   JavaScript and TypeScript execution helpers.
 
+## Capability Model
+
+Runtime support is described by language profiles, not a few flat booleans.
+
+The browser surface exports:
+
+- `SUPPORTED_LANGUAGES`
+- `getRuntimeClient(language)`
+- `getLanguageRuntimeProfile(language)`
+- `getSupportedLanguageProfiles()`
+- `isLanguageSupported(language)`
+
+Each language profile includes:
+
+- `language`
+- `maturity`
+- `capabilities`
+
+Capability areas are structured by feature domain:
+
+- `execution`
+- `tracing`
+- `diagnostics`
+- `structures`
+- `visualization`
+
+This is intentional. A future language can be present as `experimental` and honestly partial without pretending it has Python or JavaScript parity.
+
+Example:
+
+```ts
+import { getLanguageRuntimeProfile } from '@tracecode/harness/browser';
+
+const profile = getLanguageRuntimeProfile('typescript');
+
+if (profile.capabilities.tracing.supported) {
+  // enable trace UI
+}
+
+if (!profile.capabilities.execution.styles.script) {
+  // hide script-mode entrypoint
+}
+```
+
+Runtime clients are execution transports only. Static capability inspection comes from the profile registry, not from client instances.
+
 ## Worker Assets
 
 The browser runtime currently expects these worker assets to be served by the consuming app:
@@ -88,6 +134,39 @@ That runs:
 - Python harness drift checks
 - JavaScript worker runtime tests
 - cross-runtime contract tests
+
+## Conformance Expectations
+
+Capability claims are test-backed.
+
+The contract suite checks:
+
+- every supported language has a runtime profile
+- every profile has a maturity level and complete nested capability object
+- unsupported feature requests fail explicitly
+- declared capabilities stay aligned with conformance coverage
+
+Current stable languages:
+
+- Python
+- JavaScript
+- TypeScript
+
+The intended path for a new language is:
+
+1. add a profile with an honest maturity level
+2. implement only the supported execution paths
+3. fail closed for unsupported features
+4. expand conformance coverage before promoting maturity
+
+## Releases
+
+This repo uses explicit Git tags as release boundaries.
+
+- `v0.1.0` is the pre-profile baseline
+- `v0.2.0` introduces structured runtime capability profiles
+
+TraceCode currently consumes tagged releases rather than floating commit SHAs.
 
 ## Repository Layout
 
