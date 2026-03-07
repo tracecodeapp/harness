@@ -1,0 +1,24 @@
+{
+  "name": "tracecode-harness",
+  "private": true,
+  "version": "0.1.0",
+  "license": "GPL-3.0-only",
+  "packageManager": "pnpm@10.4.1",
+  "scripts": {
+    "generate:python-harness": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts",
+    "typecheck": "pnpm typecheck:packages",
+    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit",
+    "test:smoke": "pnpm exec tsx tests/test-harness-workspace-smoke.ts",
+    "test:trace-adapters": "pnpm exec tsx tests/test-trace-adapters.ts",
+    "test:python-harness-sync": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts --check && pnpm exec tsx tests/test-python-harness-sync.ts",
+    "test:javascript-runtime": "pnpm exec tsx tests/test-javascript-runtime.ts",
+    "test:runtime-contract": "pnpm exec tsx tests/test-runtime-contract.ts",
+    "test": "pnpm typecheck && pnpm test:smoke && pnpm test:trace-adapters && pnpm test:python-harness-sync && pnpm test:javascript-runtime && pnpm test:runtime-contract"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "pyodide": "^0.29.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.0.0"
+  }
+}

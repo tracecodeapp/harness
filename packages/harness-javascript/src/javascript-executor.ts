@@ -1,0 +1,484 @@
+import type { RuntimeExecutionStyle } from '../../harness-core/src/runtime-types';
+import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import { withTypeScriptRuntimeDeclarations } from './typescript-runtime-declarations';
+
+type TypeScriptModule = typeof import('typescript');
+
+let typeScriptModulePromise: Promise<TypeScriptModule> | null = null;
+
+type DynamicRunner = (...args: unknown[]) => unknown;
+
+async function getTypeScriptModule(): Promise<TypeScriptModule> {
+  if (!typeScriptModulePromise) {
+    const specifier = 'typescript';
+    typeScriptModulePromise = import(/* webpackIgnore: true */ specifier);
+  }
+  return typeScriptModulePromise;
+}
+
+function performanceNow(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+function formatConsoleArg(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function createConsoleProxy(output: string[]): Console {
+  const capture = (...args: unknown[]) => {
+    output.push(args.map(formatConsoleArg).join(' '));
+  };
+
+  return {
+    ...console,
+    log: capture,
+    info: capture,
+    warn: capture,
+    error: capture,
+    debug: capture,
+  };
+}
+
+function isLikelyTreeNodeValue(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const hasValue = 'val' in value || 'value' in value;
+  const hasTreeLinks = 'left' in value || 'right' in value;
+  return hasValue && hasTreeLinks;
+}
+
+function isLikelyListNodeValue(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const hasValue = 'val' in value || 'value' in value;
+  const hasTreeLinks = 'left' in value || 'right' in value;
+  const hasListLinks = 'next' in value || 'prev' in value;
+  return hasValue && hasListLinks && !hasTreeLinks;
+}
+
+function serializeValue(
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>(),
+  nodeRefState: { ids: Map<object, string>; nextId: number } = { ids: new Map<object, string>(), nextId: 1 }
+): unknown {
+  if (depth > 48) return '<max depth>';
+  if (value === null || value === undefined) return value;
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'bigint') {
+    return Number.isSafeInteger(Number(value)) ? Number(value) : String(value);
+  }
+  if (typeof value === 'function') {
+    return '<function>';
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeValue(item, depth + 1, seen));
+  }
+
+  if (value instanceof Set) {
+    return {
+      __type__: 'set',
+      values: [...value].map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
+    };
+  }
+
+  if (value instanceof Map) {
+    return {
+      __type__: 'map',
+      entries: [...value.entries()].map(([k, v]) => [
+        serializeValue(k, depth + 1, seen, nodeRefState),
+        serializeValue(v, depth + 1, seen, nodeRefState),
+      ]),
+    };
+  }
+
+  if (typeof value === 'object') {
+    if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) {
+      const objectValue = value as object;
+      const nodeValue = value as Record<string, unknown>;
+      const existingId = nodeRefState.ids.get(objectValue);
+      if (existingId) {
+        return { __ref__: existingId };
+      }
+
+      const isTree = isLikelyTreeNodeValue(value);
+      const nodePrefix = isTree ? 'tree' : 'list';
+      const nodeId = `${nodePrefix}-${nodeRefState.nextId++}`;
+      nodeRefState.ids.set(objectValue, nodeId);
+
+      if (isTree) {
+        return {
+          __type__: 'TreeNode',
+          __id__: nodeId,
+          val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
+          left: serializeValue(nodeValue.left ?? null, depth + 1, seen, nodeRefState),
+          right: serializeValue(nodeValue.right ?? null, depth + 1, seen, nodeRefState),
+        };
+      }
+
+      return {
+        __type__: 'ListNode',
+        __id__: nodeId,
+        val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
+        next: serializeValue(nodeValue.next ?? null, depth + 1, seen, nodeRefState),
+        ...('prev' in nodeValue
+          ? { prev: serializeValue(nodeValue.prev ?? null, depth + 1, seen, nodeRefState) }
+          : {}),
+      };
+    }
+
+    if (seen.has(value as object)) return '<cycle>';
+    seen.add(value as object);
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+    }
+    seen.delete(value as object);
+    return out;
+  }
+
+  return String(value);
+}
+
+function extractUserErrorLine(error: unknown): number | undefined {
+  if (typeof error === 'object' && error && '__tracecodeLine' in error) {
+    const line = Number((error as { __tracecodeLine?: unknown }).__tracecodeLine);
+    if (Number.isFinite(line)) return line;
+  }
+
+  const stack =
+    typeof error === 'object' && error && 'stack' in error
+      ? String((error as { stack?: unknown }).stack ?? '')
+      : '';
+  if (!stack) return undefined;
+  const match = stack.match(/<anonymous>:(\d+):\d+/);
+  if (!match) return undefined;
+  const line = Number.parseInt(match[1], 10);
+  return Number.isFinite(line) ? line : undefined;
+}
+
+function isPlainObjectRecord(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.prototype.toString.call(value) === '[object Object]';
+}
+
+function collectReferenceTargets(
+  value: unknown,
+  byId: Map<string, Record<string, unknown>>,
+  seen: WeakSet<object>
+): void {
+  if (value === null || value === undefined) return;
+  if (typeof value !== 'object') return;
+  if (seen.has(value)) return;
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectReferenceTargets(item, byId, seen);
+    }
+    return;
+  }
+
+  if (!isPlainObjectRecord(value)) return;
+  if (typeof value.__id__ === 'string' && value.__id__.length > 0 && !byId.has(value.__id__)) {
+    byId.set(value.__id__, value);
+  }
+
+  for (const nested of Object.values(value)) {
+    collectReferenceTargets(nested, byId, seen);
+  }
+}
+
+function resolveReferenceGraph(
+  value: unknown,
+  byId: Map<string, Record<string, unknown>>,
+  resolved: WeakMap<object, unknown>
+): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+
+  if (resolved.has(value)) {
+    return resolved.get(value);
+  }
+
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    resolved.set(value, out);
+    for (const item of value) {
+      out.push(resolveReferenceGraph(item, byId, resolved));
+    }
+    return out;
+  }
+
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+
+  const keys = Object.keys(value);
+  if (keys.length === 1 && typeof value.__ref__ === 'string') {
+    const target = byId.get(value.__ref__);
+    if (!target) return null;
+    return resolveReferenceGraph(target, byId, resolved);
+  }
+
+  const out: Record<string, unknown> = {};
+  resolved.set(value, out);
+  for (const [key, nested] of Object.entries(value)) {
+    out[key] = resolveReferenceGraph(nested, byId, resolved);
+  }
+  return out;
+}
+
+function normalizeInputs(inputs: Record<string, unknown>): Record<string, unknown> {
+  if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return {};
+  const byId = new Map<string, Record<string, unknown>>();
+  collectReferenceTargets(inputs, byId, new WeakSet<object>());
+  if (byId.size === 0) {
+    return inputs;
+  }
+  const hydrated = resolveReferenceGraph(inputs, byId, new WeakMap<object, unknown>());
+  if (!hydrated || typeof hydrated !== 'object' || Array.isArray(hydrated)) {
+    return inputs;
+  }
+  return hydrated as Record<string, unknown>;
+}
+
+function buildRunner(code: string, executionStyle: RuntimeExecutionStyle, argNames: string[]): DynamicRunner {
+  if (executionStyle === 'function') {
+    return new Function(
+      'console',
+      '__functionName',
+      ...argNames,
+      `"use strict";
+${code}
+let __target;
+try {
+  __target = eval(__functionName);
+} catch (_err) {
+  __target = undefined;
+}
+if (typeof __target !== 'function') {
+  throw new Error('Function "' + __functionName + '" not found');
+}
+return __target(${argNames.join(', ')});`
+    ) as DynamicRunner;
+  }
+
+  if (executionStyle === 'solution-method') {
+    return new Function(
+      'console',
+      '__functionName',
+      ...argNames,
+      `"use strict";
+${code}
+if (typeof Solution !== 'function') {
+  throw new Error('Class "Solution" not found');
+}
+const __solver = new Solution();
+const __method = __solver[__functionName];
+if (typeof __method !== 'function') {
+  throw new Error('Method "Solution.' + __functionName + '" not found');
+}
+return __method.call(__solver, ${argNames.join(', ')});`
+    ) as DynamicRunner;
+  }
+
+  if (executionStyle === 'ops-class') {
+    return new Function(
+      'console',
+      '__className',
+      '__operations',
+      '__arguments',
+      `"use strict";
+${code}
+if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
+  throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
+}
+if (__operations.length !== __arguments.length) {
+  throw new Error('operations and arguments must have the same length');
+}
+let __targetClass;
+try {
+  __targetClass = eval(__className);
+} catch (_err) {
+  __targetClass = undefined;
+}
+if (typeof __targetClass !== 'function') {
+  throw new Error('Class "' + __className + '" not found');
+}
+let __instance = null;
+const __out = [];
+for (let __i = 0; __i < __operations.length; __i++) {
+  const __op = __operations[__i];
+  let __callArgs = __arguments[__i];
+  if (__callArgs === null || __callArgs === undefined) {
+    __callArgs = [];
+  }
+  if (!Array.isArray(__callArgs)) {
+    __callArgs = [__callArgs];
+  }
+  if (__i === 0) {
+    __instance = new __targetClass(...__callArgs);
+    __out.push(null);
+    continue;
+  }
+  if (!__instance || typeof __instance[__op] !== 'function') {
+    throw new Error('Required method "' + __op + '" is not implemented on ' + (__className || 'target class'));
+  }
+  __out.push(__instance[__op](...__callArgs));
+}
+return __out;`
+    ) as DynamicRunner;
+  }
+
+  throw new Error(`Execution style "${executionStyle}" is not supported for JavaScript runtime yet.`);
+}
+
+function getOpsClassInputs(inputs: Record<string, unknown>): {
+  operations: unknown[] | null;
+  argumentsList: unknown[] | null;
+} {
+  const operations = Array.isArray(inputs.operations)
+    ? inputs.operations
+    : (Array.isArray(inputs.ops) ? inputs.ops : null);
+  const argumentsList = Array.isArray(inputs.arguments)
+    ? inputs.arguments
+    : (Array.isArray(inputs.args) ? inputs.args : null);
+  return { operations, argumentsList };
+}
+
+async function transpileTypeScript(code: string): Promise<string> {
+  const ts = await getTypeScriptModule();
+  const transpileInput = withTypeScriptRuntimeDeclarations(code);
+  const transpiled = ts.transpileModule(transpileInput, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2020,
+      module: ts.ModuleKind.None,
+      strict: false,
+      esModuleInterop: true,
+    },
+    reportDiagnostics: true,
+    fileName: 'solution.ts',
+  });
+
+  const diagnostics = Array.isArray(transpiled.diagnostics) ? transpiled.diagnostics : [];
+  const errors = diagnostics.filter((diag) => diag.category === ts.DiagnosticCategory.Error);
+  if (errors.length > 0) {
+    const first = errors[0];
+    const messageText = ts.flattenDiagnosticMessageText(first.messageText, '\n');
+    let lineNumber: number | undefined;
+    if (first.file && typeof first.start === 'number') {
+      const position = first.file.getLineAndCharacterOfPosition(first.start);
+      lineNumber = position.line + 1;
+    }
+    const error = new Error(
+      lineNumber
+        ? `TypeScript transpilation failed (line ${lineNumber}): ${messageText}`
+        : `TypeScript transpilation failed: ${messageText}`
+    );
+    if (lineNumber) {
+      (error as Error & { __tracecodeLine?: number }).__tracecodeLine = lineNumber;
+    }
+    throw error;
+  }
+
+  return transpiled.outputText;
+}
+
+export async function executeJavaScriptCode(
+  code: string,
+  functionName: string,
+  inputs: Record<string, unknown>,
+  executionStyle: RuntimeExecutionStyle = 'function'
+): Promise<CodeExecutionResult> {
+  const consoleOutput: string[] = [];
+  const consoleProxy = createConsoleProxy(consoleOutput);
+  const normalizedInputs = normalizeInputs(inputs);
+
+  try {
+    let output: unknown;
+
+    if (executionStyle === 'ops-class') {
+      const { operations, argumentsList } = getOpsClassInputs(normalizedInputs);
+      const runner = buildRunner(code, executionStyle, []);
+      output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
+    } else {
+      const inputKeys = Object.keys(normalizedInputs);
+      const argNames = inputKeys.map((_, index) => `__arg${index}`);
+      const argValues = inputKeys.map((key) => normalizedInputs[key]);
+      const runner = buildRunner(code, executionStyle, argNames);
+      output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
+    }
+
+    return {
+      success: true,
+      output: serializeValue(output),
+      consoleOutput,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      output: null,
+      error: error instanceof Error ? error.message : String(error),
+      errorLine: extractUserErrorLine(error),
+      consoleOutput,
+    };
+  }
+}
+
+export async function executeJavaScriptWithTracing(
+  code: string,
+  functionName: string | null,
+  inputs: Record<string, unknown>,
+  executionStyle: RuntimeExecutionStyle = 'function'
+): Promise<ExecutionResult> {
+  const startedAt = performanceNow();
+  const codeResult = await executeJavaScriptCode(code, functionName ?? '', inputs, executionStyle);
+  const executionTimeMs = performanceNow() - startedAt;
+
+  if (!codeResult.success) {
+    return {
+      success: false,
+      error: codeResult.error,
+      errorLine: codeResult.errorLine,
+      trace: [],
+      executionTimeMs,
+      consoleOutput: codeResult.consoleOutput ?? [],
+      lineEventCount: 0,
+      traceStepCount: 0,
+    };
+  }
+
+  return {
+    success: true,
+    output: codeResult.output,
+    trace: [],
+    executionTimeMs,
+    consoleOutput: codeResult.consoleOutput ?? [],
+    lineEventCount: 0,
+    traceStepCount: 0,
+  };
+}
+
+export async function executeTypeScriptCode(
+  code: string,
+  functionName: string,
+  inputs: Record<string, unknown>,
+  executionStyle: RuntimeExecutionStyle = 'function'
+): Promise<CodeExecutionResult> {
+  const transpiledCode = await transpileTypeScript(code);
+  return executeJavaScriptCode(transpiledCode, functionName, inputs, executionStyle);
+}

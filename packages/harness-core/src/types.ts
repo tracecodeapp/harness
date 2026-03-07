@@ -1,0 +1,119 @@
+/**
+ * Execution Types for TraceCode
+ *
+ * Types for browser runtime execution contracts.
+ */
+
+export type ExecutionStatus =
+  | 'idle'
+  | 'loading'
+  | 'ready'
+  | 'running'
+  | 'stepping'
+  | 'paused'
+  | 'completed'
+  | 'error';
+
+// Call stack frame info
+export interface CallStackFrame {
+  function: string;
+  args: Record<string, unknown>;
+  line: number;
+}
+
+// Raw trace data from Python sys.settrace
+export interface RawTraceStep {
+  line: number;
+  event: 'line' | 'call' | 'return' | 'exception' | 'timeout' | 'stdout';
+  variables: Record<string, unknown>;
+  function: string;
+  callStack?: CallStackFrame[];
+  returnValue?: unknown;
+  stdoutLineCount?: number;
+  visualization?: RuntimeVisualizationPayload;
+}
+
+export type RuntimeObjectKind = 'hashmap' | 'map' | 'set' | 'tree' | 'linked-list' | 'graph-adjacency';
+
+export interface RuntimeHashMapEntry {
+  key: unknown;
+  value: unknown;
+  highlight?: boolean;
+}
+
+export interface RuntimeHashMapVisualization {
+  name: string;
+  kind?: 'hashmap' | 'map' | 'set';
+  entries: RuntimeHashMapEntry[];
+  highlightedKey?: unknown;
+  deletedKey?: unknown;
+}
+
+export interface RuntimeVisualizationPayload {
+  hashMaps?: RuntimeHashMapVisualization[];
+  objectKinds?: Partial<Record<string, RuntimeObjectKind>>;
+}
+
+// Processed step for visualization
+export interface ProcessedStep {
+  stepIndex: number;
+  lineNumber: number;
+  lineContent: string;
+  functionName: string;
+  variables: Record<string, unknown>;
+  output?: string;
+  event?: 'line' | 'call' | 'return' | 'exception' | 'timeout' | 'stdout';
+  callStack?: CallStackFrame[];
+  returnValue?: unknown;
+  stdoutLineCount?: number;
+  visualization?: RuntimeVisualizationPayload;
+}
+
+// Test case execution result
+export interface TestResult {
+  id: string;
+  passed: boolean;
+  input: Record<string, unknown>;
+  expected: unknown;
+  actual: unknown;
+  error?: string;
+  warning?: string;
+  executionTimeMs?: number;
+}
+
+// Non-tracing code execution result
+export interface CodeExecutionResult {
+  success: boolean;
+  output: unknown;
+  error?: string;
+  errorLine?: number;
+  consoleOutput?: string[];
+}
+
+// Complete execution result
+export interface ExecutionResult {
+  success: boolean;
+  output?: unknown;
+  error?: string;
+  errorLine?: number;
+  trace: RawTraceStep[];
+  executionTimeMs: number;
+  consoleOutput: string[];
+  traceLimitExceeded?: boolean;
+  timeoutReason?:
+    | 'trace-limit'
+    | 'line-limit'
+    | 'single-line-limit'
+    | 'recursion-limit'
+    | 'memory-limit'
+    | 'client-timeout';
+  lineEventCount?: number;
+  traceStepCount?: number;
+}
+
+// Pyodide loading state
+export interface PyodideState {
+  status: 'loading' | 'ready' | 'error';
+  error?: Error;
+  loadTimeMs?: number;
+}

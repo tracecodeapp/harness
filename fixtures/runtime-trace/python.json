@@ -1,0 +1,757 @@
+{
+  "consoleOutput": [],
+  "language": "python",
+  "lineEventCount": 11,
+  "output": [
+    0,
+    1
+  ],
+  "schemaVersion": "2026-02-28",
+  "success": true,
+  "trace": [
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "call",
+      "function": "solve",
+      "line": 1,
+      "stdoutLineCount": 0,
+      "variables": {
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "target": 9
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 2,
+      "stdoutLineCount": 0,
+      "variables": {
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "target": 9
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 3,
+      "stdoutLineCount": 0,
+      "variables": {
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {},
+        "target": 9
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [],
+            "kind": "hashmap",
+            "name": "seen"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 5,
+      "stdoutLineCount": 0,
+      "variables": {
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {},
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": []
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 6,
+      "stdoutLineCount": 0,
+      "variables": {
+        "i": 0,
+        "num": 2,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {},
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": []
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 7,
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 7,
+        "i": 0,
+        "num": 2,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {},
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": []
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 9,
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 7,
+        "i": 0,
+        "num": 2,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {},
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": []
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 10,
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 7,
+        "i": 0,
+        "num": 2,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {
+          "2": 0
+        },
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": []
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [
+              {
+                "key": "2",
+                "value": 0
+              }
+            ],
+            "highlightedKey": "2",
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 5,
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 7,
+        "i": 0,
+        "num": 2,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {
+          "2": 0
+        },
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": [
+            2
+          ]
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [
+              {
+                "key": "2",
+                "value": 0
+              }
+            ],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [
+              {
+                "key": 2,
+                "value": true
+              }
+            ],
+            "highlightedKey": 2,
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 6,
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 7,
+        "i": 1,
+        "num": 7,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {
+          "2": 0
+        },
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": [
+            2
+          ]
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [
+              {
+                "key": "2",
+                "value": 0
+              }
+            ],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [
+              {
+                "key": 2,
+                "value": true
+              }
+            ],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 7,
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 2,
+        "i": 1,
+        "num": 7,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {
+          "2": 0
+        },
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": [
+            2
+          ]
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [
+              {
+                "key": "2",
+                "value": 0
+              }
+            ],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [
+              {
+                "key": 2,
+                "value": true
+              }
+            ],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "line",
+      "function": "solve",
+      "line": 8,
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 2,
+        "i": 1,
+        "num": 7,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {
+          "2": 0
+        },
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": [
+            2
+          ]
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [
+              {
+                "key": "2",
+                "value": 0
+              }
+            ],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [
+              {
+                "key": 2,
+                "value": true
+              }
+            ],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    },
+    {
+      "callStack": [
+        {
+          "args": {
+            "nums": [
+              2,
+              7,
+              11,
+              15
+            ],
+            "target": 9
+          },
+          "function": "solve",
+          "line": 590
+        }
+      ],
+      "event": "return",
+      "function": "solve",
+      "line": 8,
+      "returnValue": [
+        0,
+        1
+      ],
+      "stdoutLineCount": 0,
+      "variables": {
+        "complement": 2,
+        "i": 1,
+        "num": 7,
+        "nums": [
+          2,
+          7,
+          11,
+          15
+        ],
+        "seen": {
+          "2": 0
+        },
+        "target": 9,
+        "visited": {
+          "__type__": "set",
+          "values": [
+            2
+          ]
+        }
+      },
+      "visualization": {
+        "hashMaps": [
+          {
+            "entries": [
+              {
+                "key": "2",
+                "value": 0
+              }
+            ],
+            "kind": "hashmap",
+            "name": "seen"
+          },
+          {
+            "entries": [
+              {
+                "key": 2,
+                "value": true
+              }
+            ],
+            "kind": "set",
+            "name": "visited"
+          }
+        ],
+        "objectKinds": {
+          "seen": "hashmap",
+          "visited": "set"
+        }
+      }
+    }
+  ],
+  "traceLimitExceeded": false,
+  "traceStepCount": 13
+}
