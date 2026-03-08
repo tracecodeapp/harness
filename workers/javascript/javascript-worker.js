@@ -522,6 +522,7 @@ function createTraceRecorder(options = {}) {
   const callStack = [];
   const pendingAccessesByFrame = new Map();
   const lineHitCount = new Map();
+  const stableNodeRefState = { ids: new Map(), nextId: 1 };
   const maxTraceSteps = getNumericOption(options.maxTraceSteps, 4000);
   const maxLineEvents = getNumericOption(options.maxLineEvents, 12000);
   const maxSingleLineHits = getNumericOption(options.maxSingleLineHits, 1000);
@@ -550,11 +551,10 @@ function createTraceRecorder(options = {}) {
   function sanitizeVariables(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
     const result = {};
-    const nodeRefState = { ids: new Map(), nextId: 1 };
     for (const [key, variableValue] of Object.entries(value)) {
       if (variableValue === undefined) continue;
       try {
-        result[key] = serializeValue(variableValue, 0, new WeakSet(), nodeRefState);
+        result[key] = serializeValue(variableValue, 0, new WeakSet(), stableNodeRefState);
       } catch {
         // Skip variables that throw during serialization (e.g. transient proxy/getter failures).
       }
@@ -884,7 +884,7 @@ function createTraceRecorder(options = {}) {
 
   return {
     serialize(value) {
-      return serializeValue(value);
+      return serializeValue(value, 0, new WeakSet(), stableNodeRefState);
     },
     read(getter) {
       try {

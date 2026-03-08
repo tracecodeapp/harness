@@ -877,6 +877,57 @@ result = twoSum([2, 7, 11, 15], 9);`,
   );
   console.log('PASS: execute-with-tracing script mode contract');
 
+  const recursiveTreeTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{
+      event?: string;
+      function?: string;
+      callStack?: Array<{ function?: string; args?: Record<string, unknown> }>;
+    }>;
+  }>('execute-with-tracing', {
+    code: `function sumLeftBranch(root) {
+  function dfs(node) {
+    if (!node) return 0;
+    return node.val + dfs(node.left);
+  }
+  return dfs(root);
+}`,
+    functionName: 'sumLeftBranch',
+    inputs: {
+      root: {
+        val: 5,
+        left: {
+          val: 4,
+          left: { val: 3, left: null, right: null },
+          right: null,
+        },
+        right: { val: 8, left: null, right: null },
+      },
+    },
+    executionStyle: 'function',
+  });
+  assertCondition(recursiveTreeTracing.success === true, 'Recursive tree tracing should succeed');
+  const recursiveTreeStep = recursiveTreeTracing.trace.find((step) => {
+    const frames = step.callStack ?? [];
+    if (frames.length < 3) return false;
+    const topArgs = frames[frames.length - 1]?.args ?? {};
+    const node = topArgs.node as Record<string, unknown> | undefined;
+    return node !== undefined && typeof node === 'object';
+  });
+  const recursiveTopNode = recursiveTreeStep?.callStack?.[recursiveTreeStep.callStack.length - 1]?.args?.node as
+    | Record<string, unknown>
+    | undefined;
+  assertCondition(Boolean(recursiveTreeStep), 'Recursive tree tracing should capture nested dfs frames');
+  assertCondition(
+    Boolean(
+      recursiveTopNode &&
+        ((typeof recursiveTopNode.__ref__ === 'string' && recursiveTopNode.__ref__ !== 'tree-1') ||
+          (typeof recursiveTopNode.__id__ === 'string' && recursiveTopNode.__id__ !== 'tree-1'))
+    ),
+    'Recursive tree frame args should keep canonical node identity instead of restarting at tree-1'
+  );
+  console.log('PASS: execute-with-tracing recursive tree identity contract');
+
   const collectionTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
