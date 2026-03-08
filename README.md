@@ -165,8 +165,11 @@ This repo uses explicit Git tags as release boundaries.
 
 - `v0.1.0` is the pre-profile baseline
 - `v0.2.0` introduces structured runtime capability profiles
+- `v0.3.0` introduces runtime access metadata for traced reads, writes, cell access, and mutating calls
 
 TraceCode currently consumes tagged releases rather than floating commit SHAs.
+
+Detailed release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Repository Layout
 
