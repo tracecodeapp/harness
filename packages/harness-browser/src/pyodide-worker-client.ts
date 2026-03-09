@@ -14,7 +14,7 @@ export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timeoutId?: number;
+  timeoutId?: ReturnType<typeof globalThis.setTimeout>;
 }
 
 interface WorkerMessage {
@@ -114,7 +114,7 @@ class PyodideWorkerClient {
         const pending = this.pendingMessages.get(id);
         if (pending) {
           this.pendingMessages.delete(id);
-          if (pending.timeoutId) window.clearTimeout(pending.timeoutId);
+          if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
           
           if (type === 'error') {
             pending.reject(new Error((payload as { error: string }).error));
@@ -135,7 +135,7 @@ class PyodideWorkerClient {
       // Reject all pending messages and clear their timeouts
       for (const [id, pending] of this.pendingMessages) {
         if (pending.timeoutId) {
-          window.clearTimeout(pending.timeoutId);
+          globalThis.clearTimeout(pending.timeoutId);
         }
         pending.reject(workerError);
         this.pendingMessages.delete(id);
@@ -156,7 +156,7 @@ class PyodideWorkerClient {
     await new Promise<void>((resolve, reject) => {
       let settled = false;
 
-      const timeoutId = window.setTimeout(() => {
+      const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
         const timeoutError = new Error(
@@ -173,13 +173,13 @@ class PyodideWorkerClient {
         .then(() => {
           if (settled) return;
           settled = true;
-          window.clearTimeout(timeoutId);
+          globalThis.clearTimeout(timeoutId);
           resolve();
         })
         .catch((error) => {
           if (settled) return;
           settled = true;
-          window.clearTimeout(timeoutId);
+          globalThis.clearTimeout(timeoutId);
           reject(error instanceof Error ? error : new Error(String(error)));
         });
     });
@@ -204,7 +204,7 @@ class PyodideWorkerClient {
 
       if (this.debug) console.log('[PyodideWorkerClient] send', { id, type });
 
-      const timeoutId = window.setTimeout(() => {
+      const timeoutId = globalThis.setTimeout(() => {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
@@ -229,7 +229,7 @@ class PyodideWorkerClient {
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       
-      const timeoutId = window.setTimeout(() => {
+      const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
         
@@ -247,13 +247,13 @@ class PyodideWorkerClient {
         .then((result) => {
           if (settled) return;
           settled = true;
-          window.clearTimeout(timeoutId);
+          globalThis.clearTimeout(timeoutId);
           resolve(result);
         })
         .catch((error) => {
           if (settled) return;
           settled = true;
-          window.clearTimeout(timeoutId);
+          globalThis.clearTimeout(timeoutId);
           reject(error);
         });
     });
@@ -275,7 +275,7 @@ class PyodideWorkerClient {
     
     // Reject all pending messages
     for (const [, pending] of this.pendingMessages) {
-      if (pending.timeoutId) window.clearTimeout(pending.timeoutId);
+      if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
       pending.reject(reason);
     }
     this.pendingMessages.clear();
