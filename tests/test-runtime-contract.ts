@@ -2,12 +2,12 @@
 
 import { spawnSync } from 'node:child_process';
 import {
+  createBrowserHarness,
   SUPPORTED_LANGUAGES,
   getLanguageRuntimeProfile,
-  getRuntimeClient,
   getSupportedLanguageProfiles,
   isLanguageSupported,
-} from '../packages/harness-browser/src/runtime-client';
+} from '../packages/harness-browser/src';
 import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
@@ -296,9 +296,10 @@ async function main(): Promise<void> {
   }
   console.log('PASS: runtime language/profile registry');
 
-  const pythonClient = getRuntimeClient('python');
-  const javascriptClient = getRuntimeClient('javascript');
-  const typescriptClient = getRuntimeClient('typescript');
+  const browserHarness = createBrowserHarness();
+  const pythonClient = browserHarness.getClient('python');
+  const javascriptClient = browserHarness.getClient('javascript');
+  const typescriptClient = browserHarness.getClient('typescript');
   for (const [name, client] of [
     ['python', pythonClient],
     ['javascript', javascriptClient],

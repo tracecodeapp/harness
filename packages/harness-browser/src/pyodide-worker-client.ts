@@ -6,10 +6,14 @@
  */
 
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { assertWorkerFamilyAllowed, getActiveRuntimeLanguage } from './runtime-language-gate';
 
 type MessageId = string;
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
+
+export interface PyodideWorkerClientOptions {
+  workerUrl: string;
+  debug?: boolean;
+}
 
 interface PendingMessage {
   resolve: (value: unknown) => void;
@@ -51,7 +55,7 @@ const MESSAGE_TIMEOUT_MS = 20000;
 // Worker bootstrap timeout - prevents deadlock when worker never emits "worker-ready"
 const WORKER_READY_TIMEOUT_MS = 10000;
 
-class PyodideWorkerClient {
+export class PyodideWorkerClient {
   private worker: Worker | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
@@ -60,7 +64,11 @@ class PyodideWorkerClient {
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
-  private debug = process.env.NODE_ENV === 'development';
+  private readonly debug: boolean;
+
+  constructor(private readonly options: PyodideWorkerClientOptions) {
+    this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+  }
 
   /**
    * Check if Web Workers are supported
@@ -73,8 +81,6 @@ class PyodideWorkerClient {
    * Get or create the worker instance
    */
   private getWorker(): Worker {
-    assertWorkerFamilyAllowed('python');
-
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -88,9 +94,9 @@ class PyodideWorkerClient {
     });
 
     const workerUrl =
-      process.env.NODE_ENV === 'development'
-        ? `/workers/pyodide-worker.js?dev=${Date.now()}`
-        : '/workers/pyodide-worker.js';
+      this.debug && !this.options.workerUrl.includes('?')
+        ? `${this.options.workerUrl}?dev=${Date.now()}`
+        : this.options.workerUrl;
     this.worker = new Worker(workerUrl);
     
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
@@ -303,18 +309,6 @@ class PyodideWorkerClient {
         return await this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const activeLanguage = getActiveRuntimeLanguage();
-        if (activeLanguage && activeLanguage !== 'python') {
-          if (this.debug) {
-            console.log('[PyodideWorkerClient] init aborted after language switch', {
-              activeLanguage,
-              message,
-            });
-          }
-          throw new Error(
-            `Python runtime init aborted because active language is "${activeLanguage}".`
-          );
-        }
 
         const shouldRetry =
           message.includes('Worker request timed out: init') ||
@@ -518,19 +512,6 @@ class PyodideWorkerClient {
   terminate(): void {
     this.terminateAndReset();
   }
-}
-
-// Singleton instance
-let workerClient: PyodideWorkerClient | null = null;
-
-/**
- * Get the singleton PyodideWorkerClient instance
- */
-export function getPyodideWorkerClient(): PyodideWorkerClient {
-  if (!workerClient) {
-    workerClient = new PyodideWorkerClient();
-  }
-  return workerClient;
 }
 
 /**

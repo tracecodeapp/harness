@@ -1,7 +1,7 @@
 import {
-  getJavaScriptWorkerClient,
   type JavaScriptExecutionStyle,
   type JavaScriptWorkerLanguage,
+  type JavaScriptWorkerClient,
 } from './javascript-worker-client';
 import type {
   RuntimeClient,
@@ -14,14 +14,13 @@ import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 
 class JavaScriptRuntimeClient implements RuntimeClient {
-  constructor(private readonly runtimeLanguage: JavaScriptWorkerLanguage) {}
-
-  private getClient() {
-    return getJavaScriptWorkerClient();
-  }
+  constructor(
+    private readonly runtimeLanguage: JavaScriptWorkerLanguage,
+    private readonly workerClient: JavaScriptWorkerClient
+  ) {}
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
-    return this.getClient().init();
+    return this.workerClient.init();
   }
 
   async executeWithTracing(
@@ -36,7 +35,7 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    const rawResult = await this.getClient().executeWithTracing(
+    const rawResult = await this.workerClient.executeWithTracing(
       code,
       functionName,
       inputs,
@@ -58,7 +57,7 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    return this.getClient().executeCode(
+    return this.workerClient.executeCode(
       code,
       functionName,
       inputs,
@@ -78,7 +77,7 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    return this.getClient().executeCodeInterviewMode(
+    return this.workerClient.executeCodeInterviewMode(
       code,
       functionName,
       inputs,
@@ -88,19 +87,9 @@ class JavaScriptRuntimeClient implements RuntimeClient {
   }
 }
 
-let javascriptRuntimeClient: RuntimeClient | null = null;
-let typescriptRuntimeClient: RuntimeClient | null = null;
-
-export function getJavaScriptRuntimeClient(): RuntimeClient {
-  if (!javascriptRuntimeClient) {
-    javascriptRuntimeClient = new JavaScriptRuntimeClient('javascript');
-  }
-  return javascriptRuntimeClient;
-}
-
-export function getTypeScriptRuntimeClient(): RuntimeClient {
-  if (!typescriptRuntimeClient) {
-    typescriptRuntimeClient = new JavaScriptRuntimeClient('typescript');
-  }
-  return typescriptRuntimeClient;
+export function createJavaScriptRuntimeClient(
+  runtimeLanguage: JavaScriptWorkerLanguage,
+  workerClient: JavaScriptWorkerClient
+): RuntimeClient {
+  return new JavaScriptRuntimeClient(runtimeLanguage, workerClient);
 }

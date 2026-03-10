@@ -1,53 +1,207 @@
 # TraceCode Harness
 
-Opinionated browser-first execution harness for Python, JavaScript, and TypeScript.
+Browser-first execution and tracing harness for Python, JavaScript, and TypeScript.
 
-This repo contains the runtime contract, browser worker clients, Python harness generation, and worker assets that power TraceCode's code execution and tracing pipeline.
+`@tracecode/harness` is a browser-consumable runtime SDK for code execution and tracing: explicit browser runtime creation, package-managed worker assets, and no app-specific storage/bootstrap contract in the public API.
 
-## What This Repo Contains
+Project site: [tracecode.app](https://tracecode.app)
 
-- a shared runtime contract for execution results and trace payloads
-- browser worker clients for Python, JavaScript, and TypeScript execution
-- Python harness generation utilities and generated snippet artifacts
-- worker assets used by the browser runtime
-- regression tests for runtime parity and harness drift
+## Scope
 
-This is not a generic workflow engine. It is an opinionated execution harness designed around interactive tracing and browser-hosted runtimes.
+This package provides an execution and tracing runtime for browser applications.
 
-## Package Surface
+It includes:
 
-The root package is `@tracecode/harness` and exposes these subpaths:
+- browser-hosted execution for Python, JavaScript, and TypeScript
+- trace capture and normalized runtime contracts
+- browser worker assets and asset sync tooling
+- runtime-side structural annotations such as object kinds and hash/map payloads
+
+It does not include a full end-user product.
+
+Specifically, this package does not ship:
+
+- any curriculum or problem corpus
+- guided-learning logic
+- higher-level visualization planners or rendering strategy
+- personalization, analytics, or product workflows
+- a complete application UI
+
+## Non-Goals
+
+`@tracecode/harness` is not intended to be:
+
+- a full web IDE framework
+- a white-labeled teaching product
+- a higher-level pedagogy or visualization-planning layer
+
+Consuming apps are expected to own their own UI, persistence, product logic, and any higher-order visualization behavior built on top of the runtime payloads.
+
+## What You Get
+
+- shared runtime contract types and trace adapters
+- browser runtime clients for Python, JavaScript, and TypeScript
+- published worker assets plus a CLI to copy them into your app
+- capability profiles for honest per-language support claims
+- regression coverage for runtime parity, packaging, and consumer smoke tests
+
+This is not a general workflow engine. It is an opinionated execution harness designed for interactive code execution and trace playback in browser apps.
+
+## Installation
+
+```bash
+pnpm add @tracecode/harness
+```
+
+If your app bundles dependencies, transpiling the package is usually the safest option. For Next.js:
+
+```ts
+transpilePackages: ['@tracecode/harness']
+```
+
+## Quick Start
+
+1. Copy the worker assets into your app's public directory.
+
+```bash
+pnpm exec tracecode-harness sync-assets public/workers
+```
+
+2. Create an explicit browser harness instance.
+
+```ts
+import { createBrowserHarness } from '@tracecode/harness/browser';
+
+const harness = createBrowserHarness({
+  assetBaseUrl: '/workers',
+});
+```
+
+3. Get a runtime client and execute code.
+
+```ts
+const client = harness.getClient('python');
+
+await client.init();
+
+const result = await client.executeCode(
+  `
+def solve(nums, target):
+    seen = {}
+    for index, value in enumerate(nums):
+        complement = target - value
+        if complement in seen:
+            return [seen[complement], index]
+        seen[value] = index
+    return []
+`,
+  'solve',
+  { nums: [2, 7, 11, 15], target: 9 }
+);
+```
+
+4. Run tracing when the selected language profile supports it.
+
+```ts
+const trace = await client.executeWithTracing(
+  code,
+  'solve',
+  inputs,
+  { maxTraceSteps: 200 },
+  'function'
+);
+```
+
+## Public Package Surface
+
+The package publishes built ESM and CommonJS entrypoints plus `.d.ts` files.
 
 - `@tracecode/harness`
-  Re-exports the full surface.
-- `@tracecode/harness/core`
-  Shared runtime contract, result types, and trace adapters.
+  Re-exports the documented public surface.
 - `@tracecode/harness/browser`
-  Browser worker clients and runtime selection.
+  Browser harness factory, capability guards, and language profiles.
+- `@tracecode/harness/core`
+  Shared runtime contracts, result types, and trace helpers.
 - `@tracecode/harness/python`
   Python harness generation helpers and snippet artifacts.
 - `@tracecode/harness/javascript`
   JavaScript and TypeScript execution helpers.
 
-## Capability Model
+The browser entrypoint is intentionally narrow. Low-level worker constructors, language gates, and isolation helpers are internal implementation details, not public SDK surface.
 
-Runtime support is described by language profiles, not a few flat booleans.
+## Browser API
 
-The browser surface exports:
+The browser package centers on `createBrowserHarness(options)`.
 
-- `SUPPORTED_LANGUAGES`
-- `getRuntimeClient(language)`
-- `getLanguageRuntimeProfile(language)`
+```ts
+import {
+  createBrowserHarness,
+  getLanguageRuntimeProfile,
+  isLanguageSupported,
+  SUPPORTED_LANGUAGES,
+} from '@tracecode/harness/browser';
+```
+
+The returned harness exposes:
+
+- `getClient(language)`
+- `getProfile(language)`
 - `getSupportedLanguageProfiles()`
 - `isLanguageSupported(language)`
+- `disposeLanguage(language)`
+- `dispose()`
 
-Each language profile includes:
+Configuration:
+
+- `assetBaseUrl?: string`
+- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler }>`
+- `debug?: boolean`
+
+Example:
+
+```ts
+const harness = createBrowserHarness({
+  assetBaseUrl: '/workers',
+});
+
+const profile = harness.getProfile('typescript');
+
+if (profile.capabilities.tracing.supported) {
+  // show trace controls
+}
+```
+
+## Worker Assets
+
+`tracecode-harness sync-assets <target-dir>` copies the canonical browser asset set:
+
+- `pyodide-worker.js`
+- `generated-python-harness-snippets.js`
+- `pyodide/runtime-core.js`
+- `javascript-worker.js`
+- `vendor/typescript.js`
+
+By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those assets as:
+
+- `/workers/pyodide-worker.js`
+- `/workers/generated-python-harness-snippets.js`
+- `/workers/pyodide/runtime-core.js`
+- `/workers/javascript-worker.js`
+- `/workers/vendor/typescript.js`
+
+Advanced consumers can override individual asset URLs through the `assets` option.
+
+## Capability Model
+
+Runtime support is expressed through language profiles, not a few flat booleans.
+
+Each profile includes:
 
 - `language`
 - `maturity`
 - `capabilities`
 
-Capability areas are structured by feature domain:
+Capability domains:
 
 - `execution`
 - `tracing`
@@ -55,138 +209,57 @@ Capability areas are structured by feature domain:
 - `structures`
 - `visualization`
 
-This is intentional. A future language can be present as `experimental` and honestly partial without pretending it has Python or JavaScript parity.
+That lets the package be explicit about partial support and fail closed for unsupported requests.
 
-Example:
+## Example Consumer
 
-```ts
-import { getLanguageRuntimeProfile } from '@tracecode/harness/browser';
+A minimal reference browser IDE lives in [examples/web-ide](./examples/web-ide). It is intentionally small and exists to prove that a third-party app can:
 
-const profile = getLanguageRuntimeProfile('typescript');
+- consume the public browser API
+- sync worker assets with the CLI
+- initialize all supported runtimes
+- execute and trace code without any app-specific state wiring
 
-if (profile.capabilities.tracing.supported) {
-  // enable trace UI
-}
-
-if (!profile.capabilities.execution.styles.script) {
-  // hide script-mode entrypoint
-}
-```
-
-Runtime clients are execution transports only. Static capability inspection comes from the profile registry, not from client instances.
-
-## Worker Assets
-
-The browser runtime currently expects these worker assets to be served by the consuming app:
-
-- `workers/python/pyodide-worker.js`
-- `workers/python/runtime-core.js`
-- `workers/python/generated-python-harness-snippets.js`
-- `workers/javascript/javascript-worker.js`
-- `workers/vendor/typescript.js`
-
-In TraceCode, those assets are served from `/workers/...`.
-
-## Consuming From Another Repo
-
-Right now the simplest integration path is a Git dependency.
-
-```json
-{
-  "dependencies": {
-    "@tracecode/harness": "github:tracecodeapp/harness"
-  }
-}
-```
-
-Then import from the root package or subpaths:
-
-```ts
-import { getRuntimeClient } from '@tracecode/harness/browser';
-import type { ExecutionResult } from '@tracecode/harness/core';
-```
-
-If your app uses Next.js, you will likely want to transpile the package:
-
-```ts
-transpilePackages: ['@tracecode/harness']
-```
+It is a reference consumer for the SDK contract, not a canonical product UI.
 
 ## Development
 
-Install dependencies:
+Install workspace dependencies:
 
 ```bash
 pnpm install
 ```
 
-Run the full local gate:
+Run the full gate:
 
 ```bash
 pnpm test
 ```
 
-That runs:
+That covers:
 
 - package typechecks
-- smoke checks across the package surface
-- trace adapter regressions
-- Python harness drift checks
-- JavaScript worker runtime tests
-- cross-runtime contract tests
+- runtime and trace contract tests
+- packaging/import smoke tests
+- asset sync contract tests
+- example app browser smoke tests
 
-## Conformance Expectations
+If you change Python harness templates or generated snippets, regenerate artifacts:
 
-Capability claims are test-backed.
-
-The contract suite checks:
-
-- every supported language has a runtime profile
-- every profile has a maturity level and complete nested capability object
-- unsupported feature requests fail explicitly
-- declared capabilities stay aligned with conformance coverage
-
-Current stable languages:
-
-- Python
-- JavaScript
-- TypeScript
-
-The intended path for a new language is:
-
-1. add a profile with an honest maturity level
-2. implement only the supported execution paths
-3. fail closed for unsupported features
-4. expand conformance coverage before promoting maturity
+```bash
+pnpm generate:python-harness
+```
 
 ## Releases
 
-This repo uses explicit Git tags as release boundaries.
+This repo uses explicit versioned release boundaries.
 
-- `v0.1.0` is the pre-profile baseline
-- `v0.2.0` introduces structured runtime capability profiles
-- `v0.3.0` introduces runtime access metadata for traced reads, writes, cell access, and mutating calls
-
-TraceCode currently consumes tagged releases rather than floating commit SHAs.
+- `0.1.0` introduced the public harness baseline
+- `0.2.0` introduced structured runtime capability profiles
+- `0.3.0` introduced runtime access metadata in traces
+- `0.4.0` makes the harness a clean browser SDK with explicit runtime creation and asset sync tooling
 
 Detailed release notes live in [CHANGELOG.md](./CHANGELOG.md).
-
-## Repository Layout
-
-- `packages/`
-  Source packages for the runtime surface.
-- `workers/`
-  Browser worker assets.
-- `fixtures/`
-  Runtime trace fixture snapshots.
-- `tests/`
-  Regression coverage for the harness contract.
-- `scripts/`
-  Artifact generation helpers.
-
-## Current Consumer Model
-
-TraceCode currently consumes this repo as a dependency while preserving thin compatibility facades locally. That lets the harness evolve as its own project without forcing the app to refactor all execution imports at once.
 
 ## License
 

@@ -1,9 +1,13 @@
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { assertWorkerFamilyAllowed } from './runtime-language-gate';
 
 type MessageId = string;
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type JavaScriptWorkerLanguage = 'javascript' | 'typescript';
+
+export interface JavaScriptWorkerClientOptions {
+  workerUrl: string;
+  debug?: boolean;
+}
 
 interface PendingMessage {
   resolve: (value: unknown) => void;
@@ -29,7 +33,7 @@ const INIT_TIMEOUT_MS = 10000;
 const MESSAGE_TIMEOUT_MS = 12000;
 const WORKER_READY_TIMEOUT_MS = 10000;
 
-class JavaScriptWorkerClient {
+export class JavaScriptWorkerClient {
   private worker: Worker | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
@@ -38,15 +42,17 @@ class JavaScriptWorkerClient {
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
-  private debug = process.env.NODE_ENV === 'development';
+  private readonly debug: boolean;
+
+  constructor(private readonly options: JavaScriptWorkerClientOptions) {
+    this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+  }
 
   isSupported(): boolean {
     return typeof Worker !== 'undefined';
   }
 
   private getWorker(): Worker {
-    assertWorkerFamilyAllowed('javascript');
-
     if (this.worker) return this.worker;
 
     if (!this.isSupported()) {
@@ -59,9 +65,9 @@ class JavaScriptWorkerClient {
     });
 
     const workerUrl =
-      process.env.NODE_ENV === 'development'
-        ? `/workers/javascript-worker.js?dev=${Date.now()}`
-        : '/workers/javascript-worker.js';
+      this.debug && !this.options.workerUrl.includes('?')
+        ? `${this.options.workerUrl}?dev=${Date.now()}`
+        : this.options.workerUrl;
     this.worker = new Worker(workerUrl);
 
     this.worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
@@ -360,15 +366,6 @@ class JavaScriptWorkerClient {
   terminate(): void {
     this.terminateAndReset();
   }
-}
-
-let workerClient: JavaScriptWorkerClient | null = null;
-
-export function getJavaScriptWorkerClient(): JavaScriptWorkerClient {
-  if (!workerClient) {
-    workerClient = new JavaScriptWorkerClient();
-  }
-  return workerClient;
 }
 
 export function isJavaScriptWorkerSupported(): boolean {

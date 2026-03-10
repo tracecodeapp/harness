@@ -84,7 +84,7 @@ function buildGeneratedWorkerScript(): string {
  * Generator: scripts/generate-python-harness-artifacts.ts
  */
 
-(function registerTraceCodeHarnessSnippets(scope) {
+(function registerHarnessPythonSnippets(scope) {
   ${toPythonLiteralSource}
 
   scope.__TRACECODE_PYTHON_HARNESS__ = Object.freeze({

@@ -1,7 +1,4 @@
-import {
-  getPyodideWorkerClient,
-  type ExecutionStyle,
-} from './pyodide-worker-client';
+import type { ExecutionStyle, PyodideWorkerClient } from './pyodide-worker-client';
 import type {
   RuntimeClient,
   RuntimeExecutionStyle,
@@ -13,12 +10,10 @@ import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 
 class PythonRuntimeClient implements RuntimeClient {
-  private getClient() {
-    return getPyodideWorkerClient();
-  }
+  constructor(private readonly workerClient: PyodideWorkerClient) {}
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
-    return this.getClient().init();
+    return this.workerClient.init();
   }
 
   async executeWithTracing(
@@ -33,7 +28,7 @@ class PythonRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    const rawResult = await this.getClient().executeWithTracing(
+    const rawResult = await this.workerClient.executeWithTracing(
       code,
       functionName,
       inputs,
@@ -54,7 +49,7 @@ class PythonRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    return this.getClient().executeCode(
+    return this.workerClient.executeCode(
       code,
       functionName,
       inputs,
@@ -73,7 +68,7 @@ class PythonRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    return this.getClient().executeCodeInterviewMode(
+    return this.workerClient.executeCodeInterviewMode(
       code,
       functionName,
       inputs,
@@ -82,11 +77,6 @@ class PythonRuntimeClient implements RuntimeClient {
   }
 }
 
-let pythonRuntimeClient: RuntimeClient | null = null;
-
-export function getPythonRuntimeClient(): RuntimeClient {
-  if (!pythonRuntimeClient) {
-    pythonRuntimeClient = new PythonRuntimeClient();
-  }
-  return pythonRuntimeClient;
+export function createPythonRuntimeClient(workerClient: PyodideWorkerClient): RuntimeClient {
+  return new PythonRuntimeClient(workerClient);
 }

@@ -1,7 +1,5 @@
 /**
- * Execution Types for TraceCode
- *
- * Types for browser runtime execution contracts.
+ * Execution types for browser runtime contracts.
  */
 
 export type ExecutionStatus =

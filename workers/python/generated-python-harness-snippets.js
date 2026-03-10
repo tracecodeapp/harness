@@ -5,7 +5,7 @@
  * Generator: scripts/generate-python-harness-artifacts.ts
  */
 
-(function registerTraceCodeHarnessSnippets(scope) {
+(function registerHarnessPythonSnippets(scope) {
   function __tracecodeToPythonLiteral(value){if(value===null||value===void 0){return"None"}if(typeof value==="boolean"){return value?"True":"False"}if(typeof value==="number"){return String(value)}if(typeof value==="string"){return JSON.stringify(value)}if(Array.isArray(value)){return"["+value.map(__tracecodeToPythonLiteral).join(", ")+"]"}if(typeof value==="object"){const entries=Object.entries(value).map(([k,v])=>`${JSON.stringify(k)}: ${__tracecodeToPythonLiteral(v)}`).join(", ");return"{"+entries+"}"}return JSON.stringify(value)}
 
   scope.__TRACECODE_PYTHON_HARNESS__ = Object.freeze({

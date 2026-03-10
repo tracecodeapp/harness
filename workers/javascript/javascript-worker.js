@@ -24,7 +24,7 @@ const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
   maxCallDepth: 2000,
 });
 const TYPESCRIPT_COMPILER_URLS = [
-  '/workers/vendor/typescript.js',
+  './vendor/typescript.js',
   'https://cdn.jsdelivr.net/npm/typescript@5.9.2/lib/typescript.js',
   'https://unpkg.com/typescript@5.9.2/lib/typescript.js',
 ];

@@ -1,0 +1,19 @@
+{
+  "name": "@tracecode/harness-example-web-ide",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:assets": "node ../../dist/cli.cjs sync-assets public/workers",
+    "dev": "pnpm sync:assets && vite",
+    "build": "pnpm sync:assets && vite build",
+    "preview": "pnpm sync:assets && vite preview --host 127.0.0.1 --port 4173"
+  },
+  "dependencies": {
+    "@tracecode/harness": "workspace:*",
+    "monaco-editor": "^0.55.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vite": "^7.2.0"
+  }
+}

@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.4.0] - 2026-03-10
+
+### Added
+
+- Built ESM and CommonJS package outputs plus `.d.ts` publishing.
+- `createBrowserHarness(...)` as the stable public browser runtime factory.
+- `tracecode-harness sync-assets <target-dir>` for copying the canonical worker asset set into consumer apps.
+- Packaging, asset-contract, and example-consumer smoke tests.
+- In-repo minimal example app at `examples/web-ide`.
+
+### Changed
+
+- The public browser SDK now uses explicit runtime instances instead of app-coupled ambient bootstrap.
+- Browser asset resolution is centralized around `assetBaseUrl` and per-asset overrides.
+- `@tracecode/harness/browser` now exports the high-level stable API instead of low-level worker internals.
+
+### Notes
+
+- `0.4.0` is the clean public SDK cut for browser consumers.
+
 ## [0.3.4] - 2026-03-07
 
 ### Fixed
@@ -80,7 +100,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Notes
 
-- `0.2.0` formalizes the public runtime capability surface consumed by TraceCode.
+- `0.2.0` formalizes the public runtime capability surface.
 
 ## [0.1.0] - 2026-03-06
 

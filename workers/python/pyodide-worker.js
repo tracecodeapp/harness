@@ -4,7 +4,7 @@
  * Runs Python code execution in a separate thread to avoid blocking the UI.
  * This worker handles loading Pyodide, executing code, and returning traces.
  * 
- * THIS IS THE CANONICAL IMPLEMENTATION for Pyodide execution in TraceCode.
+ * This is the canonical worker implementation for the browser Python runtime.
  * The legacy lib/execution/pyodide.ts path is deprecated and should not be used.
  * 
  * IMPORTANT: Shared harness snippets are defined in:
@@ -32,7 +32,6 @@ const PYODIDE_INDEX_URLS = [
 ];
 const GENERATED_HARNESS_SNIPPETS_PATHS = [
   './generated-python-harness-snippets.js',
-  '/workers/generated-python-harness-snippets.js',
 ];
 
 let pyodide = null;
@@ -415,7 +414,6 @@ async function loadPyodideInstance() {
 
 const PYODIDE_RUNTIME_CORE_PATHS = [
   './pyodide/runtime-core.js',
-  '/workers/pyodide/runtime-core.js',
 ];
 
 let pyodideRuntimeCore = null;
