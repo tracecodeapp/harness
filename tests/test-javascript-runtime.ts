@@ -1081,6 +1081,39 @@ class Trie {
       (childrenEntry.value as { __type__?: unknown }).__type__ === 'map',
     'TrieNode object payload should preserve map-backed children fields'
   );
+  const insertBodySteps = typeScriptTrieObjectTracing.trace.filter(
+    (step) => step.function === 'insert' && (step.line === 18 || step.line === 19 || step.line === 24)
+  );
+  assertCondition(insertBodySteps.length > 0, 'Trie tracing should include insert body steps');
+  assertCondition(
+    insertBodySteps.every((step) => {
+      const functions = (step.callStack ?? []).map((frame) => frame.function);
+      return functions.length === 1 && functions[0] === 'insert';
+    }),
+    'Trie insert body steps should not retain stale constructor or duplicate insert frames'
+  );
+  const helperConstructorSteps = typeScriptTrieObjectTracing.trace.filter(
+    (step) =>
+      step.function === 'TrieNode.constructor' &&
+      (step.line === 6 || step.line === 7) &&
+      (step.callStack ?? []).some((frame) => frame.function === 'insert')
+  );
+  assertCondition(helperConstructorSteps.length > 0, 'Trie tracing should include helper constructor steps');
+  assertCondition(
+    helperConstructorSteps.every((step) => {
+      const functions = (step.callStack ?? []).map((frame) => frame.function);
+      return !functions.includes('constructor') && !functions.includes('Trie.constructor');
+    }),
+    'Trie helper constructor steps should not expose stale bare constructor or Trie constructor frames'
+  );
+  const insertOperationSteps = typeScriptTrieObjectTracing.trace.filter((step) => {
+    const topArgs = step.callStack?.[step.callStack.length - 1]?.args ?? {};
+    return typeof topArgs.word === 'string' && topArgs.word === 'apple';
+  });
+  assertCondition(
+    insertOperationSteps.every((step) => !(step.callStack ?? []).some((frame) => frame.function === 'constructor')),
+    'Trie insert operation steps should not expose bare constructor frames'
+  );
   console.log('PASS: execute-with-tracing typescript trie object visualization contract');
 
   const graphKindTracing = await harness.sendMessage<{

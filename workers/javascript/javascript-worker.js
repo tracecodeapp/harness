@@ -837,6 +837,15 @@ function createTraceRecorder(options = {}) {
     return callStack[callStack.length - 1]?.id;
   }
 
+  function normalizeFrameMatchKey(functionName) {
+    const normalized =
+      typeof functionName === 'string' && functionName.length > 0 ? functionName : '<module>';
+    if (normalized === 'constructor' || normalized.endsWith('.constructor')) {
+      return 'constructor';
+    }
+    return normalized;
+  }
+
   function flushPendingAccesses(frameId) {
     if (frameId === undefined || frameId === null) {
       return undefined;
@@ -933,8 +942,49 @@ function createTraceRecorder(options = {}) {
       return '<module>';
     }
 
+    const normalizedMatchKey = normalizeFrameMatchKey(normalizedFunctionName);
+    let matchingFrameIndex = -1;
+    for (let index = callStack.length - 1; index >= 0; index -= 1) {
+      const frame = callStack[index];
+      if (!frame) continue;
+      if (
+        frame.function === normalizedFunctionName ||
+        normalizeFrameMatchKey(frame.function) === normalizedMatchKey
+      ) {
+        matchingFrameIndex = index;
+        break;
+      }
+    }
+
+    if (matchingFrameIndex >= 0) {
+      while (callStack.length - 1 > matchingFrameIndex) {
+        const frame = callStack.pop();
+        if (frame?.id !== undefined) {
+          pendingAccessesByFrame.delete(frame.id);
+        }
+      }
+    }
+
     const topFrame = callStack[callStack.length - 1];
-    if (!topFrame || topFrame.function !== normalizedFunctionName) {
+    if (topFrame && normalizeFrameMatchKey(topFrame.function) === normalizedMatchKey) {
+      if (
+        normalizedMatchKey === 'constructor' &&
+        topFrame.function !== normalizedFunctionName &&
+        normalizedFunctionName.endsWith('.constructor')
+      ) {
+        topFrame.function = normalizedFunctionName;
+      }
+      if (
+        Object.keys(topFrame.args ?? {}).length === 0 &&
+        inferredArgs &&
+        typeof inferredArgs === 'object'
+      ) {
+        topFrame.args = sanitizeVariables(inferredArgs);
+      }
+      return normalizedFunctionName;
+    }
+
+    if (!topFrame) {
       const callLine = normalizeLine(functionStartLine, lineNumber);
       const inferredFrame = {
         id: nextFrameId++,
@@ -951,13 +1001,7 @@ function createTraceRecorder(options = {}) {
         callStack: snapshotCallStack(),
         visualization: buildVisualizationPayload(inferredArgs),
       });
-    } else if (
-      topFrame.function === normalizedFunctionName &&
-      Object.keys(topFrame.args ?? {}).length === 0 &&
-      inferredArgs &&
-      typeof inferredArgs === 'object'
-    ) {
-      topFrame.args = sanitizeVariables(inferredArgs);
+      return normalizedFunctionName;
     }
 
     return normalizedFunctionName;
@@ -1462,9 +1506,16 @@ function inferTraceFunctionName(ts, node, fallbackFunctionName) {
   }
 
   if (ts.isConstructorDeclaration(node)) {
+    const originalNode = ts.getOriginalNode(node);
+    const classLikeParent =
+      node.parent && ts.isClassLike(node.parent)
+        ? node.parent
+        : originalNode?.parent && ts.isClassLike(originalNode.parent)
+          ? originalNode.parent
+          : null;
     const className =
-      node.parent && ts.isClassLike(node.parent) && node.parent.name && ts.isIdentifier(node.parent.name)
-        ? node.parent.name.text
+      classLikeParent && classLikeParent.name && ts.isIdentifier(classLikeParent.name)
+        ? classLikeParent.name.text
         : null;
     return className ? `${className}.constructor` : 'constructor';
   }
