@@ -65,6 +65,18 @@ function isLikelyListNodeValue(value: unknown): value is Record<string, unknown>
   return hasValue && hasListLinks && !hasTreeLinks;
 }
 
+function getCustomClassName(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value instanceof Map || value instanceof Set) return null;
+  if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) return null;
+  const ctor = (value as { constructor?: { name?: unknown } }).constructor;
+  const name = typeof ctor?.name === 'string' ? ctor.name : '';
+  if (!name || name === 'Object' || name === 'Array' || name === 'Map' || name === 'Set') {
+    return null;
+  }
+  return name;
+}
+
 function serializeValue(
   value: unknown,
   depth = 0,
@@ -138,6 +150,31 @@ function serializeValue(
           ? { prev: serializeValue(nodeValue.prev ?? null, depth + 1, seen, nodeRefState) }
           : {}),
       };
+    }
+
+    const customClassName = getCustomClassName(value);
+    if (customClassName) {
+      const objectValue = value as object;
+      const existingId = nodeRefState.ids.get(objectValue);
+      if (existingId) {
+        return { __ref__: existingId };
+      }
+
+      const objectId = `object-${nodeRefState.nextId++}`;
+      nodeRefState.ids.set(objectValue, objectId);
+
+      if (seen.has(objectValue)) return { __ref__: objectId };
+      seen.add(objectValue);
+      const out: Record<string, unknown> = {
+        __type__: 'object',
+        __class__: customClassName,
+        __id__: objectId,
+      };
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+      }
+      seen.delete(objectValue);
+      return out;
     }
 
     if (seen.has(value as object)) return '<cycle>';

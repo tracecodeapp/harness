@@ -15,7 +15,7 @@ import type {
  * Bump this when payload shape/normalization semantics change in a way that
  * should invalidate golden fixtures.
  */
-export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-03-07';
+export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-03-11';
 
 export type RuntimeTraceContractEvent =
   | 'line'
@@ -33,10 +33,12 @@ export interface RuntimeTraceContractHashMapEntry {
 
 export interface RuntimeTraceContractHashMap {
   name: string;
-  kind: 'hashmap' | 'map' | 'set';
+  kind: 'hashmap' | 'object' | 'map' | 'set';
   entries: RuntimeTraceContractHashMapEntry[];
   highlightedKey?: unknown;
   deletedKey?: unknown;
+  objectClassName?: string;
+  objectId?: string;
 }
 
 export interface RuntimeTraceContractVisualization {
@@ -125,8 +127,8 @@ function normalizeFunctionName(value: unknown): string {
   return '<module>';
 }
 
-function normalizeKind(value: unknown): 'hashmap' | 'map' | 'set' {
-  if (value === 'map' || value === 'set' || value === 'hashmap') {
+function normalizeKind(value: unknown): 'hashmap' | 'object' | 'map' | 'set' {
+  if (value === 'map' || value === 'set' || value === 'hashmap' || value === 'object') {
     return value;
   }
   return 'hashmap';
@@ -135,6 +137,7 @@ function normalizeKind(value: unknown): 'hashmap' | 'map' | 'set' {
 function normalizeObjectKind(value: unknown): RuntimeObjectKind | null {
   if (
     value === 'hashmap' ||
+    value === 'object' ||
     value === 'map' ||
     value === 'set' ||
     value === 'tree' ||
@@ -274,6 +277,12 @@ function normalizeVisualizationPayload(
             : {}),
           ...(entry?.deletedKey !== undefined
             ? { deletedKey: normalizeUnknown(entry.deletedKey) }
+            : {}),
+          ...(typeof entry?.objectClassName === 'string' && entry.objectClassName.length > 0
+            ? { objectClassName: entry.objectClassName }
+            : {}),
+          ...(typeof entry?.objectId === 'string' && entry.objectId.length > 0
+            ? { objectId: entry.objectId }
             : {}),
         }))
         .sort((a, b) => `${a.name}:${a.kind}`.localeCompare(`${b.name}:${b.kind}`))

@@ -1002,6 +1002,87 @@ result = twoSum([2, 7, 11, 15], 9);`,
   );
   console.log('PASS: execute-with-tracing object-hash visualization payload contract');
 
+  const typeScriptTrieObjectTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{
+      variables?: Record<string, unknown>;
+      visualization?: {
+        hashMaps?: Array<{
+          name?: string;
+          kind?: string;
+          objectClassName?: string;
+          entries?: Array<{ key?: unknown; value?: unknown }>;
+        }>;
+        objectKinds?: Record<string, string>;
+      };
+    }>;
+  }>('execute-with-tracing', {
+    code: `class TrieNode {
+  children: Map<string, TrieNode>;
+  isEnd: boolean;
+
+  constructor() {
+    this.children = new Map();
+    this.isEnd = false;
+  }
+}
+
+class Trie {
+  private root: TrieNode;
+
+  constructor(...args: unknown[]) {
+    this.root = new TrieNode();
+  }
+
+  insert(...args: unknown[]): unknown {
+    const word = args[0] as string;
+    let node = this.root;
+
+    for (const char of word) {
+      if (!node.children.has(char)) {
+        node.children.set(char, new TrieNode());
+      }
+      node = node.children.get(char)!;
+    }
+
+    node.isEnd = true;
+    return undefined;
+  }
+}`,
+    functionName: 'Trie',
+    executionStyle: 'ops-class',
+    language: 'typescript',
+    inputs: {
+      operations: ['Trie', 'insert'],
+      arguments: [[], ['apple']],
+    },
+  });
+  assertCondition(typeScriptTrieObjectTracing.success === true, 'TypeScript trie object tracing should succeed');
+  const hasTrieNodeObjectKind = typeScriptTrieObjectTracing.trace.some(
+    (step) => step.visualization?.objectKinds?.node === 'object'
+  );
+  assertCondition(
+    hasTrieNodeObjectKind,
+    'Tracing should tag ref-followed TrieNode locals with objectKinds.object'
+  );
+  const trieNodeVisualization = typeScriptTrieObjectTracing.trace
+    .flatMap((step) => step.visualization?.hashMaps ?? [])
+    .find((visualization) => visualization.name === 'node' && visualization.kind === 'object');
+  assertCondition(Boolean(trieNodeVisualization), 'Tracing should emit object visualization payload for TrieNode locals');
+  assertCondition(
+    trieNodeVisualization?.objectClassName === 'TrieNode',
+    'TrieNode object payload should preserve the class name'
+  );
+  const childrenEntry = trieNodeVisualization?.entries?.find((entry) => entry.key === 'children');
+  assertCondition(
+    Boolean(childrenEntry) &&
+      typeof childrenEntry?.value === 'object' &&
+      childrenEntry.value !== null &&
+      (childrenEntry.value as { __type__?: unknown }).__type__ === 'map',
+    'TrieNode object payload should preserve map-backed children fields'
+  );
+  console.log('PASS: execute-with-tracing typescript trie object visualization contract');
+
   const graphKindTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{

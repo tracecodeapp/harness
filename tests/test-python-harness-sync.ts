@@ -125,6 +125,7 @@ function selectTraceSerializeContractLines(serializedBlock: string): string {
   const keepers = [
     '_SKIP_SENTINEL = "__TRACECODE_SKIP__"',
     '_MAX_SERIALIZE_DEPTH = 48',
+    '_MAX_OBJECT_FIELDS = 32',
     'def _serialize(obj, depth=0, node_refs=None):',
     "elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':",
     "elif isinstance(obj, (list, tuple)):",
@@ -137,6 +138,10 @@ function selectTraceSerializeContractLines(serializedBlock: string): string {
     "\"__type__\": \"TreeNode\"",
     "elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and hasattr(obj, 'next'):",
     "\"__type__\": \"ListNode\"",
+    "elif hasattr(obj, '__dict__'):",
+    "\"__type__\": \"object\"",
+    "\"__class__\": class_name",
+    'result["__truncated__"] = True',
     'elif callable(obj):',
     'return _SKIP_SENTINEL',
   ];

@@ -146,6 +146,7 @@ export const TEMPLATE_PYTHON_TRACE_SERIALIZE_FUNCTION = `
 # Sentinel to mark skipped values (functions, etc.) - distinct from None
 _SKIP_SENTINEL = "__TRACECODE_SKIP__"
 _MAX_SERIALIZE_DEPTH = 48
+_MAX_OBJECT_FIELDS = 32
 
 def _serialize(obj, depth=0, node_refs=None):
     if node_refs is None:
@@ -201,6 +202,36 @@ def _serialize(obj, depth=0, node_refs=None):
             "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, node_refs),
         }
         result["next"] = _serialize(obj.next, depth + 1, node_refs)
+        return result
+    elif hasattr(obj, '__dict__'):
+        obj_ref = id(obj)
+        if obj_ref in node_refs:
+            return {"__ref__": node_refs[obj_ref]}
+        node_id = f"object-{obj_ref}"
+        node_refs[obj_ref] = node_id
+        class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
+        result = {
+            "__type__": "object",
+            "__class__": class_name,
+            "__id__": node_id,
+        }
+        try:
+            raw_fields = getattr(obj, '__dict__', None)
+        except Exception:
+            raw_fields = None
+        if isinstance(raw_fields, dict):
+            added = 0
+            for key, value in raw_fields.items():
+                key_str = str(key)
+                if key_str.startswith('_'):
+                    continue
+                if callable(value):
+                    continue
+                result[key_str] = _serialize(value, depth + 1, node_refs)
+                added += 1
+                if added >= _MAX_OBJECT_FIELDS:
+                    result["__truncated__"] = True
+                    break
         return result
     elif callable(obj):
         # Skip functions entirely - return sentinel

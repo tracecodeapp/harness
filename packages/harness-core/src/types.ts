@@ -47,7 +47,7 @@ export interface RawTraceStep {
   visualization?: RuntimeVisualizationPayload;
 }
 
-export type RuntimeObjectKind = 'hashmap' | 'map' | 'set' | 'tree' | 'linked-list' | 'graph-adjacency';
+export type RuntimeObjectKind = 'hashmap' | 'object' | 'map' | 'set' | 'tree' | 'linked-list' | 'graph-adjacency';
 
 export interface RuntimeHashMapEntry {
   key: unknown;
@@ -57,10 +57,12 @@ export interface RuntimeHashMapEntry {
 
 export interface RuntimeHashMapVisualization {
   name: string;
-  kind?: 'hashmap' | 'map' | 'set';
+  kind?: 'hashmap' | 'object' | 'map' | 'set';
   entries: RuntimeHashMapEntry[];
   highlightedKey?: unknown;
   deletedKey?: unknown;
+  objectClassName?: string;
+  objectId?: string;
 }
 
 export interface RuntimeVisualizationPayload {

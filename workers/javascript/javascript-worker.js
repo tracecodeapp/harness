@@ -141,6 +141,17 @@ function isLikelyListNodeValue(value) {
   return hasValue && hasListLinks && !hasTreeLinks;
 }
 
+function getCustomClassName(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (value instanceof Map || value instanceof Set) return null;
+  if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) return null;
+  const name = typeof value?.constructor?.name === 'string' ? value.constructor.name : '';
+  if (!name || name === 'Object' || name === 'Array' || name === 'Map' || name === 'Set') {
+    return null;
+  }
+  return name;
+}
+
 function serializeValue(
   value,
   depth = 0,
@@ -207,6 +218,30 @@ function serializeValue(
           ? { prev: serializeValue(value.prev ?? null, depth + 1, seen, nodeRefState) }
           : {}),
       };
+    }
+
+    const customClassName = getCustomClassName(value);
+    if (customClassName) {
+      const existingId = nodeRefState.ids.get(value);
+      if (existingId) {
+        return { __ref__: existingId };
+      }
+
+      const objectId = `object-${nodeRefState.nextId++}`;
+      nodeRefState.ids.set(value, objectId);
+
+      if (seen.has(value)) return { __ref__: objectId };
+      seen.add(value);
+      const out = {
+        __type__: 'object',
+        __class__: customClassName,
+        __id__: objectId,
+      };
+      for (const [k, v] of Object.entries(value)) {
+        out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+      }
+      seen.delete(value);
+      return out;
     }
 
     if (seen.has(value)) return '<cycle>';
@@ -621,6 +656,7 @@ function createTraceRecorder(options = {}) {
   function shouldVisualizeObjectAsHashMap(name, value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     if (isLikelyTreeObject(value) || isLikelyLinkedListObject(value)) return false;
+    if (value.__type__ === 'object') return false;
     if (Object.keys(value).length === 1 && typeof value.__ref__ === 'string') return false;
     if (isLikelyAdjacencyListObject(value)) return false;
 
@@ -673,7 +709,52 @@ function createTraceRecorder(options = {}) {
       }
 
       if (variableValue && typeof variableValue === 'object' && !Array.isArray(variableValue)) {
+        const customClassName = getCustomClassName(variableValue);
+        if (customClassName) {
+          const serializedObject = serializeValue(variableValue);
+          objectKinds[name] = 'object';
+          visualizations.push({
+            name,
+            kind: 'object',
+            objectClassName: customClassName,
+            objectId:
+              serializedObject && typeof serializedObject === 'object' && typeof serializedObject.__id__ === 'string'
+                ? serializedObject.__id__
+                : undefined,
+            entries: Object.entries(serializedObject)
+              .filter(([key]) => key !== '__type__' && key !== '__class__' && key !== '__id__')
+              .map(([key, entryValue]) => ({
+                key,
+                value: entryValue,
+              })),
+          });
+          continue;
+        }
+
         const serializedValue = variableValue;
+
+        if (serializedValue.__type__ === 'object') {
+          objectKinds[name] = 'object';
+          visualizations.push({
+            name,
+            kind: 'object',
+            objectClassName:
+              typeof serializedValue.__class__ === 'string' && serializedValue.__class__.length > 0
+                ? serializedValue.__class__
+                : undefined,
+            objectId:
+              typeof serializedValue.__id__ === 'string' && serializedValue.__id__.length > 0
+                ? serializedValue.__id__
+                : undefined,
+            entries: Object.entries(serializedValue)
+              .filter(([key]) => key !== '__type__' && key !== '__class__' && key !== '__id__')
+              .map(([key, entryValue]) => ({
+                key,
+                value: entryValue,
+              })),
+          });
+          continue;
+        }
 
         if (serializedValue.__type__ === 'map' && Array.isArray(serializedValue.entries)) {
           objectKinds[name] = 'map';
