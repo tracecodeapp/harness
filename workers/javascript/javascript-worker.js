@@ -800,6 +800,7 @@ function createTraceRecorder(options = {}) {
     const result = {};
     for (const [key, variableValue] of Object.entries(value)) {
       if (variableValue === undefined) continue;
+      if (typeof variableValue === 'function') continue;
       try {
         const refState =
           key === 'this' && variableValue && typeof variableValue === 'object'

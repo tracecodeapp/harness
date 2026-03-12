@@ -1270,6 +1270,36 @@ class Trie {
   );
   console.log('PASS: execute-with-tracing typescript trie object visualization contract');
 
+  const helperFunctionTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{ variables?: Record<string, unknown>; line?: number; event?: string }>;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  countRangeSum(nums: number[], lower: number, upper: number): number {
+    const sortCount = (left: number, right: number): number => {
+      return right - left;
+    };
+    let i = 2;
+    return sortCount(0, 1) + i;
+  }
+}`,
+    functionName: 'countRangeSum',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: { nums: [1, 2, 3], lower: -1, upper: 1 },
+  });
+  assertCondition(helperFunctionTracing.success === true, 'TypeScript helper-function tracing should succeed');
+  const helperLine = helperFunctionTracing.trace.find(
+    (step) => step.event === 'line' && step.variables && step.variables.i === 2
+  );
+  assertCondition(Boolean(helperLine), 'TypeScript helper-function tracing should include the scalar local state');
+  assertCondition(
+    helperLine?.variables !== undefined && !Object.prototype.hasOwnProperty.call(helperLine.variables, 'sortCount'),
+    'TypeScript helper functions should not be emitted as traced locals'
+  );
+  assertCondition(helperLine?.variables?.i === 2, 'TypeScript helper-function tracing should keep scalar locals');
+  console.log('PASS: execute-with-tracing omits callable helper locals');
+
   const graphKindTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
