@@ -340,7 +340,11 @@ function materializeTreeInput(value: unknown): unknown {
   return value;
 }
 
-function materializeListInput(value: unknown, refs: Map<string, Record<string, unknown>> = new Map()): unknown {
+function materializeListInput(
+  value: unknown,
+  refs: Map<string, Record<string, unknown>> = new Map(),
+  materialized: WeakMap<object, Record<string, unknown>> = new WeakMap()
+): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
@@ -359,15 +363,20 @@ function materializeListInput(value: unknown, refs: Map<string, Record<string, u
     return refs.get(value.__ref__) ?? null;
   }
   if (isLikelyListNodeValue(value) || value.__type__ === 'ListNode') {
+    const existingMaterialized = materialized.get(value as object);
+    if (existingMaterialized) {
+      return existingMaterialized;
+    }
     const node: Record<string, unknown> = {
       val: value.val ?? value.value ?? null,
       value: value.val ?? value.value ?? null,
       next: null,
     };
+    materialized.set(value as object, node);
     if (typeof value.__id__ === 'string' && value.__id__.length > 0) {
       refs.set(value.__id__, node);
     }
-    node.next = materializeListInput(value.next ?? null, refs);
+    node.next = materializeListInput(value.next ?? null, refs, materialized);
     return node;
   }
   return value;

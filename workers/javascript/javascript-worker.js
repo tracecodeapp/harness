@@ -448,7 +448,7 @@ function materializeTreeInput(value) {
   return value;
 }
 
-function materializeListInput(value, refs = new Map()) {
+function materializeListInput(value, refs = new Map(), materialized = new WeakMap()) {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
@@ -467,15 +467,20 @@ function materializeListInput(value, refs = new Map()) {
     return refs.get(value.__ref__) ?? null;
   }
   if (isLikelyListNodeValue(value) || value.__type__ === 'ListNode') {
+    const existingMaterialized = materialized.get(value);
+    if (existingMaterialized) {
+      return existingMaterialized;
+    }
     const node = {
       val: value.val ?? value.value ?? null,
       value: value.val ?? value.value ?? null,
       next: null,
     };
+    materialized.set(value, node);
     if (typeof value.__id__ === 'string' && value.__id__.length > 0) {
       refs.set(value.__id__, node);
     }
-    node.next = materializeListInput(value.next ?? null, refs);
+    node.next = materializeListInput(value.next ?? null, refs, materialized);
     return node;
   }
   return value;
