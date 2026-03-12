@@ -134,16 +134,202 @@ def _snapshot_call_stack():
         return []
     return [f.copy() for f in _call_stack]
 
+def _is_serialized_ref(value):
+    return isinstance(value, dict) and len(value) == 1 and isinstance(value.get('__ref__'), str)
+
+def _is_serialized_list_node(value):
+    return isinstance(value, dict) and value.get('__type__') == 'ListNode' and isinstance(value.get('__id__'), str)
+
+def _serialized_list_root_id(value):
+    if _is_serialized_list_node(value):
+        return value.get('__id__')
+    if _is_serialized_ref(value):
+        return value.get('__ref__')
+    return None
+
+def _collect_serialized_list_component(value, node_ids=None, ref_ids=None, seen=None):
+    if node_ids is None:
+        node_ids = set()
+    if ref_ids is None:
+        ref_ids = set()
+    if seen is None:
+        seen = set()
+
+    if _is_serialized_ref(value):
+        ref_ids.add(value.get('__ref__'))
+        return (node_ids, ref_ids)
+
+    if not _is_serialized_list_node(value):
+        return (node_ids, ref_ids)
+
+    marker = id(value)
+    if marker in seen:
+        return (node_ids, ref_ids)
+    seen.add(marker)
+
+    node_id = value.get('__id__')
+    if isinstance(node_id, str):
+        node_ids.add(node_id)
+
+    for field_name in ('next', 'prev'):
+        if field_name in value:
+            _collect_serialized_list_component(value.get(field_name), node_ids, ref_ids, seen)
+
+    return (node_ids, ref_ids)
+
+def _clone_serialized_value(value):
+    if isinstance(value, dict):
+        return {key: _clone_serialized_value(nested) for key, nested in value.items()}
+    if isinstance(value, list):
+        return [_clone_serialized_value(item) for item in value]
+    return value
+
+def _inline_component_list_refs(value, root_payloads, seen_root_ids=None):
+    if seen_root_ids is None:
+        seen_root_ids = set()
+
+    if _is_serialized_ref(value):
+        ref_id = value.get('__ref__')
+        if not isinstance(ref_id, str):
+            return value
+        target = root_payloads.get(ref_id)
+        if target is None or ref_id in seen_root_ids:
+            return value
+        next_seen = set(seen_root_ids)
+        next_seen.add(ref_id)
+        return _inline_component_list_refs(_clone_serialized_value(target), root_payloads, next_seen)
+
+    if isinstance(value, list):
+        return [_inline_component_list_refs(item, root_payloads, seen_root_ids) for item in value]
+
+    if not isinstance(value, dict):
+        return value
+
+    out = {}
+    next_seen = set(seen_root_ids)
+    value_id = value.get('__id__')
+    if isinstance(value_id, str):
+        next_seen.add(value_id)
+
+    for key, nested in value.items():
+        out[key] = _inline_component_list_refs(nested, root_payloads, next_seen)
+    return out
+
+def _normalize_top_level_linked_list_locals(local_vars):
+    if not isinstance(local_vars, dict) or len(local_vars) < 2:
+        return local_vars
+
+    ordered_names = list(local_vars.keys())
+    candidates = []
+
+    for index, name in enumerate(ordered_names):
+        value = local_vars.get(name)
+        root_id = _serialized_list_root_id(value)
+        if not isinstance(root_id, str):
+            continue
+        node_ids, ref_ids = _collect_serialized_list_component(value)
+        all_ids = set(node_ids) | set(ref_ids)
+        if not all_ids:
+            all_ids.add(root_id)
+        candidates.append({
+            'name': name,
+            'index': index,
+            'value': value,
+            'root_id': root_id,
+            'is_ref_only': _is_serialized_ref(value),
+            'node_ids': node_ids,
+            'ref_ids': ref_ids,
+            'all_ids': all_ids,
+            'incoming': 0,
+        })
+
+    if len(candidates) < 2:
+        return local_vars
+
+    parent = list(range(len(candidates)))
+
+    def _find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(a, b):
+        ra = _find(a)
+        rb = _find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(len(candidates)):
+        left = candidates[i]
+        for j in range(i + 1, len(candidates)):
+            right = candidates[j]
+            if left['all_ids'].intersection(right['all_ids']):
+                _union(i, j)
+            if left['root_id'] in right['all_ids'] or right['root_id'] in left['all_ids']:
+                _union(i, j)
+
+    for i in range(len(candidates)):
+        left = candidates[i]
+        for j in range(len(candidates)):
+            if i == j:
+                continue
+            right = candidates[j]
+            if left['root_id'] in right['all_ids'] and left['root_id'] != right['root_id']:
+                left['incoming'] += 1
+
+    groups = {}
+    for index, candidate in enumerate(candidates):
+        groups.setdefault(_find(index), []).append(candidate)
+
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+
+        root_payloads = {}
+        for candidate in group:
+            root_id = candidate.get('root_id')
+            value = candidate.get('value')
+            if isinstance(root_id, str) and _is_serialized_list_node(value):
+                root_payloads[root_id] = _clone_serialized_value(value)
+
+        canonical = max(
+            group,
+            key=lambda candidate: (
+                0 if candidate['is_ref_only'] else 1,
+                1 if candidate['incoming'] == 0 else 0,
+                len(candidate['node_ids']) + len(candidate['ref_ids']),
+                -candidate['index'],
+            ),
+        )
+
+        if _is_serialized_list_node(canonical.get('value')):
+            local_vars[canonical['name']] = _inline_component_list_refs(
+                _clone_serialized_value(canonical['value']),
+                root_payloads,
+                set([canonical.get('root_id')]) if isinstance(canonical.get('root_id'), str) else set(),
+            )
+
+        for candidate in group:
+            if candidate is canonical:
+                continue
+            root_id = candidate.get('root_id')
+            if isinstance(root_id, str):
+                local_vars[candidate['name']] = {'__ref__': root_id}
+
+    return local_vars
+
 def _snapshot_locals(frame):
     if _MINIMAL_TRACE:
         return {}
     try:
         _node_refs = {}
-        return {
+        local_vars = {
             k: v
             for k, v in ((k, _serialize(v, 0, _node_refs)) for k, v in frame.f_locals.items() if k not in _internal_locals and k != '_' and not k.startswith('__'))
             if v != _SKIP_SENTINEL
         }
+        return _normalize_top_level_linked_list_locals(local_vars)
     except Exception:
         return {}
 
