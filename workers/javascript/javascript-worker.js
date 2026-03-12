@@ -257,6 +257,67 @@ function serializeValue(
   return String(value);
 }
 
+function serializeTopLevelValue(value, nodeRefState) {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return serializeValue(value, 0, new WeakSet(), nodeRefState);
+  }
+
+  if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) {
+    const objectValue = value;
+    const nodeValue = value;
+    const isTree = isLikelyTreeNodeValue(value);
+    let nodeId = nodeRefState.ids.get(objectValue);
+    if (!nodeId) {
+      nodeId = `${isTree ? 'tree' : 'list'}-${nodeRefState.nextId++}`;
+      nodeRefState.ids.set(objectValue, nodeId);
+    }
+
+    if (isTree) {
+      return {
+        __type__: 'TreeNode',
+        __id__: nodeId,
+        val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, 1, new WeakSet(), nodeRefState),
+        left: serializeValue(nodeValue.left ?? null, 1, new WeakSet(), nodeRefState),
+        right: serializeValue(nodeValue.right ?? null, 1, new WeakSet(), nodeRefState),
+      };
+    }
+
+    return {
+      __type__: 'ListNode',
+      __id__: nodeId,
+      val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, 1, new WeakSet(), nodeRefState),
+      next: serializeValue(nodeValue.next ?? null, 1, new WeakSet(), nodeRefState),
+      ...('prev' in nodeValue
+        ? { prev: serializeValue(nodeValue.prev ?? null, 1, new WeakSet(), nodeRefState) }
+        : {}),
+    };
+  }
+
+  const customClassName = getCustomClassName(value);
+  if (customClassName) {
+    const objectValue = value;
+    let objectId = nodeRefState.ids.get(objectValue);
+    if (!objectId) {
+      objectId = `object-${nodeRefState.nextId++}`;
+      nodeRefState.ids.set(objectValue, objectId);
+    }
+    const seen = new WeakSet();
+    seen.add(objectValue);
+    const out = {
+      __type__: 'object',
+      __class__: customClassName,
+      __id__: objectId,
+    };
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = serializeValue(v, 1, seen, nodeRefState);
+    }
+    return out;
+  }
+
+  return serializeValue(value, 0, new WeakSet(), nodeRefState);
+}
+
 function extractUserErrorLine(error) {
   if (error && typeof error === 'object' && '__tracecodeLine' in error) {
     const line = Number(error.__tracecodeLine);
@@ -739,7 +800,7 @@ function createTraceRecorder(options = {}) {
           key === 'this' && variableValue && typeof variableValue === 'object'
             ? { ids: new Map(), nextId: 1 }
             : stableNodeRefState;
-        result[key] = serializeValue(variableValue, 0, new WeakSet(), refState);
+        result[key] = serializeTopLevelValue(variableValue, refState);
       } catch {
         // Skip variables that throw during serialization (e.g. transient proxy/getter failures).
       }

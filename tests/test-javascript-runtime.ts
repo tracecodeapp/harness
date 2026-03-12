@@ -705,6 +705,51 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-with-tracing typescript tree input materialization contract');
 
+  const executeTypeScriptReverseListTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{
+      line?: number;
+      variables?: Record<string, unknown>;
+      visualization?: {
+        objectKinds?: Record<string, string>;
+      };
+    }>;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  reverseList(head: ListNode | null): ListNode | null {
+    let prev: ListNode | null = null;
+    let curr: ListNode | null = head;
+    while (curr !== null) {
+      const nextTemp = curr.next;
+      curr.next = prev;
+      prev = curr;
+      curr = nextTemp;
+    }
+    return prev;
+  }
+}`,
+    functionName: 'reverseList',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: {
+      head: [1, 2, 3, 4, 5],
+    },
+  });
+  assertCondition(executeTypeScriptReverseListTracing.success === true, 'TypeScript reverse-list tracing should succeed');
+  const lateListFrame = executeTypeScriptReverseListTracing.trace.find(
+    (step) =>
+      step.line === 9 &&
+      step.variables &&
+      typeof step.variables.prev === 'object' &&
+      step.variables.prev !== null &&
+      (step.variables.prev as Record<string, unknown>).__type__ === 'ListNode'
+  );
+  assertCondition(
+    Boolean(lateListFrame),
+    'TypeScript reverse-list tracing should keep top-level linked-list variables materialized after the first iteration'
+  );
+  console.log('PASS: execute-with-tracing typescript reverse-list linked-list materialization contract');
+
   const executeTypeScriptAccessTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{ accesses?: RuntimeAccessEvent[] }>;
