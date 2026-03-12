@@ -405,6 +405,63 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-with-tracing typescript line mapping contract');
 
+  const executeTypeScriptOpsClassReceiverTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{
+      event?: string;
+      function?: string;
+      line?: number;
+      variables?: Record<string, unknown>;
+    }>;
+  }>('execute-with-tracing', {
+    code: `class MedianFinder {
+  constructor() {
+    this.lo = [];
+    this.hi = [];
+  }
+
+  addNum(num: number): null {
+    this.lo.push(num);
+    return null;
+  }
+}`,
+    functionName: 'MedianFinder',
+    executionStyle: 'ops-class',
+    language: 'typescript',
+    inputs: {
+      operations: ['MedianFinder', 'addNum'],
+      arguments: [[], [5]],
+    },
+  });
+  assertCondition(executeTypeScriptOpsClassReceiverTracing.success === true, 'TypeScript ops-class tracing should succeed');
+  const receiverTraceStep = executeTypeScriptOpsClassReceiverTracing.trace.find(
+    (step) =>
+      step.event === 'line' &&
+      step.function === 'addNum' &&
+      typeof step.variables === 'object' &&
+      step.variables !== null &&
+      Object.prototype.hasOwnProperty.call(step.variables, 'this')
+  );
+  assertCondition(Boolean(receiverTraceStep), 'Ops-class method tracing should snapshot `this`');
+  const receiverValue = receiverTraceStep?.variables?.this as Record<string, unknown> | undefined;
+  assertCondition(receiverValue?.__class__ === 'MedianFinder', 'Receiver snapshot should preserve custom class identity');
+  const mutatedReceiverTraceStep = executeTypeScriptOpsClassReceiverTracing.trace.find(
+    (step) =>
+      step.event === 'line' &&
+      step.function === 'addNum' &&
+      typeof step.variables === 'object' &&
+      step.variables !== null &&
+      Array.isArray((step.variables.this as Record<string, unknown> | undefined)?.lo) &&
+      ((step.variables.this as Record<string, unknown>).lo as unknown[]).length === 1
+  );
+  assertCondition(Boolean(mutatedReceiverTraceStep), 'Ops-class method tracing should retain live receiver fields after mutation');
+  const mutatedReceiverValue = mutatedReceiverTraceStep?.variables?.this as Record<string, unknown> | undefined;
+  assertCondition(
+    Array.isArray(mutatedReceiverValue?.lo) && (mutatedReceiverValue?.lo as unknown[])[0] === 5,
+    'Receiver snapshot should expose live instance fields'
+  );
+  console.log('PASS: execute-with-tracing ops-class methods snapshot receiver state');
+
   const executeTypeScriptBfsLineMapping = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
@@ -595,6 +652,58 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     'TypeScript traced execution should preserve the successful return value for arg-order cases'
   );
   console.log('PASS: execute-with-tracing typescript solution-method arg order contract');
+
+  const executeTypeScriptTreeInputTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    trace: Array<{
+      line?: number;
+      visualization?: {
+        objectKinds?: Record<string, string>;
+      };
+      variables?: Record<string, unknown>;
+    }>;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  levelOrder(root: TreeNode | null): number[][] {
+    if (!root) return [];
+    const result: number[][] = [];
+    const queue: TreeNode[] = [root];
+    let front = 0;
+    while (front < queue.length) {
+      const levelSize = queue.length - front;
+      const level: number[] = [];
+      for (let i = 0; i < levelSize; i++) {
+        const node = queue[front++];
+        level.push(node.val);
+        if (node.left) queue.push(node.left);
+        if (node.right) queue.push(node.right);
+      }
+      result.push(level);
+    }
+    return result;
+  }
+}`,
+    functionName: 'levelOrder',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: {
+      root: [3, 9, 20, null, null, 15, 7],
+    },
+  });
+  assertCondition(executeTypeScriptTreeInputTracing.success === true, 'TypeScript tree-input tracing should succeed');
+  assertCondition(
+    JSON.stringify(executeTypeScriptTreeInputTracing.output) === JSON.stringify([[3], [9, 20], [15, 7]]),
+    'TypeScript traced execution should materialize level-order arrays into TreeNode inputs'
+  );
+  const hasTreeTaggedLocal = executeTypeScriptTreeInputTracing.trace.some(
+    (step) => step.visualization?.objectKinds?.root === 'tree' || step.visualization?.objectKinds?.node === 'tree'
+  );
+  assertCondition(
+    hasTreeTaggedLocal,
+    'TypeScript tree-input tracing should surface tree-tagged root/node locals once inputs are materialized'
+  );
+  console.log('PASS: execute-with-tracing typescript tree input materialization contract');
 
   const executeTypeScriptAccessTracing = await harness.sendMessage<{
     success: boolean;

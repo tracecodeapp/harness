@@ -293,6 +293,166 @@ function normalizeInputs(inputs: Record<string, unknown>): Record<string, unknow
   return hydrated as Record<string, unknown>;
 }
 
+type InputMaterializerKind = 'tree' | 'list';
+
+function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown> | null {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const nodes = values.map((value) =>
+    value === null || value === undefined
+      ? null
+      : { val: value, value, left: null as Record<string, unknown> | null, right: null as Record<string, unknown> | null }
+  );
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (!node) continue;
+    const leftIndex = i * 2 + 1;
+    const rightIndex = i * 2 + 2;
+    node.left = leftIndex < nodes.length ? nodes[leftIndex] : null;
+    node.right = rightIndex < nodes.length ? nodes[rightIndex] : null;
+  }
+  return nodes[0];
+}
+
+function materializeTreeInput(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return buildTreeNodeFromLevelOrder(value);
+  }
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+  if (isLikelyTreeNodeValue(value)) {
+    return {
+      val: value.val ?? value.value ?? null,
+      value: value.val ?? value.value ?? null,
+      left: materializeTreeInput(value.left ?? null),
+      right: materializeTreeInput(value.right ?? null),
+    };
+  }
+  if (value.__type__ === 'TreeNode') {
+    return {
+      val: value.val ?? value.value ?? null,
+      value: value.val ?? value.value ?? null,
+      left: materializeTreeInput(value.left ?? null),
+      right: materializeTreeInput(value.right ?? null),
+    };
+  }
+  return value;
+}
+
+function materializeListInput(value: unknown, refs: Map<string, Record<string, unknown>> = new Map()): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return null;
+    const head = { val: value[0], value: value[0], next: null as Record<string, unknown> | null };
+    let current = head;
+    for (let i = 1; i < value.length; i++) {
+      current.next = { val: value[i], value: value[i], next: null };
+      current = current.next;
+    }
+    return head;
+  }
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+  if (typeof value.__ref__ === 'string') {
+    return refs.get(value.__ref__) ?? null;
+  }
+  if (isLikelyListNodeValue(value) || value.__type__ === 'ListNode') {
+    const node: Record<string, unknown> = {
+      val: value.val ?? value.value ?? null,
+      value: value.val ?? value.value ?? null,
+      next: null,
+    };
+    if (typeof value.__id__ === 'string' && value.__id__.length > 0) {
+      refs.set(value.__id__, node);
+    }
+    node.next = materializeListInput(value.next ?? null, refs);
+    return node;
+  }
+  return value;
+}
+
+function detectMaterializerKind(
+  ts: TypeScriptModule,
+  typeNode: import('typescript').TypeNode | undefined
+): InputMaterializerKind | null {
+  if (!typeNode) return null;
+  if (ts.isParenthesizedTypeNode(typeNode)) {
+    return detectMaterializerKind(ts, typeNode.type);
+  }
+  if (ts.isUnionTypeNode(typeNode)) {
+    for (const child of typeNode.types) {
+      const resolved = detectMaterializerKind(ts, child);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+  if (ts.isTypeReferenceNode(typeNode)) {
+    const typeNameText = typeNode.typeName.getText();
+    if (typeNameText === 'TreeNode') return 'tree';
+    if (typeNameText === 'ListNode') return 'list';
+    return null;
+  }
+  return null;
+}
+
+function collectInputMaterializers(
+  ts: TypeScriptModule,
+  functionLikeNode: FunctionLikeNode
+): Record<string, InputMaterializerKind> {
+  const out: Record<string, InputMaterializerKind> = {};
+  for (const parameter of functionLikeNode.parameters ?? []) {
+    if (!ts.isIdentifier(parameter.name)) continue;
+    if (parameter.name.text === 'this') continue;
+    const kind = detectMaterializerKind(ts, parameter.type);
+    if (kind) {
+      out[parameter.name.text] = kind;
+    }
+  }
+  return out;
+}
+
+async function resolveInputMaterializers(
+  code: string,
+  functionName: string,
+  executionStyle: RuntimeExecutionStyle,
+  language: 'javascript' | 'typescript'
+): Promise<Record<string, InputMaterializerKind>> {
+  if (!functionName || executionStyle === 'ops-class' || language !== 'typescript') {
+    return {};
+  }
+
+  try {
+    const ts = await getTypeScriptModule();
+    const sourceFile = ts.createSourceFile(
+      'runtime-input.ts',
+      code,
+      ts.ScriptTarget.ES2020,
+      true,
+      ts.ScriptKind.TS
+    );
+    const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
+    if (!target) return {};
+    return collectInputMaterializers(ts, target);
+  } catch {
+    return {};
+  }
+}
+
+function applyInputMaterializers(
+  inputs: Record<string, unknown>,
+  materializers: Record<string, InputMaterializerKind>
+): Record<string, unknown> {
+  if (Object.keys(materializers).length === 0) return inputs;
+  const next: Record<string, unknown> = { ...inputs };
+  for (const [name, kind] of Object.entries(materializers)) {
+    if (!Object.prototype.hasOwnProperty.call(next, name)) continue;
+    next[name] = kind === 'tree' ? materializeTreeInput(next[name]) : materializeListInput(next[name]);
+  }
+  return next;
+}
+
 type FunctionLikeNode =
   | import('typescript').FunctionDeclaration
   | import('typescript').FunctionExpression
@@ -388,7 +548,8 @@ async function resolveOrderedInputKeys(
   code: string,
   functionName: string,
   inputs: Record<string, unknown>,
-  executionStyle: RuntimeExecutionStyle
+  executionStyle: RuntimeExecutionStyle,
+  language: 'javascript' | 'typescript' = 'javascript'
 ): Promise<string[]> {
   const fallbackKeys = Object.keys(inputs);
   if (!functionName || executionStyle === 'ops-class' || fallbackKeys.length <= 1) {
@@ -397,7 +558,13 @@ async function resolveOrderedInputKeys(
 
   try {
     const ts = await getTypeScriptModule();
-    const sourceFile = ts.createSourceFile('runtime-input.js', code, ts.ScriptTarget.ES2020, true, ts.ScriptKind.JS);
+    const sourceFile = ts.createSourceFile(
+      `runtime-input.${language === 'typescript' ? 'ts' : 'js'}`,
+      code,
+      ts.ScriptTarget.ES2020,
+      true,
+      language === 'typescript' ? ts.ScriptKind.TS : ts.ScriptKind.JS
+    );
     const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
     if (!target) {
       return fallbackKeys;
@@ -566,23 +733,26 @@ export async function executeJavaScriptCode(
   code: string,
   functionName: string,
   inputs: Record<string, unknown>,
-  executionStyle: RuntimeExecutionStyle = 'function'
+  executionStyle: RuntimeExecutionStyle = 'function',
+  language: 'javascript' | 'typescript' = 'javascript'
 ): Promise<CodeExecutionResult> {
   const consoleOutput: string[] = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
   const normalizedInputs = normalizeInputs(inputs);
+  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+  const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
 
   try {
     let output: unknown;
 
     if (executionStyle === 'ops-class') {
-      const { operations, argumentsList } = getOpsClassInputs(normalizedInputs);
+      const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
       const runner = buildRunner(code, executionStyle, []);
       output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
     } else {
-      const inputKeys = await resolveOrderedInputKeys(code, functionName, normalizedInputs, executionStyle);
+      const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
       const argNames = inputKeys.map((_, index) => `__arg${index}`);
-      const argValues = inputKeys.map((key) => normalizedInputs[key]);
+      const argValues = inputKeys.map((key) => materializedInputs[key]);
       const runner = buildRunner(code, executionStyle, argNames);
       output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
     }
@@ -607,10 +777,11 @@ export async function executeJavaScriptWithTracing(
   code: string,
   functionName: string | null,
   inputs: Record<string, unknown>,
-  executionStyle: RuntimeExecutionStyle = 'function'
+  executionStyle: RuntimeExecutionStyle = 'function',
+  language: 'javascript' | 'typescript' = 'javascript'
 ): Promise<ExecutionResult> {
   const startedAt = performanceNow();
-  const codeResult = await executeJavaScriptCode(code, functionName ?? '', inputs, executionStyle);
+  const codeResult = await executeJavaScriptCode(code, functionName ?? '', inputs, executionStyle, language);
   const executionTimeMs = performanceNow() - startedAt;
 
   if (!codeResult.success) {
@@ -643,6 +814,9 @@ export async function executeTypeScriptCode(
   inputs: Record<string, unknown>,
   executionStyle: RuntimeExecutionStyle = 'function'
 ): Promise<CodeExecutionResult> {
+  const normalizedInputs = normalizeInputs(inputs);
+  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, 'typescript');
+  const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const transpiledCode = await transpileTypeScript(code);
-  return executeJavaScriptCode(transpiledCode, functionName, inputs, executionStyle);
+  return executeJavaScriptCode(transpiledCode, functionName, materializedInputs, executionStyle, 'typescript');
 }

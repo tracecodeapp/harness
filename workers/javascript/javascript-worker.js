@@ -349,6 +349,146 @@ function normalizeInputs(inputs) {
   return hydrated;
 }
 
+function buildTreeNodeFromLevelOrder(values) {
+  if (!Array.isArray(values) || values.length === 0) return null;
+  const nodes = values.map((value) =>
+    value === null || value === undefined
+      ? null
+      : { val: value, value, left: null, right: null }
+  );
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (!node) continue;
+    const leftIndex = i * 2 + 1;
+    const rightIndex = i * 2 + 2;
+    node.left = leftIndex < nodes.length ? nodes[leftIndex] : null;
+    node.right = rightIndex < nodes.length ? nodes[rightIndex] : null;
+  }
+  return nodes[0];
+}
+
+function materializeTreeInput(value) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return buildTreeNodeFromLevelOrder(value);
+  }
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+  if (isLikelyTreeNodeValue(value) || value.__type__ === 'TreeNode') {
+    const nodeValue = value;
+    return {
+      val: nodeValue.val ?? nodeValue.value ?? null,
+      value: nodeValue.val ?? nodeValue.value ?? null,
+      left: materializeTreeInput(nodeValue.left ?? null),
+      right: materializeTreeInput(nodeValue.right ?? null),
+    };
+  }
+  return value;
+}
+
+function materializeListInput(value, refs = new Map()) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return null;
+    const head = { val: value[0], value: value[0], next: null };
+    let current = head;
+    for (let i = 1; i < value.length; i++) {
+      current.next = { val: value[i], value: value[i], next: null };
+      current = current.next;
+    }
+    return head;
+  }
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+  if (typeof value.__ref__ === 'string') {
+    return refs.get(value.__ref__) ?? null;
+  }
+  if (isLikelyListNodeValue(value) || value.__type__ === 'ListNode') {
+    const node = {
+      val: value.val ?? value.value ?? null,
+      value: value.val ?? value.value ?? null,
+      next: null,
+    };
+    if (typeof value.__id__ === 'string' && value.__id__.length > 0) {
+      refs.set(value.__id__, node);
+    }
+    node.next = materializeListInput(value.next ?? null, refs);
+    return node;
+  }
+  return value;
+}
+
+function detectMaterializerKind(ts, typeNode) {
+  if (!typeNode) return null;
+  if (ts.isParenthesizedTypeNode(typeNode)) {
+    return detectMaterializerKind(ts, typeNode.type);
+  }
+  if (ts.isUnionTypeNode(typeNode)) {
+    for (const child of typeNode.types) {
+      const resolved = detectMaterializerKind(ts, child);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+  if (ts.isTypeReferenceNode(typeNode)) {
+    const typeNameText = typeNode.typeName.getText();
+    if (typeNameText === 'TreeNode') return 'tree';
+    if (typeNameText === 'ListNode') return 'list';
+    return null;
+  }
+  return null;
+}
+
+function collectInputMaterializers(ts, functionLikeNode) {
+  const out = {};
+  for (const parameter of functionLikeNode.parameters ?? []) {
+    if (!ts.isIdentifier(parameter.name)) continue;
+    if (parameter.name.text === 'this') continue;
+    const kind = detectMaterializerKind(ts, parameter.type);
+    if (kind) {
+      out[parameter.name.text] = kind;
+    }
+  }
+  return out;
+}
+
+async function resolveInputMaterializers(code, functionName, executionStyle, language) {
+  if (!functionName || executionStyle === 'ops-class' || language !== 'typescript') {
+    return {};
+  }
+
+  try {
+    await ensureTypeScriptCompiler();
+    const ts = getTypeScriptCompiler();
+    if (!ts) return {};
+
+    const sourceFile = ts.createSourceFile(
+      'runtime-input.ts',
+      code,
+      ts.ScriptTarget.ES2020,
+      true,
+      ts.ScriptKind.TS
+    );
+    const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
+    if (!target) return {};
+    return collectInputMaterializers(ts, target);
+  } catch (_error) {
+    return {};
+  }
+}
+
+function applyInputMaterializers(inputs, materializers) {
+  if (!materializers || Object.keys(materializers).length === 0) return inputs;
+  const next = { ...inputs };
+  for (const [name, kind] of Object.entries(materializers)) {
+    if (!Object.prototype.hasOwnProperty.call(next, name)) continue;
+    next[name] = kind === 'tree' ? materializeTreeInput(next[name]) : materializeListInput(next[name]);
+  }
+  return next;
+}
+
 function collectSimpleParameterNames(ts, functionLikeNode) {
   const names = [];
 
@@ -426,7 +566,7 @@ function findFunctionLikeNode(ts, sourceFile, functionName, executionStyle) {
   return found;
 }
 
-async function resolveOrderedInputKeys(code, functionName, inputs, executionStyle) {
+async function resolveOrderedInputKeys(code, functionName, inputs, executionStyle, language = 'javascript') {
   const fallbackKeys = Object.keys(inputs ?? {});
   if (!functionName || executionStyle === 'ops-class' || fallbackKeys.length <= 1) {
     return fallbackKeys;
@@ -439,7 +579,13 @@ async function resolveOrderedInputKeys(code, functionName, inputs, executionStyl
       return fallbackKeys;
     }
 
-    const sourceFile = ts.createSourceFile('runtime-input.js', code, ts.ScriptTarget.ES2020, true, ts.ScriptKind.JS);
+    const sourceFile = ts.createSourceFile(
+      `runtime-input.${language === 'typescript' ? 'ts' : 'js'}`,
+      code,
+      ts.ScriptTarget.ES2020,
+      true,
+      language === 'typescript' ? ts.ScriptKind.TS : ts.ScriptKind.JS
+    );
     const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
     if (!target) {
       return fallbackKeys;
@@ -589,7 +735,11 @@ function createTraceRecorder(options = {}) {
     for (const [key, variableValue] of Object.entries(value)) {
       if (variableValue === undefined) continue;
       try {
-        result[key] = serializeValue(variableValue, 0, new WeakSet(), stableNodeRefState);
+        const refState =
+          key === 'this' && variableValue && typeof variableValue === 'object'
+            ? { ids: new Map(), nextId: 1 }
+            : stableNodeRefState;
+        result[key] = serializeValue(variableValue, 0, new WeakSet(), refState);
       } catch {
         // Skip variables that throw during serialization (e.g. transient proxy/getter failures).
       }
@@ -1539,53 +1689,57 @@ function inferTraceFunctionName(ts, node, fallbackFunctionName) {
 function buildLineFunctionMap(ts, sourceFile, defaultFunctionName) {
   const lineFunctionMap = new Map();
 
-  function mapStatementLine(statementNode, functionName, functionStartLine) {
+  function mapStatementLine(statementNode, functionName, functionStartLine, includeThisSnapshot) {
     const lineNumber = sourceFile.getLineAndCharacterOfPosition(statementNode.getStart(sourceFile)).line + 1;
     if (!lineFunctionMap.has(lineNumber)) {
       lineFunctionMap.set(lineNumber, {
         functionName,
         functionStartLine,
+        includeThisSnapshot,
       });
     }
   }
 
-  function visitNode(node, currentFunctionName, currentFunctionStartLine) {
+  function visitNode(node, currentFunctionName, currentFunctionStartLine, includeThisSnapshot) {
     const nextFunctionName = ts.isFunctionLike(node)
       ? inferTraceFunctionName(ts, node, currentFunctionName)
       : currentFunctionName;
     const nextFunctionStartLine = ts.isFunctionLike(node)
       ? sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
       : currentFunctionStartLine;
+    const nextIncludeThisSnapshot = ts.isFunctionLike(node)
+      ? functionLikeSnapshotsReceiver(ts, node)
+      : includeThisSnapshot;
 
     if (ts.isSourceFile(node) || ts.isBlock(node)) {
       for (const statement of node.statements) {
-        visitNode(statement, currentFunctionName, currentFunctionStartLine);
+        visitNode(statement, currentFunctionName, currentFunctionStartLine, includeThisSnapshot);
       }
       return;
     }
 
     if (ts.isCaseClause(node) || ts.isDefaultClause(node)) {
       for (const statement of node.statements) {
-        visitNode(statement, currentFunctionName, currentFunctionStartLine);
+        visitNode(statement, currentFunctionName, currentFunctionStartLine, includeThisSnapshot);
       }
       return;
     }
 
     if (ts.isFunctionLike(node)) {
       if (node.body) {
-        visitNode(node.body, nextFunctionName, nextFunctionStartLine);
+        visitNode(node.body, nextFunctionName, nextFunctionStartLine, nextIncludeThisSnapshot);
       }
       return;
     }
 
     if (ts.isStatement(node) && shouldTraceStatement(ts, node)) {
-      mapStatementLine(node, currentFunctionName, currentFunctionStartLine);
+      mapStatementLine(node, currentFunctionName, currentFunctionStartLine, includeThisSnapshot);
     }
 
-    ts.forEachChild(node, (child) => visitNode(child, currentFunctionName, currentFunctionStartLine));
+    ts.forEachChild(node, (child) => visitNode(child, currentFunctionName, currentFunctionStartLine, includeThisSnapshot));
   }
 
-  visitNode(sourceFile, defaultFunctionName, 1);
+  visitNode(sourceFile, defaultFunctionName, 1, false);
   return lineFunctionMap;
 }
 
@@ -1789,7 +1943,7 @@ function createTraceMutatingCallExpression(ts, variableName, methodName, args) {
   );
 }
 
-function createSnapshotFactory(ts, variableNames) {
+function createSnapshotFactory(ts, variableNames, includeThis = false) {
   const properties = variableNames.map((name) =>
     ts.factory.createPropertyAssignment(
       ts.factory.createIdentifier(name),
@@ -1813,6 +1967,31 @@ function createSnapshotFactory(ts, variableNames) {
     )
   );
 
+  if (includeThis) {
+    properties.push(
+      ts.factory.createPropertyAssignment(
+        ts.factory.createStringLiteral('this'),
+        ts.factory.createCallExpression(
+          ts.factory.createPropertyAccessExpression(
+            ts.factory.createIdentifier('__traceRecorder'),
+            ts.factory.createIdentifier('read')
+          ),
+          undefined,
+          [
+            ts.factory.createArrowFunction(
+              undefined,
+              undefined,
+              [],
+              undefined,
+              ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+              ts.factory.createThis()
+            ),
+          ]
+        )
+      )
+    );
+  }
+
   return ts.factory.createArrowFunction(
     undefined,
     undefined,
@@ -1825,11 +2004,21 @@ function createSnapshotFactory(ts, variableNames) {
   );
 }
 
+function functionLikeSnapshotsReceiver(ts, functionLikeNode) {
+  return (
+    ts.isMethodDeclaration(functionLikeNode) ||
+    ts.isConstructorDeclaration(functionLikeNode) ||
+    ts.isGetAccessorDeclaration(functionLikeNode) ||
+    ts.isSetAccessorDeclaration(functionLikeNode)
+  );
+}
+
 function createTraceLineStatement(ts, sourceFile, statement, variableNames, lineFunctionMap, defaultFunctionName) {
   const lineNumber = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line + 1;
   const functionContext = lineFunctionMap.get(lineNumber);
   const traceFunctionName = functionContext?.functionName ?? defaultFunctionName;
   const traceFunctionStartLine = functionContext?.functionStartLine ?? lineNumber;
+  const includeThisSnapshot = Boolean(functionContext?.includeThisSnapshot);
   return ts.factory.createExpressionStatement(
     ts.factory.createCallExpression(
       ts.factory.createPropertyAccessExpression(
@@ -1839,7 +2028,7 @@ function createTraceLineStatement(ts, sourceFile, statement, variableNames, line
       undefined,
       [
         ts.factory.createNumericLiteral(lineNumber),
-        createSnapshotFactory(ts, variableNames),
+        createSnapshotFactory(ts, variableNames, includeThisSnapshot),
         ts.factory.createStringLiteral(traceFunctionName),
         ts.factory.createNumericLiteral(traceFunctionStartLine),
       ]
@@ -2049,6 +2238,7 @@ function wrapFunctionBodyForTracing(
   const functionEndPosition = Math.max(functionBody.getEnd() - 1, functionBody.getStart(sourceFile));
   const functionEndLine = sourceFile.getLineAndCharacterOfPosition(functionEndPosition).line + 1;
   const parameterNames = collectFunctionParameterNames(ts, functionLikeNode);
+  const includeThisSnapshot = functionLikeSnapshotsReceiver(ts, functionLikeNode);
 
   const rewrittenBody = rewriteFunctionReturnStatements(
     ts,
@@ -2059,7 +2249,7 @@ function wrapFunctionBodyForTracing(
   );
 
   const argsSnapshotExpression = ts.factory.createCallExpression(
-    ts.factory.createParenthesizedExpression(createSnapshotFactory(ts, parameterNames)),
+    ts.factory.createParenthesizedExpression(createSnapshotFactory(ts, parameterNames, includeThisSnapshot)),
     undefined,
     []
   );
@@ -2686,6 +2876,8 @@ async function executeCode(payload) {
   const consoleOutput = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
   const normalizedInputs = normalizeInputs(inputs);
+  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+  const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
 
   try {
     if (typeof code !== 'string') {
@@ -2701,13 +2893,13 @@ async function executeCode(payload) {
 
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
-        const { operations, argumentsList } = getOpsClassInputs(normalizedInputs);
+        const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, []);
         output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
       } else {
-        const inputKeys = await resolveOrderedInputKeys(executableCode, functionName, normalizedInputs, executionStyle);
+        const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
-        const argValues = inputKeys.map((key) => normalizedInputs[key]);
+        const argValues = inputKeys.map((key) => materializedInputs[key]);
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames);
         output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
       }
@@ -2749,6 +2941,8 @@ async function executeWithTracing(payload) {
   const consoleOutput = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
   const normalizedInputs = normalizeInputs(inputs);
+  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+  const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
   const traceFunctionName = hasNamedFunction ? functionName : '<module>';
   const traceRecorder = createTraceRecorder(options);
@@ -2812,14 +3006,14 @@ async function executeWithTracing(payload) {
     }
 
     const serializedInputs = {};
-    for (const [key, value] of Object.entries(normalizedInputs)) {
+    for (const [key, value] of Object.entries(materializedInputs)) {
       serializedInputs[key] = serializeValue(value);
     }
 
     let output;
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
-        const { operations, argumentsList } = getOpsClassInputs(normalizedInputs);
+        const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
         const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, []);
         output = await Promise.resolve(
           runner(
@@ -2832,9 +3026,9 @@ async function executeWithTracing(payload) {
           )
         );
       } else {
-        const inputKeys = await resolveOrderedInputKeys(executableCode, functionName, normalizedInputs, executionStyle);
+        const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
-        const argValues = inputKeys.map((key) => normalizedInputs[key]);
+        const argValues = inputKeys.map((key) => materializedInputs[key]);
         const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames);
         output = await Promise.resolve(
           runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues)
