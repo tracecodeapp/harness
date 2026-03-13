@@ -38,6 +38,8 @@ _original_print = _builtins.print
 _target_function = "${targetFunction}"
 _MIRROR_PRINT_TO_WORKER_CONSOLE = ${mirrorPrintToConsole ? 'True' : 'False'}
 _MINIMAL_TRACE = ${minimalTrace ? 'True' : 'False'}
+_SCRIPT_MODE = ${functionName ? 'False' : 'True'}
+_TRACE_INPUT_NAMES = set(${JSON.stringify(Object.keys(inputs))})
 
 class _InfiniteLoopDetected(Exception):
     pass
@@ -71,6 +73,7 @@ _internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_
 _internal_locals = {
     '_trace_data', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
+    '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
     '_call_stack', '_pending_accesses', '_prev_hashmap_snapshots', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
@@ -319,19 +322,50 @@ def _normalize_top_level_linked_list_locals(local_vars):
 
     return local_vars
 
-def _snapshot_locals(frame):
+_SCRIPT_PRE_USER_GLOBALS = set()
+
+def _snapshot_local_sources(frame):
     if _MINIMAL_TRACE:
         return {}
     try:
-        _node_refs = {}
-        local_vars = {
-            k: v
-            for k, v in ((k, _serialize(v, 0, _node_refs)) for k, v in frame.f_locals.items() if k not in _internal_locals and k != '_' and not k.startswith('__'))
-            if v != _SKIP_SENTINEL
-        }
-        return _normalize_top_level_linked_list_locals(local_vars)
+        func_name = frame.f_code.co_name
+        sources = {}
+        for name in frame.f_locals.keys():
+            if name in _internal_locals or name == '_' or name.startswith('__'):
+                continue
+            if _SCRIPT_MODE and func_name == '<module>':
+                if name in _TRACE_INPUT_NAMES:
+                    sources[name] = 'user-input'
+                elif name in _SCRIPT_PRE_USER_GLOBALS:
+                    sources[name] = 'harness-prelude'
+                else:
+                    sources[name] = 'user'
+            else:
+                sources[name] = 'user'
+        return sources
     except Exception:
         return {}
+
+def _snapshot_locals(frame, with_sources=False):
+    if _MINIMAL_TRACE:
+        return ({}, {}) if with_sources else {}
+    try:
+        _node_refs = {}
+        _sources = _snapshot_local_sources(frame)
+        local_vars = {
+            k: v
+            for k, v in (
+                (k, _serialize(v, 0, _node_refs))
+                for k, v in frame.f_locals.items()
+                if k not in _internal_locals and k != '_' and not k.startswith('__') and _sources.get(k) != 'harness-prelude'
+            )
+            if v != _SKIP_SENTINEL
+        }
+        local_vars = _normalize_top_level_linked_list_locals(local_vars)
+        local_sources = {name: _sources.get(name, 'user') for name in local_vars.keys()}
+        return (local_vars, local_sources) if with_sources else local_vars
+    except Exception:
+        return ({}, {}) if with_sources else {}
 
 def __tracecode_record_access(frame, event):
     if frame is None or not isinstance(event, dict):
@@ -867,12 +901,13 @@ def _tracer(frame, event, arg):
                 _trace_limit_exceeded = True
                 _timeout_reason = 'single-line-limit'
                 _infinite_loop_line = frame.f_lineno
-                local_vars = _snapshot_locals(frame)
+                local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
                 local_vars['timeoutReason'] = _timeout_reason
                 _trace_data.append({
                     'line': frame.f_lineno,
                     'event': 'timeout',
                     'variables': local_vars,
+                    'variableSources': local_sources,
                     'function': func_name,
                     'callStack': _snapshot_call_stack(),
                     'stdoutLineCount': len(_console_output),
@@ -901,7 +936,7 @@ def _tracer(frame, event, arg):
             raise _InfiniteLoopDetected(f"Exceeded {_max_trace_steps} trace steps")
 
     if event == 'call':
-        local_vars = _snapshot_locals(frame)
+        local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         if func_name != '<module>':
             _call_stack.append({
                 'function': func_name,
@@ -914,6 +949,7 @@ def _tracer(frame, event, arg):
             'line': frame.f_lineno,
             'event': 'call',
             'variables': local_vars,
+            'variableSources': local_sources,
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
@@ -923,11 +959,12 @@ def _tracer(frame, event, arg):
     elif event == 'line':
         if _MINIMAL_TRACE:
             return _tracer
-        local_vars = _snapshot_locals(frame)
+        local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
         _trace_data.append({
             'line': frame.f_lineno,
             'event': event,
             'variables': local_vars,
+            'variableSources': local_sources,
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
@@ -936,11 +973,12 @@ def _tracer(frame, event, arg):
         })
     elif event == 'return':
         if not _MINIMAL_TRACE:
-            local_vars = _snapshot_locals(frame)
+            local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
             _trace_data.append({
                 'line': frame.f_lineno,
                 'event': 'return',
                 'variables': local_vars,
+                'variableSources': local_sources,
                 'function': func_name,
                 'returnValue': _serialize(arg),
                 'callStack': _snapshot_call_stack(),
@@ -1078,6 +1116,9 @@ ${treeConversions}
 ${listConversions}
 
 ${preloadUserDefinitions}
+
+if _SCRIPT_MODE:
+    _SCRIPT_PRE_USER_GLOBALS = set(globals().keys()) - _TRACE_INPUT_NAMES
 
 sys.settrace(_tracer)
 _trace_failed = False

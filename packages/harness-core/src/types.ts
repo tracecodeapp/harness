@@ -39,6 +39,7 @@ export interface RawTraceStep {
   line: number;
   event: 'line' | 'call' | 'return' | 'exception' | 'timeout' | 'stdout';
   variables: Record<string, unknown>;
+  variableSources?: Record<string, 'user' | 'user-input' | 'harness-prelude'>;
   function: string;
   callStack?: CallStackFrame[];
   accesses?: RuntimeTraceAccessEvent[];

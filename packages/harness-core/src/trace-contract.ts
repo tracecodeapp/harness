@@ -15,7 +15,7 @@ import type {
  * Bump this when payload shape/normalization semantics change in a way that
  * should invalidate golden fixtures.
  */
-export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-03-11';
+export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-03-13';
 
 export type RuntimeTraceContractEvent =
   | 'line'
@@ -57,6 +57,7 @@ export interface RuntimeTraceContractStep {
   line: number;
   function: string;
   variables: Record<string, unknown>;
+  variableSources?: Record<string, 'user' | 'user-input' | 'harness-prelude'>;
   callStack?: RuntimeTraceContractCallStackFrame[];
   accesses?: RuntimeTraceAccessEvent[];
   returnValue?: unknown;
@@ -249,6 +250,23 @@ function normalizeRecord(value: unknown): Record<string, unknown> {
   return normalizeUnknown(value) as Record<string, unknown>;
 }
 
+function normalizeVariableSources(
+  value: unknown
+): Record<string, 'user' | 'user-input' | 'harness-prelude'> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([name, source]) =>
+      typeof name === 'string' &&
+      name.length > 0 &&
+      (source === 'user' || source === 'user-input' || source === 'harness-prelude')
+    )
+    .sort((a, b) => a[0].localeCompare(b[0])) as Array<
+      [string, 'user' | 'user-input' | 'harness-prelude']
+    >;
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(entries);
+}
+
 function normalizeCallStackFrame(frame: CallStackFrame): RuntimeTraceContractCallStackFrame {
   return {
     function: normalizeFunctionName(frame?.function),
@@ -313,12 +331,14 @@ function normalizeTraceStep(step: RawTraceStep): RuntimeTraceContractStep {
   const normalizedStdoutCount = normalizeOutputLineCount(step?.stdoutLineCount);
   const normalizedVisualization = normalizeVisualizationPayload(step?.visualization);
   const normalizedAccesses = normalizeAccesses(step?.accesses);
+  const normalizedVariableSources = normalizeVariableSources(step?.variableSources);
 
   return {
     event: normalizeEvent(step?.event),
     line: normalizeLineNumber(step?.line, 1),
     function: normalizeFunctionName(step?.function),
     variables: normalizeRecord(step?.variables),
+    ...(normalizedVariableSources ? { variableSources: normalizedVariableSources } : {}),
     ...(Array.isArray(step?.callStack) && step.callStack.length > 0
       ? { callStack: step.callStack.map(normalizeCallStackFrame) }
       : {}),
