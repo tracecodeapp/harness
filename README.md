@@ -254,6 +254,7 @@ pnpm generate:python-harness
 
 This repo uses explicit versioned release boundaries.
 
+- `0.5.0` improves JavaScript tree/list input hydration, fixes sparse tree deserialization, and trims GitHub CI to the non-browser verification set
 - `0.1.0` introduced the public harness baseline
 - `0.2.0` introduced structured runtime capability profiles
 - `0.3.0` introduced runtime access metadata in traces
