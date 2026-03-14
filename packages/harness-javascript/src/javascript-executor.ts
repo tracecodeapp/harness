@@ -297,20 +297,48 @@ type InputMaterializerKind = 'tree' | 'list';
 
 function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown> | null {
   if (!Array.isArray(values) || values.length === 0) return null;
-  const nodes = values.map((value) =>
-    value === null || value === undefined
-      ? null
-      : { val: value, value, left: null as Record<string, unknown> | null, right: null as Record<string, unknown> | null }
-  );
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i];
-    if (!node) continue;
-    const leftIndex = i * 2 + 1;
-    const rightIndex = i * 2 + 2;
-    node.left = leftIndex < nodes.length ? nodes[leftIndex] : null;
-    node.right = rightIndex < nodes.length ? nodes[rightIndex] : null;
+  const firstValue = values[0];
+  if (firstValue === null || firstValue === undefined) return null;
+  const root: Record<string, unknown> = {
+    val: firstValue,
+    value: firstValue,
+    left: null,
+    right: null,
+  };
+  const queue: Record<string, unknown>[] = [root];
+  let index = 1;
+
+  while (queue.length > 0 && index < values.length) {
+    const node = queue.shift();
+    if (!node) break;
+
+    const leftValue = values[index++];
+    if (leftValue !== null && leftValue !== undefined) {
+      const leftNode: Record<string, unknown> = {
+        val: leftValue,
+        value: leftValue,
+        left: null,
+        right: null,
+      };
+      node.left = leftNode;
+      queue.push(leftNode);
+    }
+
+    if (index >= values.length) break;
+
+    const rightValue = values[index++];
+    if (rightValue !== null && rightValue !== undefined) {
+      const rightNode: Record<string, unknown> = {
+        val: rightValue,
+        value: rightValue,
+        left: null,
+        right: null,
+      };
+      node.right = rightNode;
+      queue.push(rightNode);
+    }
   }
-  return nodes[0];
+  return root;
 }
 
 function materializeTreeInput(value: unknown): unknown {
@@ -321,20 +349,22 @@ function materializeTreeInput(value: unknown): unknown {
   if (!isPlainObjectRecord(value)) {
     return value;
   }
-  if (isLikelyTreeNodeValue(value)) {
+  const record = value as Record<string, unknown>;
+  if (isLikelyTreeNodeValue(record)) {
     return {
-      val: value.val ?? value.value ?? null,
-      value: value.val ?? value.value ?? null,
-      left: materializeTreeInput(value.left ?? null),
-      right: materializeTreeInput(value.right ?? null),
+      val: record.val ?? record.value ?? null,
+      value: record.val ?? record.value ?? null,
+      left: materializeTreeInput(record.left ?? null),
+      right: materializeTreeInput(record.right ?? null),
     };
   }
-  if (value.__type__ === 'TreeNode') {
+  const taggedRecord = value as Record<string, unknown> & { __type__?: unknown };
+  if (taggedRecord.__type__ === 'TreeNode') {
     return {
-      val: value.val ?? value.value ?? null,
-      value: value.val ?? value.value ?? null,
-      left: materializeTreeInput(value.left ?? null),
-      right: materializeTreeInput(value.right ?? null),
+      val: taggedRecord.val ?? taggedRecord.value ?? null,
+      value: taggedRecord.val ?? taggedRecord.value ?? null,
+      left: materializeTreeInput(taggedRecord.left ?? null),
+      right: materializeTreeInput(taggedRecord.right ?? null),
     };
   }
   return value;
@@ -348,35 +378,42 @@ function materializeListInput(
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
-    const head = { val: value[0], value: value[0], next: null as Record<string, unknown> | null };
-    let current = head;
+    const head: Record<string, unknown> = {
+      val: value[0],
+      value: value[0],
+      next: null,
+    };
+    let current: Record<string, unknown> = head;
     for (let i = 1; i < value.length; i++) {
-      current.next = { val: value[i], value: value[i], next: null };
-      current = current.next;
+      const nextNode: Record<string, unknown> = { val: value[i], value: value[i], next: null };
+      current.next = nextNode;
+      current = nextNode;
     }
     return head;
   }
   if (!isPlainObjectRecord(value)) {
     return value;
   }
-  if (typeof value.__ref__ === 'string') {
-    return refs.get(value.__ref__) ?? null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.__ref__ === 'string') {
+    return refs.get(record.__ref__) ?? null;
   }
-  if (isLikelyListNodeValue(value) || value.__type__ === 'ListNode') {
-    const existingMaterialized = materialized.get(value as object);
+  const taggedRecord = value as Record<string, unknown> & { __type__?: unknown };
+  if (isLikelyListNodeValue(record) || taggedRecord.__type__ === 'ListNode') {
+    const existingMaterialized = materialized.get(record as object);
     if (existingMaterialized) {
       return existingMaterialized;
     }
     const node: Record<string, unknown> = {
-      val: value.val ?? value.value ?? null,
-      value: value.val ?? value.value ?? null,
+      val: taggedRecord.val ?? taggedRecord.value ?? null,
+      value: taggedRecord.val ?? taggedRecord.value ?? null,
       next: null,
     };
-    materialized.set(value as object, node);
-    if (typeof value.__id__ === 'string' && value.__id__.length > 0) {
-      refs.set(value.__id__, node);
+    materialized.set(record as object, node);
+    if (typeof taggedRecord.__id__ === 'string' && taggedRecord.__id__.length > 0) {
+      refs.set(taggedRecord.__id__, node);
     }
-    node.next = materializeListInput(value.next ?? null, refs, materialized);
+    node.next = materializeListInput(taggedRecord.next ?? null, refs, materialized);
     return node;
   }
   return value;

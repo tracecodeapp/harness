@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.5.0] - 2026-03-14
+
+### Fixed
+
+- JavaScript function-style tree inputs now hydrate fallback `root`/`head` array inputs even when no explicit static parameter materializer is available.
+- Sparse level-order tree arrays now deserialize correctly in the JavaScript worker instead of being rebuilt as complete binary trees.
+
+### Changed
+
+- GitHub CI now runs the non-browser harness verification set and skips Playwright/Chrome example-app coverage.
+
+### Notes
+
+- `0.5.0` is a JavaScript runtime correctness and CI-trim release ahead of the next app cut.
+
 ## [0.4.0] - 2026-03-10
 
 ### Added

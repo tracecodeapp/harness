@@ -412,20 +412,32 @@ function normalizeInputs(inputs) {
 
 function buildTreeNodeFromLevelOrder(values) {
   if (!Array.isArray(values) || values.length === 0) return null;
-  const nodes = values.map((value) =>
-    value === null || value === undefined
-      ? null
-      : { val: value, value, left: null, right: null }
-  );
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i];
-    if (!node) continue;
-    const leftIndex = i * 2 + 1;
-    const rightIndex = i * 2 + 2;
-    node.left = leftIndex < nodes.length ? nodes[leftIndex] : null;
-    node.right = rightIndex < nodes.length ? nodes[rightIndex] : null;
+  const firstValue = values[0];
+  if (firstValue === null || firstValue === undefined) return null;
+  const root = { val: firstValue, value: firstValue, left: null, right: null };
+  const queue = [root];
+  let index = 1;
+
+  while (queue.length > 0 && index < values.length) {
+    const node = queue.shift();
+    if (!node) break;
+
+    const leftValue = values[index++];
+    if (leftValue !== null && leftValue !== undefined) {
+      node.left = { val: leftValue, value: leftValue, left: null, right: null };
+      queue.push(node.left);
+    }
+
+    if (index >= values.length) break;
+
+    const rightValue = values[index++];
+    if (rightValue !== null && rightValue !== undefined) {
+      node.right = { val: rightValue, value: rightValue, left: null, right: null };
+      queue.push(node.right);
+    }
   }
-  return nodes[0];
+
+  return root;
 }
 
 function materializeTreeInput(value) {
@@ -546,13 +558,32 @@ async function resolveInputMaterializers(code, functionName, executionStyle, lan
 }
 
 function applyInputMaterializers(inputs, materializers) {
-  if (!materializers || Object.keys(materializers).length === 0) return inputs;
   const next = { ...inputs };
-  for (const [name, kind] of Object.entries(materializers)) {
+  const combined = { ...inferFallbackInputMaterializers(inputs), ...(materializers ?? {}) };
+  if (Object.keys(combined).length === 0) return inputs;
+  for (const [name, kind] of Object.entries(combined)) {
     if (!Object.prototype.hasOwnProperty.call(next, name)) continue;
     next[name] = kind === 'tree' ? materializeTreeInput(next[name]) : materializeListInput(next[name]);
   }
   return next;
+}
+
+function inferFallbackInputMaterializers(inputs) {
+  if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return {};
+  const inferred = {};
+  for (const [name, value] of Object.entries(inputs)) {
+    const lowerName = String(name || '').toLowerCase();
+    if (!Array.isArray(value)) continue;
+    if (lowerName === 'root' || lowerName.endsWith('root') || lowerName.includes('tree')) {
+      inferred[name] = 'tree';
+      continue;
+    }
+    if (lowerName === 'head' || lowerName.endsWith('head') || lowerName.includes('list')) {
+      inferred[name] = 'list';
+      continue;
+    }
+  }
+  return inferred;
 }
 
 function collectSimpleParameterNames(ts, functionLikeNode) {

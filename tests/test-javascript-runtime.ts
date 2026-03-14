@@ -254,6 +254,57 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-code tree ref hydration contract');
 
+  const executeJavaScriptTreeArrayInput = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+  }>('execute-code', {
+    code: `function rightSideView(root) {
+  if (!root) return [];
+  return [root.val, root.right ? root.right.val : null];
+}`,
+    functionName: 'rightSideView',
+    executionStyle: 'function',
+    language: 'javascript',
+    inputs: {
+      root: [1, null, 3],
+    },
+  });
+  assertCondition(executeJavaScriptTreeArrayInput.success === true, 'JavaScript tree array input execution should succeed');
+  assertCondition(
+    Array.isArray(executeJavaScriptTreeArrayInput.output) &&
+      (executeJavaScriptTreeArrayInput.output as unknown[])[0] === 1 &&
+      (executeJavaScriptTreeArrayInput.output as unknown[])[1] === 3,
+    'JavaScript function-style tree inputs should hydrate level-order arrays into TreeNode objects'
+  );
+  console.log('PASS: execute-code javascript tree array hydration fallback');
+
+  const executeJavaScriptSparseTreeArrayInput = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+  }>('execute-code', {
+    code: `function collectRightChain(root) {
+  const out = [];
+  let node = root;
+  while (node) {
+    out.push(node.val);
+    node = node.right;
+  }
+  return out;
+}`,
+    functionName: 'collectRightChain',
+    executionStyle: 'function',
+    language: 'javascript',
+    inputs: {
+      root: [1, null, 2, null, 3, null, 4, null, 5],
+    },
+  });
+  assertCondition(executeJavaScriptSparseTreeArrayInput.success === true, 'JavaScript sparse tree array input execution should succeed');
+  assertCondition(
+    JSON.stringify(executeJavaScriptSparseTreeArrayInput.output) === JSON.stringify([1, 2, 3, 4, 5]),
+    'JavaScript tree hydration should honor sparse LeetCode-style level-order arrays'
+  );
+  console.log('PASS: execute-code javascript sparse tree array hydration');
+
   const executeSerializedCollections = await harness.sendMessage<{
     success: boolean;
     output: unknown;

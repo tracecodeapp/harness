@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "GPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -77,6 +77,7 @@
     "test:python-harness-sync": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts --check && pnpm exec tsx tests/test-python-harness-sync.ts",
     "test:javascript-runtime": "pnpm exec tsx tests/test-javascript-runtime.ts",
     "test:runtime-contract": "pnpm exec tsx tests/test-runtime-contract.ts",
+    "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-harness-sync && pnpm test:javascript-runtime && pnpm test:runtime-contract && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
     "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-harness-sync && pnpm test:javascript-runtime && pnpm test:runtime-contract && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:example-app-packaged"
   },
   "devDependencies": {
