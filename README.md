@@ -264,4 +264,4 @@ Detailed release notes live in [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 
-GPL-3.0-only
+AGPL-3.0-only

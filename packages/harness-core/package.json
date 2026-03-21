@@ -2,7 +2,7 @@
   "name": "@tracecode/harness-core",
   "private": true,
   "version": "0.0.0-stage",
-  "license": "GPL-3.0-only",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
