@@ -793,7 +793,9 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
       step.variables &&
       typeof step.variables.prev === 'object' &&
       step.variables.prev !== null &&
-      (step.variables.prev as Record<string, unknown>).__type__ === 'ListNode'
+      (step.visualization?.objectKinds?.prev === 'linked-list' ||
+        ((step.variables.prev as Record<string, unknown>).val !== undefined &&
+          (step.variables.prev as Record<string, unknown>).next !== undefined))
   );
   assertCondition(
     Boolean(lateListFrame),
@@ -1126,10 +1128,11 @@ result = twoSum([2, 7, 11, 15], 9);`,
   assertCondition(
     Boolean(
       recursiveTopNode &&
-        ((typeof recursiveTopNode.__ref__ === 'string' && recursiveTopNode.__ref__ !== 'tree-1') ||
-          (typeof recursiveTopNode.__id__ === 'string' && recursiveTopNode.__id__ !== 'tree-1'))
+        recursiveTreeStep?.visualization?.objectKinds?.node === 'tree' &&
+        typeof recursiveTopNode.val !== 'undefined' &&
+        ('left' in recursiveTopNode || 'right' in recursiveTopNode)
     ),
-    'Recursive tree frame args should keep canonical node identity instead of restarting at tree-1'
+    'Recursive tree frame args should keep nested tree inputs materialized and tagged as tree values'
   );
   console.log('PASS: execute-with-tracing recursive tree identity contract');
 

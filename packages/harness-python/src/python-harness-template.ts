@@ -174,7 +174,7 @@ def _serialize(obj, depth=0, node_refs=None):
         except TypeError:
             sorted_vals = [_serialize(x, depth + 1, node_refs) for x in obj]
         return {"__type__": "set", "values": sorted_vals}
-    elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and (hasattr(obj, 'left') or hasattr(obj, 'right')):
+    elif isinstance(obj, TreeNode):
         obj_ref = id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
@@ -190,7 +190,7 @@ def _serialize(obj, depth=0, node_refs=None):
         if hasattr(obj, 'right'):
             result["right"] = _serialize(obj.right, depth + 1, node_refs)
         return result
-    elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and hasattr(obj, 'next'):
+    elif isinstance(obj, ListNode):
         obj_ref = id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
@@ -273,14 +273,14 @@ def _serialize(obj, depth=0):
             return {"__type__": "set", "values": sorted([_serialize(x, depth + 1) for x in obj])}
         except TypeError:
             return {"__type__": "set", "values": [_serialize(x, depth + 1) for x in obj]}
-    elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and (hasattr(obj, 'left') or hasattr(obj, 'right')):
+    elif isinstance(obj, TreeNode):
         result = {"__type__": "TreeNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
         if hasattr(obj, 'left'):
             result["left"] = _serialize(obj.left, depth + 1)
         if hasattr(obj, 'right'):
             result["right"] = _serialize(obj.right, depth + 1)
         return result
-    elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and hasattr(obj, 'next'):
+    elif isinstance(obj, ListNode):
         result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
         result["next"] = _serialize(obj.next, depth + 1)
         return result
@@ -363,14 +363,14 @@ def _serialize(obj, depth=0):
             return {"__type__": "set", "values": sorted([_serialize(x, depth + 1) for x in obj])}
         except TypeError:
             return {"__type__": "set", "values": [_serialize(x, depth + 1) for x in obj]}
-    elif hasattr(obj, 'val') and (hasattr(obj, 'left') or hasattr(obj, 'right')):
+    elif isinstance(obj, TreeNode):
         result = {"__type__": "TreeNode", "val": _serialize(getattr(obj, 'val', None), depth + 1)}
         if hasattr(obj, 'left'):
             result["left"] = _serialize(obj.left, depth + 1)
         if hasattr(obj, 'right'):
             result["right"] = _serialize(obj.right, depth + 1)
         return result
-    elif hasattr(obj, 'val') and hasattr(obj, 'next'):
+    elif isinstance(obj, ListNode):
         result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', None), depth + 1)}
         result["next"] = _serialize(obj.next, depth + 1)
         return result

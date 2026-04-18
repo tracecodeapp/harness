@@ -52,17 +52,18 @@ function createConsoleProxy(output: string[]): Console {
 
 function isLikelyTreeNodeValue(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const hasValue = 'val' in value || 'value' in value;
-  const hasTreeLinks = 'left' in value || 'right' in value;
-  return hasValue && hasTreeLinks;
+  const record = value as Record<string, unknown>;
+  if (record.__type__ === 'TreeNode') return true;
+  const ctor = (value as { constructor?: { name?: unknown } }).constructor;
+  return ctor?.name === 'TreeNode';
 }
 
 function isLikelyListNodeValue(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const hasValue = 'val' in value || 'value' in value;
-  const hasTreeLinks = 'left' in value || 'right' in value;
-  const hasListLinks = 'next' in value || 'prev' in value;
-  return hasValue && hasListLinks && !hasTreeLinks;
+  const record = value as Record<string, unknown>;
+  if (record.__type__ === 'ListNode') return true;
+  const ctor = (value as { constructor?: { name?: unknown } }).constructor;
+  return ctor?.name === 'ListNode';
 }
 
 function getCustomClassName(value: unknown): string | null {
@@ -131,25 +132,32 @@ function serializeValue(
       const nodeId = `${nodePrefix}-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(objectValue, nodeId);
 
-      if (isTree) {
-        return {
-          __type__: 'TreeNode',
-          __id__: nodeId,
-          val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
-          left: serializeValue(nodeValue.left ?? null, depth + 1, seen, nodeRefState),
-          right: serializeValue(nodeValue.right ?? null, depth + 1, seen, nodeRefState),
-        };
-      }
+      const out: Record<string, unknown> = isTree
+        ? {
+            __type__: 'TreeNode',
+            __id__: nodeId,
+            val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
+            left: serializeValue(nodeValue.left ?? null, depth + 1, seen, nodeRefState),
+            right: serializeValue(nodeValue.right ?? null, depth + 1, seen, nodeRefState),
+          }
+        : {
+            __type__: 'ListNode',
+            __id__: nodeId,
+            val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
+            next: serializeValue(nodeValue.next ?? null, depth + 1, seen, nodeRefState),
+            ...('prev' in nodeValue
+              ? { prev: serializeValue(nodeValue.prev ?? null, depth + 1, seen, nodeRefState) }
+              : {}),
+          };
 
-      return {
-        __type__: 'ListNode',
-        __id__: nodeId,
-        val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
-        next: serializeValue(nodeValue.next ?? null, depth + 1, seen, nodeRefState),
-        ...('prev' in nodeValue
-          ? { prev: serializeValue(nodeValue.prev ?? null, depth + 1, seen, nodeRefState) }
-          : {}),
-      };
+      const skipped = isTree
+        ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
+        : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
+      for (const [k, v] of Object.entries(nodeValue)) {
+        if (skipped.has(k)) continue;
+        out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+      }
+      return out;
     }
 
     const customClassName = getCustomClassName(value);
@@ -351,21 +359,31 @@ function materializeTreeInput(value: unknown): unknown {
   }
   const record = value as Record<string, unknown>;
   if (isLikelyTreeNodeValue(record)) {
-    return {
+    const node: Record<string, unknown> = {
       val: record.val ?? record.value ?? null,
       value: record.val ?? record.value ?? null,
       left: materializeTreeInput(record.left ?? null),
       right: materializeTreeInput(record.right ?? null),
     };
+    for (const [key, nested] of Object.entries(record)) {
+      if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
+      node[key] = materializeTreeInput(nested);
+    }
+    return node;
   }
   const taggedRecord = value as Record<string, unknown> & { __type__?: unknown };
   if (taggedRecord.__type__ === 'TreeNode') {
-    return {
+    const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
       value: taggedRecord.val ?? taggedRecord.value ?? null,
       left: materializeTreeInput(taggedRecord.left ?? null),
       right: materializeTreeInput(taggedRecord.right ?? null),
     };
+    for (const [key, nested] of Object.entries(taggedRecord)) {
+      if (key === '__id__' || key === '__type__' || key === 'val' || key === 'value' || key === 'left' || key === 'right') continue;
+      node[key] = materializeTreeInput(nested);
+    }
+    return node;
   }
   return value;
 }
@@ -414,6 +432,10 @@ function materializeListInput(
       refs.set(taggedRecord.__id__, node);
     }
     node.next = materializeListInput(taggedRecord.next ?? null, refs, materialized);
+    for (const [key, nested] of Object.entries(taggedRecord)) {
+      if (key === '__id__' || key === '__type__' || key === '__class__' || key === 'val' || key === 'value' || key === 'next') continue;
+      node[key] = materializeListInput(nested, refs, materialized);
+    }
     return node;
   }
   return value;

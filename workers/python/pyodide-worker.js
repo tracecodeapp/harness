@@ -671,7 +671,7 @@ async function initAnalyzer() {
   
   await loadPyodideInstance();
   
-  // The AST analyzer Python code - must match lib/analysis/ast-analyzer.ts
+  // The AST analyzer Python code - must match the semantic facts contract.
   const analyzerCode = `
 import ast
 import json
@@ -707,7 +707,8 @@ HEAP_FUNCS = frozenset([
     'nlargest', 'nsmallest',
 ])
 
-def analyze_code(code):
+
+def analyze_code(code: str) -> dict:
     facts = {
         'valid': True,
         'syntaxError': None,
@@ -737,17 +738,30 @@ def analyze_code(code):
         'slidingWindowPattern': None,
         'indexExpressions': [],
         'windowPatterns': [],
+        'sliceExpressions': [],
+        'subtractionAssignments': [],
+        'hashLookupChecks': [],
+        'hashAssignments': [],
+        'returnCollectionShapes': [],
+        'returnExpressions': [],
+        'comparisonExpressions': [],
+        'variableAssignments': [],
+        'augmentedAssignments': [],
+        'propertyAssignments': [],
+        'methodCalls': [],
+        'functionCalls': [],
+        'loopIterations': [],
         'variablesAssigned': [],
         'functionParams': [],
     }
-    
+
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
         facts['valid'] = False
         facts['syntaxError'] = f"Line {e.lineno}: {e.msg}" if e.lineno else str(e.msg)
         return facts
-    
+
     function_names = set()
     builtins_used = set()
     aug_assign_ops = set()
@@ -757,24 +771,52 @@ def analyze_code(code):
     string_ops = set()
     variables_assigned = set()
     function_params = set()
-    
+
     loop_depth = 0
     in_conditional = False
     deque_imported = False
     current_loop_var = None
     canonical_index_expressions = []
-    
+    subtraction_assignments = []
+    hash_lookup_checks = []
+    hash_assignments = []
+    return_collection_shapes = []
+    return_expressions = []
+    comparison_expressions = []
+    variable_assignments = []
+    augmented_assignments = []
+    property_assignments = []
+    method_calls = []
+    function_calls = []
+    loop_iterations = []
+    slice_expressions = []
+
     AUG_OP_MAP = {
-        ast.Add: '+=', ast.Sub: '-=', ast.Mult: '*=', ast.Div: '/=',
-        ast.FloorDiv: '//=', ast.Mod: '%=', ast.Pow: '**=',
-        ast.BitOr: '|=', ast.BitAnd: '&=', ast.BitXor: '^=',
-        ast.LShift: '<<=', ast.RShift: '>>=',
+        ast.Add: '+=',
+        ast.Sub: '-=',
+        ast.Mult: '*=',
+        ast.Div: '/=',
+        ast.FloorDiv: '//=',
+        ast.Mod: '%=',
+        ast.Pow: '**=',
+        ast.BitOr: '|=',
+        ast.BitAnd: '&=',
+        ast.BitXor: '^=',
+        ast.LShift: '<<=',
+        ast.RShift: '>>=',
     }
-    
+
     CMP_OP_MAP = {
-        ast.Lt: '<', ast.LtE: '<=', ast.Gt: '>', ast.GtE: '>=',
-        ast.Eq: '==', ast.NotEq: '!=', ast.In: 'in', ast.NotIn: 'not in',
-        ast.Is: 'is', ast.IsNot: 'is not',
+        ast.Lt: '<',
+        ast.LtE: '<=',
+        ast.Gt: '>',
+        ast.GtE: '>=',
+        ast.Eq: '==',
+        ast.NotEq: '!=',
+        ast.In: 'in',
+        ast.NotIn: 'not in',
+        ast.Is: 'is',
+        ast.IsNot: 'is not',
     }
 
     def _merge_coeffs(left_coeffs, right_coeffs):
@@ -788,14 +830,12 @@ def analyze_code(code):
     def _linearize_index_expr(node):
         if isinstance(node, ast.Name):
             return (0, {node.id: 1}, [node.id])
-
         if isinstance(node, ast.Constant):
             if isinstance(node.value, bool):
                 return None
             if isinstance(node.value, int):
                 return (int(node.value), {}, [])
             return None
-
         if isinstance(node, ast.UnaryOp):
             child = _linearize_index_expr(node.operand)
             if child is None:
@@ -807,7 +847,6 @@ def analyze_code(code):
                 neg_coeffs = {key: -value for key, value in child_coeffs.items()}
                 return (-child_const, neg_coeffs, child_order)
             return None
-
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
             left = _linearize_index_expr(node.left)
             right = _linearize_index_expr(node.right)
@@ -825,18 +864,15 @@ def analyze_code(code):
                 if key not in order:
                     order.append(key)
             return (const_delta, coeffs, order)
-
         return None
 
     def _to_canonical_index_expr(array_name, expr_node, preferred_base_var=None):
         linear = _linearize_index_expr(expr_node)
         if linear is None:
             return None
-
         const_delta, coeffs, order = linear
         if not coeffs:
             return None
-
         mutable_coeffs = dict(coeffs)
         base_var = None
         if preferred_base_var and mutable_coeffs.get(preferred_base_var) == 1:
@@ -846,14 +882,11 @@ def analyze_code(code):
                 if mutable_coeffs.get(var_name) == 1:
                     base_var = var_name
                     break
-
         if base_var is None:
             return None
-
         mutable_coeffs[base_var] = mutable_coeffs.get(base_var, 0) - 1
         if mutable_coeffs[base_var] == 0:
             del mutable_coeffs[base_var]
-
         variable_delta_name = None
         variable_delta_sign = 0
         if len(mutable_coeffs) > 1:
@@ -863,7 +896,6 @@ def analyze_code(code):
             if coeff not in (-1, 1):
                 return None
             variable_delta_sign = coeff
-
         return {
             'arrayVar': array_name,
             'baseVar': base_var,
@@ -893,7 +925,6 @@ def analyze_code(code):
         for expr in index_exprs:
             group_key = (expr['arrayVar'], expr['baseVar'])
             grouped.setdefault(group_key, []).append(expr)
-
         patterns = []
         for (array_var, base_var), expressions in grouped.items():
             unique = []
@@ -904,10 +935,8 @@ def analyze_code(code):
                     continue
                 seen.add(key)
                 unique.append(expr)
-
             if len(unique) < 2:
                 continue
-
             plain = next((expr for expr in unique if _is_plain_base_expr(expr)), None)
             if plain is not None:
                 shifted = next(
@@ -929,14 +958,12 @@ def analyze_code(code):
                         'rightExpr': plain,
                     })
                     continue
-
             patterns.append({
                 'arrayVar': array_var,
                 'baseVar': base_var,
                 'leftExpr': unique[0],
                 'rightExpr': unique[1],
             })
-
         return patterns
 
     def _project_legacy_sliding_window(window_patterns):
@@ -953,11 +980,9 @@ def analyze_code(code):
                 shifted = left
             else:
                 continue
-
             offset_name = shifted.get('variableDeltaName')
             offset_sign = int(shifted.get('variableDeltaSign') or 0)
             offset_constant = int(shifted.get('constantDelta', 0))
-
             if offset_name and offset_sign in (-1, 1) and offset_constant == 0:
                 return {
                     'loopVar': plain['baseVar'],
@@ -965,7 +990,6 @@ def analyze_code(code):
                     'arrayVar': pattern['arrayVar'],
                     'offsetDirection': 'subtract' if offset_sign < 0 else 'add',
                 }
-
             if not offset_name and offset_constant != 0:
                 return {
                     'loopVar': plain['baseVar'],
@@ -973,9 +997,204 @@ def analyze_code(code):
                     'arrayVar': pattern['arrayVar'],
                     'offsetDirection': 'subtract' if offset_constant < 0 else 'add',
                 }
-
         return None
-    
+
+    def _get_name_id(node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return _get_name_id(node.value) or node.attr
+        if isinstance(node, ast.Subscript):
+            return _get_name_id(node.value)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, int)):
+            return str(node.value)
+        return None
+
+    def _get_subtraction_operands(node):
+        if (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Sub)
+            and isinstance(node.left, ast.Name)
+            and isinstance(node.right, ast.Name)
+        ):
+            return {
+                'leftVar': node.left.id,
+                'rightVar': node.right.id,
+            }
+        return None
+
+    def _get_loop_target_name(node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, (ast.Tuple, ast.List)):
+            for element in node.elts:
+                candidate = _get_loop_target_name(element)
+                if candidate:
+                    return candidate
+        return None
+
+    def _extract_range_sequence_source(node):
+        if not isinstance(node, ast.Call):
+            return None
+        if not isinstance(node.func, ast.Name) or node.func.id != 'range':
+            return None
+        if not node.args:
+            return None
+        upper_candidate = node.args[-1]
+        if (
+            isinstance(upper_candidate, ast.Call)
+            and isinstance(upper_candidate.func, ast.Name)
+            and upper_candidate.func.id == 'len'
+            and len(upper_candidate.args) == 1
+            and isinstance(upper_candidate.args[0], ast.Name)
+        ):
+            return upper_candidate.args[0].id
+        return None
+
+    def _describe_loop_iteration(node):
+        loop_var = _get_loop_target_name(node.target)
+        if isinstance(node.iter, ast.Name):
+            return {
+                'kind': 'direct-sequence',
+                'sourceVar': node.iter.id,
+                'loopVar': loop_var,
+            }
+        if isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name):
+            if (
+                node.iter.func.id == 'enumerate'
+                and len(node.iter.args) >= 1
+                and isinstance(node.iter.args[0], ast.Name)
+            ):
+                return {
+                    'kind': 'direct-sequence',
+                    'sourceVar': node.iter.args[0].id,
+                    'loopVar': loop_var,
+                }
+            range_source = _extract_range_sequence_source(node.iter)
+            if range_source:
+                return {
+                    'kind': 'indexed-sequence',
+                    'sourceVar': range_source,
+                    'loopVar': loop_var,
+                }
+            if node.iter.func.id == 'range':
+                return {
+                    'kind': 'other',
+                    'sourceVar': _get_name_id(node.iter.args[-1]) if node.iter.args else None,
+                    'loopVar': loop_var,
+                }
+        return {
+            'kind': 'other',
+            'sourceVar': _get_name_id(node.iter),
+            'loopVar': loop_var,
+        }
+
+    def _is_hash_lookup_expr(node):
+        if isinstance(node, ast.Subscript):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            return node.func.attr in ('get',)
+        return False
+
+    def _is_hash_value_read_expr(node):
+        if isinstance(node, ast.Subscript):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            return node.func.attr in ('get',)
+        return False
+
+    def _get_call_name(node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    def _get_call_arg_names(args):
+        names = []
+        for arg in args:
+            if isinstance(arg, ast.Name):
+                names.append(arg.id)
+        return names
+
+    def _collect_identifier_names(node, names=None):
+        if names is None:
+            names = set()
+        if node is None:
+            return sorted(names)
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+            return sorted(names)
+        for child in ast.iter_child_nodes(node):
+            _collect_identifier_names(child, names)
+        return sorted(names)
+
+    def _get_property_path(node):
+        if isinstance(node, ast.Attribute):
+            return _get_property_path(node.value) + [node.attr]
+        if isinstance(node, ast.Subscript):
+            return _get_property_path(node.value) + [_get_name_id(node.slice) or '[computed]']
+        return []
+
+    def _describe_slice_bound(node):
+        if node is None:
+            return {'kind': 'omitted'}
+        if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+            return {'kind': 'number', 'number': int(node.value)}
+        if isinstance(node, ast.Name):
+            return {'kind': 'identifier', 'var': node.id}
+        return {'kind': 'omitted'}
+
+    def _describe_value(node):
+        if node is None:
+            return {'valueKind': 'object'}
+        if isinstance(node, ast.Constant):
+            if node.value is None:
+                return {'valueKind': 'null'}
+            if isinstance(node.value, bool):
+                return {'valueKind': 'boolean', 'booleanValue': bool(node.value)}
+            if isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+                return {'valueKind': 'number', 'numberValue': node.value}
+            if isinstance(node.value, str):
+                return {'valueKind': 'string', 'stringValue': node.value}
+        if isinstance(node, ast.Name):
+            return {'valueKind': 'identifier', 'valueVar': node.id}
+        if isinstance(node, ast.Attribute):
+            return {
+                'valueKind': 'property',
+                'objectVar': _get_name_id(node.value),
+                'propertyName': node.attr,
+                'propertyPath': _get_property_path(node),
+                'argumentVars': _collect_identifier_names(node.value),
+            }
+        if isinstance(node, ast.Subscript):
+            return {
+                'valueKind': 'property',
+                'objectVar': _get_name_id(node.value),
+                'propertyName': _get_name_id(node.slice),
+                'propertyPath': _get_property_path(node),
+                'argumentVars': _collect_identifier_names(node.slice),
+            }
+        if isinstance(node, ast.Call):
+            return {
+                'valueKind': 'call',
+                'callName': _get_call_name(node.func),
+                'argumentVars': _collect_identifier_names(node),
+            }
+        if isinstance(node, ast.BinOp):
+            return {
+                'valueKind': 'binary',
+                'operator': type(node.op).__name__,
+                'leftVar': _get_name_id(node.left),
+                'rightVar': _get_name_id(node.right),
+                'argumentVars': _collect_identifier_names(node),
+            }
+        if isinstance(node, ast.List):
+            return {'valueKind': 'array'}
+        if isinstance(node, ast.Dict):
+            return {'valueKind': 'object'}
+        return {'valueKind': 'object'}
+
     class FactExtractor(ast.NodeVisitor):
         def visit_FunctionDef(self, node):
             nonlocal function_names, function_params
@@ -984,12 +1203,12 @@ def analyze_code(code):
             for arg in node.args.args:
                 function_params.add(arg.arg)
             self.generic_visit(node)
-        
+
         def visit_AsyncFunctionDef(self, node):
             self.visit_FunctionDef(node)
-        
+
         def visit_For(self, node):
-            nonlocal loop_depth, current_loop_var
+            nonlocal loop_depth, current_loop_var, loop_iterations
             facts['hasForLoop'] = True
             loop_depth += 1
             if loop_depth > 1:
@@ -997,10 +1216,11 @@ def analyze_code(code):
             old_loop_var = current_loop_var
             if isinstance(node.target, ast.Name):
                 current_loop_var = node.target.id
+            loop_iterations.append(_describe_loop_iteration(node))
             self.generic_visit(node)
             current_loop_var = old_loop_var
             loop_depth -= 1
-        
+
         def visit_While(self, node):
             nonlocal loop_depth
             facts['hasWhileLoop'] = True
@@ -1009,7 +1229,7 @@ def analyze_code(code):
                 facts['hasNestedLoop'] = True
             self.generic_visit(node)
             loop_depth -= 1
-        
+
         def visit_If(self, node):
             nonlocal in_conditional
             facts['hasConditional'] = True
@@ -1017,11 +1237,15 @@ def analyze_code(code):
             in_conditional = True
             self.generic_visit(node)
             in_conditional = was_in_conditional
-        
+
         def visit_Call(self, node):
-            nonlocal builtins_used, dict_ops, list_ops, string_ops
+            nonlocal builtins_used, dict_ops, list_ops, string_ops, hash_lookup_checks, method_calls, function_calls
             if isinstance(node.func, ast.Name):
                 name = node.func.id
+                function_calls.append({
+                    'functionName': name,
+                    'argumentVars': _get_call_arg_names(node.args),
+                })
                 if name in TRACKED_BUILTINS:
                     builtins_used.add(name)
                 if name == 'dict':
@@ -1036,8 +1260,20 @@ def analyze_code(code):
                     facts['hasRecursion'] = True
             elif isinstance(node.func, ast.Attribute):
                 method = node.func.attr
+                method_calls.append({
+                    'receiverVar': _get_name_id(node.func.value),
+                    'methodName': method,
+                    'argumentVars': _get_call_arg_names(node.args),
+                })
                 if method in DICT_METHODS:
                     dict_ops.add(method)
+                if method in ('get',):
+                    hash_lookup_checks.append({
+                        'operation': method,
+                        'containerVar': _get_name_id(node.func.value),
+                        'argumentVar': _get_name_id(node.args[0]) if len(node.args) > 0 else None,
+                        'directSubtraction': _get_subtraction_operands(node.args[0]) if len(node.args) > 0 else None,
+                    })
                 if method in LIST_METHODS:
                     list_ops.add(method)
                 if method in STRING_METHODS:
@@ -1049,70 +1285,161 @@ def analyze_code(code):
                 if method in HEAP_FUNCS:
                     facts['usesHeap'] = True
             self.generic_visit(node)
-        
+
         def visit_Dict(self, node):
             facts['usesDict'] = True
             self.generic_visit(node)
-        
+
         def visit_List(self, node):
             facts['usesList'] = True
             self.generic_visit(node)
-        
+
         def visit_Set(self, node):
             facts['usesSet'] = True
             self.generic_visit(node)
-        
+
         def visit_ListComp(self, node):
             facts['usesList'] = True
             self.generic_visit(node)
-        
+
         def visit_DictComp(self, node):
             facts['usesDict'] = True
             self.generic_visit(node)
-        
+
         def visit_SetComp(self, node):
             facts['usesSet'] = True
             self.generic_visit(node)
-        
+
         def visit_AugAssign(self, node):
-            nonlocal aug_assign_ops
+            nonlocal aug_assign_ops, augmented_assignments
             op_type = type(node.op)
             if op_type in AUG_OP_MAP:
-                aug_assign_ops.add(AUG_OP_MAP[op_type])
+                operator = AUG_OP_MAP[op_type]
+                aug_assign_ops.add(operator)
+                fact = {
+                    'operator': operator,
+                    'value': _describe_value(node.value),
+                }
+                if isinstance(node.target, ast.Name):
+                    fact['targetVar'] = node.target.id
+                elif isinstance(node.target, ast.Attribute):
+                    fact['targetObjectVar'] = _get_name_id(node.target.value)
+                    fact['targetPropertyName'] = node.target.attr
+                    fact['targetPropertyPath'] = _get_property_path(node.target)
+                elif isinstance(node.target, ast.Subscript):
+                    fact['targetObjectVar'] = _get_name_id(node.target.value)
+                    fact['targetPropertyName'] = _get_name_id(node.target.slice)
+                    fact['targetPropertyPath'] = _get_property_path(node.target)
+                augmented_assignments.append(fact)
             self.generic_visit(node)
-        
+
         def visit_Compare(self, node):
-            nonlocal comparison_ops, dict_ops
+            nonlocal comparison_ops, dict_ops, hash_lookup_checks, comparison_expressions
             for op in node.ops:
                 op_type = type(op)
                 if op_type in CMP_OP_MAP:
                     op_str = CMP_OP_MAP[op_type]
                     comparison_ops.add(op_str)
+                    comparator = node.comparators[0] if node.comparators else None
+                    comparison_expressions.append({
+                        'operator': op_str,
+                        'left': _describe_value(node.left),
+                        'right': _describe_value(comparator),
+                    })
                     if op_str == 'in' or op_str == 'not in':
                         dict_ops.add(op_str)
+                        hash_lookup_checks.append({
+                            'operation': op_str,
+                            'containerVar': _get_name_id(comparator),
+                            'argumentVar': _get_name_id(node.left),
+                            'directSubtraction': _get_subtraction_operands(node.left),
+                        })
             self.generic_visit(node)
-        
+
         def visit_Assign(self, node):
-            nonlocal variables_assigned
+            nonlocal variables_assigned, subtraction_assignments, hash_assignments, variable_assignments, property_assignments
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     variables_assigned.add(target.id)
-                elif isinstance(target, (ast.Tuple, ast.List)):
+                    assignment_fact = {'targetVar': target.id}
+                    assignment_fact.update(_describe_value(node.value))
+                    variable_assignments.append(assignment_fact)
+                    subtraction = _get_subtraction_operands(node.value)
+                    if subtraction:
+                        subtraction_assignments.append({
+                            'targetVar': target.id,
+                            'leftVar': subtraction['leftVar'],
+                            'rightVar': subtraction['rightVar'],
+                        })
+                elif isinstance(target, ast.Tuple) or isinstance(target, ast.List):
                     for elt in target.elts:
                         if isinstance(elt, ast.Name):
                             variables_assigned.add(elt.id)
+                            assignment_fact = {'targetVar': elt.id}
+                            assignment_fact.update(_describe_value(node.value))
+                            variable_assignments.append(assignment_fact)
+                elif isinstance(target, ast.Subscript):
+                    hash_assignments.append({
+                        'operation': 'setitem',
+                        'containerVar': _get_name_id(target.value),
+                        'keyVar': _get_name_id(target.slice),
+                        'valueVar': _get_name_id(node.value),
+                    })
+                    property_assignment_fact = {
+                        'objectVar': _get_name_id(target.value),
+                        'propertyName': _get_name_id(target.slice),
+                    }
+                    property_assignment_fact.update(_describe_value(node.value))
+                    property_assignments.append(property_assignment_fact)
+                elif isinstance(target, ast.Attribute):
+                    property_assignment_fact = {
+                        'objectVar': _get_name_id(target.value),
+                        'propertyName': target.attr,
+                    }
+                    property_assignment_fact.update(_describe_value(node.value))
+                    property_assignments.append(property_assignment_fact)
             self.generic_visit(node)
-        
+
         def visit_AnnAssign(self, node):
-            nonlocal variables_assigned
+            nonlocal variables_assigned, subtraction_assignments, variable_assignments, property_assignments
             if isinstance(node.target, ast.Name):
                 variables_assigned.add(node.target.id)
+                assignment_fact = {'targetVar': node.target.id}
+                assignment_fact.update(_describe_value(node.value))
+                variable_assignments.append(assignment_fact)
+                subtraction = _get_subtraction_operands(node.value)
+                if subtraction:
+                    subtraction_assignments.append({
+                        'targetVar': node.target.id,
+                        'leftVar': subtraction['leftVar'],
+                        'rightVar': subtraction['rightVar'],
+                    })
+            elif isinstance(node.target, ast.Attribute):
+                property_assignment_fact = {
+                    'objectVar': _get_name_id(node.target.value),
+                    'propertyName': node.target.attr,
+                }
+                property_assignment_fact.update(_describe_value(node.value))
+                property_assignments.append(property_assignment_fact)
             self.generic_visit(node)
-        
+
         def visit_Subscript(self, node):
-            nonlocal canonical_index_expressions, current_loop_var
+            nonlocal canonical_index_expressions, current_loop_var, slice_expressions
             if isinstance(node.slice, ast.Slice):
                 facts['sliceAccesses'] = True
+                object_var = _get_name_id(node.value)
+                if object_var:
+                    lower = _describe_slice_bound(node.slice.lower)
+                    upper = _describe_slice_bound(node.slice.upper)
+                    slice_expressions.append({
+                        'objectVar': object_var,
+                        'lowerKind': lower['kind'],
+                        'lowerVar': lower.get('var'),
+                        'lowerNumber': lower.get('number'),
+                        'upperKind': upper['kind'],
+                        'upperVar': upper.get('var'),
+                        'upperNumber': upper.get('number'),
+                    })
             else:
                 facts['indexAccesses'] = True
                 if isinstance(node.value, ast.Name):
@@ -1125,21 +1452,32 @@ def analyze_code(code):
                     if canonical_expr:
                         canonical_index_expressions.append(canonical_expr)
             self.generic_visit(node)
-        
+
         def visit_Return(self, node):
-            nonlocal in_conditional
+            nonlocal in_conditional, return_collection_shapes, return_expressions
             facts['hasReturn'] = True
             facts['returnCount'] += 1
             if in_conditional:
                 facts['hasEarlyReturn'] = True
+            if node.value is not None:
+                return_expressions.append(_describe_value(node.value))
+            if isinstance(node.value, (ast.List, ast.Tuple)):
+                items = list(node.value.elts)
+                return_collection_shapes.append({
+                    'kind': 'array' if isinstance(node.value, ast.List) else 'tuple',
+                    'itemCount': len(items),
+                    'containsHashLookup': any(_is_hash_lookup_expr(item) for item in items),
+                    'containsHashValueRead': any(_is_hash_value_read_expr(item) for item in items),
+                    'containsIdentifier': any(isinstance(item, ast.Name) for item in items),
+                })
             self.generic_visit(node)
-        
+
         def visit_Import(self, node):
             for alias in node.names:
                 if alias.name == 'heapq':
                     facts['usesHeap'] = True
             self.generic_visit(node)
-        
+
         def visit_ImportFrom(self, node):
             nonlocal deque_imported
             if node.module == 'heapq':
@@ -1150,10 +1488,10 @@ def analyze_code(code):
                         facts['usesDeque'] = True
                         deque_imported = True
             self.generic_visit(node)
-    
+
     extractor = FactExtractor()
     extractor.visit(tree)
-    
+
     facts['functionNames'] = sorted(function_names)
     facts['builtinsUsed'] = sorted(builtins_used)
     facts['augmentedAssignOps'] = sorted(aug_assign_ops)
@@ -1163,7 +1501,20 @@ def analyze_code(code):
     facts['stringOps'] = sorted(string_ops)
     facts['variablesAssigned'] = sorted(variables_assigned)
     facts['functionParams'] = sorted(function_params)
-    
+    facts['subtractionAssignments'] = subtraction_assignments
+    facts['hashLookupChecks'] = hash_lookup_checks
+    facts['hashAssignments'] = hash_assignments
+    facts['returnCollectionShapes'] = return_collection_shapes
+    facts['returnExpressions'] = return_expressions
+    facts['comparisonExpressions'] = comparison_expressions
+    facts['variableAssignments'] = variable_assignments
+    facts['augmentedAssignments'] = augmented_assignments
+    facts['propertyAssignments'] = property_assignments
+    facts['methodCalls'] = method_calls
+    facts['functionCalls'] = function_calls
+    facts['loopIterations'] = loop_iterations
+    facts['sliceExpressions'] = slice_expressions
+
     deduped_index_exprs = []
     seen_expr_keys = set()
     for expr in canonical_index_expressions:
@@ -1176,12 +1527,12 @@ def analyze_code(code):
     facts['indexExpressions'] = deduped_index_exprs
     facts['windowPatterns'] = _build_window_patterns(deduped_index_exprs)
     facts['slidingWindowPattern'] = _project_legacy_sliding_window(facts['windowPatterns'])
-    
+
     return facts
 
-def analyze(code):
+def analyze(code: str) -> str:
     return json.dumps(analyze_code(code))
-`; 
+`;
   
   // The analyzer code defines `analyze()` in Pyodide's default globals.
   // We mark initialization done so we don't redefine each time.

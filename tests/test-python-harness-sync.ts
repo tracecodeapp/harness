@@ -259,6 +259,31 @@ async function main(): Promise<void> {
     countOccurrences(workerSource, 'class TreeNode:') >= 1,
     'Worker should keep fallback TreeNode definition available'
   );
+  const semanticFactMarkers = [
+    "'sliceExpressions': []",
+    "'comparisonExpressions': []",
+    "'variableAssignments': []",
+    "'augmentedAssignments': []",
+    "'propertyAssignments': []",
+    "'methodCalls': []",
+    "'functionCalls': []",
+    "'loopIterations': []",
+    "facts['comparisonExpressions'] = comparison_expressions",
+    "facts['variableAssignments'] = variable_assignments",
+    "facts['augmentedAssignments'] = augmented_assignments",
+    "facts['propertyAssignments'] = property_assignments",
+    "facts['methodCalls'] = method_calls",
+    "facts['functionCalls'] = function_calls",
+    "facts['loopIterations'] = loop_iterations",
+    "facts['sliceExpressions'] = slice_expressions",
+  ];
+  for (const marker of semanticFactMarkers) {
+    assertCondition(
+      workerSource.includes(marker),
+      `Worker semantic analyzer drift detected. Missing marker: ${marker}`
+    );
+  }
+  console.log('PASS: worker semantic fact markers present');
   assertCondition(
     countOccurrences(workerSource, 'class ListNode:') >= 1,
     'Worker should keep fallback ListNode definition available'
