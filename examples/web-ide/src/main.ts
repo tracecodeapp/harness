@@ -44,6 +44,7 @@ type ExampleFixture = {
   functionName: string;
   inputs: Record<string, unknown>;
   code: string;
+  executionStyle?: 'function' | 'solution-method' | 'ops-class';
 };
 
 const EXAMPLES: Record<Language, ExampleFixture> = {
@@ -100,13 +101,44 @@ const EXAMPLES: Record<Language, ExampleFixture> = {
   return [];
 }`,
   },
+  java: {
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    inputs: {
+      nums: [2, 7, 11, 15],
+      target: 9,
+    },
+    code: `class Solution {
+  public int[] solve(int[] nums, int target) {
+    java.util.Map<Integer, Integer> seen = new java.util.HashMap<>();
+    for (int index = 0; index < nums.length; index += 1) {
+      int value = nums[index];
+      int complement = target - value;
+      if (seen.containsKey(complement)) {
+        return new int[] { seen.get(complement), index };
+      }
+      seen.put(value, index);
+    }
+    return new int[] {};
+  }
+}`,
+  },
 };
 
 const getExtension = (lang: Language) => {
   if (lang === 'python') return '.py';
   if (lang === 'javascript') return '.js';
   if (lang === 'typescript') return '.ts';
+  if (lang === 'java') return '.java';
   return '.txt';
+};
+
+const getEditorLanguage = (lang: Language): string => {
+  if (lang === 'typescript') return 'typescript';
+  if (lang === 'javascript') return 'javascript';
+  if (lang === 'python') return 'python';
+  if (lang === 'java') return 'java';
+  return 'plaintext';
 };
 
 // ----------------------------------------------------------------------
@@ -214,7 +246,7 @@ function applyExample(language: Language): void {
   functionNameInput.value = example.functionName;
   
   codeEditor.getModel()?.setValue(example.code);
-  monaco.editor.setModelLanguage(codeEditor.getModel()!, language);
+  monaco.editor.setModelLanguage(codeEditor.getModel()!, getEditorLanguage(language));
   fileExtension.textContent = getExtension(language);
   
   inputsEditor.getModel()?.setValue(JSON.stringify(example.inputs, null, 2));
@@ -259,13 +291,14 @@ async function runCode(): Promise<void> {
     const inputs = readInputs();
     const code = codeEditor.getValue();
     const fnName = functionNameInput.value;
+    const executionStyle = EXAMPLES[activeLanguage].executionStyle ?? 'function';
     
     const client = harness.getClient(activeLanguage);
     setStatus(`Initializing runtime...`, 'active');
     await client.init();
 
     setStatus(`Executing...`, 'active');
-    const result = await client.executeCode(code, fnName, inputs, 'function');
+    const result = await client.executeCode(code, fnName, inputs, executionStyle);
     
     renderOutput(executionOutput, consoleEmpty, result);
     setStatus(`Execution complete`, 'success');
@@ -283,6 +316,7 @@ async function traceCode(): Promise<void> {
     const inputs = readInputs();
     const code = codeEditor.getValue();
     const fnName = functionNameInput.value;
+    const executionStyle = EXAMPLES[activeLanguage].executionStyle ?? 'function';
     
     const client = harness.getClient(activeLanguage);
     setStatus(`Initializing runtime...`, 'active');
@@ -298,7 +332,7 @@ async function traceCode(): Promise<void> {
         maxLineEvents: 200,
         maxSingleLineHits: 50,
       },
-      'function'
+      executionStyle
     );
 
     renderOutput(traceOutput, traceEmpty, result);

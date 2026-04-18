@@ -4,3 +4,5 @@ export * from './trace-contract';
 export * from './trace-adapters/shared';
 export * from './trace-adapters/python';
 export * from './trace-adapters/javascript';
+export * from './trace-adapters/java';
+export * from './trace-adapters/java-spike';

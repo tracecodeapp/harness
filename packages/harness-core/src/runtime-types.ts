@@ -1,6 +1,6 @@
 import type { CodeExecutionResult, ExecutionResult } from './types';
 
-export type Language = 'python' | 'javascript' | 'typescript';
+export type Language = 'python' | 'javascript' | 'typescript' | 'java';
 
 export type RuntimeExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 

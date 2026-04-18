@@ -7,7 +7,7 @@ This app is intentionally small. It exists to prove that a third-party browser a
 - install the package
 - sync the published worker assets
 - create an explicit browser harness instance
-- execute and trace Python, JavaScript, and TypeScript
+- execute and trace Python, JavaScript, TypeScript, and Java
 
 It is not the canonical TraceCode product UI.
 
@@ -26,7 +26,7 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 
 - `createBrowserHarness(...)` from `@tracecode/harness/browser`
 - worker asset syncing through `tracecode-harness sync-assets`
-- runtime initialization for Python, JavaScript, and TypeScript
+- runtime initialization for Python, JavaScript, TypeScript, and Java
 - execution output and full trace payload rendering
 
 ## Production Note

@@ -53,6 +53,12 @@ async function main(): Promise<void> {
     'dist/javascript.cjs',
     'workers/python/pyodide-worker.js',
     'workers/javascript/javascript-worker.js',
+    'workers/java/java-worker.js',
+    'workers/vendor/java-browser-spike-helper.jar',
+    'workers/vendor/java-practice-rewriter.jar',
+    'workers/vendor/java-rewrite-bridge.jar',
+    'workers/vendor/javaparser-core-3.25.10.jar',
+    'workers/vendor/jdk.compiler-17.jar',
     'workers/vendor/typescript.js',
   ];
 

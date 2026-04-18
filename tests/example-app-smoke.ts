@@ -133,6 +133,70 @@ export function startPreviewServer(
   return { process: child, waitForExit, waitForUrl };
 }
 
+async function runLanguageExampleSmoke(
+  page: import('playwright').Page,
+  language: 'python' | 'javascript' | 'typescript' | 'java',
+  options: {
+    executionTimeoutMs: number;
+    traceTimeoutMs: number;
+    assertTrace?: (traceResult: { success?: boolean; trace?: unknown }) => void;
+  }
+): Promise<void> {
+  await page.selectOption('#language', language);
+
+  await page.click('#run');
+  await page.waitForFunction(
+    () => {
+      const output = document.querySelector('#execution-output');
+      const text = output?.textContent;
+      if (!text) return false;
+
+      try {
+        const parsed = JSON.parse(text) as { success?: boolean; output?: unknown };
+        return (
+          parsed.success === true &&
+          Array.isArray(parsed.output) &&
+          parsed.output.length === 2 &&
+          parsed.output[0] === 0 &&
+          parsed.output[1] === 1
+        );
+      } catch {
+        return false;
+      }
+    },
+    undefined,
+    { timeout: options.executionTimeoutMs }
+  );
+
+  await page.click('#trace');
+  await page.waitForFunction(
+    () => {
+      const output = document.querySelector('#trace-output');
+      const text = output?.textContent;
+      if (!text) return false;
+
+      try {
+        const parsed = JSON.parse(text) as { success?: boolean; trace?: unknown };
+        return parsed.success === true && Array.isArray(parsed.trace) && parsed.trace.length > 0;
+      } catch {
+        return false;
+      }
+    },
+    undefined,
+    { timeout: options.traceTimeoutMs }
+  );
+
+  const traceText = await page.textContent('#trace-output');
+  assertCondition(typeof traceText === 'string', `Expected trace output for ${language}`);
+  const traceResult = JSON.parse(traceText) as { success?: boolean; trace?: unknown };
+  assertCondition(traceResult.success === true, `Expected successful trace result for ${language}`);
+  assertCondition(
+    Array.isArray(traceResult.trace) && traceResult.trace.length > 0,
+    `Expected non-empty trace array for ${language}`
+  );
+  options.assertTrace?.(traceResult);
+}
+
 export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> {
   const browser = await chromium.launch({ headless: true });
 
@@ -141,57 +205,47 @@ export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> 
     page.setDefaultTimeout(180_000);
     await page.goto(previewUrl, { waitUntil: 'networkidle' });
 
-    for (const language of ['python', 'javascript', 'typescript'] as const) {
-      await page.selectOption('#language', language);
-
-      await page.click('#run');
-      await page.waitForFunction(
-        () => {
-          const output = document.querySelector('#execution-output');
-          const text = output?.textContent;
-          if (!text) return false;
-
-          try {
-            const parsed = JSON.parse(text) as { success?: boolean; output?: unknown };
-            return (
-              parsed.success === true &&
-              Array.isArray(parsed.output) &&
-              parsed.output.length === 2 &&
-              parsed.output[0] === 0 &&
-              parsed.output[1] === 1
-            );
-          } catch {
-            return false;
-          }
-        },
-        undefined,
-        { timeout: language === 'python' ? 180_000 : 60_000 }
-      );
-
-      await page.click('#trace');
-      await page.waitForFunction(
-        () => {
-          const output = document.querySelector('#trace-output');
-          const text = output?.textContent;
-          if (!text) return false;
-
-          try {
-            const parsed = JSON.parse(text) as { success?: boolean; trace?: unknown };
-            return parsed.success === true && Array.isArray(parsed.trace) && parsed.trace.length > 0;
-          } catch {
-            return false;
-          }
-        },
-        undefined,
-        { timeout: language === 'python' ? 180_000 : 60_000 }
-      );
-
-      const traceText = await page.textContent('#trace-output');
-      assertCondition(typeof traceText === 'string', `Expected trace output for ${language}`);
-      const traceResult = JSON.parse(traceText) as { success?: boolean; trace?: unknown };
-      assertCondition(traceResult.success === true, `Expected successful trace result for ${language}`);
-      assertCondition(Array.isArray(traceResult.trace) && traceResult.trace.length > 0, `Expected non-empty trace array for ${language}`);
+    for (const language of ['python', 'javascript', 'typescript', 'java'] as const) {
+      await runLanguageExampleSmoke(page, language, {
+        executionTimeoutMs: language === 'python' || language === 'java' ? 240_000 : 60_000,
+        traceTimeoutMs: language === 'python' || language === 'java' ? 240_000 : 60_000,
+      });
     }
+  } finally {
+    await browser.close();
+  }
+}
+
+export async function runJavaExampleBrowserSmoke(previewUrl: string): Promise<void> {
+  const browser = await chromium.launch({ headless: true });
+
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(240_000);
+    await page.goto(previewUrl, { waitUntil: 'networkidle' });
+
+    await runLanguageExampleSmoke(page, 'java', {
+      executionTimeoutMs: 240_000,
+      traceTimeoutMs: 240_000,
+      assertTrace(traceResult) {
+        const trace = Array.isArray(traceResult.trace) ? traceResult.trace : [];
+        const callSteps = trace.filter((step) => (step as { event?: unknown }).event === 'call');
+        const returnSteps = trace.filter((step) => (step as { event?: unknown }).event === 'return');
+        const accessKinds = new Set(
+          trace.flatMap((step) => {
+            const accesses = (step as { accesses?: Array<{ kind?: unknown }> }).accesses;
+            return Array.isArray(accesses)
+              ? accesses
+                  .map((access) => (typeof access?.kind === 'string' ? access.kind : null))
+                  .filter((kind): kind is string => kind !== null)
+              : [];
+          })
+        );
+        assertCondition(callSteps.length > 0, 'Expected Java trace to include call events');
+        assertCondition(returnSteps.length > 0, 'Expected Java trace to include return events');
+        assertCondition(accessKinds.has('indexed-read'), 'Expected Java trace to include indexed-read access events');
+      },
+    });
   } finally {
     await browser.close();
   }

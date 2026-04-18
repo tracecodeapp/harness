@@ -87,6 +87,7 @@ async function main(): Promise<void> {
   try {
     const defaultAssets = resolveBrowserHarnessAssets();
     assertCondition(defaultAssets.pythonWorker === '/workers/pyodide-worker.js', 'Default python worker path should resolve');
+    assertCondition(defaultAssets.javaWorker === '/workers/java-worker.js', 'Default java worker path should resolve');
     assertCondition(
       defaultAssets.typescriptCompiler === '/workers/vendor/typescript.js',
       'Default TypeScript compiler path should resolve'
@@ -105,13 +106,19 @@ async function main(): Promise<void> {
 
     const harnessA = createBrowserHarness({ assetBaseUrl: '/instance-a' });
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });
+    assertCondition(harnessA.isLanguageSupported('java'), 'Browser harness should expose Java support');
 
     await harnessA.getClient('javascript').init();
+    await harnessA.getClient('java').init();
     await harnessB.getClient('python').init();
 
     assertCondition(
       workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/javascript-worker.js')),
       'Harness A should use its own JavaScript worker URL'
+    );
+    assertCondition(
+      workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/java-worker.js')),
+      'Harness A should use its own Java worker URL'
     );
     assertCondition(
       workerInstances.some((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js?dev=')),
@@ -129,6 +136,12 @@ async function main(): Promise<void> {
     const executeResult = await harnessB.getClient('python').executeCode('result = 1', 'noop', {}, 'function');
     assertCondition(executeResult.success, 'Surviving harness instance should still execute after a peer is disposed');
     console.log('PASS: browser harness instances are isolated');
+
+    const javaExecuteResult = await harnessA
+      .getClient('java')
+      .executeCode('class Solution { int search(int[] nums, int target) { return 0; } }', 'search', {}, 'solution-method');
+    assertCondition(javaExecuteResult.success, 'Java runtime should route executeCode through the browser harness client');
+    console.log('PASS: browser harness routes Java runtime requests');
 
     harnessB.disposeLanguage('python');
     assertCondition(Boolean(survivingWorker?.terminated), 'disposeLanguage should terminate the targeted runtime');

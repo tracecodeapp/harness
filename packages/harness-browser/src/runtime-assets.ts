@@ -5,6 +5,7 @@ export interface BrowserHarnessAssets {
   pythonRuntimeCore: string;
   pythonSnippets: string;
   javascriptWorker: string;
+  javaWorker: string;
   typescriptCompiler: string;
 }
 
@@ -15,6 +16,7 @@ export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarne
   pythonRuntimeCore: 'pyodide/runtime-core.js',
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
+  javaWorker: 'java-worker.js',
   typescriptCompiler: 'vendor/typescript.js',
 });
 
@@ -64,6 +66,7 @@ export function resolveBrowserHarnessAssets(options: {
       assetBaseUrl,
       assets.javascriptWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javascriptWorker
     ),
+    javaWorker: resolveAssetPath(assetBaseUrl, assets.javaWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javaWorker),
     typescriptCompiler: resolveAssetPath(
       assetBaseUrl,
       assets.typescriptCompiler ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.typescriptCompiler

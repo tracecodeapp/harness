@@ -13,6 +13,8 @@ const SCANNED_FILES = [
   'packages/harness-browser/src/internal.ts',
   'packages/harness-browser/src/javascript-runtime-client.ts',
   'packages/harness-browser/src/javascript-worker-client.ts',
+  'packages/harness-browser/src/java-runtime-client.ts',
+  'packages/harness-browser/src/java-worker-client.ts',
   'packages/harness-browser/src/pyodide-worker-client.ts',
   'packages/harness-browser/src/python-runtime-client.ts',
   'packages/harness-browser/src/runtime-assets.ts',
@@ -29,6 +31,7 @@ const SCANNED_FILES = [
   'packages/harness-python/src/python-harness-template.ts',
   'packages/harness-python/src/python-harness.ts',
   'workers/javascript/javascript-worker.js',
+  'workers/java/java-worker.js',
   'workers/python/pyodide-worker.js',
   'workers/python/runtime-core.js',
 ];

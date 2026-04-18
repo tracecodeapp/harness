@@ -5,6 +5,8 @@ import type {
 } from '../../harness-core/src/runtime-types';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 import { createJavaScriptRuntimeClient } from './javascript-runtime-client';
+import { JavaWorkerClient } from './java-worker-client';
+import { createJavaRuntimeClient } from './java-runtime-client';
 import { PyodideWorkerClient } from './pyodide-worker-client';
 import { createPythonRuntimeClient } from './python-runtime-client';
 import {
@@ -43,6 +45,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
 
   private readonly pythonWorkerClient: PyodideWorkerClient;
   private readonly javaScriptWorkerClient: JavaScriptWorkerClient;
+  private readonly javaWorkerClient: JavaWorkerClient;
   private readonly clients: Record<Language, RuntimeClient>;
 
   constructor(options: CreateBrowserHarnessOptions = {}) {
@@ -55,10 +58,15 @@ class BrowserHarnessRuntime implements BrowserHarness {
       workerUrl: this.assets.javascriptWorker,
       debug: options.debug,
     });
+    this.javaWorkerClient = new JavaWorkerClient({
+      workerUrl: this.assets.javaWorker,
+      debug: options.debug,
+    });
     this.clients = {
       python: createPythonRuntimeClient(this.pythonWorkerClient),
       javascript: createJavaScriptRuntimeClient('javascript', this.javaScriptWorkerClient),
       typescript: createJavaScriptRuntimeClient('typescript', this.javaScriptWorkerClient),
+      java: createJavaRuntimeClient(this.javaWorkerClient),
     };
   }
 
@@ -87,12 +95,17 @@ class BrowserHarnessRuntime implements BrowserHarness {
       this.pythonWorkerClient.terminate();
       return;
     }
+    if (language === 'java') {
+      this.javaWorkerClient.terminate();
+      return;
+    }
     this.javaScriptWorkerClient.terminate();
   }
 
   dispose(): void {
     this.pythonWorkerClient.terminate();
     this.javaScriptWorkerClient.terminate();
+    this.javaWorkerClient.terminate();
   }
 }
 

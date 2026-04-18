@@ -21,8 +21,32 @@ const ASSET_COPY_PLAN = [
     target: ['javascript-worker.js'],
   },
   {
+    source: ['workers', 'java', 'java-worker.js'],
+    target: ['java-worker.js'],
+  },
+  {
     source: ['workers', 'vendor', 'typescript.js'],
     target: ['vendor', 'typescript.js'],
+  },
+  {
+    source: ['workers', 'vendor', 'java-browser-spike-helper.jar'],
+    target: ['vendor', 'java-browser-spike-helper.jar'],
+  },
+  {
+    source: ['workers', 'vendor', 'java-practice-rewriter.jar'],
+    target: ['vendor', 'java-practice-rewriter.jar'],
+  },
+  {
+    source: ['workers', 'vendor', 'java-rewrite-bridge.jar'],
+    target: ['vendor', 'java-rewrite-bridge.jar'],
+  },
+  {
+    source: ['workers', 'vendor', 'javaparser-core-3.25.10.jar'],
+    target: ['vendor', 'javaparser-core-3.25.10.jar'],
+  },
+  {
+    source: ['workers', 'vendor', 'jdk.compiler-17.jar'],
+    target: ['vendor', 'jdk.compiler-17.jar'],
   },
 ] as const;
 

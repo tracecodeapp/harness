@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { adaptJavaScriptTraceExecutionResult } from '../packages/harness-core/src/trace-adapters/javascript';
+import { adaptJavaTraceExecutionResult } from '../packages/harness-core/src/trace-adapters/java';
 import { adaptPythonTraceExecutionResult } from '../packages/harness-core/src/trace-adapters/python';
 import type { ExecutionResult } from '../packages/harness-core/src/types';
 
@@ -104,9 +105,56 @@ function testPythonVisualizationPreservation(): void {
   console.log('PASS: Python trace adapter preserves runtime visualization payload');
 }
 
+function testJavaVisualizationPreservation(): void {
+  const input: ExecutionResult = {
+    success: true,
+    output: [1, 2, 3],
+    trace: [
+      {
+        line: 8,
+        event: 'line',
+        function: 'search',
+        variables: {
+          nums: [1, 2, 3],
+          root: { __type__: 'TreeNode', val: 3, left: null, right: null },
+        },
+        accesses: [
+          {
+            variable: 'nums',
+            kind: 'indexed-read',
+            indices: [1],
+            pathDepth: 1,
+          },
+        ],
+        visualization: {
+          objectKinds: {
+            root: 'tree',
+          },
+        },
+      },
+    ],
+    executionTimeMs: 4,
+    consoleOutput: [],
+    lineEventCount: 1,
+    traceStepCount: 1,
+  };
+
+  const adapted = adaptJavaTraceExecutionResult(input);
+  assertCondition(
+    adapted.trace[0]?.visualization?.objectKinds?.root === 'tree',
+    'java adapter should preserve runtime objectKinds payload'
+  );
+  assertCondition(
+    adapted.trace[0]?.accesses?.[0]?.kind === 'indexed-read',
+    'java adapter should preserve runtime access events'
+  );
+  console.log('PASS: Java trace adapter preserves runtime visualization payload');
+}
+
 function main(): void {
   testJavaScriptHashLikeInference();
   testPythonVisualizationPreservation();
+  testJavaVisualizationPreservation();
   console.log('\nTrace adapter tests passed.');
 }
 

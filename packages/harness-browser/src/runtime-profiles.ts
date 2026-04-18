@@ -186,10 +186,77 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   },
 };
 
+const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
+  language: 'java',
+  maturity: 'experimental',
+  capabilities: {
+    execution: {
+      styles: {
+        function: false,
+        solutionMethod: true,
+        opsClass: true,
+        script: false,
+        interviewMode: false,
+      },
+      timeouts: {
+        clientTimeouts: true,
+        runtimeTimeouts: true,
+      },
+    },
+    tracing: {
+      supported: true,
+      events: {
+        line: true,
+        call: true,
+        return: true,
+        exception: true,
+        stdout: false,
+        timeout: true,
+      },
+      controls: {
+        maxTraceSteps: false,
+        maxLineEvents: false,
+        maxSingleLineHits: false,
+        minimalTrace: false,
+      },
+      fidelity: {
+        preciseLineMapping: true,
+        stableFunctionNames: true,
+        callStack: true,
+      },
+    },
+    diagnostics: {
+      compileErrors: true,
+      runtimeErrors: true,
+      mappedErrorLines: false,
+      stackTraces: true,
+    },
+    structures: {
+      treeNodeRefs: true,
+      listNodeRefs: true,
+      mapSerialization: true,
+      setSerialization: true,
+      graphSerialization: false,
+      cycleReferences: true,
+    },
+    visualization: {
+      runtimePayloads: true,
+      objectKinds: true,
+      hashMaps: true,
+      stepVisualization: true,
+    },
+  },
+  notes: [
+    'Java currently supports the browser-local Java 17 lane for solution-method and ops-class execution.',
+    'Function-style and script-style Java are not enabled in the first harness slice.',
+  ],
+};
+
 export const LANGUAGE_RUNTIME_PROFILES: Record<Language, LanguageRuntimeProfile> = {
   python: PYTHON_RUNTIME_PROFILE,
   javascript: JAVASCRIPT_RUNTIME_PROFILE,
   typescript: TYPESCRIPT_RUNTIME_PROFILE,
+  java: JAVA_RUNTIME_PROFILE,
 };
 
 export const SUPPORTED_LANGUAGES: readonly Language[] = Object.freeze(
