@@ -279,6 +279,7 @@ pnpm generate:python-harness
 
 This repo uses explicit versioned release boundaries.
 
+- `0.6.1` resolves Dependabot-reported vulnerabilities in Vite, DOMPurify, and Picomatch dependency paths
 - `0.6.0` adds an experimental browser-local Java 17 runtime lane for `function`, `solution-method`, `ops-class`, and `interviewMode` execution, plus public asset packaging and browser smoke coverage for Java
 - `0.5.0` improves JavaScript tree/list input hydration, fixes sparse tree deserialization, and trims GitHub CI to the non-browser verification set
 - `0.1.0` introduced the public harness baseline

@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.6.1] - 2026-04-23
+
+### Fixed
+
+- Resolved Dependabot-reported vulnerabilities by moving the example app to patched Vite 7.3.2 and overriding transitive DOMPurify and Picomatch resolutions to patched versions.
+
 ## [0.6.0] - 2026-04-23
 
 ### Added

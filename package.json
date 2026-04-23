@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -93,5 +93,11 @@
     "tsup": "^8.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "dompurify": "3.4.1",
+      "picomatch": "4.0.4"
+    }
   }
 }
