@@ -14,6 +14,7 @@ const FULL_CLASSPATH = [
 const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const IDLE_TIMEOUT_MS = 90_000;
+const SCRIPT_METHOD_NAME = '__tracecodeScript';
 
 let workerReadyPromise = null;
 let idleTimer = null;
@@ -46,6 +47,10 @@ function assertSupportedExecutionStyle(executionStyle) {
   if (executionStyle !== 'function' && executionStyle !== 'solution-method' && executionStyle !== 'ops-class') {
     throw new Error(`Java worker does not support execution style "${executionStyle}".`);
   }
+}
+
+function isScriptRequest(payload) {
+  return typeof payload?.functionName !== 'string' || payload.functionName.trim().length === 0;
 }
 
 function resolveMaxStoredEvents(options = {}) {
@@ -343,21 +348,7 @@ function indentBlock(source, spaces = 2) {
     .join('\n');
 }
 
-function normalizeFunctionSource(source) {
-  if (/\bpackage\s+[A-Za-z_][A-Za-z0-9_.]*\s*;/.test(source)) {
-    throw new Error('Java function style should not declare a package; the harness manages package isolation.');
-  }
-
-  if (/\bclass\s+Solution\b/.test(source)) {
-    return source;
-  }
-
-  if (/\b(class|interface|enum|record)\b/.test(source)) {
-    throw new Error(
-      'Java function style currently expects a bare method fragment or a class named Solution containing the target method.'
-    );
-  }
-
+function splitImportPrelude(source) {
   const lines = source.split('\n');
   const importLines = [];
   const bodyLines = [];
@@ -373,6 +364,26 @@ function normalizeFunctionSource(source) {
     bodyLines.push(line);
   }
 
+  return { importLines, bodyLines };
+}
+
+function normalizeFunctionSource(source) {
+  if (/\bpackage\s+[A-Za-z_][A-Za-z0-9_.]*\s*;/.test(source)) {
+    throw new Error('Java function style should not declare a package; the harness manages package isolation.');
+  }
+
+  if (/\bclass\s+Solution\b/.test(source)) {
+    return source;
+  }
+
+  if (/\b(class|interface|enum|record)\b/.test(source)) {
+    throw new Error(
+      'Java function style currently expects a bare method fragment or a class named Solution containing the target method.'
+    );
+  }
+
+  const { importLines, bodyLines } = splitImportPrelude(source);
+
   const importBlock = importLines.join('\n').trim();
   const body = bodyLines.join('\n').trim();
   if (!body) {
@@ -382,7 +393,39 @@ function normalizeFunctionSource(source) {
   return `${importBlock ? `${importBlock}\n\n` : ''}class Solution {\n${indentBlock(body, 2)}\n}`;
 }
 
+function normalizeScriptSource(source) {
+  if (/\bpackage\s+[A-Za-z_][A-Za-z0-9_.]*\s*;/.test(source)) {
+    throw new Error('Java script style should not declare a package; the harness manages package isolation.');
+  }
+
+  const { importLines, bodyLines } = splitImportPrelude(source);
+  const body = bodyLines.join('\n');
+  if (!body.trim()) {
+    throw new Error('Java script style requires executable statements and a result assignment.');
+  }
+
+  const prelude = importLines.length > 0 ? `${importLines.join('\n')}\n` : '';
+  const wrapperPrefix = `class Solution { Object ${SCRIPT_METHOD_NAME}() { Object result = null; `;
+  return `${prelude}${wrapperPrefix}${body}\nreturn result;\n} }`;
+}
+
 function normalizeJavaRequest(payload) {
+  if (isScriptRequest(payload)) {
+    if (payload.executionStyle !== 'function') {
+      throw new Error('Java script-mode execution only supports executionStyle="function".');
+    }
+
+    return {
+      ...payload,
+      code: normalizeScriptSource(payload.code),
+      executionStyle: 'solution-method',
+      functionName: SCRIPT_METHOD_NAME,
+      sourceText: payload.code,
+      userCodeLineCount: payload.code.split(/\r?\n/).length,
+      scriptMode: true,
+    };
+  }
+
   if (payload.executionStyle !== 'function') {
     return payload;
   }
@@ -533,35 +576,55 @@ public class ExportsTracecodeWarmup {
 }
 
 async function rewriteSource(payload, requestId) {
-  const normalizedPayload = normalizeJavaRequest(payload);
   const rewriteLibraryClass = await getRewriteLibraryClass();
   const exportsClassName = buildExportsClassName(requestId);
   const packageName = buildPackageName(requestId);
   const exportsSource = buildExportsSource(
-    normalizedPayload.code,
-    normalizedPayload.functionName,
-    normalizedPayload.executionStyle,
-    normalizedPayload.inputs ?? {}
+    payload.code,
+    payload.functionName,
+    payload.executionStyle,
+    payload.inputs ?? {}
   );
   return rewriteLibraryClass.rewriteSource(
-    normalizedPayload.code,
-    normalizedPayload.executionStyle,
-    normalizedPayload.functionName,
+    payload.code,
+    payload.executionStyle,
+    payload.functionName,
     exportsSource,
     exportsClassName,
     packageName
   );
 }
 
+function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount) {
+  if (!scriptMode || !Array.isArray(events)) return events;
+  return events.map((event) => {
+    const normalizedEvent = String(event)
+      .replace(new RegExp(`\\bcall\\s+${SCRIPT_METHOD_NAME}\\b`, 'g'), 'call <module>')
+      .replace(new RegExp(`\\breturn\\s+${SCRIPT_METHOD_NAME}\\b`, 'g'), 'return <module>');
+    const match = normalizedEvent.match(/^line=(\d+)\s+return\s+<module>$/);
+    if (!match || !Number.isFinite(userCodeLineCount) || userCodeLineCount <= 0) {
+      return normalizedEvent;
+    }
+    const line = Number.parseInt(match[1], 10);
+    if (line <= userCodeLineCount) return normalizedEvent;
+    return `line=${userCodeLineCount} return <module>`;
+  });
+}
+
 async function runJavaRequest(payload, requestId) {
   assertSupportedExecutionStyle(payload.executionStyle);
-  if (typeof payload.functionName !== 'string' || payload.functionName.trim().length === 0) {
+  if (typeof payload.code !== 'string') {
+    throw new Error('`code` must be a string');
+  }
+  const scriptRequest = isScriptRequest(payload);
+  if (!scriptRequest && (typeof payload.functionName !== 'string' || payload.functionName.trim().length === 0)) {
     throw new Error('Java execution requires a non-empty functionName or class entry name.');
   }
 
   const totalStart = performance.now();
   const rewriteStart = performance.now();
-  const rewrittenSource = await rewriteSource(payload, requestId);
+  const normalizedPayload = normalizeJavaRequest(payload);
+  const rewrittenSource = await rewriteSource(normalizedPayload, requestId);
   const rewriteEnd = performance.now();
 
   const exportsClassName = buildExportsClassName(requestId);
@@ -592,7 +655,12 @@ async function runJavaRequest(payload, requestId) {
   if (report.success !== true) {
     return {
       success: false,
-      events: Array.isArray(report.events) ? report.events : [],
+      events: normalizeScriptTraceEvents(
+        Array.isArray(report.events) ? report.events : [],
+        normalizedPayload.scriptMode,
+        normalizedPayload.userCodeLineCount
+      ),
+      ...(normalizedPayload.sourceText ? { sourceText: normalizedPayload.sourceText } : {}),
       executionTimeMs: totalEnd - totalStart,
       consoleOutput,
       error:
@@ -618,7 +686,12 @@ async function runJavaRequest(payload, requestId) {
   return {
     success: true,
     output: report.output ? JSON.parse(report.output) : undefined,
-    events: Array.isArray(report.events) ? report.events : [],
+    events: normalizeScriptTraceEvents(
+      Array.isArray(report.events) ? report.events : [],
+      normalizedPayload.scriptMode,
+      normalizedPayload.userCodeLineCount
+    ),
+    ...(normalizedPayload.sourceText ? { sourceText: normalizedPayload.sourceText } : {}),
     executionTimeMs: totalEnd - totalStart,
     consoleOutput,
     ...(report.traceLimitExceeded !== undefined

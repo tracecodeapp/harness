@@ -13,7 +13,7 @@ This package provides an execution and tracing runtime for browser applications.
 It includes:
 
 - browser-hosted execution for Python, JavaScript, and TypeScript
-- an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, and `interviewMode` execution
+- an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
 - trace capture and normalized runtime contracts
 - browser worker assets and asset sync tooling
 - runtime-side structural annotations such as object kinds and hash/map payloads
@@ -233,8 +233,8 @@ Current language status:
 
 Current Java scope:
 
-- supported: `function`, `solution-method`, `ops-class`, `interviewMode`, tracing, compile diagnostics, structural visualization payloads
-- not yet supported: `script`
+- supported: `function`, `solution-method`, `ops-class`, `script`, `interviewMode`, tracing, compile diagnostics, structural visualization payloads
+- script mode uses an empty function name with `executionStyle: "function"` and reads the top-level `result` variable
 
 ## Example Consumer
 
@@ -279,6 +279,7 @@ pnpm generate:python-harness
 
 This repo uses explicit versioned release boundaries.
 
+- `0.6.2` enables experimental Java script-style execution using the empty function name and top-level `result` convention
 - `0.6.1` resolves Dependabot-reported vulnerabilities in Vite, DOMPurify, and Picomatch dependency paths
 - `0.6.0` adds an experimental browser-local Java 17 runtime lane for `function`, `solution-method`, `ops-class`, and `interviewMode` execution, plus public asset packaging and browser smoke coverage for Java
 - `0.5.0` improves JavaScript tree/list input hydration, fixes sparse tree deserialization, and trims GitHub CI to the non-browser verification set

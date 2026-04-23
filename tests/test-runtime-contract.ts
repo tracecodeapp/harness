@@ -117,6 +117,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.function',
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
+    'execution.styles.script',
     'execution.styles.interviewMode',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
@@ -397,7 +398,7 @@ async function main(): Promise<void> {
     'TypeScript should preserve mapped compile error lines'
   );
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function execution');
-  assertCondition(!javaProfile.capabilities.execution.styles.script, 'Java should not support script execution yet');
+  assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
   console.log('PASS: runtime capability profile matrix');
 

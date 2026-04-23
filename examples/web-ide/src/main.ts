@@ -102,23 +102,25 @@ const EXAMPLES: Record<Language, ExampleFixture> = {
 }`,
   },
   java: {
-    functionName: 'solve',
+    functionName: '',
     executionStyle: 'function',
-    inputs: {
-      nums: [2, 7, 11, 15],
-      target: 9,
-    },
-    code: `int[] solve(int[] nums, int target) {
-  java.util.Map<Integer, Integer> seen = new java.util.HashMap<>();
+    inputs: {},
+    code: `import java.util.HashMap;
+import java.util.Map;
+
+int[] nums = new int[] { 2, 7, 11, 15 };
+int target = 9;
+Map<Integer, Integer> seen = new HashMap<>();
+result = new int[] {};
+
   for (int index = 0; index < nums.length; index += 1) {
     int value = nums[index];
     int complement = target - value;
     if (seen.containsKey(complement)) {
-      return new int[] { seen.get(complement), index };
+      result = new int[] { seen.get(complement), index };
+      break;
     }
     seen.put(value, index);
-  }
-  return new int[] {};
 }`,
   },
 };

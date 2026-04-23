@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.solutionMethod, 'Java should support solution-method style');
   assertCondition(javaProfile.capabilities.execution.styles.opsClass, 'Java should support ops-class style');
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function style');
-  assertCondition(!javaProfile.capabilities.execution.styles.script, 'Java should not expose script style yet');
+  assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should expose script style');
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should expose interview mode');
   assertCondition(javaProfile.capabilities.tracing.supported, 'Java runtime should expose tracing support');
   console.log('PASS: java runtime profile matches first-slice contract');

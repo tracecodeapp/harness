@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.6.2] - 2026-04-23
+
+### Added
+
+- Enabled Java script-style browser execution using an empty function name, `executionStyle: "function"`, and the top-level `result` variable convention.
+- Added direct Java worker regression coverage for script-mode normalization, result serialization, trace function mapping, and invalid style rejection.
+
 ## [0.6.1] - 2026-04-23
 
 ### Fixed

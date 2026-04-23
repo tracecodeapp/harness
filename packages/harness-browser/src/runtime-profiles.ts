@@ -198,7 +198,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         function: true,
         solutionMethod: true,
         opsClass: true,
-        script: false,
+        script: true,
         interviewMode: true,
       },
       timeouts: {
@@ -251,9 +251,9 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     },
   },
   notes: [
-    'Java currently supports the browser-local Java 17 lane for function, solution-method, and ops-class execution.',
-    'Interview-mode Java reuses the same browser-local execution path and remains experimental in the first harness slice.',
-    'Script-style Java is not enabled yet.',
+    'Java currently supports the browser-local Java 17 lane for function, solution-method, ops-class, and script-style execution.',
+    'Interview-mode Java reuses the same browser-local execution path and remains experimental.',
+    'Script-style Java uses an empty function name with executionStyle="function" and reads the top-level result variable.',
   ],
 };
 

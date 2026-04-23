@@ -231,6 +231,7 @@ export async function runJavaExampleBrowserSmoke(previewUrl: string): Promise<vo
         const trace = Array.isArray(traceResult.trace) ? traceResult.trace : [];
         const callSteps = trace.filter((step) => (step as { event?: unknown }).event === 'call');
         const returnSteps = trace.filter((step) => (step as { event?: unknown }).event === 'return');
+        const moduleSteps = trace.filter((step) => (step as { function?: unknown }).function === '<module>');
         const accessKinds = new Set(
           trace.flatMap((step) => {
             const accesses = (step as { accesses?: Array<{ kind?: unknown }> }).accesses;
@@ -243,6 +244,7 @@ export async function runJavaExampleBrowserSmoke(previewUrl: string): Promise<vo
         );
         assertCondition(callSteps.length > 0, 'Expected Java trace to include call events');
         assertCondition(returnSteps.length > 0, 'Expected Java trace to include return events');
+        assertCondition(moduleSteps.length > 0, 'Expected Java script trace to use <module> as its function name');
         assertCondition(accessKinds.has('indexed-read'), 'Expected Java trace to include indexed-read access events');
       },
     });
