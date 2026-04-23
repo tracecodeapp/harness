@@ -139,9 +139,18 @@ async function main(): Promise<void> {
 
     const javaExecuteResult = await harnessA
       .getClient('java')
-      .executeCode('class Solution { int search(int[] nums, int target) { return 0; } }', 'search', {}, 'solution-method');
-    assertCondition(javaExecuteResult.success, 'Java runtime should route executeCode through the browser harness client');
+      .executeCode('int search(int[] nums, int target) { return 0; }', 'search', {}, 'function');
+    assertCondition(javaExecuteResult.success, 'Java runtime should route function-style executeCode through the browser harness client');
     console.log('PASS: browser harness routes Java runtime requests');
+
+    const javaInterviewResult = await harnessA
+      .getClient('java')
+      .executeCodeInterviewMode('int search(int[] nums, int target) { return 0; }', 'search', {}, 'function');
+    assertCondition(
+      javaInterviewResult.success,
+      'Java runtime should route interview-mode executeCode through the browser harness client'
+    );
+    console.log('PASS: browser harness routes Java interview-mode requests');
 
     harnessB.disposeLanguage('python');
     assertCondition(Boolean(survivingWorker?.terminated), 'disposeLanguage should terminate the targeted runtime');

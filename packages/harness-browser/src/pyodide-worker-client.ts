@@ -352,6 +352,7 @@ export class PyodideWorkerClient {
       maxTraceSteps?: number;
       maxLineEvents?: number;
       maxSingleLineHits?: number;
+      maxStoredEvents?: number;
       minimalTrace?: boolean;
     },
     executionStyle: ExecutionStyle = 'function'

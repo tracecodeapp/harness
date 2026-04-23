@@ -16,6 +16,8 @@ function generateTracingCode(deps, userCode, functionName, inputs, executionStyl
   
   // Configurable limits
   const maxTraceSteps = options.maxTraceSteps || 2000;
+  const maxStoredEvents = options.maxStoredEvents || maxTraceSteps;
+  const effectiveMaxTraceSteps = Math.min(maxTraceSteps, maxStoredEvents);
   const maxLineEvents = options.maxLineEvents || 10000;
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
@@ -69,7 +71,7 @@ _call_stack = []
 _pending_accesses = {}
 _prev_hashmap_snapshots = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert'}
-_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -85,7 +87,8 @@ _internal_locals = {
     '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_normalize_indices',
     '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value',
     '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index',
-    '_tracecode_augassign_index', '_tracecode_mutating_call', '__tracecode_attach_parents',
+    '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_collapsed_literal_lines',
+    '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
     '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
     '_error_line', '_solver', '_ops', '_args', '_cls', '_instance', '_out',
@@ -93,7 +96,7 @@ _internal_locals = {
     '_globals_dict', '_k', '_preserve', '_real_globals', '_real_list',
     '__tracecode_tree', '__tracecode_compiled'
 }
-_max_trace_steps = ${maxTraceSteps}
+_max_trace_steps = ${effectiveMaxTraceSteps}
 _trace_limit_exceeded = False
 _timeout_reason = None
 _total_line_events = 0
@@ -630,6 +633,49 @@ def __tracecode_compile_user_code(source):
     ast.fix_missing_locations(tree)
     return compile(tree, '<user_code>', 'exec')
 
+def _tracecode_is_pure_literal_scaffold(node):
+    if isinstance(node, (ast.Constant, ast.Name)):
+        return True
+    if isinstance(node, ast.UnaryOp):
+        return _tracecode_is_pure_literal_scaffold(node.operand)
+    if isinstance(node, ast.BinOp):
+        return _tracecode_is_pure_literal_scaffold(node.left) and _tracecode_is_pure_literal_scaffold(node.right)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return all(_tracecode_is_pure_literal_scaffold(elt) for elt in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            (key is None or _tracecode_is_pure_literal_scaffold(key)) and _tracecode_is_pure_literal_scaffold(value)
+            for key, value in zip(node.keys, node.values)
+        )
+    return False
+
+def _tracecode_collect_collapsed_literal_lines(source):
+    try:
+        tree = ast.parse(source, filename='<user_code>', mode='exec')
+    except Exception:
+        return set()
+
+    collapsed_lines = set()
+    for node in ast.walk(tree):
+        statement_line = getattr(node, 'lineno', None)
+        value = None
+        if isinstance(node, ast.Assign):
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+        elif isinstance(node, ast.Return):
+            value = node.value
+        if value is None or statement_line is None:
+            continue
+        end_line = getattr(value, 'end_lineno', None)
+        if end_line is None or end_line <= statement_line:
+            continue
+        if not _tracecode_is_pure_literal_scaffold(value):
+            continue
+        for line in range(statement_line + 1, end_line + 1):
+            collapsed_lines.add(line)
+    return collapsed_lines
+
 def _stable_token(value):
     try:
         return json.dumps(value, sort_keys=True)
@@ -873,6 +919,8 @@ def _tracer(frame, event, arg):
     
     # Fast counter for any loops
     if event == 'line':
+        if frame.f_code.co_filename == '<user_code>' and frame.f_lineno in _tracecode_collapsed_literal_lines:
+            return _tracer
         _total_line_events += 1
         
         # Check total line events
@@ -1094,6 +1142,7 @@ print = _custom_print
     `\n_user_code_str = """${escapedCode}"""`,
     `import textwrap as _textwrap`,
     `_user_code_str = _textwrap.dedent(_user_code_str.lstrip("\\n"))`,
+    `_tracecode_collapsed_literal_lines = _tracecode_collect_collapsed_literal_lines(_user_code_str)`,
     `__tracecode_compiled = __tracecode_compile_user_code(_user_code_str)`,
     ].join('\n');
 

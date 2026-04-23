@@ -255,6 +255,7 @@ export class JavaScriptWorkerClient {
       maxTraceSteps?: number;
       maxLineEvents?: number;
       maxSingleLineHits?: number;
+      maxStoredEvents?: number;
       minimalTrace?: boolean;
     },
     executionStyle: JavaScriptExecutionStyle = 'function',

@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.6.0] - 2026-04-23
+
+### Added
+
+- Experimental browser-local Java runtime client and worker support.
+- Java runtime capability profiles, worker asset sync coverage, and packaged browser harness surface.
+- Java trace adapter support for line events, access metadata, visualization payloads, and runtime output normalization.
+
+### Changed
+
+- Runtime trace contract normalization now deduplicates noisy access metadata and enforces shared trace clipping semantics.
+- JavaScript and Python workers now share the same trace budget controls used by the browser harness clients.
+- Browser example app now exercises Java alongside Python, JavaScript, and TypeScript.
+
+### Fixed
+
+- TypeScript `for...of` tracing now delays iterable access metadata to the next executable step while preserving loop-header flushes for body mutations.
+- Java worker asset checks now cover the helper, rewriter, bridge, parser, and compiler jars needed by the Java lane.
+
+### Notes
+
+- `0.6.0` is the first Java runtime preview release. Java remains capability-profiled as experimental.
+
 ## [0.5.0] - 2026-03-14
 
 ### Fixed

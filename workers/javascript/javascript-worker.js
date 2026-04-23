@@ -811,9 +811,12 @@ function createTraceRecorder(options = {}) {
   const trace = [];
   const callStack = [];
   const pendingAccessesByFrame = new Map();
+  const deferredAccessesByFrame = new Map();
   const lineHitCount = new Map();
   const stableNodeRefState = { ids: new Map(), nextId: 1 };
   const maxTraceSteps = getNumericOption(options.maxTraceSteps, 4000);
+  const maxStoredEvents = getNumericOption(options.maxStoredEvents, maxTraceSteps);
+  const effectiveMaxTraceSteps = Math.min(maxTraceSteps, maxStoredEvents);
   const maxLineEvents = getNumericOption(options.maxLineEvents, 12000);
   const maxSingleLineHits = getNumericOption(options.maxSingleLineHits, 1000);
   const maxCallDepth = getNumericOption(options.maxCallDepth, 2000);
@@ -1111,11 +1114,22 @@ function createTraceRecorder(options = {}) {
       return undefined;
     }
     const pending = pendingAccessesByFrame.get(frameId);
-    if (!Array.isArray(pending) || pending.length === 0) {
+    const deferred = deferredAccessesByFrame.get(frameId);
+    let deferredReady = [];
+    if (deferred && Array.isArray(deferred.accesses) && deferred.accesses.length > 0) {
+      if (deferred.skipLineFlushes > 0) {
+        deferred.skipLineFlushes -= 1;
+        deferredAccessesByFrame.set(frameId, deferred);
+      } else {
+        deferredReady = deferred.accesses;
+        deferredAccessesByFrame.delete(frameId);
+      }
+    }
+    if ((!Array.isArray(pending) || pending.length === 0) && deferredReady.length === 0) {
       return undefined;
     }
     pendingAccessesByFrame.delete(frameId);
-    return pending.map((access) => ({
+    return [...(Array.isArray(pending) ? pending : []), ...deferredReady].map((access) => ({
       variable: access.variable,
       kind: access.kind,
       ...(Array.isArray(access.indices) && access.indices.length > 0
@@ -1127,13 +1141,13 @@ function createTraceRecorder(options = {}) {
   }
 
   function appendTrace(step, frameId = getCurrentFrameId()) {
-    if (trace.length >= maxTraceSteps) {
+    if (trace.length >= effectiveMaxTraceSteps) {
       const lineNumber = normalizeLine(step?.line, 1);
       if (!traceLimitExceeded) {
         traceLimitExceeded = true;
         timeoutReason = 'trace-limit';
       }
-      if (!timeoutRecorded && trace.length < maxTraceSteps) {
+      if (!timeoutRecorded && trace.length < effectiveMaxTraceSteps) {
         trace.push({
           line: lineNumber,
           event: 'timeout',
@@ -1143,13 +1157,51 @@ function createTraceRecorder(options = {}) {
         });
         timeoutRecorded = true;
       }
-      throw createLimitError('trace-limit', lineNumber, `Exceeded ${maxTraceSteps} trace steps`);
+      throw createLimitError('trace-limit', lineNumber, `Exceeded ${effectiveMaxTraceSteps} trace steps`);
     }
     const accesses = flushPendingAccesses(frameId);
-    trace.push({
+    const nextStep = {
       ...step,
       ...(accesses ? { accesses } : {}),
-    });
+    };
+    const previous = trace[trace.length - 1];
+    if (canMergeConsecutiveLineSteps(previous, nextStep)) {
+      previous.variables = {
+        ...(previous.variables || {}),
+        ...(nextStep.variables || {}),
+      };
+      if (nextStep.accesses?.length) {
+        previous.accesses = [...(previous.accesses || []), ...nextStep.accesses];
+      }
+      if (nextStep.visualization !== undefined) {
+        previous.visualization = nextStep.visualization;
+      }
+      previous.callStack = nextStep.callStack;
+      previous.function = nextStep.function;
+      return;
+    }
+    trace.push(nextStep);
+  }
+
+  function canMergeConsecutiveLineSteps(previous, nextStep) {
+    if (!previous || !nextStep) return false;
+    if (previous.event !== 'line' || nextStep.event !== 'line') return false;
+    if (previous.line !== nextStep.line) return false;
+    if (previous.function !== nextStep.function) return false;
+    return sameCallStackVisit(previous.callStack, nextStep.callStack);
+  }
+
+  function sameCallStackVisit(left, right) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      const leftFrame = left[index];
+      const rightFrame = right[index];
+      if (!leftFrame || !rightFrame) return false;
+      if (leftFrame.function !== rightFrame.function) return false;
+      if (leftFrame.line !== rightFrame.line) return false;
+    }
+    return true;
   }
 
   function markTimeout(reason, lineNumber, message) {
@@ -1158,7 +1210,7 @@ function createTraceRecorder(options = {}) {
       traceLimitExceeded = true;
       timeoutReason = reason;
     }
-    if (!timeoutRecorded && trace.length < maxTraceSteps) {
+    if (!timeoutRecorded && trace.length < effectiveMaxTraceSteps) {
       appendTrace({
         line: normalizedLine,
         event: 'timeout',
@@ -1221,6 +1273,7 @@ function createTraceRecorder(options = {}) {
         const frame = callStack.pop();
         if (frame?.id !== undefined) {
           pendingAccessesByFrame.delete(frame.id);
+          deferredAccessesByFrame.delete(frame.id);
         }
       }
     }
@@ -1336,6 +1389,25 @@ function createTraceRecorder(options = {}) {
       existing.push(normalized);
       pendingAccessesByFrame.set(frameId, existing);
     },
+    deferPendingAccesses(lineFlushes = 1) {
+      const frameId = getCurrentFrameId();
+      if (frameId === undefined) {
+        return;
+      }
+      const pending = pendingAccessesByFrame.get(frameId);
+      if (!Array.isArray(pending) || pending.length === 0) {
+        return;
+      }
+      pendingAccessesByFrame.delete(frameId);
+      const existing = deferredAccessesByFrame.get(frameId);
+      deferredAccessesByFrame.set(frameId, {
+        accesses: [...(Array.isArray(existing?.accesses) ? existing.accesses : []), ...pending],
+        skipLineFlushes: Math.max(
+          typeof existing?.skipLineFlushes === 'number' ? existing.skipLineFlushes : 0,
+          Math.max(0, Math.trunc(lineFlushes))
+        ),
+      });
+    },
     line(lineNumber, snapshotFactory, functionNameOverride, functionStartLine) {
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
 
@@ -1424,6 +1496,7 @@ function createTraceRecorder(options = {}) {
         const frame = callStack.pop();
         if (frame?.id !== undefined) {
           pendingAccessesByFrame.delete(frame.id);
+          deferredAccessesByFrame.delete(frame.id);
         }
       }
     },
@@ -1433,6 +1506,7 @@ function createTraceRecorder(options = {}) {
         const frame = callStack.pop();
         if (frame?.id !== undefined) {
           pendingAccessesByFrame.delete(frame.id);
+          deferredAccessesByFrame.delete(frame.id);
         }
       }
     },
@@ -1736,6 +1810,8 @@ function shouldTraceStatement(ts, statement) {
   return !(
     ts.isFunctionDeclaration(statement) ||
     ts.isClassDeclaration(statement) ||
+    ts.isWhileStatement(statement) ||
+    ts.isForStatement(statement) ||
     ts.isEmptyStatement(statement) ||
     ts.isBlock(statement)
   );
@@ -2146,6 +2222,162 @@ function createTraceLineStatement(ts, sourceFile, statement, variableNames, line
   );
 }
 
+function ensureBlockStatement(ts, statement) {
+  if (ts.isBlock(statement)) {
+    return statement;
+  }
+  return ts.factory.createBlock([statement], true);
+}
+
+function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variableNames, lineFunctionMap, defaultFunctionName) {
+  const originalNode = ts.getOriginalNode(whileStatement) ?? whileStatement;
+  const tracedLine = createTraceLineStatement(
+    ts,
+    sourceFile,
+    originalNode,
+    variableNames,
+    lineFunctionMap,
+    defaultFunctionName
+  );
+  const visitedBodyBlock = ensureBlockStatement(ts, whileStatement.statement);
+  const guardedBreak = ts.factory.createIfStatement(
+    ts.factory.createPrefixUnaryExpression(
+      ts.SyntaxKind.ExclamationToken,
+      whileStatement.expression
+    ),
+    ts.factory.createBreakStatement(),
+    undefined
+  );
+  return ts.factory.createWhileStatement(
+    ts.factory.createTrue(),
+    ts.factory.createBlock(
+      [
+        tracedLine,
+        guardedBreak,
+        ...visitedBodyBlock.statements,
+      ],
+      true
+    )
+  );
+}
+
+function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNames, lineFunctionMap, defaultFunctionName) {
+  const originalNode = ts.getOriginalNode(forStatement) ?? forStatement;
+  const tracedLineCall = createTraceLineStatement(
+    ts,
+    sourceFile,
+    originalNode,
+    variableNames,
+    lineFunctionMap,
+    defaultFunctionName
+  ).expression;
+  const condition = forStatement.condition ?? ts.factory.createTrue();
+  const tracedCondition = ts.factory.createParenthesizedExpression(
+    ts.factory.createBinaryExpression(
+      tracedLineCall,
+      ts.SyntaxKind.CommaToken,
+      condition
+    )
+  );
+  return ts.factory.updateForStatement(
+    forStatement,
+    forStatement.initializer,
+    tracedCondition,
+    forStatement.incrementor,
+    forStatement.statement
+  );
+}
+
+function rewriteForOfStatementForTracing(ts, sourceFile, forOfStatement, variableNames, lineFunctionMap, defaultFunctionName) {
+  const originalNode = ts.getOriginalNode(forOfStatement) ?? forOfStatement;
+  const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, originalNode.getStart(sourceFile)).line + 1;
+  const tempIndexName = `__traceForOfIndex_${lineNumber}_${originalNode.pos < 0 ? 0 : originalNode.pos}`;
+  const tempArrayName = `__traceForOfArray_${lineNumber}_${originalNode.pos < 0 ? 0 : originalNode.pos}`;
+  const arrayId = ts.factory.createIdentifier(tempArrayName);
+  const indexId = ts.factory.createIdentifier(tempIndexName);
+  const visitedBodyBlock = ensureBlockStatement(ts, forOfStatement.statement);
+  const tracedLine = createTraceLineStatement(
+    ts,
+    sourceFile,
+    originalNode,
+    variableNames,
+    lineFunctionMap,
+    defaultFunctionName
+  );
+  const tracedLineCall = createTraceLineStatement(
+    ts,
+    sourceFile,
+    originalNode,
+    variableNames,
+    lineFunctionMap,
+    defaultFunctionName
+  ).expression;
+
+  let bindingStatement;
+  if (ts.isVariableDeclarationList(forOfStatement.initializer)) {
+    const declaration = forOfStatement.initializer.declarations[0];
+    bindingStatement = ts.factory.createVariableStatement(
+      undefined,
+      ts.factory.updateVariableDeclarationList(forOfStatement.initializer, [
+        ts.factory.updateVariableDeclaration(
+          declaration,
+          declaration.name,
+          declaration.exclamationToken,
+          declaration.type,
+          ts.factory.createElementAccessExpression(arrayId, indexId)
+        ),
+      ])
+    );
+  } else {
+    bindingStatement = ts.factory.createExpressionStatement(
+      ts.factory.createAssignment(forOfStatement.initializer, ts.factory.createElementAccessExpression(arrayId, indexId))
+    );
+  }
+
+  return ts.factory.createBlock(
+    [
+      tracedLine,
+      ts.factory.createVariableStatement(
+        undefined,
+        ts.factory.createVariableDeclarationList(
+          [ts.factory.createVariableDeclaration(arrayId, undefined, undefined, forOfStatement.expression)],
+          ts.NodeFlags.Const
+        )
+      ),
+      ts.factory.createExpressionStatement(
+        ts.factory.createCallExpression(
+          ts.factory.createPropertyAccessExpression(
+            ts.factory.createIdentifier('__traceRecorder'),
+            ts.factory.createIdentifier('deferPendingAccesses')
+          ),
+          undefined,
+          [ts.factory.createNumericLiteral(1)]
+        )
+      ),
+      ts.factory.createForStatement(
+        ts.factory.createVariableDeclarationList(
+          [ts.factory.createVariableDeclaration(indexId, undefined, undefined, ts.factory.createNumericLiteral(0))],
+          ts.NodeFlags.Let
+        ),
+        ts.factory.createParenthesizedExpression(
+          ts.factory.createBinaryExpression(
+            tracedLineCall,
+            ts.SyntaxKind.CommaToken,
+            ts.factory.createBinaryExpression(
+              indexId,
+              ts.SyntaxKind.LessThanToken,
+              ts.factory.createPropertyAccessExpression(arrayId, 'length')
+            )
+          )
+        ),
+        ts.factory.createPostfixIncrement(indexId),
+        ts.factory.createBlock([bindingStatement, ...visitedBodyBlock.statements], true)
+      ),
+    ],
+    true
+  );
+}
+
 function instrumentStatementList(
   ts,
   sourceFile,
@@ -2539,6 +2771,42 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             lineFunctionMap,
             effectiveFunctionName
           )
+        );
+      }
+
+      if (ts.isWhileStatement(node)) {
+        const visited = ts.visitEachChild(node, visit, context);
+        return rewriteWhileStatementForTracing(
+          ts,
+          sourceFile,
+          visited,
+          variableNames,
+          lineFunctionMap,
+          effectiveFunctionName
+        );
+      }
+
+      if (ts.isForStatement(node)) {
+        const visited = ts.visitEachChild(node, visit, context);
+        return rewriteForStatementForTracing(
+          ts,
+          sourceFile,
+          visited,
+          variableNames,
+          lineFunctionMap,
+          effectiveFunctionName
+        );
+      }
+
+      if (ts.isForOfStatement(node)) {
+        const visited = ts.visitEachChild(node, visit, context);
+        return rewriteForOfStatementForTracing(
+          ts,
+          sourceFile,
+          visited,
+          variableNames,
+          lineFunctionMap,
+          effectiveFunctionName
         );
       }
 

@@ -31,6 +31,7 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxTraceSteps: true,
         maxLineEvents: true,
         maxSingleLineHits: true,
+        maxStoredEvents: true,
         minimalTrace: true,
       },
       fidelity: {
@@ -93,6 +94,7 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxTraceSteps: true,
         maxLineEvents: true,
         maxSingleLineHits: true,
+        maxStoredEvents: true,
         minimalTrace: true,
       },
       fidelity: {
@@ -155,6 +157,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         maxTraceSteps: true,
         maxLineEvents: true,
         maxSingleLineHits: true,
+        maxStoredEvents: true,
         minimalTrace: true,
       },
       fidelity: {
@@ -192,11 +195,11 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   capabilities: {
     execution: {
       styles: {
-        function: false,
+        function: true,
         solutionMethod: true,
         opsClass: true,
         script: false,
-        interviewMode: false,
+        interviewMode: true,
       },
       timeouts: {
         clientTimeouts: true,
@@ -214,9 +217,10 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         timeout: true,
       },
       controls: {
-        maxTraceSteps: false,
+        maxTraceSteps: true,
         maxLineEvents: false,
         maxSingleLineHits: false,
+        maxStoredEvents: true,
         minimalTrace: false,
       },
       fidelity: {
@@ -247,8 +251,9 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     },
   },
   notes: [
-    'Java currently supports the browser-local Java 17 lane for solution-method and ops-class execution.',
-    'Function-style and script-style Java are not enabled in the first harness slice.',
+    'Java currently supports the browser-local Java 17 lane for function, solution-method, and ops-class execution.',
+    'Interview-mode Java reuses the same browser-local execution path and remains experimental in the first harness slice.',
+    'Script-style Java is not enabled yet.',
   ],
 };
 

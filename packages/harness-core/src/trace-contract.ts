@@ -15,7 +15,7 @@ import type {
  * Bump this when payload shape/normalization semantics change in a way that
  * should invalidate golden fixtures.
  */
-export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-03-13';
+export const RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION = '2026-04-21';
 
 export type RuntimeTraceContractEvent =
   | 'line'
@@ -242,7 +242,46 @@ function normalizeAccesses(
     })
     .filter((access): access is RuntimeTraceAccessEvent => access !== null);
 
-  return normalized.length > 0 ? normalized : undefined;
+  if (normalized.length === 0) {
+    return undefined;
+  }
+
+  const statsByVariable = new Map<
+    string,
+    { hasCellRead: boolean; hasCellWrite: boolean }
+  >();
+  for (const access of normalized) {
+    const stats =
+      statsByVariable.get(access.variable) ?? { hasCellRead: false, hasCellWrite: false };
+    if (access.kind === 'cell-read') stats.hasCellRead = true;
+    if (access.kind === 'cell-write') stats.hasCellWrite = true;
+    statsByVariable.set(access.variable, stats);
+  }
+
+  const deduped = new Set<string>();
+  const collapsed = normalized.filter((access) => {
+    const stats = statsByVariable.get(access.variable);
+    if (access.kind === 'indexed-read' && (stats?.hasCellRead || stats?.hasCellWrite)) {
+      return false;
+    }
+    if (access.kind === 'indexed-write' && stats?.hasCellWrite) {
+      return false;
+    }
+    const key = JSON.stringify([
+      access.variable,
+      access.kind,
+      access.indices ?? null,
+      access.pathDepth ?? null,
+      access.method ?? null,
+    ]);
+    if (deduped.has(key)) {
+      return false;
+    }
+    deduped.add(key);
+    return true;
+  });
+
+  return collapsed.length > 0 ? collapsed : undefined;
 }
 
 function normalizeRecord(value: unknown): Record<string, unknown> {
@@ -349,11 +388,98 @@ function normalizeTraceStep(step: RawTraceStep): RuntimeTraceContractStep {
   };
 }
 
+function collapseTraceAccessNoise(
+  trace: RuntimeTraceContractStep[]
+): RuntimeTraceContractStep[] {
+  const variablesWithCellAccess = new Set<string>();
+  const accessStatsByVariable = new Map<
+    string,
+    {
+      hasCellRead: boolean;
+      hasCellWrite: boolean;
+      hasMutatingCall: boolean;
+      hasIndexedWrite: boolean;
+    }
+  >();
+  for (const step of trace) {
+    for (const access of step.accesses ?? []) {
+      const stats =
+        accessStatsByVariable.get(access.variable) ?? {
+          hasCellRead: false,
+          hasCellWrite: false,
+          hasMutatingCall: false,
+          hasIndexedWrite: false,
+        };
+      if (access.kind === 'cell-read' || access.kind === 'cell-write') {
+        variablesWithCellAccess.add(access.variable);
+      }
+      if (access.kind === 'cell-read') stats.hasCellRead = true;
+      if (access.kind === 'cell-write') stats.hasCellWrite = true;
+      if (access.kind === 'mutating-call') stats.hasMutatingCall = true;
+      if (access.kind === 'indexed-write') stats.hasIndexedWrite = true;
+      accessStatsByVariable.set(access.variable, stats);
+    }
+  }
+  if (variablesWithCellAccess.size === 0) {
+    return trace;
+  }
+
+  return trace.map((step) => {
+    if (!step.accesses?.length) {
+      return step;
+    }
+    const filtered = step.accesses.filter((access) => {
+      const stats = accessStatsByVariable.get(access.variable);
+      if (variablesWithCellAccess.has(access.variable)) {
+        return access.kind !== 'indexed-read' && access.kind !== 'indexed-write';
+      }
+      if (
+        access.kind === 'mutating-call' &&
+        stats?.hasIndexedWrite &&
+        !stats.hasCellRead &&
+        !stats.hasCellWrite
+      ) {
+        return false;
+      }
+      if (
+        access.kind === 'indexed-read' &&
+        stats?.hasMutatingCall &&
+        !stats.hasIndexedWrite &&
+        !stats.hasCellRead &&
+        !stats.hasCellWrite
+      ) {
+        return false;
+      }
+      return true;
+    });
+    if (filtered.length === step.accesses.length) {
+      return step;
+    }
+    return {
+      ...step,
+      ...(filtered.length > 0 ? { accesses: filtered } : {}),
+      ...(filtered.length === 0 ? { accesses: undefined } : {}),
+    };
+  });
+}
+
 export function normalizeRuntimeTraceContract(
   language: Language,
   result: ExecutionResult
 ): RuntimeTraceContractResult {
-  const normalizedTrace = Array.isArray(result.trace) ? result.trace.map(normalizeTraceStep) : [];
+  const rawNormalizedTrace = collapseTraceAccessNoise(
+    Array.isArray(result.trace) ? result.trace.map(normalizeTraceStep) : []
+  );
+  const maxTraceSteps =
+    typeof result.maxTraceSteps === 'number' && Number.isFinite(result.maxTraceSteps)
+      ? Math.max(1, Math.floor(result.maxTraceSteps))
+      : undefined;
+  const traceWasClipped =
+    maxTraceSteps !== undefined && rawNormalizedTrace.length > maxTraceSteps;
+  const normalizedTrace =
+    traceWasClipped && maxTraceSteps !== undefined
+      ? rawNormalizedTrace.slice(0, maxTraceSteps)
+      : rawNormalizedTrace;
   const lineEventCount =
     typeof result.lineEventCount === 'number' && Number.isFinite(result.lineEventCount)
       ? Math.floor(result.lineEventCount)
@@ -378,8 +504,8 @@ export function normalizeRuntimeTraceContract(
       : {}),
     consoleOutput: normalizedConsole,
     trace: normalizedTrace,
-    ...(result.traceLimitExceeded !== undefined
-      ? { traceLimitExceeded: Boolean(result.traceLimitExceeded) }
+    ...((result.traceLimitExceeded !== undefined || traceWasClipped)
+      ? { traceLimitExceeded: Boolean(result.traceLimitExceeded) || traceWasClipped }
       : {}),
     ...(typeof result.timeoutReason === 'string' && result.timeoutReason.length > 0
       ? { timeoutReason: result.timeoutReason }

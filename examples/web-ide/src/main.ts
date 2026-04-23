@@ -103,24 +103,22 @@ const EXAMPLES: Record<Language, ExampleFixture> = {
   },
   java: {
     functionName: 'solve',
-    executionStyle: 'solution-method',
+    executionStyle: 'function',
     inputs: {
       nums: [2, 7, 11, 15],
       target: 9,
     },
-    code: `class Solution {
-  public int[] solve(int[] nums, int target) {
-    java.util.Map<Integer, Integer> seen = new java.util.HashMap<>();
-    for (int index = 0; index < nums.length; index += 1) {
-      int value = nums[index];
-      int complement = target - value;
-      if (seen.containsKey(complement)) {
-        return new int[] { seen.get(complement), index };
-      }
-      seen.put(value, index);
+    code: `int[] solve(int[] nums, int target) {
+  java.util.Map<Integer, Integer> seen = new java.util.HashMap<>();
+  for (int index = 0; index < nums.length; index += 1) {
+    int value = nums[index];
+    int complement = target - value;
+    if (seen.containsKey(complement)) {
+      return new int[] { seen.get(complement), index };
     }
-    return new int[] {};
+    seen.put(value, index);
   }
+  return new int[] {};
 }`,
   },
 };

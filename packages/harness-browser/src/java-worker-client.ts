@@ -1,7 +1,7 @@
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 
 type MessageId = string;
-export type JavaExecutionStyle = 'solution-method' | 'ops-class';
+export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 export interface JavaWorkerClientOptions {
   workerUrl: string;
@@ -29,10 +29,22 @@ export interface JavaWorkerTraceResult {
   success: boolean;
   output?: unknown;
   events: string[];
+  sourceText?: string;
   executionTimeMs: number;
   error?: string;
   errorLine?: number;
   consoleOutput: string[];
+  traceLimitExceeded?: boolean;
+  timeoutReason?: 'trace-limit';
+  droppedEventCount?: number;
+}
+
+export interface JavaTraceExecutionOptions {
+  maxTraceSteps?: number;
+  maxLineEvents?: number;
+  maxSingleLineHits?: number;
+  maxStoredEvents?: number;
+  minimalTrace?: boolean;
 }
 
 const EXECUTION_TIMEOUT_MS = 20_000;
@@ -251,6 +263,7 @@ export class JavaWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
+    options: JavaTraceExecutionOptions | undefined,
     executionStyle: JavaExecutionStyle
   ): Promise<JavaWorkerTraceResult> {
     await this.init();
@@ -258,7 +271,7 @@ export class JavaWorkerClient {
       () =>
         this.sendMessage<JavaWorkerTraceResult>(
           'execute-with-tracing',
-          { code, functionName, inputs, executionStyle },
+          { code, functionName, inputs, options, executionStyle },
           TRACING_TIMEOUT_MS + 5_000
         ),
       TRACING_TIMEOUT_MS
@@ -269,9 +282,10 @@ export class JavaWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
+    options: JavaTraceExecutionOptions | undefined,
     executionStyle: JavaExecutionStyle
   ): Promise<CodeExecutionResult> {
-    const result = await this.executeWithTracing(code, functionName, inputs, executionStyle);
+    const result = await this.executeWithTracing(code, functionName, inputs, options, executionStyle);
     if (!result.success) {
       return {
         success: false,
@@ -292,9 +306,10 @@ export class JavaWorkerClient {
     code: string,
     functionName: string,
     inputs: Record<string, unknown>,
+    options: JavaTraceExecutionOptions | undefined,
     executionStyle: JavaExecutionStyle
   ): Promise<CodeExecutionResult> {
-    return this.executeCode(code, functionName, inputs, executionStyle);
+    return this.executeCode(code, functionName, inputs, options, executionStyle);
   }
 
   terminate(): void {

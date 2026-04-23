@@ -118,6 +118,7 @@ export interface ExecutionResult {
   executionTimeMs: number;
   consoleOutput: string[];
   traceLimitExceeded?: boolean;
+  maxTraceSteps?: number;
   timeoutReason?:
     | 'trace-limit'
     | 'line-limit'

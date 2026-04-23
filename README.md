@@ -1,6 +1,6 @@
 # TraceCode Harness
 
-Browser-first execution and tracing harness for Python, JavaScript, and TypeScript.
+Browser-first execution and tracing harness for Python, JavaScript, TypeScript, and an experimental Java lane.
 
 `@tracecode/harness` is a browser-consumable runtime SDK for code execution and tracing: explicit browser runtime creation, package-managed worker assets, and no app-specific storage/bootstrap contract in the public API.
 
@@ -13,6 +13,7 @@ This package provides an execution and tracing runtime for browser applications.
 It includes:
 
 - browser-hosted execution for Python, JavaScript, and TypeScript
+- an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, and `interviewMode` execution
 - trace capture and normalized runtime contracts
 - browser worker assets and asset sync tooling
 - runtime-side structural annotations such as object kinds and hash/map payloads
@@ -40,7 +41,7 @@ Consuming apps are expected to own their own UI, persistence, product logic, and
 ## What You Get
 
 - shared runtime contract types and trace adapters
-- browser runtime clients for Python, JavaScript, and TypeScript
+- browser runtime clients for Python, JavaScript, TypeScript, and Java
 - published worker assets plus a CLI to copy them into your app
 - capability profiles for honest per-language support claims
 - regression coverage for runtime parity, packaging, and consumer smoke tests
@@ -154,7 +155,7 @@ The returned harness exposes:
 Configuration:
 
 - `assetBaseUrl?: string`
-- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler }>`
+- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; javaHelperJar; javaPracticeRewriterJar; javaRewriteBridgeJar; javaParserJar; javaCompilerJar }>`
 - `debug?: boolean`
 
 Example:
@@ -180,6 +181,12 @@ if (profile.capabilities.tracing.supported) {
 - `pyodide/runtime-core.js`
 - `javascript-worker.js`
 - `vendor/typescript.js`
+- `java-worker.js`
+- `vendor/java-browser-spike-helper.jar`
+- `vendor/java-practice-rewriter.jar`
+- `vendor/java-rewrite-bridge.jar`
+- `vendor/javaparser-core-3.25.10.jar`
+- `vendor/jdk.compiler-17.jar`
 
 By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those assets as:
 
@@ -188,6 +195,12 @@ By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those 
 - `/workers/pyodide/runtime-core.js`
 - `/workers/javascript-worker.js`
 - `/workers/vendor/typescript.js`
+- `/workers/java-worker.js`
+- `/workers/vendor/java-browser-spike-helper.jar`
+- `/workers/vendor/java-practice-rewriter.jar`
+- `/workers/vendor/java-rewrite-bridge.jar`
+- `/workers/vendor/javaparser-core-3.25.10.jar`
+- `/workers/vendor/jdk.compiler-17.jar`
 
 Advanced consumers can override individual asset URLs through the `assets` option.
 
@@ -210,6 +223,18 @@ Capability domains:
 - `visualization`
 
 That lets the package be explicit about partial support and fail closed for unsupported requests.
+
+Current language status:
+
+- `python`: stable
+- `javascript`: stable
+- `typescript`: stable
+- `java`: experimental, browser-local Java 17 lane
+
+Current Java scope:
+
+- supported: `function`, `solution-method`, `ops-class`, `interviewMode`, tracing, compile diagnostics, structural visualization payloads
+- not yet supported: `script`
 
 ## Example Consumer
 
@@ -254,6 +279,7 @@ pnpm generate:python-harness
 
 This repo uses explicit versioned release boundaries.
 
+- `0.6.0` adds an experimental browser-local Java 17 runtime lane for `function`, `solution-method`, `ops-class`, and `interviewMode` execution, plus public asset packaging and browser smoke coverage for Java
 - `0.5.0` improves JavaScript tree/list input hydration, fixes sparse tree deserialization, and trims GitHub CI to the non-browser verification set
 - `0.1.0` introduced the public harness baseline
 - `0.2.0` introduced structured runtime capability profiles

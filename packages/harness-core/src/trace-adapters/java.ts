@@ -11,6 +11,9 @@ import { adaptTraceExecutionResult } from './shared';
 export interface JavaTraceResult {
   output: unknown;
   events: string[];
+  sourceText?: string;
+  traceLimitExceeded?: boolean;
+  timeoutReason?: ExecutionResult['timeoutReason'];
 }
 
 export interface JavaTraceContractResult
@@ -24,14 +27,29 @@ function parseScalar(raw: string): unknown {
   if (raw === 'false') return false;
   if (/^-?\d+$/.test(raw)) return Number.parseInt(raw, 10);
   if (/^-?\d+\.\d+$/.test(raw)) return Number.parseFloat(raw);
+  if (
+    (raw.startsWith('"') && raw.endsWith('"')) ||
+    (raw.startsWith('[') && raw.endsWith(']')) ||
+    (raw.startsWith('{') && raw.endsWith('}'))
+  ) {
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      // Fall through to raw string return.
+    }
+  }
   return raw;
 }
 
 function parseKeyValuePairs(fragment: string): Record<string, unknown> {
   const variables: Record<string, unknown> = {};
-  const pairs = fragment.match(/[A-Za-z_][A-Za-z0-9_.]*=[^\s]+/g) ?? [];
-  for (const pair of pairs) {
-    const [rawKey, rawValue] = pair.split('=');
+  const matches = Array.from(fragment.matchAll(/\b([A-Za-z_][A-Za-z0-9_.]*)=/g));
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const rawKey = match[1];
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const valueEnd = index + 1 < matches.length ? (matches[index + 1].index ?? fragment.length) : fragment.length;
+    const rawValue = fragment.slice(valueStart, valueEnd).trim();
     if (!rawKey || rawValue === undefined) continue;
     if (rawKey === 'method') continue;
     variables[rawKey.replaceAll('.', '_')] = parseScalar(rawValue);
@@ -40,17 +58,152 @@ function parseKeyValuePairs(fragment: string): Record<string, unknown> {
 }
 
 function extractLineMetadata(event: string): { line: number; payload: string } {
-  const match = event.match(/^line=(\d+)\s+(.+)$/);
+  const match = event.match(/^line=(\d+)(?:\s+(.*))?$/);
   if (!match) {
     return { line: 1, payload: event };
   }
   return {
     line: Number.parseInt(match[1], 10),
-    payload: match[2],
+    payload: match[2] ?? '',
   };
 }
 
+function stripInlineComments(line: string, inBlockComment: boolean): { text: string; inBlockComment: boolean } {
+  let result = '';
+  let index = 0;
+  let inBlock = inBlockComment;
+  while (index < line.length) {
+    const current = line[index];
+    const next = index + 1 < line.length ? line[index + 1] : '';
+
+    if (inBlock) {
+      if (current === '*' && next === '/') {
+        inBlock = false;
+        index += 2;
+        continue;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (current === '/' && next === '*') {
+      inBlock = true;
+      index += 2;
+      continue;
+    }
+
+    if (current === '/' && next === '/') {
+      break;
+    }
+
+    result += current;
+    index += 1;
+  }
+
+  return { text: result, inBlockComment: inBlock };
+}
+
+function isMethodDeclarationLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('@')) return false;
+  if (!trimmed.includes('(') || !trimmed.includes(')')) return false;
+  if (trimmed.endsWith(';')) return false;
+  if (trimmed.includes('->')) return false;
+  if (/^(?:if|for|while|switch|catch|do|try|else|return|throw|new)\b/.test(trimmed)) {
+    return false;
+  }
+  if (!/[A-Za-z_][A-Za-z0-9_]*\s*\([^{};]*\)/.test(trimmed)) {
+    return false;
+  }
+  return /(?:\{\s*)?$/.test(trimmed);
+}
+
+function buildLineRemap(sourceText: string | undefined): Map<number, number> | null {
+  if (typeof sourceText !== 'string' || sourceText.length === 0) {
+    return null;
+  }
+
+  const lines = sourceText.split(/\r?\n/);
+  const executable = new Set<number>();
+  let inBlockComment = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const { text, inBlockComment: nextInBlockComment } = stripInlineComments(lines[index] ?? '', inBlockComment);
+    inBlockComment = nextInBlockComment;
+    if (text.trim().length > 0) {
+      executable.add(index + 1);
+    }
+  }
+
+  if (executable.size === 0) {
+    return null;
+  }
+
+  const nextExecutableAtOrAfter: Array<number | null> = new Array(lines.length + 2).fill(null);
+  let nextExecutable: number | null = null;
+  for (let line = lines.length; line >= 1; line -= 1) {
+    if (executable.has(line)) {
+      nextExecutable = line;
+    }
+    nextExecutableAtOrAfter[line] = nextExecutable;
+  }
+
+  const previousExecutableAtOrBefore: Array<number | null> = new Array(lines.length + 2).fill(null);
+  let previousExecutable: number | null = null;
+  for (let line = 1; line <= lines.length; line += 1) {
+    if (executable.has(line)) {
+      previousExecutable = line;
+    }
+    previousExecutableAtOrBefore[line] = previousExecutable;
+  }
+
+  const remap = new Map<number, number>();
+  for (let line = 1; line <= lines.length; line += 1) {
+    if (executable.has(line)) continue;
+    const forward = nextExecutableAtOrAfter[line];
+    const backward = previousExecutableAtOrBefore[line];
+    const target = forward ?? backward;
+    if (target !== null && target !== line) {
+      remap.set(line, target);
+    }
+  }
+
+  return remap;
+}
+
+function buildMethodDeclarationLineSet(sourceText: string | undefined): Set<number> | null {
+  if (typeof sourceText !== 'string' || sourceText.length === 0) {
+    return null;
+  }
+
+  const declarationLines = new Set<number>();
+  const lines = sourceText.split(/\r?\n/);
+  let inBlockComment = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const { text, inBlockComment: nextInBlockComment } = stripInlineComments(lines[index] ?? '', inBlockComment);
+    inBlockComment = nextInBlockComment;
+    if (isMethodDeclarationLine(text)) {
+      declarationLines.add(index + 1);
+    }
+  }
+
+  return declarationLines;
+}
+
 function parseAccessEvent(payload: string): RuntimeTraceAccessEvent[] | undefined {
+  const isEphemeralOutputArrayName = (name: string): boolean =>
+    /^(output|outputs)$/i.test(name);
+
+  const cellRead = payload.match(/^access ([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]\[(\d+)\]=(.+)$/);
+  if (cellRead) {
+    return [{
+      variable: cellRead[1],
+      kind: 'cell-read',
+      indices: [Number.parseInt(cellRead[2], 10), Number.parseInt(cellRead[3], 10)],
+      pathDepth: 2,
+    }];
+  }
   const indexedRead = payload.match(/^access ([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]=(.+)$/);
   if (indexedRead) {
     return [{
@@ -60,8 +213,20 @@ function parseAccessEvent(payload: string): RuntimeTraceAccessEvent[] | undefine
       pathDepth: 1,
     }];
   }
+  const cellWrite = payload.match(/^write-array ([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]\[(\d+)\]=(.+)$/);
+  if (cellWrite) {
+    return [{
+      variable: cellWrite[1],
+      kind: 'cell-write',
+      indices: [Number.parseInt(cellWrite[2], 10), Number.parseInt(cellWrite[3], 10)],
+      pathDepth: 2,
+    }];
+  }
   const indexedWrite = payload.match(/^write-array ([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\]=(.+)$/);
   if (indexedWrite) {
+    if (isEphemeralOutputArrayName(indexedWrite[1])) {
+      return undefined;
+    }
     return [{
       variable: indexedWrite[1],
       kind: 'indexed-write',
@@ -133,43 +298,202 @@ function buildFieldVisualization(event: { variable: string; field: string; value
   };
 }
 
-function eventsToRawTrace(events: string[]): RawTraceStep[] {
+function callStacksEqual(
+  left: RawTraceStep['callStack'] | undefined,
+  right: RawTraceStep['callStack'] | undefined
+): boolean {
+  return JSON.stringify(left ?? []) === JSON.stringify(right ?? []);
+}
+
+function mergeVisualizationPayloads(
+  left: RuntimeVisualizationPayload | undefined,
+  right: RuntimeVisualizationPayload | undefined
+): RuntimeVisualizationPayload | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return {
+    ...left,
+    ...right,
+    objectKinds: {
+      ...(left.objectKinds ?? {}),
+      ...(right.objectKinds ?? {}),
+    },
+    hashMaps: [
+      ...(left.hashMaps ?? []),
+      ...(right.hashMaps ?? []),
+    ],
+  };
+}
+
+function maybeMergeConsecutiveLineStep(trace: RawTraceStep[], nextStep: RawTraceStep): boolean {
+  if (nextStep.event !== 'line') {
+    return false;
+  }
+  const previous = trace.at(-1);
+  if (!previous || previous.event !== 'line') {
+    return false;
+  }
+  if (previous.line !== nextStep.line || previous.function !== nextStep.function) {
+    return false;
+  }
+  if (!callStacksEqual(previous.callStack, nextStep.callStack)) {
+    return false;
+  }
+
+  previous.variables = { ...(previous.variables ?? {}), ...(nextStep.variables ?? {}) };
+  if (nextStep.accesses?.length) {
+    previous.accesses = [...(previous.accesses ?? []), ...nextStep.accesses];
+  }
+  previous.visualization = mergeVisualizationPayloads(previous.visualization, nextStep.visualization);
+  return true;
+}
+
+function filterStructuredVariables(
+  variables: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!variables) {
+    return undefined;
+  }
+  const isEphemeralOutputArrayName = (name: string): boolean =>
+    /^(output|outputs)$/i.test(name);
+  const entries = Object.entries(variables).filter(([name, value]) => {
+    if (value === null || typeof value !== 'object') {
+      return false;
+    }
+    if (!Array.isArray(value)) {
+      return true;
+    }
+    if (Array.isArray(value[0])) {
+      return true;
+    }
+    return !isEphemeralOutputArrayName(name);
+  });
+  if (entries.length === 0) {
+    return undefined;
+  }
+  return Object.fromEntries(entries);
+}
+
+function appendJavaTraceStep(
+  trace: RawTraceStep[],
+  step: RawTraceStep,
+  pendingAccesses: RuntimeTraceAccessEvent[]
+): void {
+  const nextStep: RawTraceStep = pendingAccesses.length > 0
+    ? { ...step, accesses: [...pendingAccesses] }
+    : step;
+  pendingAccesses.length = 0;
+  if (!maybeMergeConsecutiveLineStep(trace, nextStep)) {
+    trace.push(nextStep);
+  }
+}
+
+function mergeIntoPreviousMatchingLineStep(
+  trace: RawTraceStep[],
+  line: number,
+  currentFunction: string,
+  currentCallStack: RawTraceStep['callStack'],
+  patch: Partial<Pick<RawTraceStep, 'variables' | 'accesses' | 'visualization'>>
+): boolean {
+  const candidate = trace.at(-1);
+  if (!candidate || candidate.event !== 'line') {
+    return false;
+  }
+  if (candidate.line !== line || candidate.function !== currentFunction) {
+    return false;
+  }
+  if (!callStacksEqual(candidate.callStack, currentCallStack)) {
+    return false;
+  }
+
+  candidate.variables = { ...(candidate.variables ?? {}), ...(patch.variables ?? {}) };
+  if (patch.accesses?.length) {
+    candidate.accesses = [...(candidate.accesses ?? []), ...patch.accesses];
+  }
+  candidate.visualization = mergeVisualizationPayloads(candidate.visualization, patch.visualization);
+  return true;
+}
+
+function mergeAccessesIntoPreviousMatchingLineStep(
+  trace: RawTraceStep[],
+  line: number,
+  currentFunction: string,
+  currentCallStack: RawTraceStep['callStack'],
+  accesses: RuntimeTraceAccessEvent[]
+): boolean {
+  return mergeIntoPreviousMatchingLineStep(trace, line, currentFunction, currentCallStack, {
+    variables: undefined,
+    accesses,
+    visualization: undefined,
+  });
+}
+
+function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[] {
   const trace: RawTraceStep[] = [];
   const variables: Record<string, unknown> = {};
   const objectKinds: Record<string, 'linked-list' | 'tree'> = {};
   const stack: Array<{ function: string; line: number }> = [];
+  const pendingAccesses: RuntimeTraceAccessEvent[] = [];
   let currentFunction = '<module>';
+  const lineRemap = buildLineRemap(sourceText);
+  const declarationLines = buildMethodDeclarationLineSet(sourceText);
 
   for (const rawEvent of events) {
     if (rawEvent === 'clear' || rawEvent === 'reset') continue;
-    const { line, payload } = extractLineMetadata(rawEvent);
+    const metadata = extractLineMetadata(rawEvent);
+    const line = lineRemap?.get(metadata.line) ?? metadata.line;
+    const payload = metadata.payload;
+    const isDeclarationLine = declarationLines?.has(line) === true;
 
     if (payload.startsWith('call ')) {
-      const [functionName, ...rest] = payload.slice('call '.length).split(' ');
-      Object.assign(variables, parseKeyValuePairs(rest.join(' ')));
+      const match = payload.match(/^call\s+(\S+)(?:\s+(.*))?$/);
+      const functionName = match?.[1] ?? currentFunction;
+      const argsFragment = match?.[2] ?? '';
+      Object.assign(variables, parseKeyValuePairs(argsFragment));
       currentFunction = functionName || currentFunction;
       stack.push({ function: currentFunction, line });
-      trace.push({
+      appendJavaTraceStep(trace, {
         line,
         event: 'call',
         function: currentFunction,
         variables: { ...variables },
         callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
-      });
+      }, pendingAccesses);
       continue;
     }
 
     if (payload.startsWith('return ')) {
-      const [functionName] = payload.slice('return '.length).split(' ');
-      trace.push({
+      const match = payload.match(/^return\s+(\S+)$/);
+      const functionName = match?.[1] ?? currentFunction;
+      const returnVariables = functionName === '<module>'
+        ? { ...variables }
+        : (filterStructuredVariables(variables) ?? {});
+      appendJavaTraceStep(trace, {
         line,
         event: 'return',
         function: functionName || currentFunction,
-        variables: { ...variables },
+        variables: returnVariables,
         callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
-      });
+      }, pendingAccesses);
       stack.pop();
       currentFunction = stack[stack.length - 1]?.function ?? '<module>';
+      continue;
+    }
+
+    if (isDeclarationLine) {
+      continue;
+    }
+
+    if (payload.length === 0) {
+      appendJavaTraceStep(trace, {
+        line,
+        event: 'line',
+        function: currentFunction,
+        variables: { ...variables },
+        ...(stack.length > 0
+          ? { callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) }
+          : {}),
+      }, pendingAccesses);
       continue;
     }
 
@@ -177,7 +501,7 @@ function eventsToRawTrace(events: string[]): RawTraceStep[] {
     if (structureState) {
       variables[structureState.variable] = structureState.value;
       objectKinds[structureState.variable] = structureState.structure;
-      trace.push({
+      appendJavaTraceStep(trace, {
         line,
         event: 'line',
         function: currentFunction,
@@ -186,14 +510,14 @@ function eventsToRawTrace(events: string[]): RawTraceStep[] {
         visualization: {
           objectKinds: { ...objectKinds },
         },
-      });
+      }, pendingAccesses);
       continue;
     }
 
     const objectState = parseObjectState(payload);
     if (objectState) {
       variables[objectState.variable] = { __ref__: objectState.visualization.objectId ?? `${objectState.variable}-object` };
-      trace.push({
+      appendJavaTraceStep(trace, {
         line,
         event: 'line',
         function: currentFunction,
@@ -203,27 +527,45 @@ function eventsToRawTrace(events: string[]): RawTraceStep[] {
           objectKinds: { [objectState.variable]: 'object' },
           hashMaps: [objectState.visualization],
         },
-      });
+      }, pendingAccesses);
       continue;
     }
 
     const objectField = parseObjectFieldEvent(payload);
     if (objectField) {
       variables[objectField.variable] = { __ref__: `${objectField.variable}-object` };
-      trace.push({
+      const currentCallStack =
+        stack.length > 0 ? stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) : undefined;
+      if (mergeIntoPreviousMatchingLineStep(trace, line, currentFunction, currentCallStack, {
+        variables: { ...variables },
+        accesses: undefined,
+        visualization: buildFieldVisualization(objectField),
+      })) {
+        continue;
+      }
+      appendJavaTraceStep(trace, {
         line,
         event: 'line',
         function: currentFunction,
         variables: { ...variables },
         callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
         visualization: buildFieldVisualization(objectField),
-      });
+      }, pendingAccesses);
       continue;
     }
 
     Object.assign(variables, parseKeyValuePairs(payload));
     const accesses = parseAccessEvent(payload);
-    trace.push({
+    if (accesses) {
+      const currentCallStack =
+        stack.length > 0 ? stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) : undefined;
+      if (mergeAccessesIntoPreviousMatchingLineStep(trace, line, currentFunction, currentCallStack, accesses)) {
+        continue;
+      }
+      pendingAccesses.push(...accesses);
+      continue;
+    }
+    appendJavaTraceStep(trace, {
       line,
       event: 'line',
       function: currentFunction,
@@ -231,28 +573,54 @@ function eventsToRawTrace(events: string[]): RawTraceStep[] {
       ...(stack.length > 0
         ? { callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) }
         : {}),
-      ...(accesses ? { accesses } : {}),
-    });
+    }, pendingAccesses);
+  }
+
+  if (pendingAccesses.length > 0 && trace.length > 0) {
+    const last = trace[trace.length - 1];
+    last.accesses = [...(last.accesses ?? []), ...pendingAccesses];
   }
 
   return trace;
 }
 
-export function buildJavaExecutionResult(output: unknown, events: string[], executionTimeMs = 0): ExecutionResult {
-  const trace = eventsToRawTrace(events);
+export function buildJavaExecutionResult(
+  output: unknown,
+  events: string[],
+  executionTimeMs = 0,
+  traceLimitExceeded?: boolean,
+  timeoutReason?: ExecutionResult['timeoutReason'],
+  maxTraceSteps?: number,
+  sourceText?: string
+): ExecutionResult {
+  const trace = eventsToRawTrace(events, sourceText);
   return {
     success: true,
     output,
     trace,
     executionTimeMs,
     consoleOutput: [],
+    ...(traceLimitExceeded !== undefined ? { traceLimitExceeded } : {}),
+    ...(maxTraceSteps !== undefined ? { maxTraceSteps } : {}),
+    ...(timeoutReason ? { timeoutReason } : {}),
     lineEventCount: trace.filter((step) => step.event === 'line').length,
     traceStepCount: trace.length,
   };
 }
 
 export function normalizeJavaTraceContract(result: JavaTraceResult): JavaTraceContractResult {
-  const normalized = normalizeRuntimeTraceContract('java', buildJavaExecutionResult(result.output, result.events));
+  const normalized = normalizeRuntimeTraceContract(
+    'java',
+    buildJavaExecutionResult(
+      result.output,
+      result.events,
+      0,
+      result.traceLimitExceeded,
+      result.timeoutReason,
+      undefined,
+      result.sourceText
+    )
+  );
   return {
     ...normalized,
     language: 'java',

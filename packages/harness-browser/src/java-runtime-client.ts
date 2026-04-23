@@ -21,7 +21,7 @@ class JavaRuntimeClient implements RuntimeClient {
     code: string,
     functionName: string | null,
     inputs: Record<string, unknown>,
-    _options?: TraceExecutionOptions,
+    options?: TraceExecutionOptions,
     executionStyle: RuntimeExecutionStyle = 'function'
   ): Promise<ExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
@@ -34,6 +34,7 @@ class JavaRuntimeClient implements RuntimeClient {
       code,
       functionName ?? '',
       inputs,
+      options,
       executionStyle as JavaExecutionStyle
     );
 
@@ -45,13 +46,25 @@ class JavaRuntimeClient implements RuntimeClient {
         trace: [],
         executionTimeMs: rawResult.executionTimeMs,
         consoleOutput: rawResult.consoleOutput,
+        ...(rawResult.traceLimitExceeded !== undefined
+          ? { traceLimitExceeded: rawResult.traceLimitExceeded }
+          : {}),
+        ...(rawResult.timeoutReason ? { timeoutReason: rawResult.timeoutReason } : {}),
         lineEventCount: 0,
         traceStepCount: 0,
       };
     }
 
     const adapted = adaptJavaTraceExecutionResult(
-      buildJavaExecutionResult(rawResult.output, rawResult.events, rawResult.executionTimeMs)
+      buildJavaExecutionResult(
+        rawResult.output,
+        rawResult.events,
+        rawResult.executionTimeMs,
+        rawResult.traceLimitExceeded,
+        rawResult.timeoutReason,
+        undefined,
+        rawResult.sourceText
+      )
     );
     return {
       ...adapted,
@@ -71,7 +84,13 @@ class JavaRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    return this.workerClient.executeCode(code, functionName, inputs, executionStyle as JavaExecutionStyle);
+    return this.workerClient.executeCode(
+      code,
+      functionName,
+      inputs,
+      undefined,
+      executionStyle as JavaExecutionStyle
+    );
   }
 
   async executeCodeInterviewMode(
@@ -89,6 +108,7 @@ class JavaRuntimeClient implements RuntimeClient {
       code,
       functionName,
       inputs,
+      undefined,
       executionStyle as JavaExecutionStyle
     );
   }

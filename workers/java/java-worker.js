@@ -12,6 +12,7 @@ const FULL_CLASSPATH = [
   JAVAPARSER_JAR_PATH,
 ].join(':');
 const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
+const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const IDLE_TIMEOUT_MS = 90_000;
 
 let workerReadyPromise = null;
@@ -42,9 +43,21 @@ function resetIdleTimer() {
 }
 
 function assertSupportedExecutionStyle(executionStyle) {
-  if (executionStyle !== 'solution-method' && executionStyle !== 'ops-class') {
+  if (executionStyle !== 'function' && executionStyle !== 'solution-method' && executionStyle !== 'ops-class') {
     throw new Error(`Java worker does not support execution style "${executionStyle}".`);
   }
+}
+
+function resolveMaxStoredEvents(options = {}) {
+  const fromStored = Number(options.maxStoredEvents);
+  if (Number.isFinite(fromStored) && fromStored > 0) {
+    return Math.floor(fromStored);
+  }
+  const fromTraceSteps = Number(options.maxTraceSteps);
+  if (Number.isFinite(fromTraceSteps) && fromTraceSteps > 0) {
+    return Math.floor(fromTraceSteps);
+  }
+  return DEFAULT_MAX_STORED_EVENTS;
 }
 
 function isRecord(value) {
@@ -322,6 +335,65 @@ function extractMethodParameters(source, methodName) {
     });
 }
 
+function indentBlock(source, spaces = 2) {
+  const prefix = ' '.repeat(spaces);
+  return source
+    .split('\n')
+    .map((line) => (line.trim().length === 0 ? '' : `${prefix}${line}`))
+    .join('\n');
+}
+
+function normalizeFunctionSource(source) {
+  if (/\bpackage\s+[A-Za-z_][A-Za-z0-9_.]*\s*;/.test(source)) {
+    throw new Error('Java function style should not declare a package; the harness manages package isolation.');
+  }
+
+  if (/\bclass\s+Solution\b/.test(source)) {
+    return source;
+  }
+
+  if (/\b(class|interface|enum|record)\b/.test(source)) {
+    throw new Error(
+      'Java function style currently expects a bare method fragment or a class named Solution containing the target method.'
+    );
+  }
+
+  const lines = source.split('\n');
+  const importLines = [];
+  const bodyLines = [];
+  let inImportPrelude = true;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (inImportPrelude && (trimmed === '' || trimmed.startsWith('import '))) {
+      importLines.push(line);
+      continue;
+    }
+    inImportPrelude = false;
+    bodyLines.push(line);
+  }
+
+  const importBlock = importLines.join('\n').trim();
+  const body = bodyLines.join('\n').trim();
+  if (!body) {
+    throw new Error('Java function style requires a method fragment.');
+  }
+
+  return `${importBlock ? `${importBlock}\n\n` : ''}class Solution {\n${indentBlock(body, 2)}\n}`;
+}
+
+function normalizeJavaRequest(payload) {
+  if (payload.executionStyle !== 'function') {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    code: normalizeFunctionSource(payload.code),
+    executionStyle: 'solution-method',
+  };
+}
+
 function buildExportsSource(source, functionName, executionStyle, input) {
   const features = detectFeatures(source, input);
   const helperMethods = buildHelperMethods(features);
@@ -461,19 +533,20 @@ public class ExportsTracecodeWarmup {
 }
 
 async function rewriteSource(payload, requestId) {
+  const normalizedPayload = normalizeJavaRequest(payload);
   const rewriteLibraryClass = await getRewriteLibraryClass();
   const exportsClassName = buildExportsClassName(requestId);
   const packageName = buildPackageName(requestId);
   const exportsSource = buildExportsSource(
-    payload.code,
-    payload.functionName,
-    payload.executionStyle,
-    payload.inputs ?? {}
+    normalizedPayload.code,
+    normalizedPayload.functionName,
+    normalizedPayload.executionStyle,
+    normalizedPayload.inputs ?? {}
   );
   return rewriteLibraryClass.rewriteSource(
-    payload.code,
-    payload.executionStyle,
-    payload.functionName,
+    normalizedPayload.code,
+    normalizedPayload.executionStyle,
+    normalizedPayload.functionName,
     exportsSource,
     exportsClassName,
     packageName
@@ -505,7 +578,8 @@ async function runJavaRequest(payload, requestId) {
     classesDir,
     `${packageName}.${exportsClassName}`,
     HELPER_JAR_PATH,
-    DEFAULT_COMPILER_DEBUG_PROFILE
+    DEFAULT_COMPILER_DEBUG_PROFILE,
+    String(resolveMaxStoredEvents(payload.options))
   );
   const libraryCallEnd = performance.now();
 
@@ -526,6 +600,13 @@ async function runJavaRequest(payload, requestId) {
         report.compilerStderr ||
         report.compilerStdout ||
         'Java execution failed',
+      ...(report.traceLimitExceeded !== undefined
+        ? {
+            traceLimitExceeded: Boolean(report.traceLimitExceeded),
+            timeoutReason: report.traceLimitExceeded ? 'trace-limit' : undefined,
+            droppedEventCount: report.droppedEventCount ?? 0,
+          }
+        : {}),
       timings: {
         rewriteMs: rewriteEnd - rewriteStart,
         hostCallMs: libraryCallEnd - libraryCallStart,
@@ -540,6 +621,13 @@ async function runJavaRequest(payload, requestId) {
     events: Array.isArray(report.events) ? report.events : [],
     executionTimeMs: totalEnd - totalStart,
     consoleOutput,
+    ...(report.traceLimitExceeded !== undefined
+      ? {
+          traceLimitExceeded: Boolean(report.traceLimitExceeded),
+          timeoutReason: report.traceLimitExceeded ? 'trace-limit' : undefined,
+          droppedEventCount: report.droppedEventCount ?? 0,
+        }
+      : {}),
     timings: {
       rewriteMs: rewriteEnd - rewriteStart,
       hostCallMs: libraryCallEnd - libraryCallStart,

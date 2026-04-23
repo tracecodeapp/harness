@@ -20,22 +20,23 @@ export interface RuntimeCapabilities {
       runtimeTimeouts: boolean;
     };
   };
-  tracing: {
-    supported: boolean;
-    events: {
+    tracing: {
+      supported: boolean;
+      events: {
       line: boolean;
       call: boolean;
       return: boolean;
       exception: boolean;
       stdout: boolean;
       timeout: boolean;
-    };
-    controls: {
-      maxTraceSteps: boolean;
-      maxLineEvents: boolean;
-      maxSingleLineHits: boolean;
-      minimalTrace: boolean;
-    };
+      };
+      controls: {
+        maxTraceSteps: boolean;
+        maxLineEvents: boolean;
+        maxSingleLineHits: boolean;
+        maxStoredEvents: boolean;
+        minimalTrace: boolean;
+      };
     fidelity: {
       preciseLineMapping: boolean;
       stableFunctionNames: boolean;
@@ -64,10 +65,14 @@ export interface RuntimeCapabilities {
   };
 }
 
-export interface TraceExecutionOptions {
+export interface TraceBudget {
   maxTraceSteps?: number;
   maxLineEvents?: number;
   maxSingleLineHits?: number;
+  maxStoredEvents?: number;
+}
+
+export interface TraceExecutionOptions extends TraceBudget {
   minimalTrace?: boolean;
 }
 
