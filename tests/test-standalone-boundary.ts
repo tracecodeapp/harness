@@ -32,6 +32,7 @@ const SCANNED_FILES = [
   'packages/harness-python/src/python-harness.ts',
   'workers/javascript/javascript-worker.js',
   'workers/java/java-worker.js',
+  'workers/java/java-source-augmentations.cjs',
   'workers/python/pyodide-worker.js',
   'workers/python/runtime-core.js',
 ];

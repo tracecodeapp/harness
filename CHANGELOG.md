@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.6.5] - 2026-04-26
+
+### Added
+
+- Added Java visualizer harness support for public runtime trace metadata used by the app visualization path.
+
+### Fixed
+
+- Improved Java trace bookkeeping parity so emitted trace steps line up with the shared runtime contract.
+- Fixed Python runtime access attribution regressions caught while validating cross-language visualization parity.
+- Preserved Java script-mode tracing behavior through the updated harness assets.
+
+### Notes
+
+- `0.6.5` skips `0.6.4` intentionally because this release bundles the larger Java visualization compatibility update.
+
 ## [0.6.2] - 2026-04-23
 
 ### Added

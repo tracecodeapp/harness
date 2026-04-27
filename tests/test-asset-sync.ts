@@ -30,6 +30,7 @@ async function main(): Promise<void> {
     'pyodide/runtime-core.js',
     'javascript-worker.js',
     'java-worker.js',
+    'java-source-augmentations.cjs',
     'vendor/typescript.js',
     'vendor/java-browser-spike-helper.jar',
     'vendor/java-practice-rewriter.jar',
@@ -48,6 +49,10 @@ async function main(): Promise<void> {
   assertCondition(rootEntries.includes('pyodide-worker.js'), 'Asset sync should flatten the Python worker into the target root');
   assertCondition(rootEntries.includes('javascript-worker.js'), 'Asset sync should flatten the JavaScript worker into the target root');
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
+  assertCondition(
+    rootEntries.includes('java-source-augmentations.cjs'),
+    'Asset sync should flatten the Java augmentation helper into the target root'
+  );
   console.log('PASS: asset sync CLI copies the canonical worker asset set');
 }
 

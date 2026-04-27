@@ -31,8 +31,11 @@ import sys
 import json
 import math
 import ast
+from typing import *
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
+
+_TRACECODE_TYPING_GLOBALS = {name for name in globals().keys() if not name.startswith('_')}
 
 _trace_data = []
 _console_output = []
@@ -69,14 +72,16 @@ ${deps.PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET}
 
 _call_stack = []
 _pending_accesses = {}
+_last_trace_index_by_frame = {}
 _prev_hashmap_snapshots = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert'}
-_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
-    '_call_stack', '_pending_accesses', '_prev_hashmap_snapshots', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
+    '_TRACECODE_TYPING_GLOBALS',
+    '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_prev_hashmap_snapshots', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
@@ -84,10 +89,11 @@ _internal_locals = {
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta',
     '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result',
-    '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_normalize_indices',
+    '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step',
+    '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices',
     '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value',
     '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index',
-    '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_collapsed_literal_lines',
+    '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_collapsed_literal_lines',
     '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
     '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
@@ -381,6 +387,27 @@ def __tracecode_flush_accesses(frame):
         return []
     return _pending_accesses.pop(id(frame), [])
 
+def __tracecode_append_trace_step(frame, step):
+    _trace_data.append(step)
+    if frame is not None:
+        _last_trace_index_by_frame[id(frame)] = len(_trace_data) - 1
+
+def __tracecode_attach_accesses_to_previous_step(frame):
+    accesses = __tracecode_flush_accesses(frame)
+    if not accesses:
+        return []
+    frame_key = id(frame)
+    previous_index = _last_trace_index_by_frame.get(frame_key)
+    if previous_index is not None and 0 <= previous_index < len(_trace_data):
+        previous_step = _trace_data[previous_index]
+        existing_accesses = previous_step.get('accesses')
+        if isinstance(existing_accesses, list):
+            existing_accesses.extend(accesses)
+        else:
+            previous_step['accesses'] = accesses
+        return []
+    return accesses
+
 def __tracecode_normalize_indices(indices, max_depth=2):
     if not isinstance(indices, (list, tuple)) or len(indices) == 0 or len(indices) > max_depth:
         return None
@@ -509,6 +536,18 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
         )
     return result
 
+def _tracecode_mutating_index_call(var_name, container, indices, method_name, *args, **kwargs):
+    effective_indices = list(indices)
+    target = __tracecode_read_value(container, effective_indices)
+    result = getattr(target, method_name)(*args, **kwargs)
+    normalized = __tracecode_normalize_indices(effective_indices)
+    if method_name in _TRACE_MUTATING_METHODS:
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(var_name, 'mutating-call', normalized, method_name),
+        )
+    return result
+
 def __tracecode_attach_parents(node, parent=None):
     for child in ast.iter_child_nodes(node):
         setattr(child, '__trace_parent__', node)
@@ -609,6 +648,25 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         return ast.copy_location(ast.Expr(value=call), node)
 
     def visit_Call(self, node):
+        if isinstance(node.func, ast.Attribute):
+            method_name = node.func.attr
+            if method_name in _TRACE_MUTATING_METHODS:
+                extracted = _tracecode_extract_named_subscript(node.func.value)
+                if extracted is not None:
+                    var_name, indices = extracted
+                    call = ast.Call(
+                        func=ast.Name(id='_tracecode_mutating_index_call', ctx=ast.Load()),
+                        args=[
+                            ast.Constant(value=var_name),
+                            ast.Name(id=var_name, ctx=ast.Load()),
+                            ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
+                            ast.Constant(value=method_name),
+                            *[self.visit(arg) for arg in node.args],
+                        ],
+                        keywords=[self.visit(keyword) for keyword in node.keywords],
+                    )
+                    return ast.copy_location(call, node)
+
         node = self.generic_visit(node)
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             method_name = node.func.attr
@@ -919,6 +977,7 @@ def _tracer(frame, event, arg):
     
     # Fast counter for any loops
     if event == 'line':
+        __tracecode_attach_accesses_to_previous_step(frame)
         if frame.f_code.co_filename == '<user_code>' and frame.f_lineno in _tracecode_collapsed_literal_lines:
             return _tracer
         _total_line_events += 1
@@ -929,14 +988,14 @@ def _tracer(frame, event, arg):
                 _trace_limit_exceeded = True
                 _timeout_reason = 'line-limit'
                 _infinite_loop_line = frame.f_lineno
-                _trace_data.append({
+                __tracecode_append_trace_step(frame, {
                     'line': frame.f_lineno,
                     'event': 'timeout',
                     'variables': {'timeoutReason': _timeout_reason},
                     'function': func_name,
                     'callStack': _snapshot_call_stack(),
                     'stdoutLineCount': len(_console_output),
-                    'accesses': __tracecode_flush_accesses(frame),
+                    'accesses': [],
                 })
                 sys.settrace(None)
                 raise _InfiniteLoopDetected(f"Exceeded {_max_line_events} line events")
@@ -951,7 +1010,7 @@ def _tracer(frame, event, arg):
                 _infinite_loop_line = frame.f_lineno
                 local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
                 local_vars['timeoutReason'] = _timeout_reason
-                _trace_data.append({
+                __tracecode_append_trace_step(frame, {
                     'line': frame.f_lineno,
                     'event': 'timeout',
                     'variables': local_vars,
@@ -959,7 +1018,7 @@ def _tracer(frame, event, arg):
                     'function': func_name,
                     'callStack': _snapshot_call_stack(),
                     'stdoutLineCount': len(_console_output),
-                    'accesses': __tracecode_flush_accesses(frame),
+                    'accesses': [],
                     'visualization': _build_runtime_visualization(local_vars, frame)
                 })
                 sys.settrace(None)
@@ -971,14 +1030,15 @@ def _tracer(frame, event, arg):
             _trace_limit_exceeded = True
             _timeout_reason = 'trace-limit'
             _infinite_loop_line = frame.f_lineno
-            _trace_data.append({
+            __tracecode_attach_accesses_to_previous_step(frame)
+            __tracecode_append_trace_step(frame, {
                 'line': frame.f_lineno,
                 'event': 'timeout',
                 'variables': {'timeoutReason': _timeout_reason},
                 'function': func_name,
                 'callStack': _snapshot_call_stack(),
                 'stdoutLineCount': len(_console_output),
-                'accesses': __tracecode_flush_accesses(frame),
+                'accesses': [],
             })
             sys.settrace(None)
             raise _InfiniteLoopDetected(f"Exceeded {_max_trace_steps} trace steps")
@@ -993,7 +1053,7 @@ def _tracer(frame, event, arg):
             })
         if _MINIMAL_TRACE:
             return _tracer
-        _trace_data.append({
+        __tracecode_append_trace_step(frame, {
             'line': frame.f_lineno,
             'event': 'call',
             'variables': local_vars,
@@ -1008,7 +1068,7 @@ def _tracer(frame, event, arg):
         if _MINIMAL_TRACE:
             return _tracer
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
-        _trace_data.append({
+        __tracecode_append_trace_step(frame, {
             'line': frame.f_lineno,
             'event': event,
             'variables': local_vars,
@@ -1016,13 +1076,14 @@ def _tracer(frame, event, arg):
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
-            'accesses': __tracecode_flush_accesses(frame),
+            'accesses': [],
             'visualization': _build_runtime_visualization(local_vars, frame)
         })
     elif event == 'return':
+        __tracecode_attach_accesses_to_previous_step(frame)
         if not _MINIMAL_TRACE:
             local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
-            _trace_data.append({
+            __tracecode_append_trace_step(frame, {
                 'line': frame.f_lineno,
                 'event': 'return',
                 'variables': local_vars,
@@ -1031,11 +1092,12 @@ def _tracer(frame, event, arg):
                 'returnValue': _serialize(arg),
                 'callStack': _snapshot_call_stack(),
                 'stdoutLineCount': len(_console_output),
-                'accesses': __tracecode_flush_accesses(frame),
+                'accesses': [],
                 'visualization': _build_runtime_visualization(local_vars, frame)
             })
         _clear_frame_hashmap_snapshots(frame)
         _pending_accesses.pop(id(frame), None)
+        _last_trace_index_by_frame.pop(id(frame), None)
         if _call_stack and _call_stack[-1]['function'] == func_name:
             _call_stack.pop()
 
@@ -1046,7 +1108,7 @@ def _tracer(frame, event, arg):
 _real_globals = __builtins__['globals'] if isinstance(__builtins__, dict) else getattr(__builtins__, 'globals')
 _real_list = __builtins__['list'] if isinstance(__builtins__, dict) else getattr(__builtins__, 'list')
 _globals_dict = _real_globals()
-_preserve = {"TreeNode", "ListNode", 'sys', 'json', 'math', 'ast', 'print', '__builtins__', '__name__', '__doc__', '__package__', '__loader__', '__spec__'}
+_preserve = {"TreeNode", "ListNode", 'sys', 'json', 'math', 'ast', 'print', '__builtins__', '__name__', '__doc__', '__package__', '__loader__', '__spec__'} | _TRACECODE_TYPING_GLOBALS
 for _k in _real_list(_globals_dict.keys()):
     if not _k.startswith('_') and _k not in _preserve:
         _globals_dict.pop(_k, None)

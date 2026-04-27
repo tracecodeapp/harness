@@ -116,6 +116,7 @@ export function generateSolutionScript(
   return `
 import json
 import sys
+from typing import *
 
 ${PYTHON_CLASS_DEFINITIONS}
 

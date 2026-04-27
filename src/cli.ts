@@ -25,6 +25,10 @@ const ASSET_COPY_PLAN = [
     target: ['java-worker.js'],
   },
   {
+    source: ['workers', 'java', 'java-source-augmentations.cjs'],
+    target: ['java-source-augmentations.cjs'],
+  },
+  {
     source: ['workers', 'vendor', 'typescript.js'],
     target: ['vendor', 'typescript.js'],
   },

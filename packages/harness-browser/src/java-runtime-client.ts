@@ -63,7 +63,8 @@ class JavaRuntimeClient implements RuntimeClient {
         rawResult.traceLimitExceeded,
         rawResult.timeoutReason,
         undefined,
-        rawResult.sourceText
+        rawResult.sourceText,
+        { outputIsSerialized: false }
       )
     );
     return {

@@ -41,6 +41,17 @@ function parseScalar(raw: string): unknown {
   return raw;
 }
 
+export function normalizeJavaSerializedResult(output: unknown): unknown {
+  if (typeof output !== 'string') {
+    return output;
+  }
+  try {
+    return JSON.parse(output) as unknown;
+  } catch {
+    return output;
+  }
+}
+
 function parseKeyValuePairs(fragment: string): Record<string, unknown> {
   const variables: Record<string, unknown> = {};
   const matches = Array.from(fragment.matchAll(/\b([A-Za-z_][A-Za-z0-9_.]*)=/g));
@@ -243,14 +254,33 @@ function parseAccessEvent(payload: string): RuntimeTraceAccessEvent[] | undefine
       pathDepth: 1,
     }];
   }
+  const indexedMutatingCall = payload.match(/^mutate-indexed ([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\] method=([A-Za-z_][A-Za-z0-9_]*)$/);
+  if (indexedMutatingCall) {
+    return [{
+      variable: indexedMutatingCall[1],
+      kind: 'mutating-call',
+      indices: [Number.parseInt(indexedMutatingCall[2], 10)],
+      method: indexedMutatingCall[3],
+      pathDepth: 1,
+    }];
+  }
+  const keyedCall = payload.match(/^keyed-call ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)(?:\s+.*)?$/);
+  if (keyedCall) {
+    return [{
+      variable: keyedCall[1],
+      kind: 'mutating-call',
+      method: keyedCall[2],
+      pathDepth: 1,
+    }];
+  }
   return undefined;
 }
 
-function parseStructureState(payload: string): { structure: 'linked-list' | 'tree'; variable: string; value: unknown } | null {
-  const match = payload.match(/^state (linked-list|tree) ([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
+function parseStructureState(payload: string): { structure: 'linked-list' | 'tree' | 'graph-adjacency'; variable: string; value: unknown } | null {
+  const match = payload.match(/^state (linked-list|tree|graph-adjacency) ([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
   if (!match) return null;
   return {
-    structure: match[1] as 'linked-list' | 'tree',
+    structure: match[1] as 'linked-list' | 'tree' | 'graph-adjacency',
     variable: match[2],
     value: JSON.parse(match[3]) as unknown,
   };
@@ -258,6 +288,24 @@ function parseStructureState(payload: string): { structure: 'linked-list' | 'tre
 
 function parseObjectState(payload: string): { variable: string; visualization: RuntimeHashMapVisualization } | null {
   const match = payload.match(/^object-state ([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
+  if (!match) return null;
+  return {
+    variable: match[1],
+    visualization: JSON.parse(match[2]) as RuntimeHashMapVisualization,
+  };
+}
+
+function parseMapState(payload: string): { variable: string; visualization: RuntimeHashMapVisualization } | null {
+  const match = payload.match(/^map-state ([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
+  if (!match) return null;
+  return {
+    variable: match[1],
+    visualization: JSON.parse(match[2]) as RuntimeHashMapVisualization,
+  };
+}
+
+function parseSetState(payload: string): { variable: string; visualization: RuntimeHashMapVisualization } | null {
+  const match = payload.match(/^set-state ([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
   if (!match) return null;
   return {
     variable: match[1],
@@ -273,6 +321,10 @@ function parseObjectFieldEvent(payload: string): { variable: string; field: stri
     field: match[3],
     value: parseScalar(match[4]),
   };
+}
+
+function isArrayLengthAccessEvent(payload: string): boolean {
+  return /^access [A-Za-z_][A-Za-z0-9_]*\.length=\d+$/.test(payload);
 }
 
 function buildFieldVisualization(event: { variable: string; field: string; value: unknown }): RuntimeVisualizationPayload {
@@ -377,15 +429,17 @@ function filterStructuredVariables(
 function appendJavaTraceStep(
   trace: RawTraceStep[],
   step: RawTraceStep,
-  pendingAccesses: RuntimeTraceAccessEvent[]
+  pendingAccesses: RuntimeTraceAccessEvent[],
+  options: { allowMerge?: boolean } = {}
 ): void {
   const nextStep: RawTraceStep = pendingAccesses.length > 0
     ? { ...step, accesses: [...pendingAccesses] }
     : step;
   pendingAccesses.length = 0;
-  if (!maybeMergeConsecutiveLineStep(trace, nextStep)) {
-    trace.push(nextStep);
+  if (options.allowMerge !== false && maybeMergeConsecutiveLineStep(trace, nextStep)) {
+    return;
   }
+  trace.push(nextStep);
 }
 
 function mergeIntoPreviousMatchingLineStep(
@@ -431,16 +485,19 @@ function mergeAccessesIntoPreviousMatchingLineStep(
 function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[] {
   const trace: RawTraceStep[] = [];
   const variables: Record<string, unknown> = {};
-  const objectKinds: Record<string, 'linked-list' | 'tree'> = {};
-  const stack: Array<{ function: string; line: number }> = [];
+  const objectKinds: Record<string, 'linked-list' | 'tree' | 'graph-adjacency'> = {};
+  const stack: Array<{ function: string; line: number; args: Record<string, unknown> }> = [];
   const pendingAccesses: RuntimeTraceAccessEvent[] = [];
   let currentFunction = '<module>';
+  let previousRawLine: number | null = null;
   const lineRemap = buildLineRemap(sourceText);
   const declarationLines = buildMethodDeclarationLineSet(sourceText);
 
   for (const rawEvent of events) {
     if (rawEvent === 'clear' || rawEvent === 'reset') continue;
     const metadata = extractLineMetadata(rawEvent);
+    const previousEventRawLine = previousRawLine;
+    previousRawLine = metadata.line;
     const line = lineRemap?.get(metadata.line) ?? metadata.line;
     const payload = metadata.payload;
     const isDeclarationLine = declarationLines?.has(line) === true;
@@ -449,22 +506,24 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
       const match = payload.match(/^call\s+(\S+)(?:\s+(.*))?$/);
       const functionName = match?.[1] ?? currentFunction;
       const argsFragment = match?.[2] ?? '';
-      Object.assign(variables, parseKeyValuePairs(argsFragment));
+      const args = parseKeyValuePairs(argsFragment);
+      Object.assign(variables, args);
       currentFunction = functionName || currentFunction;
-      stack.push({ function: currentFunction, line });
+      stack.push({ function: currentFunction, line, args });
       appendJavaTraceStep(trace, {
         line,
         event: 'call',
         function: currentFunction,
         variables: { ...variables },
-        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
       }, pendingAccesses);
       continue;
     }
 
     if (payload.startsWith('return ')) {
-      const match = payload.match(/^return\s+(\S+)$/);
+      const match = payload.match(/^return\s+(\S+)(?:\s+value=(.*))?$/);
       const functionName = match?.[1] ?? currentFunction;
+      const returnValue = match?.[2] !== undefined ? parseScalar(match[2].trim()) : undefined;
       const returnVariables = functionName === '<module>'
         ? { ...variables }
         : (filterStructuredVariables(variables) ?? {});
@@ -473,7 +532,8 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
         event: 'return',
         function: functionName || currentFunction,
         variables: returnVariables,
-        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
+        ...(returnValue !== undefined ? { returnValue } : {}),
       }, pendingAccesses);
       stack.pop();
       currentFunction = stack[stack.length - 1]?.function ?? '<module>';
@@ -491,9 +551,9 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
         function: currentFunction,
         variables: { ...variables },
         ...(stack.length > 0
-          ? { callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) }
+          ? { callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })) }
           : {}),
-      }, pendingAccesses);
+      }, pendingAccesses, { allowMerge: previousEventRawLine !== metadata.line });
       continue;
     }
 
@@ -506,7 +566,7 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
         event: 'line',
         function: currentFunction,
         variables: { ...variables },
-        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
         visualization: {
           objectKinds: { ...objectKinds },
         },
@@ -522,7 +582,7 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
         event: 'line',
         function: currentFunction,
         variables: { ...variables },
-        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
         visualization: {
           objectKinds: { [objectState.variable]: 'object' },
           hashMaps: [objectState.visualization],
@@ -531,11 +591,62 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
       continue;
     }
 
+    const mapState = parseMapState(payload);
+    if (mapState) {
+      const entries = mapState.visualization.entries.map((entry) => [entry.key, entry.value]);
+      variables[mapState.variable] = { __type__: 'map', entries };
+      appendJavaTraceStep(trace, {
+        line,
+        event: 'line',
+        function: currentFunction,
+        variables: { ...variables },
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
+        visualization: {
+          objectKinds: { [mapState.variable]: 'map' },
+          hashMaps: [mapState.visualization],
+        },
+      }, pendingAccesses);
+      continue;
+    }
+
+    const setState = parseSetState(payload);
+    if (setState) {
+      const values = setState.visualization.entries.map((entry) => entry.key);
+      variables[setState.variable] = { __type__: 'set', values };
+      appendJavaTraceStep(trace, {
+        line,
+        event: 'line',
+        function: currentFunction,
+        variables: { ...variables },
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
+        visualization: {
+          objectKinds: { [setState.variable]: 'set' },
+          hashMaps: [setState.visualization],
+        },
+      }, pendingAccesses);
+      continue;
+    }
+
+    if (isArrayLengthAccessEvent(payload)) {
+      continue;
+    }
+
+    const accesses = parseAccessEvent(payload);
+    if (accesses) {
+      const currentCallStack =
+        stack.length > 0 ? stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })) : undefined;
+      if (mergeAccessesIntoPreviousMatchingLineStep(trace, line, currentFunction, currentCallStack, accesses)) {
+        continue;
+      }
+      pendingAccesses.push(...accesses);
+      continue;
+    }
+
     const objectField = parseObjectFieldEvent(payload);
     if (objectField) {
       variables[objectField.variable] = { __ref__: `${objectField.variable}-object` };
       const currentCallStack =
-        stack.length > 0 ? stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) : undefined;
+        stack.length > 0 ? stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })) : undefined;
       if (mergeIntoPreviousMatchingLineStep(trace, line, currentFunction, currentCallStack, {
         variables: { ...variables },
         accesses: undefined,
@@ -548,30 +659,20 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
         event: 'line',
         function: currentFunction,
         variables: { ...variables },
-        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })),
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
         visualization: buildFieldVisualization(objectField),
       }, pendingAccesses);
       continue;
     }
 
     Object.assign(variables, parseKeyValuePairs(payload));
-    const accesses = parseAccessEvent(payload);
-    if (accesses) {
-      const currentCallStack =
-        stack.length > 0 ? stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) : undefined;
-      if (mergeAccessesIntoPreviousMatchingLineStep(trace, line, currentFunction, currentCallStack, accesses)) {
-        continue;
-      }
-      pendingAccesses.push(...accesses);
-      continue;
-    }
     appendJavaTraceStep(trace, {
       line,
       event: 'line',
       function: currentFunction,
       variables: { ...variables },
       ...(stack.length > 0
-        ? { callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: {} })) }
+        ? { callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })) }
         : {}),
     }, pendingAccesses);
   }
@@ -591,12 +692,13 @@ export function buildJavaExecutionResult(
   traceLimitExceeded?: boolean,
   timeoutReason?: ExecutionResult['timeoutReason'],
   maxTraceSteps?: number,
-  sourceText?: string
+  sourceText?: string,
+  options: { outputIsSerialized?: boolean } = {}
 ): ExecutionResult {
   const trace = eventsToRawTrace(events, sourceText);
   return {
     success: true,
-    output,
+    output: options.outputIsSerialized === false ? output : normalizeJavaSerializedResult(output),
     trace,
     executionTimeMs,
     consoleOutput: [],

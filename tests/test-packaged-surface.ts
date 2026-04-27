@@ -54,6 +54,7 @@ async function main(): Promise<void> {
     'workers/python/pyodide-worker.js',
     'workers/javascript/javascript-worker.js',
     'workers/java/java-worker.js',
+    'workers/java/java-source-augmentations.cjs',
     'workers/vendor/java-browser-spike-helper.jar',
     'workers/vendor/java-practice-rewriter.jar',
     'workers/vendor/java-rewrite-bridge.jar',

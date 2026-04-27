@@ -20,6 +20,7 @@ async function assertFileExists(pathname: string, label: string): Promise<void> 
 async function main(): Promise<void> {
   const root = process.cwd();
   const workerPath = join(root, 'workers', 'java', 'java-worker.js');
+  const augmentationPath = join(root, 'workers', 'java', 'java-source-augmentations.cjs');
   const helperJarPath = join(root, 'workers', 'vendor', 'java-browser-spike-helper.jar');
   const compilerJarPath = join(root, 'workers', 'vendor', 'jdk.compiler-17.jar');
   const rewriterJarPath = join(root, 'workers', 'vendor', 'java-practice-rewriter.jar');
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
   const javaparserJarPath = join(root, 'workers', 'vendor', 'javaparser-core-3.25.10.jar');
 
   await assertFileExists(workerPath, 'java worker asset exists');
+  await assertFileExists(augmentationPath, 'java source augmentation asset exists');
   await assertFileExists(helperJarPath, 'java helper jar exists');
   await assertFileExists(compilerJarPath, 'java compiler jar exists');
   await assertFileExists(rewriterJarPath, 'java rewriter jar exists');
@@ -34,6 +36,7 @@ async function main(): Promise<void> {
   await assertFileExists(javaparserJarPath, 'javaparser jar exists');
 
   const workerSource = await readFile(workerPath, 'utf8');
+  const augmentationSource = await readFile(augmentationPath, 'utf8');
   const requiredMarkers = [
     'https://cjrtnc.leaningtech.com/4.2/loader.js',
     '/app/workers/vendor/java-browser-spike-helper.jar',
@@ -50,6 +53,8 @@ async function main(): Promise<void> {
     "message.type === 'execute-code-interview'",
     "postMessageResponse({ type: 'worker-ready' })",
     "postMessageResponse({ type: 'idle-timeout' })",
+    'java-source-augmentations.cjs',
+    'TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations',
   ];
 
   for (const marker of requiredMarkers) {
@@ -59,6 +64,13 @@ async function main(): Promise<void> {
     );
   }
   console.log('PASS: java worker contract markers present');
+
+  assertCondition(
+    augmentationSource.includes('augmentJavaCollectionOperations') &&
+      augmentationSource.includes('TraceCodeJavaSourceAugmentations'),
+    'Java source augmentation asset should expose the shared post-rewrite helper'
+  );
+  console.log('PASS: java source augmentation helper markers present');
 
   const javaProfile = getLanguageRuntimeProfile('java');
   assertCondition(javaProfile.language === 'java', 'Java runtime profile should resolve');

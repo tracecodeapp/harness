@@ -9,9 +9,12 @@ import {
   isLanguageSupported,
 } from '../packages/harness-browser/src';
 import { assertRuntimeRequestSupported } from '../packages/harness-browser/src/runtime-capability-guards';
+import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
+import type { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
 import type { Language, LanguageRuntimeProfile, RuntimeCapabilities } from '../packages/harness-core/src/runtime-types';
+import { normalizeJavaTraceContract } from '../packages/harness-core/src/trace-adapters/java';
 import {
   normalizeRuntimeTraceContract,
   RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION,
@@ -310,8 +313,79 @@ function testRuntimeTraceContractAccessNormalization(): void {
   console.log('PASS: runtime trace contract preserves access metadata');
 }
 
+async function testJavaSerializedResultNormalization(): Promise<void> {
+  const normalized = normalizeJavaTraceContract({
+    output: '[1,true,"ok"]',
+    events: ['line=1 return solve value=[1,true,"ok"]'],
+  });
+  assertCondition(
+    stableStringify(normalized.output) === stableStringify([1, true, 'ok']),
+    'Java trace adapter should decode TraceHooks.serializeResult JSON arrays'
+  );
+  assertCondition(
+    stableStringify(normalized.trace[0]?.returnValue) === stableStringify([1, true, 'ok']),
+    'Java trace adapter should decode serialized return values'
+  );
+  const normalizedString = normalizeJavaTraceContract({
+    output: '"true"',
+    events: ['line=1 return solve value="true"'],
+  });
+  assertCondition(
+    normalizedString.output === 'true',
+    'Java trace adapter should decode serialized Java strings without coercing their contents'
+  );
+
+  let nextOutput: unknown = 7;
+  const workerClient = {
+    init: async () => ({ success: true, loadTimeMs: 0 }),
+    executeWithTracing: async () => ({
+      success: true,
+      output: nextOutput,
+      events: ['line=1 return solve'],
+      sourceText: 'return 7;',
+      executionTimeMs: 1,
+      consoleOutput: [],
+    }),
+    executeCode: async () => ({
+      success: true,
+      output: nextOutput,
+      consoleOutput: [],
+    }),
+    executeCodeInterviewMode: async () => ({
+      success: true,
+      output: nextOutput,
+      consoleOutput: [],
+    }),
+  };
+  const javaClient = createJavaRuntimeClient(workerClient as unknown as JavaWorkerClient);
+
+  const tracedNumber = await javaClient.executeWithTracing('class Solution {}', 'solve', {});
+  assertCondition(tracedNumber.output === 7, 'Java runtime tracing should preserve worker-normalized numeric output');
+
+  nextOutput = false;
+  const executedBoolean = await javaClient.executeCode('class Solution {}', 'solve', {});
+  assertCondition(executedBoolean.output === false, 'Java runtime executeCode should preserve worker-normalized boolean output');
+
+  nextOutput = 'false';
+  const executedString = await javaClient.executeCode('class Solution {}', 'solve', {});
+  assertCondition(
+    executedString.output === 'false',
+    'Java runtime executeCode should preserve already-normalized string output'
+  );
+
+  nextOutput = [2, 3];
+  const interviewArray = await javaClient.executeCodeInterviewMode('class Solution {}', 'solve', {});
+  assertCondition(
+    stableStringify(interviewArray.output) === stableStringify([2, 3]),
+    'Java runtime interview execution should preserve worker-normalized array output'
+  );
+
+  console.log('PASS: Java TraceHooks serialized results normalize without double-parsing runtime outputs');
+}
+
 async function main(): Promise<void> {
   testRuntimeTraceContractAccessNormalization();
+  await testJavaSerializedResultNormalization();
   const profiles = getSupportedLanguageProfiles();
 
   assertCondition(SUPPORTED_LANGUAGES.includes('python'), 'SUPPORTED_LANGUAGES should include python');
@@ -461,6 +535,17 @@ function compute(nums, delta) {
     functionCase.inputs
   );
   assertCondition(pythonSuccess.success === true, 'Python function case should succeed');
+
+  const pythonTypingSuccess = runPythonCase(
+    `
+def count_items(nums: List[int]) -> int:
+    return len(nums)
+`,
+    'count_items',
+    { nums: [1, 2, 3] }
+  );
+  assertCondition(pythonTypingSuccess.success === true, 'Python typing annotations should execute');
+  assertCondition(pythonTypingSuccess.output === 3, 'Python typing annotation case should return expected output');
 
   const javascriptSuccess = await executeJavaScriptCode(
     functionCase.javascriptCode,
