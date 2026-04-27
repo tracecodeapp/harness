@@ -68,13 +68,19 @@ function formatWorkerErrorMessage(error) {
     } catch {}
     try {
       const tag = Object.prototype.toString.call(error);
-      if (tag && tag !== '[object Object]') {
+      if (tag && tag.includes('ParseProblemException')) {
+        return 'Java syntax error.';
+      }
+      if (tag && tag !== '[object Object]' && !tag.startsWith('[object ')) {
         return tag;
       }
     } catch {}
     try {
       if (typeof error.toString === 'function' && error.toString !== Object.prototype.toString) {
         const value = error.toString();
+        if (value.includes('ParseProblemException')) {
+          return 'Java syntax error.';
+        }
         if (typeof value === 'string' && value.length > 0 && value !== '[object Object]') {
           return value;
         }
@@ -83,6 +89,9 @@ function formatWorkerErrorMessage(error) {
   }
   try {
     const stringified = String(error);
+    if (stringified.includes('ParseProblemException')) {
+      return 'Java syntax error.';
+    }
     if (stringified && stringified !== '[object Object]') {
       return stringified;
     }
@@ -1302,7 +1311,23 @@ async function runJavaRequest(payload, requestId) {
     rewrittenSource = self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(rewrittenSource);
     rewrittenSource = augmentTraceReturnValueSnapshots(rewrittenSource);
   } catch (error) {
-    throw makeWorkerStageError('source rewrite', error);
+    const rewriteError = formatWorkerErrorMessage(error);
+    const totalEnd = performance.now();
+    return {
+      success: false,
+      events: [],
+      ...(normalizedPayload.sourceText ? { sourceText: normalizedPayload.sourceText } : {}),
+      executionTimeMs: totalEnd - totalStart,
+      consoleOutput: [],
+      error: rewriteError === 'Java syntax error.'
+        ? 'Java syntax error. Check Code Assist for parser details.'
+        : `Java source rewrite failed: ${rewriteError}`,
+      timings: {
+        rewriteMs: totalEnd - rewriteStart,
+        hostCallMs: 0,
+        totalMs: totalEnd - totalStart,
+      },
+    };
   }
   const rewriteEnd = performance.now();
 
