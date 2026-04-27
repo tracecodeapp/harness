@@ -1209,6 +1209,88 @@ async function rewriteSource(payload, requestId) {
   );
 }
 
+function normalizePublicClassDeclarations(source) {
+  return String(source).replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
+}
+
+async function collectCompileProbeDiagnostics(source, requestId, options) {
+  const probeClassName = buildExportsClassName(`${requestId}RewriteProbe`);
+  const probePackageName = buildPackageName(`${requestId}RewriteProbe`);
+  const sourcePath = `/str/${probeClassName}.java`;
+  const classesDir = `/files/java-worker/${requestId}/rewrite-probe/classes`;
+
+  let compileLibraryClass;
+  try {
+    compileLibraryClass = await getCompileLibraryClass();
+  } catch (error) {
+    return {
+      consoleOutput: [],
+      error: null,
+      hostCallMs: 0,
+      diagnosticError: formatWorkerErrorMessage(error),
+    };
+  }
+
+  try {
+    await self.cheerpOSAddStringFile(sourcePath, normalizePublicClassDeclarations(source));
+  } catch (error) {
+    return {
+      consoleOutput: [],
+      error: null,
+      hostCallMs: 0,
+      diagnosticError: formatWorkerErrorMessage(error),
+    };
+  }
+
+  const startedAt = performance.now();
+  let reportText;
+  try {
+    reportText = await compileLibraryClass.compileAndTrace(
+      sourcePath,
+      classesDir,
+      `${probePackageName}.${probeClassName}`,
+      HELPER_JAR_PATH,
+      DEFAULT_COMPILER_DEBUG_PROFILE,
+      String(resolveMaxStoredEvents(options))
+    );
+  } catch (error) {
+    return {
+      consoleOutput: [],
+      error: null,
+      hostCallMs: performance.now() - startedAt,
+      diagnosticError: formatWorkerErrorMessage(error),
+    };
+  }
+
+  let report;
+  try {
+    report = JSON.parse(reportText);
+  } catch (error) {
+    return {
+      consoleOutput: [],
+      error: null,
+      hostCallMs: performance.now() - startedAt,
+      diagnosticError: `Invalid compile probe report: ${formatWorkerErrorMessage(error)}`,
+    };
+  }
+
+  const consoleOutput = [report.compilerStdout, report.compilerStderr].filter(
+    (entry) => typeof entry === 'string' && entry.trim().length > 0
+  );
+  const surfacedError =
+    report.runtimeError ||
+    report.compilerStderr ||
+    report.compilerStdout ||
+    null;
+
+  return {
+    consoleOutput,
+    error: surfacedError,
+    hostCallMs: performance.now() - startedAt,
+    diagnosticError: null,
+  };
+}
+
 function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount, sourceLineMap) {
   if (!scriptMode || !Array.isArray(events)) return events;
   return events.map((event) => {
@@ -1312,19 +1394,27 @@ async function runJavaRequest(payload, requestId) {
     rewrittenSource = augmentTraceReturnValueSnapshots(rewrittenSource);
   } catch (error) {
     const rewriteError = formatWorkerErrorMessage(error);
+    const diagnosticProbe = await collectCompileProbeDiagnostics(
+      normalizedPayload.code,
+      requestId,
+      payload.options
+    );
     const totalEnd = performance.now();
+    const surfacedError =
+      diagnosticProbe.error ??
+      (rewriteError === 'Java syntax error.'
+        ? 'Java syntax error. Check Code Assist for parser details.'
+        : `Java source rewrite failed: ${rewriteError}`);
     return {
       success: false,
       events: [],
       ...(normalizedPayload.sourceText ? { sourceText: normalizedPayload.sourceText } : {}),
       executionTimeMs: totalEnd - totalStart,
-      consoleOutput: [],
-      error: rewriteError === 'Java syntax error.'
-        ? 'Java syntax error. Check Code Assist for parser details.'
-        : `Java source rewrite failed: ${rewriteError}`,
+      consoleOutput: diagnosticProbe.consoleOutput,
+      error: surfacedError,
       timings: {
         rewriteMs: totalEnd - rewriteStart,
-        hostCallMs: 0,
+        hostCallMs: diagnosticProbe.hostCallMs,
         totalMs: totalEnd - totalStart,
       },
     };
