@@ -1,5 +1,4 @@
 import type { Language } from './runtime-types';
-import type { RawTraceStep, RuntimeTraceAccessEvent } from './types';
 import type { RuntimeV4Trace } from './trace-v4';
 
 export type RuntimeRawEmissionKind =
@@ -60,37 +59,6 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
     language: 'java',
     kinds: sortedUnique(kinds),
     unsupported,
-  };
-}
-
-function accessKind(access: RuntimeTraceAccessEvent): RuntimeRawEmissionKind {
-  if (access.kind === 'indexed-read' || access.kind === 'cell-read') return 'read';
-  if (access.kind === 'indexed-write' || access.kind === 'cell-write') return 'write';
-  return 'mutate';
-}
-
-export function summarizeRawTraceEmissions(language: Language, trace: RawTraceStep[]): RuntimeRawEmissionSummary {
-  const kinds: RuntimeRawEmissionKind[] = [];
-
-  for (const step of trace) {
-    if (step.event === 'line') kinds.push('line');
-    if (step.event === 'call') kinds.push('call');
-    if (step.event === 'return') kinds.push('return');
-    if (step.event === 'exception') kinds.push('exception');
-    if (step.event === 'stdout') kinds.push('stdout');
-    if (Object.keys(step.variables ?? {}).length > 0) kinds.push('snapshot');
-    for (const access of step.accesses ?? []) {
-      kinds.push(accessKind(access));
-    }
-    if (step.visualization) {
-      kinds.push('legacy-visualization-state');
-    }
-  }
-
-  return {
-    language,
-    kinds: sortedUnique(kinds),
-    unsupported: [],
   };
 }
 

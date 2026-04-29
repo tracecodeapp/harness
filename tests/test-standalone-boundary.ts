@@ -22,7 +22,6 @@ const SCANNED_FILES = [
   'packages/harness-browser/src/runtime-profiles.ts',
   'packages/harness-core/src/index.ts',
   'packages/harness-core/src/runtime-types.ts',
-  'packages/harness-core/src/trace-contract.ts',
   'packages/harness-core/src/types.ts',
   'packages/harness-javascript/src/index.ts',
   'packages/harness-javascript/src/javascript-executor.ts',

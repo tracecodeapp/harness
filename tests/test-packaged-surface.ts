@@ -86,7 +86,6 @@ async function main(): Promise<void> {
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
       if ('getPyodideWorkerClient' in browser) throw new Error('Low-level worker clients should not be publicly exported');
       if ('enforceRuntimeWorkerIsolation' in browser) throw new Error('Worker isolation helpers should not be publicly exported');
-      if (typeof core.normalizeRuntimeTraceContract !== 'function') throw new Error('Missing core export');
       if (typeof python.generateSolutionScript !== 'function') throw new Error('Missing python export');
       if (typeof javascript.executeJavaScriptCode !== 'function') throw new Error('Missing javascript export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');

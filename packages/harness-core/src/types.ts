@@ -12,81 +12,6 @@ export type ExecutionStatus =
   | 'completed'
   | 'error';
 
-// Call stack frame info
-export interface CallStackFrame {
-  function: string;
-  args: Record<string, unknown>;
-  line: number;
-}
-
-export type RuntimeTraceAccessKind =
-  | 'indexed-read'
-  | 'indexed-write'
-  | 'cell-read'
-  | 'cell-write'
-  | 'mutating-call';
-
-export interface RuntimeTraceAccessEvent {
-  variable: string;
-  kind: RuntimeTraceAccessKind;
-  indices?: Array<string | number>;
-  method?: string;
-  pathDepth?: 1 | 2;
-}
-
-// Raw trace data from Python sys.settrace
-export interface RawTraceStep {
-  line: number;
-  event: 'line' | 'call' | 'return' | 'exception' | 'timeout' | 'stdout';
-  variables: Record<string, unknown>;
-  variableSources?: Record<string, 'user' | 'user-input' | 'harness-prelude'>;
-  function: string;
-  callStack?: CallStackFrame[];
-  accesses?: RuntimeTraceAccessEvent[];
-  returnValue?: unknown;
-  stdoutLineCount?: number;
-  visualization?: RuntimeVisualizationPayload;
-}
-
-export type RuntimeObjectKind = 'hashmap' | 'object' | 'map' | 'set' | 'tree' | 'linked-list' | 'graph-adjacency';
-
-export interface RuntimeHashMapEntry {
-  key: unknown;
-  value: unknown;
-  highlight?: boolean;
-}
-
-export interface RuntimeHashMapVisualization {
-  name: string;
-  kind?: 'hashmap' | 'object' | 'map' | 'set';
-  entries: RuntimeHashMapEntry[];
-  highlightedKey?: unknown;
-  deletedKey?: unknown;
-  objectClassName?: string;
-  objectId?: string;
-}
-
-export interface RuntimeVisualizationPayload {
-  hashMaps?: RuntimeHashMapVisualization[];
-  objectKinds?: Partial<Record<string, RuntimeObjectKind>>;
-}
-
-// Processed step for visualization
-export interface ProcessedStep {
-  stepIndex: number;
-  lineNumber: number;
-  lineContent: string;
-  functionName: string;
-  variables: Record<string, unknown>;
-  output?: string;
-  event?: 'line' | 'call' | 'return' | 'exception' | 'timeout' | 'stdout';
-  callStack?: CallStackFrame[];
-  accesses?: RuntimeTraceAccessEvent[];
-  returnValue?: unknown;
-  stdoutLineCount?: number;
-  visualization?: RuntimeVisualizationPayload;
-}
-
 // Test case execution result
 export interface TestResult {
   id: string;
@@ -128,10 +53,6 @@ export interface ExecutionResult {
     | 'client-timeout';
   lineEventCount?: number;
   traceStepCount?: number;
-}
-
-export interface LegacyTraceExecutionResult extends Omit<ExecutionResult, 'trace'> {
-  trace: RawTraceStep[];
 }
 
 // Pyodide loading state

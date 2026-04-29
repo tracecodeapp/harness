@@ -11,8 +11,7 @@ import type { ExecutionResult } from '@tracecode/harness/core';
 Public surface:
 
 - runtime/result types
-- normalized trace-contract helpers
-- shared trace adapters
+- runtime trace types and helpers
 
 Use this package when you need stable types and trace-shape utilities without pulling in the browser runtime entrypoint.
 

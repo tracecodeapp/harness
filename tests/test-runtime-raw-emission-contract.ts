@@ -5,9 +5,9 @@ import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeJavaRawEmissions,
-  summarizeRawTraceEmissions,
+  summarizeRuntimeV4Emissions,
 } from '../packages/harness-core/src/runtime-raw-emission-contract';
-import type { RawTraceStep } from '../packages/harness-core/src/types';
+import { RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION, type RuntimeV4Trace } from '../packages/harness-core/src/trace-v4';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -24,6 +24,17 @@ function assertThrows(fn: () => unknown, pattern: RegExp, message: string): void
   throw new Error(`${message}: expected throw`);
 }
 
+function trace(language: RuntimeV4Trace['language'], events: RuntimeV4Trace['events']): RuntimeV4Trace {
+  return {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language,
+    runId: `${language}:test`,
+    events,
+    lineEventCount: events.filter((event) => event.kind === 'line').length,
+    traceStepCount: events.length,
+  };
+}
+
 function testJavaUnknownPayloadRejection(): void {
   const summary = summarizeJavaRawEmissions([
     'line=2 call solve nums=[1,2,3]',
@@ -38,7 +49,7 @@ function testJavaUnknownPayloadRejection(): void {
   assertThrows(
     () => javaTraceHooksEventsToV4Trace(['line=3 array-length nums=3']),
     /unsupported raw runtime payloads/,
-    'java TraceHooks V4 assembly should reject legacy raw payloads'
+    'java TraceHooks assembly should reject legacy raw payloads'
   );
   console.log('PASS: raw emission contract rejects unsupported Java payloads');
 }
@@ -61,26 +72,22 @@ function testJavaKnownPayloads(): void {
 }
 
 function testRawParityComparison(): void {
-  const pythonTrace: RawTraceStep[] = [{
-    line: 1,
-    event: 'line',
-    function: 'solve',
-    variables: { nums: [1, 2, 3] },
-    accesses: [{ variable: 'nums', kind: 'indexed-read', indices: [0], pathDepth: 1 }],
-  }];
-  const jsTrace: RawTraceStep[] = [{
-    line: 1,
-    event: 'line',
-    function: 'solve',
-    variables: { nums: [1, 2, 3] },
-  }];
+  const pythonTrace = trace('python', [
+    { kind: 'line', runId: 'python:test', line: 1, function: 'solve' },
+    { kind: 'snapshot', runId: 'python:test', line: 1, target: { variable: 'nums' }, value: [1, 2, 3] },
+    { kind: 'read', runId: 'python:test', line: 1, target: { variable: 'nums', path: [0] }, value: 1 },
+  ]);
+  const jsTrace = trace('javascript', [
+    { kind: 'line', runId: 'javascript:test', line: 1, function: 'solve' },
+    { kind: 'snapshot', runId: 'javascript:test', line: 1, target: { variable: 'nums' }, value: [1, 2, 3] },
+  ]);
   const mismatches = compareRawEmissionParity(
-    summarizeRawTraceEmissions('python', pythonTrace),
-    [summarizeRawTraceEmissions('python', pythonTrace), summarizeRawTraceEmissions('javascript', jsTrace)]
+    summarizeRuntimeV4Emissions(pythonTrace),
+    [summarizeRuntimeV4Emissions(pythonTrace), summarizeRuntimeV4Emissions(jsTrace)]
   );
   assertCondition(
     mismatches.length === 1 && mismatches[0]?.language === 'javascript' && mismatches[0]?.missing.includes('read'),
-    'raw parity comparison should report missing V4-relevant emission categories'
+    'raw parity comparison should report missing trace emission categories'
   );
   console.log('PASS: raw emission parity comparison reports category mismatches');
 }

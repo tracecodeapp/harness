@@ -18,10 +18,6 @@ import {
   javaTraceHooksEventsToV4Trace,
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
-import {
-  normalizeRuntimeTraceContract,
-  RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION,
-} from '../packages/harness-core/src/trace-contract';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -264,58 +260,6 @@ function runPythonCase(
   return parsed;
 }
 
-function testRuntimeTraceContractAccessNormalization(): void {
-  const normalized = normalizeRuntimeTraceContract('javascript', {
-    success: true,
-    output: 3,
-    trace: [
-      {
-        line: 2,
-        event: 'line',
-        function: 'solve',
-        variables: {
-          arr: [1, 2, 3],
-        },
-        accesses: [
-          {
-            variable: 'arr',
-            kind: 'indexed-read',
-            indices: [1.8],
-            pathDepth: 1,
-          },
-          {
-            variable: 'grid',
-            kind: 'cell-write',
-            indices: [2, 3],
-            pathDepth: 2,
-          },
-          {
-            variable: '',
-            kind: 'indexed-read',
-          },
-        ],
-      },
-    ],
-    executionTimeMs: 1,
-    consoleOutput: [],
-  });
-
-  assertCondition(
-    normalized.schemaVersion === RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION,
-    'normalized runtime traces should use the latest schema version'
-  );
-  assertCondition(normalized.trace[0]?.accesses?.length === 2, 'normalization should preserve valid access events');
-  assertCondition(
-    normalized.trace[0]?.accesses?.[0]?.indices?.[0] === 1,
-    'normalization should floor numeric access indices'
-  );
-  assertCondition(
-    normalized.trace[0]?.accesses?.[1]?.kind === 'cell-write',
-    'normalization should preserve cell access kinds'
-  );
-  console.log('PASS: runtime trace contract preserves access metadata');
-}
-
 async function testJavaSerializedResultNormalization(): Promise<void> {
   const trace = javaTraceHooksEventsToV4Trace([
     `v4:${JSON.stringify({ kind: 'return', line: 1, function: 'solve', value: [1, true, 'ok'] })}`,
@@ -385,7 +329,6 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  testRuntimeTraceContractAccessNormalization();
   await testJavaSerializedResultNormalization();
   const profiles = getSupportedLanguageProfiles();
 
