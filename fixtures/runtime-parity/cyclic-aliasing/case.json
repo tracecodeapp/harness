@@ -1,0 +1,61 @@
+{
+  "id": "cyclic-aliasing",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "head": {
+      "__id__": "n0",
+      "val": 3,
+      "next": {
+        "__ref__": "n0"
+      },
+      "__type__": "ListNode"
+    }
+  },
+  "expectOpaqueRefs": true,
+  "anchors": {
+    "makeAlias": {
+      "python": "alias = head",
+      "javascript": "const alias = head;",
+      "typescript": "const alias = head;",
+      "java": "ListNode alias = head;"
+    },
+    "readThroughAlias": {
+      "python": "return alias.next.val",
+      "javascript": "return alias.next.val;",
+      "typescript": "return alias.next.val;",
+      "java": "return alias.next.val;"
+    }
+  },
+  "expect": {
+    "makeAlias": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "head"
+      ],
+      "accessTargets": []
+    },
+    "readThroughAlias": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "alias",
+        "head"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "alias",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

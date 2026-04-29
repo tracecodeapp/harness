@@ -153,6 +153,32 @@ async function main(): Promise<void> {
   assertCondition(typeof init.loadTimeMs === 'number', 'Init should return loadTimeMs');
   console.log('PASS: worker init');
 
+  const setForOfTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const values = new Set([1, 2, 3]);
+  let total = 0;
+  for (const value of values) {
+    total += value;
+  }
+  return total;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(setForOfTracing.success === true, `Set for-of tracing should succeed: ${setForOfTracing.error ?? 'unknown error'}`);
+  assertCondition(setForOfTracing.output === 6, 'Tracing must preserve native Set for-of iteration semantics');
+  assertCondition(
+    traceLineEvents(setForOfTracing).length > 0,
+    'Set for-of tracing should keep line anchors'
+  );
+  console.log('PASS: execute-with-tracing preserves Set for-of semantics');
+
   const execute = await harness.sendMessage<{
     success: boolean;
     output: unknown;

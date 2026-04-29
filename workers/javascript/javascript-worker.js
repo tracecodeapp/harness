@@ -2489,13 +2489,8 @@ function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNam
 
 function rewriteForOfStatementForTracing(ts, sourceFile, forOfStatement, variableNames, lineFunctionMap, defaultFunctionName) {
   const originalNode = ts.getOriginalNode(forOfStatement) ?? forOfStatement;
-  const lineNumber = ts.getLineAndCharacterOfPosition(sourceFile, originalNode.getStart(sourceFile)).line + 1;
-  const tempIndexName = `__traceForOfIndex_${lineNumber}_${originalNode.pos < 0 ? 0 : originalNode.pos}`;
-  const tempArrayName = `__traceForOfArray_${lineNumber}_${originalNode.pos < 0 ? 0 : originalNode.pos}`;
-  const arrayId = ts.factory.createIdentifier(tempArrayName);
-  const indexId = ts.factory.createIdentifier(tempIndexName);
   const visitedBodyBlock = ensureBlockStatement(ts, forOfStatement.statement);
-  const tracedLine = createTraceLineStatement(
+  const initialTracedLine = createTraceLineStatement(
     ts,
     sourceFile,
     originalNode,
@@ -2503,74 +2498,16 @@ function rewriteForOfStatementForTracing(ts, sourceFile, forOfStatement, variabl
     lineFunctionMap,
     defaultFunctionName
   );
-  const tracedLineCall = createTraceLineStatement(
-    ts,
-    sourceFile,
-    originalNode,
-    variableNames,
-    lineFunctionMap,
-    defaultFunctionName
-  ).expression;
-
-  let bindingStatement;
-  if (ts.isVariableDeclarationList(forOfStatement.initializer)) {
-    const declaration = forOfStatement.initializer.declarations[0];
-    bindingStatement = ts.factory.createVariableStatement(
-      undefined,
-      ts.factory.updateVariableDeclarationList(forOfStatement.initializer, [
-        ts.factory.updateVariableDeclaration(
-          declaration,
-          declaration.name,
-          declaration.exclamationToken,
-          declaration.type,
-          ts.factory.createElementAccessExpression(arrayId, indexId)
-        ),
-      ])
-    );
-  } else {
-    bindingStatement = ts.factory.createExpressionStatement(
-      ts.factory.createAssignment(forOfStatement.initializer, ts.factory.createElementAccessExpression(arrayId, indexId))
-    );
-  }
 
   return ts.factory.createBlock(
     [
-      tracedLine,
-      ts.factory.createVariableStatement(
-        undefined,
-        ts.factory.createVariableDeclarationList(
-          [ts.factory.createVariableDeclaration(arrayId, undefined, undefined, forOfStatement.expression)],
-          ts.NodeFlags.Const
-        )
-      ),
-      ts.factory.createExpressionStatement(
-        ts.factory.createCallExpression(
-          ts.factory.createPropertyAccessExpression(
-            ts.factory.createIdentifier('__traceRecorder'),
-            ts.factory.createIdentifier('deferPendingAccesses')
-          ),
-          undefined,
-          [ts.factory.createNumericLiteral(1)]
-        )
-      ),
-      ts.factory.createForStatement(
-        ts.factory.createVariableDeclarationList(
-          [ts.factory.createVariableDeclaration(indexId, undefined, undefined, ts.factory.createNumericLiteral(0))],
-          ts.NodeFlags.Let
-        ),
-        ts.factory.createParenthesizedExpression(
-          ts.factory.createBinaryExpression(
-            tracedLineCall,
-            ts.SyntaxKind.CommaToken,
-            ts.factory.createBinaryExpression(
-              indexId,
-              ts.SyntaxKind.LessThanToken,
-              ts.factory.createPropertyAccessExpression(arrayId, 'length')
-            )
-          )
-        ),
-        ts.factory.createPostfixIncrement(indexId),
-        ts.factory.createBlock([bindingStatement, ...visitedBodyBlock.statements], true)
+      initialTracedLine,
+      ts.factory.updateForOfStatement(
+        forOfStatement,
+        forOfStatement.awaitModifier,
+        forOfStatement.initializer,
+        forOfStatement.expression,
+        visitedBodyBlock
       ),
     ],
     true

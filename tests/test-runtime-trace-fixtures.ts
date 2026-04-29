@@ -89,6 +89,7 @@ interface FixtureCase {
   expectSummaryByLanguage?: Partial<Record<Language, {
     accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   }>>;
+  expectOpaqueRefs?: boolean;
   knownGaps?: Partial<Record<Language, Record<string, string>>>;
 }
 
@@ -369,13 +370,6 @@ function normalizeTopLevelPublicClasses(source: string): string {
   return source.replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
 }
 
-function normalizeJavaRuntimeSnapshotHooks(source: string): string {
-  return source.replace(
-    /TraceHooks\.emit(?:List|Tree|Object)StateAtLine\(/g,
-    'TraceHooks.emitRuntimeSnapshotAtLine('
-  );
-}
-
 function createLocalJavaWorkerClient(): JavaWorkerClient {
   const stringFiles = new Map<string, string>();
   const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-java-'));
@@ -402,7 +396,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
       executionStyle,
       entryName,
     ]);
-    const rewrittenSource = normalizeJavaRuntimeSnapshotHooks(await readFile(outputPath, 'utf8'));
+    const rewrittenSource = await readFile(outputPath, 'utf8');
     const renamedExports = exportsSource.replace(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
     return `package ${packageName};\n\n${rewrittenSource.trim()}\n\n${renamedExports.trim()}\n`;
   }
@@ -690,6 +684,18 @@ function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): v
   );
 }
 
+function assertOpaqueRefs(trace: RuntimeTrace, label: string): void {
+  const serialized = stableStringify(trace.events);
+  assertCondition(
+    serialized.includes('__ref__'),
+    `${label} did not emit opaque reference payloads`
+  );
+  assertCondition(
+    !serialized.includes('<cycle>'),
+    `${label} emitted legacy cycle placeholders instead of opaque references`
+  );
+}
+
 function projectTraceSummary(trace: RuntimeTrace): {
   accessTargets: Array<RuntimeTraceParityAccessTarget & { count: number }>;
 } {
@@ -794,6 +800,9 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
       );
     }
     assertNoUnsupportedVisualization(traces[language], `${fixture.id}:${language}`);
+    if (fixture.expectOpaqueRefs) {
+      assertOpaqueRefs(traces[language], `${fixture.id}:${language}`);
+    }
   }
 }
 

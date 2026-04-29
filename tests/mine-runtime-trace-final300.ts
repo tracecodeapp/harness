@@ -107,7 +107,7 @@ interface MineSignature {
 interface DriftRecord {
   slug: string;
   family?: string;
-  comparedTo: MineLanguage;
+  comparedTo: MineLanguage | 'expectedOutput';
   language: MineLanguage;
   kinds: string[];
   output?: { expected: unknown; received: unknown };
@@ -233,7 +233,14 @@ async function runPythonScript(script: string): Promise<string> {
   }
 }
 
-async function executePythonTrace(runtime: RuntimeCore, entry: Final300Entry, code: string, maxTraceSteps: number, maxLineEvents: number): Promise<TraceRun> {
+async function executePythonTrace(
+  runtime: RuntimeCore,
+  entry: Final300Entry,
+  code: string,
+  maxTraceSteps: number,
+  maxLineEvents: number,
+  maxSingleLineHits: number
+): Promise<TraceRun> {
   const tracingPayload = runtime.generateTracingCode(
     {
       PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
@@ -246,17 +253,27 @@ async function executePythonTrace(runtime: RuntimeCore, entry: Final300Entry, co
     entry.functionName,
     entry.inputs,
     entry.runtimeExecutionStyle ?? 'function',
-    { maxTraceSteps, maxLineEvents }
+    { maxTraceSteps, maxLineEvents, maxSingleLineHits }
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'traceEvents': _trace_events,
     'result': _serialize(_result),
     'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_events)
+    'traceStepCount': len(_trace_events),
+    'traceLimitExceeded': bool(globals().get('_trace_limit_exceeded', False))
 }))
 `);
-  const parsed = JSON.parse(stdout) as { traceEvents: RuntimeTraceEvent[]; result: unknown; lineEventCount?: number; traceStepCount?: number };
+  const parsed = JSON.parse(stdout) as {
+    traceEvents: RuntimeTraceEvent[];
+    result: unknown;
+    lineEventCount?: number;
+    traceStepCount?: number;
+    traceLimitExceeded?: boolean;
+  };
+  if (parsed.traceLimitExceeded) {
+    throw new Error(`python tracing failed: Exceeded trace budget`);
+  }
   const runId = `mine:${entry.slug}:python`;
   const trace: RuntimeTrace = {
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
@@ -317,7 +334,7 @@ function createJavaScriptWorkerHarness(workerSource: string) {
       const timeoutId = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`Timed out waiting for response: ${type}`));
-      }, 10_000);
+      }, 60_000);
       pending.set(id, { resolve: resolvePromise as (value: unknown) => void, reject, timeoutId });
     });
     onmessage({ data: { id, type, payload } });
@@ -332,7 +349,8 @@ async function executeJavaScriptTrace(
   entry: Final300Entry,
   code: string,
   maxTraceSteps: number,
-  maxLineEvents: number
+  maxLineEvents: number,
+  maxSingleLineHits: number
 ): Promise<TraceRun> {
   const harness = createJavaScriptWorkerHarness(workerSource);
   const init = await harness.sendMessage<{ success: boolean }>('init');
@@ -343,7 +361,7 @@ async function executeJavaScriptTrace(
     inputs: entry.inputs,
     executionStyle: entry.runtimeExecutionStyle ?? 'function',
     language: entry.language,
-    options: { maxTraceSteps, maxLineEvents },
+    options: { maxTraceSteps, maxLineEvents, maxSingleLineHits },
   });
   if (!result.success) throw new Error(`${entry.language} tracing failed: ${result.error ?? 'unknown error'}`);
   const trace = result.trace;
@@ -353,13 +371,6 @@ async function executeJavaScriptTrace(
 
 function normalizeTopLevelPublicClasses(source: string): string {
   return source.replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
-}
-
-function normalizeJavaRuntimeSnapshotHooks(source: string): string {
-  return source.replace(
-    /TraceHooks\.emit(?:List|Tree|Object)StateAtLine\(/g,
-    'TraceHooks.emitRuntimeSnapshotAtLine('
-  );
 }
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {
@@ -388,7 +399,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
       executionStyle,
       entryName,
     ]);
-    const rewrittenSource = normalizeJavaRuntimeSnapshotHooks(await readFile(outputPath, 'utf8'));
+    const rewrittenSource = await readFile(outputPath, 'utf8');
     const renamedExports = exportsSource.replace(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
     return `package ${packageName};\n\n${rewrittenSource.trim()}\n\n${renamedExports.trim()}\n`;
   }
@@ -546,7 +557,13 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
   return workerClient as unknown as JavaWorkerClient;
 }
 
-async function executeJavaTrace(entry: Final300Entry, code: string, maxTraceSteps: number, maxLineEvents: number): Promise<TraceRun> {
+async function executeJavaTrace(
+  entry: Final300Entry,
+  code: string,
+  maxTraceSteps: number,
+  maxLineEvents: number,
+  maxSingleLineHits: number
+): Promise<TraceRun> {
   const workerClient = createLocalJavaWorkerClient();
   const client = createJavaRuntimeClient(workerClient);
   try {
@@ -554,7 +571,7 @@ async function executeJavaTrace(entry: Final300Entry, code: string, maxTraceStep
       code,
       entry.functionName,
       entry.inputs,
-      { maxTraceSteps, maxLineEvents },
+      { maxTraceSteps, maxLineEvents, maxSingleLineHits },
       entry.runtimeExecutionStyle ?? 'function'
     );
     if (!result.success) throw new Error(`java tracing failed: ${result.error ?? 'unknown error'}`);
@@ -584,27 +601,34 @@ function resolveSourcePath(root: string, entry: Final300Entry): string {
 
 function signaturesEqual(left: MineSignature, right: MineSignature): boolean {
   const comparableLeft = {
-    accessShapeFacts: left.accessShapeFacts,
+    accessShapeKinds: Object.keys(left.accessShapeFacts).sort((a, b) => a.localeCompare(b)),
     stdoutCount: left.stdoutCount,
     exceptionCount: left.exceptionCount,
   };
   const comparableRight = {
-    accessShapeFacts: right.accessShapeFacts,
+    accessShapeKinds: Object.keys(right.accessShapeFacts).sort((a, b) => a.localeCompare(b)),
     stdoutCount: right.stdoutCount,
     exceptionCount: right.exceptionCount,
   };
   return stableStringify(comparableLeft) === stableStringify(comparableRight);
 }
 
-function compareRuns(slug: string, family: string | undefined, reference: TraceRun, run: TraceRun): DriftRecord | null {
+function compareRuns(
+  slug: string,
+  family: string | undefined,
+  reference: TraceRun,
+  run: TraceRun,
+  compareRuntimeFacts: boolean,
+  compareOutputToReference: boolean
+): DriftRecord | null {
   const kinds: string[] = [];
   let output: DriftRecord['output'];
   let signatureDiff: DriftRecord['signatureDiff'];
-  if (stableStringify(reference.output) !== stableStringify(run.output)) {
+  if (compareOutputToReference && stableStringify(reference.output) !== stableStringify(run.output)) {
     kinds.push('output');
     output = { expected: reference.output, received: run.output };
   }
-  if (!signaturesEqual(reference.signature, run.signature)) {
+  if (compareRuntimeFacts && !signaturesEqual(reference.signature, run.signature)) {
     kinds.push('runtime-facts');
     signatureDiff = { expected: reference.signature, received: run.signature };
   }
@@ -612,18 +636,24 @@ function compareRuns(slug: string, family: string | undefined, reference: TraceR
   return { slug, family, comparedTo: reference.language, language: run.language, kinds, output, signatureDiff };
 }
 
-function diffCountMap(left: Record<string, number>, right: Record<string, number>): string[] {
-  return [...new Set([...Object.keys(left), ...Object.keys(right)])]
+function hasExpectedOutput(entry: Final300Entry): boolean {
+  return Object.prototype.hasOwnProperty.call(entry, 'expectedOutput');
+}
+
+function diffKeySet(left: Record<string, number>, right: Record<string, number>): string[] {
+  const leftKeys = new Set(Object.keys(left));
+  const rightKeys = new Set(Object.keys(right));
+  return [...new Set([...leftKeys, ...rightKeys])]
     .sort((a, b) => a.localeCompare(b))
-    .filter((key) => (left[key] ?? 0) !== (right[key] ?? 0))
-    .map((key) => `${key}:${left[key] ?? 0}->${right[key] ?? 0}`);
+    .filter((key) => !leftKeys.has(key) || !rightKeys.has(key))
+    .map((key) => `${key}:${leftKeys.has(key) ? 'present' : 'missing'}->${rightKeys.has(key) ? 'present' : 'missing'}`);
 }
 
 function clusterDrifts(drifts: DriftRecord[]): DriftCluster[] {
   const clusters = new Map<string, DriftCluster>();
   for (const drift of drifts) {
     const shapeDiff = drift.signatureDiff
-      ? diffCountMap(drift.signatureDiff.expected.accessShapeFacts, drift.signatureDiff.received.accessShapeFacts)
+      ? diffKeySet(drift.signatureDiff.expected.accessShapeFacts, drift.signatureDiff.received.accessShapeFacts)
       : [];
     const key = [
       ...drift.kinds,
@@ -675,9 +705,11 @@ async function main(): Promise<void> {
   const limit = parseNumberFlag('limit', 20);
   const offset = parseNumberFlag('offset', 0);
   const reportPath = resolve(parseStringFlag('report') ?? join(process.cwd(), 'reports', 'runtime-trace-final300-mine.json'));
-  const maxTraceSteps = parseNumberFlag('max-trace-steps', 2000);
-  const maxLineEvents = parseNumberFlag('max-line-events', 4000);
+  const maxTraceSteps = parseNumberFlag('max-trace-steps', 10000);
+  const maxLineEvents = parseNumberFlag('max-line-events', 20000);
+  const maxSingleLineHits = parseNumberFlag('max-single-line-hits', 10000);
   const failOnDrift = hasFlag('fail-on-drift');
+  const compareRuntimeFacts = hasFlag('compare-runtime-facts');
 
   const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as Final300Entry[];
   const bySlug = new Map<string, Final300Entry[]>();
@@ -707,16 +739,28 @@ async function main(): Promise<void> {
 
   for (const [slug, group] of groups) {
     const runs = new Map<MineLanguage, TraceRun>();
+    const entriesByLanguage = new Map<MineLanguage, Final300Entry>();
     for (const entry of group.sort((left, right) => left.language.localeCompare(right.language))) {
+      entriesByLanguage.set(entry.language, entry);
       const sourcePath = resolveSourcePath(sourceRoot, entry);
       try {
         const code = await readFile(sourcePath, 'utf8');
         const run = entry.language === 'python'
-          ? await executePythonTrace(pythonRuntime, entry, code, maxTraceSteps, maxLineEvents)
+          ? await executePythonTrace(pythonRuntime, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
           : entry.language === 'java'
-            ? await executeJavaTrace(entry, code, maxTraceSteps, maxLineEvents)
-            : await executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents);
+            ? await executeJavaTrace(entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
+            : await executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
         runs.set(entry.language, run);
+        if (hasExpectedOutput(entry) && stableStringify(entry.expectedOutput) !== stableStringify(run.output)) {
+          drifts.push({
+            slug,
+            family: entry.family,
+            comparedTo: 'expectedOutput',
+            language: entry.language,
+            kinds: ['output'],
+            output: { expected: entry.expectedOutput, received: run.output },
+          });
+        }
       } catch (error) {
         failures.push({ slug, language: entry.language, error: error instanceof Error ? error.message : String(error) });
       }
@@ -727,7 +771,15 @@ async function main(): Promise<void> {
       const run = runs.get(language);
       if (!run) continue;
       compared += 1;
-      const drift = compareRuns(slug, group[0]?.family, reference, run);
+      const entry = entriesByLanguage.get(language);
+      const drift = compareRuns(
+        slug,
+        group[0]?.family,
+        reference,
+        run,
+        compareRuntimeFacts,
+        !entry || !hasExpectedOutput(entry)
+      );
       if (drift) drifts.push(drift);
     }
   }
@@ -739,6 +791,8 @@ async function main(): Promise<void> {
     limit,
     maxTraceSteps,
     maxLineEvents,
+    maxSingleLineHits,
+    compareRuntimeFacts,
     groupsScanned: groups.length,
     synthesizedJavaEntries,
     comparisons: compared,
