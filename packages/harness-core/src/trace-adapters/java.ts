@@ -7,6 +7,11 @@ import type {
   RuntimeVisualizationPayload,
 } from '../types';
 import { normalizeRuntimeTraceContract, type RuntimeTraceContractResult } from '../trace-contract';
+import {
+  runtimeTraceContractToV4Events,
+  type RuntimeV4Trace,
+  type RuntimeV4TraceOptions,
+} from '../trace-v4';
 import { adaptTraceExecutionResult } from './shared';
 import { assertSupportedRawEmissions, summarizeJavaRawEmissions } from '../runtime-raw-emission-contract';
 
@@ -831,6 +836,24 @@ export function normalizeJavaTraceContract(result: JavaTraceResult): JavaTraceCo
     ...normalized,
     language: 'java',
   };
+}
+
+export function javaTraceHooksEventsToV4Trace(
+  events: string[],
+  sourceText?: string,
+  options: RuntimeV4TraceOptions = {}
+): RuntimeV4Trace {
+  assertSupportedRawEmissions(summarizeJavaRawEmissions(events), 'java');
+  const trace = eventsToRawTrace(events, sourceText);
+  const contract = normalizeRuntimeTraceContract('java', {
+    success: true,
+    trace,
+    executionTimeMs: 0,
+    consoleOutput: [],
+    lineEventCount: trace.filter((step) => step.event === 'line').length,
+    traceStepCount: trace.length,
+  });
+  return runtimeTraceContractToV4Events(contract, options);
 }
 
 export function adaptJavaTraceExecutionResult(result: LegacyTraceExecutionResult): ExecutionResult {

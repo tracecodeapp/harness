@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { buildJavaExecutionResult } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
 
 interface WorkerMessage {
   id?: string;
@@ -640,43 +640,42 @@ class Solution {
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');
     assertCondition(
       Array.isArray(graphExecute.events) &&
-        graphExecute.events.includes('line=5 state graph-adjacency graph=[[],[],[]]'),
-      'Java graph adjacency runtime events should expose graph-adjacency state when emitted'
-    );
-    assertCondition(
-      Array.isArray(graphExecute.events) &&
         graphExecute.events.includes('line=6 mutate-indexed graph[0] method=add') &&
         graphExecute.events.includes('line=7 mutate-indexed graph[1] method=add'),
       'Java graph adjacency runtime events should retain indexed receiver mutation indices'
     );
 
-    const graphTrace = buildJavaExecutionResult(graphExecute.output, graphExecute.events ?? [], 0);
+    const graphTrace = javaTraceHooksEventsToV4Trace(graphExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'Solution.java',
+    });
     assertCondition(
-      graphTrace.trace.some((step) => step.visualization?.objectKinds?.graph === 'graph-adjacency'),
-      'Java graph adjacency runtime events should normalize to objectKinds.graph-adjacency'
-    );
-    assertCondition(
-      graphTrace.trace.some((step) =>
-        step.accesses?.some((access) =>
-          access.variable === 'graph' &&
-          access.kind === 'mutating-call' &&
-          access.method === 'add' &&
-          JSON.stringify(access.indices) === JSON.stringify([1])
-        )
+      graphTrace.events.some((event) =>
+        event.kind === 'mutate' &&
+        'variable' in event.target &&
+        event.target.variable === 'graph' &&
+        event.method === 'append' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify([1])
       ),
-      'Java graph adjacency runtime events should normalize indexed receiver mutations'
+      'Java graph adjacency runtime events should emit V4 indexed receiver mutations'
     );
     assertCondition(
-      graphTrace.trace.some((step) =>
-        step.accesses?.some((access) =>
-          access.variable === 'graph' &&
-          access.kind === 'indexed-read' &&
-          JSON.stringify(access.indices) === JSON.stringify([0])
-        )
+      graphTrace.events.some((event) =>
+        event.kind === 'read' &&
+        'variable' in event.target &&
+        event.target.variable === 'graph' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify([0])
       ),
-      'Java graph adjacency traversal should normalize graph.get(u) reads'
+      'Java graph adjacency traversal should emit V4 indexed reads'
     );
-    console.log('PASS: java worker graph adjacency events normalize for visualization');
+    assertCondition(
+      !JSON.stringify(graphTrace.events).includes('graph-adjacency') &&
+        !JSON.stringify(graphTrace.events).includes('objectKinds'),
+      'Java V4 graph traces should not carry legacy visualization classifications'
+    );
+    console.log('PASS: java worker graph adjacency events normalize to V4 accesses');
 
     let invalidRejected = false;
     try {

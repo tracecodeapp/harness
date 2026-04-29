@@ -30,6 +30,10 @@ function extractJavaPayload(event: string): string {
   return match[1] ?? '';
 }
 
+function isJavaLineEvent(event: string): boolean {
+  return /^line=\d+(?:\s+.*)?$/.test(event);
+}
+
 function javaPayloadKind(payload: string): RuntimeRawEmissionKind | null {
   if (payload.length === 0) return 'line';
   if (payload.startsWith('call ')) return 'call';
@@ -56,11 +60,15 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
   const unsupported: string[] = [];
 
   for (const event of events) {
+    if (isJavaLineEvent(event)) {
+      kinds.push('line');
+    }
     const payload = extractJavaPayload(event);
     const kind = javaPayloadKind(payload);
-    if (kind) {
+    if (kind && kind !== 'line') {
       kinds.push(kind);
     } else {
+      if (kind === 'line') continue;
       unsupported.push(event);
     }
   }

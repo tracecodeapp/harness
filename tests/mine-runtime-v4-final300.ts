@@ -14,6 +14,7 @@ import type { ExecutionResult, LegacyTraceExecutionResult, RawTraceStep } from '
 import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
 import {
   runtimeTraceContractToV4Events,
+  withRuntimeV4TraceOptions,
   type RuntimeV4Event,
   type RuntimeV4Trace,
 } from '../packages/harness-core/src/trace-v4';
@@ -542,10 +543,10 @@ async function executeJavaTrace(entry: Final300Entry, code: string, maxTraceStep
       entry.runtimeExecutionStyle ?? 'function'
     );
     if (!result.success) throw new Error(`java tracing failed: ${result.error ?? 'unknown error'}`);
-    const trace = runtimeTraceContractToV4Events(
-      normalizeRuntimeTraceContract('java', result),
-      { runId: `mine:${entry.slug}:java`, file: entry.source.path }
-    );
+    const trace = withRuntimeV4TraceOptions(result.trace, {
+      runId: `mine:${entry.slug}:java`,
+      file: entry.source.path,
+    });
     return { language: 'java', output: result.output, trace, signature: buildMineSignature(trace) };
   } finally {
     workerClient.terminate();

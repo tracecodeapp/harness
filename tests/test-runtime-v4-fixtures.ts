@@ -19,13 +19,13 @@ import {
 import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
+  summarizeJavaRawEmissions,
   summarizeRawTraceEmissions,
   summarizeRuntimeV4Emissions,
   type RuntimeRawEmissionSummary,
 } from '../packages/harness-core/src/runtime-raw-emission-contract';
 import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
 import type { JavaWorkerClient, JavaWorkerTraceResult } from '../packages/harness-browser/src/java-worker-client';
-import { buildJavaExecutionResult } from '../packages/harness-core/src/trace-adapters/java';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
@@ -606,17 +606,7 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
     if (!result.success) {
       throw new Error(`Java tracing failed for ${fixture.id}: ${result.error ?? 'unknown error'}`);
     }
-    const rawLegacyResult = buildJavaExecutionResult(
-      rawResult.output,
-      rawResult.events,
-      rawResult.executionTimeMs,
-      rawResult.traceLimitExceeded,
-      rawResult.timeoutReason,
-      undefined,
-      rawResult.sourceText,
-      { outputIsSerialized: false }
-    );
-    const rawSummary = summarizeRawTraceEmissions('java', rawLegacyResult.trace);
+    const rawSummary = summarizeJavaRawEmissions(rawResult.events);
     assertSupportedRawEmissions(rawSummary, `${fixture.id}:java`);
     assertCondition(
       Array.isArray((result.trace as unknown as { events?: unknown[] }).events),
