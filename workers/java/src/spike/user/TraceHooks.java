@@ -320,7 +320,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceStructureState(int line, String payload) {
-    Matcher match = Pattern.compile("^state (linked-list|tree|graph-adjacency) ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
+    Matcher match = Pattern.compile("^state (linked-list|tree) ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
     if (match.matches()) {
       emitTraceSnapshot(line, match.group(2), match.group(3));
     }
@@ -675,9 +675,6 @@ public final class TraceHooks {
     emit("line=" + line + " state tree " + name + "=" + serializeValue(value));
   }
 
-  public static void emitGraphAdjacencyStateAtLine(int line, String name, Object value) {
-    emit("line=" + line + " state graph-adjacency " + name + "=" + serializeValue(value));
-  }
 
   public static void emitObjectStateAtLine(
     int line,

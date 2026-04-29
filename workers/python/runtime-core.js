@@ -1120,8 +1120,6 @@ def _extract_hashmap_snapshot(value):
 
 def _classify_runtime_object_kind(value):
     if isinstance(value, list):
-        if _looks_like_indexed_adjacency_list(value):
-            return 'graph-adjacency'
         return None
 
     if not isinstance(value, dict):
@@ -1138,8 +1136,6 @@ def _classify_runtime_object_kind(value):
         return 'linked-list'
     if '__ref__' in value and len(value) == 1:
         return None
-    if _looks_like_adjacency_list(value):
-        return 'graph-adjacency'
     return 'hashmap'
 
 def _infer_hashmap_delta(previous_snapshot, current_snapshot):

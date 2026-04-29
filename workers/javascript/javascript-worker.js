@@ -969,10 +969,6 @@ function createTraceRecorder(options = {}) {
         continue;
       }
 
-      if (isLikelyIndexedAdjacencyListArray(variableValue)) {
-        objectKinds[name] = 'graph-adjacency';
-        continue;
-      }
 
       if (variableValue && typeof variableValue === 'object' && !Array.isArray(variableValue)) {
         const customClassName = getCustomClassName(variableValue);
@@ -1060,10 +1056,6 @@ function createTraceRecorder(options = {}) {
           continue;
         }
 
-        if (isLikelyAdjacencyListObject(serializedValue)) {
-          objectKinds[name] = 'graph-adjacency';
-          continue;
-        }
 
         if (shouldVisualizeObjectAsHashMap(name, serializedValue)) {
           objectKinds[name] = 'hashmap';

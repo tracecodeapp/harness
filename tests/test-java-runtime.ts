@@ -633,8 +633,8 @@ class Solution {
     assertCondition(
       graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, 0).add(1);') &&
         graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", 0, "add");') &&
-        graphSource.includes('TraceHooks.emitGraphAdjacencyStateAtLine(7, "graph", graph);'),
-      'Java worker should rewrite indexed adjacency mutations with receiver indices and graph state'
+        !graphSource.includes('emit' + 'Graph' + 'AdjacencyStateAtLine'),
+      'Java worker should rewrite indexed adjacency mutations with receiver indices without semantic graph state'
     );
     assertCondition(
       graphSource.includes('for (int v : TraceHooks.readObjectListAtLine(11, "graph", graph, u))'),
@@ -677,7 +677,7 @@ class Solution {
         !JSON.stringify(graphTrace.events).includes('objectKinds'),
       'Java runtime trace graph traces should not carry visualization classifications'
     );
-    console.log('PASS: java worker graph adjacency events normalize to runtime trace accesses');
+    console.log('PASS: java worker indexed receiver graph operations emit neutral runtime trace accesses');
 
     let invalidRejected = false;
     try {

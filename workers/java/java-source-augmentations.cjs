@@ -218,7 +218,7 @@
           );
           nextLine = nextLine.replace(indexedAddPattern, (_match, indexSource, valueSource) => {
             const indexExpression = String(indexSource).trim();
-            return `{ TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}).add(${String(valueSource).trim()}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add"); TraceHooks.emitGraphAdjacencyStateAtLine(${lineNumber}, "${name}", ${name}); }`;
+            return `{ TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}).add(${String(valueSource).trim()}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add"); }`;
           });
 
           const listGetPattern = new RegExp(`\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)`, 'g');
