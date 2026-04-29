@@ -5,7 +5,6 @@ import type {
   TraceExecutionOptions,
 } from '../../harness-core/src/runtime-types';
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { adaptPythonTraceExecutionResult } from '../../harness-core/src/trace-adapters/python';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 
@@ -28,14 +27,13 @@ class PythonRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    const rawResult = await this.workerClient.executeWithTracing(
+    return this.workerClient.executeWithTracing(
       code,
       functionName,
       inputs,
       options,
       executionStyle as ExecutionStyle
     );
-    return adaptPythonTraceExecutionResult(rawResult);
   }
 
   async executeCode(
