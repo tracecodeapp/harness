@@ -382,7 +382,7 @@ public final class TraceHooks {
     IdentityHashMap<Object, Boolean> seen = new IdentityHashMap<>();
     while (current != null && !seen.containsKey(current)) {
       seen.put(current, Boolean.TRUE);
-      registerIdentity(current, "node-" + nextListIdentityIndex++);
+      registerIdentity(current, "ref-" + nextListIdentityIndex++);
       current = readField(current, "next");
     }
     return head;
@@ -638,15 +638,7 @@ public final class TraceHooks {
     emitSetSnapshotAtLine(line, name, values, highlightedKey, true, deletedKey, true);
   }
 
-  public static void emitListStateAtLine(int line, String name, Object value) {
-    emitTraceSnapshot(line, name, serializeValue(value));
-  }
-
-  public static void emitTreeStateAtLine(int line, String name, Object value) {
-    emitTraceSnapshot(line, name, serializeValue(value));
-  }
-
-  public static void emitObjectStateAtLine(int line, String name, Object value) {
+  public static void emitRuntimeSnapshotAtLine(int line, String name, Object value) {
     emitTraceSnapshot(line, name, serializeValue(value));
   }
 

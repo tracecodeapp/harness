@@ -183,7 +183,7 @@ function serializeValue(
         return { __ref__: existingId };
       }
       const isTree = isLikelyTreeNodeValue(value);
-      const nodeId = `node-${nodeRefState.nextId++}`;
+      const nodeId = `ref-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(value, nodeId);
 
       const out =
@@ -222,7 +222,7 @@ function serializeValue(
         return { __ref__: existingId };
       }
 
-      const objectId = `object-${nodeRefState.nextId++}`;
+      const objectId = `ref-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(value, objectId);
 
       if (seen.has(value)) return { __ref__: objectId };
@@ -264,7 +264,7 @@ function serializeTopLevelValue(value, nodeRefState) {
     const isTree = isLikelyTreeNodeValue(value);
     let nodeId = nodeRefState.ids.get(objectValue);
     if (!nodeId) {
-      nodeId = `node-${nodeRefState.nextId++}`;
+      nodeId = `ref-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(objectValue, nodeId);
     }
 
@@ -301,7 +301,7 @@ function serializeTopLevelValue(value, nodeRefState) {
     const objectValue = value;
     let objectId = nodeRefState.ids.get(objectValue);
     if (!objectId) {
-      objectId = `object-${nodeRefState.nextId++}`;
+      objectId = `ref-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(objectValue, objectId);
     }
     const seen = new WeakSet();

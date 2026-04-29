@@ -26,6 +26,7 @@ type TraceStep = {
   line: number;
   event: string;
   accesses?: TraceAccess[];
+  variables?: Record<string, unknown>;
 };
 
 type RuntimeCore = {
@@ -121,6 +122,23 @@ function findTraceStep(trace: TraceStep[], rawLine: number): TraceStep {
 
 function accessVariables(step: TraceStep): Set<string> {
   return new Set((step.accesses ?? []).map((access) => access.variable).filter(Boolean) as string[]);
+}
+
+function assertNoSemanticRefIds(value: unknown, label: string): void {
+  if (typeof value === 'string') {
+    assertCondition(!/^node-\d+$/.test(value), `${label} should not expose node-prefixed trace refs`);
+    assertCondition(!/^object-\d+$/.test(value), `${label} should not expose object-prefixed trace refs`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoSemanticRefIds(item, `${label}[${index}]`));
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      assertNoSemanticRefIds(nested, `${label}.${key}`);
+    }
+  }
 }
 
 async function assertAccessAttributionUsesExecutedLine(): Promise<void> {
@@ -269,9 +287,61 @@ print(json.dumps({
   console.log('PASS: Python runtime records indexed receiver mutations');
 }
 
+async function assertTraceReferenceIdsAreNeutral(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Box:
+    def __init__(self, value):
+        self.value = value
+
+def make_cycle():
+    first = ListNode(1)
+    second = ListNode(2)
+    first.next = second
+    second.next = first
+    box = Box(first)
+    return box.value.val
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'make_cycle',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'traceEvents': _trace_events,
+    'result': _serialize(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; traceEvents: unknown[] };
+
+  assertNoSemanticRefIds(parsed.trace, 'python trace steps');
+  assertNoSemanticRefIds(parsed.traceEvents, 'python runtime trace events');
+
+  const serialized = JSON.stringify({ trace: parsed.trace, events: parsed.traceEvents });
+  assertCondition(serialized.includes('"__id__":"r'), 'Trace should still emit opaque ids for cycle-safe refs');
+  assertCondition(serialized.includes('"__ref__":"r'), 'Trace should still emit opaque refs for cycles');
+
+  console.log('PASS: Python runtime trace reference ids are neutral');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
+  await assertTraceReferenceIdsAreNeutral();
   console.log('\nPython runtime checks passed.');
 }
 

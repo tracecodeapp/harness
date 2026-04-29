@@ -126,6 +126,8 @@ function selectTraceSerializeContractLines(serializedBlock: string): string {
     '_SKIP_SENTINEL = "__TRACECODE_SKIP__"',
     '_MAX_SERIALIZE_DEPTH = 48',
     '_MAX_OBJECT_FIELDS = 32',
+    'def _tracecode_ref_id(node_refs):',
+    'return f"r{len(node_refs)}"',
     'def _serialize(obj, depth=0, node_refs=None):',
     "elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':",
     "elif isinstance(obj, (list, tuple)):",

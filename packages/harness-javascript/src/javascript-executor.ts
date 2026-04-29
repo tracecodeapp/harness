@@ -129,7 +129,7 @@ function serializeValue(
       }
 
       const isTree = isLikelyTreeNodeValue(value);
-      const nodeId = `node-${nodeRefState.nextId++}`;
+      const nodeId = `ref-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(objectValue, nodeId);
 
       const out: Record<string, unknown> = isTree
@@ -168,7 +168,7 @@ function serializeValue(
         return { __ref__: existingId };
       }
 
-      const objectId = `object-${nodeRefState.nextId++}`;
+      const objectId = `ref-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(objectValue, objectId);
 
       if (seen.has(objectValue)) return { __ref__: objectId };

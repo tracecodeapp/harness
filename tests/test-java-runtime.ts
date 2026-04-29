@@ -270,6 +270,25 @@ class Solution {
 
 ${exportsSource.replace('public class Exports', `public class ${exportsClassName}`)}`;
               }
+              if (source.includes('legacySnapshot')) {
+                return `package ${packageName};
+import spike.user.TraceHooks;
+
+class Solution {
+  public int legacySnapshot() {
+    TraceHooks.emit("line=4 call legacySnapshot");
+    TraceHooks.emit("line=5");
+    Object box = new Object();
+    TraceHooks.emitObjectStateAtLine(5, "box", box);
+    TraceHooks.emitListStateAtLine(5, "box", box);
+    TraceHooks.emitTreeStateAtLine(5, "box", box);
+    TraceHooks.emit("line=6 return legacySnapshot");
+    return 1;
+  }
+}
+
+${exportsSource.replace('public class Exports', `public class ${exportsClassName}`)}`;
+              }
               return `package ${packageName};\n${source}\n${exportsSource.replace('public class Exports', `public class ${exportsClassName}`)}`;
             },
           },
@@ -678,6 +697,27 @@ class Solution {
       'Java runtime trace graph traces should not carry visualization classifications'
     );
     console.log('PASS: java worker indexed receiver graph operations emit neutral runtime trace accesses');
+
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: `class Solution {
+  public int legacySnapshot() {
+    return 1;
+  }
+}`,
+      functionName: 'legacySnapshot',
+      inputs: {},
+      executionStyle: 'function',
+    });
+
+    const legacySnapshotSource = harness.stringFiles.at(-1)?.source ?? '';
+    assertCondition(
+      !legacySnapshotSource.includes('emitListStateAtLine') &&
+        !legacySnapshotSource.includes('emitTreeStateAtLine') &&
+        !legacySnapshotSource.includes('emitObjectStateAtLine') &&
+        legacySnapshotSource.includes('TraceHooks.emitRuntimeSnapshotAtLine(5, "box", box);'),
+      'Java worker should normalize rewriter legacy state hooks to neutral runtime snapshot hooks'
+    );
+    console.log('PASS: java worker normalizes legacy state hooks to runtime snapshot hooks');
 
     let invalidRejected = false;
     try {

@@ -1561,6 +1561,13 @@ async function rewriteSource(payload, requestId) {
   );
 }
 
+function normalizeJavaRuntimeSnapshotHooks(source) {
+  return String(source).replace(
+    /TraceHooks\.emit(?:List|Tree|Object)StateAtLine\(/g,
+    'TraceHooks.emitRuntimeSnapshotAtLine('
+  );
+}
+
 function normalizePublicClassDeclarations(source) {
   return String(source).replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
 }
@@ -1793,6 +1800,7 @@ async function runJavaRequest(payload, requestId) {
   let rewrittenSource;
   try {
     rewrittenSource = await rewriteSource(normalizedPayload, requestId);
+    rewrittenSource = normalizeJavaRuntimeSnapshotHooks(rewrittenSource);
     rewrittenSource = augmentTraceCallArgumentSnapshots(rewrittenSource);
     rewrittenSource = augmentArrayLengthReads(rewrittenSource);
     rewrittenSource = self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(

@@ -54,6 +54,23 @@ function traceAccessEvents(result: { trace?: { events?: RuntimeTraceEvent[] } })
   );
 }
 
+function assertNoRuntimeTraceVisualizerPayloadLeak(
+  result: { trace?: { events?: RuntimeTraceEvent[] } },
+  label: string
+): void {
+  const serialized = JSON.stringify(traceEvents(result));
+  assertCondition(
+    !serialized.includes('visualization') &&
+      !serialized.includes('objectKinds') &&
+      !serialized.includes('hashMaps') &&
+      !serialized.includes('graph-adjacency') &&
+      !serialized.includes('linked-list') &&
+      !serialized.includes('node-') &&
+      !serialized.includes('object-'),
+    `${label} leaked semantic/visualizer payload markers into runtime trace events`
+  );
+}
+
 async function loadWorkerSource(): Promise<string> {
   const workerPath = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
   return readFile(workerPath, 'utf8');
@@ -755,6 +772,7 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     hasTreeTaggedLocal,
     'TypeScript tree-input tracing should surface tree-tagged root/node locals once inputs are materialized'
   );
+  assertNoRuntimeTraceVisualizerPayloadLeak(executeTypeScriptTreeInputTracing, 'typescript tree-input tracing');
   console.log('PASS: execute-with-tracing typescript tree input materialization contract');
 
   const executeTypeScriptReverseListTracing = await harness.sendMessage<{
@@ -1306,6 +1324,7 @@ class Trie {
     hasGraphSnapshot,
     'Tracing should emit neutral runtime trace snapshots for adjacency-list object locals'
   );
+  assertNoRuntimeTraceVisualizerPayloadLeak(graphKindTracing, 'javascript graph-object tracing');
   console.log('PASS: execute-with-tracing graph snapshot contract');
 
   const indexedGraphKindTracing = await harness.sendMessage<{
@@ -1329,6 +1348,7 @@ class Trie {
     hasIndexedGraphSnapshot,
     'Tracing should emit neutral runtime trace snapshots for indexed adjacency-list locals'
   );
+  assertNoRuntimeTraceVisualizerPayloadLeak(indexedGraphKindTracing, 'javascript indexed-graph tracing');
   console.log('PASS: execute-with-tracing indexed graph snapshot contract');
 
   const listKindTracing = await harness.sendMessage<{
@@ -1357,7 +1377,34 @@ class Trie {
     hasListSnapshot,
     'Tracing should emit neutral runtime trace snapshots for linked-list locals'
   );
+  assertNoRuntimeTraceVisualizerPayloadLeak(listKindTracing, 'javascript linked-list tracing');
   console.log('PASS: execute-with-tracing linked-list snapshot contract');
+
+  const customObjectTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: Array<{
+    }>;
+  }>('execute-with-tracing', {
+    code: `function captureCustomObject() {
+  class Box {
+    constructor(value) {
+      this.value = value;
+    }
+  }
+  const box = new Box(7);
+  return box;
+}`,
+    functionName: 'captureCustomObject',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(customObjectTracing.success === true, 'Custom object tracing should succeed');
+  assertCondition(
+    traceSnapshotEvents(customObjectTracing).some((event) => event.target?.variable === 'box'),
+    'Tracing should emit runtime trace snapshots for custom object locals'
+  );
+  assertNoRuntimeTraceVisualizerPayloadLeak(customObjectTracing, 'javascript custom-object tracing');
+  console.log('PASS: execute-with-tracing custom object id neutrality contract');
 
   const topLevelOrderingTracing = await harness.sendMessage<{
     success: boolean;
