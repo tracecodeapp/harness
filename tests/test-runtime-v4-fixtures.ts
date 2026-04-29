@@ -251,25 +251,25 @@ async function executePythonTrace(code: string, fixture: FixtureCase): Promise<F
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
-    'traceV4Events': _trace_v4_events,
+    'traceEvents': _trace_events,
     'result': _serialize(_result),
     'console': _console_output,
     'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_v4_events)
+    'traceStepCount': len(_trace_events)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { traceV4Events: RuntimeV4Event[]; lineEventCount?: number; traceStepCount?: number };
+  const parsed = JSON.parse(stdout) as { traceEvents: RuntimeV4Event[]; lineEventCount?: number; traceStepCount?: number };
   const trace: RuntimeV4Trace = {
     schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
     language: 'python',
     runId: `python:${fixture.id}`,
-    events: parsed.traceV4Events.map((event) => ({
+    events: parsed.traceEvents.map((event) => ({
       ...event,
       runId: `python:${fixture.id}`,
       file: 'solution.py',
     })),
-    lineEventCount: parsed.traceV4Events.filter((event) => event.kind === 'line').length,
-    traceStepCount: parsed.traceStepCount ?? parsed.traceV4Events.length,
+    lineEventCount: parsed.traceEvents.filter((event) => event.kind === 'line').length,
+    traceStepCount: parsed.traceStepCount ?? parsed.traceEvents.length,
   };
   const rawSummary = summarizeRuntimeV4Emissions(trace);
   assertSupportedRawEmissions(rawSummary, `${fixture.id}:python`);

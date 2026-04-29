@@ -810,11 +810,11 @@ function writeValueAtIndices(container, indices, value) {
 
 function createTraceRecorder(options = {}) {
   const trace = [];
-  const runtimeV4Events = [];
+  const runtimeTraceEvents = [];
   const callStack = [];
   const pendingAccessesByFrame = new Map();
   const deferredAccessesByFrame = new Map();
-  const runtimeV4AccessStatsByVariable = new Map();
+  const runtimeTraceAccessStatsByVariable = new Map();
   const lineHitCount = new Map();
   const stableNodeRefState = { ids: new Map(), nextId: 1 };
   const maxTraceSteps = getNumericOption(options.maxTraceSteps, 4000);
@@ -1159,7 +1159,7 @@ function createTraceRecorder(options = {}) {
           callStack: snapshotCallStack(),
         };
         trace.push(timeoutStep);
-        appendRuntimeV4EventsForStep(timeoutStep);
+        appendRuntimeTraceEventsForStep(timeoutStep);
         timeoutRecorded = true;
       }
       throw createLimitError('trace-limit', lineNumber, `Exceeded ${effectiveMaxTraceSteps} trace steps`);
@@ -1183,17 +1183,17 @@ function createTraceRecorder(options = {}) {
       }
       previous.callStack = nextStep.callStack;
       previous.function = nextStep.function;
-      appendRuntimeV4EventsForStep({
+      appendRuntimeTraceEventsForStep({
         ...nextStep,
         event: '__merge_only__',
       });
       return;
     }
     trace.push(nextStep);
-    appendRuntimeV4EventsForStep(nextStep);
+    appendRuntimeTraceEventsForStep(nextStep);
   }
 
-  function runtimeV4FrameIdForStep(step) {
+  function runtimeTraceFrameIdForStep(step) {
     const stack = Array.isArray(step?.callStack) ? step.callStack : [];
     if (stack.length > 0) {
       const frame = stack[stack.length - 1];
@@ -1202,7 +1202,7 @@ function createTraceRecorder(options = {}) {
     return `${step.function}:${step.line}`;
   }
 
-  function runtimeV4TargetForAccess(access) {
+  function runtimeTraceTargetForAccess(access) {
     const indices = Array.isArray(access?.indices) ? access.indices : [];
     if (indices.length > 0) {
       return { variable: access.variable, path: indices };
@@ -1210,20 +1210,20 @@ function createTraceRecorder(options = {}) {
     return { variable: access.variable };
   }
 
-  function runtimeV4KindForAccess(access) {
+  function runtimeTraceKindForAccess(access) {
     if (access.kind === 'indexed-read' || access.kind === 'cell-read') return 'read';
     if (access.kind === 'indexed-write' || access.kind === 'cell-write') return 'write';
     return 'mutate';
   }
 
-  function runtimeV4AccessValue(step, access) {
+  function runtimeTraceAccessValue(step, access) {
     return valueAtPath(step?.variables?.[access.variable], access.indices);
   }
 
-  function updateRuntimeV4AccessStats(access) {
+  function updateRuntimeTraceAccessStats(access) {
     const variable = access?.variable;
     if (typeof variable !== 'string' || variable.length === 0) return;
-    const stats = runtimeV4AccessStatsByVariable.get(variable) ?? {
+    const stats = runtimeTraceAccessStatsByVariable.get(variable) ?? {
       hasCellRead: false,
       hasCellWrite: false,
       hasMutatingCall: false,
@@ -1233,10 +1233,10 @@ function createTraceRecorder(options = {}) {
     if (access.kind === 'cell-write') stats.hasCellWrite = true;
     if (access.kind === 'mutating-call') stats.hasMutatingCall = true;
     if (access.kind === 'indexed-write') stats.hasIndexedWrite = true;
-    runtimeV4AccessStatsByVariable.set(variable, stats);
+    runtimeTraceAccessStatsByVariable.set(variable, stats);
   }
 
-  function shouldKeepRuntimeV4AccessEvent(event, stats) {
+  function shouldKeepRuntimeTraceAccessEvent(event, stats) {
     if (!event || (event.kind !== 'read' && event.kind !== 'write' && event.kind !== 'mutate')) return true;
     const pathDepth = Array.isArray(event.target?.path) ? event.target.path.length : 0;
     if ((stats.hasCellRead || stats.hasCellWrite) && pathDepth === 1 && (event.kind === 'read' || event.kind === 'write')) {
@@ -1263,43 +1263,43 @@ function createTraceRecorder(options = {}) {
     return true;
   }
 
-  function pruneRuntimeV4AccessEvents(variable) {
-    const stats = runtimeV4AccessStatsByVariable.get(variable);
+  function pruneRuntimeTraceAccessEvents(variable) {
+    const stats = runtimeTraceAccessStatsByVariable.get(variable);
     if (!stats) return;
-    for (let index = runtimeV4Events.length - 1; index >= 0; index -= 1) {
-      const event = runtimeV4Events[index];
+    for (let index = runtimeTraceEvents.length - 1; index >= 0; index -= 1) {
+      const event = runtimeTraceEvents[index];
       if (!event || !event.target || event.target.variable !== variable) continue;
-      if (!shouldKeepRuntimeV4AccessEvent(event, stats)) {
-        runtimeV4Events.splice(index, 1);
+      if (!shouldKeepRuntimeTraceAccessEvent(event, stats)) {
+        runtimeTraceEvents.splice(index, 1);
       }
     }
   }
 
-  function appendRuntimeV4EventsForStep(step) {
+  function appendRuntimeTraceEventsForStep(step) {
     const base = {
       runId: 'javascript:run',
       line: step.line,
-      frameId: runtimeV4FrameIdForStep(step),
+      frameId: runtimeTraceFrameIdForStep(step),
     };
 
     if (step.event === 'line') {
-      runtimeV4Events.push({ ...base, kind: 'line', function: step.function });
+      runtimeTraceEvents.push({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'call') {
       const stack = Array.isArray(step.callStack) ? step.callStack : [];
-      runtimeV4Events.push({ ...base, kind: 'call', function: step.function, args: stack.at(-1)?.args });
+      runtimeTraceEvents.push({ ...base, kind: 'call', function: step.function, args: stack.at(-1)?.args });
     } else if (step.event === 'return') {
-      runtimeV4Events.push({
+      runtimeTraceEvents.push({
         ...base,
         kind: 'return',
         function: step.function,
         ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
       });
     } else if (step.event === 'exception') {
-      runtimeV4Events.push({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
+      runtimeTraceEvents.push({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
     } else if (step.event === 'timeout') {
-      runtimeV4Events.push({ ...base, kind: 'timeout', message: 'Runtime timeout' });
+      runtimeTraceEvents.push({ ...base, kind: 'timeout', message: 'Runtime timeout' });
     } else if (step.event === 'stdout') {
-      runtimeV4Events.push({
+      runtimeTraceEvents.push({
         kind: 'stdout',
         runId: 'javascript:run',
         ...(step.line ? { line: step.line } : {}),
@@ -1309,27 +1309,27 @@ function createTraceRecorder(options = {}) {
 
     if (step.event !== '__merge_only__') {
       for (const [variable, value] of Object.entries(step.variables ?? {})) {
-        runtimeV4Events.push({ ...base, kind: 'snapshot', target: { variable }, value });
+        runtimeTraceEvents.push({ ...base, kind: 'snapshot', target: { variable }, value });
       }
     } else {
       for (const [variable, value] of Object.entries(step.variables ?? {})) {
-        runtimeV4Events.push({ ...base, kind: 'snapshot', target: { variable }, value });
+        runtimeTraceEvents.push({ ...base, kind: 'snapshot', target: { variable }, value });
       }
     }
 
     for (const access of step.accesses ?? []) {
-      updateRuntimeV4AccessStats(access);
-      pruneRuntimeV4AccessEvents(access.variable);
-      const kind = runtimeV4KindForAccess(access);
-      const target = runtimeV4TargetForAccess(access);
-      const stats = runtimeV4AccessStatsByVariable.get(access.variable);
+      updateRuntimeTraceAccessStats(access);
+      pruneRuntimeTraceAccessEvents(access.variable);
+      const kind = runtimeTraceKindForAccess(access);
+      const target = runtimeTraceTargetForAccess(access);
+      const stats = runtimeTraceAccessStatsByVariable.get(access.variable);
       if (kind === 'mutate') {
-        const method = normalizeV4MutationMethod(access.method);
+        const method = normalizeMutationMethod(access.method);
         const event = { ...base, kind, target, ...(method ? { method } : {}) };
-        if (shouldKeepRuntimeV4AccessEvent(event, stats)) runtimeV4Events.push(event);
+        if (shouldKeepRuntimeTraceAccessEvent(event, stats)) runtimeTraceEvents.push(event);
       } else {
-        const event = { ...base, kind, target, value: runtimeV4AccessValue(step, access) };
-        if (shouldKeepRuntimeV4AccessEvent(event, stats)) runtimeV4Events.push(event);
+        const event = { ...base, kind, target, value: runtimeTraceAccessValue(step, access) };
+        if (shouldKeepRuntimeTraceAccessEvent(event, stats)) runtimeTraceEvents.push(event);
       }
     }
   }
@@ -1577,7 +1577,7 @@ function createTraceRecorder(options = {}) {
         const step = trace[index];
         if (!step || step.event !== 'line') continue;
         step.accesses = [...(step.accesses ?? []), ...attachable];
-        appendRuntimeV4EventsForStep({
+        appendRuntimeTraceEventsForStep({
           ...step,
           event: '__access_only__',
           variables: {},
@@ -1708,14 +1708,14 @@ function createTraceRecorder(options = {}) {
     getTrace() {
       return trace;
     },
-    getRuntimeV4Trace(language, runId = `${language}:run`, file) {
-      const events = runtimeV4Events.map((event) => ({
+    getRuntimeTrace(language, runId = `${language}:run`, file) {
+      const events = runtimeTraceEvents.map((event) => ({
         ...event,
         runId,
         ...(file ? { file } : {}),
       }));
       return {
-        schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+        schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
         language,
         runId,
         events,
@@ -1882,9 +1882,9 @@ function createSyntheticTrace(payload, codeResult) {
   ];
 }
 
-function createEmptyRuntimeV4Trace(language, runId = `${language}:run`) {
+function createEmptyRuntimeTrace(language, runId = `${language}:run`) {
   return {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language,
     runId,
     events: [],
@@ -1893,7 +1893,7 @@ function createEmptyRuntimeV4Trace(language, runId = `${language}:run`) {
   };
 }
 
-function createSyntheticRuntimeV4Trace(payload, codeResult, language) {
+function createSyntheticRuntimeTrace(payload, codeResult, language) {
   const syntheticTrace = createSyntheticTrace(payload, codeResult);
   const runId = `${language}:run`;
   const events = [];
@@ -1901,7 +1901,7 @@ function createSyntheticRuntimeV4Trace(payload, codeResult, language) {
     const base = {
       runId,
       line: step.line,
-      frameId: runtimeV4FrameIdForSyntheticStep(step),
+      frameId: runtimeTraceFrameIdForSyntheticStep(step),
     };
     if (step.event === 'call') {
       events.push({ ...base, kind: 'call', function: step.function, args: step.callStack?.at(-1)?.args });
@@ -1915,7 +1915,7 @@ function createSyntheticRuntimeV4Trace(payload, codeResult, language) {
     }
   }
   return {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language,
     runId,
     events,
@@ -1924,9 +1924,9 @@ function createSyntheticRuntimeV4Trace(payload, codeResult, language) {
   };
 }
 
-const RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION = 'v4-draft-2026-04-28';
+const RUNTIME_TRACE_SCHEMA_VERSION = 'v4-draft-2026-04-28';
 
-const V4_MUTATION_METHOD_ALIASES = {
+const MUTATION_METHOD_ALIASES = {
   add: 'append',
   append: 'append',
   push: 'append',
@@ -1934,7 +1934,7 @@ const V4_MUTATION_METHOD_ALIASES = {
   set: 'set',
 };
 
-function runtimeV4FrameIdForSyntheticStep(step) {
+function runtimeTraceFrameIdForSyntheticStep(step) {
   const stack = Array.isArray(step?.callStack) ? step.callStack : [];
   if (stack.length > 0) {
     const frame = stack[stack.length - 1];
@@ -1953,9 +1953,9 @@ function valueAtPath(value, path) {
   return current;
 }
 
-function normalizeV4MutationMethod(method) {
+function normalizeMutationMethod(method) {
   if (!method) return undefined;
-  return V4_MUTATION_METHOD_ALIASES[method] ?? method;
+  return MUTATION_METHOD_ALIASES[method] ?? method;
 }
 
 function getTypeScriptCompiler() {
@@ -3842,7 +3842,7 @@ async function executeWithTracing(payload) {
       const executionTimeMs = performanceNow() - startedAt;
 
       if (!fallbackResult.success) {
-        const trace = createEmptyRuntimeV4Trace(language);
+        const trace = createEmptyRuntimeTrace(language);
         return {
           success: false,
           error: fallbackResult.error,
@@ -3855,7 +3855,7 @@ async function executeWithTracing(payload) {
         };
       }
 
-      const trace = createSyntheticRuntimeV4Trace(payload, fallbackResult, language);
+      const trace = createSyntheticRuntimeTrace(payload, fallbackResult, language);
       return {
         success: true,
         output: fallbackResult.output,
@@ -3913,7 +3913,7 @@ async function executeWithTracing(payload) {
     }
 
     const executionTimeMs = performanceNow() - startedAt;
-    const trace = traceRecorder.getRuntimeV4Trace(language);
+    const trace = traceRecorder.getRuntimeTrace(language);
     return {
       success: true,
       output: serializedOutput,
@@ -3946,7 +3946,7 @@ async function executeWithTracing(payload) {
       traceRecorder.recordException(traceErrorLine, message, traceFunctionName);
     }
 
-    const trace = traceRecorder.getRuntimeV4Trace(language);
+    const trace = traceRecorder.getRuntimeTrace(language);
     return {
       success: false,
       output: null,
