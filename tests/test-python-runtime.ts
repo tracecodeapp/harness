@@ -338,10 +338,63 @@ print(json.dumps({
   console.log('PASS: Python runtime trace reference ids are neutral');
 }
 
+async function assertTraceCaptureLimitPreservesOutput(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def sum_to(n):
+    total = 0
+    for i in range(n):
+        total += i
+    return total
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'sum_to',
+    { n: 200 },
+    'function',
+    { maxTraceSteps: 5, maxStoredEvents: 20, maxLineEvents: 1000, maxSingleLineHits: 1000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'traceEvents': _trace_events,
+    'result': _serialize(_result),
+    'traceLimitExceeded': _trace_limit_exceeded,
+    'timeoutReason': _timeout_reason,
+    'traceStepCount': len(_trace_data)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    traceEvents: unknown[];
+    result: unknown;
+    traceLimitExceeded?: boolean;
+    timeoutReason?: string;
+  };
+
+  assertCondition(parsed.result === 19900, 'Trace capture limit should preserve Python output');
+  assertCondition(parsed.traceLimitExceeded === true, 'Trace capture limit should set Python traceLimitExceeded');
+  assertCondition(parsed.timeoutReason === 'trace-limit', 'Trace capture limit should use Python trace-limit reason');
+  assertCondition(parsed.traceEvents.length <= 20, 'Trace capture limit should bound Python runtime events');
+
+  console.log('PASS: Python runtime trace capture limit preserves output');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertTraceReferenceIdsAreNeutral();
+  await assertTraceCaptureLimitPreservesOutput();
   console.log('\nPython runtime checks passed.');
 }
 

@@ -30,6 +30,10 @@ public final class TraceHooks {
   private TraceHooks() {}
 
   public static void emit(String event) {
+    if (traceLimitExceeded) {
+      droppedEventCount += 1;
+      return;
+    }
     if (event != null && event.startsWith("trace:")) {
       appendEvent(event);
       return;
@@ -133,6 +137,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceCall(int line, String function, String argsFragment) {
+    if (traceLimitExceeded) return;
     StringBuilder builder = new StringBuilder();
     builder.append("trace:{\"kind\":\"call\",\"line\":").append(line);
     builder.append(",\"function\":").append(jsonString(function));
@@ -146,6 +151,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceReturn(int line, String function, String valueJson) {
+    if (traceLimitExceeded) return;
     StringBuilder builder = new StringBuilder();
     builder.append("trace:{\"kind\":\"return\",\"line\":").append(line);
     builder.append(",\"function\":").append(jsonString(function));
@@ -157,25 +163,30 @@ public final class TraceHooks {
   }
 
   private static void emitTraceException(int line, String messageJson) {
+    if (traceLimitExceeded) return;
     appendEvent(baseEvent(line, "exception") + ",\"message\":" + asJsonValue(messageJson) + "}");
   }
 
   private static void emitTraceStdout(int line, String textJson) {
+    if (traceLimitExceeded) return;
     appendEvent(baseEvent(line, "stdout") + ",\"text\":" + asJsonValue(textJson) + "}");
   }
 
   private static void emitTraceSnapshot(int line, String variable, String valueJson) {
+    if (traceLimitExceeded) return;
     CURRENT_SNAPSHOTS.put(variable, valueJson);
     emitTraceSnapshotEvent(line, variable, valueJson);
   }
 
   private static void emitTraceSnapshotEvent(int line, String variable, String valueJson) {
+    if (traceLimitExceeded) return;
     appendEvent(baseEvent(line, "snapshot")
         + ",\"target\":{\"variable\":" + jsonString(variable) + "}"
         + ",\"value\":" + asJsonValue(valueJson) + "}");
   }
 
   private static void emitTraceAccess(int line, String kind, String variable, String pathJson, String valueJson) {
+    if (traceLimitExceeded) return;
     StringBuilder builder = new StringBuilder(baseEvent(line, kind));
     builder.append(",\"target\":{\"variable\":").append(jsonString(variable));
     if (pathJson != null) {
@@ -190,6 +201,7 @@ public final class TraceHooks {
   }
 
   private static void emitTraceMutate(int line, String variable, String pathJson, String method) {
+    if (traceLimitExceeded) return;
     String normalizedMethod = normalizeMutationMethod(method);
     StringBuilder builder = new StringBuilder(baseEvent(line, "mutate"));
     builder.append(",\"target\":{\"variable\":").append(jsonString(variable));
@@ -806,6 +818,7 @@ public final class TraceHooks {
   }
 
   private static void emitIndexedState(int line, String name, Object values) {
+    if (traceLimitExceeded) return;
     emit("line=" + line + " " + name + "=" + serializeValue(values));
   }
 

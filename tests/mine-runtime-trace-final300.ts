@@ -261,7 +261,8 @@ print(json.dumps({
     'result': _serialize(_result),
     'lineEventCount': _total_line_events,
     'traceStepCount': len(_trace_events),
-    'traceLimitExceeded': bool(globals().get('_trace_limit_exceeded', False))
+    'traceLimitExceeded': bool(globals().get('_trace_limit_exceeded', False)),
+    'timeoutReason': globals().get('_timeout_reason', None)
 }))
 `);
   const parsed = JSON.parse(stdout) as {
@@ -270,9 +271,10 @@ print(json.dumps({
     lineEventCount?: number;
     traceStepCount?: number;
     traceLimitExceeded?: boolean;
+    timeoutReason?: string | null;
   };
-  if (parsed.traceLimitExceeded) {
-    throw new Error(`python tracing failed: Exceeded trace budget`);
+  if (parsed.traceLimitExceeded && parsed.timeoutReason !== 'trace-limit') {
+    throw new Error(`python tracing failed: ${parsed.timeoutReason ?? 'trace limit exceeded'}`);
   }
   const runId = `mine:${entry.slug}:python`;
   const trace: RuntimeTrace = {

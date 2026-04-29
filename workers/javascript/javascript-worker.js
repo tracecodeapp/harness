@@ -820,6 +820,7 @@ function createTraceRecorder(options = {}) {
   const maxTraceSteps = getNumericOption(options.maxTraceSteps, 4000);
   const maxStoredEvents = getNumericOption(options.maxStoredEvents, maxTraceSteps);
   const effectiveMaxTraceSteps = Math.min(maxTraceSteps, maxStoredEvents);
+  const effectiveMaxRuntimeTraceEvents = maxStoredEvents;
   const maxLineEvents = getNumericOption(options.maxLineEvents, 12000);
   const maxSingleLineHits = getNumericOption(options.maxSingleLineHits, 1000);
   const maxCallDepth = getNumericOption(options.maxCallDepth, 2000);
@@ -829,6 +830,27 @@ function createTraceRecorder(options = {}) {
   let timeoutReason;
   let timeoutRecorded = false;
   let nextFrameId = 1;
+
+  function markTraceCaptureLimit(lineNumber, functionName) {
+    if (!traceLimitExceeded) {
+      traceLimitExceeded = true;
+      timeoutReason = 'trace-limit';
+    }
+    pendingAccessesByFrame.clear();
+    deferredAccessesByFrame.clear();
+    if (!timeoutRecorded && trace.length < effectiveMaxTraceSteps && runtimeTraceEvents.length < effectiveMaxRuntimeTraceEvents) {
+      const timeoutStep = {
+        line: normalizeLine(lineNumber, 1),
+        event: 'timeout',
+        variables: { timeoutReason: 'trace-limit' },
+        function: functionName ?? callStack[callStack.length - 1]?.function ?? '<module>',
+        callStack: snapshotCallStack(),
+      };
+      timeoutRecorded = true;
+      trace.push(timeoutStep);
+      appendRuntimeTraceEventsForStep(timeoutStep);
+    }
+  }
 
   function normalizeLine(lineNumber, fallback = 1) {
     const parsed = Number(lineNumber);
@@ -972,25 +994,12 @@ function createTraceRecorder(options = {}) {
   }
 
   function appendTrace(step, frameId = getCurrentFrameId()) {
+    if (traceLimitExceeded) {
+      return;
+    }
     if (trace.length >= effectiveMaxTraceSteps) {
-      const lineNumber = normalizeLine(step?.line, 1);
-      if (!traceLimitExceeded) {
-        traceLimitExceeded = true;
-        timeoutReason = 'trace-limit';
-      }
-      if (!timeoutRecorded && trace.length < effectiveMaxTraceSteps) {
-        const timeoutStep = {
-          line: lineNumber,
-          event: 'timeout',
-          variables: {},
-          function: step?.function ?? callStack[callStack.length - 1]?.function ?? '<module>',
-          callStack: snapshotCallStack(),
-        };
-        trace.push(timeoutStep);
-        appendRuntimeTraceEventsForStep(timeoutStep);
-        timeoutRecorded = true;
-      }
-      throw createLimitError('trace-limit', lineNumber, `Exceeded ${effectiveMaxTraceSteps} trace steps`);
+      markTraceCaptureLimit(step?.line, step?.function);
+      return;
     }
     const accesses = flushPendingAccesses(frameId);
     const nextStep = {
@@ -1101,30 +1110,41 @@ function createTraceRecorder(options = {}) {
   }
 
   function appendRuntimeTraceEventsForStep(step) {
+    if (traceLimitExceeded && timeoutReason === 'trace-limit' && step?.event !== 'timeout') {
+      return;
+    }
     const base = {
       runId: 'javascript:run',
       line: step.line,
       frameId: runtimeTraceFrameIdForStep(step),
     };
+    const pushRuntimeTraceEvent = (event) => {
+      if (runtimeTraceEvents.length >= effectiveMaxRuntimeTraceEvents) {
+        markTraceCaptureLimit(step?.line, step?.function);
+        return false;
+      }
+      runtimeTraceEvents.push(event);
+      return true;
+    };
 
     if (step.event === 'line') {
-      runtimeTraceEvents.push({ ...base, kind: 'line', function: step.function });
+      pushRuntimeTraceEvent({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'call') {
       const stack = Array.isArray(step.callStack) ? step.callStack : [];
-      runtimeTraceEvents.push({ ...base, kind: 'call', function: step.function, args: stack.at(-1)?.args });
+      pushRuntimeTraceEvent({ ...base, kind: 'call', function: step.function, args: stack.at(-1)?.args });
     } else if (step.event === 'return') {
-      runtimeTraceEvents.push({
+      pushRuntimeTraceEvent({
         ...base,
         kind: 'return',
         function: step.function,
         ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
       });
     } else if (step.event === 'exception') {
-      runtimeTraceEvents.push({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
+      pushRuntimeTraceEvent({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
     } else if (step.event === 'timeout') {
-      runtimeTraceEvents.push({ ...base, kind: 'timeout', message: 'Runtime timeout' });
+      pushRuntimeTraceEvent({ ...base, kind: 'timeout', message: 'Runtime timeout' });
     } else if (step.event === 'stdout') {
-      runtimeTraceEvents.push({
+      pushRuntimeTraceEvent({
         kind: 'stdout',
         runId: 'javascript:run',
         ...(step.line ? { line: step.line } : {}),
@@ -1134,11 +1154,11 @@ function createTraceRecorder(options = {}) {
 
     if (step.event !== '__merge_only__') {
       for (const [variable, value] of Object.entries(step.variables ?? {})) {
-        runtimeTraceEvents.push({ ...base, kind: 'snapshot', target: { variable }, value });
+        if (!pushRuntimeTraceEvent({ ...base, kind: 'snapshot', target: { variable }, value })) return;
       }
     } else {
       for (const [variable, value] of Object.entries(step.variables ?? {})) {
-        runtimeTraceEvents.push({ ...base, kind: 'snapshot', target: { variable }, value });
+        if (!pushRuntimeTraceEvent({ ...base, kind: 'snapshot', target: { variable }, value })) return;
       }
     }
 
@@ -1151,10 +1171,10 @@ function createTraceRecorder(options = {}) {
       if (kind === 'mutate') {
         const method = normalizeMutationMethod(access.method);
         const event = { ...base, kind, target, ...(method ? { method } : {}) };
-        if (shouldKeepRuntimeTraceAccessEvent(event, stats)) runtimeTraceEvents.push(event);
+        if (shouldKeepRuntimeTraceAccessEvent(event, stats) && !pushRuntimeTraceEvent(event)) return;
       } else {
         const event = { ...base, kind, target, value: runtimeTraceAccessValue(step, access) };
-        if (shouldKeepRuntimeTraceAccessEvent(event, stats)) runtimeTraceEvents.push(event);
+        if (shouldKeepRuntimeTraceAccessEvent(event, stats) && !pushRuntimeTraceEvent(event)) return;
       }
     }
   }
@@ -1308,7 +1328,6 @@ function createTraceRecorder(options = {}) {
     },
     pushCall(functionName, args, lineNumber) {
       const normalizedLine = normalizeLine(lineNumber, 1);
-      const normalizedArgs = sanitizeVariables(args);
       if (callStack.length + 1 > maxCallDepth) {
         markTimeout(
           'recursion-limit',
@@ -1316,6 +1335,10 @@ function createTraceRecorder(options = {}) {
           `Exceeded max call depth (${maxCallDepth})`
         );
       }
+      if (traceLimitExceeded) {
+        return;
+      }
+      const normalizedArgs = sanitizeVariables(args);
       const frame = {
         id: nextFrameId++,
         function: functionName || '<module>',
@@ -1332,6 +1355,9 @@ function createTraceRecorder(options = {}) {
       });
     },
     recordAccess(event) {
+      if (traceLimitExceeded) {
+        return;
+      }
       if (!event || typeof event !== 'object') {
         return;
       }
@@ -1364,6 +1390,9 @@ function createTraceRecorder(options = {}) {
       pendingAccessesByFrame.set(frameId, existing);
     },
     deferPendingAccesses(lineFlushes = 1) {
+      if (traceLimitExceeded) {
+        return;
+      }
       const frameId = getCurrentFrameId();
       if (frameId === undefined) {
         return;
@@ -1383,6 +1412,9 @@ function createTraceRecorder(options = {}) {
       });
     },
     attachPendingAccessesToPreviousLine() {
+      if (traceLimitExceeded) {
+        return;
+      }
       const frameId = getCurrentFrameId();
       if (frameId === undefined) {
         return;
@@ -1416,6 +1448,10 @@ function createTraceRecorder(options = {}) {
     },
     line(lineNumber, snapshotFactory, functionNameOverride, functionStartLine) {
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
+
+      if (traceLimitExceeded) {
+        return;
+      }
 
       lineEventCount += 1;
       if (lineEventCount > maxLineEvents) {
@@ -1458,6 +1494,9 @@ function createTraceRecorder(options = {}) {
       });
     },
     recordReturn(lineNumber, returnValue, functionNameOverride) {
+      if (traceLimitExceeded) {
+        return;
+      }
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
       const functionName =
         typeof functionNameOverride === 'string' && functionNameOverride.length > 0
@@ -1476,6 +1515,9 @@ function createTraceRecorder(options = {}) {
       });
     },
     recordException(lineNumber, error, functionNameOverride) {
+      if (traceLimitExceeded) {
+        return;
+      }
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
       appendTrace({
         line: normalizedLine,
@@ -1490,6 +1532,9 @@ function createTraceRecorder(options = {}) {
       });
     },
     recordStdout(lineNumber, text) {
+      if (traceLimitExceeded) {
+        return;
+      }
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
       appendTrace({
         line: normalizedLine,

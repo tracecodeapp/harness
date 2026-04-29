@@ -75,14 +75,14 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard'}
-_internal_funcs = {'_serialize', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_normalize_mutation_method', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_normalize_mutation_method', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
     '_TRACECODE_TYPING_GLOBALS',
     '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
-    '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events',
+    '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list',
@@ -105,6 +105,7 @@ _internal_locals = {
     '__tracecode_tree', '__tracecode_compiled'
 }
 _max_trace_steps = ${effectiveMaxTraceSteps}
+_max_stored_events = ${maxStoredEvents}
 _trace_limit_exceeded = False
 _timeout_reason = None
 _total_line_events = 0
@@ -379,12 +380,16 @@ def _snapshot_locals(frame, with_sources=False):
         return ({}, {}) if with_sources else {}
 
 def __tracecode_record_access(frame, event):
+    if _trace_limit_exceeded:
+        return
     if frame is None or not isinstance(event, dict):
         return
     frame_key = id(frame)
     _pending_accesses.setdefault(frame_key, []).append(event)
 
 def __tracecode_flush_accesses(frame):
+    if _trace_limit_exceeded:
+        return []
     if frame is None:
         return []
     return _pending_accesses.pop(id(frame), [])
@@ -434,8 +439,21 @@ def __tracecode_normalize_mutation_method(method):
         return 'set'
     return method
 
+def __tracecode_append_runtime_event(event):
+    global _trace_limit_exceeded, _timeout_reason
+    if len(_trace_events) >= _max_stored_events:
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-limit'
+        _pending_accesses.clear()
+        return False
+    _trace_events.append(event)
+    return True
+
 def __tracecode_append_trace_events_for_step(step):
     if not isinstance(step, dict):
+        return
+    if _trace_limit_exceeded and step.get('event') != 'timeout':
         return
     line = step.get('line')
     event_kind = step.get('event')
@@ -446,29 +464,30 @@ def __tracecode_append_trace_events_for_step(step):
         'frameId': __tracecode_frame_id_for_step(step)
     }
     if event_kind == 'line':
-        _trace_events.append({**base, 'kind': 'line', 'function': function_name})
+        __tracecode_append_runtime_event({**base, 'kind': 'line', 'function': function_name})
     elif event_kind == 'call':
         stack = step.get('callStack') if isinstance(step.get('callStack'), list) else []
         frame = stack[-1] if len(stack) > 0 and isinstance(stack[-1], dict) else {}
-        _trace_events.append({**base, 'kind': 'call', 'function': function_name, 'args': frame.get('args')})
+        __tracecode_append_runtime_event({**base, 'kind': 'call', 'function': function_name, 'args': frame.get('args')})
     elif event_kind == 'return':
         event = {**base, 'kind': 'return', 'function': function_name}
         if 'returnValue' in step:
             event['value'] = step.get('returnValue')
-        _trace_events.append(event)
+        __tracecode_append_runtime_event(event)
     elif event_kind == 'exception':
         variables = step.get('variables') if isinstance(step.get('variables'), dict) else {}
-        _trace_events.append({**base, 'kind': 'exception', 'message': str(step.get('returnValue') or variables.get('error') or 'Runtime exception')})
+        __tracecode_append_runtime_event({**base, 'kind': 'exception', 'message': str(step.get('returnValue') or variables.get('error') or 'Runtime exception')})
     elif event_kind == 'timeout':
-        _trace_events.append({**base, 'kind': 'timeout', 'message': 'Runtime timeout'})
+        __tracecode_append_runtime_event({**base, 'kind': 'timeout', 'message': 'Runtime timeout'})
     elif event_kind == 'stdout':
         variables = step.get('variables') if isinstance(step.get('variables'), dict) else {}
-        _trace_events.append({'kind': 'stdout', 'runId': 'python:run', 'line': line, 'text': str(step.get('returnValue') or variables.get('output') or '')})
+        __tracecode_append_runtime_event({'kind': 'stdout', 'runId': 'python:run', 'line': line, 'text': str(step.get('returnValue') or variables.get('output') or '')})
 
     variables = step.get('variables')
     if event_kind != '__access_only__' and isinstance(variables, dict):
         for variable, value in variables.items():
-            _trace_events.append({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value})
+            if not __tracecode_append_runtime_event({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value}):
+                return
 
     accesses = step.get('accesses')
     if isinstance(accesses, list):
@@ -482,11 +501,22 @@ def __tracecode_append_trace_events_for_step(step):
                 event = {**base, 'kind': kind, 'target': target}
                 if method:
                     event['method'] = method
-                _trace_events.append(event)
+                if not __tracecode_append_runtime_event(event):
+                    return
             else:
-                _trace_events.append({**base, 'kind': kind, 'target': target, 'value': __tracecode_access_value(step, access)})
+                if not __tracecode_append_runtime_event({**base, 'kind': kind, 'target': target, 'value': __tracecode_access_value(step, access)}):
+                    return
 
 def __tracecode_append_trace_step(frame, step):
+    global _trace_limit_exceeded, _timeout_reason
+    if _trace_limit_exceeded and (not isinstance(step, dict) or step.get('event') != 'timeout'):
+        return
+    if len(_trace_data) >= _max_trace_steps and (not isinstance(step, dict) or step.get('event') != 'timeout'):
+        if not _trace_limit_exceeded:
+            _trace_limit_exceeded = True
+            _timeout_reason = 'trace-limit'
+        _pending_accesses.clear()
+        return
     _trace_data.append(step)
     __tracecode_append_trace_events_for_step(step)
     if frame is not None:
@@ -1144,8 +1174,14 @@ def _tracer(frame, event, arg):
                 'stdoutLineCount': len(_console_output),
                 'accesses': [],
             })
+            _pending_accesses.clear()
             sys.settrace(None)
-            raise _InfiniteLoopDetected(f"Exceeded {_max_trace_steps} trace steps")
+        return None
+
+    if _trace_limit_exceeded and _timeout_reason == 'trace-limit':
+        _pending_accesses.clear()
+        sys.settrace(None)
+        return None
 
     if event == 'call':
         local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
@@ -1581,6 +1617,8 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
       timeoutReason === 'single-line-limit' ||
       (result.traceLimitExceeded && timeoutReason !== 'client-timeout');
 
+    const traceOnlyBudgetExceeded = timeoutReason === 'trace-limit';
+
     // Handle tracing guard stops and execution timeouts
     if (result.traceLimitExceeded || timeoutStep) {
       const lastStep = adjustedTrace[adjustedTrace.length - 1];
@@ -1618,7 +1656,10 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
     }
 
     return {
-      success: !errorStep && !result.traceLimitExceeded && !timeoutStep,
+      success:
+        !errorStep &&
+        (!result.traceLimitExceeded || traceOnlyBudgetExceeded) &&
+        (!timeoutStep || traceOnlyBudgetExceeded),
       output: result.result,
       error: errorMessage,
       errorLine,

@@ -943,6 +943,35 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   assertCondition(typeof tracing.executionTimeMs === 'number', 'Tracing execution should include timing');
   console.log('PASS: execute-with-tracing contract');
 
+  const cappedTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    traceLimitExceeded?: boolean;
+    timeoutReason?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function sumTo(n) {
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    total += i;
+  }
+  return total;
+}`,
+    functionName: 'sumTo',
+    inputs: { n: 200 },
+    executionStyle: 'function',
+    options: { maxTraceSteps: 5, maxStoredEvents: 20, maxLineEvents: 1000, maxSingleLineHits: 1000 },
+  });
+  assertCondition(cappedTracing.success === true, 'Trace capture limit should not fail JavaScript execution');
+  assertCondition(cappedTracing.output === 19900, 'Trace capture limit should preserve JavaScript output');
+  assertCondition(cappedTracing.traceLimitExceeded === true, 'Trace capture limit should set traceLimitExceeded');
+  assertCondition(cappedTracing.timeoutReason === 'trace-limit', 'Trace capture limit should use trace-limit reason');
+  assertCondition(
+    traceEvents(cappedTracing).length <= 20,
+    'Trace capture limit should bound returned JavaScript runtime events'
+  );
+  console.log('PASS: execute-with-tracing JavaScript trace capture limit preserves output');
+
   const loopTracing = await harness.sendMessage<{
     success: boolean;
     output?: unknown;
