@@ -1,0 +1,29 @@
+{
+  "id": "early-return",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 0
+  },
+  "anchors": {
+    "return": {
+      "python": "return 0",
+      "javascript": "return 0;",
+      "typescript": "return 0;",
+      "java": "return 0;"
+    }
+  },
+  "expect": {
+    "return": {
+      "eventKinds": [
+        "line",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "n"
+      ],
+      "accessTargets": []
+    }
+  }
+}

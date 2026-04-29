@@ -1,0 +1,39 @@
+{
+  "id": "indexed-write",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "write": {
+      "python": "nums[1] = 9",
+      "javascript": "nums[1] = 9;",
+      "typescript": "nums[1] = 9;",
+      "java": "nums[1] = 9;"
+    }
+  },
+  "expect": {
+    "write": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

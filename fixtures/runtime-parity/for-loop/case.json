@@ -1,0 +1,41 @@
+{
+  "id": "for-loop",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "body": {
+      "python": "total += nums[i]",
+      "javascript": "total += nums[i];",
+      "typescript": "total += nums[i];",
+      "java": "total += nums[i];"
+    }
+  },
+  "expect": {
+    "body": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

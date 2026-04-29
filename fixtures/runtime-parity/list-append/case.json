@@ -1,0 +1,40 @@
+{
+  "id": "list-append",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2
+    ]
+  },
+  "anchors": {
+    "append": {
+      "python": "out.append(num)",
+      "javascript": "out.push(num);",
+      "typescript": "out.push(num);",
+      "java": "out.add(num);"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "num",
+        "nums",
+        "out"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "out",
+          "method": "append"
+        }
+      ]
+    }
+  }
+}

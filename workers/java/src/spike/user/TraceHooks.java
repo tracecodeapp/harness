@@ -219,7 +219,6 @@ public final class TraceHooks {
   public static int readArrayLengthAtLine(int line, String name, Object value) {
     int length = value == null ? 0 : Array.getLength(value);
     emitIndexedState(line, name, value);
-    emit("line=" + line + " access " + name + ".length=" + length);
     return length;
   }
 
@@ -262,6 +261,13 @@ public final class TraceHooks {
 
   public static <K, V> V readMapAtLine(int line, String name, Map<K, V> values, K key) {
     V value = values.get(key);
+    emitKeyedMutatingCallAtLine(line, name, "get", key);
+    emitMapStateAtLine(line, name, values, key);
+    return value;
+  }
+
+  public static <K, V> V readMapOrDefaultAtLine(int line, String name, Map<K, V> values, K key, V defaultValue) {
+    V value = values.getOrDefault(key, defaultValue);
     emitKeyedMutatingCallAtLine(line, name, "get", key);
     emitMapStateAtLine(line, name, values, key);
     return value;
@@ -329,6 +335,12 @@ public final class TraceHooks {
 
   public static void emitSetStateAtLine(int line, String name, Set<?> values, Object highlightedKey, Object deletedKey) {
     emitSetStateAtLine(line, name, values, highlightedKey, true, deletedKey, true);
+  }
+
+  public static <T> T popListAtLine(int line, String name, List<T> values) {
+    T value = values.remove(values.size() - 1);
+    emit("line=" + line + " mutate " + name + " method=pop");
+    return value;
   }
 
   public static void emitListStateAtLine(int line, String name, Object value) {

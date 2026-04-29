@@ -1,0 +1,79 @@
+{
+  "id": "break-continue",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      -1,
+      3,
+      0,
+      5
+    ]
+  },
+  "anchors": {
+    "continue": {
+      "python": "continue",
+      "javascript": "continue;",
+      "typescript": "continue;",
+      "java": "continue;"
+    },
+    "break": {
+      "python": "break",
+      "javascript": "break;",
+      "typescript": "break;",
+      "java": "break;"
+    },
+    "add": {
+      "python": "total += nums[i]",
+      "javascript": "total += nums[i];",
+      "typescript": "total += nums[i];",
+      "java": "total += nums[i];"
+    }
+  },
+  "expect": {
+    "continue": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": []
+    },
+    "break": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": []
+    },
+    "add": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

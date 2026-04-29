@@ -1,0 +1,57 @@
+{
+  "id": "object-length-field-read",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "write": {
+      "python": "box.length = 4",
+      "javascript": "box.length = 4;",
+      "typescript": "box.length = 4;",
+      "java": "box.length = 4;"
+    },
+    "read": {
+      "python": "return box.length",
+      "javascript": "return box.length;",
+      "typescript": "return box.length;",
+      "java": "return box.length;"
+    }
+  },
+  "expect": {
+    "write": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "box"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "box",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "box"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "box",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

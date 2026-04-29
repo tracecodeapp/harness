@@ -1,0 +1,39 @@
+{
+  "id": "list-pop",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "pop": {
+      "python": "value = nums.pop()",
+      "javascript": "const value = nums.pop();",
+      "typescript": "const value = nums.pop()!;",
+      "java": "int value = nums.remove(nums.size() - 1);"
+    }
+  },
+  "expect": {
+    "pop": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "nums",
+          "method": "pop"
+        }
+      ]
+    }
+  }
+}

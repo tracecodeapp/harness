@@ -1,0 +1,34 @@
+{
+  "id": "map-contains",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "contains": {
+      "python": "return 2 in seen",
+      "javascript": "return seen.has(2);",
+      "typescript": "return seen.has(2);",
+      "java": "return seen.containsKey(2);"
+    }
+  },
+  "expect": {
+    "contains": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "containsKey"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "function-call",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 2
+  },
+  "anchors": {
+    "helperEntry": {
+      "python": "def helper(x):",
+      "javascript": "function helper(x) {",
+      "typescript": "function helper(x: number): number {",
+      "java": "public int helper(int x) {"
+    }
+  },
+  "expect": {
+    "helperEntry": {
+      "eventKinds": [
+        "call",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "x"
+      ],
+      "accessTargets": []
+    }
+  }
+}

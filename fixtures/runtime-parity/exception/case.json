@@ -1,0 +1,52 @@
+{
+  "id": "exception",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 5
+  },
+  "anchors": {
+    "throw": {
+      "python": "raise ValueError(\"bad input\")",
+      "javascript": "throw new Error(\"bad input\");",
+      "typescript": "throw new Error(\"bad input\");",
+      "java": "throw new IllegalArgumentException(\"bad input\");"
+    }
+  },
+  "expect": {
+    "throw": {
+      "eventKinds": [
+        "exception",
+        "line"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "throw": {
+        "eventKinds": [
+          "exception",
+          "line",
+          "return"
+        ],
+        "variableSnapshots": [],
+        "accessTargets": []
+      }
+    },
+    "java": {
+      "throw": {
+        "eventKinds": [
+          "exception",
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "n"
+        ],
+        "accessTargets": []
+      }
+    }
+  }
+}

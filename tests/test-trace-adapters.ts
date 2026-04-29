@@ -220,6 +220,44 @@ function testJavaMatrixAccessParsing(): void {
   console.log('PASS: Java trace adapter parses matrix access events');
 }
 
+function testJavaObjectFieldAccessParsing(): void {
+  const adapted = buildJavaExecutionResult(
+    7,
+    [
+      'line=7 box={"__type__":"object","__class__":"Box","value":0}',
+      'line=8 box={"__type__":"object","__class__":"Box","value":7}',
+      'line=8 write box.value=7',
+      'line=9 access box.value=7',
+      'line=9 return solve value=7',
+    ],
+    2
+  );
+
+  const writeStep = adapted.trace.find((step) => step.line === 8);
+  const readStep = adapted.trace.find((step) => step.line === 9 && step.event === 'return');
+  assertCondition(
+    writeStep?.accesses?.some((access) =>
+      access.variable === 'box' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indices) === JSON.stringify(['value'])
+    ) === true,
+    `java adapter should parse object field writes as neutral access events, got ${JSON.stringify(writeStep?.accesses)}`
+  );
+  assertCondition(
+    readStep?.accesses?.some((access) =>
+      access.variable === 'box' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify(['value'])
+    ) === true,
+    `java adapter should parse object field reads as neutral access events, got ${JSON.stringify(readStep?.accesses)}`
+  );
+  assertCondition(
+    !adapted.trace.some((step) => step.visualization?.hashMaps?.some((entry) => entry.kind === 'object')),
+    'java adapter should not route object field access through legacy visualization payloads'
+  );
+  console.log('PASS: Java trace adapter parses object field access events');
+}
+
 function testJavaArrayLengthAccessStaysIndexedState(): void {
   const adapted = buildJavaExecutionResult(
     5,
@@ -227,7 +265,6 @@ function testJavaArrayLengthAccessStaysIndexedState(): void {
       'line=3 call lowerBound nums=[1,3,3,5,8] target=4',
       'line=5',
       'line=5 nums=[1,3,3,5,8]',
-      'line=5 access nums.length=5',
       'line=5 right=5',
     ],
     2
@@ -243,10 +280,14 @@ function testJavaArrayLengthAccessStaysIndexedState(): void {
     'java adapter should preserve scalar assigned from array length'
   );
   assertCondition(
-    initStep?.visualization?.objectKinds?.nums === undefined,
-    'java adapter should not reinterpret array length reads as object field visualization'
+    initStep?.accesses?.some((access) => access.variable === 'nums') !== true,
+    'java adapter should not expose array length metadata as an access event'
   );
-  console.log('PASS: Java trace adapter treats array length reads as indexed-state context');
+  assertCondition(
+    initStep?.visualization?.objectKinds?.nums === undefined,
+    'java adapter should not reinterpret array length metadata as object field visualization'
+  );
+  console.log('PASS: Java trace adapter keeps array length metadata out of access events');
 }
 
 function testJavaStringAccessParsing(): void {
@@ -539,6 +580,7 @@ function main(): void {
   testJavaVisualizationPreservation();
   testJavaLineOnlyAndSpacedStringParsing();
   testJavaMatrixAccessParsing();
+  testJavaObjectFieldAccessParsing();
   testJavaArrayLengthAccessStaysIndexedState();
   testJavaStringAccessParsing();
   testJavaMapSetVisualizationAndKeyedCalls();

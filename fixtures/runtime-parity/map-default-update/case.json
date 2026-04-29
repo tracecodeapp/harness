@@ -1,0 +1,59 @@
+{
+  "id": "map-default-update",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      0
+    ]
+  },
+  "anchors": {
+    "update": {
+      "python": "freq[1] = freq.get(1, 0) + 1",
+      "javascript": "freq.set(1, (freq.get(1) || 0) + 1);",
+      "typescript": "freq.set(1, (freq.get(1) || 0) + 1);",
+      "java": "freq.put(1, freq.getOrDefault(1, 0) + 1);"
+    }
+  },
+  "expect": {
+    "update": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "freq",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "freq",
+          "method": "get"
+        },
+        {
+          "kind": "mutate",
+          "variable": "freq",
+          "method": "set"
+        }
+      ]
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "mutate",
+        "variable": "freq",
+        "method": "set",
+        "count": 3
+      },
+      {
+        "kind": "mutate",
+        "variable": "freq",
+        "method": "get",
+        "count": 4
+      }
+    ]
+  }
+}

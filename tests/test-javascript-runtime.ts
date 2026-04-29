@@ -656,8 +656,8 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     )
     .map((step) => step.line);
   assertCondition(
-    orderPushLines.length > 0 && orderPushLines.every((line) => line === 25),
-    'TypeScript topological-sort tracing should attach order.push effects to the neighbor-loop line that executes next'
+    orderPushLines.length > 0 && orderPushLines.every((line) => line === 23),
+    'TypeScript topological-sort tracing should attach order.push effects to the line that executed the mutation'
   );
   const graphNeighborReadLines = topoTrace
     .filter((step) =>

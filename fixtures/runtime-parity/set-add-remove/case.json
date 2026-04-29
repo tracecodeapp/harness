@@ -1,0 +1,56 @@
+{
+  "id": "set-add-remove",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "add": {
+      "python": "seen.add(2)",
+      "javascript": "seen.add(2);",
+      "typescript": "seen.add(2);",
+      "java": "seen.add(2);"
+    },
+    "remove": {
+      "python": "seen.remove(2)",
+      "javascript": "seen.delete(2);",
+      "typescript": "seen.delete(2);",
+      "java": "seen.remove(2);"
+    }
+  },
+  "expect": {
+    "add": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "append"
+        }
+      ]
+    },
+    "remove": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "remove"
+        }
+      ]
+    }
+  }
+}

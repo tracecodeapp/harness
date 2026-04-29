@@ -1,0 +1,29 @@
+{
+  "id": "recursion",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 3
+  },
+  "anchors": {
+    "recursiveCall": {
+      "python": "return n * solve(n - 1)",
+      "javascript": "return n * solve(n - 1);",
+      "typescript": "return n * solve(n - 1);",
+      "java": "return n * solve(n - 1);"
+    }
+  },
+  "expect": {
+    "recursiveCall": {
+      "eventKinds": [
+        "line",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "n"
+      ],
+      "accessTargets": []
+    }
+  }
+}

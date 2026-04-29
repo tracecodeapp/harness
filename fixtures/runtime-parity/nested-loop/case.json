@@ -1,0 +1,47 @@
+{
+  "id": "nested-loop",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "grid": [
+      [
+        1,
+        2
+      ],
+      [
+        3,
+        4
+      ]
+    ]
+  },
+  "anchors": {
+    "body": {
+      "python": "total += grid[i][j]",
+      "javascript": "total += grid[i][j];",
+      "typescript": "total += grid[i][j];",
+      "java": "total += grid[i][j];"
+    }
+  },
+  "expect": {
+    "body": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "grid",
+        "i",
+        "j",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "grid",
+          "pathDepth": 2
+        }
+      ]
+    }
+  }
+}

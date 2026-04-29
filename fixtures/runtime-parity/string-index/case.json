@@ -1,0 +1,36 @@
+{
+  "id": "string-index",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "text": "abc"
+  },
+  "anchors": {
+    "read": {
+      "python": "return text[1]",
+      "javascript": "return text[1];",
+      "typescript": "return text[1];",
+      "java": "return text.charAt(1);"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "text"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "text",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

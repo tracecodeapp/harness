@@ -1,0 +1,57 @@
+{
+  "id": "object-field-read-write",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "write": {
+      "python": "box.value = 7",
+      "javascript": "box.value = 7;",
+      "typescript": "box.value = 7;",
+      "java": "box.value = 7;"
+    },
+    "read": {
+      "python": "return box.value",
+      "javascript": "return box.value;",
+      "typescript": "return box.value;",
+      "java": "return box.value;"
+    }
+  },
+  "expect": {
+    "write": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "box"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "box",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "box"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "box",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

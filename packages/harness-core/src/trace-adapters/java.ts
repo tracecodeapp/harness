@@ -7,6 +7,7 @@ import type {
 } from '../types';
 import { normalizeRuntimeTraceContract, type RuntimeTraceContractResult } from '../trace-contract';
 import { adaptTraceExecutionResult } from './shared';
+import { assertSupportedRawEmissions, summarizeJavaRawEmissions } from '../runtime-raw-emission-contract';
 
 export interface JavaTraceResult {
   output: unknown;
@@ -202,6 +203,69 @@ function buildMethodDeclarationLineSet(sourceText: string | undefined): Set<numb
   return declarationLines;
 }
 
+function buildLocalDeclarationNamesByLine(sourceText: string | undefined): Map<number, string[]> {
+  const namesByLine = new Map<number, string[]>();
+  if (typeof sourceText !== 'string' || sourceText.length === 0) {
+    return namesByLine;
+  }
+
+  const lines = sourceText.split(/\r?\n/);
+  let inBlockComment = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const { text, inBlockComment: nextInBlockComment } = stripInlineComments(lines[index] ?? '', inBlockComment);
+    inBlockComment = nextInBlockComment;
+    if (isMethodDeclarationLine(text)) continue;
+
+    const names: string[] = [];
+    const declarationPattern =
+      /\b(?:final\s+)?(?:[A-Za-z_][A-Za-z0-9_.$]*(?:\s*<[^;=(){}]+>)?(?:\s*\[\])?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=/g;
+    for (const match of text.matchAll(declarationPattern)) {
+      if (match[1]) names.push(match[1]);
+    }
+    if (names.length > 0) {
+      namesByLine.set(index + 1, names);
+    }
+  }
+
+  return namesByLine;
+}
+
+function removeSameLineMutationDeclarationSnapshots(
+  trace: RawTraceStep[],
+  sourceText: string | undefined
+): void {
+  const declarationNamesByLine = buildLocalDeclarationNamesByLine(sourceText);
+  if (declarationNamesByLine.size === 0) return;
+  const mutationVariablesByLine = new Map<number, Set<string>>();
+  for (const step of trace) {
+    for (const access of step.accesses ?? []) {
+      if (access.kind !== 'mutating-call') continue;
+      const variables = mutationVariablesByLine.get(step.line) ?? new Set<string>();
+      variables.add(access.variable);
+      mutationVariablesByLine.set(step.line, variables);
+    }
+  }
+  if (mutationVariablesByLine.size === 0) return;
+
+  for (const step of trace) {
+    const accessedVariables = mutationVariablesByLine.get(step.line);
+    if (step.event !== 'line' || !step.variables || !accessedVariables) {
+      continue;
+    }
+    const declaredNames = declarationNamesByLine.get(step.line);
+    if (!declaredNames?.length) continue;
+
+    for (const name of declaredNames) {
+      if (!accessedVariables.has(name)) {
+        delete step.variables[name];
+      }
+    }
+    if (Object.keys(step.variables).length === 0) {
+      step.variables = {};
+    }
+  }
+}
+
 function parseAccessEvent(payload: string): RuntimeTraceAccessEvent[] | undefined {
   const isEphemeralOutputArrayName = (name: string): boolean =>
     /^(output|outputs)$/i.test(name);
@@ -242,6 +306,24 @@ function parseAccessEvent(payload: string): RuntimeTraceAccessEvent[] | undefine
       variable: indexedWrite[1],
       kind: 'indexed-write',
       indices: [Number.parseInt(indexedWrite[2], 10)],
+      pathDepth: 1,
+    }];
+  }
+  const fieldRead = payload.match(/^access ([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
+  if (fieldRead) {
+    return [{
+      variable: fieldRead[1],
+      kind: 'indexed-read',
+      indices: [fieldRead[2]],
+      pathDepth: 1,
+    }];
+  }
+  const fieldWrite = payload.match(/^write ([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$/);
+  if (fieldWrite) {
+    return [{
+      variable: fieldWrite[1],
+      kind: 'indexed-write',
+      indices: [fieldWrite[2]],
       pathDepth: 1,
     }];
   }
@@ -321,10 +403,6 @@ function parseObjectFieldEvent(payload: string): { variable: string; field: stri
     field: match[3],
     value: parseScalar(match[4]),
   };
-}
-
-function isArrayLengthAccessEvent(payload: string): boolean {
-  return /^access [A-Za-z_][A-Za-z0-9_]*\.length=\d+$/.test(payload);
 }
 
 function buildFieldVisualization(event: { variable: string; field: string; value: unknown }): RuntimeVisualizationPayload {
@@ -514,7 +592,7 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
         line,
         event: 'call',
         function: currentFunction,
-        variables: { ...variables },
+        variables: { ...args },
         callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
       }, pendingAccesses);
       continue;
@@ -537,6 +615,32 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
       }, pendingAccesses);
       stack.pop();
       currentFunction = stack[stack.length - 1]?.function ?? '<module>';
+      continue;
+    }
+
+    if (payload.startsWith('exception ')) {
+      const message = payload.replace(/^exception\s+/, '');
+      appendJavaTraceStep(trace, {
+        line,
+        event: 'exception',
+        function: currentFunction,
+        variables: {},
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
+        returnValue: parseScalar(message),
+      }, pendingAccesses);
+      continue;
+    }
+
+    if (payload.startsWith('stdout ')) {
+      appendJavaTraceStep(trace, {
+        line,
+        event: 'stdout',
+        function: currentFunction,
+        variables: {},
+        callStack: stack.map((frame) => ({ function: frame.function, line: frame.line, args: { ...frame.args } })),
+        stdoutLineCount: 1,
+        returnValue: parseScalar(payload.replace(/^stdout\s+/, '')),
+      }, pendingAccesses);
       continue;
     }
 
@@ -627,10 +731,6 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
       continue;
     }
 
-    if (isArrayLengthAccessEvent(payload)) {
-      continue;
-    }
-
     const accesses = parseAccessEvent(payload);
     if (accesses) {
       const currentCallStack =
@@ -682,6 +782,8 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
     last.accesses = [...(last.accesses ?? []), ...pendingAccesses];
   }
 
+  removeSameLineMutationDeclarationSnapshots(trace, sourceText);
+
   return trace;
 }
 
@@ -695,6 +797,7 @@ export function buildJavaExecutionResult(
   sourceText?: string,
   options: { outputIsSerialized?: boolean } = {}
 ): ExecutionResult {
+  assertSupportedRawEmissions(summarizeJavaRawEmissions(events), 'java');
   const trace = eventsToRawTrace(events, sourceText);
   return {
     success: true,

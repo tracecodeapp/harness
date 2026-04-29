@@ -1,0 +1,69 @@
+{
+  "id": "collection-metadata-loop-condition",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "loopCondition": {
+      "python": "for i in range(len(nums)):",
+      "javascript": "for (let i = 0; i < nums.length; i++) {",
+      "typescript": "for (let i = 0; i < nums.length; i++) {",
+      "java": "for (int i = 0; i < nums.length; i++) {"
+    },
+    "elementRead": {
+      "python": "total += nums[i]",
+      "javascript": "total += nums[i];",
+      "typescript": "total += nums[i];",
+      "java": "total += nums[i];"
+    }
+  },
+  "expect": {
+    "loopCondition": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": []
+    },
+    "elementRead": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "count": 3
+      }
+    ]
+  }
+}

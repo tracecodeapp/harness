@@ -1,0 +1,57 @@
+{
+  "id": "map-put-get",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "put": {
+      "python": "seen[2] = 5",
+      "javascript": "seen.set(2, 5);",
+      "typescript": "seen.set(2, 5);",
+      "java": "seen.put(2, 5);"
+    },
+    "get": {
+      "python": "return seen[2]",
+      "javascript": "return seen.get(2);",
+      "typescript": "return seen.get(2)!;",
+      "java": "return seen.get(2);"
+    }
+  },
+  "expect": {
+    "put": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "set"
+        }
+      ]
+    },
+    "get": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "get"
+        }
+      ]
+    }
+  }
+}

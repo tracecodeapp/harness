@@ -1,0 +1,85 @@
+{
+  "id": "collection-size-metadata",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "arraySize": {
+      "python": "n = len(nums)",
+      "javascript": "const n = nums.length;",
+      "typescript": "const n = nums.length;",
+      "java": "int n = nums.length;"
+    },
+    "mapSize": {
+      "python": "m = len(seen)",
+      "javascript": "const m = seen.size;",
+      "typescript": "const m = seen.size;",
+      "java": "int m = seen.size();"
+    }
+  },
+  "expect": {
+    "arraySize": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "nums",
+        "total"
+      ],
+      "accessTargets": []
+    },
+    "mapSize": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "n",
+        "nums",
+        "seen",
+        "total"
+      ],
+      "accessTargets": []
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "arraySize": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "n",
+          "nums",
+          "total"
+        ],
+        "accessTargets": []
+      },
+      "mapSize": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "m",
+          "n",
+          "nums",
+          "seen",
+          "total"
+        ],
+        "accessTargets": []
+      }
+    }
+  },
+  "expectSummary": {
+    "accessTargets": []
+  }
+}

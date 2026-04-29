@@ -16,6 +16,7 @@
     const collections = {
       maps: [],
       sets: [],
+      lists: [],
       adjacencyLists: [],
     };
     const declarationPattern =
@@ -34,9 +35,17 @@
         /<\s*(?:java\.util\.)?(?:List|ArrayList|LinkedList)\s*</.test(rawType)
       ) {
         collections.adjacencyLists.push(name);
+      } else if (/\b(?:ArrayList|LinkedList|List)\b/.test(typeSource)) {
+        collections.lists.push(name);
       }
     }
     return collections;
+  }
+
+  function isLastListIndexExpression(source, receiverName) {
+    const normalized = String(source).replace(/\s+/g, '');
+    const escaped = escapeRegExp(receiverName);
+    return new RegExp(`^${escaped}\\.size\\(\\)-1$`).test(normalized);
   }
 
   function splitFirstTopLevelJavaArgument(argsSource) {
@@ -137,13 +146,35 @@
     return output + source.slice(cursor);
   }
 
-  function augmentJavaCollectionOperations(source) {
+  function buildOriginalLineResolver(sourceText) {
+    if (typeof sourceText !== 'string' || sourceText.trim().length === 0) {
+      return () => null;
+    }
+    const linesByText = new Map();
+    sourceText.split('\n').forEach((line, index) => {
+      const key = line.trim();
+      if (!key) return;
+      const lines = linesByText.get(key) ?? [];
+      lines.push(index + 1);
+      linesByText.set(key, lines);
+    });
+    return (line) => {
+      const key = String(line).trim();
+      if (!key) return null;
+      const lines = linesByText.get(key);
+      if (!lines || lines.length === 0) return null;
+      return lines.shift() ?? null;
+    };
+  }
+
+  function augmentJavaCollectionOperations(source, sourceText) {
     const lines = source.split('\n');
     const methodStack = [];
+    const resolveOriginalLine = buildOriginalLineResolver(sourceText);
     const methodStartPattern =
       /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
 
-    return lines.map((line) => {
+    return lines.map((line, lineIndex) => {
       const methodMatch = line.match(methodStartPattern);
       if (methodMatch) {
         methodStack.push({
@@ -151,8 +182,14 @@
           currentTraceLine: null,
           maps: new Set(),
           sets: new Set(),
+          lists: new Set(),
           adjacencyLists: new Set(),
         });
+        const params = collectJavaCollectionDeclarations(methodMatch[3] ?? '');
+        params.maps.forEach((name) => methodStack[methodStack.length - 1].maps.add(name));
+        params.sets.forEach((name) => methodStack[methodStack.length - 1].sets.add(name));
+        params.lists.forEach((name) => methodStack[methodStack.length - 1].lists.add(name));
+        params.adjacencyLists.forEach((name) => methodStack[methodStack.length - 1].adjacencyLists.add(name));
         return line;
       }
 
@@ -163,6 +200,7 @@
       const declarations = collectJavaCollectionDeclarations(line);
       declarations.maps.forEach((name) => currentMethod.maps.add(name));
       declarations.sets.forEach((name) => currentMethod.sets.add(name));
+      declarations.lists.forEach((name) => currentMethod.lists.add(name));
       declarations.adjacencyLists.forEach((name) => currentMethod.adjacencyLists.add(name));
 
       const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
@@ -170,7 +208,7 @@
         currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
       }
 
-      const lineNumber = currentMethod.currentTraceLine;
+      const lineNumber = resolveOriginalLine(line) ?? currentMethod.currentTraceLine ?? (lineIndex + 1);
       if (lineNumber !== null) {
         for (const name of currentMethod.adjacencyLists) {
           const indexedAddPattern = new RegExp(
@@ -195,6 +233,11 @@
           nextLine = replaceJavaReceiverCall(nextLine, name, 'get', (key) =>
             `TraceHooks.readMapAtLine(${lineNumber}, "${name}", ${name}, ${key})`
           );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'getOrDefault', (argsSource) => {
+            const parts = splitFirstTopLevelJavaArgument(argsSource);
+            if (!parts) return `${name}.getOrDefault(${argsSource})`;
+            return `TraceHooks.readMapOrDefaultAtLine(${lineNumber}, "${name}", ${name}, ${parts[0]}, ${parts[1]})`;
+          });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'put', (argsSource) => {
             const parts = splitFirstTopLevelJavaArgument(argsSource);
             if (!parts) return `${name}.put(${argsSource})`;
@@ -214,10 +257,25 @@
           );
         }
 
-        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(?:put|add|remove)"\);\s*/g;
-        nextLine = nextLine.replace(staleMutationPattern, (match, name) =>
-          currentMethod.maps.has(name) || currentMethod.sets.has(name) || currentMethod.adjacencyLists.has(name) ? '' : match
-        );
+        for (const name of currentMethod.lists) {
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'remove', (indexSource) => {
+            if (isLastListIndexExpression(indexSource, name)) {
+              return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name})`;
+            }
+            return `${name}.remove(${indexSource})`;
+          });
+        }
+
+        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(put|add|remove)"\);\s*/g;
+        nextLine = nextLine.replace(staleMutationPattern, (match, name, method) => {
+          if (currentMethod.maps.has(name) || currentMethod.sets.has(name) || currentMethod.adjacencyLists.has(name)) {
+            return '';
+          }
+          if (currentMethod.lists.has(name) && method === 'remove') {
+            return '';
+          }
+          return match;
+        });
       }
 
       currentMethod.depth += braceDelta(nextLine);

@@ -29,7 +29,7 @@ export type RuntimeTraceAccessKind =
 export interface RuntimeTraceAccessEvent {
   variable: string;
   kind: RuntimeTraceAccessKind;
-  indices?: number[];
+  indices?: Array<string | number>;
   method?: string;
   pathDepth?: 1 | 2;
 }

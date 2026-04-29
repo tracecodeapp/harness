@@ -1,0 +1,97 @@
+{
+  "id": "enumerate-element-read",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "read": {
+      "python": "for i, num in enumerate(nums):",
+      "javascript": "const num = nums[i];",
+      "typescript": "const num = nums[i];",
+      "java": "int num = nums[i];"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "count": 3
+      }
+    ]
+  },
+  "expectByLanguage": {
+    "python": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "i",
+          "num",
+          "nums",
+          "total"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "java": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "i",
+          "num",
+          "nums",
+          "total"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}

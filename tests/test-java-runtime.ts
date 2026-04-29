@@ -505,6 +505,12 @@ Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
       'Java rewritten array length reads should emit runtime indexed-state context'
     );
     assertCondition(
+      lowerBoundSource.includes(
+        'TraceHooks.emit("line=8" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target) + " left=" + TraceHooks.serializeResult(left) + " right=" + TraceHooks.serializeResult(right) + " mid=" + TraceHooks.serializeResult(mid));'
+      ),
+      'Java rewritten line hooks should emit visible method args and loop locals before indexed reads'
+    );
+    assertCondition(
       lowerBoundSource.includes('int __tracecodeReturnValue0 = left;') &&
         lowerBoundSource.includes(
           'TraceHooks.emit("line=11 return lowerBound value=" + TraceHooks.serializeResult(__tracecodeReturnValue0));'
@@ -554,7 +560,41 @@ class Solution {
       !twoSumSource.includes('TraceHooks.emitMutatingCallAtLine(11, "seen", "put");'),
       'Java worker should remove stale generic Map mutation events after keyed rewrite'
     );
+    assertCondition(
+      twoSumSource.includes(
+        'TraceHooks.emit("line=7" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target) + " seen=" + TraceHooks.serializeResult(seen) + " i=" + TraceHooks.serializeResult(i));'
+      ),
+      'Java worker should emit loop index locals on loop body line hooks'
+    );
     console.log('PASS: java worker rewrites Map operations to keyed visualization hooks');
+
+    const defaultMapCode = `import java.util.*;
+
+class Solution {
+  public int solve(int[] nums) {
+    Map<Integer, Integer> freq = new HashMap<>();
+    freq.put(1, freq.getOrDefault(1, 0) + 1);
+    return freq.get(1);
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
+      code: defaultMapCode,
+      functionName: 'solve',
+      inputs: { nums: [1] },
+      executionStyle: 'function',
+    });
+
+    const defaultMapSource = harness.stringFiles.at(-1)?.source ?? '';
+    assertCondition(
+      defaultMapSource.includes('TraceHooks.readMapOrDefaultAtLine(6, "freq", freq, 1, 0)'),
+      'Java worker should rewrite Map.getOrDefault into keyed TraceHooks get access'
+    );
+    assertCondition(
+      defaultMapSource.includes('TraceHooks.writeMapAtLine(6, "freq", freq, 1, TraceHooks.readMapOrDefaultAtLine(6, "freq", freq, 1, 0) + 1);'),
+      'Java worker should rewrite Map.put with literal keys while preserving getOrDefault instrumentation'
+    );
+    console.log('PASS: java worker rewrites Map.getOrDefault default updates');
 
     const graphCode = `import java.util.*;
 
@@ -594,7 +634,7 @@ class Solution {
       'Java worker should rewrite indexed adjacency mutations with receiver indices and graph state'
     );
     assertCondition(
-      graphSource.includes('for (int v : TraceHooks.readObjectListAtLine(12, "graph", graph, u))'),
+      graphSource.includes('for (int v : TraceHooks.readObjectListAtLine(11, "graph", graph, u))'),
       'Java worker should rewrite adjacency traversal graph.get(u) reads'
     );
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');

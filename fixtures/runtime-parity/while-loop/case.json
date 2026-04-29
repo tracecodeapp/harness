@@ -1,0 +1,30 @@
+{
+  "id": "while-loop",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 3
+  },
+  "anchors": {
+    "body": {
+      "python": "total += i",
+      "javascript": "total += i;",
+      "typescript": "total += i;",
+      "java": "total += i;"
+    }
+  },
+  "expect": {
+    "body": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "n",
+        "total"
+      ],
+      "accessTargets": []
+    }
+  }
+}

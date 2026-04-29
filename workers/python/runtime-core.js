@@ -74,8 +74,8 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _prev_hashmap_snapshots = {}
-_TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert'}
-_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard'}
+_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -93,7 +93,7 @@ _internal_locals = {
     '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices',
     '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value',
     '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index',
-    '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_collapsed_literal_lines',
+    '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_contains_key', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
     '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
     '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
@@ -413,9 +413,9 @@ def __tracecode_normalize_indices(indices, max_depth=2):
         return None
     normalized = []
     for index in indices:
-        if not isinstance(index, int):
+        if not isinstance(index, (int, str)):
             return None
-        normalized.append(int(index))
+        normalized.append(int(index) if isinstance(index, int) else index)
     return normalized
 
 def __tracecode_make_access_event(var_name, kind, indices=None, method_name=None):
@@ -476,6 +476,12 @@ def __tracecode_apply_augmented_value(current, op_name, rhs):
 def _tracecode_read_index(var_name, container, indices):
     normalized = __tracecode_normalize_indices(indices)
     if normalized is not None:
+        if isinstance(container, dict):
+            __tracecode_record_access(
+                sys._getframe(1),
+                __tracecode_make_access_event(var_name, 'mutating-call', method_name='get'),
+            )
+            return __tracecode_read_value(container, list(indices))
         __tracecode_record_access(
             sys._getframe(1),
             __tracecode_make_access_event(
@@ -491,6 +497,12 @@ def _tracecode_write_index(var_name, container, indices, value):
     result = __tracecode_write_value(container, effective_indices, value)
     normalized = __tracecode_normalize_indices(effective_indices)
     if normalized is not None:
+        if isinstance(container, dict):
+            __tracecode_record_access(
+                sys._getframe(1),
+                __tracecode_make_access_event(var_name, 'mutating-call', method_name='set'),
+            )
+            return result
         __tracecode_record_access(
             sys._getframe(1),
             __tracecode_make_access_event(
@@ -530,9 +542,10 @@ def _tracecode_augassign_index(var_name, container, indices, op_name, rhs):
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
     result = getattr(container, method_name)(*args, **kwargs)
     if method_name in _TRACE_MUTATING_METHODS:
+        normalized_method = 'append' if method_name == 'add' else ('remove' if method_name in {'remove', 'discard'} else method_name)
         __tracecode_record_access(
             sys._getframe(1),
-            __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name),
+            __tracecode_make_access_event(var_name, 'mutating-call', method_name=normalized_method),
         )
     return result
 
@@ -547,6 +560,59 @@ def _tracecode_mutating_index_call(var_name, container, indices, method_name, *a
             __tracecode_make_access_event(var_name, 'mutating-call', normalized, method_name),
         )
     return result
+
+def _tracecode_read_attr(var_name, obj, attr_name):
+    value = getattr(obj, attr_name)
+    __tracecode_record_access(
+        sys._getframe(1),
+        __tracecode_make_access_event(var_name, 'indexed-read', [attr_name]),
+    )
+    return value
+
+def _tracecode_write_attr(var_name, obj, attr_name, value):
+    setattr(obj, attr_name, value)
+    __tracecode_record_access(
+        sys._getframe(1),
+        __tracecode_make_access_event(var_name, 'indexed-write', [attr_name]),
+    )
+    return value
+
+def _tracecode_contains_key(var_name, container, key):
+    result = key in container
+    method_name = 'containsKey' if isinstance(container, dict) else 'contains'
+    __tracecode_record_access(
+        sys._getframe(1),
+        __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name),
+    )
+    return result
+
+def _tracecode_dict_get(var_name, container, key, default=None):
+    result = container.get(key, default)
+    __tracecode_record_access(
+        sys._getframe(1),
+        __tracecode_make_access_event(var_name, 'mutating-call', method_name='get'),
+    )
+    return result
+
+def _tracecode_enumerate(var_name, container):
+    for index, value in enumerate(container):
+        __tracecode_record_access(
+            sys._getframe(1),
+            __tracecode_make_access_event(var_name, 'indexed-read', [index]),
+        )
+        yield index, value
+
+def _tracecode_exception_value(line_number, error):
+    frame = sys._getframe(1)
+    __tracecode_append_trace_step(frame, {
+        'line': line_number,
+        'event': 'exception',
+        'variables': {},
+        'function': frame.f_code.co_name,
+        'callStack': _snapshot_call_stack(),
+        'returnValue': str(error),
+    })
+    return error
 
 def __tracecode_attach_parents(node, parent=None):
     for child in ast.iter_child_nodes(node):
@@ -563,7 +629,32 @@ def _tracecode_extract_named_subscript(node):
         return None
     return current.id, indices
 
+def _tracecode_extract_named_attribute(node):
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return node.value.id, node.attr
+    return None
+
 class __TracecodeAccessTransformer(ast.NodeTransformer):
+    def visit_For(self, node):
+        node = self.generic_visit(node)
+        if (
+            isinstance(node.iter, ast.Call) and
+            isinstance(node.iter.func, ast.Name) and
+            node.iter.func.id == 'enumerate' and
+            len(node.iter.args) >= 1 and
+            isinstance(node.iter.args[0], ast.Name)
+        ):
+            var_name = node.iter.args[0].id
+            node.iter = ast.copy_location(
+                ast.Call(
+                    func=ast.Name(id='_tracecode_enumerate', ctx=ast.Load()),
+                    args=[ast.Constant(value=var_name), ast.Name(id=var_name, ctx=ast.Load())],
+                    keywords=[],
+                ),
+                node.iter,
+            )
+        return node
+
     def visit_Subscript(self, node):
         parent = getattr(node, '__trace_parent__', None)
         if isinstance(parent, ast.Subscript) and getattr(parent, 'value', None) is node:
@@ -602,6 +693,21 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                         ast.Constant(value=var_name),
                         ast.Name(id=var_name, ctx=ast.Load()),
                         ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
+                        value,
+                    ],
+                    keywords=[],
+                )
+                return ast.copy_location(ast.Expr(value=call), node)
+            attr_extracted = _tracecode_extract_named_attribute(node.targets[0])
+            if attr_extracted is not None:
+                var_name, attr_name = attr_extracted
+                value = self.visit(node.value)
+                call = ast.Call(
+                    func=ast.Name(id='_tracecode_write_attr', ctx=ast.Load()),
+                    args=[
+                        ast.Constant(value=var_name),
+                        ast.Name(id=var_name, ctx=ast.Load()),
+                        ast.Constant(value=attr_name),
                         value,
                     ],
                     keywords=[],
@@ -670,6 +776,17 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         node = self.generic_visit(node)
         if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             method_name = node.func.attr
+            if method_name == 'get':
+                call = ast.Call(
+                    func=ast.Name(id='_tracecode_dict_get', ctx=ast.Load()),
+                    args=[
+                        ast.Constant(value=node.func.value.id),
+                        ast.Name(id=node.func.value.id, ctx=ast.Load()),
+                        *node.args,
+                    ],
+                    keywords=node.keywords,
+                )
+                return ast.copy_location(call, node)
             if method_name in _TRACE_MUTATING_METHODS:
                 call = ast.Call(
                     func=ast.Name(id='_tracecode_mutating_call', ctx=ast.Load()),
@@ -683,6 +800,65 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 )
                 return ast.copy_location(call, node)
         return node
+
+    def visit_Compare(self, node):
+        if (
+            len(node.ops) == 1 and
+            len(node.comparators) == 1 and
+            isinstance(node.ops[0], (ast.In, ast.NotIn)) and
+            isinstance(node.comparators[0], ast.Name)
+        ):
+            container_name = node.comparators[0].id
+            call = ast.Call(
+                func=ast.Name(id='_tracecode_contains_key', ctx=ast.Load()),
+                args=[
+                    ast.Constant(value=container_name),
+                    ast.Name(id=container_name, ctx=ast.Load()),
+                    self.visit(node.left),
+                ],
+                keywords=[],
+            )
+            value = ast.UnaryOp(op=ast.Not(), operand=call) if isinstance(node.ops[0], ast.NotIn) else call
+            return ast.copy_location(value, node)
+        return self.generic_visit(node)
+
+    def visit_Raise(self, node):
+        if node.exc is None:
+            return self.generic_visit(node)
+        line_number = getattr(node, 'lineno', 1)
+        call = ast.Call(
+            func=ast.Name(id='_tracecode_exception_value', ctx=ast.Load()),
+            args=[
+                ast.Constant(value=line_number),
+                self.visit(node.exc),
+            ],
+            keywords=[],
+        )
+        return ast.copy_location(ast.Raise(exc=call, cause=self.visit(node.cause) if node.cause else None), node)
+
+    def visit_Attribute(self, node):
+        parent = getattr(node, '__trace_parent__', None)
+        if isinstance(parent, ast.Assign) and node in getattr(parent, 'targets', []):
+            return self.generic_visit(node)
+        if isinstance(parent, ast.Call) and getattr(parent, 'func', None) is node:
+            return self.generic_visit(node)
+
+        node = self.generic_visit(node)
+        extracted = _tracecode_extract_named_attribute(node)
+        if extracted is None or not isinstance(node.ctx, ast.Load):
+            return node
+
+        var_name, attr_name = extracted
+        call = ast.Call(
+            func=ast.Name(id='_tracecode_read_attr', ctx=ast.Load()),
+            args=[
+                ast.Constant(value=var_name),
+                ast.Name(id=var_name, ctx=ast.Load()),
+                ast.Constant(value=attr_name),
+            ],
+            keywords=[],
+        )
+        return ast.copy_location(call, node)
 
 def __tracecode_compile_user_code(source):
     tree = ast.parse(source, filename='<user_code>', mode='exec')

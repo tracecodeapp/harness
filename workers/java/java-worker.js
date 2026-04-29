@@ -268,7 +268,7 @@ function toJavaTypedArrayLiteral(value, expectedType) {
 
 function toJavaListLiteral(value, expectedType) {
   const [elementType = 'Object'] = extractTypeArguments(expectedType);
-  return `java.util.List.of(${value.map((entry) => buildJavaExpression(entry, elementType)).join(', ')})`;
+  return `new java.util.ArrayList<>(java.util.List.of(${value.map((entry) => buildJavaExpression(entry, elementType)).join(', ')}))`;
 }
 
 function listLiteral(value) {
@@ -720,6 +720,282 @@ function augmentTraceCallArgumentSnapshots(source) {
   }).join('\n');
 }
 
+function collectJavaLocalDeclarations(line) {
+  const names = [];
+  const declarationPattern =
+    /\b(?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^;=(){}:]+>)?)\s*(?:\[\s*\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==|;|:|,|\))/g;
+  const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
+  for (const match of line.matchAll(declarationPattern)) {
+    const name = match[1];
+    if (name && !skippedNames.has(name) && !name.startsWith('__tracecode')) {
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function visibleJavaLocalNames(scopeStack) {
+  const names = [];
+  const seen = new Set();
+  for (const scope of scopeStack) {
+    for (const name of scope.names) {
+      if (!seen.has(name)) {
+        names.push(name);
+        seen.add(name);
+      }
+    }
+  }
+  return names;
+}
+
+function isUnbracedForDeclarationLine(line) {
+  return /^\s*for\s*\(/.test(line) && !(line.includes('{'));
+}
+
+function traceEmitAlreadyIncludesVariable(emitExpression, name) {
+  return new RegExp(`\\b${escapeRegExp(name)}=`).test(emitExpression);
+}
+
+function appendJavaLocalSnapshotsToEmitLine(line, scopeStack) {
+  const visibleNames = visibleJavaLocalNames(scopeStack);
+  if (visibleNames.length === 0 || !line.includes('TraceHooks.emit("line=')) {
+    return line;
+  }
+
+  return line.replace(/TraceHooks\.emit\(((?:"line=\d+(?:(?!\);).)*"))\);/g, (match, emitExpression) => {
+    if (/\b(?:call|return)\b/.test(emitExpression)) {
+      return match;
+    }
+    const additions = visibleNames
+      .filter((name) => !traceEmitAlreadyIncludesVariable(emitExpression, name))
+      .map((name) => ` + " ${name}=" + TraceHooks.serializeResult(${name})`)
+      .join('');
+    if (!additions) return match;
+    return `TraceHooks.emit(${emitExpression}${additions});`;
+  });
+}
+
+function appendJavaLocalSnapshotsAfterMutations(line, scopeStack) {
+  const visibleNames = visibleJavaLocalNames(scopeStack);
+  if (visibleNames.length === 0 || !line.includes('TraceHooks.emitMutatingCallAtLine(')) {
+    return line;
+  }
+
+  return line.replace(
+    /(TraceHooks\.emitMutatingCallAtLine\((\d+),[^;]+;\s*)/g,
+    (match, statement, lineNumber) => {
+      const additions = visibleNames
+        .map((name) => ` + " ${name}=" + TraceHooks.serializeResult(${name})`)
+        .join('');
+      return `${statement} TraceHooks.emit("line=${lineNumber}"${additions});`;
+    }
+  );
+}
+
+function augmentJavaLocalSnapshots(source) {
+  const lines = source.split('\n');
+  const output = [];
+  const scopeStack = [];
+  const methodStartPattern =
+    /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+
+  for (const line of lines) {
+    const closingCount = (line.match(/}/g) ?? []).length;
+    for (let index = 0; index < closingCount; index += 1) {
+      if (scopeStack.length > 0) scopeStack.pop();
+    }
+
+    const methodMatch = line.match(methodStartPattern);
+    if (methodMatch) {
+      const params = parseJavaParameterNames(methodMatch[3] ?? '');
+      scopeStack.push({ names: params });
+      output.push(line);
+      continue;
+    }
+
+    const transformedLine = appendJavaLocalSnapshotsAfterMutations(
+      appendJavaLocalSnapshotsToEmitLine(line, scopeStack),
+      scopeStack
+    );
+    output.push(transformedLine);
+
+    const openingCount = (line.match(/{/g) ?? []).length;
+    const declarations = collectJavaLocalDeclarations(line);
+    for (let index = 0; index < openingCount; index += 1) {
+      scopeStack.push({ names: index === 0 ? declarations : [] });
+    }
+    if (openingCount === 0 && declarations.length > 0 && !isUnbracedForDeclarationLine(line)) {
+      const currentScope = scopeStack[scopeStack.length - 1];
+      if (currentScope) {
+        for (const name of declarations) {
+          currentScope.names.push(name);
+        }
+      }
+    }
+  }
+
+  return output.join('\n');
+}
+
+function collectJavaObjectDeclarations(line) {
+  const names = [];
+  const declarationPattern =
+    /\b([A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*new\s+\1\s*\(/g;
+  for (const match of line.matchAll(declarationPattern)) {
+    if (match[2]) names.push(match[2]);
+  }
+  return names;
+}
+
+function rewriteJavaObjectFieldReads(expression, objectNames, lineNumber) {
+  let output = expression;
+  for (const name of objectNames) {
+    const fieldPattern = new RegExp(`\\b${escapeRegExp(name)}\\.([A-Za-z_][A-Za-z0-9_]*)\\b`, 'g');
+    output = output.replace(fieldPattern, (match, field, offset, fullSource) => {
+      const nextChar = fullSource[offset + match.length] ?? '';
+      if (nextChar === '(') return match;
+      return `TraceHooks.readObjectFieldAtLine(${lineNumber}, "${name}", "${field}", ${match})`;
+    });
+  }
+  return output;
+}
+
+function augmentJavaObjectFieldOperations(source) {
+  const lines = source.split('\n');
+  const methodStack = [];
+  const methodStartPattern =
+    /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+
+  return lines.map((line) => {
+    const methodMatch = line.match(methodStartPattern);
+    if (methodMatch) {
+      methodStack.push({
+        depth: 1,
+        currentTraceLine: null,
+        objectNames: new Set(),
+      });
+      return line;
+    }
+
+    const currentMethod = methodStack[methodStack.length - 1];
+    let nextLine = line;
+    if (!currentMethod) return nextLine;
+
+    for (const name of collectJavaObjectDeclarations(line)) {
+      currentMethod.objectNames.add(name);
+    }
+
+    const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
+    if (traceLineMatch) {
+      currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
+    }
+
+    const lineNumber = currentMethod.currentTraceLine;
+    if (lineNumber !== null && currentMethod.objectNames.size > 0) {
+      for (const name of currentMethod.objectNames) {
+        const writePattern = new RegExp(`^(\\s*)${escapeRegExp(name)}\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$`);
+        const writeMatch = nextLine.match(writePattern);
+        if (writeMatch) {
+          const indent = writeMatch[1] ?? '';
+          const field = writeMatch[2];
+          const rhs = writeMatch[3];
+          nextLine = `${indent}{ ${name}.${field} = ${rhs}; TraceHooks.emitFieldWriteAtLine(${lineNumber}, "${name}", "${field}", ${name}.${field}); }`;
+          break;
+        }
+      }
+
+      const returnMatch = nextLine.match(/^(\s*)return\s+(.+);\s*$/);
+      if (returnMatch) {
+        nextLine = `${returnMatch[1]}return ${rewriteJavaObjectFieldReads(returnMatch[2], currentMethod.objectNames, lineNumber)};`;
+      }
+    }
+
+    currentMethod.depth += braceDelta(nextLine);
+    while (methodStack.length > 0 && methodStack[methodStack.length - 1].depth <= 0) {
+      methodStack.pop();
+    }
+    return nextLine;
+  }).join('\n');
+}
+
+function augmentJavaThrowEvents(source) {
+  const lines = source.split('\n');
+  const methodStack = [];
+  let thrownIndex = 0;
+  const methodStartPattern =
+    /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+
+  return lines.map((line) => {
+    const methodMatch = line.match(methodStartPattern);
+    if (methodMatch) {
+      methodStack.push({ depth: 1, currentTraceLine: null });
+      return line;
+    }
+
+    const currentMethod = methodStack[methodStack.length - 1];
+    let nextLine = line;
+    if (!currentMethod) return nextLine;
+
+    const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
+    if (traceLineMatch) {
+      currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
+    }
+
+    const throwMatch = nextLine.match(/^(\s*)throw\s+(.+);\s*$/);
+    if (throwMatch && currentMethod.currentTraceLine !== null) {
+      const indent = throwMatch[1] ?? '';
+      const tempName = `__tracecodeThrown${thrownIndex++}`;
+      const expression = throwMatch[2];
+      nextLine = `${indent}{ var ${tempName} = ${expression}; TraceHooks.emit("line=${currentMethod.currentTraceLine} exception " + TraceHooks.jsonString(String.valueOf(${tempName}))); throw ${tempName}; }`;
+    }
+
+    currentMethod.depth += braceDelta(nextLine);
+    while (methodStack.length > 0 && methodStack[methodStack.length - 1].depth <= 0) {
+      methodStack.pop();
+    }
+    return nextLine;
+  }).join('\n');
+}
+
+function augmentJavaStdoutEvents(source) {
+  const lines = source.split('\n');
+  const methodStack = [];
+  let stdoutIndex = 0;
+  const methodStartPattern =
+    /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+
+  return lines.map((line) => {
+    const methodMatch = line.match(methodStartPattern);
+    if (methodMatch) {
+      methodStack.push({ depth: 1, currentTraceLine: null });
+      return line;
+    }
+
+    const currentMethod = methodStack[methodStack.length - 1];
+    let nextLine = line;
+    if (!currentMethod) return nextLine;
+
+    const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
+    if (traceLineMatch) {
+      currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
+    }
+
+    const stdoutMatch = nextLine.match(/^(\s*)System\.out\.println\((.+)\);\s*$/);
+    if (stdoutMatch && currentMethod.currentTraceLine !== null) {
+      const indent = stdoutMatch[1] ?? '';
+      const tempName = `__tracecodeStdout${stdoutIndex++}`;
+      const expression = stdoutMatch[2];
+      nextLine = `${indent}{ var ${tempName} = ${expression}; System.out.println(${tempName}); TraceHooks.emit("line=${currentMethod.currentTraceLine} stdout " + TraceHooks.jsonString(String.valueOf(${tempName}))); }`;
+    }
+
+    currentMethod.depth += braceDelta(nextLine);
+    while (methodStack.length > 0 && methodStack[methodStack.length - 1].depth <= 0) {
+      methodStack.pop();
+    }
+    return nextLine;
+  }).join('\n');
+}
+
 function augmentArrayLengthReads(source) {
   const lines = source.split('\n');
   const methodStack = [];
@@ -1046,6 +1322,7 @@ function normalizeJavaRequest(payload) {
 
   return {
     ...payload,
+    sourceText: payload.code,
     code: normalizeFunctionSource(payload.code),
     executionStyle: 'solution-method',
   };
@@ -1390,7 +1667,14 @@ async function runJavaRequest(payload, requestId) {
     rewrittenSource = await rewriteSource(normalizedPayload, requestId);
     rewrittenSource = augmentTraceCallArgumentSnapshots(rewrittenSource);
     rewrittenSource = augmentArrayLengthReads(rewrittenSource);
-    rewrittenSource = self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(rewrittenSource);
+    rewrittenSource = self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(
+      rewrittenSource,
+      normalizedPayload.sourceText
+    );
+    rewrittenSource = augmentJavaObjectFieldOperations(rewrittenSource);
+    rewrittenSource = augmentJavaStdoutEvents(rewrittenSource);
+    rewrittenSource = augmentJavaThrowEvents(rewrittenSource);
+    rewrittenSource = augmentJavaLocalSnapshots(rewrittenSource);
     rewrittenSource = augmentTraceReturnValueSnapshots(rewrittenSource);
   } catch (error) {
     const rewriteError = formatWorkerErrorMessage(error);

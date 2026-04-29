@@ -759,22 +759,23 @@ function getNumericOption(value, fallback) {
   return Math.floor(value);
 }
 
-function isTraceableIntegerIndex(value) {
-  return typeof value === 'number' && Number.isInteger(value);
+function isTraceablePathSegment(value) {
+  return (typeof value === 'number' && Number.isInteger(value)) ||
+    (typeof value === 'string' && value.length > 0);
 }
 
 function normalizeTraceIndices(indices, maxDepth = 2) {
   if (!Array.isArray(indices) || indices.length === 0 || indices.length > maxDepth) {
     return null;
   }
-  if (!indices.every(isTraceableIntegerIndex)) {
+  if (!indices.every(isTraceablePathSegment)) {
     return null;
   }
-  return indices.map((index) => Math.trunc(index));
+  return indices.map((index) => typeof index === 'number' ? Math.trunc(index) : index);
 }
 
 function isTraceableMutatingMethod(methodName) {
-  return ['push', 'pop', 'shift', 'unshift', 'splice'].includes(methodName);
+  return ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete'].includes(methodName);
 }
 
 function readValueAtIndices(container, indices) {
@@ -1377,7 +1378,7 @@ function createTraceRecorder(options = {}) {
         variable,
         kind,
         ...(Array.isArray(event.indices) && event.indices.length > 0
-          ? { indices: event.indices.map((index) => Math.trunc(index)) }
+          ? { indices: normalizeTraceIndices(event.indices) ?? undefined }
           : {}),
         ...(typeof event.method === 'string' && event.method.length > 0
           ? { method: event.method }
@@ -1407,6 +1408,32 @@ function createTraceRecorder(options = {}) {
           Math.max(0, Math.trunc(lineFlushes))
         ),
       });
+    },
+    attachPendingAccessesToPreviousLine() {
+      const frameId = getCurrentFrameId();
+      if (frameId === undefined) {
+        return;
+      }
+      const pending = pendingAccessesByFrame.get(frameId);
+      if (!Array.isArray(pending) || pending.length === 0) {
+        return;
+      }
+      const attachable = pending;
+      pendingAccessesByFrame.delete(frameId);
+      if (attachable.length === 0) {
+        return;
+      }
+      for (let index = trace.length - 1; index >= 0; index -= 1) {
+        const step = trace[index];
+        if (!step || step.event !== 'line') continue;
+        step.accesses = [...(step.accesses ?? []), ...attachable];
+        return;
+      }
+      pendingAccessesByFrame.set(frameId, attachable);
+    },
+    traceCondition(value) {
+      this.attachPendingAccessesToPreviousLine();
+      return value;
     },
     line(lineNumber, snapshotFactory, functionNameOverride, functionStartLine) {
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
@@ -1489,6 +1516,18 @@ function createTraceRecorder(options = {}) {
             : callStack[callStack.length - 1]?.function ?? '<module>',
         callStack: snapshotCallStack(),
         returnValue: error instanceof Error ? error.message : String(error),
+      });
+    },
+    recordStdout(lineNumber, text) {
+      const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
+      appendTrace({
+        line: normalizedLine,
+        event: 'stdout',
+        variables: {},
+        function: callStack[callStack.length - 1]?.function ?? '<module>',
+        callStack: snapshotCallStack(),
+        stdoutLineCount: 1,
+        returnValue: String(text ?? ''),
       });
     },
     popCall() {
@@ -1951,6 +1990,16 @@ function isAssignmentLikeLeftOperand(ts, node) {
   );
 }
 
+function isTraceablePropertyWriteLeftOperand(ts, node) {
+  const parent = node?.parent;
+  return Boolean(
+    parent &&
+      ts.isBinaryExpression(parent) &&
+      parent.left === node &&
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  );
+}
+
 function isUpdateExpressionOperand(ts, node) {
   const parent = node?.parent;
   if (!parent) return false;
@@ -2021,6 +2070,21 @@ function extractTraceableElementAccess(ts, node) {
   };
 }
 
+function extractTraceablePropertyAccess(ts, node) {
+  const current = unwrapParenthesizedExpression(ts, node);
+  if (!current || !ts.isPropertyAccessExpression(current)) {
+    return null;
+  }
+  const receiver = unwrapParenthesizedExpression(ts, current.expression);
+  if (!receiver || !ts.isIdentifier(receiver)) {
+    return null;
+  }
+  return {
+    variableName: receiver.text,
+    propertyName: current.name.text,
+  };
+}
+
 function extractTraceableMutatingCall(ts, node) {
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
     return null;
@@ -2088,6 +2152,18 @@ function createTraceWriteIndexExpression(ts, variableName, indices, value) {
   ]);
 }
 
+function createTraceReadPropertyExpression(ts, variableName, propertyName) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadProperty'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    ts.factory.createIdentifier(variableName),
+    ts.factory.createStringLiteral(propertyName),
+  ]);
+}
+
+function createTraceWritePropertyExpression(ts, variableName, propertyName, value) {
+  return createTraceWriteIndexExpression(ts, variableName, [ts.factory.createStringLiteral(propertyName)], value);
+}
+
 function createTraceAugAssignExpression(ts, variableName, indices, operatorName, rhs) {
   return ts.factory.createCallExpression(
     ts.factory.createIdentifier('__traceAugAssignIndex'),
@@ -2126,6 +2202,43 @@ function createTraceMutatingCallExpression(ts, variableName, methodName, args) {
       ts.factory.createStringLiteral(methodName),
       ...args,
     ]
+  );
+}
+
+function isConsoleLogCall(ts, node) {
+  return Boolean(
+    ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === 'console' &&
+      node.expression.name.text === 'log'
+  );
+}
+
+function createTraceStdoutExpression(ts, sourceFile, node) {
+  const lineNumber = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  return ts.factory.createCallExpression(
+    ts.factory.createIdentifier('__traceStdout'),
+    undefined,
+    [
+      ts.factory.createNumericLiteral(lineNumber),
+      ...node.arguments,
+    ]
+  );
+}
+
+function createTraceThrowExpression(ts, sourceFile, node) {
+  const lineNumber = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  return ts.factory.updateThrowStatement(
+    node,
+    ts.factory.createCallExpression(
+      ts.factory.createIdentifier('__traceExceptionValue'),
+      undefined,
+      [
+        ts.factory.createNumericLiteral(lineNumber),
+        node.expression ?? ts.factory.createIdentifier('undefined'),
+      ]
+    )
   );
 }
 
@@ -2222,11 +2335,35 @@ function createTraceLineStatement(ts, sourceFile, statement, variableNames, line
   );
 }
 
+function createAttachPendingAccessesStatement(ts) {
+  return ts.factory.createExpressionStatement(
+    ts.factory.createCallExpression(
+      ts.factory.createPropertyAccessExpression(
+        ts.factory.createIdentifier('__traceRecorder'),
+        ts.factory.createIdentifier('attachPendingAccessesToPreviousLine')
+      ),
+      undefined,
+      []
+    )
+  );
+}
+
 function ensureBlockStatement(ts, statement) {
   if (ts.isBlock(statement)) {
     return statement;
   }
   return ts.factory.createBlock([statement], true);
+}
+
+function wrapTraceCondition(ts, expression) {
+  return ts.factory.createCallExpression(
+    ts.factory.createPropertyAccessExpression(
+      ts.factory.createIdentifier('__traceRecorder'),
+      ts.factory.createIdentifier('traceCondition')
+    ),
+    undefined,
+    [expression]
+  );
 }
 
 function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variableNames, lineFunctionMap, defaultFunctionName) {
@@ -2405,6 +2542,9 @@ function instrumentStatementList(
           defaultFunctionName
         )
       );
+      nextStatements.push(visitedStatement);
+      nextStatements.push(createAttachPendingAccessesStatement(ts));
+      continue;
     }
     nextStatements.push(visitedStatement);
   }
@@ -2670,6 +2810,10 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         }
       }
 
+      if (ts.isThrowStatement(node)) {
+        return createTraceThrowExpression(ts, sourceFile, node);
+      }
+
       if (ts.isBinaryExpression(node)) {
         const tracedLeft = extractTraceableElementAccess(ts, node.left);
         if (tracedLeft && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
@@ -2695,9 +2839,23 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             );
           }
         }
+
+        const tracedPropertyLeft = extractTraceablePropertyAccess(ts, node.left);
+        if (tracedPropertyLeft && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+          const visitedRight = ts.visitNode(node.right, visit);
+          return createTraceWritePropertyExpression(
+            ts,
+            tracedPropertyLeft.variableName,
+            tracedPropertyLeft.propertyName,
+            visitedRight
+          );
+        }
       }
 
       if (ts.isCallExpression(node)) {
+        if (isConsoleLogCall(ts, node)) {
+          return createTraceStdoutExpression(ts, sourceFile, node);
+        }
         const tracedCall = extractTraceableMutatingCall(ts, node);
         if (tracedCall) {
           const visitedArgs = node.arguments.map((arg) => ts.visitNode(arg, visit));
@@ -2708,6 +2866,16 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visitedArgs
           );
         }
+      }
+
+      if (ts.isIfStatement(node)) {
+        const visited = ts.visitEachChild(node, visit, context);
+        return ts.factory.updateIfStatement(
+          visited,
+          wrapTraceCondition(ts, visited.expression),
+          visited.thenStatement,
+          visited.elseStatement
+        );
       }
 
       if (ts.isElementAccessExpression(node)) {
@@ -2724,6 +2892,25 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         if (tracedAccess) {
           const visitedIndices = tracedAccess.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
           return createTraceReadIndexExpression(ts, tracedAccess.variableName, visitedIndices);
+        }
+      }
+
+      if (ts.isPropertyAccessExpression(node)) {
+        const parent = node.parent;
+        if (
+          isTraceablePropertyWriteLeftOperand(ts, node) ||
+          (parent && ts.isCallExpression(parent) && parent.expression === node)
+        ) {
+          return ts.visitEachChild(node, visit, context);
+        }
+
+        const tracedAccess = extractTraceablePropertyAccess(ts, node);
+        if (tracedAccess) {
+          return createTraceReadPropertyExpression(
+            ts,
+            tracedAccess.variableName,
+            tracedAccess.propertyName
+          );
         }
       }
 
@@ -2879,8 +3066,11 @@ return result;`
 const TRACING_RUNTIME_HELPERS_SOURCE = `
 function __traceNormalizeIndices(__indices, __maxDepth = 2) {
   if (!Array.isArray(__indices) || __indices.length === 0 || __indices.length > __maxDepth) return null;
-  if (!__indices.every((__index) => typeof __index === 'number' && Number.isInteger(__index))) return null;
-  return __indices.map((__index) => Math.trunc(__index));
+  if (!__indices.every((__index) =>
+    (typeof __index === 'number' && Number.isInteger(__index)) ||
+    (typeof __index === 'string' && __index.length > 0)
+  )) return null;
+  return __indices.map((__index) => typeof __index === 'number' ? Math.trunc(__index) : __index);
 }
 
 function __traceReadValueAtIndices(__container, __indices) {
@@ -2918,6 +3108,28 @@ function __traceReadIndex(__varName, __container, __indices) {
     });
   }
   return __traceReadValueAtIndices(__container, Array.isArray(__indices) ? __indices : []);
+}
+
+function __traceIsMetadataProperty(__container, __propertyName) {
+  if (__propertyName === 'length') {
+    return Array.isArray(__container) || typeof __container === 'string';
+  }
+  if (__propertyName === 'size') {
+    return __container instanceof Map || __container instanceof Set;
+  }
+  return false;
+}
+
+function __traceReadProperty(__varName, __container, __propertyName) {
+  if (!__traceIsMetadataProperty(__container, __propertyName)) {
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: 'indexed-read',
+      indices: [__propertyName],
+      pathDepth: 1,
+    });
+  }
+  return __container?.[__propertyName];
 }
 
 function __traceWriteIndex(__varName, __container, __indices, __value) {
@@ -3002,13 +3214,37 @@ function __traceUpdateIndex(__varName, __container, __indices, __op, __isPrefix)
   return __isPrefix ? __next : __current;
 }
 
+function __traceNormalizeMethodName(__container, __method) {
+  if (__container instanceof Map) {
+    if (__method === 'has') return 'containsKey';
+    if (__method === 'set') return 'set';
+    if (__method === 'get') return 'get';
+  }
+  if (__container instanceof Set) {
+    if (__method === 'has') return 'contains';
+    if (__method === 'add') return 'add';
+    if (__method === 'delete') return 'remove';
+  }
+  return __method;
+}
+
+function __traceStdout(__line, ...__args) {
+  console.log(...__args);
+  __traceRecorder.recordStdout(__line, __args.map((__arg) => String(__arg)).join(' '));
+}
+
+function __traceExceptionValue(__line, __error) {
+  __traceRecorder.recordException(__line, __error);
+  return __error;
+}
+
 function __traceMutatingCall(__varName, __container, __method, ...__args) {
   const __result = __container[__method](...__args);
-  if (['push', 'pop', 'shift', 'unshift', 'splice'].includes(__method)) {
+  if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete'].includes(__method)) {
     __traceRecorder.recordAccess({
       variable: __varName,
       kind: 'mutating-call',
-      method: __method,
+      method: __traceNormalizeMethodName(__container, __method),
       pathDepth: 1,
     });
   }

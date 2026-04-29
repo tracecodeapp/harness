@@ -213,10 +213,16 @@ function normalizeAccesses(
 
       const indices = Array.isArray(access?.indices)
         ? access.indices
-            .map((index) =>
-              typeof index === 'number' && Number.isFinite(index) ? Math.floor(index) : null
-            )
-            .filter((index): index is number => index !== null)
+            .map((index) => {
+              if (typeof index === 'number' && Number.isFinite(index)) {
+                return Math.floor(index);
+              }
+              if (typeof index === 'string' && index.length > 0) {
+                return index;
+              }
+              return null;
+            })
+            .filter((index): index is string | number => index !== null)
         : undefined;
       const pathDepth =
         access?.pathDepth === 1 || access?.pathDepth === 2 ? access.pathDepth : undefined;

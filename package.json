@@ -86,8 +86,15 @@
     "test:java-harness-sync": "pnpm run test:java-sync",
     "test:javascript-runtime": "pnpm run test:js-runtime",
     "test:runtime-contract": "pnpm exec tsx tests/test-runtime-contract.ts",
-    "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:visualizer-conformance && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
-    "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:visualizer-conformance && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged"
+    "test:runtime-v4-parity": "pnpm exec tsx tests/test-runtime-v4-parity.ts",
+    "test:runtime-v4-fixtures": "pnpm exec tsx tests/test-runtime-v4-fixtures.ts",
+    "report:runtime-v4-known-gaps": "pnpm exec tsx tests/report-runtime-v4-known-gaps.ts",
+    "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-v4 && pnpm test:visualizer-conformance && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
+    "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-v4 && pnpm test:visualizer-conformance && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
+    "mine:runtime-v4-final300": "pnpm exec tsx tests/mine-runtime-v4-final300.ts",
+    "test:runtime-raw-emission-contract": "pnpm exec tsx tests/test-runtime-raw-emission-contract.ts",
+    "test:runtime-v4-fixtures:raw-strict": "TRACECODE_STRICT_RAW_EMISSION_PARITY=1 pnpm exec tsx tests/test-runtime-v4-fixtures.ts",
+    "test:runtime-v4": "pnpm test:runtime-v4-fixtures && pnpm test:runtime-v4-fixtures:raw-strict && pnpm test:runtime-raw-emission-contract && pnpm report:runtime-v4-known-gaps"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

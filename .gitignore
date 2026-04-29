@@ -2,3 +2,5 @@ node_modules
 .pnpm-store
 tsconfig.tsbuildinfo
 dist
+
+reports
