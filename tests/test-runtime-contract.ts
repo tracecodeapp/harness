@@ -96,10 +96,6 @@ const COMMON_STABLE_COVERAGE = [
   'structures.setSerialization',
   'structures.graphSerialization',
   'structures.cycleReferences',
-  'visualization.runtimePayloads',
-  'visualization.objectKinds',
-  'visualization.hashMaps',
-  'visualization.stepVisualization',
 ] as const satisfies readonly string[];
 
 const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
@@ -142,11 +138,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.mapSerialization',
     'structures.setSerialization',
     'structures.cycleReferences',
-    'visualization.runtimePayloads',
-    'visualization.objectKinds',
-    'visualization.hashMaps',
-    'visualization.stepVisualization',
-  ],
+          ],
 };
 
 function assertProfileCoverageAlignment(profile: LanguageRuntimeProfile): void {
@@ -217,12 +209,6 @@ function createUnsupportedProfile(
         setSerialization: false,
         graphSerialization: false,
         cycleReferences: false,
-      },
-      visualization: {
-        runtimePayloads: false,
-        objectKinds: false,
-        hashMaps: false,
-        stepVisualization: false,
       },
       ...overrides,
     },
@@ -391,10 +377,6 @@ async function main(): Promise<void> {
   }
   assertCondition(pythonProfile.capabilities.tracing.supported, 'Python should support tracing');
   assertCondition(
-    pythonProfile.capabilities.visualization.stepVisualization,
-    'Python should support step visualization'
-  );
-  assertCondition(
     pythonProfile.capabilities.execution.timeouts.runtimeTimeouts,
     'Python should advertise runtime-side timeouts'
   );
@@ -405,10 +387,6 @@ async function main(): Promise<void> {
   assertCondition(
     javascriptProfile.capabilities.structures.listNodeRefs,
     'JavaScript should advertise linked-list ref hydration'
-  );
-  assertCondition(
-    javascriptProfile.capabilities.visualization.runtimePayloads,
-    'JavaScript should advertise runtime visualization payloads'
   );
   assertCondition(typescriptProfile.capabilities.diagnostics.compileErrors, 'TypeScript should support compile errors');
   assertCondition(

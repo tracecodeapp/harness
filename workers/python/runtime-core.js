@@ -74,22 +74,20 @@ ${deps.PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET}
 _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
-_prev_hashmap_snapshots = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard'}
-_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_normalize_mutation_method', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_normalize_mutation_method', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
     '_TRACECODE_TYPING_GLOBALS',
-    '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_prev_hashmap_snapshots', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
+    '_call_stack', '_pending_accesses', '_last_trace_index_by_frame', '_TRACE_MUTATING_METHODS', '_internal_funcs', '_internal_locals', '_max_trace_steps',
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_dict_to_tree', '_dict_to_list',
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
-    '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta',
-    '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result',
+    '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result',
     '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step',
     '__tracecode_append_trace_events_for_step', '__tracecode_frame_id_for_step',
     '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path',
@@ -1071,182 +1069,6 @@ def _looks_like_indexed_adjacency_list(value):
 
     return True
 
-def _extract_hashmap_snapshot(value):
-    if not isinstance(value, dict):
-        return None
-
-    value_type = value.get('__type__')
-
-    if value_type == 'set' and isinstance(value.get('values'), list):
-        _values = value.get('values') or []
-        return {
-            'kind': 'set',
-            'entries': [{'key': item, 'value': True} for item in _values],
-            'setValues': {_stable_token(item): item for item in _values},
-        }
-
-    if value_type in ('TreeNode', 'ListNode'):
-        return None
-
-    if value_type == 'map' and isinstance(value.get('entries'), list):
-        _entries = []
-        _map_values = {}
-        for entry in value.get('entries') or []:
-            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                _key = entry[0]
-                _value = entry[1]
-                _entries.append({'key': _key, 'value': _value})
-                _map_values[str(_key)] = _value
-        return {
-            'kind': 'map',
-            'entries': _entries,
-            'mapValues': _map_values,
-        }
-
-    if value_type in ('map',):
-        return None
-
-    if '__ref__' in value and len(value) == 1:
-        return None
-
-    if _looks_like_adjacency_list(value):
-        return None
-
-    return {
-        'kind': 'hashmap',
-        'entries': [{'key': key, 'value': val} for key, val in value.items()],
-        'mapValues': {str(key): val for key, val in value.items()},
-    }
-
-def _classify_runtime_object_kind(value):
-    if isinstance(value, list):
-        return None
-
-    if not isinstance(value, dict):
-        return None
-
-    value_type = value.get('__type__')
-    if value_type == 'set' and isinstance(value.get('values'), list):
-        return 'set'
-    if value_type == 'map' and isinstance(value.get('entries'), list):
-        return 'map'
-    if value_type == 'TreeNode':
-        return 'tree'
-    if value_type == 'ListNode':
-        return 'linked-list'
-    if '__ref__' in value and len(value) == 1:
-        return None
-    return 'hashmap'
-
-def _infer_hashmap_delta(previous_snapshot, current_snapshot):
-    if not previous_snapshot or not current_snapshot:
-        return (None, None)
-
-    if previous_snapshot.get('kind') != current_snapshot.get('kind'):
-        return (None, None)
-
-    highlighted_key = None
-    deleted_key = None
-
-    if current_snapshot.get('kind') in ('hashmap', 'map'):
-        previous_map = previous_snapshot.get('mapValues') or {}
-        current_map = current_snapshot.get('mapValues') or {}
-
-        previous_keys = set(previous_map.keys())
-        current_keys = set(current_map.keys())
-
-        new_keys = [key for key in current_keys if key not in previous_keys]
-        removed_keys = [key for key in previous_keys if key not in current_keys]
-        changed_keys = [
-            key for key in current_keys
-            if key in previous_map and previous_map.get(key) != current_map.get(key)
-        ]
-
-        if len(new_keys) == 1:
-            highlighted_key = new_keys[0]
-        elif len(changed_keys) == 1:
-            highlighted_key = changed_keys[0]
-
-        if len(removed_keys) == 1:
-            deleted_key = removed_keys[0]
-
-        return (highlighted_key, deleted_key)
-
-    if current_snapshot.get('kind') == 'set':
-        previous_values = previous_snapshot.get('setValues') or {}
-        current_values = current_snapshot.get('setValues') or {}
-
-        added_tokens = [token for token in current_values.keys() if token not in previous_values]
-        removed_tokens = [token for token in previous_values.keys() if token not in current_values]
-
-        if len(added_tokens) == 1:
-            highlighted_key = current_values.get(added_tokens[0])
-        if len(removed_tokens) == 1:
-            deleted_key = previous_values.get(removed_tokens[0])
-
-    return (highlighted_key, deleted_key)
-
-def _clear_frame_hashmap_snapshots(frame):
-    frame_prefix = f"{id(frame)}::"
-    stale_keys = [
-        key for key in list(_prev_hashmap_snapshots.keys())
-        if key.startswith(frame_prefix)
-    ]
-    for key in stale_keys:
-        _prev_hashmap_snapshots.pop(key, None)
-
-def _build_runtime_visualization(local_vars, frame):
-    try:
-        hash_maps = []
-        object_kinds = {}
-        active_snapshot_keys = set()
-        frame_prefix = f"{id(frame)}::"
-
-        for name, value in local_vars.items():
-            kind = _classify_runtime_object_kind(value)
-            if kind is not None:
-                object_kinds[name] = kind
-
-            snapshot = _extract_hashmap_snapshot(value)
-            if snapshot is None:
-                continue
-
-            snapshot_key = f"{frame_prefix}{name}"
-            active_snapshot_keys.add(snapshot_key)
-            previous_snapshot = _prev_hashmap_snapshots.get(snapshot_key)
-            highlighted_key, deleted_key = _infer_hashmap_delta(previous_snapshot, snapshot)
-
-            payload = {
-                'name': name,
-                'kind': snapshot.get('kind', 'hashmap'),
-                'entries': snapshot.get('entries', []),
-            }
-            if highlighted_key is not None:
-                payload['highlightedKey'] = highlighted_key
-            if deleted_key is not None:
-                payload['deletedKey'] = deleted_key
-
-            hash_maps.append(payload)
-            _prev_hashmap_snapshots[snapshot_key] = snapshot
-
-        stale_keys = [
-            key for key in list(_prev_hashmap_snapshots.keys())
-            if key.startswith(frame_prefix) and key not in active_snapshot_keys
-        ]
-        for key in stale_keys:
-            _prev_hashmap_snapshots.pop(key, None)
-
-        if len(hash_maps) > 0 or len(object_kinds) > 0:
-            payload = {}
-            if len(hash_maps) > 0:
-                payload['hashMaps'] = hash_maps
-            if len(object_kinds) > 0:
-                payload['objectKinds'] = object_kinds
-            return payload
-        return {}
-    except Exception:
-        return {}
-
 def _tracer(frame, event, arg):
     global _trace_limit_exceeded, _timeout_reason, _total_line_events, _line_hit_count, _infinite_loop_line
     func_name = frame.f_code.co_name
@@ -1301,8 +1123,7 @@ def _tracer(frame, event, arg):
                     'function': func_name,
                     'callStack': _snapshot_call_stack(),
                     'stdoutLineCount': len(_console_output),
-                    'accesses': [],
-                    'visualization': _build_runtime_visualization(local_vars, frame)
+                    'accesses': []
                 })
                 sys.settrace(None)
                 raise _InfiniteLoopDetected(f"Line {frame.f_lineno} executed {_max_single_line_hits} times")
@@ -1344,8 +1165,7 @@ def _tracer(frame, event, arg):
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
-            'accesses': __tracecode_flush_accesses(frame),
-            'visualization': _build_runtime_visualization(local_vars, frame)
+            'accesses': __tracecode_flush_accesses(frame)
         })
     elif event == 'line':
         if _MINIMAL_TRACE:
@@ -1359,8 +1179,7 @@ def _tracer(frame, event, arg):
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
-            'accesses': [],
-            'visualization': _build_runtime_visualization(local_vars, frame)
+            'accesses': []
         })
     elif event == 'return':
         __tracecode_attach_accesses_to_previous_step(frame)
@@ -1375,10 +1194,8 @@ def _tracer(frame, event, arg):
                 'returnValue': _serialize(arg),
                 'callStack': _snapshot_call_stack(),
                 'stdoutLineCount': len(_console_output),
-                'accesses': [],
-                'visualization': _build_runtime_visualization(local_vars, frame)
+                'accesses': []
             })
-        _clear_frame_hashmap_snapshots(frame)
         _pending_accesses.pop(id(frame), None)
         _last_trace_index_by_frame.pop(id(frame), None)
         if _call_stack and _call_stack[-1]['function'] == func_name:
@@ -1773,7 +1590,7 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
       if (timeoutReason === 'client-timeout') {
         errorMessage = `Execution timed out${lineSuffix}. This may indicate an infinite loop or very expensive execution.`;
       } else if (isTraceBudgetExceeded) {
-        errorMessage = `Trace budget exceeded${lineSuffix}. Step-by-step visualization hit its safety limits before execution finished.`;
+        errorMessage = `Trace budget exceeded${lineSuffix}. Trace playback hit its safety limits before execution finished.`;
       } else {
         errorMessage = `Execution stopped${lineSuffix}.`;
       }

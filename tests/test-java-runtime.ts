@@ -569,7 +569,7 @@ class Solution {
       ),
       'Java worker should emit loop index locals on loop body line hooks'
     );
-    console.log('PASS: java worker rewrites Map operations to keyed visualization hooks');
+    console.log('PASS: java worker rewrites Map operations to keyed runtime trace hooks');
 
     const defaultMapCode = `import java.util.*;
 

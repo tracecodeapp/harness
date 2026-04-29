@@ -919,170 +919,6 @@ function createTraceRecorder(options = {}) {
     return true;
   }
 
-  function shouldVisualizeObjectAsHashMap(name, value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    if (isLikelyTreeObject(value) || isLikelyLinkedListObject(value)) return false;
-    if (value.__type__ === 'object') return false;
-    if (Object.keys(value).length === 1 && typeof value.__ref__ === 'string') return false;
-    if (isLikelyAdjacencyListObject(value)) return false;
-
-    const lowerName = String(name).toLowerCase();
-    if (lowerName.includes('map') || lowerName.includes('seen') || lowerName.includes('dict')) {
-      return true;
-    }
-    return Object.keys(value).length > 0;
-  }
-
-  function collectRuntimeVisualizations(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return { hashMaps: [], objectKinds: {} };
-    }
-
-    const visualizations = [];
-    const objectKinds = {};
-    for (const [name, variableValue] of Object.entries(value)) {
-      if (variableValue === undefined) continue;
-
-      if (variableValue instanceof Map) {
-        objectKinds[name] = 'map';
-        visualizations.push({
-          name,
-          kind: 'map',
-          entries: [...variableValue.entries()].map(([key, mapValue]) => ({
-            key: serializeValue(key),
-            value: serializeValue(mapValue),
-          })),
-        });
-        continue;
-      }
-
-      if (variableValue instanceof Set) {
-        objectKinds[name] = 'set';
-        visualizations.push({
-          name,
-          kind: 'set',
-          entries: [...variableValue.values()].map((item) => ({
-            key: serializeValue(item),
-            value: true,
-          })),
-        });
-        continue;
-      }
-
-
-      if (variableValue && typeof variableValue === 'object' && !Array.isArray(variableValue)) {
-        const customClassName = getCustomClassName(variableValue);
-        if (customClassName) {
-          const serializedObject = serializeValue(variableValue);
-          objectKinds[name] = 'object';
-          visualizations.push({
-            name,
-            kind: 'object',
-            objectClassName: customClassName,
-            objectId:
-              serializedObject && typeof serializedObject === 'object' && typeof serializedObject.__id__ === 'string'
-                ? serializedObject.__id__
-                : undefined,
-            entries: Object.entries(serializedObject)
-              .filter(([key]) => key !== '__type__' && key !== '__class__' && key !== '__id__')
-              .map(([key, entryValue]) => ({
-                key,
-                value: entryValue,
-              })),
-          });
-          continue;
-        }
-
-        const serializedValue = variableValue;
-
-        if (serializedValue.__type__ === 'object') {
-          objectKinds[name] = 'object';
-          visualizations.push({
-            name,
-            kind: 'object',
-            objectClassName:
-              typeof serializedValue.__class__ === 'string' && serializedValue.__class__.length > 0
-                ? serializedValue.__class__
-                : undefined,
-            objectId:
-              typeof serializedValue.__id__ === 'string' && serializedValue.__id__.length > 0
-                ? serializedValue.__id__
-                : undefined,
-            entries: Object.entries(serializedValue)
-              .filter(([key]) => key !== '__type__' && key !== '__class__' && key !== '__id__')
-              .map(([key, entryValue]) => ({
-                key,
-                value: entryValue,
-              })),
-          });
-          continue;
-        }
-
-        if (serializedValue.__type__ === 'map' && Array.isArray(serializedValue.entries)) {
-          objectKinds[name] = 'map';
-          visualizations.push({
-            name,
-            kind: 'map',
-            entries: serializedValue.entries
-              .filter((entry) => Array.isArray(entry) && entry.length >= 2)
-              .map((entry) => ({
-                key: entry[0],
-                value: entry[1],
-              })),
-          });
-          continue;
-        }
-
-        if (serializedValue.__type__ === 'set' && Array.isArray(serializedValue.values)) {
-          objectKinds[name] = 'set';
-          visualizations.push({
-            name,
-            kind: 'set',
-            entries: serializedValue.values.map((item) => ({
-              key: item,
-              value: true,
-            })),
-          });
-          continue;
-        }
-
-        if (isLikelyTreeObject(serializedValue)) {
-          objectKinds[name] = 'tree';
-          continue;
-        }
-
-        if (isLikelyLinkedListObject(serializedValue)) {
-          objectKinds[name] = 'linked-list';
-          continue;
-        }
-
-
-        if (shouldVisualizeObjectAsHashMap(name, serializedValue)) {
-          objectKinds[name] = 'hashmap';
-          visualizations.push({
-            name,
-            kind: 'hashmap',
-            entries: Object.entries(serializedValue).map(([key, entryValue]) => ({
-              key,
-              value: serializeValue(entryValue),
-            })),
-          });
-        }
-      }
-    }
-
-    return { hashMaps: visualizations, objectKinds };
-  }
-
-  function buildVisualizationPayload(value) {
-    const { hashMaps, objectKinds } = collectRuntimeVisualizations(value);
-    if (hashMaps.length === 0 && Object.keys(objectKinds).length === 0) return undefined;
-    return {
-      ...(hashMaps.length > 0 ? { hashMaps } : {}),
-      ...(Object.keys(objectKinds).length > 0 ? { objectKinds } : {}),
-    };
-  }
-
   function createLimitError(reason, lineNumber, message) {
     const error = new Error(message);
     error.__traceLimitExceeded = true;
@@ -1169,9 +1005,6 @@ function createTraceRecorder(options = {}) {
       };
       if (nextStep.accesses?.length) {
         previous.accesses = [...(previous.accesses || []), ...nextStep.accesses];
-      }
-      if (nextStep.visualization !== undefined) {
-        previous.visualization = nextStep.visualization;
       }
       previous.callStack = nextStep.callStack;
       previous.function = nextStep.function;
@@ -1455,7 +1288,6 @@ function createTraceRecorder(options = {}) {
         variables: inferredFrame.args,
         function: normalizedFunctionName,
         callStack: snapshotCallStack(),
-        visualization: buildVisualizationPayload(inferredArgs),
       });
       return normalizedFunctionName;
     }
@@ -1497,7 +1329,6 @@ function createTraceRecorder(options = {}) {
         variables: normalizedArgs,
         function: frame.function,
         callStack: snapshotCallStack(),
-        visualization: buildVisualizationPayload(args),
       });
     },
     recordAccess(event) {
@@ -1602,15 +1433,12 @@ function createTraceRecorder(options = {}) {
       }
 
       let variables = {};
-      let visualization;
       if (typeof snapshotFactory === 'function') {
         try {
           const snapshot = snapshotFactory();
           variables = sanitizeVariables(snapshot);
-          visualization = buildVisualizationPayload(snapshot);
         } catch {
           variables = {};
-          visualization = undefined;
         }
       }
 
@@ -1627,7 +1455,6 @@ function createTraceRecorder(options = {}) {
         variables,
         function: traceFunctionName,
         callStack: snapshotCallStack(),
-        visualization,
       });
     },
     recordReturn(lineNumber, returnValue, functionNameOverride) {
@@ -1638,9 +1465,6 @@ function createTraceRecorder(options = {}) {
           : callStack[callStack.length - 1]?.function ?? '<module>';
       const serializedReturnValue = serializeValue(returnValue);
       const variables = functionName === '<module>' ? { result: serializedReturnValue } : {};
-      const visualization = functionName === '<module>'
-        ? buildVisualizationPayload({ result: returnValue })
-        : undefined;
 
       appendTrace({
         line: normalizedLine,
@@ -1649,7 +1473,6 @@ function createTraceRecorder(options = {}) {
         function: functionName,
         callStack: snapshotCallStack(),
         returnValue: serializedReturnValue,
-        visualization,
       });
     },
     recordException(lineNumber, error, functionNameOverride) {

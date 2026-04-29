@@ -57,12 +57,6 @@ export interface RuntimeCapabilities {
     graphSerialization: boolean;
     cycleReferences: boolean;
   };
-  visualization: {
-    runtimePayloads: boolean;
-    objectKinds: boolean;
-    hashMaps: boolean;
-    stepVisualization: boolean;
-  };
 }
 
 export interface TraceBudget {

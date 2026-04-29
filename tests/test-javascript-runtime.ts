@@ -710,9 +710,6 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     output?: unknown;
     trace: Array<{
       line?: number;
-      visualization?: {
-        objectKinds?: Record<string, string>;
-      };
       variables?: Record<string, unknown>;
     }>;
   }>('execute-with-tracing', {
@@ -765,9 +762,6 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     trace: Array<{
       line?: number;
       variables?: Record<string, unknown>;
-      visualization?: {
-        objectKinds?: Record<string, string>;
-      };
     }>;
   }>('execute-with-tracing', {
     code: `class Solution {
@@ -1009,7 +1003,6 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
       line?: number;
       function?: string;
       variables?: Record<string, unknown>;
-      visualization?: { hashMaps?: Array<{ name?: string; kind?: string; entries?: unknown[] }> };
       callStack?: Array<{ function?: string; args?: Record<string, unknown> }>;
     }>;
   }>('execute-with-tracing', {
@@ -1129,10 +1122,6 @@ result = twoSum([2, 7, 11, 15], 9);`,
   const collectionTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
-      visualization?: {
-        hashMaps?: Array<{ name?: string; kind?: string; entries?: unknown[] }>;
-        objectKinds?: Record<string, string>;
-      };
     }>;
   }>('execute-with-tracing', {
     code: `function capture() {
@@ -1158,10 +1147,6 @@ result = twoSum([2, 7, 11, 15], 9);`,
   const objectHashTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
-      visualization?: {
-        hashMaps?: Array<{ name?: string; kind?: string; entries?: unknown[] }>;
-        objectKinds?: Record<string, string>;
-      };
     }>;
   }>('execute-with-tracing', {
     code: `function captureObjectHash(nums, target) {
@@ -1195,15 +1180,6 @@ result = twoSum([2, 7, 11, 15], 9);`,
     success: boolean;
     trace: Array<{
       variables?: Record<string, unknown>;
-      visualization?: {
-        hashMaps?: Array<{
-          name?: string;
-          kind?: string;
-          objectClassName?: string;
-          entries?: Array<{ key?: unknown; value?: unknown }>;
-        }>;
-        objectKinds?: Record<string, string>;
-      };
     }>;
   }>('execute-with-tracing', {
     code: `class TrieNode {
@@ -1312,9 +1288,6 @@ class Trie {
   const graphKindTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
-      visualization?: {
-        objectKinds?: Record<string, string>;
-      };
     }>;
   }>('execute-with-tracing', {
     code: `function captureGraph() {
@@ -1338,9 +1311,6 @@ class Trie {
   const indexedGraphKindTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
-      visualization?: {
-        objectKinds?: Record<string, string>;
-      };
     }>;
   }>('execute-with-tracing', {
     code: `function captureIndexedGraph() {
@@ -1364,9 +1334,6 @@ class Trie {
   const listKindTracing = await harness.sendMessage<{
     success: boolean;
     trace: Array<{
-      visualization?: {
-        objectKinds?: Record<string, string>;
-      };
     }>;
   }>('execute-with-tracing', {
     code: `function captureList() {

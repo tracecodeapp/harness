@@ -16,7 +16,6 @@ It includes:
 - an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
 - trace capture and normalized runtime contracts
 - browser worker assets and asset sync tooling
-- runtime-side structural annotations such as object kinds and hash/map payloads
 
 It does not include a full end-user product.
 
@@ -36,7 +35,7 @@ Specifically, this package does not ship:
 - a white-labeled teaching product
 - a higher-level pedagogy or visualization-planning layer
 
-Consuming apps are expected to own their own UI, persistence, product logic, and any higher-order visualization behavior built on top of the runtime payloads.
+Consuming apps are expected to own their own UI, persistence, product logic, and any higher-order visualization behavior built on top of neutral runtime trace facts.
 
 ## What You Get
 
@@ -220,7 +219,6 @@ Capability domains:
 - `tracing`
 - `diagnostics`
 - `structures`
-- `visualization`
 
 That lets the package be explicit about partial support and fail closed for unsupported requests.
 
@@ -233,7 +231,7 @@ Current language status:
 
 Current Java scope:
 
-- supported: `function`, `solution-method`, `ops-class`, `script`, `interviewMode`, tracing, compile diagnostics, structural visualization payloads
+- supported: `function`, `solution-method`, `ops-class`, `script`, `interviewMode`, tracing, compile diagnostics, and neutral runtime trace facts
 - script mode uses an empty function name with `executionStyle: "function"` and reads the top-level `result` variable
 
 ## Example Consumer

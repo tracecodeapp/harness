@@ -54,12 +54,6 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       graphSerialization: true,
       cycleReferences: true,
     },
-    visualization: {
-      runtimePayloads: true,
-      objectKinds: true,
-      hashMaps: true,
-      stepVisualization: true,
-    },
   },
 };
 
@@ -116,12 +110,6 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       setSerialization: true,
       graphSerialization: true,
       cycleReferences: true,
-    },
-    visualization: {
-      runtimePayloads: true,
-      objectKinds: true,
-      hashMaps: true,
-      stepVisualization: true,
     },
   },
 };
@@ -180,12 +168,6 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       graphSerialization: true,
       cycleReferences: true,
     },
-    visualization: {
-      runtimePayloads: true,
-      objectKinds: true,
-      hashMaps: true,
-      stepVisualization: true,
-    },
   },
 };
 
@@ -242,12 +224,6 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       setSerialization: true,
       graphSerialization: false,
       cycleReferences: true,
-    },
-    visualization: {
-      runtimePayloads: true,
-      objectKinds: true,
-      hashMaps: true,
-      stepVisualization: true,
     },
   },
   notes: [

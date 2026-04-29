@@ -105,15 +105,6 @@ public final class TraceHooks {
       return;
     }
 
-    if (payload.startsWith("state ")) {
-      emitTraceStructureState(line, payload);
-      return;
-    }
-
-    if (payload.startsWith("object-state ")) {
-      emitTraceObjectState(line, payload);
-      return;
-    }
 
     if (payload.startsWith("map-state ") || payload.startsWith("set-state ")) {
       // Dedicated map/set helpers emit neutral runtime trace snapshots directly.
@@ -316,20 +307,6 @@ public final class TraceHooks {
     Matcher keyedCall = Pattern.compile("^keyed-call ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)(?:\\s+.*)?$").matcher(payload);
     if (keyedCall.matches()) {
       emitTraceMutate(line, keyedCall.group(1), null, keyedCall.group(2));
-    }
-  }
-
-  private static void emitTraceStructureState(int line, String payload) {
-    Matcher match = Pattern.compile("^state (linked-list|tree) ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
-    if (match.matches()) {
-      emitTraceSnapshot(line, match.group(2), match.group(3));
-    }
-  }
-
-  private static void emitTraceObjectState(int line, String payload) {
-    Matcher match = Pattern.compile("^object-state ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
-    if (match.matches()) {
-      emitTraceSnapshot(line, match.group(1), "{\"__ref__\":" + jsonString(match.group(1) + "-object") + "}");
     }
   }
 
@@ -586,49 +563,49 @@ public final class TraceHooks {
   public static <K, V> V readMapAtLine(int line, String name, Map<K, V> values, K key) {
     V value = values.get(key);
     emitKeyedMutatingCallAtLine(line, name, "get", key);
-    emitMapStateAtLine(line, name, values, key);
+    emitMapSnapshotAtLine(line, name, values, key);
     return value;
   }
 
   public static <K, V> V readMapOrDefaultAtLine(int line, String name, Map<K, V> values, K key, V defaultValue) {
     V value = values.getOrDefault(key, defaultValue);
     emitKeyedMutatingCallAtLine(line, name, "get", key);
-    emitMapStateAtLine(line, name, values, key);
+    emitMapSnapshotAtLine(line, name, values, key);
     return value;
   }
 
   public static boolean containsMapKeyAtLine(int line, String name, Map<?, ?> values, Object key) {
     boolean value = values.containsKey(key);
     emitKeyedMutatingCallAtLine(line, name, "containsKey", key);
-    emitMapStateAtLine(line, name, values, key);
+    emitMapSnapshotAtLine(line, name, values, key);
     return value;
   }
 
   public static <K, V> V writeMapAtLine(int line, String name, Map<K, V> values, K key, V value) {
     V previous = values.put(key, value);
     emitKeyedMutatingCallAtLine(line, name, "put", key, value);
-    emitMapStateAtLine(line, name, values, key);
+    emitMapSnapshotAtLine(line, name, values, key);
     return previous;
   }
 
   public static boolean readSetAtLine(int line, String name, Set<?> values, Object key) {
     boolean value = values.contains(key);
     emitKeyedMutatingCallAtLine(line, name, "contains", key);
-    emitSetStateAtLine(line, name, values, key);
+    emitSetSnapshotAtLine(line, name, values, key);
     return value;
   }
 
   public static <T> boolean addSetAtLine(int line, String name, Set<T> values, T key) {
     boolean changed = values.add(key);
     emitKeyedMutatingCallAtLine(line, name, "add", key);
-    emitSetStateAtLine(line, name, values, key);
+    emitSetSnapshotAtLine(line, name, values, key);
     return changed;
   }
 
   public static boolean removeSetAtLine(int line, String name, Set<?> values, Object key) {
     boolean changed = values.remove(key);
     emitKeyedMutatingCallAtLine(line, name, "remove", key);
-    emitSetStateAtLine(line, name, values, null, false, key, true);
+    emitSetSnapshotAtLine(line, name, values, null, false, key, true);
     return changed;
   }
 
@@ -641,24 +618,24 @@ public final class TraceHooks {
         + " value=" + serializeValue(value));
   }
 
-  public static void emitMapStateAtLine(int line, String name, Map<?, ?> values) {
+  public static void emitMapSnapshotAtLine(int line, String name, Map<?, ?> values) {
     emitTraceSnapshot(line, name, buildMapRuntimeValue(values));
   }
 
-  public static void emitMapStateAtLine(int line, String name, Map<?, ?> values, Object highlightedKey) {
+  public static void emitMapSnapshotAtLine(int line, String name, Map<?, ?> values, Object highlightedKey) {
     emitTraceSnapshot(line, name, buildMapRuntimeValue(values));
   }
 
-  public static void emitSetStateAtLine(int line, String name, Set<?> values) {
-    emitSetStateAtLine(line, name, values, null, false, null, false);
+  public static void emitSetSnapshotAtLine(int line, String name, Set<?> values) {
+    emitSetSnapshotAtLine(line, name, values, null, false, null, false);
   }
 
-  public static void emitSetStateAtLine(int line, String name, Set<?> values, Object highlightedKey) {
-    emitSetStateAtLine(line, name, values, highlightedKey, true, null, false);
+  public static void emitSetSnapshotAtLine(int line, String name, Set<?> values, Object highlightedKey) {
+    emitSetSnapshotAtLine(line, name, values, highlightedKey, true, null, false);
   }
 
-  public static void emitSetStateAtLine(int line, String name, Set<?> values, Object highlightedKey, Object deletedKey) {
-    emitSetStateAtLine(line, name, values, highlightedKey, true, deletedKey, true);
+  public static void emitSetSnapshotAtLine(int line, String name, Set<?> values, Object highlightedKey, Object deletedKey) {
+    emitSetSnapshotAtLine(line, name, values, highlightedKey, true, deletedKey, true);
   }
 
   public static <T> T popListAtLine(int line, String name, List<T> values) {
@@ -667,56 +644,12 @@ public final class TraceHooks {
     return value;
   }
 
-  public static void emitListStateAtLine(int line, String name, Object value) {
-    emit("line=" + line + " state linked-list " + name + "=" + serializeValue(value));
-  }
-
-  public static void emitTreeStateAtLine(int line, String name, Object value) {
-    emit("line=" + line + " state tree " + name + "=" + serializeValue(value));
-  }
-
-
-  public static void emitObjectStateAtLine(
-    int line,
-    String name,
-    Object object,
-    String className,
-    String[] fieldNames,
-    Object[] fieldValues,
-    String highlightedField
-  ) {
-    String objectId = identityFor(object);
-    if (objectId == null) {
-      objectId = "object-" + System.identityHashCode(object);
-      registerIdentity(object, objectId);
-    }
-    StringBuilder builder = new StringBuilder();
-    builder.append("{\"name\":").append(jsonString(name));
-    builder.append(",\"kind\":\"object\"");
-    builder.append(",\"objectClassName\":").append(jsonString(className));
-    builder.append(",\"objectId\":").append(jsonString(objectId));
-    if (highlightedField != null) {
-      builder.append(",\"highlightedKey\":").append(jsonString(highlightedField));
-    }
-    builder.append(",\"entries\":[");
-    for (int index = 0; index < fieldNames.length; index++) {
-      if (index > 0) builder.append(',');
-      builder.append("{\"key\":").append(jsonString(fieldNames[index]));
-      builder.append(",\"value\":").append(serializeValue(fieldValues[index]));
-      if (fieldNames[index] != null && fieldNames[index].equals(highlightedField)) {
-        builder.append(",\"highlight\":true");
-      }
-      builder.append('}');
-    }
-    builder.append("]}");
-    emit("line=" + line + " object-state " + name + "=" + builder);
-  }
 
   public static String serializeResult(Object value) {
     return serializeValue(value);
   }
 
-  private static void emitSetStateAtLine(
+  private static void emitSetSnapshotAtLine(
     int line,
     String name,
     Set<?> values,
