@@ -8,11 +8,11 @@ import { spawn } from 'node:child_process';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
-import type { ExecutionResult, LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
-import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
+import type { ExecutionResult } from '../packages/harness-core/src/types';
 import {
   createEmptyRuntimeV4Trace,
-  runtimeTraceContractToV4Events,
+  RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+  type RuntimeV4Event,
   type RuntimeV4EventKind,
   type RuntimeV4ParityAccessTarget,
   type RuntimeV4Trace,
@@ -21,7 +21,6 @@ import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeJavaRawEmissions,
-  summarizeRawTraceEmissions,
   summarizeRuntimeV4Emissions,
   type RuntimeRawEmissionSummary,
 } from '../packages/harness-core/src/runtime-raw-emission-contract';
@@ -162,18 +161,6 @@ function fixtureLanguageFile(language: Language): string {
   return 'Solution.java';
 }
 
-function makeExecutionResult(trace: RawTraceStep[]): LegacyTraceExecutionResult {
-  return {
-    success: true,
-    output: null,
-    trace,
-    executionTimeMs: 0,
-    consoleOutput: [],
-    lineEventCount: trace.filter((step) => step.event === 'line').length,
-    traceStepCount: trace.length,
-  };
-}
-
 async function runProcess(command: string, args: string[]): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -264,28 +251,29 @@ async function executePythonTrace(code: string, fixture: FixtureCase): Promise<F
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
-    'trace': _trace_data,
+    'traceV4Events': _trace_v4_events,
     'result': _serialize(_result),
     'console': _console_output,
     'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_data)
+    'traceStepCount': len(_trace_v4_events)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { trace: RawTraceStep[]; lineEventCount?: number; traceStepCount?: number };
-  const result = {
-    ...makeExecutionResult(parsed.trace),
-    lineEventCount: parsed.lineEventCount,
-    traceStepCount: parsed.traceStepCount,
+  const parsed = JSON.parse(stdout) as { traceV4Events: RuntimeV4Event[]; lineEventCount?: number; traceStepCount?: number };
+  const trace: RuntimeV4Trace = {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language: 'python',
+    runId: `python:${fixture.id}`,
+    events: parsed.traceV4Events.map((event) => ({
+      ...event,
+      runId: `python:${fixture.id}`,
+      file: 'solution.py',
+    })),
+    lineEventCount: parsed.traceV4Events.filter((event) => event.kind === 'line').length,
+    traceStepCount: parsed.traceStepCount ?? parsed.traceV4Events.length,
   };
-  const rawSummary = summarizeRawTraceEmissions('python', parsed.trace);
+  const rawSummary = summarizeRuntimeV4Emissions(trace);
   assertSupportedRawEmissions(rawSummary, `${fixture.id}:python`);
-  return {
-    trace: runtimeTraceContractToV4Events(
-      normalizeRuntimeTraceContract('python', result),
-      { runId: `python:${fixture.id}`, file: 'solution.py' }
-    ),
-    rawSummary,
-  };
+  return { trace, rawSummary };
 }
 
 function createJavaScriptWorkerHarness(workerSource: string) {

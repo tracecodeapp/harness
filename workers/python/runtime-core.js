@@ -38,6 +38,7 @@ ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 _TRACECODE_TYPING_GLOBALS = {name for name in globals().keys() if not name.startswith('_')}
 
 _trace_data = []
+_trace_v4_events = []
 _console_output = []
 _original_print = _builtins.print
 _target_function = "${targetFunction}"
@@ -54,7 +55,7 @@ def _custom_print(*args, **kwargs):
     _console_output.append(output)
     try:
         _frame = sys._getframe(1)
-        _trace_data.append({
+        __tracecode_append_trace_step(_frame, {
             'line': _frame.f_lineno,
             'event': 'stdout',
             'variables': {'output': output},
@@ -75,9 +76,9 @@ _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _prev_hashmap_snapshots = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard'}
-_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta', '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_v4_events_for_step', '__tracecode_frame_id_for_step', '__tracecode_v4_access_target', '__tracecode_v4_access_kind', '__tracecode_v4_value_at_path', '__tracecode_v4_access_value', '__tracecode_normalize_v4_mutation_method', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
-    '_trace_data', '_console_output', '_original_print', '_target_function',
+    '_trace_data', '_trace_v4_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
     '_SCRIPT_MODE', '_TRACE_INPUT_NAMES', '_SCRIPT_PRE_USER_GLOBALS',
     '_TRACECODE_TYPING_GLOBALS',
@@ -90,6 +91,9 @@ _internal_locals = {
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_extract_hashmap_snapshot', '_classify_runtime_object_kind', '_infer_hashmap_delta',
     '_clear_frame_hashmap_snapshots', '_build_runtime_visualization', '_resolve_inplace_result',
     '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step',
+    '__tracecode_append_v4_events_for_step', '__tracecode_frame_id_for_step',
+    '__tracecode_v4_access_target', '__tracecode_v4_access_kind', '__tracecode_v4_value_at_path',
+    '__tracecode_v4_access_value', '__tracecode_normalize_v4_mutation_method',
     '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices',
     '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value',
     '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index',
@@ -387,8 +391,106 @@ def __tracecode_flush_accesses(frame):
         return []
     return _pending_accesses.pop(id(frame), [])
 
+def __tracecode_frame_id_for_step(step):
+    stack = step.get('callStack') if isinstance(step, dict) else []
+    if isinstance(stack, list) and len(stack) > 0:
+        frame = stack[-1]
+        if isinstance(frame, dict):
+            return str(frame.get('function')) + ':' + str(frame.get('line'))
+    return str(step.get('function')) + ':' + str(step.get('line'))
+
+def __tracecode_v4_access_target(access):
+    indices = access.get('indices') if isinstance(access, dict) else None
+    if isinstance(indices, list) and len(indices) > 0:
+        return {'variable': access.get('variable'), 'path': indices}
+    return {'variable': access.get('variable')}
+
+def __tracecode_v4_access_kind(access):
+    kind = access.get('kind') if isinstance(access, dict) else None
+    if kind in ('indexed-read', 'cell-read'):
+        return 'read'
+    if kind in ('indexed-write', 'cell-write'):
+        return 'write'
+    return 'mutate'
+
+def __tracecode_v4_value_at_path(value, path):
+    if not isinstance(path, list) or len(path) == 0:
+        return value
+    current = value
+    for part in path:
+        try:
+            current = current[part]
+        except Exception:
+            return None
+    return current
+
+def __tracecode_v4_access_value(step, access):
+    variables = step.get('variables') if isinstance(step, dict) else {}
+    root = variables.get(access.get('variable')) if isinstance(variables, dict) else None
+    return __tracecode_v4_value_at_path(root, access.get('indices'))
+
+def __tracecode_normalize_v4_mutation_method(method):
+    if method in ('add', 'append', 'push'):
+        return 'append'
+    if method in ('put', 'set'):
+        return 'set'
+    return method
+
+def __tracecode_append_v4_events_for_step(step):
+    if not isinstance(step, dict):
+        return
+    line = step.get('line')
+    event_kind = step.get('event')
+    function_name = step.get('function')
+    base = {
+        'runId': 'python:run',
+        'line': line,
+        'frameId': __tracecode_frame_id_for_step(step)
+    }
+    if event_kind == 'line':
+        _trace_v4_events.append({**base, 'kind': 'line', 'function': function_name})
+    elif event_kind == 'call':
+        stack = step.get('callStack') if isinstance(step.get('callStack'), list) else []
+        frame = stack[-1] if len(stack) > 0 and isinstance(stack[-1], dict) else {}
+        _trace_v4_events.append({**base, 'kind': 'call', 'function': function_name, 'args': frame.get('args')})
+    elif event_kind == 'return':
+        event = {**base, 'kind': 'return', 'function': function_name}
+        if 'returnValue' in step:
+            event['value'] = step.get('returnValue')
+        _trace_v4_events.append(event)
+    elif event_kind == 'exception':
+        variables = step.get('variables') if isinstance(step.get('variables'), dict) else {}
+        _trace_v4_events.append({**base, 'kind': 'exception', 'message': str(step.get('returnValue') or variables.get('error') or 'Runtime exception')})
+    elif event_kind == 'timeout':
+        _trace_v4_events.append({**base, 'kind': 'timeout', 'message': 'Runtime timeout'})
+    elif event_kind == 'stdout':
+        variables = step.get('variables') if isinstance(step.get('variables'), dict) else {}
+        _trace_v4_events.append({'kind': 'stdout', 'runId': 'python:run', 'line': line, 'text': str(step.get('returnValue') or variables.get('output') or '')})
+
+    variables = step.get('variables')
+    if event_kind != '__access_only__' and isinstance(variables, dict):
+        for variable, value in variables.items():
+            _trace_v4_events.append({**base, 'kind': 'snapshot', 'target': {'variable': variable}, 'value': value})
+
+    accesses = step.get('accesses')
+    if isinstance(accesses, list):
+        for access in accesses:
+            if not isinstance(access, dict):
+                continue
+            kind = __tracecode_v4_access_kind(access)
+            target = __tracecode_v4_access_target(access)
+            if kind == 'mutate':
+                method = __tracecode_normalize_v4_mutation_method(access.get('method'))
+                event = {**base, 'kind': kind, 'target': target}
+                if method:
+                    event['method'] = method
+                _trace_v4_events.append(event)
+            else:
+                _trace_v4_events.append({**base, 'kind': kind, 'target': target, 'value': __tracecode_v4_access_value(step, access)})
+
 def __tracecode_append_trace_step(frame, step):
     _trace_data.append(step)
+    __tracecode_append_v4_events_for_step(step)
     if frame is not None:
         _last_trace_index_by_frame[id(frame)] = len(_trace_data) - 1
 
@@ -405,6 +507,15 @@ def __tracecode_attach_accesses_to_previous_step(frame):
             existing_accesses.extend(accesses)
         else:
             previous_step['accesses'] = accesses
+        for access in accesses:
+            __tracecode_append_v4_events_for_step({
+                'line': previous_step.get('line'),
+                'event': '__access_only__',
+                'variables': previous_step.get('variables', {}),
+                'function': previous_step.get('function'),
+                'callStack': previous_step.get('callStack', []),
+                'accesses': [access],
+            })
         return []
     return accesses
 
@@ -1429,7 +1540,7 @@ except Exception as e:
         if _exc_tb.tb_lineno is not None:
             _error_line = _exc_tb.tb_lineno
         _exc_tb = _exc_tb.tb_next
-    _trace_data.append({
+    __tracecode_append_trace_step(None, {
         'line': _error_line,
         'event': 'exception',
         'variables': {
@@ -1455,6 +1566,7 @@ print = _original_print
 
 json.dumps({
     'trace': _trace_data,
+    'traceV4Events': _trace_v4_events,
     'result': _serialize(_result),
     'console': _console_output,
     'userCodeStartLine': ${userCodeStartLine},
@@ -1574,171 +1686,30 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
 
 const RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION = 'v4-draft-2026-04-28';
 
-const V4_MUTATION_METHOD_ALIASES = {
-  add: 'append',
-  append: 'append',
-  push: 'append',
-  put: 'set',
-  set: 'set',
-};
-
-function legacyFrameIdForStep(step) {
-  const stack = Array.isArray(step?.callStack) ? step.callStack : [];
-  if (stack.length > 0) {
-    const frame = stack[stack.length - 1];
-    return `${frame.function}:${frame.line}`;
-  }
-  return `${step.function}:${step.line}`;
-}
-
-function legacyAccessTarget(access) {
-  const indices = Array.isArray(access?.indices) ? access.indices : [];
-  if (indices.length > 0) {
-    return { variable: access.variable, path: indices };
-  }
-  return { variable: access.variable };
-}
-
-function legacyAccessKindToV4Kind(access) {
-  if (access.kind === 'indexed-read' || access.kind === 'cell-read') return 'read';
-  if (access.kind === 'indexed-write' || access.kind === 'cell-write') return 'write';
-  return 'mutate';
-}
-
-function valueAtPath(value, path) {
-  if (!Array.isArray(path) || path.length === 0) return value;
-  let current = value;
-  for (const part of path) {
-    if (current === null || current === undefined || typeof current !== 'object') return undefined;
-    current = current[String(part)];
-  }
-  return current;
-}
-
-function legacyAccessValue(step, access) {
-  return valueAtPath(step?.variables?.[access.variable], access.indices);
-}
-
-function normalizeV4MutationMethod(method) {
-  if (!method) return undefined;
-  return V4_MUTATION_METHOD_ALIASES[method] ?? method;
-}
-
-function collapseLegacyAccessNoiseForV4(steps) {
-  const variablesWithCellAccess = new Set();
-  const accessStatsByVariable = new Map();
-  for (const step of Array.isArray(steps) ? steps : []) {
-    for (const access of step.accesses ?? []) {
-      const stats = accessStatsByVariable.get(access.variable) ?? {
-        hasCellRead: false,
-        hasCellWrite: false,
-        hasMutatingCall: false,
-        hasIndexedWrite: false,
-      };
-      if (access.kind === 'cell-read' || access.kind === 'cell-write') {
-        variablesWithCellAccess.add(access.variable);
-      }
-      if (access.kind === 'cell-read') stats.hasCellRead = true;
-      if (access.kind === 'cell-write') stats.hasCellWrite = true;
-      if (access.kind === 'mutating-call') stats.hasMutatingCall = true;
-      if (access.kind === 'indexed-write') stats.hasIndexedWrite = true;
-      accessStatsByVariable.set(access.variable, stats);
-    }
-  }
-  if (variablesWithCellAccess.size === 0) return steps;
-
-  return steps.map((step) => {
-    if (!step.accesses?.length) return step;
-    const filtered = step.accesses.filter((access) => {
-      const stats = accessStatsByVariable.get(access.variable);
-      if (variablesWithCellAccess.has(access.variable)) {
-        return access.kind !== 'indexed-read' && access.kind !== 'indexed-write';
-      }
-      if (
-        access.kind === 'mutating-call' &&
-        stats?.hasIndexedWrite &&
-        !stats.hasCellRead &&
-        !stats.hasCellWrite
-      ) {
-        return false;
-      }
-      if (
-        access.kind === 'indexed-read' &&
-        stats?.hasMutatingCall &&
-        !stats.hasIndexedWrite &&
-        !stats.hasCellRead &&
-        !stats.hasCellWrite
-      ) {
-        return false;
-      }
-      return true;
-    });
-    return {
-      ...step,
-      ...(filtered.length > 0 ? { accesses: filtered } : {}),
-      ...(filtered.length === 0 ? { accesses: undefined } : {}),
-    };
-  });
-}
-
-function legacyStepsToRuntimeV4Trace(language, steps, runId = `${language}:run`, file) {
-  const normalizedSteps = collapseLegacyAccessNoiseForV4(Array.isArray(steps) ? steps : []);
-  const events = [];
-  for (const step of normalizedSteps) {
-    const base = {
+function nativePythonEventsToRuntimeV4Trace(events, userCodeStartLine, userCodeLineCount, runId = 'python:run', file) {
+  const normalizedEvents = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!event || typeof event !== 'object') continue;
+    const normalized = {
+      ...event,
       runId,
       ...(file ? { file } : {}),
-      line: step.line,
-      frameId: legacyFrameIdForStep(step),
     };
-    if (step.event === 'line') {
-      events.push({ ...base, kind: 'line', function: step.function });
-    } else if (step.event === 'call') {
-      const stack = Array.isArray(step.callStack) ? step.callStack : [];
-      events.push({ ...base, kind: 'call', function: step.function, args: stack[stack.length - 1]?.args });
-    } else if (step.event === 'return') {
-      events.push({
-        ...base,
-        kind: 'return',
-        function: step.function,
-        ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
-      });
-    } else if (step.event === 'exception') {
-      events.push({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
-    } else if (step.event === 'timeout') {
-      events.push({ ...base, kind: 'timeout', message: 'Runtime timeout' });
-    } else if (step.event === 'stdout') {
-      events.push({
-        kind: 'stdout',
-        runId,
-        ...(file ? { file } : {}),
-        ...(step.line ? { line: step.line } : {}),
-        text: String(step.returnValue ?? step.variables?.output ?? ''),
-      });
-    }
-
-    for (const [variable, value] of Object.entries(step.variables ?? {})) {
-      events.push({ ...base, kind: 'snapshot', target: { variable }, value });
-    }
-
-    for (const access of step.accesses ?? []) {
-      const kind = legacyAccessKindToV4Kind(access);
-      const target = legacyAccessTarget(access);
-      if (kind === 'mutate') {
-        const method = normalizeV4MutationMethod(access.method);
-        events.push({ ...base, kind, target, ...(method ? { method } : {}) });
-      } else {
-        events.push({ ...base, kind, target, value: legacyAccessValue(step, access) });
+    if (typeof normalized.line === 'number') {
+      normalized.line = normalized.line > 0 ? normalized.line - userCodeStartLine + 1 : normalized.line;
+      if (normalized.line < 1 || normalized.line > userCodeLineCount) {
+        continue;
       }
     }
+    normalizedEvents.push(normalized);
   }
   return {
     schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
-    language,
+    language: 'python',
     runId,
-    events,
-    lineEventCount: normalizedSteps.filter((step) => step.event === 'line').length,
-    traceStepCount: normalizedSteps.length,
+    events: normalizedEvents,
+    lineEventCount: normalizedEvents.filter((event) => event.kind === 'line').length,
+    traceStepCount: normalizedEvents.length,
   };
 }
 
@@ -1838,7 +1809,11 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
       output: result.result,
       error: errorMessage,
       errorLine,
-      trace: legacyStepsToRuntimeV4Trace('python', filteredTrace),
+      trace: nativePythonEventsToRuntimeV4Trace(
+        result.traceV4Events,
+        userCodeStartLine,
+        userCodeLineCount
+      ),
       executionTimeMs,
       consoleOutput: result.console,
       traceLimitExceeded: result.traceLimitExceeded,
@@ -1859,7 +1834,7 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
         ? 'Execution timed out. This may indicate an infinite loop or very expensive execution.'
         : message,
       errorLine: line,
-      trace: legacyStepsToRuntimeV4Trace('python', []),
+      trace: nativePythonEventsToRuntimeV4Trace([], userCodeStartLine, userCodeLineCount),
       executionTimeMs,
       consoleOutput: [],
       timeoutReason: isClientTimeout ? 'client-timeout' : undefined,

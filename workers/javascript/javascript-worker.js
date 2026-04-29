@@ -810,9 +810,11 @@ function writeValueAtIndices(container, indices, value) {
 
 function createTraceRecorder(options = {}) {
   const trace = [];
+  const runtimeV4Events = [];
   const callStack = [];
   const pendingAccessesByFrame = new Map();
   const deferredAccessesByFrame = new Map();
+  const runtimeV4AccessStatsByVariable = new Map();
   const lineHitCount = new Map();
   const stableNodeRefState = { ids: new Map(), nextId: 1 };
   const maxTraceSteps = getNumericOption(options.maxTraceSteps, 4000);
@@ -1149,13 +1151,15 @@ function createTraceRecorder(options = {}) {
         timeoutReason = 'trace-limit';
       }
       if (!timeoutRecorded && trace.length < effectiveMaxTraceSteps) {
-        trace.push({
+        const timeoutStep = {
           line: lineNumber,
           event: 'timeout',
           variables: {},
           function: step?.function ?? callStack[callStack.length - 1]?.function ?? '<module>',
           callStack: snapshotCallStack(),
-        });
+        };
+        trace.push(timeoutStep);
+        appendRuntimeV4EventsForStep(timeoutStep);
         timeoutRecorded = true;
       }
       throw createLimitError('trace-limit', lineNumber, `Exceeded ${effectiveMaxTraceSteps} trace steps`);
@@ -1179,9 +1183,155 @@ function createTraceRecorder(options = {}) {
       }
       previous.callStack = nextStep.callStack;
       previous.function = nextStep.function;
+      appendRuntimeV4EventsForStep({
+        ...nextStep,
+        event: '__merge_only__',
+      });
       return;
     }
     trace.push(nextStep);
+    appendRuntimeV4EventsForStep(nextStep);
+  }
+
+  function runtimeV4FrameIdForStep(step) {
+    const stack = Array.isArray(step?.callStack) ? step.callStack : [];
+    if (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      return `${frame.function}:${frame.line}`;
+    }
+    return `${step.function}:${step.line}`;
+  }
+
+  function runtimeV4TargetForAccess(access) {
+    const indices = Array.isArray(access?.indices) ? access.indices : [];
+    if (indices.length > 0) {
+      return { variable: access.variable, path: indices };
+    }
+    return { variable: access.variable };
+  }
+
+  function runtimeV4KindForAccess(access) {
+    if (access.kind === 'indexed-read' || access.kind === 'cell-read') return 'read';
+    if (access.kind === 'indexed-write' || access.kind === 'cell-write') return 'write';
+    return 'mutate';
+  }
+
+  function runtimeV4AccessValue(step, access) {
+    return valueAtPath(step?.variables?.[access.variable], access.indices);
+  }
+
+  function updateRuntimeV4AccessStats(access) {
+    const variable = access?.variable;
+    if (typeof variable !== 'string' || variable.length === 0) return;
+    const stats = runtimeV4AccessStatsByVariable.get(variable) ?? {
+      hasCellRead: false,
+      hasCellWrite: false,
+      hasMutatingCall: false,
+      hasIndexedWrite: false,
+    };
+    if (access.kind === 'cell-read') stats.hasCellRead = true;
+    if (access.kind === 'cell-write') stats.hasCellWrite = true;
+    if (access.kind === 'mutating-call') stats.hasMutatingCall = true;
+    if (access.kind === 'indexed-write') stats.hasIndexedWrite = true;
+    runtimeV4AccessStatsByVariable.set(variable, stats);
+  }
+
+  function shouldKeepRuntimeV4AccessEvent(event, stats) {
+    if (!event || (event.kind !== 'read' && event.kind !== 'write' && event.kind !== 'mutate')) return true;
+    const pathDepth = Array.isArray(event.target?.path) ? event.target.path.length : 0;
+    if ((stats.hasCellRead || stats.hasCellWrite) && pathDepth === 1 && (event.kind === 'read' || event.kind === 'write')) {
+      return false;
+    }
+    if (
+      event.kind === 'mutate' &&
+      stats.hasIndexedWrite &&
+      !stats.hasCellRead &&
+      !stats.hasCellWrite
+    ) {
+      return false;
+    }
+    if (
+      event.kind === 'read' &&
+      pathDepth === 1 &&
+      stats.hasMutatingCall &&
+      !stats.hasIndexedWrite &&
+      !stats.hasCellRead &&
+      !stats.hasCellWrite
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  function pruneRuntimeV4AccessEvents(variable) {
+    const stats = runtimeV4AccessStatsByVariable.get(variable);
+    if (!stats) return;
+    for (let index = runtimeV4Events.length - 1; index >= 0; index -= 1) {
+      const event = runtimeV4Events[index];
+      if (!event || !event.target || event.target.variable !== variable) continue;
+      if (!shouldKeepRuntimeV4AccessEvent(event, stats)) {
+        runtimeV4Events.splice(index, 1);
+      }
+    }
+  }
+
+  function appendRuntimeV4EventsForStep(step) {
+    const base = {
+      runId: 'javascript:run',
+      line: step.line,
+      frameId: runtimeV4FrameIdForStep(step),
+    };
+
+    if (step.event === 'line') {
+      runtimeV4Events.push({ ...base, kind: 'line', function: step.function });
+    } else if (step.event === 'call') {
+      const stack = Array.isArray(step.callStack) ? step.callStack : [];
+      runtimeV4Events.push({ ...base, kind: 'call', function: step.function, args: stack.at(-1)?.args });
+    } else if (step.event === 'return') {
+      runtimeV4Events.push({
+        ...base,
+        kind: 'return',
+        function: step.function,
+        ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
+      });
+    } else if (step.event === 'exception') {
+      runtimeV4Events.push({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
+    } else if (step.event === 'timeout') {
+      runtimeV4Events.push({ ...base, kind: 'timeout', message: 'Runtime timeout' });
+    } else if (step.event === 'stdout') {
+      runtimeV4Events.push({
+        kind: 'stdout',
+        runId: 'javascript:run',
+        ...(step.line ? { line: step.line } : {}),
+        text: String(step.returnValue ?? ''),
+      });
+    }
+
+    if (step.event !== '__merge_only__') {
+      for (const [variable, value] of Object.entries(step.variables ?? {})) {
+        runtimeV4Events.push({ ...base, kind: 'snapshot', target: { variable }, value });
+      }
+    } else {
+      for (const [variable, value] of Object.entries(step.variables ?? {})) {
+        runtimeV4Events.push({ ...base, kind: 'snapshot', target: { variable }, value });
+      }
+    }
+
+    for (const access of step.accesses ?? []) {
+      updateRuntimeV4AccessStats(access);
+      pruneRuntimeV4AccessEvents(access.variable);
+      const kind = runtimeV4KindForAccess(access);
+      const target = runtimeV4TargetForAccess(access);
+      const stats = runtimeV4AccessStatsByVariable.get(access.variable);
+      if (kind === 'mutate') {
+        const method = normalizeV4MutationMethod(access.method);
+        const event = { ...base, kind, target, ...(method ? { method } : {}) };
+        if (shouldKeepRuntimeV4AccessEvent(event, stats)) runtimeV4Events.push(event);
+      } else {
+        const event = { ...base, kind, target, value: runtimeV4AccessValue(step, access) };
+        if (shouldKeepRuntimeV4AccessEvent(event, stats)) runtimeV4Events.push(event);
+      }
+    }
   }
 
   function canMergeConsecutiveLineSteps(previous, nextStep) {
@@ -1427,6 +1577,12 @@ function createTraceRecorder(options = {}) {
         const step = trace[index];
         if (!step || step.event !== 'line') continue;
         step.accesses = [...(step.accesses ?? []), ...attachable];
+        appendRuntimeV4EventsForStep({
+          ...step,
+          event: '__access_only__',
+          variables: {},
+          accesses: attachable,
+        });
         return;
       }
       pendingAccessesByFrame.set(frameId, attachable);
@@ -1551,6 +1707,21 @@ function createTraceRecorder(options = {}) {
     },
     getTrace() {
       return trace;
+    },
+    getRuntimeV4Trace(language, runId = `${language}:run`, file) {
+      const events = runtimeV4Events.map((event) => ({
+        ...event,
+        runId,
+        ...(file ? { file } : {}),
+      }));
+      return {
+        schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+        language,
+        runId,
+        events,
+        lineEventCount: events.filter((event) => event.kind === 'line').length,
+        traceStepCount: events.length,
+      };
     },
     getLineEventCount() {
       return lineEventCount;
@@ -1711,6 +1882,48 @@ function createSyntheticTrace(payload, codeResult) {
   ];
 }
 
+function createEmptyRuntimeV4Trace(language, runId = `${language}:run`) {
+  return {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language,
+    runId,
+    events: [],
+    lineEventCount: 0,
+    traceStepCount: 0,
+  };
+}
+
+function createSyntheticRuntimeV4Trace(payload, codeResult, language) {
+  const syntheticTrace = createSyntheticTrace(payload, codeResult);
+  const runId = `${language}:run`;
+  const events = [];
+  for (const step of syntheticTrace) {
+    const base = {
+      runId,
+      line: step.line,
+      frameId: runtimeV4FrameIdForSyntheticStep(step),
+    };
+    if (step.event === 'call') {
+      events.push({ ...base, kind: 'call', function: step.function, args: step.callStack?.at(-1)?.args });
+    } else if (step.event === 'line') {
+      events.push({ ...base, kind: 'line', function: step.function });
+    } else if (step.event === 'return') {
+      events.push({ ...base, kind: 'return', function: step.function, value: step.returnValue });
+    }
+    for (const [variable, value] of Object.entries(step.variables ?? {})) {
+      events.push({ ...base, kind: 'snapshot', target: { variable }, value });
+    }
+  }
+  return {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language,
+    runId,
+    events,
+    lineEventCount: events.filter((event) => event.kind === 'line').length,
+    traceStepCount: events.length,
+  };
+}
+
 const RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION = 'v4-draft-2026-04-28';
 
 const V4_MUTATION_METHOD_ALIASES = {
@@ -1721,27 +1934,13 @@ const V4_MUTATION_METHOD_ALIASES = {
   set: 'set',
 };
 
-function legacyFrameIdForStep(step) {
+function runtimeV4FrameIdForSyntheticStep(step) {
   const stack = Array.isArray(step?.callStack) ? step.callStack : [];
   if (stack.length > 0) {
     const frame = stack[stack.length - 1];
     return `${frame.function}:${frame.line}`;
   }
   return `${step.function}:${step.line}`;
-}
-
-function legacyAccessTarget(access) {
-  const indices = Array.isArray(access?.indices) ? access.indices : [];
-  if (indices.length > 0) {
-    return { variable: access.variable, path: indices };
-  }
-  return { variable: access.variable };
-}
-
-function legacyAccessKindToV4Kind(access) {
-  if (access.kind === 'indexed-read' || access.kind === 'cell-read') return 'read';
-  if (access.kind === 'indexed-write' || access.kind === 'cell-write') return 'write';
-  return 'mutate';
 }
 
 function valueAtPath(value, path) {
@@ -1754,131 +1953,9 @@ function valueAtPath(value, path) {
   return current;
 }
 
-function legacyAccessValue(step, access) {
-  return valueAtPath(step?.variables?.[access.variable], access.indices);
-}
-
 function normalizeV4MutationMethod(method) {
   if (!method) return undefined;
   return V4_MUTATION_METHOD_ALIASES[method] ?? method;
-}
-
-function collapseLegacyAccessNoiseForV4(steps) {
-  const variablesWithCellAccess = new Set();
-  const accessStatsByVariable = new Map();
-  for (const step of Array.isArray(steps) ? steps : []) {
-    for (const access of step.accesses ?? []) {
-      const stats = accessStatsByVariable.get(access.variable) ?? {
-        hasCellRead: false,
-        hasCellWrite: false,
-        hasMutatingCall: false,
-        hasIndexedWrite: false,
-      };
-      if (access.kind === 'cell-read' || access.kind === 'cell-write') {
-        variablesWithCellAccess.add(access.variable);
-      }
-      if (access.kind === 'cell-read') stats.hasCellRead = true;
-      if (access.kind === 'cell-write') stats.hasCellWrite = true;
-      if (access.kind === 'mutating-call') stats.hasMutatingCall = true;
-      if (access.kind === 'indexed-write') stats.hasIndexedWrite = true;
-      accessStatsByVariable.set(access.variable, stats);
-    }
-  }
-  if (variablesWithCellAccess.size === 0) return steps;
-
-  return steps.map((step) => {
-    if (!step.accesses?.length) return step;
-    const filtered = step.accesses.filter((access) => {
-      const stats = accessStatsByVariable.get(access.variable);
-      if (variablesWithCellAccess.has(access.variable)) {
-        return access.kind !== 'indexed-read' && access.kind !== 'indexed-write';
-      }
-      if (
-        access.kind === 'mutating-call' &&
-        stats?.hasIndexedWrite &&
-        !stats.hasCellRead &&
-        !stats.hasCellWrite
-      ) {
-        return false;
-      }
-      if (
-        access.kind === 'indexed-read' &&
-        stats?.hasMutatingCall &&
-        !stats.hasIndexedWrite &&
-        !stats.hasCellRead &&
-        !stats.hasCellWrite
-      ) {
-        return false;
-      }
-      return true;
-    });
-    return {
-      ...step,
-      ...(filtered.length > 0 ? { accesses: filtered } : {}),
-      ...(filtered.length === 0 ? { accesses: undefined } : {}),
-    };
-  });
-}
-
-function legacyStepsToRuntimeV4Trace(language, steps, runId = `${language}:run`, file) {
-  const normalizedSteps = collapseLegacyAccessNoiseForV4(Array.isArray(steps) ? steps : []);
-  const events = [];
-  for (const step of normalizedSteps) {
-    const base = {
-      runId,
-      ...(file ? { file } : {}),
-      line: step.line,
-      frameId: legacyFrameIdForStep(step),
-    };
-    if (step.event === 'line') {
-      events.push({ ...base, kind: 'line', function: step.function });
-    } else if (step.event === 'call') {
-      const stack = Array.isArray(step.callStack) ? step.callStack : [];
-      events.push({ ...base, kind: 'call', function: step.function, args: stack[stack.length - 1]?.args });
-    } else if (step.event === 'return') {
-      events.push({
-        ...base,
-        kind: 'return',
-        function: step.function,
-        ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
-      });
-    } else if (step.event === 'exception') {
-      events.push({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
-    } else if (step.event === 'timeout') {
-      events.push({ ...base, kind: 'timeout', message: 'Runtime timeout' });
-    } else if (step.event === 'stdout') {
-      events.push({
-        kind: 'stdout',
-        runId,
-        ...(file ? { file } : {}),
-        ...(step.line ? { line: step.line } : {}),
-        text: String(step.returnValue ?? ''),
-      });
-    }
-
-    for (const [variable, value] of Object.entries(step.variables ?? {})) {
-      events.push({ ...base, kind: 'snapshot', target: { variable }, value });
-    }
-
-    for (const access of step.accesses ?? []) {
-      const kind = legacyAccessKindToV4Kind(access);
-      const target = legacyAccessTarget(access);
-      if (kind === 'mutate') {
-        const method = normalizeV4MutationMethod(access.method);
-        events.push({ ...base, kind, target, ...(method ? { method } : {}) });
-      } else {
-        events.push({ ...base, kind, target, value: legacyAccessValue(step, access) });
-      }
-    }
-  }
-  return {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
-    language,
-    runId,
-    events,
-    lineEventCount: normalizedSteps.filter((step) => step.event === 'line').length,
-    traceStepCount: normalizedSteps.length,
-  };
 }
 
 function getTypeScriptCompiler() {
@@ -3765,27 +3842,28 @@ async function executeWithTracing(payload) {
       const executionTimeMs = performanceNow() - startedAt;
 
       if (!fallbackResult.success) {
+        const trace = createEmptyRuntimeV4Trace(language);
         return {
           success: false,
           error: fallbackResult.error,
           errorLine: fallbackResult.errorLine,
-          trace: legacyStepsToRuntimeV4Trace(language, []),
+          trace,
           executionTimeMs,
           consoleOutput: fallbackResult.consoleOutput ?? [],
-          lineEventCount: 0,
-          traceStepCount: 0,
+          lineEventCount: trace.lineEventCount,
+          traceStepCount: trace.traceStepCount,
         };
       }
 
-      const syntheticTrace = createSyntheticTrace(payload, fallbackResult);
+      const trace = createSyntheticRuntimeV4Trace(payload, fallbackResult, language);
       return {
         success: true,
         output: fallbackResult.output,
-        trace: legacyStepsToRuntimeV4Trace(language, syntheticTrace),
+        trace,
         executionTimeMs,
         consoleOutput: fallbackResult.consoleOutput ?? [],
-        lineEventCount: syntheticTrace.filter((step) => step.event === 'line').length,
-        traceStepCount: syntheticTrace.length,
+        lineEventCount: trace.lineEventCount,
+        traceStepCount: trace.traceStepCount,
       };
     }
 
@@ -3835,14 +3913,15 @@ async function executeWithTracing(payload) {
     }
 
     const executionTimeMs = performanceNow() - startedAt;
+    const trace = traceRecorder.getRuntimeV4Trace(language);
     return {
       success: true,
       output: serializedOutput,
-      trace: legacyStepsToRuntimeV4Trace(language, traceRecorder.getTrace()),
+      trace,
       executionTimeMs,
       consoleOutput,
-      lineEventCount: traceRecorder.getLineEventCount(),
-      traceStepCount: traceRecorder.getTraceStepCount(),
+      lineEventCount: trace.lineEventCount,
+      traceStepCount: trace.traceStepCount,
       traceLimitExceeded: traceRecorder.isTraceLimitExceeded(),
       timeoutReason: traceRecorder.getTimeoutReason(),
     };
@@ -3867,16 +3946,17 @@ async function executeWithTracing(payload) {
       traceRecorder.recordException(traceErrorLine, message, traceFunctionName);
     }
 
+    const trace = traceRecorder.getRuntimeV4Trace(language);
     return {
       success: false,
       output: null,
       error: message,
       errorLine,
-      trace: legacyStepsToRuntimeV4Trace(language, traceRecorder.getTrace()),
+      trace,
       executionTimeMs,
       consoleOutput,
-      lineEventCount: traceRecorder.getLineEventCount(),
-      traceStepCount: traceRecorder.getTraceStepCount(),
+      lineEventCount: trace.lineEventCount,
+      traceStepCount: trace.traceStepCount,
       traceLimitExceeded,
       timeoutReason,
     };

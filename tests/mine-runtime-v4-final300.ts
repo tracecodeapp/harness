@@ -14,11 +14,10 @@ import type {
   JavaWorkerRawTraceResult,
   JavaWorkerTraceResult,
 } from '../packages/harness-browser/src/java-worker-client';
-import type { ExecutionResult, LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
-import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
+import type { ExecutionResult } from '../packages/harness-core/src/types';
 import {
   createEmptyRuntimeV4Trace,
-  runtimeTraceContractToV4Events,
+  RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
   withRuntimeV4TraceOptions,
   type RuntimeV4Event,
   type RuntimeV4Trace,
@@ -194,23 +193,6 @@ function buildMineSignature(trace: RuntimeV4Trace): MineSignature {
   };
 }
 
-function makeExecutionResult(
-  trace: RawTraceStep[],
-  output: unknown,
-  lineEventCount?: number,
-  traceStepCount?: number
-): LegacyTraceExecutionResult {
-  return {
-    success: true,
-    output,
-    trace,
-    executionTimeMs: 0,
-    consoleOutput: [],
-    lineEventCount: lineEventCount ?? trace.filter((step) => step.event === 'line').length,
-    traceStepCount: traceStepCount ?? trace.length,
-  };
-}
-
 async function runProcess(command: string, args: string[], input?: string): Promise<string> {
   return await new Promise<string>((resolvePromise, reject) => {
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -268,17 +250,26 @@ async function executePythonTrace(runtime: RuntimeCore, entry: Final300Entry, co
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
-    'trace': _trace_data,
+    'traceV4Events': _trace_v4_events,
     'result': _serialize(_result),
     'lineEventCount': _total_line_events,
-    'traceStepCount': len(_trace_data)
+    'traceStepCount': len(_trace_v4_events)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { trace: RawTraceStep[]; result: unknown; lineEventCount?: number; traceStepCount?: number };
-  const trace = runtimeTraceContractToV4Events(
-    normalizeRuntimeTraceContract('python', makeExecutionResult(parsed.trace, parsed.result, parsed.lineEventCount, parsed.traceStepCount)),
-    { runId: `mine:${entry.slug}:python`, file: entry.source.path }
-  );
+  const parsed = JSON.parse(stdout) as { traceV4Events: RuntimeV4Event[]; result: unknown; lineEventCount?: number; traceStepCount?: number };
+  const runId = `mine:${entry.slug}:python`;
+  const trace: RuntimeV4Trace = {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language: 'python',
+    runId,
+    events: parsed.traceV4Events.map((event) => ({
+      ...event,
+      runId,
+      file: entry.source.path,
+    })),
+    lineEventCount: parsed.traceV4Events.filter((event) => event.kind === 'line').length,
+    traceStepCount: parsed.traceStepCount ?? parsed.traceV4Events.length,
+  };
   return { language: 'python', output: parsed.result, trace, signature: buildMineSignature(trace) };
 }
 
