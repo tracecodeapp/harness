@@ -369,6 +369,13 @@ function normalizeTopLevelPublicClasses(source: string): string {
   return source.replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
 }
 
+function normalizeJavaRuntimeSnapshotHooks(source: string): string {
+  return source.replace(
+    /TraceHooks\.emit(?:List|Tree|Object)StateAtLine\(/g,
+    'TraceHooks.emitRuntimeSnapshotAtLine('
+  );
+}
+
 function createLocalJavaWorkerClient(): JavaWorkerClient {
   const stringFiles = new Map<string, string>();
   const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-java-'));
@@ -395,7 +402,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
       executionStyle,
       entryName,
     ]);
-    const rewrittenSource = await readFile(outputPath, 'utf8');
+    const rewrittenSource = normalizeJavaRuntimeSnapshotHooks(await readFile(outputPath, 'utf8'));
     const renamedExports = exportsSource.replace(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
     return `package ${packageName};\n\n${rewrittenSource.trim()}\n\n${renamedExports.trim()}\n`;
   }

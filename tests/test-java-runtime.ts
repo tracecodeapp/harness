@@ -279,9 +279,7 @@ class Solution {
     TraceHooks.emit("line=4 call legacySnapshot");
     TraceHooks.emit("line=5");
     Object box = new Object();
-    TraceHooks.emitObjectStateAtLine(5, "box", box);
-    TraceHooks.emitListStateAtLine(5, "box", box);
-    TraceHooks.emitTreeStateAtLine(5, "box", box);
+    TraceHooks.emitRuntimeSnapshotAtLine(5, "box", box);
     TraceHooks.emit("line=6 return legacySnapshot");
     return 1;
   }
@@ -715,9 +713,9 @@ class Solution {
         !legacySnapshotSource.includes('emitTreeStateAtLine') &&
         !legacySnapshotSource.includes('emitObjectStateAtLine') &&
         legacySnapshotSource.includes('TraceHooks.emitRuntimeSnapshotAtLine(5, "box", box);'),
-      'Java worker should normalize rewriter legacy state hooks to neutral runtime snapshot hooks'
+      'Java worker should receive neutral runtime snapshot hooks from the rewrite bridge'
     );
-    console.log('PASS: java worker normalizes legacy state hooks to runtime snapshot hooks');
+    console.log('PASS: java worker receives runtime snapshot hooks from rewrite bridge');
 
     let invalidRejected = false;
     try {

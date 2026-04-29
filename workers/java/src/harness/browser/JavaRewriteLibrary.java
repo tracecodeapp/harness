@@ -29,7 +29,7 @@ public final class JavaRewriteLibrary {
               executionStyle,
               entryName,
           });
-      String rewrittenSource = Files.readString(outputPath, StandardCharsets.UTF_8);
+      String rewrittenSource = normalizeRuntimeSnapshotHooks(Files.readString(outputPath, StandardCharsets.UTF_8));
       String renamedExports =
           exportsSource.replaceAll("\\bpublic class Exports\\b", "public class " + exportsClassName);
       return "package " + packageName + ";\n\n" + rewrittenSource.trim() + "\n\n" + renamedExports.trim() + "\n";
@@ -50,5 +50,11 @@ public final class JavaRewriteLibrary {
 
   private static String normalizeTopLevelPublicClasses(String source) {
     return source.replaceAll("(^|\\n)\\s*public\\s+class\\s+", "$1class ");
+  }
+
+  private static String normalizeRuntimeSnapshotHooks(String source) {
+    return source.replaceAll(
+        "TraceHooks\\.emit(?:List|Tree|Object)StateAtLine\\(",
+        "TraceHooks.emitRuntimeSnapshotAtLine(");
   }
 }
