@@ -182,12 +182,12 @@ function serializeValue(
       if (existingId) {
         return { __ref__: existingId };
       }
-      const nodePrefix = isLikelyTreeNodeValue(value) ? 'tree' : 'list';
-      const nodeId = `${nodePrefix}-${nodeRefState.nextId++}`;
+      const isTree = isLikelyTreeNodeValue(value);
+      const nodeId = `node-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(value, nodeId);
 
       const out =
-        nodePrefix === 'tree'
+        isTree
           ? {
               __type__: 'TreeNode',
               __id__: nodeId,
@@ -205,7 +205,7 @@ function serializeValue(
                 : {}),
             };
       const skipped =
-        nodePrefix === 'tree'
+        isTree
           ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
           : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
       for (const [k, v] of Object.entries(value)) {
@@ -264,7 +264,7 @@ function serializeTopLevelValue(value, nodeRefState) {
     const isTree = isLikelyTreeNodeValue(value);
     let nodeId = nodeRefState.ids.get(objectValue);
     if (!nodeId) {
-      nodeId = `${isTree ? 'tree' : 'list'}-${nodeRefState.nextId++}`;
+      nodeId = `node-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(objectValue, nodeId);
     }
 

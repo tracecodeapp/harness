@@ -178,7 +178,7 @@ def _serialize(obj, depth=0, node_refs=None):
         obj_ref = id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = f"tree-{obj_ref}"
+        node_id = f"node-{obj_ref}"
         node_refs[obj_ref] = node_id
         result = {
             "__type__": "TreeNode",
@@ -194,7 +194,7 @@ def _serialize(obj, depth=0, node_refs=None):
         obj_ref = id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = f"list-{obj_ref}"
+        node_id = f"node-{obj_ref}"
         node_refs[obj_ref] = node_id
         result = {
             "__type__": "ListNode",

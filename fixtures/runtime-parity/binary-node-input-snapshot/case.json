@@ -1,0 +1,44 @@
+{
+  "id": "binary-node-input-snapshot",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "root": {
+      "val": 7,
+      "left": {
+        "val": 3,
+        "left": null,
+        "right": null
+      },
+      "right": null
+    }
+  },
+  "anchors": {
+    "readValue": {
+      "python": "return root.val",
+      "javascript": "return root.val;",
+      "typescript": "return root.val;",
+      "java": "return root.val;"
+    }
+  },
+  "expect": {
+    "readValue": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "root"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "root",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

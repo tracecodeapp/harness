@@ -129,8 +129,7 @@ function serializeValue(
       }
 
       const isTree = isLikelyTreeNodeValue(value);
-      const nodePrefix = isTree ? 'tree' : 'list';
-      const nodeId = `${nodePrefix}-${nodeRefState.nextId++}`;
+      const nodeId = `node-${nodeRefState.nextId++}`;
       nodeRefState.ids.set(objectValue, nodeId);
 
       const out: Record<string, unknown> = isTree
