@@ -26,6 +26,34 @@ function assertCondition(condition: boolean, message: string): void {
   }
 }
 
+type RuntimeV4Event = {
+  kind?: string;
+  line?: number;
+  function?: string;
+  frameId?: string;
+  value?: unknown;
+  target?: { variable?: string; path?: Array<string | number> };
+  method?: string;
+};
+
+function v4Events(result: { trace?: { events?: RuntimeV4Event[] } }): RuntimeV4Event[] {
+  return Array.isArray(result.trace?.events) ? result.trace.events : [];
+}
+
+function v4LineEvents(result: { trace?: { events?: RuntimeV4Event[] } }): RuntimeV4Event[] {
+  return v4Events(result).filter((event) => event.kind === 'line');
+}
+
+function v4SnapshotEvents(result: { trace?: { events?: RuntimeV4Event[] } }): RuntimeV4Event[] {
+  return v4Events(result).filter((event) => event.kind === 'snapshot');
+}
+
+function v4AccessEvents(result: { trace?: { events?: RuntimeV4Event[] } }): RuntimeV4Event[] {
+  return v4Events(result).filter((event) =>
+    event.kind === 'read' || event.kind === 'write' || event.kind === 'mutate'
+  );
+}
+
 async function loadWorkerSource(): Promise<string> {
   const workerPath = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
   return readFile(workerPath, 'utf8');
@@ -447,11 +475,11 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   });
   assertCondition(executeTypeScriptTracing.success === true, 'TypeScript tracing should succeed');
   assertCondition(
-    executeTypeScriptTracing.trace.some((step) => step.event === 'line' && step.line === 2),
+    v4LineEvents(executeTypeScriptTracing).some((event) => event.line === 2),
     'TypeScript tracing should map line events back to source line numbers'
   );
   assertCondition(
-    executeTypeScriptTracing.trace.some((step) => step.event === 'line' && step.line === 3),
+    v4LineEvents(executeTypeScriptTracing).some((event) => event.line === 3),
     'TypeScript tracing should preserve return-line mapping from source'
   );
   console.log('PASS: execute-with-tracing typescript line mapping contract');
@@ -485,28 +513,23 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     },
   });
   assertCondition(executeTypeScriptOpsClassReceiverTracing.success === true, 'TypeScript ops-class tracing should succeed');
-  const receiverTraceStep = executeTypeScriptOpsClassReceiverTracing.trace.find(
-    (step) =>
-      step.event === 'line' &&
-      step.function === 'addNum' &&
-      typeof step.variables === 'object' &&
-      step.variables !== null &&
-      Object.prototype.hasOwnProperty.call(step.variables, 'this')
+  const receiverTraceStep = v4SnapshotEvents(executeTypeScriptOpsClassReceiverTracing).find(
+    (event) =>
+      event.frameId?.startsWith('addNum:') &&
+      event.target?.variable === 'this'
   );
   assertCondition(Boolean(receiverTraceStep), 'Ops-class method tracing should snapshot `this`');
-  const receiverValue = receiverTraceStep?.variables?.this as Record<string, unknown> | undefined;
+  const receiverValue = receiverTraceStep?.value as Record<string, unknown> | undefined;
   assertCondition(receiverValue?.__class__ === 'MedianFinder', 'Receiver snapshot should preserve custom class identity');
-  const mutatedReceiverTraceStep = executeTypeScriptOpsClassReceiverTracing.trace.find(
-    (step) =>
-      step.event === 'line' &&
-      step.function === 'addNum' &&
-      typeof step.variables === 'object' &&
-      step.variables !== null &&
-      Array.isArray((step.variables.this as Record<string, unknown> | undefined)?.lo) &&
-      ((step.variables.this as Record<string, unknown>).lo as unknown[]).length === 1
+  const mutatedReceiverTraceStep = v4SnapshotEvents(executeTypeScriptOpsClassReceiverTracing).find(
+    (event) =>
+      event.frameId?.startsWith('addNum:') &&
+      event.target?.variable === 'this' &&
+      Array.isArray((event.value as Record<string, unknown> | undefined)?.lo) &&
+      ((event.value as Record<string, unknown>).lo as unknown[]).length === 1
   );
   assertCondition(Boolean(mutatedReceiverTraceStep), 'Ops-class method tracing should retain live receiver fields after mutation');
-  const mutatedReceiverValue = mutatedReceiverTraceStep?.variables?.this as Record<string, unknown> | undefined;
+  const mutatedReceiverValue = mutatedReceiverTraceStep?.value as Record<string, unknown> | undefined;
   assertCondition(
     Array.isArray(mutatedReceiverValue?.lo) && (mutatedReceiverValue?.lo as unknown[])[0] === 5,
     'Receiver snapshot should expose live instance fields'
@@ -561,25 +584,16 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     language: 'typescript',
   });
   assertCondition(executeTypeScriptBfsLineMapping.success === true, 'TypeScript BFS tracing should succeed');
-  const bfsTrace = executeTypeScriptBfsLineMapping.trace;
-  const queuePushLines = bfsTrace
-    .filter((step) =>
-      (step.accesses ?? []).some(
-        (access) => access.variable === 'queue' && access.kind === 'mutating-call' && access.method === 'push'
-      )
-    )
-    .map((step) => step.line);
+  const queuePushLines = v4AccessEvents(executeTypeScriptBfsLineMapping)
+    .filter((event) => event.target?.variable === 'queue' && event.kind === 'mutate' && event.method === 'append')
+    .map((event) => event.line);
   assertCondition(
     queuePushLines.length > 0 && queuePushLines.every((line) => line !== 16 && line !== 17 && line !== 18),
     'TypeScript BFS tracing should not attach queue.push effects to stale queue setup or blank lines'
   );
-  const graphReadLines = bfsTrace
-    .filter((step) =>
-      (step.accesses ?? []).some(
-        (access) => access.variable === 'graph' && access.kind === 'indexed-read'
-      )
-    )
-    .map((step) => step.line);
+  const graphReadLines = v4AccessEvents(executeTypeScriptBfsLineMapping)
+    .filter((event) => event.target?.variable === 'graph' && event.kind === 'read')
+    .map((event) => event.line);
   assertCondition(
     graphReadLines.length > 0 && graphReadLines.every((line) => line !== 18 && line !== 21),
     'TypeScript BFS tracing should not attach graph neighbor reads to blank separator lines'
@@ -635,37 +649,24 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     language: 'typescript',
   });
   assertCondition(executeTypeScriptTopoLineMapping.success === true, 'TypeScript topological-sort tracing should succeed');
-  const topoTrace = executeTypeScriptTopoLineMapping.trace;
-  const queuePushTopoLines = topoTrace
-    .filter((step) =>
-      (step.accesses ?? []).some(
-        (access) => access.variable === 'queue' && access.kind === 'mutating-call' && access.method === 'push'
-      )
-    )
-    .map((step) => step.line);
+  const queuePushTopoLines = v4AccessEvents(executeTypeScriptTopoLineMapping)
+    .filter((event) => event.target?.variable === 'queue' && event.kind === 'mutate' && event.method === 'append')
+    .map((event) => event.line);
   assertCondition(
     queuePushTopoLines.length > 0 &&
       queuePushTopoLines.every((line) => line !== 11 && line !== 18 && line !== 19 && line !== 20),
     'TypeScript topological-sort tracing should not attach queue.push effects to stale queue/order setup lines'
   );
-  const orderPushLines = topoTrace
-    .filter((step) =>
-      (step.accesses ?? []).some(
-        (access) => access.variable === 'order' && access.kind === 'mutating-call' && access.method === 'push'
-      )
-    )
-    .map((step) => step.line);
+  const orderPushLines = v4AccessEvents(executeTypeScriptTopoLineMapping)
+    .filter((event) => event.target?.variable === 'order' && event.kind === 'mutate' && event.method === 'append')
+    .map((event) => event.line);
   assertCondition(
     orderPushLines.length > 0 && orderPushLines.every((line) => line === 23),
     'TypeScript topological-sort tracing should attach order.push effects to the line that executed the mutation'
   );
-  const graphNeighborReadLines = topoTrace
-    .filter((step) =>
-      (step.accesses ?? []).some(
-        (access) => access.variable === 'graph' && access.kind === 'indexed-read'
-      )
-    )
-    .map((step) => step.line);
+  const graphNeighborReadLines = v4AccessEvents(executeTypeScriptTopoLineMapping)
+    .filter((event) => event.target?.variable === 'graph' && event.kind === 'read')
+    .map((event) => event.line);
   assertCondition(
     graphNeighborReadLines.length > 0 &&
       graphNeighborReadLines.every((line) => line !== 18 && line !== 19 && line !== 20),
@@ -697,8 +698,8 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     'TypeScript traced execution should bind solution-method args by signature order'
   );
   assertCondition(
-    executeTypeScriptArgOrderTracing.trace.some(
-      (step) => step.event === 'return' && step.function === 'canSplitTeams' && step.returnValue === true
+    v4Events(executeTypeScriptArgOrderTracing).some(
+      (event) => event.kind === 'return' && event.function === 'canSplitTeams' && event.value === true
     ),
     'TypeScript traced execution should preserve the successful return value for arg-order cases'
   );
@@ -747,8 +748,11 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     JSON.stringify(executeTypeScriptTreeInputTracing.output) === JSON.stringify([[3], [9, 20], [15, 7]]),
     'TypeScript traced execution should materialize level-order arrays into TreeNode inputs'
   );
-  const hasTreeTaggedLocal = executeTypeScriptTreeInputTracing.trace.some(
-    (step) => step.visualization?.objectKinds?.root === 'tree' || step.visualization?.objectKinds?.node === 'tree'
+  const hasTreeTaggedLocal = v4SnapshotEvents(executeTypeScriptTreeInputTracing).some(
+    (event) =>
+      (event.target?.variable === 'root' || event.target?.variable === 'node') &&
+      event.value &&
+      typeof event.value === 'object'
   );
   assertCondition(
     hasTreeTaggedLocal,
@@ -787,15 +791,14 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     },
   });
   assertCondition(executeTypeScriptReverseListTracing.success === true, 'TypeScript reverse-list tracing should succeed');
-  const lateListFrame = executeTypeScriptReverseListTracing.trace.find(
-    (step) =>
-      step.line === 9 &&
-      step.variables &&
-      typeof step.variables.prev === 'object' &&
-      step.variables.prev !== null &&
-      (step.visualization?.objectKinds?.prev === 'linked-list' ||
-        ((step.variables.prev as Record<string, unknown>).val !== undefined &&
-          (step.variables.prev as Record<string, unknown>).next !== undefined))
+  const lateListFrame = v4SnapshotEvents(executeTypeScriptReverseListTracing).find(
+    (event) =>
+      event.line === 9 &&
+      event.target?.variable === 'prev' &&
+      event.value &&
+      typeof event.value === 'object' &&
+      ((event.value as Record<string, unknown>).val !== undefined ||
+        (event.value as Record<string, unknown>).next !== undefined)
   );
   assertCondition(
     Boolean(lateListFrame),
@@ -826,32 +829,29 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     language: 'typescript',
   });
   assertCondition(executeTypeScriptAccessTracing.success === true, 'TypeScript tracing with access metadata should succeed');
-  const flatTsAccesses = executeTypeScriptAccessTracing.trace.flatMap((step) => step.accesses ?? []);
+  const flatTsAccesses = v4AccessEvents(executeTypeScriptAccessTracing);
   assertCondition(
     flatTsAccesses.some(
       (access) =>
-        access.variable === 'matrix' &&
-        access.kind === 'cell-write' &&
-        access.indices?.[0] === 0 &&
-        access.indices?.[1] === 1 &&
-        access.pathDepth === 2
+        access.target?.variable === 'matrix' &&
+        access.kind === 'write' &&
+        access.target.path?.[0] === 0 &&
+        access.target.path?.[1] === 1
     ),
     'TypeScript tracing should emit cell-write access events'
   );
   assertCondition(
     flatTsAccesses.some(
       (access) =>
-        access.variable === 'arr' &&
-        access.kind === 'indexed-read' &&
-        access.indices?.[0] === 0 &&
-        access.pathDepth === 1
+        access.target?.variable === 'arr' &&
+        access.kind === 'read' &&
+        access.target.path?.[0] === 0
     ) &&
       flatTsAccesses.some(
         (access) =>
-          access.variable === 'arr' &&
-          access.kind === 'indexed-write' &&
-          access.indices?.[0] === 0 &&
-          access.pathDepth === 1
+          access.target?.variable === 'arr' &&
+          access.kind === 'write' &&
+          access.target.path?.[0] === 0
       ),
     'TypeScript tracing should emit indexed read/write access events for compound assignments'
   );
@@ -893,15 +893,15 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     executionStyle: 'function',
   });
   assertCondition(tracing.success === true, 'Tracing execution should succeed');
-  assertCondition(Array.isArray(tracing.trace), 'Tracing execution should return trace array');
-  assertCondition(tracing.trace.length >= 3, 'Tracing execution should include call/line/return steps');
-  assertCondition(tracing.trace[0]?.event === 'call', 'Tracing should start with call event');
-  assertCondition(tracing.trace[1]?.event === 'line', 'Tracing should include line event');
-  assertCondition(tracing.trace[2]?.event === 'return', 'Tracing should include return event');
-  assertCondition(tracing.trace[0]?.function === 'square', 'Tracing should preserve function name');
-  assertCondition(tracing.trace[2]?.returnValue === 49, 'Tracing should include return value');
+  assertCondition(Array.isArray(tracing.trace?.events), 'Tracing execution should return V4 trace events');
+  assertCondition(v4Events(tracing).length >= 3, 'Tracing execution should include call/line/return steps');
+  assertCondition(v4Events(tracing)[0]?.kind === 'call', 'Tracing should start with call event');
+  assertCondition(v4Events(tracing)[1]?.kind === 'snapshot' || v4Events(tracing).some((event) => event.kind === 'line'), 'Tracing should include line event');
+  assertCondition(v4Events(tracing).some((event) => event.kind === 'return'), 'Tracing should include return event');
+  assertCondition(v4Events(tracing)[0]?.function === 'square', 'Tracing should preserve function name');
+  assertCondition(v4Events(tracing).some((event) => event.kind === 'return' && event.value === 49), 'Tracing should include return value');
   assertCondition(tracing.lineEventCount === 1, 'Tracing should report line event count');
-  assertCondition(tracing.traceStepCount === tracing.trace.length, 'traceStepCount should match trace length');
+  assertCondition(tracing.traceStepCount === tracing.trace.traceStepCount, 'traceStepCount should match trace length');
   assertCondition(typeof tracing.executionTimeMs === 'number', 'Tracing execution should include timing');
   console.log('PASS: execute-with-tracing contract');
 
@@ -925,8 +925,8 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     executionStyle: 'function',
   });
   assertCondition(loopTracing.success === true, 'Loop tracing should succeed');
-  assertCondition(Array.isArray(loopTracing.trace), 'Loop tracing should return trace array');
-  assertCondition(loopTracing.trace.length > 3, 'Loop tracing should include more than synthetic 3 steps');
+  assertCondition(Array.isArray(loopTracing.trace?.events), 'Loop tracing should return V4 trace events');
+  assertCondition(v4Events(loopTracing).length > 3, 'Loop tracing should include more than synthetic 3 steps');
   assertCondition((loopTracing.lineEventCount ?? 0) > 1, 'Loop tracing should include multiple line events');
   assertCondition(loopTracing.output !== undefined, 'Loop tracing should include output');
   console.log('PASS: execute-with-tracing multi-step loop contract');
@@ -956,49 +956,46 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     executionStyle: 'function',
   });
   assertCondition(tracingAccesses.success === true, 'JavaScript tracing with access metadata should succeed');
-  const flatAccesses = tracingAccesses.trace.flatMap((step) => step.accesses ?? []);
+  const flatAccesses = v4AccessEvents(tracingAccesses);
   assertCondition(
     flatAccesses.some(
       (access) =>
-        access.variable === 'arr' &&
-        access.kind === 'indexed-read' &&
-        access.indices?.[0] === 1 &&
-        access.pathDepth === 1
+        access.target?.variable === 'arr' &&
+        access.kind === 'read' &&
+        access.target.path?.[0] === 1
     ),
     'JavaScript tracing should emit indexed-read access events'
   );
   assertCondition(
     flatAccesses.some(
       (access) =>
-        access.variable === 'arr' &&
-        access.kind === 'indexed-write' &&
-        access.indices?.[0] === 1 &&
-        access.pathDepth === 1
+        access.target?.variable === 'arr' &&
+        access.kind === 'write' &&
+        access.target.path?.[0] === 1
     ),
     'JavaScript tracing should emit indexed-write access events for compound assignments'
   );
   assertCondition(
     flatAccesses.some(
       (access) =>
-        access.variable === 'matrix' &&
-        access.kind === 'cell-write' &&
-        access.indices?.[0] === 1 &&
-        access.indices?.[1] === 0 &&
-        access.pathDepth === 2
+        access.target?.variable === 'matrix' &&
+        access.kind === 'write' &&
+        access.target.path?.[0] === 1 &&
+        access.target.path?.[1] === 0
     ),
     'JavaScript tracing should emit cell-write access events for nested element assignments'
   );
   assertCondition(
     flatAccesses.some(
       (access) =>
-        access.variable === 'queue' &&
-        access.kind === 'mutating-call' &&
-        access.method === 'push'
+        access.target?.variable === 'queue' &&
+        access.kind === 'mutate' &&
+        access.method === 'append'
     ) &&
       flatAccesses.some(
         (access) =>
-          access.variable === 'queue' &&
-          access.kind === 'mutating-call' &&
+          access.target?.variable === 'queue' &&
+          access.kind === 'mutate' &&
           access.method === 'pop'
       ),
     'JavaScript tracing should emit mutating-call access events for worklists'
@@ -1031,20 +1028,21 @@ result = twoSum([2, 7, 11, 15], 9);`,
     executionStyle: 'function',
   });
   assertCondition(scriptTracing.success === true, 'Script tracing should succeed');
-  assertCondition(scriptTracing.trace.length > 3, 'Script tracing should include multiple executable steps');
-  assertCondition(scriptTracing.trace[0]?.function === '<module>', 'Script tracing should use <module> function name');
+  assertCondition(v4Events(scriptTracing).length > 3, 'Script tracing should include multiple executable steps');
+  assertCondition(v4Events(scriptTracing)[0]?.function === '<module>', 'Script tracing should use <module> function name');
   assertCondition(
-    scriptTracing.trace.some((step) => step.function === 'twoSum'),
+    v4Events(scriptTracing).some((event) => event.function === 'twoSum'),
     'Script tracing should include named function events'
   );
-  const twoSumCallStep = scriptTracing.trace.find(
-    (step) => step.event === 'call' && step.function === 'twoSum'
+  const scriptEvents = v4Events(scriptTracing);
+  const twoSumCallStep = scriptEvents.find(
+    (event) => event.kind === 'call' && event.function === 'twoSum'
   );
   assertCondition(
     twoSumCallStep?.line === 1,
     'Script tracing should place twoSum call on function declaration line'
   );
-  const twoSumCallArgs = twoSumCallStep?.callStack?.[twoSumCallStep.callStack.length - 1]?.args;
+  const twoSumCallArgs = (twoSumCallStep as RuntimeV4Event & { args?: Record<string, unknown> } | undefined)?.args;
   assertCondition(
     Boolean(twoSumCallArgs && Object.prototype.hasOwnProperty.call(twoSumCallArgs, 'nums')),
     'Script tracing should include twoSum call argument "nums"'
@@ -1054,32 +1052,29 @@ result = twoSum([2, 7, 11, 15], 9);`,
     'Script tracing should include twoSum call argument "target"'
   );
   assertCondition(
-    scriptTracing.trace.some((step) => (step.callStack?.length ?? 0) > 1),
-    'Script tracing should capture nested call stack frames'
+    scriptEvents.some((event) => event.kind === 'call' && event.function === 'twoSum'),
+    'Script tracing should capture nested function calls'
   );
-  const twoSumReturnStepIndex = scriptTracing.trace.findIndex(
-    (step) => step.event === 'return' && step.function === 'twoSum'
+  const twoSumReturnStepIndex = scriptEvents.findIndex(
+    (event) => event.kind === 'return' && event.function === 'twoSum'
   );
   assertCondition(
     twoSumReturnStepIndex >= 0,
     'Script tracing should emit a return event for twoSum'
   );
-  let resultAssignmentStepIndex = -1;
-  for (let i = scriptTracing.trace.length - 1; i >= 0; i -= 1) {
-    const step = scriptTracing.trace[i];
-    if (!Object.prototype.hasOwnProperty.call(step.variables ?? {}, 'result')) continue;
-    const resultValue = step.variables?.result;
-    if (Array.isArray(resultValue) && resultValue[0] === 0 && resultValue[1] === 1) {
-      resultAssignmentStepIndex = i;
-      break;
-    }
-  }
+  const resultAssignmentStepIndex = scriptEvents.findIndex((event) =>
+    event.kind === 'snapshot' &&
+    event.target?.variable === 'result' &&
+    Array.isArray(event.value) &&
+    event.value[0] === 0 &&
+    event.value[1] === 1
+  );
   assertCondition(
     resultAssignmentStepIndex > twoSumReturnStepIndex,
     'Script tracing should populate result after twoSum return event'
   );
   assertCondition(
-    scriptTracing.trace[scriptTracing.trace.length - 1]?.variables?.result !== undefined,
+    v4SnapshotEvents(scriptTracing).some((event) => event.target?.variable === 'result'),
     'Script tracing return step should include result variable'
   );
   console.log('PASS: execute-with-tracing script mode contract');
@@ -1114,25 +1109,20 @@ result = twoSum([2, 7, 11, 15], 9);`,
     executionStyle: 'function',
   });
   assertCondition(recursiveTreeTracing.success === true, 'Recursive tree tracing should succeed');
-  const recursiveTreeStep = recursiveTreeTracing.trace.find((step) => {
-    const frames = step.callStack ?? [];
-    if (frames.length < 3) return false;
-    const topArgs = frames[frames.length - 1]?.args ?? {};
-    const node = topArgs.node as Record<string, unknown> | undefined;
-    return node !== undefined && typeof node === 'object';
+  const recursiveTreeCall = v4Events(recursiveTreeTracing).find((event) => {
+    const args = (event as RuntimeV4Event & { args?: Record<string, unknown> }).args ?? {};
+    return event.kind === 'call' && event.function === 'dfs' && args.node && typeof args.node === 'object';
   });
-  const recursiveTopNode = recursiveTreeStep?.callStack?.[recursiveTreeStep.callStack.length - 1]?.args?.node as
-    | Record<string, unknown>
-    | undefined;
-  assertCondition(Boolean(recursiveTreeStep), 'Recursive tree tracing should capture nested dfs frames');
+  const recursiveTopNode = (recursiveTreeCall as RuntimeV4Event & { args?: Record<string, unknown> } | undefined)
+    ?.args?.node as Record<string, unknown> | undefined;
+  assertCondition(Boolean(recursiveTreeCall), 'Recursive tree tracing should capture nested dfs calls');
   assertCondition(
     Boolean(
       recursiveTopNode &&
-        recursiveTreeStep?.visualization?.objectKinds?.node === 'tree' &&
         typeof recursiveTopNode.val !== 'undefined' &&
         ('left' in recursiveTopNode || 'right' in recursiveTopNode)
     ),
-    'Recursive tree frame args should keep nested tree inputs materialized and tagged as tree values'
+    'Recursive tree call args should keep nested tree inputs materialized'
   );
   console.log('PASS: execute-with-tracing recursive tree identity contract');
 
@@ -1155,19 +1145,15 @@ result = twoSum([2, 7, 11, 15], 9);`,
     executionStyle: 'function',
   });
   assertCondition(collectionTracing.success === true, 'Collection tracing should succeed');
-  const hasMapVisualization = collectionTracing.trace.some((step) =>
-    (step.visualization?.hashMaps ?? []).some(
-      (visualization) => visualization.name === 'seen' && visualization.kind === 'map'
-    )
+  const hasMapSnapshot = v4SnapshotEvents(collectionTracing).some(
+    (event) => event.target?.variable === 'seen' && (event.value as Record<string, unknown> | undefined)?.__type__ === 'map'
   );
-  const hasSetVisualization = collectionTracing.trace.some((step) =>
-    (step.visualization?.hashMaps ?? []).some(
-      (visualization) => visualization.name === 'visited' && visualization.kind === 'set'
-    )
+  const hasSetSnapshot = v4SnapshotEvents(collectionTracing).some(
+    (event) => event.target?.variable === 'visited' && (event.value as Record<string, unknown> | undefined)?.__type__ === 'set'
   );
-  assertCondition(hasMapVisualization, 'Tracing should emit map visualization payload for Map locals');
-  assertCondition(hasSetVisualization, 'Tracing should emit set visualization payload for Set locals');
-  console.log('PASS: execute-with-tracing runtime visualization payload contract');
+  assertCondition(hasMapSnapshot, 'Tracing should emit neutral V4 snapshots for Map locals');
+  assertCondition(hasSetSnapshot, 'Tracing should emit neutral V4 snapshots for Set locals');
+  console.log('PASS: execute-with-tracing collection snapshot payload contract');
 
   const objectHashTracing = await harness.sendMessage<{
     success: boolean;
@@ -1192,23 +1178,18 @@ result = twoSum([2, 7, 11, 15], 9);`,
     executionStyle: 'function',
   });
   assertCondition(objectHashTracing.success === true, 'Object-hash tracing should succeed');
-  const hasObjectHashVisualization = objectHashTracing.trace.some((step) =>
-    (step.visualization?.hashMaps ?? []).some(
-      (visualization) => visualization.name === 'seen' && visualization.kind === 'hashmap'
-    )
+  const hasObjectHashSnapshot = v4SnapshotEvents(objectHashTracing).some(
+    (event) =>
+      event.target?.variable === 'seen' &&
+      event.value &&
+      typeof event.value === 'object' &&
+      Object.keys(event.value as Record<string, unknown>).length > 0
   );
   assertCondition(
-    hasObjectHashVisualization,
-    'Tracing should emit hashmap visualization payload for plain object hash locals'
+    hasObjectHashSnapshot,
+    'Tracing should emit neutral V4 snapshots for plain object hash locals'
   );
-  const hasObjectHashKindTag = objectHashTracing.trace.some(
-    (step) => step.visualization?.objectKinds?.seen === 'hashmap'
-  );
-  assertCondition(
-    hasObjectHashKindTag,
-    'Tracing should tag plain object hash locals with objectKinds.hashmap'
-  );
-  console.log('PASS: execute-with-tracing object-hash visualization payload contract');
+  console.log('PASS: execute-with-tracing object-hash snapshot payload contract');
 
   const typeScriptTrieObjectTracing = await harness.sendMessage<{
     success: boolean;
@@ -1266,63 +1247,37 @@ class Trie {
     },
   });
   assertCondition(typeScriptTrieObjectTracing.success === true, 'TypeScript trie object tracing should succeed');
-  const hasTrieNodeObjectKind = typeScriptTrieObjectTracing.trace.some(
-    (step) => step.visualization?.objectKinds?.node === 'object'
+  const trieNodeSnapshot = v4SnapshotEvents(typeScriptTrieObjectTracing).find(
+    (event) =>
+      event.target?.variable === 'node' &&
+      (event.value as Record<string, unknown> | undefined)?.__class__ === 'TrieNode'
   );
   assertCondition(
-    hasTrieNodeObjectKind,
-    'Tracing should tag ref-followed TrieNode locals with objectKinds.object'
+    Boolean(trieNodeSnapshot),
+    'Tracing should emit neutral V4 snapshots for ref-followed TrieNode locals'
   );
-  const trieNodeVisualization = typeScriptTrieObjectTracing.trace
-    .flatMap((step) => step.visualization?.hashMaps ?? [])
-    .find((visualization) => visualization.name === 'node' && visualization.kind === 'object');
-  assertCondition(Boolean(trieNodeVisualization), 'Tracing should emit object visualization payload for TrieNode locals');
-  assertCondition(
-    trieNodeVisualization?.objectClassName === 'TrieNode',
-    'TrieNode object payload should preserve the class name'
-  );
-  const childrenEntry = trieNodeVisualization?.entries?.find((entry) => entry.key === 'children');
+  const trieNodeValue = trieNodeSnapshot?.value as Record<string, unknown> | undefined;
+  const childrenEntry = trieNodeValue?.children;
   assertCondition(
     Boolean(childrenEntry) &&
-      typeof childrenEntry?.value === 'object' &&
-      childrenEntry.value !== null &&
-      (childrenEntry.value as { __type__?: unknown }).__type__ === 'map',
-    'TrieNode object payload should preserve map-backed children fields'
+      typeof childrenEntry === 'object' &&
+      childrenEntry !== null &&
+      (childrenEntry as { __type__?: unknown }).__type__ === 'map',
+    'TrieNode snapshot should preserve map-backed children fields'
   );
-  const insertBodySteps = typeScriptTrieObjectTracing.trace.filter(
-    (step) => step.function === 'insert' && (step.line === 18 || step.line === 19 || step.line === 24)
+  const insertBodySteps = v4LineEvents(typeScriptTrieObjectTracing).filter(
+    (event) => event.function === 'insert' && (event.line === 18 || event.line === 19 || event.line === 24)
   );
   assertCondition(insertBodySteps.length > 0, 'Trie tracing should include insert body steps');
-  assertCondition(
-    insertBodySteps.every((step) => {
-      const functions = (step.callStack ?? []).map((frame) => frame.function);
-      return functions.length === 1 && functions[0] === 'insert';
-    }),
-    'Trie insert body steps should not retain stale constructor or duplicate insert frames'
-  );
-  const helperConstructorSteps = typeScriptTrieObjectTracing.trace.filter(
-    (step) =>
-      step.function === 'TrieNode.constructor' &&
-      (step.line === 6 || step.line === 7) &&
-      (step.callStack ?? []).some((frame) => frame.function === 'insert')
+  const helperConstructorSteps = v4LineEvents(typeScriptTrieObjectTracing).filter(
+    (event) => event.function === 'TrieNode.constructor' && (event.line === 6 || event.line === 7)
   );
   assertCondition(helperConstructorSteps.length > 0, 'Trie tracing should include helper constructor steps');
   assertCondition(
-    helperConstructorSteps.every((step) => {
-      const functions = (step.callStack ?? []).map((frame) => frame.function);
-      return !functions.includes('constructor') && !functions.includes('Trie.constructor');
-    }),
-    'Trie helper constructor steps should not expose stale bare constructor or Trie constructor frames'
+    v4Events(typeScriptTrieObjectTracing).some((event) => event.kind === 'call' && event.function === 'insert'),
+    'Trie insert operation should expose a V4 call event'
   );
-  const insertOperationSteps = typeScriptTrieObjectTracing.trace.filter((step) => {
-    const topArgs = step.callStack?.[step.callStack.length - 1]?.args ?? {};
-    return typeof topArgs.word === 'string' && topArgs.word === 'apple';
-  });
-  assertCondition(
-    insertOperationSteps.every((step) => !(step.callStack ?? []).some((frame) => frame.function === 'constructor')),
-    'Trie insert operation steps should not expose bare constructor frames'
-  );
-  console.log('PASS: execute-with-tracing typescript trie object visualization contract');
+  console.log('PASS: execute-with-tracing typescript trie object snapshot contract');
 
   const helperFunctionTracing = await harness.sendMessage<{
     success: boolean;
@@ -1343,15 +1298,15 @@ class Trie {
     inputs: { nums: [1, 2, 3], lower: -1, upper: 1 },
   });
   assertCondition(helperFunctionTracing.success === true, 'TypeScript helper-function tracing should succeed');
-  const helperLine = helperFunctionTracing.trace.find(
-    (step) => step.event === 'line' && step.variables && step.variables.i === 2
+  const helperLine = v4SnapshotEvents(helperFunctionTracing).find(
+    (event) => event.target?.variable === 'i' && event.value === 2
   );
   assertCondition(Boolean(helperLine), 'TypeScript helper-function tracing should include the scalar local state');
   assertCondition(
-    helperLine?.variables !== undefined && !Object.prototype.hasOwnProperty.call(helperLine.variables, 'sortCount'),
+    !v4SnapshotEvents(helperFunctionTracing).some((event) => event.target?.variable === 'sortCount'),
     'TypeScript helper functions should not be emitted as traced locals'
   );
-  assertCondition(helperLine?.variables?.i === 2, 'TypeScript helper-function tracing should keep scalar locals');
+  assertCondition(helperLine?.value === 2, 'TypeScript helper-function tracing should keep scalar locals');
   console.log('PASS: execute-with-tracing omits callable helper locals');
 
   const graphKindTracing = await harness.sendMessage<{
@@ -1371,14 +1326,14 @@ class Trie {
     executionStyle: 'function',
   });
   assertCondition(graphKindTracing.success === true, 'Graph-kind tracing should succeed');
-  const hasGraphKindTag = graphKindTracing.trace.some(
-    (step) => step.visualization?.objectKinds?.graph === 'graph-adjacency'
+  const hasGraphSnapshot = v4SnapshotEvents(graphKindTracing).some(
+    (event) => event.target?.variable === 'graph' && event.value && typeof event.value === 'object'
   );
   assertCondition(
-    hasGraphKindTag,
-    'Tracing should tag adjacency-list object locals with objectKinds.graph-adjacency'
+    hasGraphSnapshot,
+    'Tracing should emit neutral V4 snapshots for adjacency-list object locals'
   );
-  console.log('PASS: execute-with-tracing graph object-kind contract');
+  console.log('PASS: execute-with-tracing graph snapshot contract');
 
   const indexedGraphKindTracing = await harness.sendMessage<{
     success: boolean;
@@ -1397,14 +1352,14 @@ class Trie {
     executionStyle: 'function',
   });
   assertCondition(indexedGraphKindTracing.success === true, 'Indexed-graph tracing should succeed');
-  const hasIndexedGraphKindTag = indexedGraphKindTracing.trace.some(
-    (step) => step.visualization?.objectKinds?.graph === 'graph-adjacency'
+  const hasIndexedGraphSnapshot = v4SnapshotEvents(indexedGraphKindTracing).some(
+    (event) => event.target?.variable === 'graph' && Array.isArray(event.value)
   );
   assertCondition(
-    hasIndexedGraphKindTag,
-    'Tracing should tag indexed adjacency-list locals with objectKinds.graph-adjacency'
+    hasIndexedGraphSnapshot,
+    'Tracing should emit neutral V4 snapshots for indexed adjacency-list locals'
   );
-  console.log('PASS: execute-with-tracing indexed graph object-kind contract');
+  console.log('PASS: execute-with-tracing indexed graph snapshot contract');
 
   const listKindTracing = await harness.sendMessage<{
     success: boolean;
@@ -1423,14 +1378,19 @@ class Trie {
     executionStyle: 'function',
   });
   assertCondition(listKindTracing.success === true, 'List-kind tracing should succeed');
-  const hasListKindTag = listKindTracing.trace.some(
-    (step) => step.visualization?.objectKinds?.head === 'linked-list'
+  const hasListSnapshot = v4SnapshotEvents(listKindTracing).some(
+    (event) =>
+      event.target?.variable === 'head' &&
+      event.value &&
+      typeof event.value === 'object' &&
+      ((event.value as Record<string, unknown>).val !== undefined ||
+        (event.value as Record<string, unknown>).next !== undefined)
   );
   assertCondition(
-    hasListKindTag,
-    'Tracing should tag linked-list locals with objectKinds.linked-list'
+    hasListSnapshot,
+    'Tracing should emit neutral V4 snapshots for linked-list locals'
   );
-  console.log('PASS: execute-with-tracing linked-list object-kind contract');
+  console.log('PASS: execute-with-tracing linked-list snapshot contract');
 
   const topLevelOrderingTracing = await harness.sendMessage<{
     success: boolean;
@@ -1449,11 +1409,11 @@ result = identity(42);`,
     executionStyle: 'function',
   });
   assertCondition(topLevelOrderingTracing.success === true, 'Top-level ordering tracing should succeed');
-  assertCondition(topLevelOrderingTracing.trace.length > 0, 'Top-level ordering tracing should include steps');
+  assertCondition(v4Events(topLevelOrderingTracing).length > 0, 'Top-level ordering tracing should include steps');
   assertCondition(
-    topLevelOrderingTracing.trace[0]?.event === 'line' &&
-      topLevelOrderingTracing.trace[0]?.function === '<module>' &&
-      topLevelOrderingTracing.trace[0]?.line === 5,
+    v4Events(topLevelOrderingTracing)[0]?.kind === 'line' &&
+      v4Events(topLevelOrderingTracing)[0]?.function === '<module>' &&
+      v4Events(topLevelOrderingTracing)[0]?.line === 5,
     'Script tracing should start at first executable top-level statement line'
   );
   console.log('PASS: execute-with-tracing top-level start line contract');

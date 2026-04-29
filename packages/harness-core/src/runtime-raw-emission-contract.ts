@@ -1,5 +1,6 @@
 import type { Language } from './runtime-types';
 import type { RawTraceStep, RuntimeTraceAccessEvent } from './types';
+import type { RuntimeV4Trace } from './trace-v4';
 
 export type RuntimeRawEmissionKind =
   | 'line'
@@ -97,6 +98,27 @@ export function summarizeRawTraceEmissions(language: Language, trace: RawTraceSt
 
   return {
     language,
+    kinds: sortedUnique(kinds),
+    unsupported: [],
+  };
+}
+
+export function summarizeRuntimeV4Emissions(trace: RuntimeV4Trace): RuntimeRawEmissionSummary {
+  const kinds: RuntimeRawEmissionKind[] = [];
+  for (const event of trace.events) {
+    if (event.kind === 'line') kinds.push('line');
+    if (event.kind === 'call') kinds.push('call');
+    if (event.kind === 'return') kinds.push('return');
+    if (event.kind === 'exception') kinds.push('exception');
+    if (event.kind === 'stdout') kinds.push('stdout');
+    if (event.kind === 'snapshot') kinds.push('snapshot');
+    if (event.kind === 'read') kinds.push('read');
+    if (event.kind === 'write') kinds.push('write');
+    if (event.kind === 'mutate') kinds.push('mutate');
+    if (JSON.stringify(event).includes('visualization')) kinds.push('legacy-visualization-state');
+  }
+  return {
+    language: trace.language,
     kinds: sortedUnique(kinds),
     unsupported: [],
   };

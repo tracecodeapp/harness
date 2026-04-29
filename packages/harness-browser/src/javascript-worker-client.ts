@@ -1,4 +1,4 @@
-import type { CodeExecutionResult, LegacyTraceExecutionResult } from '../../harness-core/src/types';
+import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 
 type MessageId = string;
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -260,11 +260,11 @@ export class JavaScriptWorkerClient {
     },
     executionStyle: JavaScriptExecutionStyle = 'function',
     language: JavaScriptWorkerLanguage = 'javascript'
-  ): Promise<LegacyTraceExecutionResult> {
+  ): Promise<ExecutionResult> {
     await this.init();
     return this.executeWithTimeout(
       () =>
-        this.sendMessage<LegacyTraceExecutionResult>(
+        this.sendMessage<ExecutionResult>(
           'execute-with-tracing',
           {
             code,

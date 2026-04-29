@@ -9,7 +9,6 @@ import type {
   TraceExecutionOptions,
 } from '../../harness-core/src/runtime-types';
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { adaptJavaScriptTraceExecutionResult } from '../../harness-core/src/trace-adapters/javascript';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 
@@ -35,7 +34,7 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    const rawResult = await this.workerClient.executeWithTracing(
+    return this.workerClient.executeWithTracing(
       code,
       functionName,
       inputs,
@@ -43,7 +42,6 @@ class JavaScriptRuntimeClient implements RuntimeClient {
       executionStyle as JavaScriptExecutionStyle,
       this.runtimeLanguage
     );
-    return adaptJavaScriptTraceExecutionResult(this.runtimeLanguage, rawResult);
   }
 
   async executeCode(

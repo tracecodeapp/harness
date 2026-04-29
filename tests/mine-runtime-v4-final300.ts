@@ -10,7 +10,7 @@ import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
 import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
 import type { JavaWorkerClient, JavaWorkerTraceResult } from '../packages/harness-browser/src/java-worker-client';
-import type { LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
+import type { ExecutionResult, LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
 import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
 import {
   runtimeTraceContractToV4Events,
@@ -339,7 +339,7 @@ async function executeJavaScriptTrace(
   const harness = createJavaScriptWorkerHarness(workerSource);
   const init = await harness.sendMessage<{ success: boolean }>('init');
   if (init.success !== true) throw new Error(`${entry.language} worker init failed`);
-  const result = await harness.sendMessage<LegacyTraceExecutionResult>('execute-with-tracing', {
+  const result = await harness.sendMessage<ExecutionResult>('execute-with-tracing', {
     code,
     functionName: entry.functionName,
     inputs: entry.inputs,
@@ -348,10 +348,7 @@ async function executeJavaScriptTrace(
     options: { maxTraceSteps, maxLineEvents },
   });
   if (!result.success) throw new Error(`${entry.language} tracing failed: ${result.error ?? 'unknown error'}`);
-  const trace = runtimeTraceContractToV4Events(
-    normalizeRuntimeTraceContract(entry.language, result),
-    { runId: `mine:${entry.slug}:${entry.language}`, file: entry.source.path }
-  );
+  const trace = result.trace;
   return { language: entry.language, output: result.output, trace, signature: buildMineSignature(trace) };
 }
 

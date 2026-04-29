@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
-import type { LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
+import type { ExecutionResult, LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
 import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
 import {
   runtimeTraceContractToV4Events,
@@ -20,10 +20,9 @@ import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeRawTraceEmissions,
+  summarizeRuntimeV4Emissions,
   type RuntimeRawEmissionSummary,
 } from '../packages/harness-core/src/runtime-raw-emission-contract';
-import { createJavaScriptRuntimeClient } from '../packages/harness-browser/src/javascript-runtime-client';
-import type { JavaScriptWorkerClient } from '../packages/harness-browser/src/javascript-worker-client';
 import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
 import type { JavaWorkerClient, JavaWorkerTraceResult } from '../packages/harness-browser/src/java-worker-client';
 import { buildJavaExecutionResult } from '../packages/harness-core/src/trace-adapters/java';
@@ -353,7 +352,7 @@ async function executeJavaScriptTrace(
   const init = await harness.sendMessage<{ success: boolean }>('init');
   assertCondition(init.success === true, `${language} worker init failed`);
 
-  const rawResult = await harness.sendMessage<LegacyTraceExecutionResult>('execute-with-tracing', {
+  const result = await harness.sendMessage<ExecutionResult>('execute-with-tracing', {
     code,
     functionName: fixture.functionName,
     inputs: fixture.inputs,
@@ -361,26 +360,15 @@ async function executeJavaScriptTrace(
     language,
     options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
   });
-  assertCondition(rawResult.success === true, `${language} tracing failed: ${rawResult.error ?? 'unknown error'}`);
-  const runtimeClient = createJavaScriptRuntimeClient(language, {
-    init: async () => init,
-    executeWithTracing: async () => rawResult,
-  } as unknown as JavaScriptWorkerClient);
-  const publicResult = await runtimeClient.executeWithTracing(
-    code,
-    fixture.functionName,
-    fixture.inputs,
-    { maxTraceSteps: 1000, maxLineEvents: 2000 },
-    fixture.executionStyle
-  );
-  const rawSummary = summarizeRawTraceEmissions(language, rawResult.trace);
+  assertCondition(result.success === true, `${language} tracing failed: ${result.error ?? 'unknown error'}`);
+  const rawSummary = summarizeRuntimeV4Emissions(result.trace);
   assertSupportedRawEmissions(rawSummary, `${fixture.id}:${language}`);
   assertCondition(
-    Array.isArray((publicResult.trace as unknown as { events?: unknown[] }).events),
-    `${fixture.id}:${language} public trace must be native V4`
+    Array.isArray((result.trace as unknown as { events?: unknown[] }).events),
+    `${fixture.id}:${language} worker trace must be native V4`
   );
   return {
-    trace: publicResult.trace,
+    trace: result.trace,
     rawSummary,
   };
 }

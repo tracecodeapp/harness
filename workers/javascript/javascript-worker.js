@@ -1711,6 +1711,176 @@ function createSyntheticTrace(payload, codeResult) {
   ];
 }
 
+const RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION = 'v4-draft-2026-04-28';
+
+const V4_MUTATION_METHOD_ALIASES = {
+  add: 'append',
+  append: 'append',
+  push: 'append',
+  put: 'set',
+  set: 'set',
+};
+
+function legacyFrameIdForStep(step) {
+  const stack = Array.isArray(step?.callStack) ? step.callStack : [];
+  if (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    return `${frame.function}:${frame.line}`;
+  }
+  return `${step.function}:${step.line}`;
+}
+
+function legacyAccessTarget(access) {
+  const indices = Array.isArray(access?.indices) ? access.indices : [];
+  if (indices.length > 0) {
+    return { variable: access.variable, path: indices };
+  }
+  return { variable: access.variable };
+}
+
+function legacyAccessKindToV4Kind(access) {
+  if (access.kind === 'indexed-read' || access.kind === 'cell-read') return 'read';
+  if (access.kind === 'indexed-write' || access.kind === 'cell-write') return 'write';
+  return 'mutate';
+}
+
+function valueAtPath(value, path) {
+  if (!Array.isArray(path) || path.length === 0) return value;
+  let current = value;
+  for (const part of path) {
+    if (current === null || current === undefined || typeof current !== 'object') return undefined;
+    current = current[String(part)];
+  }
+  return current;
+}
+
+function legacyAccessValue(step, access) {
+  return valueAtPath(step?.variables?.[access.variable], access.indices);
+}
+
+function normalizeV4MutationMethod(method) {
+  if (!method) return undefined;
+  return V4_MUTATION_METHOD_ALIASES[method] ?? method;
+}
+
+function collapseLegacyAccessNoiseForV4(steps) {
+  const variablesWithCellAccess = new Set();
+  const accessStatsByVariable = new Map();
+  for (const step of Array.isArray(steps) ? steps : []) {
+    for (const access of step.accesses ?? []) {
+      const stats = accessStatsByVariable.get(access.variable) ?? {
+        hasCellRead: false,
+        hasCellWrite: false,
+        hasMutatingCall: false,
+        hasIndexedWrite: false,
+      };
+      if (access.kind === 'cell-read' || access.kind === 'cell-write') {
+        variablesWithCellAccess.add(access.variable);
+      }
+      if (access.kind === 'cell-read') stats.hasCellRead = true;
+      if (access.kind === 'cell-write') stats.hasCellWrite = true;
+      if (access.kind === 'mutating-call') stats.hasMutatingCall = true;
+      if (access.kind === 'indexed-write') stats.hasIndexedWrite = true;
+      accessStatsByVariable.set(access.variable, stats);
+    }
+  }
+  if (variablesWithCellAccess.size === 0) return steps;
+
+  return steps.map((step) => {
+    if (!step.accesses?.length) return step;
+    const filtered = step.accesses.filter((access) => {
+      const stats = accessStatsByVariable.get(access.variable);
+      if (variablesWithCellAccess.has(access.variable)) {
+        return access.kind !== 'indexed-read' && access.kind !== 'indexed-write';
+      }
+      if (
+        access.kind === 'mutating-call' &&
+        stats?.hasIndexedWrite &&
+        !stats.hasCellRead &&
+        !stats.hasCellWrite
+      ) {
+        return false;
+      }
+      if (
+        access.kind === 'indexed-read' &&
+        stats?.hasMutatingCall &&
+        !stats.hasIndexedWrite &&
+        !stats.hasCellRead &&
+        !stats.hasCellWrite
+      ) {
+        return false;
+      }
+      return true;
+    });
+    return {
+      ...step,
+      ...(filtered.length > 0 ? { accesses: filtered } : {}),
+      ...(filtered.length === 0 ? { accesses: undefined } : {}),
+    };
+  });
+}
+
+function legacyStepsToRuntimeV4Trace(language, steps, runId = `${language}:run`, file) {
+  const normalizedSteps = collapseLegacyAccessNoiseForV4(Array.isArray(steps) ? steps : []);
+  const events = [];
+  for (const step of normalizedSteps) {
+    const base = {
+      runId,
+      ...(file ? { file } : {}),
+      line: step.line,
+      frameId: legacyFrameIdForStep(step),
+    };
+    if (step.event === 'line') {
+      events.push({ ...base, kind: 'line', function: step.function });
+    } else if (step.event === 'call') {
+      const stack = Array.isArray(step.callStack) ? step.callStack : [];
+      events.push({ ...base, kind: 'call', function: step.function, args: stack[stack.length - 1]?.args });
+    } else if (step.event === 'return') {
+      events.push({
+        ...base,
+        kind: 'return',
+        function: step.function,
+        ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
+      });
+    } else if (step.event === 'exception') {
+      events.push({ ...base, kind: 'exception', message: String(step.returnValue ?? 'Runtime exception') });
+    } else if (step.event === 'timeout') {
+      events.push({ ...base, kind: 'timeout', message: 'Runtime timeout' });
+    } else if (step.event === 'stdout') {
+      events.push({
+        kind: 'stdout',
+        runId,
+        ...(file ? { file } : {}),
+        ...(step.line ? { line: step.line } : {}),
+        text: String(step.returnValue ?? ''),
+      });
+    }
+
+    for (const [variable, value] of Object.entries(step.variables ?? {})) {
+      events.push({ ...base, kind: 'snapshot', target: { variable }, value });
+    }
+
+    for (const access of step.accesses ?? []) {
+      const kind = legacyAccessKindToV4Kind(access);
+      const target = legacyAccessTarget(access);
+      if (kind === 'mutate') {
+        const method = normalizeV4MutationMethod(access.method);
+        events.push({ ...base, kind, target, ...(method ? { method } : {}) });
+      } else {
+        events.push({ ...base, kind, target, value: legacyAccessValue(step, access) });
+      }
+    }
+  }
+  return {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language,
+    runId,
+    events,
+    lineEventCount: normalizedSteps.filter((step) => step.event === 'line').length,
+    traceStepCount: normalizedSteps.length,
+  };
+}
+
 function getTypeScriptCompiler() {
   const ts = self?.ts;
   if (ts && typeof ts.transpileModule === 'function') {
@@ -3599,7 +3769,7 @@ async function executeWithTracing(payload) {
           success: false,
           error: fallbackResult.error,
           errorLine: fallbackResult.errorLine,
-          trace: [],
+          trace: legacyStepsToRuntimeV4Trace(language, []),
           executionTimeMs,
           consoleOutput: fallbackResult.consoleOutput ?? [],
           lineEventCount: 0,
@@ -3611,7 +3781,7 @@ async function executeWithTracing(payload) {
       return {
         success: true,
         output: fallbackResult.output,
-        trace: syntheticTrace,
+        trace: legacyStepsToRuntimeV4Trace(language, syntheticTrace),
         executionTimeMs,
         consoleOutput: fallbackResult.consoleOutput ?? [],
         lineEventCount: syntheticTrace.filter((step) => step.event === 'line').length,
@@ -3668,7 +3838,7 @@ async function executeWithTracing(payload) {
     return {
       success: true,
       output: serializedOutput,
-      trace: traceRecorder.getTrace(),
+      trace: legacyStepsToRuntimeV4Trace(language, traceRecorder.getTrace()),
       executionTimeMs,
       consoleOutput,
       lineEventCount: traceRecorder.getLineEventCount(),
@@ -3702,7 +3872,7 @@ async function executeWithTracing(payload) {
       output: null,
       error: message,
       errorLine,
-      trace: traceRecorder.getTrace(),
+      trace: legacyStepsToRuntimeV4Trace(language, traceRecorder.getTrace()),
       executionTimeMs,
       consoleOutput,
       lineEventCount: traceRecorder.getLineEventCount(),
