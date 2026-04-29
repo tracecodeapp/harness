@@ -1,7 +1,7 @@
 import type { Language } from './runtime-types';
 import type {
   CallStackFrame,
-  ExecutionResult,
+  LegacyTraceExecutionResult,
   RawTraceStep,
   RuntimeTraceAccessEvent,
   RuntimeTraceAccessKind,
@@ -471,7 +471,7 @@ function collapseTraceAccessNoise(
 
 export function normalizeRuntimeTraceContract(
   language: Language,
-  result: ExecutionResult
+  result: LegacyTraceExecutionResult
 ): RuntimeTraceContractResult {
   const rawNormalizedTrace = collapseTraceAccessNoise(
     Array.isArray(result.trace) ? result.trace.map(normalizeTraceStep) : []

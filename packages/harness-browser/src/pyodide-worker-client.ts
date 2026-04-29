@@ -5,7 +5,7 @@
  * Provides a promise-based API for executing Python code off the main thread.
  */
 
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import type { CodeExecutionResult, LegacyTraceExecutionResult } from '../../harness-core/src/types';
 
 type MessageId = string;
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -356,14 +356,14 @@ export class PyodideWorkerClient {
       minimalTrace?: boolean;
     },
     executionStyle: ExecutionStyle = 'function'
-  ): Promise<ExecutionResult> {
+  ): Promise<LegacyTraceExecutionResult> {
     // Ensure Pyodide is initialized
     await this.init();
     
     // Use longer timeout for tracing - Python heuristic detection handles infinite loops
     try {
       return await this.executeWithTimeout(
-        () => this.sendMessage<ExecutionResult>('execute-with-tracing', {
+        () => this.sendMessage<LegacyTraceExecutionResult>('execute-with-tracing', {
           code,
           functionName,
           inputs,

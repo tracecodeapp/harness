@@ -1,4 +1,4 @@
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import type { CodeExecutionResult } from '../../harness-core/src/types';
 
 type MessageId = string;
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';

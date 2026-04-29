@@ -114,7 +114,7 @@ export interface ExecutionResult {
   output?: unknown;
   error?: string;
   errorLine?: number;
-  trace: RawTraceStep[];
+  trace: import('./trace-v4').RuntimeV4Trace;
   executionTimeMs: number;
   consoleOutput: string[];
   traceLimitExceeded?: boolean;
@@ -128,6 +128,10 @@ export interface ExecutionResult {
     | 'client-timeout';
   lineEventCount?: number;
   traceStepCount?: number;
+}
+
+export interface LegacyTraceExecutionResult extends Omit<ExecutionResult, 'trace'> {
+  trace: RawTraceStep[];
 }
 
 // Pyodide loading state

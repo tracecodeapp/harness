@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import type { Language } from '../packages/harness-core/src/runtime-types';
-import type { ExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
+import type { LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
 import { normalizeJavaTraceContract } from '../packages/harness-core/src/trace-adapters/java';
 import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
 import {
@@ -32,7 +32,7 @@ function stableStringify(value: unknown): string {
     .join(',') + '}';
 }
 
-function makeExecutionResult(trace: RawTraceStep[]): ExecutionResult {
+function makeExecutionResult(trace: RawTraceStep[]): LegacyTraceExecutionResult {
   return {
     success: true,
     output: null,

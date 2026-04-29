@@ -6,6 +6,7 @@ import type {
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { buildJavaExecutionResult } from '../../harness-core/src/trace-adapters/java';
 import { adaptJavaTraceExecutionResult } from '../../harness-core/src/trace-adapters/java';
+import { createEmptyRuntimeV4Trace } from '../../harness-core/src/trace-v4';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 import type { JavaExecutionStyle, JavaWorkerClient } from './java-worker-client';
@@ -43,7 +44,7 @@ class JavaRuntimeClient implements RuntimeClient {
         success: false,
         error: rawResult.error ?? 'Java tracing failed',
         ...(rawResult.errorLine !== undefined ? { errorLine: rawResult.errorLine } : {}),
-        trace: [],
+        trace: createEmptyRuntimeV4Trace('java', { runId: 'java:run', file: 'Solution.java' }),
         executionTimeMs: rawResult.executionTimeMs,
         consoleOutput: rawResult.consoleOutput,
         ...(rawResult.traceLimitExceeded !== undefined

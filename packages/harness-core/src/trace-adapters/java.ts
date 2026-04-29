@@ -1,5 +1,6 @@
 import type {
   ExecutionResult,
+  LegacyTraceExecutionResult,
   RawTraceStep,
   RuntimeHashMapVisualization,
   RuntimeTraceAccessEvent,
@@ -14,7 +15,7 @@ export interface JavaTraceResult {
   events: string[];
   sourceText?: string;
   traceLimitExceeded?: boolean;
-  timeoutReason?: ExecutionResult['timeoutReason'];
+  timeoutReason?: LegacyTraceExecutionResult['timeoutReason'];
 }
 
 export interface JavaTraceContractResult
@@ -792,11 +793,11 @@ export function buildJavaExecutionResult(
   events: string[],
   executionTimeMs = 0,
   traceLimitExceeded?: boolean,
-  timeoutReason?: ExecutionResult['timeoutReason'],
+  timeoutReason?: LegacyTraceExecutionResult['timeoutReason'],
   maxTraceSteps?: number,
   sourceText?: string,
   options: { outputIsSerialized?: boolean } = {}
-): ExecutionResult {
+): LegacyTraceExecutionResult {
   assertSupportedRawEmissions(summarizeJavaRawEmissions(events), 'java');
   const trace = eventsToRawTrace(events, sourceText);
   return {
@@ -832,6 +833,9 @@ export function normalizeJavaTraceContract(result: JavaTraceResult): JavaTraceCo
   };
 }
 
-export function adaptJavaTraceExecutionResult(result: ExecutionResult): ExecutionResult {
-  return adaptTraceExecutionResult('java', result);
+export function adaptJavaTraceExecutionResult(result: LegacyTraceExecutionResult): ExecutionResult {
+  return adaptTraceExecutionResult('java', result, {
+    runId: 'java:run',
+    file: 'Solution.java',
+  });
 }

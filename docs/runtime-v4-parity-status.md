@@ -19,6 +19,8 @@ The end state is native V4 trace emission from every language runtime. Python, J
 
 The current `runtimeTraceContractToV4Events(...)` path is a migration bridge only. It exists so the corpus can define and test the target contract before every runtime has native V4 output. It should not become a compatibility layer where new behavior is hidden by translating old V2/V3 trace shapes into V4 after the fact.
 
+As of the V4 public-boundary cutover, `ExecutionResult.trace` is a `RuntimeV4Trace`. Public runtime clients must not return legacy trace-step arrays. Any remaining `LegacyTraceExecutionResult` usage is internal migration debt at worker/raw-instrumentation seams and should be pushed downward into native language emitters, not exposed to product consumers.
+
 This means the V4 cutover is allowed to be breaking:
 
 - Prefer exposing missing runtime facts as visible fixture gaps over masking them in the bridge adapter.
@@ -40,9 +42,9 @@ This means the V4 cutover is allowed to be breaking:
 
 `pnpm test:runtime-v4` is part of both `pnpm test` and `pnpm test:ci`. Any runtime instrumentation change that alters cross-language V4 parity, introduces unsupported raw payloads, or reopens known gaps should fail before merge.
 
-Java now runs through the real Java runtime path via `createJavaRuntimeClient(...)` in the fixture gate. The old synthetic `javaEvents` fixture field has been removed from the contract so fixture results cannot accidentally mask actual Java harness behavior.
+JavaScript, TypeScript, and Java now run through public runtime-client boundaries in the fixture gate, and those boundaries must expose V4 at `result.trace`. The old synthetic `javaEvents` fixture field has been removed from the contract so fixture results cannot accidentally mask actual Java harness behavior.
 
-The Java fixture path still flows through the legacy Java runtime client and the temporary V4 bridge. That is intentional for the current baseline, but not the target architecture.
+The remaining legacy seams are internal raw worker traces used by migration checks, Java raw `TraceHooks` events before V4 assembly, and Python fixture execution while its runtime emitter is migrated. These are not supported public trace contracts.
 
 ## Baseline Known Gaps
 

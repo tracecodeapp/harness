@@ -10,7 +10,7 @@ import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
 import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
 import type { JavaWorkerClient, JavaWorkerTraceResult } from '../packages/harness-browser/src/java-worker-client';
-import type { ExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
+import type { LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
 import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
 import {
   runtimeTraceContractToV4Events,
@@ -187,7 +187,12 @@ function buildMineSignature(trace: RuntimeV4Trace): MineSignature {
   };
 }
 
-function makeExecutionResult(trace: RawTraceStep[], output: unknown, lineEventCount?: number, traceStepCount?: number): ExecutionResult {
+function makeExecutionResult(
+  trace: RawTraceStep[],
+  output: unknown,
+  lineEventCount?: number,
+  traceStepCount?: number
+): LegacyTraceExecutionResult {
   return {
     success: true,
     output,
@@ -334,7 +339,7 @@ async function executeJavaScriptTrace(
   const harness = createJavaScriptWorkerHarness(workerSource);
   const init = await harness.sendMessage<{ success: boolean }>('init');
   if (init.success !== true) throw new Error(`${entry.language} worker init failed`);
-  const result = await harness.sendMessage<ExecutionResult>('execute-with-tracing', {
+  const result = await harness.sendMessage<LegacyTraceExecutionResult>('execute-with-tracing', {
     code,
     functionName: entry.functionName,
     inputs: entry.inputs,

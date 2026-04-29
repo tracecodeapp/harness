@@ -1,5 +1,5 @@
 import type { Language } from './runtime-types';
-import type { ExecutionResult, RuntimeTraceAccessEvent } from './types';
+import type { ExecutionResult, LegacyTraceExecutionResult, RuntimeTraceAccessEvent } from './types';
 import {
   normalizeRuntimeTraceContract,
   type RuntimeTraceContractResult,
@@ -55,6 +55,20 @@ export interface RuntimeV4Trace {
 export interface RuntimeV4TraceOptions {
   runId?: string;
   file?: string;
+}
+
+export function createEmptyRuntimeV4Trace(
+  language: Language,
+  options: RuntimeV4TraceOptions = {}
+): RuntimeV4Trace {
+  return {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language,
+    runId: options.runId ?? `${language}:run`,
+    events: [],
+    lineEventCount: 0,
+    traceStepCount: 0,
+  };
 }
 
 export interface RuntimeV4ParityAccessTarget {
@@ -232,13 +246,29 @@ export function runtimeTraceContractToV4Events(
 
 export function executionResultToV4Trace(
   language: Language,
-  result: ExecutionResult,
+  result: LegacyTraceExecutionResult,
   options: RuntimeV4TraceOptions = {}
 ): RuntimeV4Trace {
   return runtimeTraceContractToV4Events(
     normalizeRuntimeTraceContract(language, result),
     options
   );
+}
+
+export function withRuntimeV4TraceOptions(
+  trace: RuntimeV4Trace,
+  options: RuntimeV4TraceOptions = {}
+): RuntimeV4Trace {
+  const runId = options.runId ?? trace.runId;
+  return {
+    ...trace,
+    runId,
+    events: trace.events.map((event) => ({
+      ...event,
+      runId,
+      ...(options.file ? { file: options.file } : {}),
+    })),
+  };
 }
 
 export function buildRuntimeV4ParitySignature(trace: RuntimeV4Trace): RuntimeV4ParitySignature {
