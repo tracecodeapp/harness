@@ -127,6 +127,8 @@ The current raw-event assembly seams are temporary migration scaffolding. They m
 
 No language may introduce a raw payload category on its own. A payload such as `array-length` must either not exist or be accepted as a shared cross-language contract concept with parity coverage before higher layers are allowed to consume it.
 
+Runtime trace events must not carry visualizer-era or semantic classification payloads. The raw emission contract rejects any runtime trace event containing `visualization`, `objectKinds`, `hashMaps`, `graph-adjacency`, `linked-list`, or `tree`. If this trips on a legitimate data snapshot, reduce that case and decide whether the runtime serializer needs a neutral representation before widening the contract.
+
 ## Raw Emission Contract
 
 The harness now has a TraceLang-style raw runtime emission contract before runtime trace conversion:

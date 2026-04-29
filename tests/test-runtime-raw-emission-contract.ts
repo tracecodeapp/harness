@@ -71,6 +71,60 @@ function testJavaKnownPayloads(): void {
   console.log('PASS: raw emission contract accepts known Java payloads');
 }
 
+function testForbiddenRuntimeTracePayloadRejection(): void {
+  const traceWithVisualization = trace('python', [
+    {
+      kind: 'snapshot',
+      runId: 'python:test',
+      line: 1,
+      target: { variable: 'state' },
+      value: { visualization: { objectKinds: { state: 'tree' }, hashMaps: [] } },
+    },
+  ]);
+  const traceSummary = summarizeRuntimeTraceEmissions(traceWithVisualization);
+  assertCondition(
+    traceSummary.unsupported.length === 1 &&
+      traceSummary.unsupported[0]?.includes('visualization') &&
+      traceSummary.unsupported[0]?.includes('objectKinds') &&
+      traceSummary.unsupported[0]?.includes('hashMaps') &&
+      traceSummary.unsupported[0]?.includes('tree'),
+    'runtime trace summary should reject visualizer/semantic payload tokens'
+  );
+  assertThrows(
+    () => assertSupportedRawEmissions(traceSummary, 'python:semantic-leak'),
+    /forbidden runtime trace token.*visualization.*objectKinds.*hashMaps.*tree/s,
+    'raw contract should reject runtime trace visualizer payloads'
+  );
+
+  const javaSummary = summarizeJavaRawEmissions([
+    `trace:${JSON.stringify({
+      kind: 'snapshot',
+      line: 2,
+      target: { variable: 'graph' },
+      value: { kind: 'graph-adjacency', next: 'linked-list' },
+    })}`,
+  ]);
+  assertCondition(
+    javaSummary.unsupported.length === 1 &&
+      javaSummary.unsupported[0]?.includes('graph-adjacency') &&
+      javaSummary.unsupported[0]?.includes('linked-list'),
+    'Java raw summary should reject forbidden semantic payload tokens inside native trace events'
+  );
+  assertThrows(
+    () => javaTraceHooksEventsToRuntimeTrace([
+      `trace:${JSON.stringify({
+        kind: 'snapshot',
+        line: 2,
+        target: { variable: 'graph' },
+        value: { kind: 'graph-adjacency' },
+      })}`,
+    ]),
+    /forbidden runtime trace token.*graph-adjacency/s,
+    'java TraceHooks assembly should reject semantic payload tokens inside native trace events'
+  );
+  console.log('PASS: raw emission contract rejects visualizer and semantic runtime payload leaks');
+}
+
 function testRawParityComparison(): void {
   const pythonTrace = trace('python', [
     { kind: 'line', runId: 'python:test', line: 1, function: 'solve' },
@@ -94,6 +148,7 @@ function testRawParityComparison(): void {
 
 testJavaUnknownPayloadRejection();
 testJavaKnownPayloads();
+testForbiddenRuntimeTracePayloadRejection();
 testRawParityComparison();
 
 console.log('\nRuntime raw emission contract tests passed.');

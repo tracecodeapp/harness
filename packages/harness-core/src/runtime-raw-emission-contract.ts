@@ -10,8 +10,7 @@ export type RuntimeRawEmissionKind =
   | 'snapshot'
   | 'read'
   | 'write'
-  | 'mutate'
-  | 'visualization-state';
+  | 'mutate';
 
 export interface RuntimeRawEmissionSummary {
   language: Language;
@@ -21,6 +20,27 @@ export interface RuntimeRawEmissionSummary {
 
 function sortedUnique<T extends string>(values: T[]): T[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+const FORBIDDEN_RUNTIME_TRACE_TOKENS = [
+  'visualization',
+  'objectKinds',
+  'hashMaps',
+  'graph-adjacency',
+  'linked-list',
+  'tree',
+] as const;
+
+function forbiddenRuntimeTraceTokens(value: unknown): string[] {
+  const serialized = JSON.stringify(value);
+  if (typeof serialized !== 'string') return [];
+  return FORBIDDEN_RUNTIME_TRACE_TOKENS.filter((token) => serialized.includes(token));
+}
+
+function unsupportedForbiddenPayload(label: string, value: unknown): string | null {
+  const tokens = forbiddenRuntimeTraceTokens(value);
+  if (tokens.length === 0) return null;
+  return `${label} contains forbidden runtime trace token(s): ${tokens.join(', ')}`;
 }
 
 function javaNativeTracePayloadKind(event: string): RuntimeRawEmissionKind | null {
@@ -46,7 +66,19 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
   const kinds: RuntimeRawEmissionKind[] = [];
   const unsupported: string[] = [];
 
-  for (const event of events) {
+  for (const [index, event] of events.entries()) {
+    if (event.startsWith('trace:')) {
+      try {
+        const parsed = JSON.parse(event.slice('trace:'.length)) as unknown;
+        const forbiddenPayload = unsupportedForbiddenPayload(`java trace event ${index}`, parsed);
+        if (forbiddenPayload) {
+          unsupported.push(forbiddenPayload);
+          continue;
+        }
+      } catch {
+        // Let the native-kind check below classify malformed trace payloads as unsupported.
+      }
+    }
     const nativeKind = javaNativeTracePayloadKind(event);
     if (nativeKind) {
       kinds.push(nativeKind);
@@ -64,7 +96,13 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
 
 export function summarizeRuntimeTraceEmissions(trace: RuntimeTrace): RuntimeRawEmissionSummary {
   const kinds: RuntimeRawEmissionKind[] = [];
-  for (const event of trace.events) {
+  const unsupported: string[] = [];
+  for (const [index, event] of trace.events.entries()) {
+    const forbiddenPayload = unsupportedForbiddenPayload(`${trace.language} trace event ${index}`, event);
+    if (forbiddenPayload) {
+      unsupported.push(forbiddenPayload);
+      continue;
+    }
     if (event.kind === 'line') kinds.push('line');
     if (event.kind === 'call') kinds.push('call');
     if (event.kind === 'return') kinds.push('return');
@@ -74,12 +112,11 @@ export function summarizeRuntimeTraceEmissions(trace: RuntimeTrace): RuntimeRawE
     if (event.kind === 'read') kinds.push('read');
     if (event.kind === 'write') kinds.push('write');
     if (event.kind === 'mutate') kinds.push('mutate');
-    if (JSON.stringify(event).includes('visualization')) kinds.push('visualization-state');
   }
   return {
     language: trace.language,
     kinds: sortedUnique(kinds),
-    unsupported: [],
+    unsupported,
   };
 }
 
@@ -97,15 +134,8 @@ export interface RuntimeRawEmissionParityMismatch {
   extra: RuntimeRawEmissionKind[];
 }
 
-const RAW_PARITY_IGNORED_KINDS = new Set<RuntimeRawEmissionKind>([
-  // Visualization state exists while the raw trace bridge is still being
-  // retired. It must never create runtime trace facts directly, so it is ignored for the
-  // coarse cross-language emission parity signal.
-  'visualization-state',
-]);
-
 function parityKinds(summary: RuntimeRawEmissionSummary): RuntimeRawEmissionKind[] {
-  return summary.kinds.filter((kind) => !RAW_PARITY_IGNORED_KINDS.has(kind));
+  return summary.kinds;
 }
 
 export function compareRawEmissionParity(
