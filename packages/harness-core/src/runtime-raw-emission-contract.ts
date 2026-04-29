@@ -34,6 +34,25 @@ function isJavaLineEvent(event: string): boolean {
   return /^line=\d+(?:\s+.*)?$/.test(event);
 }
 
+function javaNativeV4PayloadKind(event: string): RuntimeRawEmissionKind | null {
+  if (!event.startsWith('v4:')) return null;
+  try {
+    const parsed = JSON.parse(event.slice('v4:'.length)) as { kind?: unknown };
+    if (parsed.kind === 'line') return 'line';
+    if (parsed.kind === 'call') return 'call';
+    if (parsed.kind === 'return') return 'return';
+    if (parsed.kind === 'exception') return 'exception';
+    if (parsed.kind === 'stdout') return 'stdout';
+    if (parsed.kind === 'snapshot') return 'snapshot';
+    if (parsed.kind === 'read') return 'read';
+    if (parsed.kind === 'write') return 'write';
+    if (parsed.kind === 'mutate') return 'mutate';
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function javaPayloadKind(payload: string): RuntimeRawEmissionKind | null {
   if (payload.length === 0) return 'line';
   if (payload.startsWith('call ')) return 'call';
@@ -60,6 +79,11 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
   const unsupported: string[] = [];
 
   for (const event of events) {
+    const nativeKind = javaNativeV4PayloadKind(event);
+    if (nativeKind) {
+      kinds.push(nativeKind);
+      continue;
+    }
     if (isJavaLineEvent(event)) {
       kinds.push('line');
     }

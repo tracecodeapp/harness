@@ -623,6 +623,10 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
     const rawSummary = summarizeJavaRawEmissions(rawResult.events);
     assertSupportedRawEmissions(rawSummary, `${fixture.id}:java`);
     assertCondition(
+      rawResult.events.every((event) => event.startsWith('v4:')),
+      `${fixture.id}:java TraceHooks must emit native V4 events`
+    );
+    assertCondition(
       Array.isArray((result.trace as unknown as { events?: unknown[] }).events),
       `${fixture.id}:java public trace must be native V4`
     );

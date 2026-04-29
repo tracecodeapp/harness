@@ -6,6 +6,8 @@ import type {
 } from '../types';
 import { normalizeRuntimeTraceContract } from '../trace-contract';
 import {
+  RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+  type RuntimeV4Event,
   runtimeTraceContractToV4Events,
   type RuntimeV4Trace,
   type RuntimeV4TraceOptions,
@@ -30,6 +32,69 @@ function parseScalar(raw: string): unknown {
     }
   }
   return raw;
+}
+
+function isNativeJavaV4Event(event: string): boolean {
+  return event.startsWith('v4:');
+}
+
+function nativeJavaV4EventsToTrace(
+  events: string[],
+  sourceText: string | undefined,
+  options: RuntimeV4TraceOptions = {}
+): RuntimeV4Trace {
+  const runId = options.runId ?? 'java:run';
+  let parsedEvents: RuntimeV4Event[] = events
+    .filter(isNativeJavaV4Event)
+    .map((event) => {
+      let parsed: RuntimeV4Event;
+      try {
+        parsed = JSON.parse(event.slice('v4:'.length)) as RuntimeV4Event;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid Java native V4 event: ${message}\n${event.slice(0, 500)}`);
+      }
+      return {
+        ...parsed,
+        runId,
+        ...(options.file ? { file: options.file } : {}),
+      };
+    });
+  parsedEvents = removeSameLineMutationDeclarationSnapshotEvents(parsedEvents, sourceText);
+
+  return {
+    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    language: 'java',
+    runId,
+    events: parsedEvents,
+    lineEventCount: parsedEvents.filter((event) => event.kind === 'line').length,
+    traceStepCount: parsedEvents.length,
+  };
+}
+
+function removeSameLineMutationDeclarationSnapshotEvents(
+  events: RuntimeV4Event[],
+  sourceText: string | undefined
+): RuntimeV4Event[] {
+  const declarationNamesByLine = buildLocalDeclarationNamesByLine(sourceText);
+  if (declarationNamesByLine.size === 0) return events;
+  const mutationVariablesByLine = new Map<number, Set<string>>();
+  for (const event of events) {
+    if (event.kind !== 'mutate' || typeof event.line !== 'number' || !('variable' in event.target)) continue;
+    const variables = mutationVariablesByLine.get(event.line) ?? new Set<string>();
+    variables.add(event.target.variable);
+    mutationVariablesByLine.set(event.line, variables);
+  }
+  if (mutationVariablesByLine.size === 0) return events;
+  return events.filter((event) => {
+    if (event.kind !== 'snapshot' || typeof event.line !== 'number' || !('variable' in event.target)) {
+      return true;
+    }
+    const declaredNames = declarationNamesByLine.get(event.line);
+    if (!declaredNames?.includes(event.target.variable)) return true;
+    const mutationVariables = mutationVariablesByLine.get(event.line);
+    return mutationVariables?.has(event.target.variable) === true;
+  });
 }
 
 export function normalizeJavaSerializedResult(output: unknown): unknown {
@@ -782,6 +847,9 @@ export function javaTraceHooksEventsToV4Trace(
   sourceText?: string,
   options: RuntimeV4TraceOptions = {}
 ): RuntimeV4Trace {
+  if (events.length > 0 && events.every(isNativeJavaV4Event)) {
+    return nativeJavaV4EventsToTrace(events, sourceText, options);
+  }
   assertSupportedRawEmissions(summarizeJavaRawEmissions(events), 'java');
   const trace = eventsToRawTrace(events, sourceText);
   const contract = normalizeRuntimeTraceContract('java', {

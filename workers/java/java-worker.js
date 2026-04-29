@@ -1571,6 +1571,35 @@ async function collectCompileProbeDiagnostics(source, requestId, options) {
 function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount, sourceLineMap) {
   if (!scriptMode || !Array.isArray(events)) return events;
   return events.map((event) => {
+    if (String(event).startsWith('v4:')) {
+      try {
+        const parsed = JSON.parse(String(event).slice('v4:'.length));
+        if (parsed.function === SCRIPT_METHOD_NAME) parsed.function = '<module>';
+        if (parsed.kind === 'call' && parsed.function === SCRIPT_METHOD_NAME) parsed.function = '<module>';
+        if (parsed.kind === 'return' && parsed.function === SCRIPT_METHOD_NAME) parsed.function = '<module>';
+        if (
+          typeof parsed.line === 'number' &&
+          sourceLineMap &&
+          Object.prototype.hasOwnProperty.call(sourceLineMap, String(parsed.line))
+        ) {
+          const mappedLine = Number(sourceLineMap[String(parsed.line)]);
+          if (Number.isFinite(mappedLine) && mappedLine > 0) parsed.line = mappedLine;
+        }
+        if (
+          parsed.kind === 'return' &&
+          parsed.function === '<module>' &&
+          Number.isFinite(userCodeLineCount) &&
+          userCodeLineCount > 0 &&
+          parsed.line > userCodeLineCount
+        ) {
+          parsed.line = userCodeLineCount;
+        }
+        return `v4:${JSON.stringify(parsed)}`;
+      } catch {
+        return event;
+      }
+    }
+
     let normalizedEvent = String(event)
       .replace(new RegExp(`\\bcall\\s+${SCRIPT_METHOD_NAME}\\b`, 'g'), 'call <module>')
       .replace(new RegExp(`\\breturn\\s+${SCRIPT_METHOD_NAME}\\b`, 'g'), 'return <module>');
@@ -1594,6 +1623,15 @@ function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount, sourc
 }
 
 function parseTraceLineNumber(event) {
+  if (String(event).startsWith('v4:')) {
+    try {
+      const parsed = JSON.parse(String(event).slice('v4:'.length));
+      const line = Number(parsed.line);
+      return Number.isFinite(line) && line > 0 ? line : null;
+    } catch {
+      return null;
+    }
+  }
   const match = String(event).match(/^line=(\d+)(?:\s|$)/);
   if (!match) return null;
   const line = Number.parseInt(match[1], 10);
@@ -1601,7 +1639,22 @@ function parseTraceLineNumber(event) {
 }
 
 function isBareTraceLineEvent(event) {
+  if (String(event).startsWith('v4:')) {
+    try {
+      const parsed = JSON.parse(String(event).slice('v4:'.length));
+      return parsed.kind === 'line';
+    } catch {
+      return false;
+    }
+  }
   return /^line=\d+$/.test(String(event));
+}
+
+function buildBareTraceLineEvent(line, templateEvent) {
+  if (String(templateEvent).startsWith('v4:')) {
+    return `v4:${JSON.stringify({ kind: 'line', line })}`;
+  }
+  return `line=${line}`;
 }
 
 function buildLoopBodyLineMap(sourceText) {
@@ -1636,7 +1689,7 @@ function expandLoopHeaderTraceEvents(events, sourceText) {
     const headerLine = line === null ? undefined : loopBodyLineToHeaderLine.get(line);
     const previousLine = expanded.length > 0 ? parseTraceLineNumber(expanded[expanded.length - 1]) : null;
     if (headerLine !== undefined && isBareTraceLineEvent(event) && previousLine !== headerLine) {
-      expanded.push(`line=${headerLine}`);
+      expanded.push(buildBareTraceLineEvent(headerLine, event));
     }
     expanded.push(event);
   }

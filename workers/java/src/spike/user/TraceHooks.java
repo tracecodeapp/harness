@@ -6,9 +6,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class TraceHooks {
   private static final int DEFAULT_MAX_EVENTS = 50000;
@@ -18,10 +21,23 @@ public final class TraceHooks {
   private static int maxEvents = DEFAULT_MAX_EVENTS;
   private static boolean traceLimitExceeded = false;
   private static int droppedEventCount = 0;
+  private static String currentFunction = "<module>";
+  private static final List<String> FUNCTION_STACK = new ArrayList<>();
+  private static final Map<String, String> CURRENT_SNAPSHOTS = new LinkedHashMap<>();
+  private static final Pattern LINE_EVENT_PATTERN = Pattern.compile("^line=(\\d+)(?:\\s+(.*))?$");
+  private static final Pattern KEY_VALUE_PATTERN = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_.]*)=");
 
   private TraceHooks() {}
 
   public static void emit(String event) {
+    if (event != null && event.startsWith("v4:")) {
+      appendEvent(event);
+      return;
+    }
+    emitLegacyTraceEvent(event);
+  }
+
+  private static void appendEvent(String event) {
     if (traceLimitExceeded) {
       droppedEventCount += 1;
       return;
@@ -32,6 +48,309 @@ public final class TraceHooks {
       return;
     }
     EVENTS.add(event);
+  }
+
+  private static void emitLegacyTraceEvent(String event) {
+    if (event == null) return;
+    Matcher lineMatch = LINE_EVENT_PATTERN.matcher(event);
+    if (!lineMatch.matches()) {
+      appendEvent(event);
+      return;
+    }
+
+    int line = Integer.parseInt(lineMatch.group(1));
+    String payload = lineMatch.group(2) == null ? "" : lineMatch.group(2);
+
+    if (payload.startsWith("call ")) {
+      String rest = payload.substring("call ".length()).trim();
+      int space = rest.indexOf(' ');
+      String function = space >= 0 ? rest.substring(0, space) : rest;
+      String argsFragment = space >= 0 ? rest.substring(space + 1) : "";
+      currentFunction = function.length() > 0 ? function : currentFunction;
+      FUNCTION_STACK.add(currentFunction);
+      emitV4Call(line, currentFunction, argsFragment);
+      return;
+    }
+
+    if (payload.startsWith("return ")) {
+      String rest = payload.substring("return ".length()).trim();
+      int valueIndex = rest.indexOf(" value=");
+      String function = valueIndex >= 0 ? rest.substring(0, valueIndex) : rest;
+      String value = valueIndex >= 0 ? rest.substring(valueIndex + " value=".length()) : null;
+      emitV4Return(line, function.length() > 0 ? function : currentFunction, value);
+      if (!FUNCTION_STACK.isEmpty()) {
+        FUNCTION_STACK.remove(FUNCTION_STACK.size() - 1);
+      }
+      currentFunction = FUNCTION_STACK.isEmpty() ? "<module>" : FUNCTION_STACK.get(FUNCTION_STACK.size() - 1);
+      return;
+    }
+
+    if (payload.startsWith("exception ")) {
+      emitV4Exception(line, payload.substring("exception ".length()));
+      return;
+    }
+
+    if (payload.startsWith("stdout ")) {
+      emitV4Stdout(line, payload.substring("stdout ".length()));
+      return;
+    }
+
+    if (payload.startsWith("access ") || payload.startsWith("write ") || payload.startsWith("write-array ")) {
+      emitV4AccessPayload(line, payload);
+      return;
+    }
+
+    if (payload.startsWith("mutate ") || payload.startsWith("mutate-indexed ") || payload.startsWith("keyed-call ")) {
+      emitV4MutatePayload(line, payload);
+      return;
+    }
+
+    if (payload.startsWith("state ")) {
+      emitV4StructureState(line, payload);
+      return;
+    }
+
+    if (payload.startsWith("object-state ")) {
+      emitV4ObjectState(line, payload);
+      return;
+    }
+
+    if (payload.startsWith("map-state ") || payload.startsWith("set-state ")) {
+      // Dedicated map/set helpers emit neutral V4 snapshots directly.
+      return;
+    }
+
+    emitV4Line(line);
+    emitV4SnapshotsFromFragment(line, payload);
+  }
+
+  private static String baseEvent(int line, String kind) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("v4:{\"kind\":").append(jsonString(kind));
+    builder.append(",\"line\":").append(line);
+    if (currentFunction != null && currentFunction.length() > 0) {
+      builder.append(",\"function\":").append(jsonString(currentFunction));
+    }
+    return builder.toString();
+  }
+
+  private static void emitV4Line(int line) {
+    appendEvent(baseEvent(line, "line") + "}");
+    for (Map.Entry<String, String> entry : CURRENT_SNAPSHOTS.entrySet()) {
+      emitV4SnapshotEvent(line, entry.getKey(), entry.getValue());
+    }
+  }
+
+  private static void emitV4Call(int line, String function, String argsFragment) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("v4:{\"kind\":\"call\",\"line\":").append(line);
+    builder.append(",\"function\":").append(jsonString(function));
+    String args = objectFromKeyValueFragment(argsFragment);
+    if (args.length() > 2) {
+      builder.append(",\"args\":").append(args);
+    }
+    builder.append("}");
+    appendEvent(builder.toString());
+    emitV4SnapshotsFromFragment(line, argsFragment);
+  }
+
+  private static void emitV4Return(int line, String function, String valueJson) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("v4:{\"kind\":\"return\",\"line\":").append(line);
+    builder.append(",\"function\":").append(jsonString(function));
+    if (valueJson != null) {
+      builder.append(",\"value\":").append(asJsonValue(valueJson));
+    }
+    builder.append("}");
+    appendEvent(builder.toString());
+  }
+
+  private static void emitV4Exception(int line, String messageJson) {
+    appendEvent(baseEvent(line, "exception") + ",\"message\":" + asJsonValue(messageJson) + "}");
+  }
+
+  private static void emitV4Stdout(int line, String textJson) {
+    appendEvent(baseEvent(line, "stdout") + ",\"text\":" + asJsonValue(textJson) + "}");
+  }
+
+  private static void emitV4Snapshot(int line, String variable, String valueJson) {
+    CURRENT_SNAPSHOTS.put(variable, valueJson);
+    emitV4SnapshotEvent(line, variable, valueJson);
+  }
+
+  private static void emitV4SnapshotEvent(int line, String variable, String valueJson) {
+    appendEvent(baseEvent(line, "snapshot")
+        + ",\"target\":{\"variable\":" + jsonString(variable) + "}"
+        + ",\"value\":" + asJsonValue(valueJson) + "}");
+  }
+
+  private static void emitV4Access(int line, String kind, String variable, String pathJson, String valueJson) {
+    StringBuilder builder = new StringBuilder(baseEvent(line, kind));
+    builder.append(",\"target\":{\"variable\":").append(jsonString(variable));
+    if (pathJson != null) {
+      builder.append(",\"path\":").append(pathJson);
+    }
+    builder.append("}");
+    if (valueJson != null && !"mutate".equals(kind)) {
+      builder.append(",\"value\":").append(asJsonValue(valueJson));
+    }
+    builder.append("}");
+    appendEvent(builder.toString());
+  }
+
+  private static void emitV4Mutate(int line, String variable, String pathJson, String method) {
+    String normalizedMethod = normalizeMutationMethod(method);
+    StringBuilder builder = new StringBuilder(baseEvent(line, "mutate"));
+    builder.append(",\"target\":{\"variable\":").append(jsonString(variable));
+    if (pathJson != null) {
+      builder.append(",\"path\":").append(pathJson);
+    }
+    builder.append("}");
+    if (normalizedMethod != null && normalizedMethod.length() > 0) {
+      builder.append(",\"method\":").append(jsonString(normalizedMethod));
+    }
+    builder.append("}");
+    appendEvent(builder.toString());
+  }
+
+  private static String normalizeMutationMethod(String method) {
+    if ("add".equals(method) || "push".equals(method)) return "append";
+    if ("put".equals(method)) return "set";
+    return method;
+  }
+
+  private static String asJsonValue(String raw) {
+    if (raw == null) return "null";
+    String trimmed = raw.trim();
+    if (trimmed.length() == 0) return jsonString("");
+    if ("null".equals(trimmed) || "true".equals(trimmed) || "false".equals(trimmed)) return trimmed;
+    if (trimmed.startsWith("\"") || trimmed.startsWith("[") || trimmed.startsWith("{")) return trimmed;
+    if (trimmed.matches("-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?")) return trimmed;
+    return jsonString(trimmed);
+  }
+
+  private static String objectFromKeyValueFragment(String fragment) {
+    StringBuilder builder = new StringBuilder();
+    builder.append('{');
+    int count = 0;
+    for (KeyValuePair pair : parseKeyValuePairs(fragment)) {
+      if (count++ > 0) builder.append(',');
+      builder.append(jsonString(pair.key.replace('.', '_'))).append(':').append(pair.value);
+    }
+    builder.append('}');
+    return builder.toString();
+  }
+
+  private static void emitV4SnapshotsFromFragment(int line, String fragment) {
+    for (KeyValuePair pair : parseKeyValuePairs(fragment)) {
+      if ("method".equals(pair.key)) continue;
+      emitV4Snapshot(line, pair.key.replace('.', '_'), pair.value);
+    }
+  }
+
+  private static List<KeyValuePair> parseKeyValuePairs(String fragment) {
+    List<KeyValuePair> pairs = new ArrayList<>();
+    if (fragment == null || fragment.length() == 0) return pairs;
+    Matcher matcher = KEY_VALUE_PATTERN.matcher(fragment);
+    List<MatchRange> matches = new ArrayList<>();
+    while (matcher.find()) {
+      matches.add(new MatchRange(matcher.start(), matcher.end(), matcher.group(1)));
+    }
+    for (int index = 0; index < matches.size(); index++) {
+      MatchRange current = matches.get(index);
+      int valueStart = current.end;
+      int valueEnd = index + 1 < matches.size() ? matches.get(index + 1).start : fragment.length();
+      String value = fragment.substring(valueStart, valueEnd).trim();
+      if (current.key != null && current.key.length() > 0 && value.length() > 0) {
+        pairs.add(new KeyValuePair(current.key, value));
+      }
+    }
+    return pairs;
+  }
+
+  private static void emitV4AccessPayload(int line, String payload) {
+    Matcher cellRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]\\[(\\d+)\\]=(.+)$").matcher(payload);
+    if (cellRead.matches()) {
+      emitV4Access(line, "read", cellRead.group(1), "[" + cellRead.group(2) + "," + cellRead.group(3) + "]", cellRead.group(4));
+      return;
+    }
+    Matcher indexedRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]=(.+)$").matcher(payload);
+    if (indexedRead.matches()) {
+      emitV4Access(line, "read", indexedRead.group(1), "[" + indexedRead.group(2) + "]", indexedRead.group(3));
+      return;
+    }
+    Matcher cellWrite = Pattern.compile("^write-array ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]\\[(\\d+)\\]=(.+)$").matcher(payload);
+    if (cellWrite.matches()) {
+      emitV4Access(line, "write", cellWrite.group(1), "[" + cellWrite.group(2) + "," + cellWrite.group(3) + "]", cellWrite.group(4));
+      return;
+    }
+    Matcher indexedWrite = Pattern.compile("^write-array ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]=(.+)$").matcher(payload);
+    if (indexedWrite.matches()) {
+      emitV4Access(line, "write", indexedWrite.group(1), "[" + indexedWrite.group(2) + "]", indexedWrite.group(3));
+      return;
+    }
+    Matcher fieldRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
+    if (fieldRead.matches()) {
+      emitV4Access(line, "read", fieldRead.group(1), "[" + jsonString(fieldRead.group(2)) + "]", fieldRead.group(3));
+      return;
+    }
+    Matcher fieldWrite = Pattern.compile("^write ([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
+    if (fieldWrite.matches()) {
+      emitV4Access(line, "write", fieldWrite.group(1), "[" + jsonString(fieldWrite.group(2)) + "]", fieldWrite.group(3));
+    }
+  }
+
+  private static void emitV4MutatePayload(int line, String payload) {
+    Matcher mutatingCall = Pattern.compile("^mutate ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)$").matcher(payload);
+    if (mutatingCall.matches()) {
+      emitV4Mutate(line, mutatingCall.group(1), null, mutatingCall.group(2));
+      return;
+    }
+    Matcher indexedMutatingCall = Pattern.compile("^mutate-indexed ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\] method=([A-Za-z_][A-Za-z0-9_]*)$").matcher(payload);
+    if (indexedMutatingCall.matches()) {
+      emitV4Mutate(line, indexedMutatingCall.group(1), "[" + indexedMutatingCall.group(2) + "]", indexedMutatingCall.group(3));
+      return;
+    }
+    Matcher keyedCall = Pattern.compile("^keyed-call ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)(?:\\s+.*)?$").matcher(payload);
+    if (keyedCall.matches()) {
+      emitV4Mutate(line, keyedCall.group(1), null, keyedCall.group(2));
+    }
+  }
+
+  private static void emitV4StructureState(int line, String payload) {
+    Matcher match = Pattern.compile("^state (linked-list|tree|graph-adjacency) ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
+    if (match.matches()) {
+      emitV4Snapshot(line, match.group(2), match.group(3));
+    }
+  }
+
+  private static void emitV4ObjectState(int line, String payload) {
+    Matcher match = Pattern.compile("^object-state ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
+    if (match.matches()) {
+      emitV4Snapshot(line, match.group(1), "{\"__ref__\":" + jsonString(match.group(1) + "-object") + "}");
+    }
+  }
+
+  private static final class MatchRange {
+    final int start;
+    final int end;
+    final String key;
+
+    MatchRange(int start, int end, String key) {
+      this.start = start;
+      this.end = end;
+      this.key = key;
+    }
+  }
+
+  private static final class KeyValuePair {
+    final String key;
+    final String value;
+
+    KeyValuePair(String key, String value) {
+      this.key = key;
+      this.value = value;
+    }
   }
 
   public static boolean traceCondition(int line, boolean value) {
@@ -46,6 +365,9 @@ public final class TraceHooks {
   public static void reset(int nextMaxEvents) {
     EVENTS.clear();
     IDENTITIES.clear();
+    CURRENT_SNAPSHOTS.clear();
+    FUNCTION_STACK.clear();
+    currentFunction = "<module>";
     nextListIdentityIndex = 0;
     maxEvents = Math.max(1, nextMaxEvents);
     traceLimitExceeded = false;
@@ -318,11 +640,11 @@ public final class TraceHooks {
   }
 
   public static void emitMapStateAtLine(int line, String name, Map<?, ?> values) {
-    emit("line=" + line + " map-state " + name + "=" + buildMapVisualization(name, values, null, false, null, false));
+    emitV4Snapshot(line, name, buildMapRuntimeValue(values));
   }
 
   public static void emitMapStateAtLine(int line, String name, Map<?, ?> values, Object highlightedKey) {
-    emit("line=" + line + " map-state " + name + "=" + buildMapVisualization(name, values, highlightedKey, true, null, false));
+    emitV4Snapshot(line, name, buildMapRuntimeValue(values));
   }
 
   public static void emitSetStateAtLine(int line, String name, Set<?> values) {
@@ -404,8 +726,39 @@ public final class TraceHooks {
     Object deletedKey,
     boolean hasDeletedKey
   ) {
-    emit("line=" + line + " set-state " + name + "="
-        + buildSetVisualization(name, values, highlightedKey, hasHighlightedKey, deletedKey, hasDeletedKey));
+    emitV4Snapshot(line, name, buildSetRuntimeValue(values));
+  }
+
+  private static String buildMapRuntimeValue(Map<?, ?> values) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("{\"__type__\":\"map\",\"entries\":[");
+    int index = 0;
+    if (values != null) {
+      for (Map.Entry<?, ?> entry : values.entrySet()) {
+        if (index++ > 0) builder.append(',');
+        builder.append('[')
+            .append(serializeValue(entry.getKey()))
+            .append(',')
+            .append(serializeValue(entry.getValue()))
+            .append(']');
+      }
+    }
+    builder.append("]}");
+    return builder.toString();
+  }
+
+  private static String buildSetRuntimeValue(Set<?> values) {
+    StringBuilder builder = new StringBuilder();
+    builder.append("{\"__type__\":\"set\",\"values\":[");
+    int index = 0;
+    if (values != null) {
+      for (Object entry : values) {
+        if (index++ > 0) builder.append(',');
+        builder.append(serializeValue(entry));
+      }
+    }
+    builder.append("]}");
+    return builder.toString();
   }
 
   private static String buildMapVisualization(
