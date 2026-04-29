@@ -42,7 +42,7 @@ This means the V4 cutover is allowed to be breaking:
 
 `pnpm test:runtime-v4` is part of both `pnpm test` and `pnpm test:ci`. Any runtime instrumentation change that alters cross-language V4 parity, introduces unsupported raw payloads, or reopens known gaps should fail before merge.
 
-Python, JavaScript, TypeScript, and Java browser runtime clients now return V4 directly at `result.trace`; the browser clients no longer expose legacy trace steps. Java still has an internal `TraceHooks` raw-event assembly seam before native V4 emission, but the public Java runtime boundary is V4-only. The old synthetic `javaEvents` fixture field has been removed from the contract so fixture results cannot accidentally mask actual Java harness behavior.
+Python, JavaScript, TypeScript, and Java browser runtime clients now return V4 directly at `result.trace`; the browser clients no longer expose legacy trace steps. Java worker-client results now carry V4 at `trace`, while raw `TraceHooks` string events remain as an internal diagnostics/parity seam before native Java V4 emission. The public Java runtime boundary is V4-only. The old synthetic `javaEvents` fixture field has been removed from the contract so fixture results cannot accidentally mask actual Java harness behavior.
 
 The remaining legacy seams are internal raw worker traces used by migration checks, Java raw `TraceHooks` events before V4 assembly, and Python fixture execution while its runtime emitter is migrated. These are not supported public trace contracts.
 

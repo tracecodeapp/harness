@@ -4,7 +4,6 @@ import type {
   TraceExecutionOptions,
 } from '../../harness-core/src/runtime-types';
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { javaTraceHooksEventsToV4Trace } from '../../harness-core/src/trace-adapters/java';
 import { createEmptyRuntimeV4Trace } from '../../harness-core/src/trace-v4';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
@@ -55,22 +54,18 @@ class JavaRuntimeClient implements RuntimeClient {
       };
     }
 
-    const trace = javaTraceHooksEventsToV4Trace(rawResult.events, rawResult.sourceText, {
-      runId: 'java:run',
-      file: 'Solution.java',
-    });
     return {
       success: true,
       output: rawResult.output,
-      trace,
+      trace: rawResult.trace,
       consoleOutput: rawResult.consoleOutput,
       executionTimeMs: rawResult.executionTimeMs,
       ...(rawResult.traceLimitExceeded !== undefined
         ? { traceLimitExceeded: rawResult.traceLimitExceeded }
         : {}),
       ...(rawResult.timeoutReason ? { timeoutReason: rawResult.timeoutReason } : {}),
-      lineEventCount: trace.lineEventCount,
-      traceStepCount: trace.traceStepCount,
+      lineEventCount: rawResult.trace.lineEventCount,
+      traceStepCount: rawResult.trace.traceStepCount,
     };
   }
 

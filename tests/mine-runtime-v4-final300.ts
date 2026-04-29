@@ -9,10 +9,15 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
 import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
-import type { JavaWorkerClient, JavaWorkerTraceResult } from '../packages/harness-browser/src/java-worker-client';
+import type {
+  JavaWorkerClient,
+  JavaWorkerRawTraceResult,
+  JavaWorkerTraceResult,
+} from '../packages/harness-browser/src/java-worker-client';
 import type { ExecutionResult, LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
 import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
 import {
+  createEmptyRuntimeV4Trace,
   runtimeTraceContractToV4Events,
   withRuntimeV4TraceOptions,
   type RuntimeV4Event,
@@ -25,6 +30,7 @@ import {
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
 } from '../packages/harness-python/src/python-harness';
+import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
 
 const DEFAULT_FINAL300_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
@@ -431,7 +437,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     ): Promise<JavaWorkerTraceResult> => {
       const workerSource = await readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
       const augmentationSource = await readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8');
-      let response: JavaWorkerTraceResult | null = null;
+      let response: JavaWorkerRawTraceResult | null = null;
       let errorResponse: Error | null = null;
       const activeWorkerTimers = new Set<ReturnType<typeof setTimeout>>();
       const workerSetTimeout: typeof setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
@@ -472,7 +478,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
             errorResponse = new Error(String(payload?.error ?? 'Java worker error'));
             return;
           }
-          response = message.payload as JavaWorkerTraceResult;
+          response = message.payload as JavaWorkerRawTraceResult;
         },
         onmessage: null,
         importScripts: (...urls: string[]) => {
@@ -518,7 +524,15 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         }
         if (errorResponse) throw errorResponse;
         if (!response) throw new Error('Timed out waiting for local Java worker response');
-        return response;
+        return {
+          ...response,
+          trace: response.success
+            ? javaTraceHooksEventsToV4Trace(response.events, response.sourceText, {
+                runId: 'java:run',
+                file: 'Solution.java',
+              })
+            : createEmptyRuntimeV4Trace('java', { runId: 'java:run', file: 'Solution.java' }),
+        };
       } finally {
         closeWorker();
       }

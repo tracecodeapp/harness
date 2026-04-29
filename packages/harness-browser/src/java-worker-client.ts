@@ -1,4 +1,6 @@
 import type { CodeExecutionResult } from '../../harness-core/src/types';
+import { javaTraceHooksEventsToV4Trace } from '../../harness-core/src/trace-adapters/java';
+import { createEmptyRuntimeV4Trace, type RuntimeV4Trace } from '../../harness-core/src/trace-v4';
 
 type MessageId = string;
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -25,7 +27,7 @@ interface InitResult {
   loadTimeMs: number;
 }
 
-export interface JavaWorkerTraceResult {
+export interface JavaWorkerRawTraceResult {
   success: boolean;
   output?: unknown;
   events: string[];
@@ -37,6 +39,10 @@ export interface JavaWorkerTraceResult {
   traceLimitExceeded?: boolean;
   timeoutReason?: 'trace-limit';
   droppedEventCount?: number;
+}
+
+export interface JavaWorkerTraceResult extends JavaWorkerRawTraceResult {
+  trace: RuntimeV4Trace;
 }
 
 export interface JavaTraceExecutionOptions {
@@ -267,15 +273,24 @@ export class JavaWorkerClient {
     executionStyle: JavaExecutionStyle
   ): Promise<JavaWorkerTraceResult> {
     await this.init();
-    return this.executeWithTimeout(
+    const result = await this.executeWithTimeout(
       () =>
-        this.sendMessage<JavaWorkerTraceResult>(
+        this.sendMessage<JavaWorkerRawTraceResult>(
           'execute-with-tracing',
           { code, functionName, inputs, options, executionStyle },
           TRACING_TIMEOUT_MS + 5_000
         ),
       TRACING_TIMEOUT_MS
     );
+    return {
+      ...result,
+      trace: result.success
+        ? javaTraceHooksEventsToV4Trace(result.events, result.sourceText, {
+            runId: 'java:run',
+            file: 'Solution.java',
+          })
+        : createEmptyRuntimeV4Trace('java', { runId: 'java:run', file: 'Solution.java' }),
+    };
   }
 
   async executeCode(

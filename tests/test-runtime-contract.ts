@@ -338,6 +338,7 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
       success: true,
       output: nextOutput,
       events: ['line=1 return solve'],
+      trace: javaTraceHooksEventsToV4Trace(['line=1 return solve']),
       sourceText: 'return 7;',
       executionTimeMs: 1,
       consoleOutput: [],
