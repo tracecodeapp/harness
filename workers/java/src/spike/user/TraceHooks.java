@@ -237,7 +237,7 @@ public final class TraceHooks {
     int count = 0;
     for (KeyValuePair pair : parseKeyValuePairs(fragment)) {
       if (count++ > 0) builder.append(',');
-      builder.append(jsonString(pair.key.replace('.', '_'))).append(':').append(pair.value);
+      builder.append(jsonString(pair.key.replace('.', '_'))).append(':').append(asJsonValue(pair.value));
     }
     builder.append('}');
     return builder.toString();

@@ -20,22 +20,23 @@
       adjacencyLists: [],
     };
     const declarationPattern =
-      /\b((?:java\.util\.)?(?:HashMap|LinkedHashMap|TreeMap|Map|HashSet|LinkedHashSet|TreeSet|Set|ArrayList|LinkedList|List)\s*(?:<[^;=(){}]+?>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
+      /\b((?:java\.util\.)?(?:HashMap|LinkedHashMap|TreeMap|Map|HashSet|LinkedHashSet|TreeSet|Set|ArrayList|LinkedList|List)(?!\.)\s*(?:<[^;=(){}]+?>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
     for (const match of line.matchAll(declarationPattern)) {
       const rawType = match[1] ?? '';
       const typeSource = rawType.replace(/\s+/g, '');
+      const outerType = typeSource.replace(/<.*$/, '').replace(/^java\.util\./, '');
       const name = match[2];
       if (!name) continue;
-      if (/\b(?:HashMap|LinkedHashMap|TreeMap|Map)\b/.test(typeSource)) {
+      if (/^(?:HashMap|LinkedHashMap|TreeMap|Map)$/.test(outerType)) {
         collections.maps.push(name);
-      } else if (/\b(?:HashSet|LinkedHashSet|TreeSet|Set)\b/.test(typeSource)) {
+      } else if (/^(?:HashSet|LinkedHashSet|TreeSet|Set)$/.test(outerType)) {
         collections.sets.push(name);
       } else if (
-        /\b(?:ArrayList|LinkedList|List)\b/.test(typeSource) &&
+        /^(?:ArrayList|LinkedList|List)$/.test(outerType) &&
         /<\s*(?:java\.util\.)?(?:List|ArrayList|LinkedList)\s*</.test(rawType)
       ) {
         collections.adjacencyLists.push(name);
-      } else if (/\b(?:ArrayList|LinkedList|List)\b/.test(typeSource)) {
+      } else if (/^(?:ArrayList|LinkedList|List)$/.test(outerType)) {
         collections.lists.push(name);
       }
     }
