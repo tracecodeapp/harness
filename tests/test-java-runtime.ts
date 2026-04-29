@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
-import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 
 interface WorkerMessage {
   id?: string;
@@ -27,7 +27,7 @@ function assertCondition(condition: boolean, message: string): void {
 }
 
 function nativeJavaEvent(event: Record<string, unknown>): string {
-  return `v4:${JSON.stringify(event)}`;
+  return `trace:${JSON.stringify(event)}`;
 }
 
 async function loadWorkerSource(): Promise<string> {
@@ -643,11 +643,11 @@ class Solution {
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');
     assertCondition(
       Array.isArray(graphExecute.events) &&
-        graphExecute.events.every((event) => event.startsWith('v4:')),
-      'Java graph adjacency runtime events should be native V4'
+        graphExecute.events.every((event) => event.startsWith('trace:')),
+      'Java graph adjacency runtime events should be native runtime trace'
     );
 
-    const graphTrace = javaTraceHooksEventsToV4Trace(graphExecute.events ?? [], undefined, {
+    const graphTrace = javaTraceHooksEventsToRuntimeTrace(graphExecute.events ?? [], undefined, {
       runId: 'java:test',
       file: 'Solution.java',
     });
@@ -660,7 +660,7 @@ class Solution {
         'path' in event.target &&
         JSON.stringify(event.target.path) === JSON.stringify([1])
       ),
-      'Java graph adjacency runtime events should emit V4 indexed receiver mutations'
+      'Java graph adjacency runtime events should emit runtime trace indexed receiver mutations'
     );
     assertCondition(
       graphTrace.events.some((event) =>
@@ -670,14 +670,14 @@ class Solution {
         'path' in event.target &&
         JSON.stringify(event.target.path) === JSON.stringify([0])
       ),
-      'Java graph adjacency traversal should emit V4 indexed reads'
+      'Java graph adjacency traversal should emit runtime trace indexed reads'
     );
     assertCondition(
       !JSON.stringify(graphTrace.events).includes('graph-adjacency') &&
         !JSON.stringify(graphTrace.events).includes('objectKinds'),
-      'Java V4 graph traces should not carry legacy visualization classifications'
+      'Java runtime trace graph traces should not carry visualization classifications'
     );
-    console.log('PASS: java worker graph adjacency events normalize to V4 accesses');
+    console.log('PASS: java worker graph adjacency events normalize to runtime trace accesses');
 
     let invalidRejected = false;
     try {

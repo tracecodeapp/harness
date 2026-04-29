@@ -1,8 +1,8 @@
 import type { Language } from './runtime-types';
 
-export const RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION = 'v4-draft-2026-04-28';
+export const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 
-export type RuntimeV4EventKind =
+export type RuntimeTraceEventKind =
   | 'line'
   | 'call'
   | 'return'
@@ -14,49 +14,49 @@ export type RuntimeV4EventKind =
   | 'exception'
   | 'timeout';
 
-export type RuntimeV4Target =
+export type RuntimeTraceTarget =
   | { variable: string }
   | { variable: string; path: Array<string | number> }
   | { objectId: string; path?: Array<string | number> };
 
-interface RuntimeV4BaseEvent {
-  kind: RuntimeV4EventKind;
+interface RuntimeTraceBaseEvent {
+  kind: RuntimeTraceEventKind;
   runId: string;
   file?: string;
   line?: number;
   frameId?: string;
 }
 
-export type RuntimeV4Event =
-  | (RuntimeV4BaseEvent & { kind: 'line'; line: number; function?: string })
-  | (RuntimeV4BaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> })
-  | (RuntimeV4BaseEvent & { kind: 'return'; line: number; function?: string; value?: unknown })
-  | (RuntimeV4BaseEvent & { kind: 'read' | 'write'; line: number; target: RuntimeV4Target; value?: unknown })
-  | (RuntimeV4BaseEvent & { kind: 'mutate'; line: number; target: RuntimeV4Target; method?: string; args?: unknown[] })
-  | (RuntimeV4BaseEvent & { kind: 'snapshot'; line: number; target: RuntimeV4Target; value: unknown })
-  | (RuntimeV4BaseEvent & { kind: 'stdout'; text: string })
-  | (RuntimeV4BaseEvent & { kind: 'exception' | 'timeout'; message: string });
+export type RuntimeTraceEvent =
+  | (RuntimeTraceBaseEvent & { kind: 'line'; line: number; function?: string })
+  | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> })
+  | (RuntimeTraceBaseEvent & { kind: 'return'; line: number; function?: string; value?: unknown })
+  | (RuntimeTraceBaseEvent & { kind: 'read' | 'write'; line: number; target: RuntimeTraceTarget; value?: unknown })
+  | (RuntimeTraceBaseEvent & { kind: 'mutate'; line: number; target: RuntimeTraceTarget; method?: string; args?: unknown[] })
+  | (RuntimeTraceBaseEvent & { kind: 'snapshot'; line: number; target: RuntimeTraceTarget; value: unknown })
+  | (RuntimeTraceBaseEvent & { kind: 'stdout'; text: string })
+  | (RuntimeTraceBaseEvent & { kind: 'exception' | 'timeout'; message: string });
 
-export interface RuntimeV4Trace {
-  schemaVersion: typeof RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION;
+export interface RuntimeTrace {
+  schemaVersion: typeof RUNTIME_TRACE_SCHEMA_VERSION;
   language: Language;
   runId: string;
-  events: RuntimeV4Event[];
+  events: RuntimeTraceEvent[];
   lineEventCount: number;
   traceStepCount: number;
 }
 
-export interface RuntimeV4TraceOptions {
+export interface RuntimeTraceOptions {
   runId?: string;
   file?: string;
 }
 
-export function createEmptyRuntimeV4Trace(
+export function createEmptyRuntimeTrace(
   language: Language,
-  options: RuntimeV4TraceOptions = {}
-): RuntimeV4Trace {
+  options: RuntimeTraceOptions = {}
+): RuntimeTrace {
   return {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language,
     runId: options.runId ?? `${language}:run`,
     events: [],
@@ -65,18 +65,18 @@ export function createEmptyRuntimeV4Trace(
   };
 }
 
-export interface RuntimeV4ParityAccessTarget {
+export interface RuntimeTraceParityAccessTarget {
   kind: 'read' | 'write' | 'mutate';
   variable?: string;
   pathDepth?: number;
   method?: string;
 }
 
-export interface RuntimeV4ParitySignature {
+export interface RuntimeTraceParitySignature {
   lineSequence: number[];
-  eventKindsByLine: Record<number, RuntimeV4EventKind[]>;
+  eventKindsByLine: Record<number, RuntimeTraceEventKind[]>;
   variableSnapshotsByLine: Record<number, string[]>;
-  accessTargetsByLine: Record<number, RuntimeV4ParityAccessTarget[]>;
+  accessTargetsByLine: Record<number, RuntimeTraceParityAccessTarget[]>;
   callReturnShape: Array<'call' | 'return'>;
 }
 
@@ -84,14 +84,14 @@ function sortedUnique(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
-function sortedUniqueEventKinds(values: RuntimeV4EventKind[]): RuntimeV4EventKind[] {
+function sortedUniqueEventKinds(values: RuntimeTraceEventKind[]): RuntimeTraceEventKind[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
-export function withRuntimeV4TraceOptions(
-  trace: RuntimeV4Trace,
-  options: RuntimeV4TraceOptions = {}
-): RuntimeV4Trace {
+export function withRuntimeTraceOptions(
+  trace: RuntimeTrace,
+  options: RuntimeTraceOptions = {}
+): RuntimeTrace {
   const runId = options.runId ?? trace.runId;
   return {
     ...trace,
@@ -104,11 +104,11 @@ export function withRuntimeV4TraceOptions(
   };
 }
 
-export function buildRuntimeV4ParitySignature(trace: RuntimeV4Trace): RuntimeV4ParitySignature {
+export function buildRuntimeTraceParitySignature(trace: RuntimeTrace): RuntimeTraceParitySignature {
   const lineSequence: number[] = [];
-  const eventKindsByLine = new Map<number, RuntimeV4EventKind[]>();
+  const eventKindsByLine = new Map<number, RuntimeTraceEventKind[]>();
   const variableSnapshotsByLine = new Map<number, string[]>();
-  const accessTargetsByLine = new Map<number, RuntimeV4ParityAccessTarget[]>();
+  const accessTargetsByLine = new Map<number, RuntimeTraceParityAccessTarget[]>();
   const callReturnShape: Array<'call' | 'return'> = [];
 
   for (const event of trace.events) {

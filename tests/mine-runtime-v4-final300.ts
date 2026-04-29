@@ -16,12 +16,12 @@ import type {
 } from '../packages/harness-browser/src/java-worker-client';
 import type { ExecutionResult } from '../packages/harness-core/src/types';
 import {
-  createEmptyRuntimeV4Trace,
-  RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
-  withRuntimeV4TraceOptions,
-  type RuntimeV4Event,
-  type RuntimeV4Trace,
-} from '../packages/harness-core/src/trace-v4';
+  createEmptyRuntimeTrace,
+  RUNTIME_TRACE_SCHEMA_VERSION,
+  withRuntimeTraceOptions,
+  type RuntimeTraceEvent,
+  type RuntimeTrace,
+} from '../packages/harness-core/src/runtime-trace';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
@@ -29,7 +29,7 @@ import {
   PYTHON_TRACE_SERIALIZE_FUNCTION,
   toPythonLiteral,
 } from '../packages/harness-python/src/python-harness';
-import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 
 const DEFAULT_FINAL300_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
@@ -89,7 +89,7 @@ interface WorkerMessage {
 interface TraceRun {
   language: MineLanguage;
   output: unknown;
-  trace: RuntimeV4Trace;
+  trace: RuntimeTrace;
   signature: MineSignature;
 }
 
@@ -153,7 +153,7 @@ function increment(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
 }
 
-function targetKey(event: RuntimeV4Event): string | null {
+function targetKey(event: RuntimeTraceEvent): string | null {
   if ((event.kind !== 'read' && event.kind !== 'write' && event.kind !== 'mutate') || !('target' in event)) {
     return null;
   }
@@ -163,7 +163,7 @@ function targetKey(event: RuntimeV4Event): string | null {
   return `${event.kind}:${event.target.variable}:path${pathDepth}${method}`;
 }
 
-function buildMineSignature(trace: RuntimeV4Trace): MineSignature {
+function buildMineSignature(trace: RuntimeTrace): MineSignature {
   const eventKindCounts: Record<string, number> = {};
   const accessFacts: Record<string, number> = {};
   const accessShapeFacts: Record<string, number> = {};
@@ -223,7 +223,7 @@ async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
 }
 
 async function runPythonScript(script: string): Promise<string> {
-  const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-v4-mine-python-'));
+  const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-mine-python-'));
   const scriptPath = join(tempDir, 'trace.py');
   await writeFile(scriptPath, script, 'utf8');
   try {
@@ -256,10 +256,10 @@ print(json.dumps({
     'traceStepCount': len(_trace_events)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { traceEvents: RuntimeV4Event[]; result: unknown; lineEventCount?: number; traceStepCount?: number };
+  const parsed = JSON.parse(stdout) as { traceEvents: RuntimeTraceEvent[]; result: unknown; lineEventCount?: number; traceStepCount?: number };
   const runId = `mine:${entry.slug}:python`;
-  const trace: RuntimeV4Trace = {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+  const trace: RuntimeTrace = {
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language: 'python',
     runId,
     events: parsed.traceEvents.map((event) => ({
@@ -357,7 +357,7 @@ function normalizeTopLevelPublicClasses(source: string): string {
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {
   const stringFiles = new Map<string, string>();
-  const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-v4-mine-java-'));
+  const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-mine-java-'));
 
   async function rewriteSource(
     source: string,
@@ -518,19 +518,22 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         return {
           ...response,
           trace: response.success
-            ? javaTraceHooksEventsToV4Trace(response.events, response.sourceText, {
+            ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
                 runId: 'java:run',
                 file: 'Solution.java',
               })
-            : createEmptyRuntimeV4Trace('java', { runId: 'java:run', file: 'Solution.java' }),
+            : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'Solution.java' }),
         };
       } finally {
         closeWorker();
       }
     },
-    executeCode: async () => { throw new Error('executeCode is not used by V4 mining'); },
-    executeCodeInterviewMode: async () => { throw new Error('executeCodeInterviewMode is not used by V4 mining'); },
-    terminate: () => { void rootPromise.then((root) => rm(root, { recursive: true, force: true })); },
+    executeCode: async () => { throw new Error('executeCode is not used by runtime trace mining'); },
+    executeCodeInterviewMode: async () => { throw new Error('executeCodeInterviewMode is not used by runtime trace mining'); },
+    terminate: () => {
+      if (process.env.TRACECODE_KEEP_JAVA_MINE_TEMP === '1') return;
+      void rootPromise.then((root) => rm(root, { recursive: true, force: true }));
+    },
   };
 
   return workerClient as unknown as JavaWorkerClient;
@@ -548,7 +551,7 @@ async function executeJavaTrace(entry: Final300Entry, code: string, maxTraceStep
       entry.runtimeExecutionStyle ?? 'function'
     );
     if (!result.success) throw new Error(`java tracing failed: ${result.error ?? 'unknown error'}`);
-    const trace = withRuntimeV4TraceOptions(result.trace, {
+    const trace = withRuntimeTraceOptions(result.trace, {
       runId: `mine:${entry.slug}:java`,
       file: entry.source.path,
     });
@@ -664,7 +667,7 @@ async function main(): Promise<void> {
   const sourceRoot = inferCorpusRoot(corpusPath);
   const limit = parseNumberFlag('limit', 20);
   const offset = parseNumberFlag('offset', 0);
-  const reportPath = resolve(parseStringFlag('report') ?? join(process.cwd(), 'reports', 'runtime-v4-final300-mine.json'));
+  const reportPath = resolve(parseStringFlag('report') ?? join(process.cwd(), 'reports', 'runtime-trace-final300-mine.json'));
   const maxTraceSteps = parseNumberFlag('max-trace-steps', 2000);
   const maxLineEvents = parseNumberFlag('max-line-events', 4000);
   const failOnDrift = hasFlag('fail-on-drift');
@@ -740,7 +743,7 @@ async function main(): Promise<void> {
   };
   await writeReport(reportPath, report);
 
-  console.log(`Runtime V4 final300 mining: groups=${groups.length} comparisons=${compared} drifts=${drifts.length} failures=${failures.length}`);
+  console.log(`runtime trace final300 mining: groups=${groups.length} comparisons=${compared} drifts=${drifts.length} failures=${failures.length}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);
   console.log(`Report: ${reportPath}`);
   for (const cluster of clusterDrifts(drifts).slice(0, 5)) {

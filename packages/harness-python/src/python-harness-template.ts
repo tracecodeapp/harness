@@ -346,7 +346,7 @@ def _serialize(obj, depth=0, state=None):
 `;
 
 /**
- * Interview materialization serializer, preserving current legacy behavior.
+ * Interview materialization serializer, preserving current current behavior.
  */
 export const TEMPLATE_PYTHON_INTERVIEW_MATERIALIZE_SERIALIZE_FUNCTION = `
 def _serialize(obj, depth=0):

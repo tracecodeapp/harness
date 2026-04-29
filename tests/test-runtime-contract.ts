@@ -15,7 +15,7 @@ import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harnes
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
 import type { Language, LanguageRuntimeProfile, RuntimeCapabilities } from '../packages/harness-core/src/runtime-types';
 import {
-  javaTraceHooksEventsToV4Trace,
+  javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
 
@@ -261,8 +261,8 @@ function runPythonCase(
 }
 
 async function testJavaSerializedResultNormalization(): Promise<void> {
-  const trace = javaTraceHooksEventsToV4Trace([
-    `v4:${JSON.stringify({ kind: 'return', line: 1, function: 'solve', value: [1, true, 'ok'] })}`,
+  const trace = javaTraceHooksEventsToRuntimeTrace([
+    `trace:${JSON.stringify({ kind: 'return', line: 1, function: 'solve', value: [1, true, 'ok'] })}`,
   ]);
   assertCondition(
     stableStringify(normalizeJavaSerializedResult('[1,true,"ok"]')) === stableStringify([1, true, 'ok']),
@@ -270,7 +270,7 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
   );
   assertCondition(
     stableStringify(trace.events.find((event) => event.kind === 'return')?.value) === stableStringify([1, true, 'ok']),
-    'Java TraceHooks V4 assembly should decode serialized return values'
+    'Java TraceHooks runtime trace assembly should decode serialized return values'
   );
   assertCondition(
     normalizeJavaSerializedResult('"true"') === 'true',
@@ -283,9 +283,9 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
     executeWithTracing: async () => ({
       success: true,
       output: nextOutput,
-      events: [`v4:${JSON.stringify({ kind: 'return', line: 1, function: 'solve' })}`],
-      trace: javaTraceHooksEventsToV4Trace([
-        `v4:${JSON.stringify({ kind: 'return', line: 1, function: 'solve' })}`,
+      events: [`trace:${JSON.stringify({ kind: 'return', line: 1, function: 'solve' })}`],
+      trace: javaTraceHooksEventsToRuntimeTrace([
+        `trace:${JSON.stringify({ kind: 'return', line: 1, function: 'solve' })}`,
       ]),
       sourceText: 'return 7;',
       executionTimeMs: 1,

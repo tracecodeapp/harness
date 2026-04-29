@@ -1,5 +1,5 @@
 import type { Language } from './runtime-types';
-import type { RuntimeV4Trace } from './trace-v4';
+import type { RuntimeTrace } from './runtime-trace';
 
 export type RuntimeRawEmissionKind =
   | 'line'
@@ -11,7 +11,7 @@ export type RuntimeRawEmissionKind =
   | 'read'
   | 'write'
   | 'mutate'
-  | 'legacy-visualization-state';
+  | 'visualization-state';
 
 export interface RuntimeRawEmissionSummary {
   language: Language;
@@ -23,10 +23,10 @@ function sortedUnique<T extends string>(values: T[]): T[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
-function javaNativeV4PayloadKind(event: string): RuntimeRawEmissionKind | null {
-  if (!event.startsWith('v4:')) return null;
+function javaNativeTracePayloadKind(event: string): RuntimeRawEmissionKind | null {
+  if (!event.startsWith('trace:')) return null;
   try {
-    const parsed = JSON.parse(event.slice('v4:'.length)) as { kind?: unknown };
+    const parsed = JSON.parse(event.slice('trace:'.length)) as { kind?: unknown };
     if (parsed.kind === 'line') return 'line';
     if (parsed.kind === 'call') return 'call';
     if (parsed.kind === 'return') return 'return';
@@ -47,7 +47,7 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
   const unsupported: string[] = [];
 
   for (const event of events) {
-    const nativeKind = javaNativeV4PayloadKind(event);
+    const nativeKind = javaNativeTracePayloadKind(event);
     if (nativeKind) {
       kinds.push(nativeKind);
       continue;
@@ -62,7 +62,7 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
   };
 }
 
-export function summarizeRuntimeV4Emissions(trace: RuntimeV4Trace): RuntimeRawEmissionSummary {
+export function summarizeRuntimeTraceEmissions(trace: RuntimeTrace): RuntimeRawEmissionSummary {
   const kinds: RuntimeRawEmissionKind[] = [];
   for (const event of trace.events) {
     if (event.kind === 'line') kinds.push('line');
@@ -74,7 +74,7 @@ export function summarizeRuntimeV4Emissions(trace: RuntimeV4Trace): RuntimeRawEm
     if (event.kind === 'read') kinds.push('read');
     if (event.kind === 'write') kinds.push('write');
     if (event.kind === 'mutate') kinds.push('mutate');
-    if (JSON.stringify(event).includes('visualization')) kinds.push('legacy-visualization-state');
+    if (JSON.stringify(event).includes('visualization')) kinds.push('visualization-state');
   }
   return {
     language: trace.language,
@@ -98,10 +98,10 @@ export interface RuntimeRawEmissionParityMismatch {
 }
 
 const RAW_PARITY_IGNORED_KINDS = new Set<RuntimeRawEmissionKind>([
-  // Legacy visualization state exists while the raw trace bridge is still being
-  // retired. It must never create V4 facts directly, so it is ignored for the
+  // Visualization state exists while the raw trace bridge is still being
+  // retired. It must never create runtime trace facts directly, so it is ignored for the
   // coarse cross-language emission parity signal.
-  'legacy-visualization-state',
+  'visualization-state',
 ]);
 
 function parityKinds(summary: RuntimeRawEmissionSummary): RuntimeRawEmissionKind[] {

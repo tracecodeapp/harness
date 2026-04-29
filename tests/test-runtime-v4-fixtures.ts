@@ -10,18 +10,18 @@ import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
 import type { ExecutionResult } from '../packages/harness-core/src/types';
 import {
-  createEmptyRuntimeV4Trace,
-  RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
-  type RuntimeV4Event,
-  type RuntimeV4EventKind,
-  type RuntimeV4ParityAccessTarget,
-  type RuntimeV4Trace,
-} from '../packages/harness-core/src/trace-v4';
+  createEmptyRuntimeTrace,
+  RUNTIME_TRACE_SCHEMA_VERSION,
+  type RuntimeTraceEvent,
+  type RuntimeTraceEventKind,
+  type RuntimeTraceParityAccessTarget,
+  type RuntimeTrace,
+} from '../packages/harness-core/src/runtime-trace';
 import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
   summarizeJavaRawEmissions,
-  summarizeRuntimeV4Emissions,
+  summarizeRuntimeTraceEmissions,
   type RuntimeRawEmissionSummary,
 } from '../packages/harness-core/src/runtime-raw-emission-contract';
 import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-runtime-client';
@@ -30,7 +30,7 @@ import type {
   JavaWorkerRawTraceResult,
   JavaWorkerTraceResult,
 } from '../packages/harness-browser/src/java-worker-client';
-import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import {
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
@@ -58,10 +58,8 @@ const JAVA_BIN_CANDIDATES = [
 ].filter((candidate): candidate is string => Boolean(candidate));
 const JAVA_BIN = JAVA_BIN_CANDIDATES.find((candidate) => candidate === 'java' || existsSync(candidate)) ?? 'java';
 
-// The fixture gate currently normalizes legacy runtime outputs into V4 so the
-// target contract can be tested before the native V4 cutover is complete. This
-// bridge must shrink over time; language runtimes should ultimately emit V4
-// events directly instead of depending on post-hoc adapter coercion.
+// The fixture gate verifies that each language runtime emits the default
+// runtime trace contract directly instead of depending on post-hoc coercion.
 
 interface WorkerMessage {
   id?: string;
@@ -76,20 +74,20 @@ interface FixtureCase {
   inputs: Record<string, unknown>;
   anchors: Record<string, Record<Language, string>>;
   expect: Record<string, {
-    eventKinds: RuntimeV4EventKind[];
+    eventKinds: RuntimeTraceEventKind[];
     variableSnapshots: string[];
-    accessTargets: RuntimeV4ParityAccessTarget[];
+    accessTargets: RuntimeTraceParityAccessTarget[];
   }>;
   expectByLanguage?: Partial<Record<Language, Record<string, {
-    eventKinds: RuntimeV4EventKind[];
+    eventKinds: RuntimeTraceEventKind[];
     variableSnapshots: string[];
-    accessTargets: RuntimeV4ParityAccessTarget[];
+    accessTargets: RuntimeTraceParityAccessTarget[];
   }>>>;
   expectSummary?: {
-    accessTargets?: Array<RuntimeV4ParityAccessTarget & { count: number }>;
+    accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   };
   expectSummaryByLanguage?: Partial<Record<Language, {
-    accessTargets?: Array<RuntimeV4ParityAccessTarget & { count: number }>;
+    accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   }>>;
   knownGaps?: Partial<Record<Language, Record<string, string>>>;
 }
@@ -137,9 +135,9 @@ function sortedUnique(values: string[]): string[] {
 }
 
 function sortedUniqueAccessTargets(
-  values: RuntimeV4ParityAccessTarget[]
-): RuntimeV4ParityAccessTarget[] {
-  const byKey = new Map<string, RuntimeV4ParityAccessTarget>();
+  values: RuntimeTraceParityAccessTarget[]
+): RuntimeTraceParityAccessTarget[] {
+  const byKey = new Map<string, RuntimeTraceParityAccessTarget>();
   for (const value of values) {
     byKey.set(stableStringify(value), value);
   }
@@ -199,7 +197,7 @@ async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
 }
 
 async function runPythonScript(script: string): Promise<string> {
-  const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-v4-python-'));
+  const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-python-'));
   const scriptPath = join(tempDir, 'trace.py');
   await writeFile(scriptPath, script, 'utf8');
 
@@ -229,7 +227,7 @@ async function runPythonScript(script: string): Promise<string> {
 }
 
 interface FixtureTraceRun {
-  trace: RuntimeV4Trace;
+  trace: RuntimeTrace;
   rawSummary: RuntimeRawEmissionSummary;
 }
 
@@ -258,9 +256,9 @@ print(json.dumps({
     'traceStepCount': len(_trace_events)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { traceEvents: RuntimeV4Event[]; lineEventCount?: number; traceStepCount?: number };
-  const trace: RuntimeV4Trace = {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+  const parsed = JSON.parse(stdout) as { traceEvents: RuntimeTraceEvent[]; lineEventCount?: number; traceStepCount?: number };
+  const trace: RuntimeTrace = {
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language: 'python',
     runId: `python:${fixture.id}`,
     events: parsed.traceEvents.map((event) => ({
@@ -271,7 +269,7 @@ print(json.dumps({
     lineEventCount: parsed.traceEvents.filter((event) => event.kind === 'line').length,
     traceStepCount: parsed.traceStepCount ?? parsed.traceEvents.length,
   };
-  const rawSummary = summarizeRuntimeV4Emissions(trace);
+  const rawSummary = summarizeRuntimeTraceEmissions(trace);
   assertSupportedRawEmissions(rawSummary, `${fixture.id}:python`);
   return { trace, rawSummary };
 }
@@ -355,11 +353,11 @@ async function executeJavaScriptTrace(
     options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
   });
   assertCondition(result.success === true, `${language} tracing failed: ${result.error ?? 'unknown error'}`);
-  const rawSummary = summarizeRuntimeV4Emissions(result.trace);
+  const rawSummary = summarizeRuntimeTraceEmissions(result.trace);
   assertSupportedRawEmissions(rawSummary, `${fixture.id}:${language}`);
   assertCondition(
     Array.isArray((result.trace as unknown as { events?: unknown[] }).events),
-    `${fixture.id}:${language} worker trace must be native V4`
+    `${fixture.id}:${language} worker trace must be native runtime trace`
   );
   return {
     trace: result.trace,
@@ -373,7 +371,7 @@ function normalizeTopLevelPublicClasses(source: string): string {
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {
   const stringFiles = new Map<string, string>();
-  const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-v4-java-'));
+  const rootPromise = mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-java-'));
 
   async function rewriteSource(
     source: string,
@@ -557,21 +555,21 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         return {
           ...response,
           trace: response.success
-            ? javaTraceHooksEventsToV4Trace(response.events, response.sourceText, {
+            ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
                 runId: 'java:run',
                 file: 'Solution.java',
               })
-            : createEmptyRuntimeV4Trace('java', { runId: 'java:run', file: 'Solution.java' }),
+            : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'Solution.java' }),
         };
       } finally {
         closeWorker();
       }
     },
     executeCode: async () => {
-      throw new Error('executeCode is not used by V4 fixtures');
+      throw new Error('executeCode is not used by runtime trace fixtures');
     },
     executeCodeInterviewMode: async () => {
-      throw new Error('executeCodeInterviewMode is not used by V4 fixtures');
+      throw new Error('executeCodeInterviewMode is not used by runtime trace fixtures');
     },
     terminate: () => {
       void rootPromise.then((root) => rm(root, { recursive: true, force: true }));
@@ -611,12 +609,12 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
     const rawSummary = summarizeJavaRawEmissions(rawResult.events);
     assertSupportedRawEmissions(rawSummary, `${fixture.id}:java`);
     assertCondition(
-      rawResult.events.every((event) => event.startsWith('v4:')),
-      `${fixture.id}:java TraceHooks must emit native V4 events`
+      rawResult.events.every((event) => event.startsWith('trace:')),
+      `${fixture.id}:java TraceHooks must emit native runtime trace events`
     );
     assertCondition(
       Array.isArray((result.trace as unknown as { events?: unknown[] }).events),
-      `${fixture.id}:java public trace must be native V4`
+      `${fixture.id}:java public trace must be native runtime trace`
     );
     return {
       trace: result.trace,
@@ -631,23 +629,23 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
 }
 
 function projectRoleSignature(
-  trace: RuntimeV4Trace,
+  trace: RuntimeTrace,
   roleLines: Record<string, number>
 ): Record<string, {
-  eventKinds: RuntimeV4EventKind[];
+  eventKinds: RuntimeTraceEventKind[];
   variableSnapshots: string[];
-  accessTargets: RuntimeV4ParityAccessTarget[];
+  accessTargets: RuntimeTraceParityAccessTarget[];
 }> {
   const byRole: Record<string, {
-    eventKinds: RuntimeV4EventKind[];
+    eventKinds: RuntimeTraceEventKind[];
     variableSnapshots: string[];
-    accessTargets: RuntimeV4ParityAccessTarget[];
+    accessTargets: RuntimeTraceParityAccessTarget[];
   }> = {};
 
   for (const [role, line] of Object.entries(roleLines)) {
     const roleEvents = trace.events.filter((event) => event.line === line);
     byRole[role] = {
-      eventKinds: sortedUnique(roleEvents.map((event) => event.kind)) as RuntimeV4EventKind[],
+      eventKinds: sortedUnique(roleEvents.map((event) => event.kind)) as RuntimeTraceEventKind[],
       variableSnapshots: sortedUnique(roleEvents.flatMap((event) =>
         event.kind === 'snapshot' && 'variable' in event.target ? [event.target.variable] : []
       )),
@@ -673,7 +671,7 @@ function projectRoleSignature(
   return byRole;
 }
 
-function assertNoLegacyVisualization(trace: RuntimeV4Trace, label: string): void {
+function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
     !serialized.includes('visualization') &&
@@ -681,14 +679,14 @@ function assertNoLegacyVisualization(trace: RuntimeV4Trace, label: string): void
       !serialized.includes('hashMaps') &&
       !serialized.includes('graph-adjacency') &&
       !serialized.includes('linked-list'),
-    `${label} leaked legacy visualization classification into V4 events`
+    `${label} leaked visualization classification into runtime trace events`
   );
 }
 
-function projectTraceSummary(trace: RuntimeV4Trace): {
-  accessTargets: Array<RuntimeV4ParityAccessTarget & { count: number }>;
+function projectTraceSummary(trace: RuntimeTrace): {
+  accessTargets: Array<RuntimeTraceParityAccessTarget & { count: number }>;
 } {
-  const counts = new Map<string, { target: RuntimeV4ParityAccessTarget & { count: number } }>();
+  const counts = new Map<string, { target: RuntimeTraceParityAccessTarget & { count: number } }>();
   for (const event of trace.events) {
     if (
       (event.kind !== 'read' && event.kind !== 'write' && event.kind !== 'mutate') ||
@@ -698,7 +696,7 @@ function projectTraceSummary(trace: RuntimeV4Trace): {
     }
     const pathDepth =
       'path' in event.target && Array.isArray(event.target.path) ? event.target.path.length : undefined;
-    const target: RuntimeV4ParityAccessTarget & { count: number } = {
+    const target: RuntimeTraceParityAccessTarget & { count: number } = {
       kind: event.kind,
       variable: event.target.variable,
       ...(pathDepth !== undefined ? { pathDepth } : {}),
@@ -733,13 +731,13 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
     typescript: await executeJavaScriptTrace('typescript', workerSource, sources.typescript, fixture),
     java: await executeJavaTrace(sources.java, fixture),
   };
-  const traces: Record<Language, RuntimeV4Trace> = {
+  const traces: Record<Language, RuntimeTrace> = {
     python: runs.python.trace,
     javascript: runs.javascript.trace,
     typescript: runs.typescript.trace,
     java: runs.java.trace,
   };
-  if (process.env.TRACECODE_DEBUG_RUNTIME_V4_FIXTURE === fixture.id) {
+  if (process.env.TRACECODE_DEBUG_RUNTIME_TRACE_FIXTURE === fixture.id) {
     for (const language of Object.keys(traces) as Language[]) {
       console.log(`DEBUG ${fixture.id}:${language}`);
       console.log(JSON.stringify(traces[language].events, null, 2));
@@ -775,7 +773,7 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
     );
     assertCondition(
       stableStringify(actualForLanguage) === stableStringify(expectedForLanguage),
-      `${fixture.id}: ${language} V4 fixture signature drifted.\nExpected: ${stableStringify(expectedForLanguage)}\nReceived: ${stableStringify(actualForLanguage)}`
+      `${fixture.id}: ${language} runtime trace fixture signature drifted.\nExpected: ${stableStringify(expectedForLanguage)}\nReceived: ${stableStringify(actualForLanguage)}`
     );
     const expectedSummary = {
       ...(fixture.expectSummary ?? {}),
@@ -785,10 +783,10 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
       const actualSummary = projectTraceSummary(traces[language]);
       assertCondition(
         stableStringify(actualSummary.accessTargets) === stableStringify(expectedSummary.accessTargets),
-        `${fixture.id}: ${language} V4 fixture summary drifted.\nExpected: ${stableStringify(expectedSummary.accessTargets)}\nReceived: ${stableStringify(actualSummary.accessTargets)}`
+        `${fixture.id}: ${language} runtime trace fixture summary drifted.\nExpected: ${stableStringify(expectedSummary.accessTargets)}\nReceived: ${stableStringify(actualSummary.accessTargets)}`
       );
     }
-    assertNoLegacyVisualization(traces[language], `${fixture.id}:${language}`);
+    assertNoUnsupportedVisualization(traces[language], `${fixture.id}:${language}`);
   }
 }
 
@@ -802,7 +800,7 @@ async function main(): Promise<void> {
   for (const fixtureName of fixtureNames) {
     await runFixture(fixtureName, workerSource);
   }
-  console.log(`PASS: Runtime V4 fixture parity (${fixtureNames.length} fixtures)`);
+  console.log(`PASS: runtime trace fixture parity (${fixtureNames.length} fixtures)`);
 }
 
 main().catch((error) => {

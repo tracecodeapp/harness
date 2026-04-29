@@ -1,6 +1,6 @@
 import type { CodeExecutionResult } from '../../harness-core/src/types';
-import { javaTraceHooksEventsToV4Trace } from '../../harness-core/src/trace-adapters/java';
-import { createEmptyRuntimeV4Trace, type RuntimeV4Trace } from '../../harness-core/src/trace-v4';
+import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
+import { createEmptyRuntimeTrace, type RuntimeTrace } from '../../harness-core/src/runtime-trace';
 
 type MessageId = string;
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -42,7 +42,7 @@ export interface JavaWorkerRawTraceResult {
 }
 
 export interface JavaWorkerTraceResult extends JavaWorkerRawTraceResult {
-  trace: RuntimeV4Trace;
+  trace: RuntimeTrace;
 }
 
 export interface JavaTraceExecutionOptions {
@@ -285,11 +285,11 @@ export class JavaWorkerClient {
     return {
       ...result,
       trace: result.success
-        ? javaTraceHooksEventsToV4Trace(result.events, result.sourceText, {
+        ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
             runId: 'java:run',
             file: 'Solution.java',
           })
-        : createEmptyRuntimeV4Trace('java', { runId: 'java:run', file: 'Solution.java' }),
+        : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'Solution.java' }),
     };
   }
 

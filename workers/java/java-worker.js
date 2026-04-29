@@ -342,6 +342,9 @@ function treeExpression(value) {
 
 function buildJavaExpression(value, expectedType) {
   const normalizedType = expectedType ? stripGenericType(expectedType) : null;
+  if (normalizedType === 'char' && typeof value === 'string' && value.length === 1) {
+    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  }
   if (Array.isArray(value)) {
     if (normalizedType?.startsWith('List<')) {
       return toJavaListLiteral(value, normalizedType);
@@ -417,6 +420,15 @@ function extractMethodParameters(source, methodName) {
         name: segment.slice(lastSpace + 1).trim(),
       };
     });
+}
+
+function extractMethodReturnType(source, methodName) {
+  const compact = source.replace(/\s+/g, ' ');
+  const escapedMethod = methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = compact.match(
+    new RegExp(`\\b(?:public|private|protected|static|final|synchronized|abstract|native|strictfp|\\s)*([A-Za-z_][A-Za-z0-9_<>,.?\\[\\]\\s]*)\\s+${escapedMethod}\\s*\\(`)
+  );
+  return match?.[1]?.trim() ?? null;
 }
 
 function indentBlock(source, spaces = 2) {
@@ -507,7 +519,50 @@ function findMatchingParen(source, openIndex) {
   return closeIndex;
 }
 
+function findMatchingBrace(source, openIndex) {
+  let depth = 0;
+  let closeIndex = -1;
+  scanJavaCode(source, openIndex, source.length, (index, ch) => {
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        closeIndex = index;
+        return false;
+      }
+    }
+    return undefined;
+  });
+  return closeIndex;
+}
+
 function findSingleStatementEnd(source, bodyStart) {
+  let cursor = bodyStart;
+  while (/\s/.test(source[cursor] ?? '')) cursor += 1;
+  const loopKeyword = startsWithJavaKeyword(source, cursor, 'for')
+    ? 'for'
+    : startsWithJavaKeyword(source, cursor, 'while')
+      ? 'while'
+      : null;
+  if (loopKeyword) {
+    let headerStart = cursor + loopKeyword.length;
+    while (/\s/.test(source[headerStart] ?? '')) headerStart += 1;
+    if (source[headerStart] === '(') {
+      const closeParen = findMatchingParen(source, headerStart);
+      if (closeParen >= 0) {
+        let nestedBodyStart = closeParen + 1;
+        while (/\s/.test(source[nestedBodyStart] ?? '')) nestedBodyStart += 1;
+        if (source[nestedBodyStart] === '{') {
+          const closeBrace = findMatchingBrace(source, nestedBodyStart);
+          if (closeBrace >= 0) return closeBrace;
+        }
+        if (source[nestedBodyStart] && source[nestedBodyStart] !== ';') {
+          return findSingleStatementEnd(source, nestedBodyStart);
+        }
+      }
+    }
+  }
+
   let parenDepth = 0;
   let bracketDepth = 0;
   let braceDepth = 0;
@@ -723,13 +778,20 @@ function augmentTraceCallArgumentSnapshots(source) {
 function collectJavaLocalDeclarations(line) {
   const names = [];
   const declarationPattern =
-    /\b(?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^;=(){}:]+>)?)\s*(?:\[\s*\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==|;|:|,|\))/g;
+    /\b(?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
   const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
   for (const match of line.matchAll(declarationPattern)) {
     const name = match[1];
     if (name && !skippedNames.has(name) && !name.startsWith('__tracecode')) {
       names.push(name);
     }
+  }
+  const enhancedForMatch = line.match(
+    /\bfor\s*\(\s*(?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/
+  );
+  const enhancedForName = enhancedForMatch?.[1];
+  if (enhancedForName && !skippedNames.has(enhancedForName) && !enhancedForName.startsWith('__tracecode')) {
+    names.push(enhancedForName);
   }
   return names;
 }
@@ -800,8 +862,8 @@ function augmentJavaLocalSnapshots(source) {
     /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
 
   for (const line of lines) {
-    const closingCount = (line.match(/}/g) ?? []).length;
-    for (let index = 0; index < closingCount; index += 1) {
+    const leadingClosingCount = line.match(/^\s*}+/)?.[0].replace(/\s/g, '').length ?? 0;
+    for (let index = 0; index < leadingClosingCount; index += 1) {
       if (scopeStack.length > 0) scopeStack.pop();
     }
 
@@ -820,6 +882,7 @@ function augmentJavaLocalSnapshots(source) {
     output.push(transformedLine);
 
     const openingCount = (line.match(/{/g) ?? []).length;
+    const closingCount = Math.max(0, (line.match(/}/g) ?? []).length - leadingClosingCount);
     const declarations = collectJavaLocalDeclarations(line);
     for (let index = 0; index < openingCount; index += 1) {
       scopeStack.push({ names: index === 0 ? declarations : [] });
@@ -831,6 +894,9 @@ function augmentJavaLocalSnapshots(source) {
           currentScope.names.push(name);
         }
       }
+    }
+    for (let index = 0; index < closingCount; index += 1) {
+      if (scopeStack.length > 0) scopeStack.pop();
     }
   }
 
@@ -1346,7 +1412,16 @@ function buildExportsSource(source, functionName, executionStyle, input) {
         lines.push(`    instance = new ${functionName}(${args.map((arg) => buildJavaExpression(arg)).join(', ')});`);
         lines.push('    out.add(null);');
       } else {
-        lines.push(`    out.add(instance.${String(operation)}(${args.map((arg) => buildJavaExpression(arg)).join(', ')}));`);
+        const operationName = String(operation);
+        const parameters = extractMethodParameters(source, operationName);
+        const invocationArgs = args.map((arg, argIndex) => buildJavaExpression(arg, parameters[argIndex]?.type)).join(', ');
+        const returnType = extractMethodReturnType(source, operationName);
+        if (returnType === 'void') {
+          lines.push(`    instance.${operationName}(${invocationArgs});`);
+          lines.push('    out.add(null);');
+        } else {
+          lines.push(`    out.add(instance.${operationName}(${invocationArgs}));`);
+        }
       }
     });
 
@@ -1571,9 +1646,9 @@ async function collectCompileProbeDiagnostics(source, requestId, options) {
 function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount, sourceLineMap) {
   if (!scriptMode || !Array.isArray(events)) return events;
   return events.map((event) => {
-    if (String(event).startsWith('v4:')) {
+    if (String(event).startsWith('trace:')) {
       try {
-        const parsed = JSON.parse(String(event).slice('v4:'.length));
+        const parsed = JSON.parse(String(event).slice('trace:'.length));
         if (parsed.function === SCRIPT_METHOD_NAME) parsed.function = '<module>';
         if (parsed.kind === 'call' && parsed.function === SCRIPT_METHOD_NAME) parsed.function = '<module>';
         if (parsed.kind === 'return' && parsed.function === SCRIPT_METHOD_NAME) parsed.function = '<module>';
@@ -1594,7 +1669,7 @@ function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount, sourc
         ) {
           parsed.line = userCodeLineCount;
         }
-        return `v4:${JSON.stringify(parsed)}`;
+        return `trace:${JSON.stringify(parsed)}`;
       } catch {
         return event;
       }
@@ -1623,9 +1698,9 @@ function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount, sourc
 }
 
 function parseTraceLineNumber(event) {
-  if (String(event).startsWith('v4:')) {
+  if (String(event).startsWith('trace:')) {
     try {
-      const parsed = JSON.parse(String(event).slice('v4:'.length));
+      const parsed = JSON.parse(String(event).slice('trace:'.length));
       const line = Number(parsed.line);
       return Number.isFinite(line) && line > 0 ? line : null;
     } catch {
@@ -1639,9 +1714,9 @@ function parseTraceLineNumber(event) {
 }
 
 function isBareTraceLineEvent(event) {
-  if (String(event).startsWith('v4:')) {
+  if (String(event).startsWith('trace:')) {
     try {
-      const parsed = JSON.parse(String(event).slice('v4:'.length));
+      const parsed = JSON.parse(String(event).slice('trace:'.length));
       return parsed.kind === 'line';
     } catch {
       return false;
@@ -1651,8 +1726,8 @@ function isBareTraceLineEvent(event) {
 }
 
 function buildBareTraceLineEvent(line, templateEvent) {
-  if (String(templateEvent).startsWith('v4:')) {
-    return `v4:${JSON.stringify({ kind: 'line', line })}`;
+  if (String(templateEvent).startsWith('trace:')) {
+    return `trace:${JSON.stringify({ kind: 'line', line })}`;
   }
   return `line=${line}`;
 }

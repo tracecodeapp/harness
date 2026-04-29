@@ -1,9 +1,9 @@
 import {
-  RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
-  type RuntimeV4Event,
-  type RuntimeV4Trace,
-  type RuntimeV4TraceOptions,
-} from '../trace-v4';
+  RUNTIME_TRACE_SCHEMA_VERSION,
+  type RuntimeTraceEvent,
+  type RuntimeTrace,
+  type RuntimeTraceOptions,
+} from '../runtime-trace';
 import { assertSupportedRawEmissions, summarizeJavaRawEmissions } from '../runtime-raw-emission-contract';
 
 export function normalizeJavaSerializedResult(output: unknown): unknown {
@@ -17,8 +17,8 @@ export function normalizeJavaSerializedResult(output: unknown): unknown {
   }
 }
 
-function isNativeJavaV4Event(event: string): boolean {
-  return event.startsWith('v4:');
+function isNativeJavaTraceEvent(event: string): boolean {
+  return event.startsWith('trace:');
 }
 
 function stripInlineComments(line: string, inBlockComment: boolean): { text: string; inBlockComment: boolean } {
@@ -89,9 +89,9 @@ function buildLocalDeclarationNamesByLine(sourceText: string | undefined): Map<n
 }
 
 function removeSameLineMutationDeclarationSnapshotEvents(
-  events: RuntimeV4Event[],
+  events: RuntimeTraceEvent[],
   sourceText: string | undefined
-): RuntimeV4Event[] {
+): RuntimeTraceEvent[] {
   const declarationNamesByLine = buildLocalDeclarationNamesByLine(sourceText);
   if (declarationNamesByLine.size === 0) return events;
   const mutationVariablesByLine = new Map<number, Set<string>>();
@@ -111,19 +111,19 @@ function removeSameLineMutationDeclarationSnapshotEvents(
   });
 }
 
-function nativeJavaV4EventsToTrace(
+function nativeJavaTraceEventsToTrace(
   events: string[],
   sourceText: string | undefined,
-  options: RuntimeV4TraceOptions = {}
-): RuntimeV4Trace {
+  options: RuntimeTraceOptions = {}
+): RuntimeTrace {
   const runId = options.runId ?? 'java:run';
-  let parsedEvents: RuntimeV4Event[] = events.map((event) => {
-    let parsed: RuntimeV4Event;
+  let parsedEvents: RuntimeTraceEvent[] = events.map((event) => {
+    let parsed: RuntimeTraceEvent;
     try {
-      parsed = JSON.parse(event.slice('v4:'.length)) as RuntimeV4Event;
+      parsed = JSON.parse(event.slice('trace:'.length)) as RuntimeTraceEvent;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Invalid Java native V4 event: ${message}\n${event.slice(0, 500)}`);
+      throw new Error(`Invalid Java native runtime trace event: ${message}\n${event.slice(0, 500)}`);
     }
     return {
       ...parsed,
@@ -134,7 +134,7 @@ function nativeJavaV4EventsToTrace(
   parsedEvents = removeSameLineMutationDeclarationSnapshotEvents(parsedEvents, sourceText);
 
   return {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language: 'java',
     runId,
     events: parsedEvents,
@@ -143,15 +143,15 @@ function nativeJavaV4EventsToTrace(
   };
 }
 
-export function javaTraceHooksEventsToV4Trace(
+export function javaTraceHooksEventsToRuntimeTrace(
   events: string[],
   sourceText?: string,
-  options: RuntimeV4TraceOptions = {}
-): RuntimeV4Trace {
+  options: RuntimeTraceOptions = {}
+): RuntimeTrace {
   assertSupportedRawEmissions(summarizeJavaRawEmissions(events), 'java');
   if (events.length === 0) {
     return {
-      schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+      schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
       language: 'java',
       runId: options.runId ?? 'java:run',
       events: [],
@@ -159,8 +159,8 @@ export function javaTraceHooksEventsToV4Trace(
       traceStepCount: 0,
     };
   }
-  if (!events.every(isNativeJavaV4Event)) {
-    throw new Error('Java TraceHooks must emit native V4 events. Legacy line=... events are no longer supported.');
+  if (!events.every(isNativeJavaTraceEvent)) {
+    throw new Error('Java TraceHooks must emit native runtime trace events. Unsupported line=... events are no longer supported.');
   }
-  return nativeJavaV4EventsToTrace(events, sourceText, options);
+  return nativeJavaTraceEventsToTrace(events, sourceText, options);
 }

@@ -1,13 +1,13 @@
 #!/usr/bin/env npx tsx
 
-import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 import {
-  RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
-  buildRuntimeV4ParitySignature,
-  type RuntimeV4Event,
-  type RuntimeV4ParitySignature,
-  type RuntimeV4Trace,
-} from '../packages/harness-core/src/trace-v4';
+  RUNTIME_TRACE_SCHEMA_VERSION,
+  buildRuntimeTraceParitySignature,
+  type RuntimeTraceEvent,
+  type RuntimeTraceParitySignature,
+  type RuntimeTrace,
+} from '../packages/harness-core/src/runtime-trace';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -20,10 +20,10 @@ function stableStringify(value: unknown): string {
   return '{' + Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(',') + '}';
 }
 
-function trace(language: RuntimeV4Trace['language'], events: Array<Omit<RuntimeV4Event, 'runId'>>): RuntimeV4Trace {
+function trace(language: RuntimeTrace['language'], events: Array<Omit<RuntimeTraceEvent, 'runId'>>): RuntimeTrace {
   const runId = `${language}:test`;
   return {
-    schemaVersion: RUNTIME_TRACE_V4_DRAFT_SCHEMA_VERSION,
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language,
     runId,
     events: events.map((event) => ({ ...event, runId, file: `solution.${language === 'python' ? 'py' : language === 'java' ? 'java' : 'js'}` })),
@@ -32,18 +32,18 @@ function trace(language: RuntimeV4Trace['language'], events: Array<Omit<RuntimeV
   };
 }
 
-function nativeJavaEvent(event: Omit<RuntimeV4Event, 'runId'>): string {
-  return `v4:${JSON.stringify(event)}`;
+function nativeJavaEvent(event: Omit<RuntimeTraceEvent, 'runId'>): string {
+  return `trace:${JSON.stringify(event)}`;
 }
 
-function javaTrace(events: Array<Omit<RuntimeV4Event, 'runId'>>, sourceText?: string): RuntimeV4Trace {
-  return javaTraceHooksEventsToV4Trace(events.map(nativeJavaEvent), sourceText, { runId: 'java:test', file: 'Solution.java' });
+function javaTrace(events: Array<Omit<RuntimeTraceEvent, 'runId'>>, sourceText?: string): RuntimeTrace {
+  return javaTraceHooksEventsToRuntimeTrace(events.map(nativeJavaEvent), sourceText, { runId: 'java:test', file: 'Solution.java' });
 }
 
-function assertParity(name: string, traces: Record<string, RuntimeV4Trace>, expected: RuntimeV4ParitySignature): void {
+function assertParity(name: string, traces: Record<string, RuntimeTrace>, expected: RuntimeTraceParitySignature): void {
   const expectedString = stableStringify(expected);
   for (const [language, runtimeTrace] of Object.entries(traces)) {
-    const signature = buildRuntimeV4ParitySignature(runtimeTrace);
+    const signature = buildRuntimeTraceParitySignature(runtimeTrace);
     assertCondition(
       stableStringify(signature) === expectedString,
       `${name}: ${language} trace signature drifted.\nExpected: ${expectedString}\nReceived: ${stableStringify(signature)}`
@@ -61,7 +61,7 @@ function assertParity(name: string, traces: Record<string, RuntimeV4Trace>, expe
 }
 
 function runIndexedReadParity(): void {
-  const events: Array<Omit<RuntimeV4Event, 'runId'>> = [
+  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'line', line: 2, function: 'solve' },
     { kind: 'snapshot', line: 2, target: { variable: 'nums' }, value: [1, 2] },
     { kind: 'snapshot', line: 2, target: { variable: 'i' }, value: 0 },
@@ -77,7 +77,7 @@ function runIndexedReadParity(): void {
 }
 
 function runMatrixWriteParity(): void {
-  const events: Array<Omit<RuntimeV4Event, 'runId'>> = [
+  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'line', line: 4, function: 'solve' },
     { kind: 'snapshot', line: 4, target: { variable: 'grid' }, value: [[0, 1]] },
     { kind: 'snapshot', line: 4, target: { variable: 'row' }, value: 0 },
@@ -98,13 +98,13 @@ function runListAppendParity(): void {
     { kind: 'line', line: 3, function: 'solve' },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [1] },
     { kind: 'mutate', line: 3, target: { variable: 'out' }, method: 'append' },
-  ] satisfies Array<Omit<RuntimeV4Event, 'runId'>>;
+  ] satisfies Array<Omit<RuntimeTraceEvent, 'runId'>>;
   const javaEvents = [
     { kind: 'line', line: 3, function: 'solve' },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [] },
     { kind: 'mutate', line: 3, target: { variable: 'out' }, method: 'append' },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [1] },
-  ] satisfies Array<Omit<RuntimeV4Event, 'runId'>>;
+  ] satisfies Array<Omit<RuntimeTraceEvent, 'runId'>>;
   assertParity('list-append', { python: trace('python', common), javascript: trace('javascript', common), typescript: trace('typescript', common), java: javaTrace(javaEvents) }, {
     lineSequence: [3],
     eventKindsByLine: { 3: ['line', 'mutate', 'snapshot'] },
@@ -115,7 +115,7 @@ function runListAppendParity(): void {
 }
 
 function runMapSetParity(): void {
-  const events: Array<Omit<RuntimeV4Event, 'runId'>> = [
+  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'line', line: 5, function: 'solve' },
     { kind: 'mutate', line: 5, target: { variable: 'seen' }, method: 'set' },
     { kind: 'snapshot', line: 5, target: { variable: 'seen' }, value: { __type__: 'map', entries: [[2, true]] } },
@@ -130,7 +130,7 @@ function runMapSetParity(): void {
 }
 
 function runEarlyReturnParity(): void {
-  const events: Array<Omit<RuntimeV4Event, 'runId'>> = [
+  const events: Array<Omit<RuntimeTraceEvent, 'runId'>> = [
     { kind: 'call', line: 1, function: 'solve', args: { n: 0 } },
     { kind: 'snapshot', line: 1, target: { variable: 'n' }, value: 0 },
     { kind: 'line', line: 2, function: 'solve' },

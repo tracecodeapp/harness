@@ -106,8 +106,8 @@ function groupByCategory(gaps: KnownGapRecord[]): Map<string, KnownGapRecord[]> 
 async function main(): Promise<void> {
   const gaps = await readKnownGaps();
   const fixtureCount = await readFixtureCount();
-  console.log(`Runtime V4 fixture corpus: ${fixtureCount}`);
-  console.log(`Runtime V4 known gaps: ${gaps.length}`);
+  console.log(`runtime trace fixture corpus: ${fixtureCount}`);
+  console.log(`runtime trace known gaps: ${gaps.length}`);
 
   const grouped = groupByLanguage(gaps);
   for (const language of [...grouped.keys()].sort()) {

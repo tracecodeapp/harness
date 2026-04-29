@@ -1,6 +1,6 @@
 import type { RuntimeExecutionStyle } from '../../harness-core/src/runtime-types';
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { createEmptyRuntimeV4Trace } from '../../harness-core/src/trace-v4';
+import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import { withTypeScriptRuntimeDeclarations } from './typescript-runtime-declarations';
 
 type TypeScriptModule = typeof import('typescript');
@@ -858,7 +858,7 @@ export async function executeJavaScriptWithTracing(
       success: false,
       error: codeResult.error,
       errorLine: codeResult.errorLine,
-      trace: createEmptyRuntimeV4Trace(language),
+      trace: createEmptyRuntimeTrace(language),
       executionTimeMs,
       consoleOutput: codeResult.consoleOutput ?? [],
       lineEventCount: 0,
@@ -869,7 +869,7 @@ export async function executeJavaScriptWithTracing(
   return {
     success: true,
     output: codeResult.output,
-    trace: createEmptyRuntimeV4Trace(language),
+    trace: createEmptyRuntimeTrace(language),
     executionTimeMs,
     consoleOutput: codeResult.consoleOutput ?? [],
     lineEventCount: 0,

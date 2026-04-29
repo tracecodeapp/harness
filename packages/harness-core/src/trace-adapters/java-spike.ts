@@ -1,3 +1,3 @@
 export {
-  javaTraceHooksEventsToV4Trace as javaSpikeTraceHooksEventsToV4Trace,
+  javaTraceHooksEventsToRuntimeTrace as javaSpikeTraceHooksEventsToRuntimeTrace,
 } from './java';

@@ -6,7 +6,7 @@
  */
 
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
-import { createEmptyRuntimeV4Trace } from '../../harness-core/src/trace-v4';
+import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 
 type MessageId = string;
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -383,7 +383,7 @@ export class PyodideWorkerClient {
         return {
           success: false,
           error: errorMessage,
-          trace: createEmptyRuntimeV4Trace('python', { runId: 'python:run', file: 'solution.py' }),
+          trace: createEmptyRuntimeTrace('python', { runId: 'python:run', file: 'solution.py' }),
           executionTimeMs: TRACING_TIMEOUT_MS,
           consoleOutput: [],
           traceLimitExceeded: true,

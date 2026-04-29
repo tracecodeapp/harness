@@ -20,7 +20,7 @@
       adjacencyLists: [],
     };
     const declarationPattern =
-      /\b((?:java\.util\.)?(?:HashMap|LinkedHashMap|TreeMap|Map|HashSet|LinkedHashSet|TreeSet|Set|ArrayList|LinkedList|List)\s*(?:<[^;=(){}]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
+      /\b((?:java\.util\.)?(?:HashMap|LinkedHashMap|TreeMap|Map|HashSet|LinkedHashSet|TreeSet|Set|ArrayList|LinkedList|List)\s*(?:<[^;=(){}]+?>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
     for (const match of line.matchAll(declarationPattern)) {
       const rawType = match[1] ?? '';
       const typeSource = rawType.replace(/\s+/g, '');

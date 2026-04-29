@@ -1684,7 +1684,7 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
   };
 }
 
-const RUNTIME_TRACE_SCHEMA_VERSION = 'v4-draft-2026-04-28';
+const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 
 function nativePythonEventsToRuntimeTrace(events, userCodeStartLine, userCodeLineCount, runId = 'python:run', file) {
   const normalizedEvents = [];

@@ -39,7 +39,7 @@ export interface ExecutionResult {
   output?: unknown;
   error?: string;
   errorLine?: number;
-  trace: import('./trace-v4').RuntimeV4Trace;
+  trace: import('./runtime-trace').RuntimeTrace;
   executionTimeMs: number;
   consoleOutput: string[];
   traceLimitExceeded?: boolean;

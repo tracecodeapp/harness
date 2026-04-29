@@ -30,7 +30,7 @@ public final class TraceHooks {
   private TraceHooks() {}
 
   public static void emit(String event) {
-    if (event != null && event.startsWith("v4:")) {
+    if (event != null && event.startsWith("trace:")) {
       appendEvent(event);
       return;
     }
@@ -68,7 +68,7 @@ public final class TraceHooks {
       String argsFragment = space >= 0 ? rest.substring(space + 1) : "";
       currentFunction = function.length() > 0 ? function : currentFunction;
       FUNCTION_STACK.add(currentFunction);
-      emitV4Call(line, currentFunction, argsFragment);
+      emitTraceCall(line, currentFunction, argsFragment);
       return;
     }
 
@@ -77,7 +77,7 @@ public final class TraceHooks {
       int valueIndex = rest.indexOf(" value=");
       String function = valueIndex >= 0 ? rest.substring(0, valueIndex) : rest;
       String value = valueIndex >= 0 ? rest.substring(valueIndex + " value=".length()) : null;
-      emitV4Return(line, function.length() > 0 ? function : currentFunction, value);
+      emitTraceReturn(line, function.length() > 0 ? function : currentFunction, value);
       if (!FUNCTION_STACK.isEmpty()) {
         FUNCTION_STACK.remove(FUNCTION_STACK.size() - 1);
       }
@@ -86,47 +86,47 @@ public final class TraceHooks {
     }
 
     if (payload.startsWith("exception ")) {
-      emitV4Exception(line, payload.substring("exception ".length()));
+      emitTraceException(line, payload.substring("exception ".length()));
       return;
     }
 
     if (payload.startsWith("stdout ")) {
-      emitV4Stdout(line, payload.substring("stdout ".length()));
+      emitTraceStdout(line, payload.substring("stdout ".length()));
       return;
     }
 
     if (payload.startsWith("access ") || payload.startsWith("write ") || payload.startsWith("write-array ")) {
-      emitV4AccessPayload(line, payload);
+      emitTraceAccessPayload(line, payload);
       return;
     }
 
     if (payload.startsWith("mutate ") || payload.startsWith("mutate-indexed ") || payload.startsWith("keyed-call ")) {
-      emitV4MutatePayload(line, payload);
+      emitTraceMutatePayload(line, payload);
       return;
     }
 
     if (payload.startsWith("state ")) {
-      emitV4StructureState(line, payload);
+      emitTraceStructureState(line, payload);
       return;
     }
 
     if (payload.startsWith("object-state ")) {
-      emitV4ObjectState(line, payload);
+      emitTraceObjectState(line, payload);
       return;
     }
 
     if (payload.startsWith("map-state ") || payload.startsWith("set-state ")) {
-      // Dedicated map/set helpers emit neutral V4 snapshots directly.
+      // Dedicated map/set helpers emit neutral runtime trace snapshots directly.
       return;
     }
 
-    emitV4Line(line);
-    emitV4SnapshotsFromFragment(line, payload);
+    emitTraceLine(line);
+    emitTraceSnapshotsFromFragment(line, payload);
   }
 
   private static String baseEvent(int line, String kind) {
     StringBuilder builder = new StringBuilder();
-    builder.append("v4:{\"kind\":").append(jsonString(kind));
+    builder.append("trace:{\"kind\":").append(jsonString(kind));
     builder.append(",\"line\":").append(line);
     if (currentFunction != null && currentFunction.length() > 0) {
       builder.append(",\"function\":").append(jsonString(currentFunction));
@@ -134,16 +134,16 @@ public final class TraceHooks {
     return builder.toString();
   }
 
-  private static void emitV4Line(int line) {
+  private static void emitTraceLine(int line) {
     appendEvent(baseEvent(line, "line") + "}");
     for (Map.Entry<String, String> entry : CURRENT_SNAPSHOTS.entrySet()) {
-      emitV4SnapshotEvent(line, entry.getKey(), entry.getValue());
+      emitTraceSnapshotEvent(line, entry.getKey(), entry.getValue());
     }
   }
 
-  private static void emitV4Call(int line, String function, String argsFragment) {
+  private static void emitTraceCall(int line, String function, String argsFragment) {
     StringBuilder builder = new StringBuilder();
-    builder.append("v4:{\"kind\":\"call\",\"line\":").append(line);
+    builder.append("trace:{\"kind\":\"call\",\"line\":").append(line);
     builder.append(",\"function\":").append(jsonString(function));
     String args = objectFromKeyValueFragment(argsFragment);
     if (args.length() > 2) {
@@ -151,12 +151,12 @@ public final class TraceHooks {
     }
     builder.append("}");
     appendEvent(builder.toString());
-    emitV4SnapshotsFromFragment(line, argsFragment);
+    emitTraceSnapshotsFromFragment(line, argsFragment);
   }
 
-  private static void emitV4Return(int line, String function, String valueJson) {
+  private static void emitTraceReturn(int line, String function, String valueJson) {
     StringBuilder builder = new StringBuilder();
-    builder.append("v4:{\"kind\":\"return\",\"line\":").append(line);
+    builder.append("trace:{\"kind\":\"return\",\"line\":").append(line);
     builder.append(",\"function\":").append(jsonString(function));
     if (valueJson != null) {
       builder.append(",\"value\":").append(asJsonValue(valueJson));
@@ -165,26 +165,26 @@ public final class TraceHooks {
     appendEvent(builder.toString());
   }
 
-  private static void emitV4Exception(int line, String messageJson) {
+  private static void emitTraceException(int line, String messageJson) {
     appendEvent(baseEvent(line, "exception") + ",\"message\":" + asJsonValue(messageJson) + "}");
   }
 
-  private static void emitV4Stdout(int line, String textJson) {
+  private static void emitTraceStdout(int line, String textJson) {
     appendEvent(baseEvent(line, "stdout") + ",\"text\":" + asJsonValue(textJson) + "}");
   }
 
-  private static void emitV4Snapshot(int line, String variable, String valueJson) {
+  private static void emitTraceSnapshot(int line, String variable, String valueJson) {
     CURRENT_SNAPSHOTS.put(variable, valueJson);
-    emitV4SnapshotEvent(line, variable, valueJson);
+    emitTraceSnapshotEvent(line, variable, valueJson);
   }
 
-  private static void emitV4SnapshotEvent(int line, String variable, String valueJson) {
+  private static void emitTraceSnapshotEvent(int line, String variable, String valueJson) {
     appendEvent(baseEvent(line, "snapshot")
         + ",\"target\":{\"variable\":" + jsonString(variable) + "}"
         + ",\"value\":" + asJsonValue(valueJson) + "}");
   }
 
-  private static void emitV4Access(int line, String kind, String variable, String pathJson, String valueJson) {
+  private static void emitTraceAccess(int line, String kind, String variable, String pathJson, String valueJson) {
     StringBuilder builder = new StringBuilder(baseEvent(line, kind));
     builder.append(",\"target\":{\"variable\":").append(jsonString(variable));
     if (pathJson != null) {
@@ -198,7 +198,7 @@ public final class TraceHooks {
     appendEvent(builder.toString());
   }
 
-  private static void emitV4Mutate(int line, String variable, String pathJson, String method) {
+  private static void emitTraceMutate(int line, String variable, String pathJson, String method) {
     String normalizedMethod = normalizeMutationMethod(method);
     StringBuilder builder = new StringBuilder(baseEvent(line, "mutate"));
     builder.append(",\"target\":{\"variable\":").append(jsonString(variable));
@@ -224,7 +224,9 @@ public final class TraceHooks {
     String trimmed = raw.trim();
     if (trimmed.length() == 0) return jsonString("");
     if ("null".equals(trimmed) || "true".equals(trimmed) || "false".equals(trimmed)) return trimmed;
-    if (trimmed.startsWith("\"") || trimmed.startsWith("[") || trimmed.startsWith("{")) return trimmed;
+    if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) return trimmed;
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) return trimmed;
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
     if (trimmed.matches("-?(?:0|[1-9]\\d*)(?:\\.\\d+)?(?:[eE][+-]?\\d+)?")) return trimmed;
     return jsonString(trimmed);
   }
@@ -241,10 +243,10 @@ public final class TraceHooks {
     return builder.toString();
   }
 
-  private static void emitV4SnapshotsFromFragment(int line, String fragment) {
+  private static void emitTraceSnapshotsFromFragment(int line, String fragment) {
     for (KeyValuePair pair : parseKeyValuePairs(fragment)) {
       if ("method".equals(pair.key)) continue;
-      emitV4Snapshot(line, pair.key.replace('.', '_'), pair.value);
+      emitTraceSnapshot(line, pair.key.replace('.', '_'), pair.value);
     }
   }
 
@@ -268,66 +270,66 @@ public final class TraceHooks {
     return pairs;
   }
 
-  private static void emitV4AccessPayload(int line, String payload) {
+  private static void emitTraceAccessPayload(int line, String payload) {
     Matcher cellRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]\\[(\\d+)\\]=(.+)$").matcher(payload);
     if (cellRead.matches()) {
-      emitV4Access(line, "read", cellRead.group(1), "[" + cellRead.group(2) + "," + cellRead.group(3) + "]", cellRead.group(4));
+      emitTraceAccess(line, "read", cellRead.group(1), "[" + cellRead.group(2) + "," + cellRead.group(3) + "]", cellRead.group(4));
       return;
     }
     Matcher indexedRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]=(.+)$").matcher(payload);
     if (indexedRead.matches()) {
-      emitV4Access(line, "read", indexedRead.group(1), "[" + indexedRead.group(2) + "]", indexedRead.group(3));
+      emitTraceAccess(line, "read", indexedRead.group(1), "[" + indexedRead.group(2) + "]", indexedRead.group(3));
       return;
     }
     Matcher cellWrite = Pattern.compile("^write-array ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]\\[(\\d+)\\]=(.+)$").matcher(payload);
     if (cellWrite.matches()) {
-      emitV4Access(line, "write", cellWrite.group(1), "[" + cellWrite.group(2) + "," + cellWrite.group(3) + "]", cellWrite.group(4));
+      emitTraceAccess(line, "write", cellWrite.group(1), "[" + cellWrite.group(2) + "," + cellWrite.group(3) + "]", cellWrite.group(4));
       return;
     }
     Matcher indexedWrite = Pattern.compile("^write-array ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]=(.+)$").matcher(payload);
     if (indexedWrite.matches()) {
-      emitV4Access(line, "write", indexedWrite.group(1), "[" + indexedWrite.group(2) + "]", indexedWrite.group(3));
+      emitTraceAccess(line, "write", indexedWrite.group(1), "[" + indexedWrite.group(2) + "]", indexedWrite.group(3));
       return;
     }
     Matcher fieldRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
     if (fieldRead.matches()) {
-      emitV4Access(line, "read", fieldRead.group(1), "[" + jsonString(fieldRead.group(2)) + "]", fieldRead.group(3));
+      emitTraceAccess(line, "read", fieldRead.group(1), "[" + jsonString(fieldRead.group(2)) + "]", fieldRead.group(3));
       return;
     }
     Matcher fieldWrite = Pattern.compile("^write ([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
     if (fieldWrite.matches()) {
-      emitV4Access(line, "write", fieldWrite.group(1), "[" + jsonString(fieldWrite.group(2)) + "]", fieldWrite.group(3));
+      emitTraceAccess(line, "write", fieldWrite.group(1), "[" + jsonString(fieldWrite.group(2)) + "]", fieldWrite.group(3));
     }
   }
 
-  private static void emitV4MutatePayload(int line, String payload) {
+  private static void emitTraceMutatePayload(int line, String payload) {
     Matcher mutatingCall = Pattern.compile("^mutate ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)$").matcher(payload);
     if (mutatingCall.matches()) {
-      emitV4Mutate(line, mutatingCall.group(1), null, mutatingCall.group(2));
+      emitTraceMutate(line, mutatingCall.group(1), null, mutatingCall.group(2));
       return;
     }
     Matcher indexedMutatingCall = Pattern.compile("^mutate-indexed ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\] method=([A-Za-z_][A-Za-z0-9_]*)$").matcher(payload);
     if (indexedMutatingCall.matches()) {
-      emitV4Mutate(line, indexedMutatingCall.group(1), "[" + indexedMutatingCall.group(2) + "]", indexedMutatingCall.group(3));
+      emitTraceMutate(line, indexedMutatingCall.group(1), "[" + indexedMutatingCall.group(2) + "]", indexedMutatingCall.group(3));
       return;
     }
     Matcher keyedCall = Pattern.compile("^keyed-call ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)(?:\\s+.*)?$").matcher(payload);
     if (keyedCall.matches()) {
-      emitV4Mutate(line, keyedCall.group(1), null, keyedCall.group(2));
+      emitTraceMutate(line, keyedCall.group(1), null, keyedCall.group(2));
     }
   }
 
-  private static void emitV4StructureState(int line, String payload) {
+  private static void emitTraceStructureState(int line, String payload) {
     Matcher match = Pattern.compile("^state (linked-list|tree|graph-adjacency) ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
     if (match.matches()) {
-      emitV4Snapshot(line, match.group(2), match.group(3));
+      emitTraceSnapshot(line, match.group(2), match.group(3));
     }
   }
 
-  private static void emitV4ObjectState(int line, String payload) {
+  private static void emitTraceObjectState(int line, String payload) {
     Matcher match = Pattern.compile("^object-state ([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
     if (match.matches()) {
-      emitV4Snapshot(line, match.group(1), "{\"__ref__\":" + jsonString(match.group(1) + "-object") + "}");
+      emitTraceSnapshot(line, match.group(1), "{\"__ref__\":" + jsonString(match.group(1) + "-object") + "}");
     }
   }
 
@@ -640,11 +642,11 @@ public final class TraceHooks {
   }
 
   public static void emitMapStateAtLine(int line, String name, Map<?, ?> values) {
-    emitV4Snapshot(line, name, buildMapRuntimeValue(values));
+    emitTraceSnapshot(line, name, buildMapRuntimeValue(values));
   }
 
   public static void emitMapStateAtLine(int line, String name, Map<?, ?> values, Object highlightedKey) {
-    emitV4Snapshot(line, name, buildMapRuntimeValue(values));
+    emitTraceSnapshot(line, name, buildMapRuntimeValue(values));
   }
 
   public static void emitSetStateAtLine(int line, String name, Set<?> values) {
@@ -726,7 +728,7 @@ public final class TraceHooks {
     Object deletedKey,
     boolean hasDeletedKey
   ) {
-    emitV4Snapshot(line, name, buildSetRuntimeValue(values));
+    emitTraceSnapshot(line, name, buildSetRuntimeValue(values));
   }
 
   private static String buildMapRuntimeValue(Map<?, ?> values) {
