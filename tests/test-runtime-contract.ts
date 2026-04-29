@@ -14,7 +14,10 @@ import type { JavaWorkerClient } from '../packages/harness-browser/src/java-work
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
 import type { Language, LanguageRuntimeProfile, RuntimeCapabilities } from '../packages/harness-core/src/runtime-types';
-import { normalizeJavaTraceContract } from '../packages/harness-core/src/trace-adapters/java';
+import {
+  javaTraceHooksEventsToV4Trace,
+  normalizeJavaSerializedResult,
+} from '../packages/harness-core/src/trace-adapters/java';
 import {
   normalizeRuntimeTraceContract,
   RUNTIME_TRACE_CONTRACT_SCHEMA_VERSION,
@@ -314,25 +317,18 @@ function testRuntimeTraceContractAccessNormalization(): void {
 }
 
 async function testJavaSerializedResultNormalization(): Promise<void> {
-  const normalized = normalizeJavaTraceContract({
-    output: '[1,true,"ok"]',
-    events: ['line=1 return solve value=[1,true,"ok"]'],
-  });
+  const trace = javaTraceHooksEventsToV4Trace(['line=1 return solve value=[1,true,"ok"]']);
   assertCondition(
-    stableStringify(normalized.output) === stableStringify([1, true, 'ok']),
-    'Java trace adapter should decode TraceHooks.serializeResult JSON arrays'
+    stableStringify(normalizeJavaSerializedResult('[1,true,"ok"]')) === stableStringify([1, true, 'ok']),
+    'Java TraceHooks result decoding should decode serialized JSON arrays'
   );
   assertCondition(
-    stableStringify(normalized.trace[0]?.returnValue) === stableStringify([1, true, 'ok']),
-    'Java trace adapter should decode serialized return values'
+    stableStringify(trace.events.find((event) => event.kind === 'return')?.value) === stableStringify([1, true, 'ok']),
+    'Java TraceHooks V4 assembly should decode serialized return values'
   );
-  const normalizedString = normalizeJavaTraceContract({
-    output: '"true"',
-    events: ['line=1 return solve value="true"'],
-  });
   assertCondition(
-    normalizedString.output === 'true',
-    'Java trace adapter should decode serialized Java strings without coercing their contents'
+    normalizeJavaSerializedResult('"true"') === 'true',
+    'Java TraceHooks result decoding should decode serialized Java strings without coercing their contents'
   );
 
   let nextOutput: unknown = 7;

@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { buildJavaExecutionResult } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
 import {
   assertSupportedRawEmissions,
   compareRawEmissionParity,
@@ -36,9 +36,9 @@ function testJavaUnknownPayloadRejection(): void {
     'raw contract should reject unsupported array-length payloads'
   );
   assertThrows(
-    () => buildJavaExecutionResult(null, ['line=3 array-length nums=3'], 0),
+    () => javaTraceHooksEventsToV4Trace(['line=3 array-length nums=3']),
     /unsupported raw runtime payloads/,
-    'java adapter should reject unsupported raw payloads before normalization'
+    'java TraceHooks V4 assembly should reject unsupported raw payloads before normalization'
   );
   console.log('PASS: raw emission contract rejects unsupported Java payloads');
 }

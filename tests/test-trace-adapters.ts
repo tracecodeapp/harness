@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { adaptJavaScriptTraceExecutionResult } from '../packages/harness-core/src/trace-adapters/javascript';
-import { adaptJavaTraceExecutionResult, buildJavaExecutionResult } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
 import { adaptPythonTraceExecutionResult } from '../packages/harness-core/src/trace-adapters/python';
 import type { LegacyTraceExecutionResult } from '../packages/harness-core/src/types';
 
@@ -73,20 +73,20 @@ function testPythonBoundaryReturnsV4(): void {
 }
 
 function testJavaBoundaryReturnsV4(): void {
-  const legacy = buildJavaExecutionResult(2, [
+  const trace = javaTraceHooksEventsToV4Trace([
     'line=4 call solve nums=[1,2]',
     'line=5 nums=[1,2]',
     'line=5 access nums[1]=2',
     'line=6 return solve value=2',
-  ], 0);
-  const result = adaptJavaTraceExecutionResult(legacy);
+  ], undefined, { runId: 'java:test', file: 'Solution.java' });
+  const result = { trace };
 
-  assertPublicV4Trace('java adapter boundary', result);
+  assertPublicV4Trace('java TraceHooks boundary', result);
   assertCondition(
     result.trace.events.some((event) => event.kind === 'read' && event.line === 5),
-    'java boundary should expose Java access events as V4 read events'
+    'java TraceHooks boundary should expose Java access events as V4 read events'
   );
-  console.log('PASS: Java adapter boundary returns V4 only');
+  console.log('PASS: Java TraceHooks boundary returns V4 only');
 }
 
 function main(): void {

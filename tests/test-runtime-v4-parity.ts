@@ -2,7 +2,7 @@
 
 import type { Language } from '../packages/harness-core/src/runtime-types';
 import type { LegacyTraceExecutionResult, RawTraceStep } from '../packages/harness-core/src/types';
-import { normalizeJavaTraceContract } from '../packages/harness-core/src/trace-adapters/java';
+import { javaTraceHooksEventsToV4Trace } from '../packages/harness-core/src/trace-adapters/java';
 import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trace-contract';
 import {
   buildRuntimeV4ParitySignature,
@@ -52,14 +52,7 @@ function traceFor(language: Language, trace: RawTraceStep[]): RuntimeV4Trace {
 }
 
 function javaTrace(events: string[], sourceText?: string): RuntimeV4Trace {
-  return runtimeTraceContractToV4Events(
-    normalizeJavaTraceContract({
-      output: null,
-      events,
-      sourceText,
-    }),
-    { runId: 'java:test', file: 'Solution.java' }
-  );
+  return javaTraceHooksEventsToV4Trace(events, sourceText, { runId: 'java:test', file: 'Solution.java' });
 }
 
 function assertParity(

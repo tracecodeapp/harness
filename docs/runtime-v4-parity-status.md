@@ -123,7 +123,7 @@ A `knownGaps` entry is not a waiver for future behavior. When a harness fix land
 
 Language-specific fixture overrides are not allowed as a steady state. If a language cannot meet the shared fixture expectation, mark the gap explicitly, reduce it into a smaller fixture when possible, and fix the native language instrumentation rather than coercing the temporary V4 bridge.
 
-The current adapters are temporary compatibility scaffolding. They may normalize legacy trace output while native V4 emitters are being built, but they must not become the place where missing language facts are invented. Runtimes should emit line, snapshot, read, write, mutate, call, return, stdout, exception, and timeout facts directly in the V4 shape.
+The current raw-event assembly seams are temporary migration scaffolding. They may parse language instrumentation while native V4 emitters are being built, but they must not become the place where missing language facts are invented. Runtimes should emit line, snapshot, read, write, mutate, call, return, stdout, exception, and timeout facts directly in the V4 shape.
 
 No language may introduce a raw payload category on its own. A payload such as `array-length` must either not exist or be accepted as a shared cross-language contract concept with parity coverage before higher layers are allowed to consume it.
 

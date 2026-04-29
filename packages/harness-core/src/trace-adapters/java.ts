@@ -1,32 +1,16 @@
 import type {
-  ExecutionResult,
-  LegacyTraceExecutionResult,
   RawTraceStep,
   RuntimeHashMapVisualization,
   RuntimeTraceAccessEvent,
   RuntimeVisualizationPayload,
 } from '../types';
-import { normalizeRuntimeTraceContract, type RuntimeTraceContractResult } from '../trace-contract';
+import { normalizeRuntimeTraceContract } from '../trace-contract';
 import {
   runtimeTraceContractToV4Events,
   type RuntimeV4Trace,
   type RuntimeV4TraceOptions,
 } from '../trace-v4';
-import { adaptTraceExecutionResult } from './shared';
 import { assertSupportedRawEmissions, summarizeJavaRawEmissions } from '../runtime-raw-emission-contract';
-
-export interface JavaTraceResult {
-  output: unknown;
-  events: string[];
-  sourceText?: string;
-  traceLimitExceeded?: boolean;
-  timeoutReason?: LegacyTraceExecutionResult['timeoutReason'];
-}
-
-export interface JavaTraceContractResult
-  extends Omit<RuntimeTraceContractResult, 'language'> {
-  language: 'java';
-}
 
 function parseScalar(raw: string): unknown {
   if (raw === 'null') return null;
@@ -793,51 +777,6 @@ function eventsToRawTrace(events: string[], sourceText?: string): RawTraceStep[]
   return trace;
 }
 
-export function buildJavaExecutionResult(
-  output: unknown,
-  events: string[],
-  executionTimeMs = 0,
-  traceLimitExceeded?: boolean,
-  timeoutReason?: LegacyTraceExecutionResult['timeoutReason'],
-  maxTraceSteps?: number,
-  sourceText?: string,
-  options: { outputIsSerialized?: boolean } = {}
-): LegacyTraceExecutionResult {
-  assertSupportedRawEmissions(summarizeJavaRawEmissions(events), 'java');
-  const trace = eventsToRawTrace(events, sourceText);
-  return {
-    success: true,
-    output: options.outputIsSerialized === false ? output : normalizeJavaSerializedResult(output),
-    trace,
-    executionTimeMs,
-    consoleOutput: [],
-    ...(traceLimitExceeded !== undefined ? { traceLimitExceeded } : {}),
-    ...(maxTraceSteps !== undefined ? { maxTraceSteps } : {}),
-    ...(timeoutReason ? { timeoutReason } : {}),
-    lineEventCount: trace.filter((step) => step.event === 'line').length,
-    traceStepCount: trace.length,
-  };
-}
-
-export function normalizeJavaTraceContract(result: JavaTraceResult): JavaTraceContractResult {
-  const normalized = normalizeRuntimeTraceContract(
-    'java',
-    buildJavaExecutionResult(
-      result.output,
-      result.events,
-      0,
-      result.traceLimitExceeded,
-      result.timeoutReason,
-      undefined,
-      result.sourceText
-    )
-  );
-  return {
-    ...normalized,
-    language: 'java',
-  };
-}
-
 export function javaTraceHooksEventsToV4Trace(
   events: string[],
   sourceText?: string,
@@ -854,11 +793,4 @@ export function javaTraceHooksEventsToV4Trace(
     traceStepCount: trace.length,
   });
   return runtimeTraceContractToV4Events(contract, options);
-}
-
-export function adaptJavaTraceExecutionResult(result: LegacyTraceExecutionResult): ExecutionResult {
-  return adaptTraceExecutionResult('java', result, {
-    runId: 'java:run',
-    file: 'Solution.java',
-  });
 }
