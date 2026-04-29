@@ -7,6 +7,7 @@ import { normalizeRuntimeTraceContract } from '../packages/harness-core/src/trac
 import {
   buildRuntimeV4ParitySignature,
   runtimeTraceContractToV4Events,
+  type RuntimeV4Event,
   type RuntimeV4ParitySignature,
   type RuntimeV4Trace,
 } from '../packages/harness-core/src/trace-v4';
@@ -51,8 +52,16 @@ function traceFor(language: Language, trace: RawTraceStep[]): RuntimeV4Trace {
   );
 }
 
-function javaTrace(events: string[], sourceText?: string): RuntimeV4Trace {
-  return javaTraceHooksEventsToV4Trace(events, sourceText, { runId: 'java:test', file: 'Solution.java' });
+function nativeJavaEvent(event: Omit<RuntimeV4Event, 'runId'>): string {
+  return `v4:${JSON.stringify(event)}`;
+}
+
+function javaTrace(events: Array<Omit<RuntimeV4Event, 'runId'>>, sourceText?: string): RuntimeV4Trace {
+  return javaTraceHooksEventsToV4Trace(
+    events.map(nativeJavaEvent),
+    sourceText,
+    { runId: 'java:test', file: 'Solution.java' }
+  );
 }
 
 function assertParity(
@@ -99,8 +108,10 @@ function runIndexedReadParity(): void {
       javascript: traceFor('javascript', pyTrace),
       typescript: traceFor('typescript', pyTrace),
       java: javaTrace([
-        'line=2 nums=[1,2] i=0',
-        'line=2 access nums[0]=1',
+        { kind: 'line', line: 2, function: 'solve' },
+        { kind: 'snapshot', line: 2, target: { variable: 'nums' }, value: [1, 2] },
+        { kind: 'snapshot', line: 2, target: { variable: 'i' }, value: 0 },
+        { kind: 'read', line: 2, target: { variable: 'nums', path: [0] }, value: 1 },
       ]),
     },
     {
@@ -131,8 +142,11 @@ function runMatrixWriteParity(): void {
       javascript: traceFor('javascript', trace),
       typescript: traceFor('typescript', trace),
       java: javaTrace([
-        'line=4 grid=[[0,1]] row=0 col=1',
-        'line=4 write-array grid[0][1]=1',
+        { kind: 'line', line: 4, function: 'solve' },
+        { kind: 'snapshot', line: 4, target: { variable: 'grid' }, value: [[0, 1]] },
+        { kind: 'snapshot', line: 4, target: { variable: 'row' }, value: 0 },
+        { kind: 'snapshot', line: 4, target: { variable: 'col' }, value: 1 },
+        { kind: 'write', line: 4, target: { variable: 'grid', path: [0, 1] }, value: 1 },
       ]),
     },
     {
@@ -169,9 +183,10 @@ function runListAppendParity(): void {
       javascript: traceFor('javascript', jsTrace),
       typescript: traceFor('typescript', jsTrace),
       java: javaTrace([
-        'line=3 out=[]',
-        'line=3 mutate out method=add',
-        'line=3 out=[1]',
+        { kind: 'line', line: 3, function: 'solve' },
+        { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [] },
+        { kind: 'mutate', line: 3, target: { variable: 'out' }, method: 'append' },
+        { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [1] },
       ]),
     },
     {
@@ -194,7 +209,6 @@ function runMapSetParity(): void {
       accesses: [{ variable: 'seen', kind: 'mutating-call', method: 'set', pathDepth: 1 }],
     },
   ];
-  const javaMapState = '{"name":"seen","kind":"map","highlightedKey":2,"entries":[{"key":2,"value":true,"highlight":true}]}';
 
   assertParity(
     'map-set',
@@ -203,8 +217,9 @@ function runMapSetParity(): void {
       javascript: traceFor('javascript', pythonTrace),
       typescript: traceFor('typescript', pythonTrace),
       java: javaTrace([
-        'line=5 keyed-call seen method=put key=2 value=true',
-        `line=5 map-state seen=${javaMapState}`,
+        { kind: 'line', line: 5, function: 'solve' },
+        { kind: 'mutate', line: 5, target: { variable: 'seen' }, method: 'set' },
+        { kind: 'snapshot', line: 5, target: { variable: 'seen' }, value: { __type__: 'map', entries: [[2, true]] } },
       ]),
     },
     {
@@ -250,9 +265,11 @@ function runEarlyReturnParity(): void {
       javascript: traceFor('javascript', trace),
       typescript: traceFor('typescript', trace),
       java: javaTrace([
-        'line=1 call solve n=0',
-        'line=2 n=0',
-        'line=2 return solve value=0',
+        { kind: 'call', line: 1, function: 'solve', args: { n: 0 } },
+        { kind: 'snapshot', line: 1, target: { variable: 'n' }, value: 0 },
+        { kind: 'line', line: 2, function: 'solve' },
+        { kind: 'snapshot', line: 2, target: { variable: 'n' }, value: 0 },
+        { kind: 'return', line: 2, function: 'solve', value: 0 },
       ]),
     },
     {

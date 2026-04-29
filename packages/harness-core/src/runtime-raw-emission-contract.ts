@@ -24,16 +24,6 @@ function sortedUnique<T extends string>(values: T[]): T[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
 
-function extractJavaPayload(event: string): string {
-  const match = event.match(/^line=\d+(?:\s+(.*))?$/);
-  if (!match) return event;
-  return match[1] ?? '';
-}
-
-function isJavaLineEvent(event: string): boolean {
-  return /^line=\d+(?:\s+.*)?$/.test(event);
-}
-
 function javaNativeV4PayloadKind(event: string): RuntimeRawEmissionKind | null {
   if (!event.startsWith('v4:')) return null;
   try {
@@ -53,27 +43,6 @@ function javaNativeV4PayloadKind(event: string): RuntimeRawEmissionKind | null {
   return null;
 }
 
-function javaPayloadKind(payload: string): RuntimeRawEmissionKind | null {
-  if (payload.length === 0) return 'line';
-  if (payload.startsWith('call ')) return 'call';
-  if (payload.startsWith('return ')) return 'return';
-  if (payload.startsWith('exception ')) return 'exception';
-  if (payload.startsWith('stdout ')) return 'stdout';
-  if (payload.startsWith('access ')) return 'read';
-  if (payload.startsWith('write ') || payload.startsWith('write-array ')) return 'write';
-  if (payload.startsWith('mutate ') || payload.startsWith('mutate-indexed ') || payload.startsWith('keyed-call ')) return 'mutate';
-  if (
-    payload.startsWith('state ') ||
-    payload.startsWith('object-state ') ||
-    payload.startsWith('map-state ') ||
-    payload.startsWith('set-state ')
-  ) {
-    return 'legacy-visualization-state';
-  }
-  if (/^[A-Za-z_][A-Za-z0-9_.]*=/.test(payload)) return 'snapshot';
-  return null;
-}
-
 export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionSummary {
   const kinds: RuntimeRawEmissionKind[] = [];
   const unsupported: string[] = [];
@@ -84,17 +53,7 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
       kinds.push(nativeKind);
       continue;
     }
-    if (isJavaLineEvent(event)) {
-      kinds.push('line');
-    }
-    const payload = extractJavaPayload(event);
-    const kind = javaPayloadKind(payload);
-    if (kind && kind !== 'line') {
-      kinds.push(kind);
-    } else {
-      if (kind === 'line') continue;
-      unsupported.push(event);
-    }
+    unsupported.push(event);
   }
 
   return {

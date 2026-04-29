@@ -317,7 +317,9 @@ function testRuntimeTraceContractAccessNormalization(): void {
 }
 
 async function testJavaSerializedResultNormalization(): Promise<void> {
-  const trace = javaTraceHooksEventsToV4Trace(['line=1 return solve value=[1,true,"ok"]']);
+  const trace = javaTraceHooksEventsToV4Trace([
+    `v4:${JSON.stringify({ kind: 'return', line: 1, function: 'solve', value: [1, true, 'ok'] })}`,
+  ]);
   assertCondition(
     stableStringify(normalizeJavaSerializedResult('[1,true,"ok"]')) === stableStringify([1, true, 'ok']),
     'Java TraceHooks result decoding should decode serialized JSON arrays'
@@ -337,8 +339,10 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
     executeWithTracing: async () => ({
       success: true,
       output: nextOutput,
-      events: ['line=1 return solve'],
-      trace: javaTraceHooksEventsToV4Trace(['line=1 return solve']),
+      events: [`v4:${JSON.stringify({ kind: 'return', line: 1, function: 'solve' })}`],
+      trace: javaTraceHooksEventsToV4Trace([
+        `v4:${JSON.stringify({ kind: 'return', line: 1, function: 'solve' })}`,
+      ]),
       sourceText: 'return 7;',
       executionTimeMs: 1,
       consoleOutput: [],

@@ -26,6 +26,10 @@ function assertCondition(condition: boolean, message: string): void {
   }
 }
 
+function nativeJavaEvent(event: Record<string, unknown>): string {
+  return `v4:${JSON.stringify(event)}`;
+}
+
 async function loadWorkerSource(): Promise<string> {
   const workerPath = join(process.cwd(), 'workers', 'java', 'java-worker.js');
   return readFile(workerPath, 'utf8');
@@ -126,20 +130,19 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   success: true,
                   output: JSON.stringify([0, 1, 2]),
                   events: [
-                    'line=4 call buildGraph n=3',
-                    'line=5 graph=[[],[],[]]',
-                    'line=5 state graph-adjacency graph=[[],[],[]]',
-                    'line=6 access graph[0]=[]',
-                    'line=6 mutate-indexed graph[0] method=add',
-                    'line=6 graph=[[1],[],[]]',
-                    'line=7 access graph[1]=[]',
-                    'line=7 mutate-indexed graph[1] method=add',
-                    'line=7 graph=[[1],[2],[]]',
-                    'line=10 access graph[0]=[1]',
-                    'line=10',
-                    'line=11 access graph[1]=[2]',
-                    'line=11',
-                    'line=13 return buildGraph value=[0,1,2]',
+                    nativeJavaEvent({ kind: 'call', line: 4, function: 'buildGraph', args: { n: 3 } }),
+                    nativeJavaEvent({ kind: 'snapshot', line: 5, target: { variable: 'graph' }, value: [[], [], []] }),
+                    nativeJavaEvent({ kind: 'read', line: 6, target: { variable: 'graph', path: [0] }, value: [] }),
+                    nativeJavaEvent({ kind: 'mutate', line: 6, target: { variable: 'graph', path: [0] }, method: 'append' }),
+                    nativeJavaEvent({ kind: 'snapshot', line: 6, target: { variable: 'graph' }, value: [[1], [], []] }),
+                    nativeJavaEvent({ kind: 'read', line: 7, target: { variable: 'graph', path: [1] }, value: [] }),
+                    nativeJavaEvent({ kind: 'mutate', line: 7, target: { variable: 'graph', path: [1] }, method: 'append' }),
+                    nativeJavaEvent({ kind: 'snapshot', line: 7, target: { variable: 'graph' }, value: [[1], [2], []] }),
+                    nativeJavaEvent({ kind: 'read', line: 10, target: { variable: 'graph', path: [0] }, value: [1] }),
+                    nativeJavaEvent({ kind: 'line', line: 10, function: 'buildGraph' }),
+                    nativeJavaEvent({ kind: 'read', line: 11, target: { variable: 'graph', path: [1] }, value: [2] }),
+                    nativeJavaEvent({ kind: 'line', line: 11, function: 'buildGraph' }),
+                    nativeJavaEvent({ kind: 'return', line: 13, function: 'buildGraph', value: [0, 1, 2] }),
                   ],
                 });
               }
@@ -640,9 +643,8 @@ class Solution {
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');
     assertCondition(
       Array.isArray(graphExecute.events) &&
-        graphExecute.events.includes('line=6 mutate-indexed graph[0] method=add') &&
-        graphExecute.events.includes('line=7 mutate-indexed graph[1] method=add'),
-      'Java graph adjacency runtime events should retain indexed receiver mutation indices'
+        graphExecute.events.every((event) => event.startsWith('v4:')),
+      'Java graph adjacency runtime events should be native V4'
     );
 
     const graphTrace = javaTraceHooksEventsToV4Trace(graphExecute.events ?? [], undefined, {

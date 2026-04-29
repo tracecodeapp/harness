@@ -74,10 +74,12 @@ function testPythonBoundaryReturnsV4(): void {
 
 function testJavaBoundaryReturnsV4(): void {
   const trace = javaTraceHooksEventsToV4Trace([
-    'line=4 call solve nums=[1,2]',
-    'line=5 nums=[1,2]',
-    'line=5 access nums[1]=2',
-    'line=6 return solve value=2',
+    `v4:${JSON.stringify({ kind: 'call', line: 4, function: 'solve', args: { nums: [1, 2] } })}`,
+    `v4:${JSON.stringify({ kind: 'snapshot', line: 4, target: { variable: 'nums' }, value: [1, 2] })}`,
+    `v4:${JSON.stringify({ kind: 'line', line: 5, function: 'solve' })}`,
+    `v4:${JSON.stringify({ kind: 'snapshot', line: 5, target: { variable: 'nums' }, value: [1, 2] })}`,
+    `v4:${JSON.stringify({ kind: 'read', line: 5, target: { variable: 'nums', path: [1] }, value: 2 })}`,
+    `v4:${JSON.stringify({ kind: 'return', line: 6, function: 'solve', value: 2 })}`,
   ], undefined, { runId: 'java:test', file: 'Solution.java' });
   const result = { trace };
 

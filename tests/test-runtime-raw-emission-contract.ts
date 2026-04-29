@@ -29,32 +29,31 @@ function testJavaUnknownPayloadRejection(): void {
     'line=2 call solve nums=[1,2,3]',
     'line=3 array-length nums=3',
   ]);
-  assertCondition(summary.unsupported.length === 1, 'raw contract should classify array-length as unsupported');
+  assertCondition(summary.unsupported.length === 2, 'raw contract should reject legacy Java line payloads');
   assertThrows(
     () => assertSupportedRawEmissions(summary, 'java:test'),
-    /array-length nums=3/,
-    'raw contract should reject unsupported array-length payloads'
+    /line=2 call solve/,
+    'raw contract should reject legacy Java payloads'
   );
   assertThrows(
     () => javaTraceHooksEventsToV4Trace(['line=3 array-length nums=3']),
     /unsupported raw runtime payloads/,
-    'java TraceHooks V4 assembly should reject unsupported raw payloads before normalization'
+    'java TraceHooks V4 assembly should reject legacy raw payloads'
   );
   console.log('PASS: raw emission contract rejects unsupported Java payloads');
 }
 
 function testJavaKnownPayloads(): void {
   const summary = summarizeJavaRawEmissions([
-    'line=2 call solve nums=[1,2,3]',
-    'line=3 nums=[1,2,3]',
-    'line=4 access nums[0]=1',
-    'line=5 write-array nums[1]=4',
-    'line=6 mutate out method=add',
-    'line=7 keyed-call seen method=put key=1 value=true',
-    'line=8 map-state seen={"name":"seen","kind":"map","entries":[]}',
-    'line=9 stdout "ok"',
-    'line=10 exception "boom"',
-    'line=11 return solve value=1',
+    `v4:${JSON.stringify({ kind: 'call', line: 2, function: 'solve', args: { nums: [1, 2, 3] } })}`,
+    `v4:${JSON.stringify({ kind: 'line', line: 3, function: 'solve' })}`,
+    `v4:${JSON.stringify({ kind: 'snapshot', line: 3, target: { variable: 'nums' }, value: [1, 2, 3] })}`,
+    `v4:${JSON.stringify({ kind: 'read', line: 4, target: { variable: 'nums', path: [0] }, value: 1 })}`,
+    `v4:${JSON.stringify({ kind: 'write', line: 5, target: { variable: 'nums', path: [1] }, value: 4 })}`,
+    `v4:${JSON.stringify({ kind: 'mutate', line: 6, target: { variable: 'out' }, method: 'append' })}`,
+    `v4:${JSON.stringify({ kind: 'stdout', line: 9, text: 'ok' })}`,
+    `v4:${JSON.stringify({ kind: 'exception', line: 10, message: 'boom' })}`,
+    `v4:${JSON.stringify({ kind: 'return', line: 11, function: 'solve', value: 1 })}`,
   ]);
   assertSupportedRawEmissions(summary, 'java:known');
   assertCondition(summary.unsupported.length === 0, 'known Java payloads should be supported');
