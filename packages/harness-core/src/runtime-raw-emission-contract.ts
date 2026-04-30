@@ -32,9 +32,30 @@ const FORBIDDEN_RUNTIME_TRACE_TOKENS = [
 ] as const;
 
 function forbiddenRuntimeTraceTokens(value: unknown): string[] {
-  const serialized = JSON.stringify(value);
-  if (typeof serialized !== 'string') return [];
-  return FORBIDDEN_RUNTIME_TRACE_TOKENS.filter((token) => serialized.includes(token));
+  const tokens = new Set<string>();
+  collectForbiddenRuntimeTraceTokens(value, tokens);
+  return FORBIDDEN_RUNTIME_TRACE_TOKENS.filter((token) => tokens.has(token));
+}
+
+function collectForbiddenRuntimeTraceTokens(value: unknown, tokens: Set<string>): void {
+  if (typeof value === 'string') {
+    if ((FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(value)) {
+      tokens.add(value);
+    }
+    return;
+  }
+  if (value === null || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectForbiddenRuntimeTraceTokens(item, tokens);
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if ((FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(key)) {
+      tokens.add(key);
+    }
+    if (key === 'target' || key === 'variable') continue;
+    collectForbiddenRuntimeTraceTokens(child, tokens);
+  }
 }
 
 function unsupportedForbiddenPayload(label: string, value: unknown): string | null {

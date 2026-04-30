@@ -122,6 +122,18 @@ function testForbiddenRuntimeTracePayloadRejection(): void {
     /forbidden runtime trace token.*graph-adjacency/s,
     'java TraceHooks assembly should reject semantic payload tokens inside native trace events'
   );
+  const userTargetSummary = summarizeJavaRawEmissions([
+    `trace:${JSON.stringify({
+      kind: 'read',
+      line: 3,
+      target: { variable: 'tree', path: ['tree'] },
+      value: 1,
+    })}`,
+  ]);
+  assertCondition(
+    userTargetSummary.unsupported.length === 0,
+    'raw contract should not reject user target names that match semantic tokens'
+  );
   console.log('PASS: raw emission contract rejects visualizer and semantic runtime payload leaks');
 }
 

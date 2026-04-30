@@ -782,6 +782,10 @@ function augmentTraceCallArgumentSnapshots(source) {
 
 function collectJavaLocalDeclarations(line) {
   const names = [];
+  const trimmedLine = String(line).trim();
+  if (trimmedLine.startsWith('//') || trimmedLine.startsWith('/*') || trimmedLine.startsWith('*')) {
+    return names;
+  }
   const declarationPattern =
     /\b(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
   const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
@@ -1481,6 +1485,20 @@ function buildExportsClassName(messageId) {
   return `Exports${String(messageId).replace(/[^A-Za-z0-9]/g, '')}`;
 }
 
+function normalizeJavaSerializedOutput(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeJavaSerializedOutput(item));
+  }
+  if (!value || typeof value !== 'object') return value;
+  const output = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === '__class__') continue;
+    if (value.__type__ === 'NestedInteger' && key === 'value' && child == null) continue;
+    output[key] = normalizeJavaSerializedOutput(child);
+  }
+  return output;
+}
+
 async function ensureReady() {
   if (!workerReadyPromise) {
     workerReadyPromise = (async () => {
@@ -1932,7 +1950,7 @@ async function runJavaRequest(payload, requestId) {
 
   return {
     success: true,
-    output: report.output ? JSON.parse(report.output) : undefined,
+    output: report.output ? normalizeJavaSerializedOutput(JSON.parse(report.output)) : undefined,
     events: expandLoopHeaderTraceEvents(
       normalizeScriptTraceEvents(
         Array.isArray(report.events) ? report.events : [],

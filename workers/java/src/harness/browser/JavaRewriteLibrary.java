@@ -27,8 +27,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>?, ]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
-  private static final Pattern MATRIX_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
-  private static final Pattern ARRAY_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]");
+  private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
+  private static final Pattern ARRAY_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]");
 
   private JavaRewriteLibrary() {}
 
@@ -89,6 +89,13 @@ public final class JavaRewriteLibrary {
       }
 
       String trimmed = line.trim();
+      if (trimmed.startsWith("@")) {
+        out.append(line).append('\n');
+        current.depth += braceDelta(line);
+        current.pendingAnnotation = true;
+        continue;
+      }
+
       if (current.initializerDepth > 0 || startsMultilineInitializer(trimmed)) {
         out.append(line).append('\n');
         current.initializerDepth = Math.max(0, current.initializerDepth + braceDelta(line));
@@ -99,12 +106,27 @@ public final class JavaRewriteLibrary {
         continue;
       }
 
-      if (shouldEmitLine(trimmed)) {
+      if (current.headerParenDepth > 0) {
+        String rewrittenLine = rewriteStatement(line, sourceLine, current);
+        out.append(rewrittenLine).append('\n');
+        current.headerParenDepth = Math.max(0, current.headerParenDepth + parenDelta(line));
+        current.depth += braceDelta(rewrittenLine);
+        while (!methods.isEmpty() && methods.peek().depth <= 0) {
+          methods.pop();
+        }
+        continue;
+      }
+
+      if (!current.pendingAnnotation && shouldEmitLine(trimmed)) {
         out.append(indentOf(line)).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
       }
 
       String rewrittenLine = rewriteStatement(line, sourceLine, current);
       out.append(rewrittenLine).append('\n');
+      current.pendingAnnotation = false;
+      if (startsMultilineControlHeader(trimmed)) {
+        current.headerParenDepth = Math.max(0, parenDelta(line));
+      }
 
       current.depth += braceDelta(rewrittenLine);
       while (!methods.isEmpty() && methods.peek().depth <= 0) {
@@ -219,7 +241,7 @@ public final class JavaRewriteLibrary {
       if (full.contains("TraceHooks.")) return full;
       String name = match.group(1);
       String field = match.group(2);
-      if (Character.isUpperCase(name.charAt(0)) || "out".equals(field) || "err".equals(field) || "length".equals(field)) return full;
+      if ("java".equals(name) || Character.isUpperCase(name.charAt(0)) || "out".equals(field) || "err".equals(field) || "length".equals(field)) return full;
       return "TraceHooks.readObjectFieldAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ")";
     });
     return next;
@@ -235,6 +257,16 @@ public final class JavaRewriteLibrary {
   private static boolean startsMultilineInitializer(String trimmed) {
     return trimmed.contains("=") && trimmed.contains("{") && !trimmed.contains(";") &&
         !trimmed.startsWith("if ") && !trimmed.startsWith("for ") && !trimmed.startsWith("while ") && !trimmed.startsWith("switch ");
+  }
+
+  private static boolean startsMultilineControlHeader(String trimmed) {
+    if (!(trimmed.startsWith("if ") || trimmed.startsWith("if(") ||
+        trimmed.startsWith("while ") || trimmed.startsWith("while(") ||
+        trimmed.startsWith("for ") || trimmed.startsWith("for(") ||
+        trimmed.startsWith("switch ") || trimmed.startsWith("switch("))) {
+      return false;
+    }
+    return parenDelta(trimmed) > 0;
   }
 
   private static boolean isArrayAllocationTypeMatch(String source, int matchStart) {
@@ -374,6 +406,43 @@ public final class JavaRewriteLibrary {
     return delta;
   }
 
+  private static int parenDelta(String line) {
+    int delta = 0;
+    boolean inString = false;
+    boolean inChar = false;
+    boolean escaped = false;
+    for (int i = 0; i < line.length(); i++) {
+      char ch = line.charAt(i);
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch == '\\') {
+        escaped = true;
+        continue;
+      }
+      if (inString) {
+        if (ch == '"') inString = false;
+        continue;
+      }
+      if (inChar) {
+        if (ch == '\'') inChar = false;
+        continue;
+      }
+      if (ch == '"') {
+        inString = true;
+        continue;
+      }
+      if (ch == '\'') {
+        inChar = true;
+        continue;
+      }
+      if (ch == '(') delta++;
+      if (ch == ')') delta--;
+    }
+    return delta;
+  }
+
   private static String indentOf(String line) {
     int index = 0;
     while (index < line.length() && Character.isWhitespace(line.charAt(index))) index++;
@@ -388,12 +457,16 @@ public final class JavaRewriteLibrary {
     final String name;
     int depth;
     int initializerDepth;
+    int headerParenDepth;
+    boolean pendingAnnotation;
     final Map<String, String> variables;
 
     MethodFrame(String name, int depth, Map<String, String> fields, String parametersSource) {
       this.name = name;
       this.depth = depth;
       this.initializerDepth = 0;
+      this.headerParenDepth = 0;
+      this.pendingAnnotation = false;
       this.variables = new HashMap<>(fields);
       registerParameters(this.variables, parametersSource);
     }

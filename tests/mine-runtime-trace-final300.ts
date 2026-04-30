@@ -139,6 +139,7 @@ function hasFlag(name: string): boolean {
 }
 
 function stableStringify(value: unknown): string {
+  if (value === undefined) return 'null';
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return '[' + value.map((item) => stableStringify(item)).join(',') + ']';
   const obj = value as Record<string, unknown>;
@@ -146,6 +147,16 @@ function stableStringify(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`)
     .join(',') + '}';
+}
+
+function normalizeOutputForReport(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => normalizeOutputForReport(item));
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, child]) => [key, normalizeOutputForReport(child)])
+  );
 }
 
 function increment(map: Record<string, number>, key: string): void {
@@ -638,7 +649,7 @@ function compareRuns(
   let signatureDiff: DriftRecord['signatureDiff'];
   if (compareOutputToReference && stableStringify(reference.output) !== stableStringify(run.output)) {
     kinds.push('output');
-    output = { expected: reference.output, received: run.output };
+    output = { expected: normalizeOutputForReport(reference.output), received: normalizeOutputForReport(run.output) };
   }
   if (compareRuntimeFacts && !signaturesEqual(reference.signature, run.signature)) {
     kinds.push('runtime-facts');
@@ -770,7 +781,7 @@ async function main(): Promise<void> {
             comparedTo: 'expectedOutput',
             language: entry.language,
             kinds: ['output'],
-            output: { expected: entry.expectedOutput, received: run.output },
+            output: { expected: normalizeOutputForReport(entry.expectedOutput), received: normalizeOutputForReport(run.output) },
           });
         }
       } catch (error) {

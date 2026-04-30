@@ -75,7 +75,7 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard'}
-_internal_funcs = {'_serialize', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_normalize_mutation_method', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_normalize_mutation_method', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_dict_get', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -85,7 +85,7 @@ _internal_locals = {
     '_trace_limit_exceeded', '_timeout_reason', '_total_line_events', '_max_line_events', '_max_stored_events',
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
-    '_custom_print', '_tracer', '_serialize', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list',
+    '_custom_print', '_tracer', '_serialize', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result',
     '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step',
@@ -733,11 +733,11 @@ def _tracecode_dict_get(var_name, container, key, default=None):
     )
     return result
 
-def _tracecode_enumerate(var_name, container):
-    for index, value in enumerate(container):
+def _tracecode_enumerate(var_name, container, *args, **kwargs):
+    for offset, (index, value) in enumerate(enumerate(container, *args, **kwargs)):
         __tracecode_record_access(
             sys._getframe(1),
-            __tracecode_make_access_event(var_name, 'indexed-read', [index]),
+            __tracecode_make_access_event(var_name, 'indexed-read', [offset]),
         )
         yield index, value
 
@@ -787,8 +787,8 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             node.iter = ast.copy_location(
                 ast.Call(
                     func=ast.Name(id='_tracecode_enumerate', ctx=ast.Load()),
-                    args=[ast.Constant(value=var_name), ast.Name(id=var_name, ctx=ast.Load())],
-                    keywords=[],
+                    args=[ast.Constant(value=var_name), ast.Name(id=var_name, ctx=ast.Load()), *node.iter.args[1:]],
+                    keywords=node.iter.keywords,
                 ),
                 node.iter,
             )
@@ -1320,6 +1320,7 @@ print = _custom_print
           `            _call_args = []`,
           `        if not isinstance(_call_args, (list, tuple)):`,
           `            _call_args = [_call_args]`,
+          `        _call_args = _tracecode_materialize_input(_call_args)`,
           `        if _i == 0:`,
           `            _instance = _cls(*_call_args)`,
           `            _out.append(None)`,
@@ -1349,6 +1350,19 @@ print = _custom_print
   const harnessSuffix = `
 ${userCodeTraceSetup}
 ${deps.PYTHON_CONVERSION_HELPERS_SNIPPET}
+
+def _tracecode_materialize_input(obj):
+    if isinstance(obj, list):
+        return [_tracecode_materialize_input(item) for item in obj]
+    if isinstance(obj, tuple):
+        return tuple(_tracecode_materialize_input(item) for item in obj)
+    if isinstance(obj, dict):
+        if obj.get('__type__') == 'TreeNode' or 'left' in obj or 'right' in obj:
+            return _dict_to_tree(obj)
+        if obj.get('__type__') == 'ListNode' or 'next' in obj:
+            return _dict_to_list(obj)
+        return {key: _tracecode_materialize_input(value) for key, value in obj.items()}
+    return obj
 
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:
