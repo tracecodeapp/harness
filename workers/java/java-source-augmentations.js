@@ -274,7 +274,13 @@
 
         const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(put|set|add|append|remove)"\);\s*/g;
         nextLine = nextLine.replace(staleMutationPattern, (match, name, method) => {
-          if (currentMethod.maps.has(name) || currentMethod.sets.has(name) || currentMethod.adjacencyLists.has(name)) {
+          if (currentMethod.maps.has(name) && (method === 'put' || method === 'set')) {
+            return '';
+          }
+          if (currentMethod.sets.has(name) && (method === 'add' || method === 'append' || method === 'remove')) {
+            return '';
+          }
+          if (currentMethod.adjacencyLists.has(name) && (method === 'add' || method === 'append')) {
             return '';
           }
           if (currentMethod.lists.has(name) && method === 'remove') {

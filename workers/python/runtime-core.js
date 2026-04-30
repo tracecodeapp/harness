@@ -681,7 +681,7 @@ def _tracecode_augassign_index(var_name, container, indices, op_name, rhs):
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
     result = getattr(container, method_name)(*args, **kwargs)
     if method_name in _TRACE_MUTATING_METHODS:
-        normalized_method = 'append' if method_name == 'add' else ('remove' if method_name in {'remove', 'discard'} else method_name)
+        normalized_method = 'append' if method_name == 'add' else ('remove' if method_name in {'remove', 'discard'} or (method_name == 'pop' and isinstance(container, dict)) else method_name)
         __tracecode_record_access(
             sys._getframe(1),
             __tracecode_make_access_event(var_name, 'mutating-call', method_name=normalized_method),

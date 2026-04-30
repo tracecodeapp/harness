@@ -1,0 +1,33 @@
+{
+  "id": "map-remove",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "remove": {
+      "python": "seen.pop(2)",
+      "javascript": "seen.delete(2);",
+      "typescript": "seen.delete(2);",
+      "java": "seen.remove(2);"
+    }
+  },
+  "expect": {
+    "remove": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "remove"
+        }
+      ]
+    }
+  }
+}

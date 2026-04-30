@@ -3285,6 +3285,7 @@ function __traceNormalizeMethodName(__container, __method) {
     if (__method === 'has') return 'containsKey';
     if (__method === 'set') return 'set';
     if (__method === 'get') return 'get';
+    if (__method === 'delete') return 'remove';
   }
   if (__container instanceof Set) {
     if (__method === 'has') return 'contains';

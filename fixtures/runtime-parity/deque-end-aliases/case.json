@@ -1,0 +1,173 @@
+{
+  "id": "deque-end-aliases",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "anchors": {
+    "appendOfferLast": {
+      "python": "deck.append(nums[0])",
+      "javascript": "deck.push(nums[0]);",
+      "typescript": "deck.push(nums[0]);",
+      "java": "deck.offerLast(nums[0]);"
+    },
+    "appendAddLast": {
+      "python": "deck.append(nums[1])",
+      "javascript": "deck.push(nums[1]);",
+      "typescript": "deck.push(nums[1]);",
+      "java": "deck.addLast(nums[1]);"
+    },
+    "popleftPollFirst": {
+      "python": "deck.popleft()  # pollFirst",
+      "javascript": "deck.shift(); // pollFirst",
+      "typescript": "deck.shift(); // pollFirst",
+      "java": "deck.pollFirst();"
+    },
+    "popleftRemoveFirst": {
+      "python": "deck.popleft()  # removeFirst",
+      "javascript": "deck.shift(); // removeFirst",
+      "typescript": "deck.shift(); // removeFirst",
+      "java": "deck.removeFirst();"
+    },
+    "popPollLast": {
+      "python": "deck.pop()  # pollLast",
+      "javascript": "deck.pop(); // pollLast",
+      "typescript": "deck.pop(); // pollLast",
+      "java": "deck.pollLast();"
+    },
+    "popRemoveLast": {
+      "python": "deck.pop()  # removeLast",
+      "javascript": "deck.pop(); // removeLast",
+      "typescript": "deck.pop(); // removeLast",
+      "java": "deck.removeLast();"
+    }
+  },
+  "expect": {
+    "appendOfferLast": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "deck",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "deck",
+          "method": "append"
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "appendAddLast": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "deck",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "deck",
+          "method": "append"
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "popleftPollFirst": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "deck",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "deck",
+          "method": "popleft"
+        }
+      ]
+    },
+    "popleftRemoveFirst": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "deck",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "deck",
+          "method": "popleft"
+        }
+      ]
+    },
+    "popPollLast": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "deck",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "deck",
+          "method": "pop"
+        }
+      ]
+    },
+    "popRemoveLast": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "deck",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "deck",
+          "method": "pop"
+        }
+      ]
+    }
+  }
+}

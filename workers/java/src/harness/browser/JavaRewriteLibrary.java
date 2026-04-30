@@ -436,16 +436,23 @@ public final class JavaRewriteLibrary {
   }
 
   private static boolean isTrackedMutationMethod(String method) {
-    return "add".equals(method) || "push".equals(method) || "offer".equals(method) || "put".equals(method) ||
-        "remove".equals(method) || "clear".equals(method) || "poll".equals(method) || "pop".equals(method);
+    return "add".equals(method) || "push".equals(method) || "offer".equals(method) ||
+        "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) ||
+        "remove".equals(method) || "clear".equals(method) || "poll".equals(method) ||
+        "pollFirst".equals(method) || "removeFirst".equals(method) ||
+        "pollLast".equals(method) || "removeLast".equals(method) || "pop".equals(method);
   }
 
   private static String normalizeMutationMethod(String method) {
-    if ("add".equals(method) || "push".equals(method) || "offer".equals(method)) {
+    if ("add".equals(method) || "push".equals(method) || "offer".equals(method) ||
+        "addLast".equals(method) || "offerLast".equals(method)) {
       return "append";
     }
-    if ("poll".equals(method)) {
+    if ("poll".equals(method) || "pollFirst".equals(method) || "removeFirst".equals(method)) {
       return "popleft";
+    }
+    if ("pollLast".equals(method) || "removeLast".equals(method)) {
+      return "pop";
     }
     if ("put".equals(method)) {
       return "set";
