@@ -182,7 +182,7 @@ public final class JavaRewriteLibrary {
       Matcher mutatingExpression = MUTATING_CALL_EXPRESSION.matcher(declaration.group(4).trim());
       if (mutatingExpression.matches() && isTrackedMutationMethod(mutatingExpression.group(2))) {
         rewritten += " TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " +
-            quote(mutatingExpression.group(1)) + ", " + quote(normalizeMutationMethod(mutatingExpression.group(2))) + ");";
+            quote(mutatingExpression.group(1)) + ", " + quote(normalizeMutationMethod(frame.typeOf(mutatingExpression.group(1)), mutatingExpression.group(2))) + ");";
       }
       if (isScalarSnapshotType(type)) {
         rewritten += "\n" + indent + "TraceHooks.emitLineAtLine(" + sourceLine + ", \" "+ name + "=\" + TraceHooks.serializeResult(" + name + "));";
@@ -345,10 +345,10 @@ public final class JavaRewriteLibrary {
         String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
             pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + name + ") + \"}\");";
         String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-            pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+            pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(frame.typeOf(name), method) + "\\\"}\");";
         return indent + "{ " + readEvent + " " + name + "." + method + "(" + args + "); " + mutateEvent + " }";
       }
-      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(normalizeMutationMethod(method)) + ");";
+      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(normalizeMutationMethod(frame.typeOf(name), method)) + ");";
     }
 
     return rewriteReads(line, sourceLine, frame);
@@ -601,6 +601,14 @@ public final class JavaRewriteLibrary {
       return "set";
     }
     return method;
+  }
+
+  private static String normalizeMutationMethod(String type, String method) {
+    String normalizedType = type == null ? "" : normalizeJavaType(type);
+    if ("poll".equals(method) && normalizedType.contains("PriorityQueue")) {
+      return "pop";
+    }
+    return normalizeMutationMethod(method);
   }
 
   private static int braceDelta(String line) {
