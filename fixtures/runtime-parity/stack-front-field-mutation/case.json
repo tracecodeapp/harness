@@ -1,0 +1,66 @@
+{
+  "id": "stack-front-field-mutation",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "value": 7
+  },
+  "anchors": {
+    "append": {
+      "python": "stack[-1][\"items\"].append(value)",
+      "javascript": "stack[stack.length - 1].items.push(value);",
+      "typescript": "stack[stack.length - 1].items.push(value);",
+      "java": "stack.peek().items.add(value);"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "stack",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "stack",
+          "pathDepth": 2,
+          "method": "append"
+        },
+        {
+          "kind": "read",
+          "variable": "stack",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "mutate",
+        "variable": "stack",
+        "pathDepth": 2,
+        "method": "append",
+        "count": 1
+      },
+      {
+        "kind": "mutate",
+        "variable": "stack",
+        "method": "append",
+        "count": 1
+      },
+      {
+        "kind": "read",
+        "variable": "stack",
+        "pathDepth": 2,
+        "count": 1
+      }
+    ]
+  }
+}

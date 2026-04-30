@@ -2177,13 +2177,18 @@ function extractTraceableElementAccess(ts, node) {
   const indices = [];
   let current = unwrapParenthesizedExpression(ts, node);
 
-  while (current && ts.isElementAccessExpression(current) && indices.length < 3) {
-    indices.unshift(current.argumentExpression);
-    current = unwrapParenthesizedExpression(ts, current.expression);
-  }
-  while (current && ts.isPropertyAccessExpression(current) && indices.length < 3) {
-    indices.unshift(ts.factory.createStringLiteral(current.name.text));
-    current = unwrapParenthesizedExpression(ts, current.expression);
+  while (current && indices.length < 3) {
+    if (ts.isElementAccessExpression(current)) {
+      indices.unshift(current.argumentExpression);
+      current = unwrapParenthesizedExpression(ts, current.expression);
+      continue;
+    }
+    if (ts.isPropertyAccessExpression(current)) {
+      indices.unshift(ts.factory.createStringLiteral(current.name.text));
+      current = unwrapParenthesizedExpression(ts, current.expression);
+      continue;
+    }
+    break;
   }
 
   if (!current || indices.length === 0 || indices.length > 2) {

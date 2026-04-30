@@ -41,6 +41,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern FIELD_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern FRONT_FIELD_MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.peek\\(\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern COMPUTE_IF_ABSENT_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.computeIfAbsent\\((.+),\\s*([^;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
@@ -219,6 +221,22 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + (" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+    }
+
+    Matcher frontFieldMutatingCall = FRONT_FIELD_MUTATING_CALL_STATEMENT.matcher(line);
+    if (frontFieldMutatingCall.matches() && isTrackedMutationMethod(frontFieldMutatingCall.group(4))) {
+      String indent = frontFieldMutatingCall.group(1);
+      String name = frontFieldMutatingCall.group(2);
+      String field = frontFieldMutatingCall.group(3);
+      String method = frontFieldMutatingCall.group(4);
+      String args = rewriteReads(frontFieldMutatingCall.group(5).trim(), sourceLine, frame);
+      String target = name + ".peek()." + field;
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[0,\\\"" + field + "\\\"]}";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
+      String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
       return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
