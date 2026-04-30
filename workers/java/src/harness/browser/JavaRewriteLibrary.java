@@ -307,9 +307,11 @@ public final class JavaRewriteLibrary {
       String args = rewriteReads(mutatingCall.group(4).trim(), sourceLine, frame);
       if (frame.isField(name)) {
         String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"this\\\",\\\"path\\\":[\\\"" + name + "\\\"]}";
+        String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
+            pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + name + ") + \"}\");";
         String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
             pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
-        return indent + name + "." + method + "(" + args + "); " + mutateEvent;
+        return indent + "{ " + readEvent + " " + name + "." + method + "(" + args + "); " + mutateEvent + " }";
       }
       return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(normalizeMutationMethod(method)) + ");";
     }

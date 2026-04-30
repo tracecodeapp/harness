@@ -1,0 +1,107 @@
+{
+  "id": "field-mutating-call",
+  "functionName": "Bag",
+  "executionStyle": "ops-class",
+  "inputs": {
+    "operations": [
+      "Bag",
+      "add"
+    ],
+    "arguments": [
+      [],
+      [
+        3
+      ]
+    ]
+  },
+  "anchors": {
+    "fieldAppend": {
+      "python": "self.items.append(value)",
+      "javascript": "this.items.push(value);",
+      "typescript": "this.items.push(value);",
+      "java": "items.add(value);"
+    }
+  },
+  "expect": {
+    "fieldAppend": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "this",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "this",
+          "method": "append",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "fieldAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "self",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "self",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "java": {
+      "fieldAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}

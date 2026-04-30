@@ -1067,7 +1067,7 @@ function createTraceRecorder(options = {}) {
     if (access.kind === 'cell-read') stats.hasCellRead = true;
     if (access.kind === 'cell-write') stats.hasCellWrite = true;
     if (access.kind === 'mutating-call') stats.hasMutatingCall = true;
-    if (access.kind === 'mutating-call' && (access.pathDepth ?? 0) > 1) stats.hasNestedMutatingCall = true;
+    if (access.kind === 'mutating-call' && (access.pathDepth ?? 0) > 0) stats.hasNestedMutatingCall = true;
     if (access.kind === 'indexed-write') stats.hasIndexedWrite = true;
     runtimeTraceAccessStatsByVariable.set(variable, stats);
   }
@@ -1081,6 +1081,7 @@ function createTraceRecorder(options = {}) {
     if (
       event.kind === 'mutate' &&
       stats.hasIndexedWrite &&
+      pathDepth === 0 &&
       !(stats.hasNestedMutatingCall && pathDepth > 1) &&
       !stats.hasCellRead &&
       !stats.hasCellWrite
@@ -2250,6 +2251,18 @@ function extractTraceableMutatingCall(ts, node) {
     };
   }
 
+  if (
+    ts.isPropertyAccessExpression(receiver) &&
+    ts.isThis(unwrapParenthesizedExpression(ts, receiver.expression))
+  ) {
+    return {
+      variableName: 'this',
+      receiverExpression: ts.factory.createThis(),
+      methodName,
+      indices: [ts.factory.createStringLiteral(receiver.name.text)],
+    };
+  }
+
   const indexedReceiver = extractTraceableElementAccess(ts, receiver);
   if (indexedReceiver) {
     return {
@@ -3034,9 +3047,16 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
 
       if (ts.isPropertyAccessExpression(node)) {
         const parent = node.parent;
+        const grandparent = parent?.parent;
         if (
           isTraceablePropertyWriteLeftOperand(ts, node) ||
-          (parent && ts.isCallExpression(parent) && parent.expression === node)
+          (parent && ts.isCallExpression(parent) && parent.expression === node) ||
+          (parent &&
+            ts.isPropertyAccessExpression(parent) &&
+            parent.expression === node &&
+            grandparent &&
+            ts.isCallExpression(grandparent) &&
+            grandparent.expression === parent)
         ) {
           return ts.visitEachChild(node, visit, context);
         }
@@ -3419,7 +3439,7 @@ function __traceMutatingCall(__varName, __container, __indices, __method, ...__a
       kind: 'mutating-call',
       method: __traceNormalizeMethodName(__target, __method, __args),
       indices: __indices || [],
-      pathDepth: (__indices || []).length + 1,
+      pathDepth: (__indices || []).length,
     });
   }
   return __result;
