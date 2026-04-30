@@ -272,7 +272,7 @@
           });
         }
 
-        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(put|add|remove)"\);\s*/g;
+        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(put|set|add|append|remove)"\);\s*/g;
         nextLine = nextLine.replace(staleMutationPattern, (match, name, method) => {
           if (currentMethod.maps.has(name) || currentMethod.sets.has(name) || currentMethod.adjacencyLists.has(name)) {
             return '';

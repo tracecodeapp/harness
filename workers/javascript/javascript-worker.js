@@ -1790,6 +1790,9 @@ const MUTATION_METHOD_ALIASES = {
   add: 'append',
   append: 'append',
   push: 'append',
+  offer: 'append',
+  shift: 'popleft',
+  poll: 'popleft',
   put: 'set',
   set: 'set',
 };
@@ -3268,6 +3271,10 @@ function __traceNormalizeMethodName(__container, __method) {
     if (__method === 'has') return 'contains';
     if (__method === 'add') return 'add';
     if (__method === 'delete') return 'remove';
+  }
+  if (Array.isArray(__container)) {
+    if (__method === 'push') return 'append';
+    if (__method === 'shift') return 'popleft';
   }
   return __method;
 }

@@ -1,0 +1,108 @@
+{
+  "id": "queue-fifo",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2
+    ]
+  },
+  "anchors": {
+    "append": {
+      "python": "queue.append(num)",
+      "javascript": "queue.push(num);",
+      "typescript": "queue.push(num);",
+      "java": "queue.offer(num);"
+    },
+    "popleft": {
+      "python": "first = queue.popleft()",
+      "javascript": "const first = queue.shift();",
+      "typescript": "const first = queue.shift()!;",
+      "java": "int first = queue.poll();"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "num",
+        "nums",
+        "queue"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "queue",
+          "method": "append"
+        }
+      ]
+    },
+    "popleft": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "nums",
+        "queue"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "queue",
+          "method": "popleft"
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "popleft": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "num",
+          "nums",
+          "queue"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue",
+            "method": "popleft"
+          }
+        ]
+      }
+    },
+    "java": {
+      "popleft": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "num",
+          "nums",
+          "queue"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue",
+            "method": "popleft"
+          }
+        ]
+      }
+    }
+  }
+}

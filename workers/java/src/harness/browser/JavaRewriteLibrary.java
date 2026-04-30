@@ -27,6 +27,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>?, ]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
+      "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
   private static final Pattern ARRAY_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]");
 
@@ -163,6 +165,11 @@ public final class JavaRewriteLibrary {
       String value = rewriteReads(declaration.group(4).trim(), sourceLine, frame);
       String prefix = line.substring(0, declaration.start(3));
       String rewritten = prefix + name + " = " + value + ";";
+      Matcher mutatingExpression = MUTATING_CALL_EXPRESSION.matcher(declaration.group(4).trim());
+      if (mutatingExpression.matches() && isTrackedMutationMethod(mutatingExpression.group(2))) {
+        rewritten += " TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " +
+            quote(mutatingExpression.group(1)) + ", " + quote(normalizeMutationMethod(mutatingExpression.group(2))) + ");";
+      }
       if (isScalarSnapshotType(type)) {
         rewritten += "\n" + indent + "TraceHooks.emitLineAtLine(" + sourceLine + ", \" "+ name + "=\" + TraceHooks.serializeResult(" + name + "));";
       }
@@ -209,7 +216,7 @@ public final class JavaRewriteLibrary {
       String name = mutatingCall.group(2);
       String method = mutatingCall.group(3);
       String args = rewriteReads(mutatingCall.group(4).trim(), sourceLine, frame);
-      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ");";
+      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(normalizeMutationMethod(method)) + ");";
     }
 
     return rewriteReads(line, sourceLine, frame);
@@ -431,6 +438,19 @@ public final class JavaRewriteLibrary {
   private static boolean isTrackedMutationMethod(String method) {
     return "add".equals(method) || "push".equals(method) || "offer".equals(method) || "put".equals(method) ||
         "remove".equals(method) || "clear".equals(method) || "poll".equals(method) || "pop".equals(method);
+  }
+
+  private static String normalizeMutationMethod(String method) {
+    if ("add".equals(method) || "push".equals(method) || "offer".equals(method)) {
+      return "append";
+    }
+    if ("poll".equals(method)) {
+      return "popleft";
+    }
+    if ("put".equals(method)) {
+      return "set";
+    }
+    return method;
   }
 
   private static int braceDelta(String line) {
