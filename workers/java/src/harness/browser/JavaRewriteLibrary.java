@@ -261,8 +261,10 @@ public final class JavaRewriteLibrary {
   }
 
   private static boolean startsMultilineInitializer(String trimmed) {
-    return trimmed.contains("=") && trimmed.contains("{") && !trimmed.contains(";") &&
-        !trimmed.startsWith("if ") && !trimmed.startsWith("for ") && !trimmed.startsWith("while ") && !trimmed.startsWith("switch ");
+    return trimmed.contains("{") && !trimmed.contains(";") &&
+        !trimmed.startsWith("if ") && !trimmed.startsWith("for ") && !trimmed.startsWith("while ") &&
+        !trimmed.startsWith("switch ") && !trimmed.startsWith("try") && !trimmed.startsWith("catch") &&
+        !trimmed.startsWith("finally") && !trimmed.startsWith("else") && !trimmed.startsWith("do ");
   }
 
   private static boolean startsMultilineControlHeader(String trimmed) {
@@ -367,10 +369,47 @@ public final class JavaRewriteLibrary {
     Matcher matcher = pattern.matcher(source);
     StringBuffer out = new StringBuffer();
     while (matcher.find()) {
+      if (isInsideJavaLiteral(source, matcher.start())) {
+        matcher.appendReplacement(out, Matcher.quoteReplacement(matcher.group(0)));
+        continue;
+      }
       matcher.appendReplacement(out, Matcher.quoteReplacement(replacer.replace(matcher)));
     }
     matcher.appendTail(out);
     return out.toString();
+  }
+
+  private static boolean isInsideJavaLiteral(String source, int offset) {
+    boolean inString = false;
+    boolean inChar = false;
+    boolean escaped = false;
+    for (int index = 0; index < offset; index++) {
+      char ch = source.charAt(index);
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch == '\\') {
+        escaped = inString || inChar;
+        continue;
+      }
+      if (inString) {
+        if (ch == '"') inString = false;
+        continue;
+      }
+      if (inChar) {
+        if (ch == '\'') inChar = false;
+        continue;
+      }
+      if (ch == '"') {
+        inString = true;
+        continue;
+      }
+      if (ch == '\'') {
+        inChar = true;
+      }
+    }
+    return inString || inChar;
   }
 
   private static boolean shouldEmitLine(String trimmed) {
@@ -378,6 +417,7 @@ public final class JavaRewriteLibrary {
     if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) return false;
     if (trimmed.startsWith("{") || trimmed.equals("}")) return false;
     if (trimmed.startsWith("}")) return false;
+    if (trimmed.startsWith(".")) return false;
     if (trimmed.startsWith("else")) return false;
     if (trimmed.startsWith("catch") || trimmed.startsWith("finally")) return false;
     return true;
