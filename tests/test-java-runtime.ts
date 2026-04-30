@@ -1,6 +1,9 @@
 #!/usr/bin/env npx tsx
 
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
@@ -47,6 +50,116 @@ function nativeEventMatches(event: string, expected: Record<string, unknown>): b
 
 function latestSourceContaining(files: Array<{ source: string }>, needle: string): string {
   return files.findLast((file) => file.source.includes(needle))?.source ?? '';
+}
+
+function rewriteWithNativeJavaRewriter(source: string, entryName = 'solve'): string {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-rewriter-'));
+  try {
+    const inputPath = join(tmpRoot, 'Solution.java');
+    const exportsPath = join(tmpRoot, 'ExportsHarness.java');
+    const outputPath = join(tmpRoot, 'Exports.java');
+    writeFileSync(inputPath, source, 'utf8');
+    writeFileSync(exportsPath, 'public final class Exports { public static String run() { return "null"; } }', 'utf8');
+    execFileSync(
+      'java',
+      [
+        '-cp',
+        [
+          join(process.cwd(), 'workers', 'vendor', 'java-rewriter.jar'),
+          join(process.cwd(), 'workers', 'vendor', 'javaparser-core-3.25.10.jar'),
+        ].join(':'),
+        'harness.browser.JavaRewriteLibrary',
+        inputPath,
+        outputPath,
+        'solution-method',
+        entryName,
+        exportsPath,
+        'Exports',
+        'tracecode.user',
+      ],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    return readFileSync(outputPath, 'utf8');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+function testNativeJavaRewriterRegressionGaps(): void {
+  const reflectiveTypeSource = rewriteWithNativeJavaRewriter(`import java.lang.reflect.*;
+
+class Solution {
+  Object solve() throws Exception {
+    java.lang.reflect.Constructor<?> ctor = String.class.getDeclaredConstructor();
+    return ctor.newInstance();
+  }
+}`);
+  assertCondition(
+    reflectiveTypeSource.includes('java.lang.reflect.Constructor<?> ctor = String.class.getDeclaredConstructor();'),
+    'Java rewriter should not treat package-qualified type names as object field reads'
+  );
+  assertCondition(
+    !reflectiveTypeSource.includes('TraceHooks.readObjectFieldAtLine(5, "java"'),
+    'Java rewriter should not instrument java.lang.reflect as field access'
+  );
+
+  const literalSource = rewriteWithNativeJavaRewriter(`class Solution {
+  int solve() {
+    String key = "tracecode.caseIndex";
+    return key.length();
+  }
+}`);
+  assertCondition(
+    literalSource.includes('String key = "tracecode.caseIndex";'),
+    'Java rewriter should preserve string literals that contain dotted names'
+  );
+  assertCondition(
+    !literalSource.includes('"TraceHooks.readObjectFieldAtLine'),
+    'Java rewriter should not inject field-read hooks inside string literals'
+  );
+
+  const fluentSource = rewriteWithNativeJavaRewriter(`import java.util.*;
+import java.util.stream.*;
+
+class Solution {
+  long solve(int[] nums) {
+    return Arrays.stream(nums)
+      .filter(n -> n > 0)
+      .map(n -> n * 2)
+      .count();
+  }
+}`);
+  assertCondition(
+    !fluentSource.includes('TraceHooks.emitLineAtLine(7);\n      .filter') &&
+      !fluentSource.includes('TraceHooks.emitLineAtLine(8);\n      .map'),
+    'Java rewriter should not insert standalone line hooks before fluent continuation lines'
+  );
+
+  const initializerSource = rewriteWithNativeJavaRewriter(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<double[]> edges = new ArrayList<>();
+    edges.add(new double[] {
+      1.0,
+      2.0
+    });
+    return edges.size();
+  }
+}`);
+  assertCondition(
+    initializerSource.includes('edges.add(new double[] {') &&
+      initializerSource.includes('      1.0,') &&
+      initializerSource.includes('      2.0'),
+    'Java rewriter should preserve multiline array initializer calls'
+  );
+  assertCondition(
+    !initializerSource.includes('TraceHooks.emitLineAtLine(7);\n      1.0') &&
+      !initializerSource.includes('TraceHooks.emitLineAtLine(8);\n      2.0'),
+    'Java rewriter should not insert line hooks inside multiline array initializers'
+  );
+
+  console.log('PASS: native Java rewriter preserves TC83 regression gap shapes');
 }
 
 async function loadWorkerSource(): Promise<string> {
@@ -355,6 +468,8 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
 }
 
 async function main(): Promise<void> {
+  testNativeJavaRewriterRegressionGaps();
+
   const workerSource = await loadWorkerSource();
   const augmentationSource = await loadJavaSourceAugmentationSource();
   const harness = createWorkerHarness(workerSource, augmentationSource);
