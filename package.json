@@ -88,6 +88,7 @@
     "test:runtime-trace-parity": "pnpm exec tsx tests/test-runtime-trace-parity.ts",
     "test:runtime-trace-fixtures": "pnpm exec tsx tests/test-runtime-trace-fixtures.ts",
     "report:runtime-trace-known-gaps": "pnpm exec tsx tests/report-runtime-trace-known-gaps.ts",
+    "test:runtime-trace-final300-compile": "pnpm exec tsx tests/mine-runtime-trace-final300.ts --limit=300 --fail-on-failure --report=reports/runtime-v4-final300-compile-gate.json",
     "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
     "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
     "mine:runtime-trace-final300": "pnpm exec tsx tests/mine-runtime-trace-final300.ts",

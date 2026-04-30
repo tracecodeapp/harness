@@ -122,6 +122,12 @@ interface DriftCluster {
   examples: Array<{ slug: string; language: MineLanguage }>;
 }
 
+interface FailureRecord {
+  slug: string;
+  language: MineLanguage;
+  error: string;
+}
+
 function parseStringFlag(name: string): string | undefined {
   const prefix = `--${name}=`;
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
@@ -136,6 +142,12 @@ function parseNumberFlag(name: string, fallback: number): number {
 
 function hasFlag(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+function isTraceBudgetFailure(error: string): boolean {
+  return /Exceeded \d+ trace steps/.test(error) ||
+    error.includes('trace limit exceeded') ||
+    error.includes('timeoutReason') && error.includes('trace-limit');
 }
 
 function stableStringify(value: unknown): string {
@@ -747,6 +759,7 @@ async function main(): Promise<void> {
   const maxLineEvents = parseNumberFlag('max-line-events', 20000);
   const maxSingleLineHits = parseNumberFlag('max-single-line-hits', 10000);
   const failOnDrift = hasFlag('fail-on-drift');
+  const failOnFailure = hasFlag('fail-on-failure');
   const compareRuntimeFacts = hasFlag('compare-runtime-facts');
 
   const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as Final300Entry[];
@@ -772,7 +785,7 @@ async function main(): Promise<void> {
   const pythonRuntime = await loadPythonRuntimeCore();
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
   const drifts: DriftRecord[] = [];
-  const failures: Array<{ slug: string; language: MineLanguage; error: string }> = [];
+  const failures: FailureRecord[] = [];
   let compared = 0;
 
   for (const [slug, group] of groups) {
@@ -831,11 +844,13 @@ async function main(): Promise<void> {
     maxLineEvents,
     maxSingleLineHits,
     compareRuntimeFacts,
+    failOnFailure,
     groupsScanned: groups.length,
     synthesizedJavaEntries,
     comparisons: compared,
     driftCount: drifts.length,
     failureCount: failures.length,
+    hardFailureCount: failures.filter((failure) => !isTraceBudgetFailure(failure.error)).length,
     driftClusters: clusterDrifts(drifts),
     drifts,
     failures,
@@ -843,6 +858,7 @@ async function main(): Promise<void> {
   await writeReport(reportPath, report);
 
   console.log(`runtime trace final300 mining: groups=${groups.length} comparisons=${compared} drifts=${drifts.length} failures=${failures.length}`);
+  console.log(`Hard failures: ${failures.filter((failure) => !isTraceBudgetFailure(failure.error)).length}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);
   console.log(`Report: ${reportPath}`);
   for (const cluster of clusterDrifts(drifts).slice(0, 5)) {
@@ -855,7 +871,10 @@ async function main(): Promise<void> {
     console.log(`FAIL ${failure.slug} ${failure.language}: ${failure.error.split('\n')[0]}`);
   }
 
-  if (failOnDrift && (drifts.length > 0 || failures.length > 0)) {
+  const hardFailures = failures.filter((failure) => !isTraceBudgetFailure(failure.error));
+  if (failOnFailure && hardFailures.length > 0) {
+    process.exitCode = 1;
+  } else if (failOnDrift && (drifts.length > 0 || hardFailures.length > 0)) {
     process.exitCode = 1;
   }
   // VM-backed worker shims can leave non-critical timer handles behind after
