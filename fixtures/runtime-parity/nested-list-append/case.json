@@ -1,0 +1,72 @@
+{
+  "id": "nested-list-append",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 2
+  },
+  "anchors": {
+    "append": {
+      "python": "graph[0].append(1)",
+      "javascript": "graph[0].push(1);",
+      "typescript": "graph[0].push(1);",
+      "java": "graph.get(0).add(1);"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "graph",
+        "n"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "method": "append",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "graph",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "append": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "graph",
+          "n"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "graph",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "graph",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}

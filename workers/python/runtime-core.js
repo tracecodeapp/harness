@@ -696,6 +696,10 @@ def _tracecode_mutating_index_call(var_name, container, indices, method_name, *a
     if method_name in _TRACE_MUTATING_METHODS:
         __tracecode_record_access(
             sys._getframe(1),
+            __tracecode_make_access_event(var_name, 'indexed-read', normalized),
+        )
+        __tracecode_record_access(
+            sys._getframe(1),
             __tracecode_make_access_event(var_name, 'mutating-call', normalized, method_name),
         )
     return result
