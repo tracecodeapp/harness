@@ -27,6 +27,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>?, ]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern FIELD_INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
@@ -183,6 +185,23 @@ public final class JavaRewriteLibrary {
       String field = fieldWrite.group(3);
       String value = rewriteReads(fieldWrite.group(4).trim(), sourceLine, frame);
       return indent + name + "." + field + " = " + value + "; TraceHooks.emitFieldWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ");";
+    }
+
+    Matcher fieldIndexedMutatingCall = FIELD_INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
+    if (fieldIndexedMutatingCall.matches() && isTrackedMutationMethod(fieldIndexedMutatingCall.group(5))) {
+      String indent = fieldIndexedMutatingCall.group(1);
+      String name = fieldIndexedMutatingCall.group(2);
+      String field = fieldIndexedMutatingCall.group(3);
+      String index = rewriteReads(fieldIndexedMutatingCall.group(4).trim(), sourceLine, frame);
+      String method = fieldIndexedMutatingCall.group(5);
+      String args = rewriteReads(fieldIndexedMutatingCall.group(6).trim(), sourceLine, frame);
+      String target = name + "." + field + ".get(" + index + ")";
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\\\"" + field + "\\\",";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + (" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
+      String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
     Matcher write2d = ARRAY_WRITE_2D.matcher(line);

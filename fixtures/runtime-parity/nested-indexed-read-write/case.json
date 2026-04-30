@@ -1,0 +1,112 @@
+{
+  "id": "nested-indexed-read-write",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "grid": [
+      [
+        2,
+        3
+      ],
+      [
+        5,
+        7
+      ]
+    ]
+  },
+  "anchors": {
+    "read": {
+      "python": "value = grid[0][1]",
+      "javascript": "const value = grid[0][1];",
+      "typescript": "const value = grid[0][1];",
+      "java": "int value = grid[0][1];"
+    },
+    "write": {
+      "python": "grid[1][0] = value + grid[0][0]",
+      "javascript": "grid[1][0] = value + grid[0][0];",
+      "typescript": "grid[1][0] = value + grid[0][0];",
+      "java": "grid[1][0] = value + grid[0][0];"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "grid"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "grid",
+          "pathDepth": 2
+        }
+      ]
+    },
+    "write": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "grid",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "grid",
+          "pathDepth": 2
+        },
+        {
+          "kind": "write",
+          "variable": "grid",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "grid",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "write",
+        "variable": "grid",
+        "pathDepth": 2,
+        "count": 1
+      },
+      {
+        "kind": "read",
+        "variable": "grid",
+        "pathDepth": 2,
+        "count": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "id": "class-field-nested-mutation",
+  "functionName": "solve",
+  "executionStyle": "solution-method",
+  "inputs": {
+    "n": 2
+  },
+  "anchors": {
+    "append": {
+      "python": "self.graph[0].append(1)",
+      "javascript": "this.graph[0].push(1);",
+      "typescript": "this.graph[0].push(1);",
+      "java": "this.graph.get(0).add(1);"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "n",
+        "this"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "this",
+          "method": "append",
+          "pathDepth": 2
+        },
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "append": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "n",
+          "self"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "self",
+            "method": "append",
+            "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
+    "java": {
+      "append": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "graph",
+          "n"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "method": "append",
+            "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
+  }
+}

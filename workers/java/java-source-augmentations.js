@@ -233,6 +233,17 @@
         }
 
         for (const name of currentMethod.maps) {
+          const nestedMapMutationPattern = new RegExp(
+            `\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)\\.(add|push|append)\\(([^;\\n]+)\\);`,
+            'g'
+          );
+          nextLine = nextLine.replace(nestedMapMutationPattern, (_match, keySource, methodSource, valueSource) => {
+            const keyExpression = String(keySource).trim();
+            const method = String(methodSource).trim();
+            const value = String(valueSource).trim();
+            const target = `((java.util.List) (${name}).get(${keyExpression}))`;
+            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + (${keyExpression}) + "]},\\"value\\":" + TraceHooks.serializeResult(${target}) + "}"); ${target}.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}"); }`;
+          });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'containsKey', (key) =>
             `TraceHooks.containsMapKeyAtLine(${lineNumber}, "${name}", ${name}, ${key})`
           );
@@ -272,9 +283,9 @@
           });
         }
 
-        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(put|set|add|append|remove)"\);\s*/g;
+        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(get|put|set|add|append|remove)"\);\s*/g;
         nextLine = nextLine.replace(staleMutationPattern, (match, name, method) => {
-          if (currentMethod.maps.has(name) && (method === 'put' || method === 'set')) {
+          if (currentMethod.maps.has(name) && (method === 'get' || method === 'put' || method === 'set')) {
             return '';
           }
           if (currentMethod.sets.has(name) && (method === 'add' || method === 'append' || method === 'remove')) {

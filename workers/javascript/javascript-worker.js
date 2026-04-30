@@ -1081,6 +1081,7 @@ function createTraceRecorder(options = {}) {
     if (
       event.kind === 'mutate' &&
       stats.hasIndexedWrite &&
+      !(stats.hasNestedMutatingCall && pathDepth > 1) &&
       !stats.hasCellRead &&
       !stats.hasCellWrite
     ) {
@@ -1385,7 +1386,7 @@ function createTraceRecorder(options = {}) {
         ...(typeof event.method === 'string' && event.method.length > 0
           ? { method: event.method }
           : {}),
-        ...(event.pathDepth === 1 || event.pathDepth === 2 ? { pathDepth: event.pathDepth } : {}),
+        ...(event.pathDepth === 1 || event.pathDepth === 2 || event.pathDepth === 3 ? { pathDepth: event.pathDepth } : {}),
       };
 
       const existing = pendingAccessesByFrame.get(frameId) ?? [];
@@ -1796,6 +1797,8 @@ const MUTATION_METHOD_ALIASES = {
   offer: 'append',
   shift: 'popleft',
   poll: 'popleft',
+  delete: 'remove',
+  remove: 'remove',
   put: 'set',
   set: 'set',
 };
@@ -2083,7 +2086,11 @@ function buildLineFunctionMap(ts, sourceFile, defaultFunctionName) {
 
 function unwrapParenthesizedExpression(ts, node) {
   let current = node;
-  while (current && ts.isParenthesizedExpression(current)) {
+  while (
+    current &&
+    (ts.isParenthesizedExpression(current) ||
+      (typeof ts.isNonNullExpression === 'function' && ts.isNonNullExpression(current)))
+  ) {
     current = current.expression;
   }
   return current;
@@ -2172,13 +2179,28 @@ function extractTraceableElementAccess(ts, node) {
     indices.unshift(current.argumentExpression);
     current = unwrapParenthesizedExpression(ts, current.expression);
   }
+  while (current && ts.isPropertyAccessExpression(current) && indices.length < 3) {
+    indices.unshift(ts.factory.createStringLiteral(current.name.text));
+    current = unwrapParenthesizedExpression(ts, current.expression);
+  }
 
-  if (!current || !ts.isIdentifier(current) || indices.length === 0 || indices.length > 2) {
+  if (!current || indices.length === 0 || indices.length > 2) {
+    return null;
+  }
+  if (ts.isThis(current)) {
+    return {
+      variableName: 'this',
+      receiverExpression: ts.factory.createThis(),
+      indices,
+    };
+  }
+  if (!ts.isIdentifier(current)) {
     return null;
   }
 
   return {
     variableName: current.text,
+    receiverExpression: ts.factory.createIdentifier(current.text),
     indices,
   };
 }
@@ -2212,6 +2234,7 @@ function extractTraceableMutatingCall(ts, node) {
   if (ts.isIdentifier(receiver)) {
     return {
       variableName: receiver.text,
+      receiverExpression: ts.factory.createIdentifier(receiver.text),
       methodName,
       indices: [],
     };
@@ -2221,8 +2244,25 @@ function extractTraceableMutatingCall(ts, node) {
   if (indexedReceiver) {
     return {
       variableName: indexedReceiver.variableName,
+      receiverExpression: indexedReceiver.receiverExpression,
       methodName,
       indices: indexedReceiver.indices,
+    };
+  }
+
+  if (
+    ts.isCallExpression(receiver) &&
+    ts.isPropertyAccessExpression(receiver.expression) &&
+    receiver.expression.name.text === 'get' &&
+    ts.isIdentifier(unwrapParenthesizedExpression(ts, receiver.expression.expression)) &&
+    receiver.arguments.length === 1
+  ) {
+    const mapReceiver = unwrapParenthesizedExpression(ts, receiver.expression.expression);
+    return {
+      variableName: mapReceiver.text,
+      receiverExpression: ts.factory.createIdentifier(mapReceiver.text),
+      methodName,
+      indices: [receiver.arguments[0]],
     };
   }
 
@@ -2263,17 +2303,27 @@ function createIndicesArrayExpression(ts, indices) {
 }
 
 function createTraceReadIndexExpression(ts, variableName, indices) {
+  const receiverExpression = variableName === 'this'
+    ? ts.factory.createThis()
+    : ts.factory.createIdentifier(variableName);
+  return createTraceReadIndexExpressionForReceiver(ts, variableName, receiverExpression, indices);
+}
+
+function createTraceReadIndexExpressionForReceiver(ts, variableName, receiverExpression, indices) {
   return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadIndex'), undefined, [
     ts.factory.createStringLiteral(variableName),
-    ts.factory.createIdentifier(variableName),
+    receiverExpression,
     createIndicesArrayExpression(ts, indices),
   ]);
 }
 
 function createTraceWriteIndexExpression(ts, variableName, indices, value) {
+  const receiverExpression = variableName === 'this'
+    ? ts.factory.createThis()
+    : ts.factory.createIdentifier(variableName);
   return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceWriteIndex'), undefined, [
     ts.factory.createStringLiteral(variableName),
-    ts.factory.createIdentifier(variableName),
+    receiverExpression,
     createIndicesArrayExpression(ts, indices),
     value,
   ]);
@@ -2320,12 +2370,19 @@ function createTraceUpdateExpression(ts, variableName, indices, operatorName, is
 }
 
 function createTraceMutatingCallExpression(ts, variableName, methodName, args, indices = []) {
+  const receiverExpression = variableName === 'this'
+    ? ts.factory.createThis()
+    : ts.factory.createIdentifier(variableName);
+  return createTraceMutatingCallExpressionForReceiver(ts, variableName, receiverExpression, methodName, args, indices);
+}
+
+function createTraceMutatingCallExpressionForReceiver(ts, variableName, receiverExpression, methodName, args, indices = []) {
   return ts.factory.createCallExpression(
     ts.factory.createIdentifier('__traceMutatingCall'),
     undefined,
     [
       ts.factory.createStringLiteral(variableName),
-      ts.factory.createIdentifier(variableName),
+      receiverExpression,
       createIndicesArrayExpression(ts, indices),
       ts.factory.createStringLiteral(methodName),
       ...args,
@@ -2924,9 +2981,10 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         const tracedCall = extractTraceableMutatingCall(ts, node);
         if (tracedCall) {
           const visitedArgs = node.arguments.map((arg) => ts.visitNode(arg, visit));
-          return createTraceMutatingCallExpression(
+          return createTraceMutatingCallExpressionForReceiver(
             ts,
             tracedCall.variableName,
+            tracedCall.receiverExpression,
             tracedCall.methodName,
             visitedArgs,
             tracedCall.indices?.map((indexExpr) => ts.visitNode(indexExpr, visit)) ?? []
@@ -3143,9 +3201,19 @@ function __traceReadValueAtIndices(__container, __indices) {
   let __current = __container;
   for (const __index of __indices) {
     if (__current === null || __current === undefined) return undefined;
-    __current = __current[__index];
+    __current = __traceIsMapLike(__current) ? __current.get(__index) : __current[__index];
   }
   return __current;
+}
+
+function __traceIsMapLike(__value) {
+  return __value instanceof Map ||
+    (!!__value &&
+      typeof __value === 'object' &&
+      typeof __value.get === 'function' &&
+      typeof __value.set === 'function' &&
+      typeof __value.has === 'function' &&
+      typeof __value.delete === 'function');
 }
 
 function __traceWriteValueAtIndices(__container, __indices, __value) {
@@ -3181,7 +3249,7 @@ function __traceIsMetadataProperty(__container, __propertyName) {
     return Array.isArray(__container) || typeof __container === 'string';
   }
   if (__propertyName === 'size') {
-    return __container instanceof Map || __container instanceof Set;
+    return __traceIsMapLike(__container) || __container instanceof Set;
   }
   return false;
 }
@@ -3280,8 +3348,8 @@ function __traceUpdateIndex(__varName, __container, __indices, __op, __isPrefix)
   return __isPrefix ? __next : __current;
 }
 
-function __traceNormalizeMethodName(__container, __method) {
-  if (__container instanceof Map) {
+function __traceNormalizeMethodName(__container, __method, __args) {
+  if (__traceIsMapLike(__container)) {
     if (__method === 'has') return 'containsKey';
     if (__method === 'set') return 'set';
     if (__method === 'get') return 'get';
@@ -3312,7 +3380,7 @@ function __traceExceptionValue(__line, __error) {
 function __traceMutatingCall(__varName, __container, __indices, __method, ...__args) {
   let __target = __container;
   for (const __index of __indices || []) {
-    __target = __target?.[__index];
+    __target = __traceIsMapLike(__target) ? __target.get(__index) : __target?.[__index];
   }
   const __result = __target[__method](...__args);
   if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete'].includes(__method)) {
@@ -3327,7 +3395,7 @@ function __traceMutatingCall(__varName, __container, __indices, __method, ...__a
     __traceRecorder.recordAccess({
       variable: __varName,
       kind: 'mutating-call',
-      method: __traceNormalizeMethodName(__target, __method),
+      method: __traceNormalizeMethodName(__target, __method, __args),
       indices: __indices || [],
       pathDepth: (__indices || []).length + 1,
     });

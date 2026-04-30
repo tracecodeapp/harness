@@ -572,17 +572,29 @@ def __tracecode_make_access_event(var_name, kind, indices=None, method_name=None
 def __tracecode_read_value(container, indices):
     current = container
     for index in indices:
-        current = current[index]
+        if isinstance(current, dict) or isinstance(current, (list, tuple, str)):
+            current = current[index]
+        else:
+            current = getattr(current, index)
     return current
 
 def __tracecode_write_value(container, indices, value):
     if len(indices) == 1:
-        container[indices[0]] = value
+        if isinstance(container, dict) or isinstance(container, list):
+            container[indices[0]] = value
+        else:
+            setattr(container, indices[0], value)
         return value
     parent = container
     for index in indices[:-1]:
-        parent = parent[index]
-    parent[indices[-1]] = value
+        if isinstance(parent, dict) or isinstance(parent, (list, tuple)):
+            parent = parent[index]
+        else:
+            parent = getattr(parent, index)
+    if isinstance(parent, dict) or isinstance(parent, list):
+        parent[indices[-1]] = value
+    else:
+        setattr(parent, indices[-1], value)
     return value
 
 def __tracecode_apply_augmented_value(current, op_name, rhs):
@@ -767,6 +779,9 @@ def _tracecode_extract_named_subscript(node):
     current = node
     while isinstance(current, ast.Subscript) and len(indices) < 3:
         indices.insert(0, current.slice)
+        current = current.value
+    while isinstance(current, ast.Attribute) and len(indices) < 3:
+        indices.insert(0, ast.Constant(value=current.attr))
         current = current.value
     if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > 2:
         return None
