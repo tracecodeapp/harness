@@ -3,6 +3,13 @@
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  function parseNativeTraceLine(line) {
+    const match = line.match(/TraceHooks\.emit(?:Line|Call|Return)AtLine\((\d+)\b/);
+    if (!match) return null;
+    const lineNumber = Number.parseInt(match[1], 10);
+    return Number.isFinite(lineNumber) && lineNumber > 0 ? lineNumber : null;
+  }
+
   function braceDelta(line) {
     let delta = 0;
     for (const ch of line) {
@@ -204,10 +211,8 @@
       declarations.lists.forEach((name) => currentMethod.lists.add(name));
       declarations.adjacencyLists.forEach((name) => currentMethod.adjacencyLists.add(name));
 
-      const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
-      if (traceLineMatch) {
-        currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
-      }
+      const traceLine = parseNativeTraceLine(line);
+      if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
 
       const lineNumber = resolveOriginalLine(line) ?? currentMethod.currentTraceLine ?? (lineIndex + 1);
       if (lineNumber !== null) {

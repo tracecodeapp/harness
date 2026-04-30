@@ -25,8 +25,8 @@ const ASSET_COPY_PLAN = [
     target: ['java-worker.js'],
   },
   {
-    source: ['workers', 'java', 'java-source-augmentations.cjs'],
-    target: ['java-source-augmentations.cjs'],
+    source: ['workers', 'java', 'java-source-augmentations.js'],
+    target: ['java-source-augmentations.js'],
   },
   {
     source: ['workers', 'vendor', 'typescript.js'],
@@ -37,12 +37,8 @@ const ASSET_COPY_PLAN = [
     target: ['vendor', 'java-browser-spike-helper.jar'],
   },
   {
-    source: ['workers', 'vendor', 'java-practice-rewriter.jar'],
-    target: ['vendor', 'java-practice-rewriter.jar'],
-  },
-  {
-    source: ['workers', 'vendor', 'java-rewrite-bridge.jar'],
-    target: ['vendor', 'java-rewrite-bridge.jar'],
+    source: ['workers', 'vendor', 'java-rewriter.jar'],
+    target: ['vendor', 'java-rewriter.jar'],
   },
   {
     source: ['workers', 'vendor', 'javaparser-core-3.25.10.jar'],

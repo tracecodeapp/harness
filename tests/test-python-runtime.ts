@@ -322,16 +322,23 @@ def make_cycle():
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
-    'traceEvents': _trace_events,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events,
+        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
+        'traceStepCount': len(_trace_events)
+    },
     'result': _serialize(_result)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; traceEvents: unknown[] };
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: unknown[] } };
 
   assertNoSemanticRefIds(parsed.trace, 'python trace steps');
-  assertNoSemanticRefIds(parsed.traceEvents, 'python runtime trace events');
+  assertNoSemanticRefIds(parsed.runtimeTrace.events, 'python runtime trace events');
 
-  const serialized = JSON.stringify({ trace: parsed.trace, events: parsed.traceEvents });
+  const serialized = JSON.stringify({ trace: parsed.trace, events: parsed.runtimeTrace.events });
   assertCondition(serialized.includes('"__id__":"r'), 'Trace should still emit opaque ids for cycle-safe refs');
   assertCondition(serialized.includes('"__ref__":"r'), 'Trace should still emit opaque refs for cycles');
 
@@ -367,7 +374,14 @@ async function assertTraceCaptureLimitPreservesOutput(): Promise<void> {
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
-    'traceEvents': _trace_events,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events,
+        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
+        'traceStepCount': len(_trace_events)
+    },
     'result': _serialize(_result),
     'traceLimitExceeded': _trace_limit_exceeded,
     'timeoutReason': _timeout_reason,
@@ -376,7 +390,7 @@ print(json.dumps({
 `);
   const parsed = JSON.parse(stdout) as {
     trace: TraceStep[];
-    traceEvents: unknown[];
+    runtimeTrace: { events: unknown[] };
     result: unknown;
     traceLimitExceeded?: boolean;
     timeoutReason?: string;
@@ -385,7 +399,7 @@ print(json.dumps({
   assertCondition(parsed.result === 19900, 'Trace capture limit should preserve Python output');
   assertCondition(parsed.traceLimitExceeded === true, 'Trace capture limit should set Python traceLimitExceeded');
   assertCondition(parsed.timeoutReason === 'trace-limit', 'Trace capture limit should use Python trace-limit reason');
-  assertCondition(parsed.traceEvents.length <= 20, 'Trace capture limit should bound Python runtime events');
+  assertCondition(parsed.runtimeTrace.events.length <= 20, 'Trace capture limit should bound Python runtime events');
 
   console.log('PASS: Python runtime trace capture limit preserves output');
 }

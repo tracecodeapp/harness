@@ -154,7 +154,7 @@ The returned harness exposes:
 Configuration:
 
 - `assetBaseUrl?: string`
-- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; javaHelperJar; javaPracticeRewriterJar; javaRewriteBridgeJar; javaParserJar; javaCompilerJar }>`
+- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker }>`
 - `debug?: boolean`
 
 Example:
@@ -182,8 +182,7 @@ if (profile.capabilities.tracing.supported) {
 - `vendor/typescript.js`
 - `java-worker.js`
 - `vendor/java-browser-spike-helper.jar`
-- `vendor/java-practice-rewriter.jar`
-- `vendor/java-rewrite-bridge.jar`
+- `vendor/java-rewriter.jar`
 - `vendor/javaparser-core-3.25.10.jar`
 - `vendor/jdk.compiler-17.jar`
 
@@ -196,8 +195,7 @@ By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those 
 - `/workers/vendor/typescript.js`
 - `/workers/java-worker.js`
 - `/workers/vendor/java-browser-spike-helper.jar`
-- `/workers/vendor/java-practice-rewriter.jar`
-- `/workers/vendor/java-rewrite-bridge.jar`
+- `/workers/vendor/java-rewriter.jar`
 - `/workers/vendor/javaparser-core-3.25.10.jar`
 - `/workers/vendor/jdk.compiler-17.jar`
 

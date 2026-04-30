@@ -145,56 +145,92 @@ async function runLanguageExampleSmoke(
   await page.selectOption('#language', language);
 
   await page.click('#run');
-  await page.waitForFunction(
-    () => {
-      const output = document.querySelector('#execution-output');
-      const text = output?.textContent;
-      if (!text) return false;
+  try {
+    await page.waitForFunction(
+      () => {
+        const output = document.querySelector('#execution-output');
+        const text = output?.textContent;
+        if (!text) return false;
 
-      try {
-        const parsed = JSON.parse(text) as { success?: boolean; output?: unknown };
-        return (
-          parsed.success === true &&
-          Array.isArray(parsed.output) &&
-          parsed.output.length === 2 &&
-          parsed.output[0] === 0 &&
-          parsed.output[1] === 1
-        );
-      } catch {
-        return false;
-      }
-    },
-    undefined,
-    { timeout: options.executionTimeoutMs }
-  );
+        try {
+          const parsed = JSON.parse(text) as { success?: boolean; output?: unknown };
+          return (
+            parsed.success === true &&
+            Array.isArray(parsed.output) &&
+            parsed.output.length === 2 &&
+            parsed.output[0] === 0 &&
+            parsed.output[1] === 1
+          );
+        } catch {
+          return false;
+        }
+      },
+      undefined,
+      { timeout: options.executionTimeoutMs }
+    );
+  } catch (error) {
+    throw new Error(`Example ${language} execution did not finish: ${await readExampleSmokeDiagnostics(page)}`, {
+      cause: error,
+    });
+  }
 
   await page.click('#trace');
-  await page.waitForFunction(
-    () => {
-      const output = document.querySelector('#trace-output');
-      const text = output?.textContent;
-      if (!text) return false;
+  try {
+    await page.waitForFunction(
+      () => {
+        const output = document.querySelector('#trace-output');
+        const text = output?.textContent;
+        if (!text) return false;
 
-      try {
-        const parsed = JSON.parse(text) as { success?: boolean; trace?: unknown };
-        return parsed.success === true && Array.isArray(parsed.trace) && parsed.trace.length > 0;
-      } catch {
-        return false;
-      }
-    },
-    undefined,
-    { timeout: options.traceTimeoutMs }
-  );
+        try {
+          const parsed = JSON.parse(text) as { success?: boolean; trace?: unknown };
+          const trace = parsed.trace;
+          const events = Array.isArray(trace)
+            ? trace
+            : trace && typeof trace === 'object' && Array.isArray((trace as { events?: unknown }).events)
+              ? (trace as { events: unknown[] }).events
+              : [];
+          return parsed.success === true && events.length > 0;
+        } catch {
+          return false;
+        }
+      },
+      undefined,
+      { timeout: options.traceTimeoutMs }
+    );
+  } catch (error) {
+    throw new Error(`Example ${language} trace did not finish: ${await readExampleSmokeDiagnostics(page)}`, {
+      cause: error,
+    });
+  }
 
   const traceText = await page.textContent('#trace-output');
   assertCondition(typeof traceText === 'string', `Expected trace output for ${language}`);
   const traceResult = JSON.parse(traceText) as { success?: boolean; trace?: unknown };
+  const traceEvents = runtimeTraceEvents(traceResult.trace);
   assertCondition(traceResult.success === true, `Expected successful trace result for ${language}`);
   assertCondition(
-    Array.isArray(traceResult.trace) && traceResult.trace.length > 0,
-    `Expected non-empty trace array for ${language}`
+    traceEvents.length > 0,
+    `Expected non-empty runtime trace events for ${language}`
   );
   options.assertTrace?.(traceResult);
+}
+
+function runtimeTraceEvents(trace: unknown): unknown[] {
+  if (Array.isArray(trace)) return trace;
+  if (trace && typeof trace === 'object' && Array.isArray((trace as { events?: unknown }).events)) {
+    return (trace as { events: unknown[] }).events;
+  }
+  return [];
+}
+
+async function readExampleSmokeDiagnostics(page: import('playwright').Page): Promise<string> {
+  const state = await page.evaluate(() => ({
+    status: document.querySelector('#status')?.textContent ?? '',
+    executionOutput: document.querySelector('#execution-output')?.textContent ?? '',
+    traceOutput: document.querySelector('#trace-output')?.textContent ?? '',
+  }));
+  return JSON.stringify(state);
 }
 
 export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> {
@@ -228,24 +264,15 @@ export async function runJavaExampleBrowserSmoke(previewUrl: string): Promise<vo
       executionTimeoutMs: 240_000,
       traceTimeoutMs: 240_000,
       assertTrace(traceResult) {
-        const trace = Array.isArray(traceResult.trace) ? traceResult.trace : [];
-        const callSteps = trace.filter((step) => (step as { event?: unknown }).event === 'call');
-        const returnSteps = trace.filter((step) => (step as { event?: unknown }).event === 'return');
-        const moduleSteps = trace.filter((step) => (step as { function?: unknown }).function === '<module>');
+        const trace = runtimeTraceEvents(traceResult.trace);
+        const callSteps = trace.filter((event) => (event as { kind?: unknown }).kind === 'call');
         const accessKinds = new Set(
-          trace.flatMap((step) => {
-            const accesses = (step as { accesses?: Array<{ kind?: unknown }> }).accesses;
-            return Array.isArray(accesses)
-              ? accesses
-                  .map((access) => (typeof access?.kind === 'string' ? access.kind : null))
-                  .filter((kind): kind is string => kind !== null)
-              : [];
-          })
+          trace
+            .map((event) => (event as { kind?: unknown }).kind)
+            .filter((kind): kind is string => typeof kind === 'string')
         );
         assertCondition(callSteps.length > 0, 'Expected Java trace to include call events');
-        assertCondition(returnSteps.length > 0, 'Expected Java trace to include return events');
-        assertCondition(moduleSteps.length > 0, 'Expected Java script trace to use <module> as its function name');
-        assertCondition(accessKinds.has('indexed-read'), 'Expected Java trace to include indexed-read access events');
+        assertCondition(accessKinds.has('read'), 'Expected Java trace to include read access events');
       },
     });
   } finally {

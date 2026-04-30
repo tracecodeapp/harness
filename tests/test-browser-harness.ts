@@ -63,8 +63,11 @@ class MockWorker {
             payload: {
               success: true,
               output: null,
+              events: [],
+              sourceText: '',
               trace: [],
               consoleOutput: [],
+              executionTimeMs: 1,
               lineEventCount: 0,
               traceStepCount: 0,
             },

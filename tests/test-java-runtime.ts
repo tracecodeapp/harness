@@ -30,13 +30,32 @@ function nativeJavaEvent(event: Record<string, unknown>): string {
   return `trace:${JSON.stringify(event)}`;
 }
 
+function parseNativeJavaEvent(event: string): Record<string, unknown> | null {
+  if (!event.startsWith('trace:')) return null;
+  try {
+    return JSON.parse(event.slice('trace:'.length)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function nativeEventMatches(event: string, expected: Record<string, unknown>): boolean {
+  const parsed = parseNativeJavaEvent(event);
+  if (!parsed) return false;
+  return Object.entries(expected).every(([key, value]) => JSON.stringify(parsed[key]) === JSON.stringify(value));
+}
+
+function latestSourceContaining(files: Array<{ source: string }>, needle: string): string {
+  return files.findLast((file) => file.source.includes(needle))?.source ?? '';
+}
+
 async function loadWorkerSource(): Promise<string> {
   const workerPath = join(process.cwd(), 'workers', 'java', 'java-worker.js');
   return readFile(workerPath, 'utf8');
 }
 
 async function loadJavaSourceAugmentationSource(): Promise<string> {
-  const helperPath = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.cjs');
+  const helperPath = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
   return readFile(helperPath, 'utf8');
 }
 
@@ -78,7 +97,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     onmessage: null,
     importScripts: (...urls: string[]) => {
       for (const url of urls) {
-        if (String(url).endsWith('java-source-augmentations.cjs')) {
+        if (String(url).endsWith('java-source-augmentations.js')) {
           vm.runInContext(augmentationSource, context, {
             filename: 'java-source-augmentations.js',
           });
@@ -103,25 +122,25 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   success: true,
                   output: JSON.stringify(10),
                   events: [
-                    'line=15 call __tracecodeScript',
-                    'line=16',
-                    'line=4 call uniquePaths rows=3 cols=4',
-                    'line=5',
-                    'line=8',
-                    'line=9',
-                    'line=10',
-                    'line=10 write-array dp[1][1]=2',
-                    'line=10 dp=[[1,1,1,1],[1,2,0,0],[1,0,0,0]]',
-                    'line=10',
-                    'line=10 write-array dp[1][2]=3',
-                    'line=10 dp=[[1,1,1,1],[1,2,3,0],[1,0,0,0]]',
-                    'line=9',
-                    'line=10',
-                    'line=10 write-array dp[2][1]=3',
-                    'line=10 dp=[[1,1,1,1],[1,2,3,4],[1,3,0,0]]',
-                    'line=13 return uniquePaths',
-                    'line=17',
-                    'line=17 return __tracecodeScript',
+                    nativeJavaEvent({ kind: 'call', line: 15, function: '__tracecodeScript' }),
+                    nativeJavaEvent({ kind: 'line', line: 16, function: '__tracecodeScript' }),
+                    nativeJavaEvent({ kind: 'call', line: 4, function: 'uniquePaths', args: { rows: 3, cols: 4 } }),
+                    nativeJavaEvent({ kind: 'line', line: 5, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'line', line: 8, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'line', line: 9, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'line', line: 10, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'write', line: 10, function: 'uniquePaths', target: { variable: 'dp', path: [1, 1] }, value: 2 }),
+                    nativeJavaEvent({ kind: 'snapshot', line: 10, function: 'uniquePaths', target: { variable: 'dp' }, value: [[1, 1, 1, 1], [1, 2, 0, 0], [1, 0, 0, 0]] }),
+                    nativeJavaEvent({ kind: 'line', line: 10, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'write', line: 10, function: 'uniquePaths', target: { variable: 'dp', path: [1, 2] }, value: 3 }),
+                    nativeJavaEvent({ kind: 'snapshot', line: 10, function: 'uniquePaths', target: { variable: 'dp' }, value: [[1, 1, 1, 1], [1, 2, 3, 0], [1, 0, 0, 0]] }),
+                    nativeJavaEvent({ kind: 'line', line: 9, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'line', line: 10, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'write', line: 10, function: 'uniquePaths', target: { variable: 'dp', path: [2, 1] }, value: 3 }),
+                    nativeJavaEvent({ kind: 'snapshot', line: 10, function: 'uniquePaths', target: { variable: 'dp' }, value: [[1, 1, 1, 1], [1, 2, 3, 4], [1, 3, 0, 0]] }),
+                    nativeJavaEvent({ kind: 'return', line: 13, function: 'uniquePaths' }),
+                    nativeJavaEvent({ kind: 'line', line: 17, function: '__tracecodeScript' }),
+                    nativeJavaEvent({ kind: 'return', line: 17, function: '__tracecodeScript' }),
                   ],
                 });
               }
@@ -150,9 +169,9 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 success: true,
                 output: JSON.stringify([0, 1]),
                 events: [
-                  'line=1 call __tracecodeScript',
-                  'line=2 seen={}',
-                  'line=99 return __tracecodeScript',
+                  nativeJavaEvent({ kind: 'call', line: 1, function: '__tracecodeScript' }),
+                  nativeJavaEvent({ kind: 'snapshot', line: 2, function: '__tracecodeScript', target: { variable: 'seen' }, value: {} }),
+                  nativeJavaEvent({ kind: 'return', line: 99, function: '__tracecodeScript' }),
                 ],
               });
             },
@@ -177,25 +196,25 @@ import spike.user.TraceHooks;
 
 class Solution {
   static int lowerBound(int[] nums, int target) {
-    TraceHooks.emit("line=3 call lowerBound" + " target=" + target);
-    TraceHooks.emit("line=4");
+    TraceHooks.emitCallAtLine(3, "lowerBound", " target=" + target);
+    TraceHooks.emitLineAtLine(4);
     int left = 0;
-    TraceHooks.emit("line=4 left=" + left);
-    TraceHooks.emit("line=5");
+    TraceHooks.emitLineAtLine(4, "left=" + left);
+    TraceHooks.emitLineAtLine(5);
     int right = nums.length;
-    TraceHooks.emit("line=5 right=" + right);
-    TraceHooks.emit("line=6");
+    TraceHooks.emitLineAtLine(5, "right=" + right);
+    TraceHooks.emitLineAtLine(6);
     while (left < right) {
-      TraceHooks.emit("line=7");
+      TraceHooks.emitLineAtLine(7);
       int mid = left + (right - left) / 2;
-      TraceHooks.emit("line=7 mid=" + mid);
-      TraceHooks.emit("line=8");
+      TraceHooks.emitLineAtLine(7, "mid=" + mid);
+      TraceHooks.emitLineAtLine(8);
       if (TraceHooks.readIntArrayAtLine(8, "nums", nums, mid) < target)
         left = mid + 1;
       else
         right = mid;
     }
-    TraceHooks.emit("line=11 return lowerBound");
+    TraceHooks.emitReturnAtLine(11, "lowerBound");
     return left;
   }
 }
@@ -209,25 +228,25 @@ import java.util.*;
 
 class Solution {
   public int[] twoSum(int[] nums, int target) {
-    TraceHooks.emit("line=4 call twoSum");
-    TraceHooks.emit("line=5");
+    TraceHooks.emitCallAtLine(4, "twoSum", "");
+    TraceHooks.emitLineAtLine(5);
     Map<Integer, Integer> seen = new HashMap<>();
-    TraceHooks.emit("line=6");
+    TraceHooks.emitLineAtLine(6);
     for (int i = 0; i < nums.length; i++) {
-      TraceHooks.emit("line=7");
+      TraceHooks.emitLineAtLine(7);
       int complement = target - TraceHooks.readIntArrayAtLine(7, "nums", nums, i);
-      TraceHooks.emit("line=8");
+      TraceHooks.emitLineAtLine(8);
       if (seen.containsKey(complement)) {
-        TraceHooks.emit("line=9");
+        TraceHooks.emitLineAtLine(9);
         int[] out = new int[] { seen.get(complement), i };
-        TraceHooks.emit("line=9 return twoSum");
+        TraceHooks.emitReturnAtLine(9, "twoSum");
         return out;
       }
-      TraceHooks.emit("line=11");
+      TraceHooks.emitLineAtLine(11);
       seen.put(TraceHooks.readIntArrayAtLine(11, "nums", nums, i), i);
       TraceHooks.emitMutatingCallAtLine(11, "seen", "put");
     }
-    TraceHooks.emit("line=13 return twoSum");
+    TraceHooks.emitReturnAtLine(13, "twoSum");
     return new int[0];
   }
 }
@@ -241,29 +260,29 @@ import java.util.*;
 
 class Solution {
   int[] buildGraph(int n) {
-    TraceHooks.emit("line=4 call buildGraph");
-    TraceHooks.emit("line=5");
+    TraceHooks.emitCallAtLine(4, "buildGraph", "");
+    TraceHooks.emitLineAtLine(5);
     List<List<Integer>> graph = new ArrayList<>();
-    TraceHooks.emit("line=6");
+    TraceHooks.emitLineAtLine(6);
     for (int i = 0; i < n; i++) graph.add(new ArrayList<>());
-    TraceHooks.emit("line=7");
+    TraceHooks.emitLineAtLine(7);
     graph.get(0).add(1);
     TraceHooks.emitMutatingCallAtLine(7, "graph", "add");
-    TraceHooks.emit("line=8");
+    TraceHooks.emitLineAtLine(8);
     graph.get(1).add(2);
     TraceHooks.emitMutatingCallAtLine(8, "graph", "add");
-    TraceHooks.emit("line=10");
+    TraceHooks.emitLineAtLine(10);
     int[] order = new int[n];
-    TraceHooks.emit("line=11");
+    TraceHooks.emitLineAtLine(11);
     for (int u = 0; u < n; u++) {
-      TraceHooks.emit("line=12");
+      TraceHooks.emitLineAtLine(12);
       for (int v : graph.get(u)) {
-        TraceHooks.emit("line=13");
+        TraceHooks.emitLineAtLine(13);
         order[v] = v;
         TraceHooks.emitArrayWriteAtLine(13, "order", v, order[v]);
       }
     }
-    TraceHooks.emit("line=16 return buildGraph");
+    TraceHooks.emitReturnAtLine(16, "buildGraph");
     return order;
   }
 }
@@ -276,11 +295,11 @@ import spike.user.TraceHooks;
 
 class Solution {
   public int legacySnapshot() {
-    TraceHooks.emit("line=4 call legacySnapshot");
-    TraceHooks.emit("line=5");
+    TraceHooks.emitCallAtLine(4, "legacySnapshot", "");
+    TraceHooks.emitLineAtLine(5);
     Object box = new Object();
     TraceHooks.emitRuntimeSnapshotAtLine(5, "box", box);
-    TraceHooks.emit("line=6 return legacySnapshot");
+    TraceHooks.emitReturnAtLine(6, "legacySnapshot");
     return 1;
   }
 }
@@ -367,16 +386,18 @@ result = new int[] { 0, 1 };`;
     assertCondition(JSON.stringify(execute.output) === JSON.stringify([0, 1]), 'Java script output should serialize result');
     assertCondition(execute.sourceText === scriptCode, 'Java script execution should preserve original source text');
     assertCondition(
-      Array.isArray(execute.events) && execute.events.some((event) => event.includes('call <module>')),
+      Array.isArray(execute.events) &&
+        execute.events.some((event) => nativeEventMatches(event, { kind: 'call', function: '<module>' })),
       'Java script trace events should expose <module> call events'
     );
     assertCondition(
-      Array.isArray(execute.events) && execute.events.some((event) => event === 'line=5 return <module>'),
+      Array.isArray(execute.events) &&
+        execute.events.some((event) => nativeEventMatches(event, { kind: 'return', line: 5, function: '<module>' })),
       'Java script return event should remap generated wrapper line to the last user line'
     );
 
     const scriptRewrite = harness.rewriteCalls.at(-1);
-    assertCondition(Boolean(scriptRewrite), 'Java script request should call rewrite bridge');
+    assertCondition(Boolean(scriptRewrite), 'Java script request should call the rewriter');
     assertCondition(scriptRewrite?.executionStyle === 'solution-method', 'Java script request should reuse solution-method rewrite path');
     assertCondition(scriptRewrite?.entryName === '__tracecodeScript', 'Java script request should use synthetic script method');
     assertCondition(
@@ -452,32 +473,60 @@ Object result = uniquePaths(3, 4);`;
     assertCondition(helperScriptExecute.output === 10, 'Java helper script should serialize output');
     assertCondition(
       Array.isArray(helperScriptExecute.events) &&
-        helperScriptExecute.events.includes('line=9 write-array dp[1][1]=2'),
+        helperScriptExecute.events.some((event) =>
+          nativeEventMatches(event, {
+            kind: 'write',
+            line: 9,
+            target: { variable: 'dp', path: [1, 1] },
+            value: 2,
+          })
+        ),
       `Java helper script should remap helper body events to original source lines, got ${JSON.stringify(helperScriptExecute.events)}`
     );
     assertCondition(
       Array.isArray(helperScriptExecute.events) &&
-        !helperScriptExecute.events.some((event) => event.startsWith('line=10 write-array')),
+        !helperScriptExecute.events.some((event) =>
+          nativeEventMatches(event, {
+            kind: 'write',
+            line: 10,
+            target: { variable: 'dp', path: [1, 1] },
+            value: 2,
+          })
+        ),
       'Java helper script should not leave helper body events on generated brace lines'
     );
     assertCondition(
       Array.isArray(helperScriptExecute.events) &&
-        helperScriptExecute.events.includes('line=15 return <module>'),
+        helperScriptExecute.events.some((event) => nativeEventMatches(event, { kind: 'return', line: 15, function: '<module>' })),
       'Java helper script should remap generated script return to the top-level result line'
     );
     const helperEvents = Array.isArray(helperScriptExecute.events) ? helperScriptExecute.events : [];
     const repeatedInnerHeaderIndex = helperEvents.findIndex((event, index) =>
-      event === 'line=8' && index > 0 && helperEvents[index - 1].startsWith('line=9 dp=')
+      nativeEventMatches(event, { kind: 'line', line: 8 }) &&
+      index > 0 &&
+      helperEvents.slice(0, index).some((prior) =>
+        nativeEventMatches(prior, { kind: 'snapshot', line: 9, target: { variable: 'dp' } })
+      )
     );
     assertCondition(
-      repeatedInnerHeaderIndex > 0 && helperEvents[repeatedInnerHeaderIndex + 1] === 'line=9',
+      repeatedInnerHeaderIndex > 0 &&
+        helperEvents.slice(repeatedInnerHeaderIndex + 1, repeatedInnerHeaderIndex + 4).some((event) =>
+          nativeEventMatches(event, { kind: 'line', line: 9 })
+        ),
       `Java helper script should revisit the inner for line before repeated body iterations, got ${JSON.stringify(helperEvents)}`
     );
     const repeatedOuterHeaderIndex = helperEvents.findIndex((event, index) =>
-      event === 'line=7' && index > 0 && helperEvents[index - 1].startsWith('line=9 dp=')
+      nativeEventMatches(event, { kind: 'line', line: 7 }) &&
+      index > 0 &&
+      helperEvents.slice(0, index).some((prior) =>
+        nativeEventMatches(prior, { kind: 'snapshot', line: 9, target: { variable: 'dp' } })
+      )
     );
     assertCondition(
-      repeatedOuterHeaderIndex > 0 && helperEvents[repeatedOuterHeaderIndex + 1] === 'line=8',
+      repeatedOuterHeaderIndex > 0 &&
+        helperEvents.slice(repeatedOuterHeaderIndex + 1, repeatedOuterHeaderIndex + 4).some((event) =>
+          nativeEventMatches(event, { kind: 'line', line: 8 })
+        ),
       `Java helper script should revisit the outer for line before the next inner loop pass, got ${JSON.stringify(helperEvents)}`
     );
     const helperScriptRewrite = harness.rewriteCalls.at(-1);
@@ -506,17 +555,18 @@ static int lowerBound(int[] nums, int target) {
 
 Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    const lowerBoundExecute = await harness.sendMessage<{ success: boolean; error?: string }>('execute-code', {
       code: lowerBoundCode,
       functionName: '',
       inputs: {},
       executionStyle: 'function',
     });
+    assertCondition(lowerBoundExecute.success === true, `Java lowerBound execution should succeed: ${lowerBoundExecute.error ?? ''}`);
 
-    const lowerBoundSource = harness.stringFiles.at(-1)?.source ?? '';
+    const lowerBoundSource = latestSourceContaining(harness.stringFiles, 'lowerBound');
     assertCondition(
       lowerBoundSource.includes(
-        'TraceHooks.emit("line=3 call lowerBound" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target));'
+        'TraceHooks.emitCallAtLine(3, "lowerBound", "" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target));'
       ),
       'Java rewritten call hook should serialize all live method arguments like JS/Python trace call snapshots'
     );
@@ -526,14 +576,14 @@ Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
     );
     assertCondition(
       lowerBoundSource.includes(
-        'TraceHooks.emit("line=8" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target) + " left=" + TraceHooks.serializeResult(left) + " right=" + TraceHooks.serializeResult(right) + " mid=" + TraceHooks.serializeResult(mid));'
+        'TraceHooks.emitLineAtLine(8, "" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target) + " left=" + TraceHooks.serializeResult(left) + " right=" + TraceHooks.serializeResult(right) + " mid=" + TraceHooks.serializeResult(mid));'
       ),
       'Java rewritten line hooks should emit visible method args and loop locals before indexed reads'
     );
     assertCondition(
       lowerBoundSource.includes('int __tracecodeReturnValue0 = left;') &&
         lowerBoundSource.includes(
-          'TraceHooks.emit("line=11 return lowerBound value=" + TraceHooks.serializeResult(__tracecodeReturnValue0));'
+          'TraceHooks.emitReturnAtLine(11, "lowerBound", __tracecodeReturnValue0);'
         ) &&
         lowerBoundSource.includes('return __tracecodeReturnValue0;'),
       'Java rewritten return hooks should emit serialized return values like JS/Python'
@@ -563,7 +613,7 @@ class Solution {
       executionStyle: 'function',
     });
 
-    const twoSumSource = harness.stringFiles.at(-1)?.source ?? '';
+    const twoSumSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.emitCallAtLine(4, "twoSum"');
     assertCondition(
       twoSumSource.includes('TraceHooks.containsMapKeyAtLine(8, "seen", seen, complement)'),
       'Java worker should rewrite Map.containsKey into keyed TraceHooks access'
@@ -582,7 +632,7 @@ class Solution {
     );
     assertCondition(
       twoSumSource.includes(
-        'TraceHooks.emit("line=7" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target) + " seen=" + TraceHooks.serializeResult(seen) + " i=" + TraceHooks.serializeResult(i));'
+        'TraceHooks.emitLineAtLine(7, "" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target) + " seen=" + TraceHooks.serializeResult(seen) + " i=" + TraceHooks.serializeResult(i));'
       ),
       'Java worker should emit loop index locals on loop body line hooks'
     );
@@ -605,7 +655,7 @@ class Solution {
       executionStyle: 'function',
     });
 
-    const defaultMapSource = harness.stringFiles.at(-1)?.source ?? '';
+    const defaultMapSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.readMapOrDefaultAtLine');
     assertCondition(
       defaultMapSource.includes('TraceHooks.readMapOrDefaultAtLine(6, "freq", freq, 1, 0)'),
       'Java worker should rewrite Map.getOrDefault into keyed TraceHooks get access'
@@ -646,7 +696,7 @@ class Solution {
     });
 
     assertCondition(graphExecute.success === true, 'Java graph adjacency execution should succeed');
-    const graphSource = harness.stringFiles.at(-1)?.source ?? '';
+    const graphSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.emitCallAtLine(4, "buildGraph"');
     assertCondition(
       graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, 0).add(1);') &&
         graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", 0, "add");') &&
@@ -707,15 +757,15 @@ class Solution {
       executionStyle: 'function',
     });
 
-    const legacySnapshotSource = harness.stringFiles.at(-1)?.source ?? '';
+    const legacySnapshotSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.emitRuntimeSnapshotAtLine');
     assertCondition(
       !legacySnapshotSource.includes('emitListStateAtLine') &&
         !legacySnapshotSource.includes('emitTreeStateAtLine') &&
         !legacySnapshotSource.includes('emitObjectStateAtLine') &&
         legacySnapshotSource.includes('TraceHooks.emitRuntimeSnapshotAtLine(5, "box", box);'),
-      'Java worker should receive neutral runtime snapshot hooks from the rewrite bridge'
+      'Java worker should receive neutral runtime snapshot hooks from the rewriter'
     );
-    console.log('PASS: java worker receives runtime snapshot hooks from rewrite bridge');
+    console.log('PASS: java worker receives runtime snapshot hooks from the rewriter');
 
     let invalidRejected = false;
     try {

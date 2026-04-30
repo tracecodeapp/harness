@@ -20,11 +20,10 @@ async function assertFileExists(pathname: string, label: string): Promise<void> 
 async function main(): Promise<void> {
   const root = process.cwd();
   const workerPath = join(root, 'workers', 'java', 'java-worker.js');
-  const augmentationPath = join(root, 'workers', 'java', 'java-source-augmentations.cjs');
+  const augmentationPath = join(root, 'workers', 'java', 'java-source-augmentations.js');
   const helperJarPath = join(root, 'workers', 'vendor', 'java-browser-spike-helper.jar');
   const compilerJarPath = join(root, 'workers', 'vendor', 'jdk.compiler-17.jar');
-  const rewriterJarPath = join(root, 'workers', 'vendor', 'java-practice-rewriter.jar');
-  const rewriteBridgeJarPath = join(root, 'workers', 'vendor', 'java-rewrite-bridge.jar');
+  const rewriterJarPath = join(root, 'workers', 'vendor', 'java-rewriter.jar');
   const javaparserJarPath = join(root, 'workers', 'vendor', 'javaparser-core-3.25.10.jar');
 
   await assertFileExists(workerPath, 'java worker asset exists');
@@ -32,7 +31,6 @@ async function main(): Promise<void> {
   await assertFileExists(helperJarPath, 'java helper jar exists');
   await assertFileExists(compilerJarPath, 'java compiler jar exists');
   await assertFileExists(rewriterJarPath, 'java rewriter jar exists');
-  await assertFileExists(rewriteBridgeJarPath, 'java rewrite bridge jar exists');
   await assertFileExists(javaparserJarPath, 'javaparser jar exists');
 
   const workerSource = await readFile(workerPath, 'utf8');
@@ -41,8 +39,7 @@ async function main(): Promise<void> {
     'https://cjrtnc.leaningtech.com/4.2/loader.js',
     '/app/workers/vendor/java-browser-spike-helper.jar',
     '/app/workers/vendor/jdk.compiler-17.jar',
-    '/app/workers/vendor/java-practice-rewriter.jar',
-    '/app/workers/vendor/java-rewrite-bridge.jar',
+    '/app/workers/vendor/java-rewriter.jar',
     '/app/workers/vendor/javaparser-core-3.25.10.jar',
     'cheerpjRunLibrary',
     'spike.browser.BrowserCompileAndTraceLibrary',
@@ -53,7 +50,7 @@ async function main(): Promise<void> {
     "message.type === 'execute-code-interview'",
     "postMessageResponse({ type: 'worker-ready' })",
     "postMessageResponse({ type: 'idle-timeout' })",
-    'java-source-augmentations.cjs',
+    'java-source-augmentations.js',
     'TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations',
   ];
 

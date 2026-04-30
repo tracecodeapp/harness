@@ -11,8 +11,6 @@ import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/s
 import type { ExecutionResult } from '../packages/harness-core/src/types';
 import {
   createEmptyRuntimeTrace,
-  RUNTIME_TRACE_SCHEMA_VERSION,
-  type RuntimeTraceEvent,
   type RuntimeTraceEventKind,
   type RuntimeTraceParityAccessTarget,
   type RuntimeTrace,
@@ -42,9 +40,9 @@ import {
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'runtime-parity');
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
-const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.cjs');
+const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
 const JAVA_REWRITER_CLASSPATH = [
-  join(process.cwd(), 'workers', 'vendor', 'java-practice-rewriter.jar'),
+  join(process.cwd(), 'workers', 'vendor', 'java-rewriter.jar'),
   join(process.cwd(), 'workers', 'vendor', 'javaparser-core-3.25.10.jar'),
 ].join(':');
 const JAVA_HELPER_JAR = join(process.cwd(), 'workers', 'vendor', 'java-browser-spike-helper.jar');
@@ -250,25 +248,33 @@ async function executePythonTrace(code: string, fixture: FixtureCase): Promise<F
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
-    'traceEvents': _trace_events,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events,
+        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
+        'traceStepCount': len(_trace_events)
+    },
     'result': _serialize(_result),
     'console': _console_output,
     'lineEventCount': _total_line_events,
     'traceStepCount': len(_trace_events)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { traceEvents: RuntimeTraceEvent[]; lineEventCount?: number; traceStepCount?: number };
+  const parsed = JSON.parse(stdout) as { runtimeTrace: RuntimeTrace; lineEventCount?: number; traceStepCount?: number };
+  const events = Array.isArray(parsed.runtimeTrace.events) ? parsed.runtimeTrace.events : [];
   const trace: RuntimeTrace = {
-    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+    schemaVersion: parsed.runtimeTrace.schemaVersion,
     language: 'python',
     runId: `python:${fixture.id}`,
-    events: parsed.traceEvents.map((event) => ({
+    events: events.map((event) => ({
       ...event,
       runId: `python:${fixture.id}`,
       file: 'solution.py',
     })),
-    lineEventCount: parsed.traceEvents.filter((event) => event.kind === 'line').length,
-    traceStepCount: parsed.traceStepCount ?? parsed.traceEvents.length,
+    lineEventCount: events.filter((event) => event.kind === 'line').length,
+    traceStepCount: parsed.runtimeTrace.traceStepCount ?? events.length,
   };
   const rawSummary = summarizeRuntimeTraceEmissions(trace);
   assertSupportedRawEmissions(rawSummary, `${fixture.id}:python`);
@@ -386,19 +392,22 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     const workDir = await mkdtemp(join(root, 'rewrite-'));
     const inputPath = join(workDir, 'Input.java');
     const outputPath = join(workDir, 'Output.java');
+    const exportsPath = join(workDir, 'Exports.java');
     await writeFile(inputPath, normalizeTopLevelPublicClasses(source), 'utf8');
+    await writeFile(exportsPath, exportsSource, 'utf8');
     await runProcess(JAVA_BIN, [
       '-cp',
       JAVA_REWRITER_CLASSPATH,
-      'spike.rewriter.GenericPracticeRewriter',
+      'harness.browser.JavaRewriteLibrary',
       inputPath,
       outputPath,
       executionStyle,
       entryName,
+      exportsPath,
+      exportsClassName,
+      packageName,
     ]);
-    const rewrittenSource = await readFile(outputPath, 'utf8');
-    const renamedExports = exportsSource.replace(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
-    return `package ${packageName};\n\n${rewrittenSource.trim()}\n\n${renamedExports.trim()}\n`;
+    return readFile(outputPath, 'utf8');
   }
 
   async function compileAndTrace(
@@ -495,8 +504,8 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         onmessage: null,
         importScripts: (...urls: string[]) => {
           for (const url of urls) {
-            if (String(url).endsWith('java-source-augmentations.cjs')) {
-              vm.runInContext(augmentationSource, context, { filename: 'java-source-augmentations.cjs' });
+            if (String(url).endsWith('java-source-augmentations.js')) {
+              vm.runInContext(augmentationSource, context, { filename: 'java-source-augmentations.js' });
             }
           }
         },

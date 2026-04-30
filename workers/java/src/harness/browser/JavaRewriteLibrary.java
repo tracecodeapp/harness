@@ -3,10 +3,42 @@ package harness.browser;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import spike.rewriter.GenericPracticeRewriter;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class JavaRewriteLibrary {
+  private static final Pattern METHOD_START = Pattern.compile(
+      "^(\\s*)(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*\\{\\s*$");
+  private static final Pattern RETURN_STMT = Pattern.compile("^(\\s*)return(?:\\s+(.+?))?;\\s*$");
+  private static final Pattern ARRAY_WRITE_2D = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*=\\s*(.+);\\s*$");
+  private static final Pattern ARRAY_WRITE_1D = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*=\\s*(.+);\\s*$");
+  private static final Pattern STRING_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.charAt\\(([^()]+)\\)");
+  private static final Pattern FIELD_WRITE = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
+  private static final Pattern FIELD_READ = Pattern.compile("\\b(?!System\\b|TraceHooks\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()");
+  private static final Pattern LOCAL_DECLARATION = Pattern.compile(
+      "^(\\s*)(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>?, ]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
+  private static final Pattern MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern MATRIX_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
+  private static final Pattern ARRAY_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]");
+
   private JavaRewriteLibrary() {}
+
+  public static void main(String[] args) throws Exception {
+    if (args.length < 7) {
+      throw new IllegalArgumentException(
+          "Usage: <source> <output> <executionStyle> <entryName> <exportsSource> <exportsClassName> <packageName>");
+    }
+    String source = Files.readString(Path.of(args[0]), StandardCharsets.UTF_8);
+    String exportsSource = Files.readString(Path.of(args[4]), StandardCharsets.UTF_8);
+    String rewritten = rewriteSource(source, args[2], args[3], exportsSource, args[5], args[6]);
+    Files.createDirectories(Path.of(args[1]).getParent());
+    Files.writeString(Path.of(args[1]), rewritten, StandardCharsets.UTF_8);
+  }
 
   public static String rewriteSource(
       String source,
@@ -15,40 +47,231 @@ public final class JavaRewriteLibrary {
       String exportsSource,
       String exportsClassName,
       String packageName
-  ) throws Exception {
-    Path workDir = Files.createTempDirectory("tracecode-java-rewrite-");
-    Path inputPath = workDir.resolve("Input.java");
-    Path outputPath = workDir.resolve("Output.java");
-
-    try {
-      Files.writeString(inputPath, normalizeTopLevelPublicClasses(source), StandardCharsets.UTF_8);
-      GenericPracticeRewriter.main(
-          new String[] {
-              inputPath.toString(),
-              outputPath.toString(),
-              executionStyle,
-              entryName,
-          });
-      String rewrittenSource = Files.readString(outputPath, StandardCharsets.UTF_8);
-      String renamedExports =
-          exportsSource.replaceAll("\\bpublic class Exports\\b", "public class " + exportsClassName);
-      return "package " + packageName + ";\n\n" + rewrittenSource.trim() + "\n\n" + renamedExports.trim() + "\n";
-    } finally {
-      try (var paths = Files.walk(workDir)) {
-        paths
-            .sorted((left, right) -> right.getNameCount() - left.getNameCount())
-            .forEach(
-                path -> {
-                  try {
-                    Files.deleteIfExists(path);
-                  } catch (Exception ignored) {
-                  }
-                });
-      }
-    }
+  ) {
+    String rewrittenSource = rewriteJava(normalizeTopLevelPublicClasses(source));
+    String renamedExports = exportsSource.replaceAll("\\bpublic class Exports\\b", "public class " + exportsClassName);
+    return "package " + packageName + ";\n\n" + rewrittenSource.trim() + "\n\n" + renamedExports.trim() + "\n";
   }
 
   private static String normalizeTopLevelPublicClasses(String source) {
     return source.replaceAll("(^|\\n)\\s*public\\s+class\\s+", "$1class ");
+  }
+
+  private static String rewriteJava(String source) {
+    StringBuilder out = new StringBuilder();
+    out.append("import spike.user.TraceHooks;\n");
+    String[] lines = source.split("\\r?\\n", -1);
+    Deque<MethodFrame> methods = new ArrayDeque<>();
+
+    for (int index = 0; index < lines.length; index++) {
+      String line = lines[index];
+      int sourceLine = index + 1;
+      Matcher method = METHOD_START.matcher(line);
+      if (method.matches()) {
+        out.append(line).append('\n');
+        String name = method.group(2);
+        methods.push(new MethodFrame(name, braceDelta(line)));
+        out.append(method.group(1)).append("  TraceHooks.emitCallAtLine(")
+            .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
+        continue;
+      }
+
+      MethodFrame current = methods.peek();
+      if (current == null) {
+        out.append(line).append('\n');
+        continue;
+      }
+
+      String trimmed = line.trim();
+      if (shouldEmitLine(trimmed)) {
+        out.append(indentOf(line)).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
+      }
+
+      String rewrittenLine = rewriteStatement(line, sourceLine, current.name);
+      out.append(rewrittenLine).append('\n');
+
+      current.depth += braceDelta(rewrittenLine);
+      while (!methods.isEmpty() && methods.peek().depth <= 0) {
+        methods.pop();
+        if (!methods.isEmpty()) {
+          methods.peek().depth += current.depth;
+        }
+      }
+    }
+    return out.toString();
+  }
+
+  private static String rewriteStatement(String line, int sourceLine, String methodName) {
+    Matcher returnMatch = RETURN_STMT.matcher(line);
+    if (returnMatch.matches()) {
+      String indent = returnMatch.group(1);
+      String expression = returnMatch.group(2);
+      StringBuilder out = new StringBuilder();
+      out.append(indent).append("TraceHooks.emitReturnAtLine(").append(sourceLine).append(", ").append(quote(methodName)).append(");\n");
+      if (expression == null || expression.trim().isEmpty()) {
+        out.append(indent).append("return;");
+      } else {
+        out.append(indent).append("return ").append(rewriteReads(expression.trim(), sourceLine)).append(';');
+      }
+      return out.toString();
+    }
+
+    Matcher declaration = LOCAL_DECLARATION.matcher(line);
+    if (declaration.matches() && !line.trim().startsWith("for ")) {
+      String indent = declaration.group(1);
+      String type = declaration.group(2).trim();
+      String name = declaration.group(3);
+      String value = rewriteReads(declaration.group(4).trim(), sourceLine);
+      String prefix = line.substring(0, declaration.start(3));
+      String rewritten = prefix + name + " = " + value + ";";
+      if (isScalarSnapshotType(type)) {
+        rewritten += "\n" + indent + "TraceHooks.emitLineAtLine(" + sourceLine + ", \" "+ name + "=\" + TraceHooks.serializeResult(" + name + "));";
+      }
+      return rewritten;
+    }
+
+    Matcher fieldWrite = FIELD_WRITE.matcher(line);
+    if (fieldWrite.matches()) {
+      String indent = fieldWrite.group(1);
+      String name = fieldWrite.group(2);
+      String field = fieldWrite.group(3);
+      String value = rewriteReads(fieldWrite.group(4).trim(), sourceLine);
+      return indent + name + "." + field + " = " + value + "; TraceHooks.emitFieldWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ");";
+    }
+
+    Matcher write2d = ARRAY_WRITE_2D.matcher(line);
+    if (write2d.matches()) {
+      String indent = write2d.group(1);
+      String name = write2d.group(2);
+      String row = write2d.group(3).trim();
+      String col = write2d.group(4).trim();
+      String value = rewriteReads(write2d.group(5).trim(), sourceLine);
+      return indent + name + "[" + row + "][" + col + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + row + ", " + col + ", " + name + "[" + row + "][" + col + "]);";
+    }
+
+    Matcher write1d = ARRAY_WRITE_1D.matcher(line);
+    if (write1d.matches()) {
+      String indent = write1d.group(1);
+      String name = write1d.group(2);
+      String idx = write1d.group(3).trim();
+      String value = rewriteReads(write1d.group(4).trim(), sourceLine);
+      return indent + name + "[" + idx + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + idx + ", " + name + "[" + idx + "]);";
+    }
+
+    Matcher mutatingCall = MUTATING_CALL_STATEMENT.matcher(line);
+    if (mutatingCall.matches() && isTrackedMutationMethod(mutatingCall.group(3))) {
+      String indent = mutatingCall.group(1);
+      String name = mutatingCall.group(2);
+      String method = mutatingCall.group(3);
+      String args = rewriteReads(mutatingCall.group(4).trim(), sourceLine);
+      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ");";
+    }
+
+    return rewriteReads(line, sourceLine);
+  }
+
+  private static String rewriteReads(String source, int line) {
+    String next = replaceAll(STRING_CHAR_AT, source, match ->
+        "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + match.group(2).trim() + ")");
+    next = replaceAll(MATRIX_READ, next, match -> {
+      String full = match.group(0);
+      if (full.contains("TraceHooks.")) return full;
+      String name = match.group(1);
+      return "TraceHooks.readIntMatrixAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ", " + match.group(3).trim() + ")";
+    });
+    final String arrayReadSource = next;
+    next = replaceAll(ARRAY_READ, next, match -> {
+      String full = match.group(0);
+      if (full.contains("TraceHooks.") || full.startsWith("new ")) return full;
+      if (arrayReadSource.startsWith(".length", match.end())) return full;
+      String name = match.group(1);
+      return "TraceHooks.readIntArrayAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
+    });
+    next = replaceAll(FIELD_READ, next, match -> {
+      String full = match.group(0);
+      if (full.contains("TraceHooks.")) return full;
+      String name = match.group(1);
+      String field = match.group(2);
+      if (Character.isUpperCase(name.charAt(0)) || "out".equals(field) || "err".equals(field) || "length".equals(field)) return full;
+      return "TraceHooks.readObjectFieldAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ")";
+    });
+    return next;
+  }
+
+  private static String replaceAll(Pattern pattern, String source, Replacer replacer) {
+    Matcher matcher = pattern.matcher(source);
+    StringBuffer out = new StringBuffer();
+    while (matcher.find()) {
+      matcher.appendReplacement(out, Matcher.quoteReplacement(replacer.replace(matcher)));
+    }
+    matcher.appendTail(out);
+    return out.toString();
+  }
+
+  private static boolean shouldEmitLine(String trimmed) {
+    if (trimmed.isEmpty()) return false;
+    if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) return false;
+    if (trimmed.equals("{") || trimmed.equals("}")) return false;
+    if (trimmed.startsWith("}")) return false;
+    if (trimmed.startsWith("else")) return false;
+    if (trimmed.startsWith("catch") || trimmed.startsWith("finally")) return false;
+    return true;
+  }
+
+  private static boolean isScalarSnapshotType(String type) {
+    return "boolean".equals(type) || "byte".equals(type) || "char".equals(type) || "short".equals(type) ||
+        "int".equals(type) || "long".equals(type) || "float".equals(type) || "double".equals(type) || "String".equals(type);
+  }
+
+  private static boolean isTrackedMutationMethod(String method) {
+    return "add".equals(method) || "push".equals(method) || "offer".equals(method) || "put".equals(method) ||
+        "remove".equals(method) || "clear".equals(method) || "poll".equals(method) || "pop".equals(method);
+  }
+
+  private static int braceDelta(String line) {
+    int delta = 0;
+    boolean inString = false;
+    boolean escaped = false;
+    for (int i = 0; i < line.length(); i++) {
+      char ch = line.charAt(i);
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (ch == '\\') {
+          escaped = true;
+        } else if (ch == '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch == '"') inString = true;
+      if (ch == '{') delta++;
+      if (ch == '}') delta--;
+    }
+    return delta;
+  }
+
+  private static String indentOf(String line) {
+    int index = 0;
+    while (index < line.length() && Character.isWhitespace(line.charAt(index))) index++;
+    return line.substring(0, index);
+  }
+
+  private static String quote(String value) {
+    return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+  }
+
+  private static final class MethodFrame {
+    final String name;
+    int depth;
+
+    MethodFrame(String name, int depth) {
+      this.name = name;
+      this.depth = depth;
+    }
+  }
+
+  private interface Replacer {
+    String replace(Matcher matcher);
   }
 }

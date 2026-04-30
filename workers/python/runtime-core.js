@@ -1415,7 +1415,14 @@ print = _original_print
 
 json.dumps({
     'trace': _trace_data,
-    'traceEvents': _trace_events,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events,
+        'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
+        'traceStepCount': len(_trace_events)
+    },
     'result': _serialize(_result),
     'console': _console_output,
     'userCodeStartLine': ${userCodeStartLine},
@@ -1535,9 +1542,10 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
 
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 
-function nativePythonEventsToRuntimeTrace(events, userCodeStartLine, userCodeLineCount, runId = 'python:run', file) {
+function remapPythonRuntimeTrace(runtimeTrace, userCodeStartLine, userCodeLineCount, runId = 'python:run', file) {
   const normalizedEvents = [];
-  for (const event of Array.isArray(events) ? events : []) {
+  const events = runtimeTrace && Array.isArray(runtimeTrace.events) ? runtimeTrace.events : [];
+  for (const event of events) {
     if (!event || typeof event !== 'object') continue;
     const normalized = {
       ...event,
@@ -1553,7 +1561,7 @@ function nativePythonEventsToRuntimeTrace(events, userCodeStartLine, userCodeLin
     normalizedEvents.push(normalized);
   }
   return {
-    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+    schemaVersion: runtimeTrace?.schemaVersion ?? RUNTIME_TRACE_SCHEMA_VERSION,
     language: 'python',
     runId,
     events: normalizedEvents,
@@ -1663,8 +1671,8 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
       output: result.result,
       error: errorMessage,
       errorLine,
-      trace: nativePythonEventsToRuntimeTrace(
-        result.traceEvents,
+      trace: remapPythonRuntimeTrace(
+        result.runtimeTrace,
         userCodeStartLine,
         userCodeLineCount
       ),
@@ -1688,7 +1696,7 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
         ? 'Execution timed out. This may indicate an infinite loop or very expensive execution.'
         : message,
       errorLine: line,
-      trace: nativePythonEventsToRuntimeTrace([], userCodeStartLine, userCodeLineCount),
+      trace: remapPythonRuntimeTrace({ events: [] }, userCodeStartLine, userCodeLineCount),
       executionTimeMs,
       consoleOutput: [],
       timeoutReason: isClientTimeout ? 'client-timeout' : undefined,

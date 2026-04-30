@@ -1,14 +1,12 @@
 const CHEERPJ_LOADER_URL = 'https://cjrtnc.leaningtech.com/4.2/loader.js';
 const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-spike-helper.jar';
 const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
-const REWRITER_JAR_PATH = '/app/workers/vendor/java-practice-rewriter.jar';
-const REWRITER_BRIDGE_JAR_PATH = '/app/workers/vendor/java-rewrite-bridge.jar';
+const REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
 const JAVAPARSER_JAR_PATH = '/app/workers/vendor/javaparser-core-3.25.10.jar';
 const FULL_CLASSPATH = [
   HELPER_JAR_PATH,
   JDK17_COMPILER_JAR_PATH,
   REWRITER_JAR_PATH,
-  REWRITER_BRIDGE_JAR_PATH,
   JAVAPARSER_JAR_PATH,
 ].join(':');
 const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
@@ -17,7 +15,7 @@ const IDLE_TIMEOUT_MS = 90_000;
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
 
 if (typeof self.importScripts === 'function') {
-  self.importScripts('java-source-augmentations.cjs');
+  self.importScripts('java-source-augmentations.js');
 }
 
 let workerReadyPromise = null;
@@ -730,6 +728,13 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function parseNativeTraceLine(line) {
+  const match = line.match(/TraceHooks\.emit(?:Line|Call|Return)AtLine\((\d+)\b/);
+  if (!match) return null;
+  const lineNumber = Number.parseInt(match[1], 10);
+  return Number.isFinite(lineNumber) && lineNumber > 0 ? lineNumber : null;
+}
+
 function augmentTraceCallArgumentSnapshots(source) {
   const lines = source.split('\n');
   const methodStack = [];
@@ -752,14 +757,14 @@ function augmentTraceCallArgumentSnapshots(source) {
     let nextLine = line;
     if (currentMethod && !currentMethod.patchedCall && currentMethod.params.length > 0) {
       const callPattern = new RegExp(
-        `^(\\s*)TraceHooks\\.emit\\((\"line=\\d+ call ${escapeRegExp(currentMethod.name)}\").*\\);\\s*$`
+        `^(\\s*)TraceHooks\\.emitCallAtLine\\((\\d+),\\s*"${escapeRegExp(currentMethod.name)}",\\s*([^)]*)\\);\\s*$`
       );
       const callMatch = line.match(callPattern);
       if (callMatch) {
         const serializedArgs = currentMethod.params
           .map((paramName) => ` + " ${paramName}=" + TraceHooks.serializeResult(${paramName})`)
           .join('');
-        nextLine = `${callMatch[1]}TraceHooks.emit(${callMatch[2]}${serializedArgs});`;
+        nextLine = `${callMatch[1]}TraceHooks.emitCallAtLine(${callMatch[2]}, "${currentMethod.name}", ""${serializedArgs});`;
         currentMethod.patchedCall = true;
       }
     }
@@ -820,20 +825,19 @@ function traceEmitAlreadyIncludesVariable(emitExpression, name) {
 
 function appendJavaLocalSnapshotsToEmitLine(line, scopeStack) {
   const visibleNames = visibleJavaLocalNames(scopeStack);
-  if (visibleNames.length === 0 || !line.includes('TraceHooks.emit("line=')) {
+  if (visibleNames.length === 0 || !line.includes('TraceHooks.emitLineAtLine(')) {
     return line;
   }
 
-  return line.replace(/TraceHooks\.emit\(((?:"line=\d+(?:(?!\);).)*"))\);/g, (match, emitExpression) => {
-    if (/\b(?:call|return)\b/.test(emitExpression)) {
-      return match;
-    }
+  return line.replace(/TraceHooks\.emitLineAtLine\((\d+)(?:,\s*([^;]*?))?\);/g, (match, lineNumber, snapshotExpression) => {
+    const emitExpression = snapshotExpression ?? '';
     const additions = visibleNames
       .filter((name) => !traceEmitAlreadyIncludesVariable(emitExpression, name))
       .map((name) => ` + " ${name}=" + TraceHooks.serializeResult(${name})`)
       .join('');
     if (!additions) return match;
-    return `TraceHooks.emit(${emitExpression}${additions});`;
+    const prefix = emitExpression.trim().length > 0 ? emitExpression.trim() : '""';
+    return `TraceHooks.emitLineAtLine(${Number.parseInt(lineNumber, 10)}, ${prefix}${additions});`;
   });
 }
 
@@ -849,7 +853,7 @@ function appendJavaLocalSnapshotsAfterMutations(line, scopeStack) {
       const additions = visibleNames
         .map((name) => ` + " ${name}=" + TraceHooks.serializeResult(${name})`)
         .join('');
-      return `${statement} TraceHooks.emit("line=${lineNumber}"${additions});`;
+      return `${statement} TraceHooks.emitLineAtLine(${lineNumber}, ""${additions});`;
     }
   );
 }
@@ -951,10 +955,8 @@ function augmentJavaObjectFieldOperations(source) {
       currentMethod.objectNames.add(name);
     }
 
-    const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
-    if (traceLineMatch) {
-      currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
-    }
+    const traceLine = parseNativeTraceLine(line);
+    if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
 
     const lineNumber = currentMethod.currentTraceLine;
     if (lineNumber !== null && currentMethod.objectNames.size > 0) {
@@ -1002,17 +1004,15 @@ function augmentJavaThrowEvents(source) {
     let nextLine = line;
     if (!currentMethod) return nextLine;
 
-    const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
-    if (traceLineMatch) {
-      currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
-    }
+    const traceLine = parseNativeTraceLine(line);
+    if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
 
     const throwMatch = nextLine.match(/^(\s*)throw\s+(.+);\s*$/);
     if (throwMatch && currentMethod.currentTraceLine !== null) {
       const indent = throwMatch[1] ?? '';
       const tempName = `__tracecodeThrown${thrownIndex++}`;
       const expression = throwMatch[2];
-      nextLine = `${indent}{ var ${tempName} = ${expression}; TraceHooks.emit("line=${currentMethod.currentTraceLine} exception " + TraceHooks.jsonString(String.valueOf(${tempName}))); throw ${tempName}; }`;
+      nextLine = `${indent}{ var ${tempName} = ${expression}; TraceHooks.emitExceptionAtLine(${currentMethod.currentTraceLine}, String.valueOf(${tempName})); throw ${tempName}; }`;
     }
 
     currentMethod.depth += braceDelta(nextLine);
@@ -1041,17 +1041,15 @@ function augmentJavaStdoutEvents(source) {
     let nextLine = line;
     if (!currentMethod) return nextLine;
 
-    const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
-    if (traceLineMatch) {
-      currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
-    }
+    const traceLine = parseNativeTraceLine(line);
+    if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
 
     const stdoutMatch = nextLine.match(/^(\s*)System\.out\.println\((.+)\);\s*$/);
     if (stdoutMatch && currentMethod.currentTraceLine !== null) {
       const indent = stdoutMatch[1] ?? '';
       const tempName = `__tracecodeStdout${stdoutIndex++}`;
       const expression = stdoutMatch[2];
-      nextLine = `${indent}{ var ${tempName} = ${expression}; System.out.println(${tempName}); TraceHooks.emit("line=${currentMethod.currentTraceLine} stdout " + TraceHooks.jsonString(String.valueOf(${tempName}))); }`;
+      nextLine = `${indent}{ var ${tempName} = ${expression}; System.out.println(${tempName}); TraceHooks.emitStdoutAtLine(${currentMethod.currentTraceLine}, String.valueOf(${tempName})); }`;
     }
 
     currentMethod.depth += braceDelta(nextLine);
@@ -1089,9 +1087,9 @@ function augmentArrayLengthReads(source) {
         currentMethod.arrayNames.add(name);
       }
 
-      const traceLineMatch = line.match(/TraceHooks\.emit\("line=(\d+)(?:\s|")/);
-      if (traceLineMatch) {
-        currentMethod.currentTraceLine = Number.parseInt(traceLineMatch[1], 10);
+      const traceLine = parseNativeTraceLine(line);
+      if (traceLine !== null) {
+        currentMethod.currentTraceLine = traceLine;
         currentMethod.hasTraceEmit = true;
       }
 
@@ -1143,7 +1141,7 @@ function augmentTraceReturnValueSnapshots(source) {
     const currentMethod = methodStack[methodStack.length - 1];
     if (currentMethod && currentMethod.returnType !== 'void') {
       const returnEmitMatch = line.match(
-        /^(\s*)TraceHooks\.emit\("line=(\d+) return ([A-Za-z_][A-Za-z0-9_]*)"\);\s*$/
+        /^(\s*)TraceHooks\.emitReturnAtLine\((\d+),\s*"([A-Za-z_][A-Za-z0-9_]*)"\);\s*$/
       );
       const nextLine = lines[index + 1] ?? '';
       const returnMatch = nextLine.match(/^(\s*)return\s+(.+);\s*$/);
@@ -1153,7 +1151,7 @@ function augmentTraceReturnValueSnapshots(source) {
         const returnExpression = returnMatch[2].trim();
         output.push(`${indent}${currentMethod.returnType} ${tempName} = ${returnExpression};`);
         output.push(
-          `${indent}TraceHooks.emit("line=${returnEmitMatch[2]} return ${currentMethod.name} value=" + TraceHooks.serializeResult(${tempName}));`
+          `${indent}TraceHooks.emitReturnAtLine(${returnEmitMatch[2]}, "${currentMethod.name}", ${tempName});`
         );
         output.push(`${returnMatch[1] ?? indent}return ${tempName};`);
         currentMethod.depth += braceDelta(line) + braceDelta(nextLine);
@@ -1674,26 +1672,7 @@ function normalizeScriptTraceEvents(events, scriptMode, userCodeLineCount, sourc
         return event;
       }
     }
-
-    let normalizedEvent = String(event)
-      .replace(new RegExp(`\\bcall\\s+${SCRIPT_METHOD_NAME}\\b`, 'g'), 'call <module>')
-      .replace(new RegExp(`\\breturn\\s+${SCRIPT_METHOD_NAME}\\b`, 'g'), 'return <module>');
-
-    const lineMatch = normalizedEvent.match(/^line=(\d+)(.*)$/);
-    if (lineMatch && sourceLineMap && Object.prototype.hasOwnProperty.call(sourceLineMap, lineMatch[1])) {
-      const mappedLine = Number(sourceLineMap[lineMatch[1]]);
-      if (Number.isFinite(mappedLine) && mappedLine > 0) {
-        normalizedEvent = `line=${mappedLine}${lineMatch[2] ?? ''}`;
-      }
-    }
-
-    const match = normalizedEvent.match(/^line=(\d+)\s+return\s+<module>$/);
-    if (!match || !Number.isFinite(userCodeLineCount) || userCodeLineCount <= 0) {
-      return normalizedEvent;
-    }
-    const line = Number.parseInt(match[1], 10);
-    if (line <= userCodeLineCount) return normalizedEvent;
-    return `line=${userCodeLineCount} return <module>`;
+    return event;
   });
 }
 
@@ -1707,10 +1686,7 @@ function parseTraceLineNumber(event) {
       return null;
     }
   }
-  const match = String(event).match(/^line=(\d+)(?:\s|$)/);
-  if (!match) return null;
-  const line = Number.parseInt(match[1], 10);
-  return Number.isFinite(line) && line > 0 ? line : null;
+  return null;
 }
 
 function isBareTraceLineEvent(event) {
@@ -1722,14 +1698,25 @@ function isBareTraceLineEvent(event) {
       return false;
     }
   }
-  return /^line=\d+$/.test(String(event));
+  return false;
 }
 
 function buildBareTraceLineEvent(line, templateEvent) {
   if (String(templateEvent).startsWith('trace:')) {
     return `trace:${JSON.stringify({ kind: 'line', line })}`;
   }
-  return `line=${line}`;
+  return `trace:${JSON.stringify({ kind: 'line', line })}`;
+}
+
+function cloneNativeSnapshotEventAtLine(event, line) {
+  if (!String(event).startsWith('trace:')) return null;
+  try {
+    const parsed = JSON.parse(String(event).slice('trace:'.length));
+    if (parsed.kind !== 'snapshot') return null;
+    return `trace:${JSON.stringify({ ...parsed, line })}`;
+  } catch {
+    return null;
+  }
 }
 
 function buildLoopBodyLineMap(sourceText) {
@@ -1759,12 +1746,20 @@ function expandLoopHeaderTraceEvents(events, sourceText) {
   if (!loopBodyLineToHeaderLine) return events;
 
   const expanded = [];
-  for (const event of events) {
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
     const line = parseTraceLineNumber(event);
     const headerLine = line === null ? undefined : loopBodyLineToHeaderLine.get(line);
     const previousLine = expanded.length > 0 ? parseTraceLineNumber(expanded[expanded.length - 1]) : null;
     if (headerLine !== undefined && isBareTraceLineEvent(event) && previousLine !== headerLine) {
       expanded.push(buildBareTraceLineEvent(headerLine, event));
+    }
+    if (headerLine !== undefined && isBareTraceLineEvent(event)) {
+      for (let lookahead = index + 1; lookahead < events.length; lookahead += 1) {
+        if (parseTraceLineNumber(events[lookahead]) !== line) break;
+        const clonedSnapshot = cloneNativeSnapshotEventAtLine(events[lookahead], headerLine);
+        if (clonedSnapshot) expanded.push(clonedSnapshot);
+      }
     }
     expanded.push(event);
   }
@@ -1806,14 +1801,17 @@ async function runJavaRequest(payload, requestId) {
     rewrittenSource = augmentTraceReturnValueSnapshots(rewrittenSource);
   } catch (error) {
     const rewriteError = formatWorkerErrorMessage(error);
-    const diagnosticProbe = await collectCompileProbeDiagnostics(
-      normalizedPayload.code,
-      requestId,
-      payload.options
-    );
+    const skipDiagnosticProbe = rewriteError.includes('unsupported legacy line= TraceHooks hooks');
+    const diagnosticProbe = skipDiagnosticProbe
+      ? { consoleOutput: [], error: null, hostCallMs: 0, diagnosticError: null }
+      : await collectCompileProbeDiagnostics(
+          normalizedPayload.code,
+          requestId,
+          payload.options
+        );
     const totalEnd = performance.now();
     const surfacedError =
-      diagnosticProbe.error ??
+      (skipDiagnosticProbe ? null : diagnosticProbe.error) ??
       (rewriteError === 'Java syntax error.'
         ? 'Java syntax error. Check Code Assist for parser details.'
         : `Java source rewrite failed: ${rewriteError}`);

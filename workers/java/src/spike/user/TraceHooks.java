@@ -24,7 +24,6 @@ public final class TraceHooks {
   private static String currentFunction = "<module>";
   private static final List<String> FUNCTION_STACK = new ArrayList<>();
   private static final Map<String, String> CURRENT_SNAPSHOTS = new LinkedHashMap<>();
-  private static final Pattern LINE_EVENT_PATTERN = Pattern.compile("^line=(\\d+)(?:\\s+(.*))?$");
   private static final Pattern KEY_VALUE_PATTERN = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_.]*)=");
 
   private TraceHooks() {}
@@ -38,7 +37,7 @@ public final class TraceHooks {
       appendEvent(event);
       return;
     }
-    emitLegacyTraceEvent(event);
+    throw new IllegalArgumentException("TraceHooks.emit only accepts native trace: runtime events; legacy line= events are unsupported");
   }
 
   private static void appendEvent(String event) {
@@ -52,71 +51,6 @@ public final class TraceHooks {
       return;
     }
     EVENTS.add(event);
-  }
-
-  private static void emitLegacyTraceEvent(String event) {
-    if (event == null) return;
-    Matcher lineMatch = LINE_EVENT_PATTERN.matcher(event);
-    if (!lineMatch.matches()) {
-      appendEvent(event);
-      return;
-    }
-
-    int line = Integer.parseInt(lineMatch.group(1));
-    String payload = lineMatch.group(2) == null ? "" : lineMatch.group(2);
-
-    if (payload.startsWith("call ")) {
-      String rest = payload.substring("call ".length()).trim();
-      int space = rest.indexOf(' ');
-      String function = space >= 0 ? rest.substring(0, space) : rest;
-      String argsFragment = space >= 0 ? rest.substring(space + 1) : "";
-      currentFunction = function.length() > 0 ? function : currentFunction;
-      FUNCTION_STACK.add(currentFunction);
-      emitTraceCall(line, currentFunction, argsFragment);
-      return;
-    }
-
-    if (payload.startsWith("return ")) {
-      String rest = payload.substring("return ".length()).trim();
-      int valueIndex = rest.indexOf(" value=");
-      String function = valueIndex >= 0 ? rest.substring(0, valueIndex) : rest;
-      String value = valueIndex >= 0 ? rest.substring(valueIndex + " value=".length()) : null;
-      emitTraceReturn(line, function.length() > 0 ? function : currentFunction, value);
-      if (!FUNCTION_STACK.isEmpty()) {
-        FUNCTION_STACK.remove(FUNCTION_STACK.size() - 1);
-      }
-      currentFunction = FUNCTION_STACK.isEmpty() ? "<module>" : FUNCTION_STACK.get(FUNCTION_STACK.size() - 1);
-      return;
-    }
-
-    if (payload.startsWith("exception ")) {
-      emitTraceException(line, payload.substring("exception ".length()));
-      return;
-    }
-
-    if (payload.startsWith("stdout ")) {
-      emitTraceStdout(line, payload.substring("stdout ".length()));
-      return;
-    }
-
-    if (payload.startsWith("access ") || payload.startsWith("write ") || payload.startsWith("write-array ")) {
-      emitTraceAccessPayload(line, payload);
-      return;
-    }
-
-    if (payload.startsWith("mutate ") || payload.startsWith("mutate-indexed ") || payload.startsWith("keyed-call ")) {
-      emitTraceMutatePayload(line, payload);
-      return;
-    }
-
-
-    if (payload.startsWith("map-state ") || payload.startsWith("set-state ")) {
-      // Dedicated map/set helpers emit neutral runtime trace snapshots directly.
-      return;
-    }
-
-    emitTraceLine(line);
-    emitTraceSnapshotsFromFragment(line, payload);
   }
 
   private static String baseEvent(int line, String kind) {
@@ -134,6 +68,53 @@ public final class TraceHooks {
     for (Map.Entry<String, String> entry : CURRENT_SNAPSHOTS.entrySet()) {
       emitTraceSnapshotEvent(line, entry.getKey(), entry.getValue());
     }
+  }
+
+  public static void emitLineAtLine(int line) {
+    emitTraceLine(line);
+  }
+
+  public static void emitLineAtLine(int line, String snapshotFragment) {
+    emitTraceLine(line);
+    emitTraceSnapshotsFromFragment(line, snapshotFragment);
+  }
+
+  public static void emitCallAtLine(int line, String function, String argsFragment) {
+    currentFunction = function != null && function.length() > 0 ? function : currentFunction;
+    FUNCTION_STACK.add(currentFunction);
+    emitTraceCall(line, currentFunction, argsFragment);
+  }
+
+  public static void emitReturnAtLine(int line, String function) {
+    emitTraceReturn(line, function != null && function.length() > 0 ? function : currentFunction, null);
+    if (!FUNCTION_STACK.isEmpty()) {
+      FUNCTION_STACK.remove(FUNCTION_STACK.size() - 1);
+    }
+    currentFunction = FUNCTION_STACK.isEmpty() ? "<module>" : FUNCTION_STACK.get(FUNCTION_STACK.size() - 1);
+  }
+
+  public static void emitReturnAtLine(int line, String function, Object value) {
+    emitTraceReturn(line, function != null && function.length() > 0 ? function : currentFunction, serializeValue(value));
+    if (!FUNCTION_STACK.isEmpty()) {
+      FUNCTION_STACK.remove(FUNCTION_STACK.size() - 1);
+    }
+    currentFunction = FUNCTION_STACK.isEmpty() ? "<module>" : FUNCTION_STACK.get(FUNCTION_STACK.size() - 1);
+  }
+
+  public static void emitSerializedReturnAtLine(int line, String function, String valueJson) {
+    emitTraceReturn(line, function != null && function.length() > 0 ? function : currentFunction, valueJson);
+    if (!FUNCTION_STACK.isEmpty()) {
+      FUNCTION_STACK.remove(FUNCTION_STACK.size() - 1);
+    }
+    currentFunction = FUNCTION_STACK.isEmpty() ? "<module>" : FUNCTION_STACK.get(FUNCTION_STACK.size() - 1);
+  }
+
+  public static void emitExceptionAtLine(int line, Object message) {
+    emitTraceException(line, serializeValue(message));
+  }
+
+  public static void emitStdoutAtLine(int line, Object text) {
+    emitTraceStdout(line, serializeValue(text));
   }
 
   private static void emitTraceCall(int line, String function, String argsFragment) {
@@ -273,55 +254,6 @@ public final class TraceHooks {
     return pairs;
   }
 
-  private static void emitTraceAccessPayload(int line, String payload) {
-    Matcher cellRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]\\[(\\d+)\\]=(.+)$").matcher(payload);
-    if (cellRead.matches()) {
-      emitTraceAccess(line, "read", cellRead.group(1), "[" + cellRead.group(2) + "," + cellRead.group(3) + "]", cellRead.group(4));
-      return;
-    }
-    Matcher indexedRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]=(.+)$").matcher(payload);
-    if (indexedRead.matches()) {
-      emitTraceAccess(line, "read", indexedRead.group(1), "[" + indexedRead.group(2) + "]", indexedRead.group(3));
-      return;
-    }
-    Matcher cellWrite = Pattern.compile("^write-array ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]\\[(\\d+)\\]=(.+)$").matcher(payload);
-    if (cellWrite.matches()) {
-      emitTraceAccess(line, "write", cellWrite.group(1), "[" + cellWrite.group(2) + "," + cellWrite.group(3) + "]", cellWrite.group(4));
-      return;
-    }
-    Matcher indexedWrite = Pattern.compile("^write-array ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\]=(.+)$").matcher(payload);
-    if (indexedWrite.matches()) {
-      emitTraceAccess(line, "write", indexedWrite.group(1), "[" + indexedWrite.group(2) + "]", indexedWrite.group(3));
-      return;
-    }
-    Matcher fieldRead = Pattern.compile("^access ([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
-    if (fieldRead.matches()) {
-      emitTraceAccess(line, "read", fieldRead.group(1), "[" + jsonString(fieldRead.group(2)) + "]", fieldRead.group(3));
-      return;
-    }
-    Matcher fieldWrite = Pattern.compile("^write ([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)=(.+)$").matcher(payload);
-    if (fieldWrite.matches()) {
-      emitTraceAccess(line, "write", fieldWrite.group(1), "[" + jsonString(fieldWrite.group(2)) + "]", fieldWrite.group(3));
-    }
-  }
-
-  private static void emitTraceMutatePayload(int line, String payload) {
-    Matcher mutatingCall = Pattern.compile("^mutate ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)$").matcher(payload);
-    if (mutatingCall.matches()) {
-      emitTraceMutate(line, mutatingCall.group(1), null, mutatingCall.group(2));
-      return;
-    }
-    Matcher indexedMutatingCall = Pattern.compile("^mutate-indexed ([A-Za-z_][A-Za-z0-9_]*)\\[(\\d+)\\] method=([A-Za-z_][A-Za-z0-9_]*)$").matcher(payload);
-    if (indexedMutatingCall.matches()) {
-      emitTraceMutate(line, indexedMutatingCall.group(1), "[" + indexedMutatingCall.group(2) + "]", indexedMutatingCall.group(3));
-      return;
-    }
-    Matcher keyedCall = Pattern.compile("^keyed-call ([A-Za-z_][A-Za-z0-9_]*) method=([A-Za-z_][A-Za-z0-9_]*)(?:\\s+.*)?$").matcher(payload);
-    if (keyedCall.matches()) {
-      emitTraceMutate(line, keyedCall.group(1), null, keyedCall.group(2));
-    }
-  }
-
   private static final class MatchRange {
     final int start;
     final int end;
@@ -345,7 +277,7 @@ public final class TraceHooks {
   }
 
   public static boolean traceCondition(int line, boolean value) {
-    emit("line=" + line);
+    emitLineAtLine(line);
     return value;
   }
 
@@ -403,84 +335,84 @@ public final class TraceHooks {
   public static int readIntArrayAtLine(int line, String name, int[] values, int index) {
     int value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + index + "]", String.valueOf(value));
     return value;
   }
 
   public static int readIntMatrixAtLine(int line, String name, int[][] values, int row, int col) {
     int value = values[row][col];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + row + "][" + col + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + row + "," + col + "]", String.valueOf(value));
     return value;
   }
 
   public static boolean readBooleanArrayAtLine(int line, String name, boolean[] values, int index) {
     boolean value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + index + "]", String.valueOf(value));
     return value;
   }
 
   public static boolean readBooleanMatrixAtLine(int line, String name, boolean[][] values, int row, int col) {
     boolean value = values[row][col];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + row + "][" + col + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + row + "," + col + "]", String.valueOf(value));
     return value;
   }
 
   public static long readLongArrayAtLine(int line, String name, long[] values, int index) {
     long value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + index + "]", String.valueOf(value));
     return value;
   }
 
   public static double readDoubleArrayAtLine(int line, String name, double[] values, int index) {
     double value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + index + "]", String.valueOf(value));
     return value;
   }
 
   public static float readFloatArrayAtLine(int line, String name, float[] values, int index) {
     float value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + index + "]", String.valueOf(value));
     return value;
   }
 
   public static char readCharArrayAtLine(int line, String name, char[] values, int index) {
     char value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + jsonString(String.valueOf(value)));
+    emitTraceAccess(line, "read", name, "[" + index + "]", jsonString(String.valueOf(value)));
     return value;
   }
 
   public static char readCharMatrixAtLine(int line, String name, char[][] values, int row, int col) {
     char value = values[row][col];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + row + "][" + col + "]=" + jsonString(String.valueOf(value)));
+    emitTraceAccess(line, "read", name, "[" + row + "," + col + "]", jsonString(String.valueOf(value)));
     return value;
   }
 
   public static byte readByteArrayAtLine(int line, String name, byte[] values, int index) {
     byte value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + index + "]", String.valueOf(value));
     return value;
   }
 
   public static short readShortArrayAtLine(int line, String name, short[] values, int index) {
     short value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + value);
+    emitTraceAccess(line, "read", name, "[" + index + "]", String.valueOf(value));
     return value;
   }
 
   public static char readStringCharAtLine(int line, String name, String value, int index) {
     char ch = value.charAt(index);
-    emit("line=" + line + " " + name + "=" + jsonString(value));
-    emit("line=" + line + " access " + name + "[" + index + "]=" + jsonString(String.valueOf(ch)));
+    emitTraceSnapshot(line, name, jsonString(value));
+    emitTraceAccess(line, "read", name, "[" + index + "]", jsonString(String.valueOf(ch)));
     return ch;
   }
 
@@ -491,26 +423,26 @@ public final class TraceHooks {
   public static char readStringMatrixCharAtLine(int line, String name, String[] values, int row, int col) {
     char ch = values[row].charAt(col);
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + row + "][" + col + "]=" + jsonString(String.valueOf(ch)));
+    emitTraceAccess(line, "read", name, "[" + row + "," + col + "]", jsonString(String.valueOf(ch)));
     return ch;
   }
 
   public static <T> T readObjectArrayAtLine(int line, String name, T[] values, int index) {
     T value = values[index];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + serializeValue(value));
+    emitTraceAccess(line, "read", name, "[" + index + "]", serializeValue(value));
     return value;
   }
 
   public static <T> T readObjectListAtLine(int line, String name, List<T> values, int index) {
     T value = values.get(index);
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + index + "]=" + serializeValue(value));
+    emitTraceAccess(line, "read", name, "[" + index + "]", serializeValue(value));
     return value;
   }
 
   public static <T> T readCollectionFrontAtLine(int line, String name, T value) {
-    emit("line=" + line + " access " + name + "[0]=" + serializeValue(value));
+    emitTraceAccess(line, "read", name, "[0]", serializeValue(value));
     return value;
   }
 
@@ -538,38 +470,38 @@ public final class TraceHooks {
   public static <T> T readObjectMatrixAtLine(int line, String name, T[][] values, int row, int col) {
     T value = values[row][col];
     emitIndexedState(line, name, values);
-    emit("line=" + line + " access " + name + "[" + row + "][" + col + "]=" + serializeValue(value));
+    emitTraceAccess(line, "read", name, "[" + row + "," + col + "]", serializeValue(value));
     return value;
   }
 
   public static int readIntFieldAtLine(int line, String name, String field, int value) {
-    emit("line=" + line + " access " + name + "." + field + "=" + value);
+    emitTraceAccess(line, "read", name, "[\"" + field + "\"]", String.valueOf(value));
     return value;
   }
 
   public static void emitArrayWriteAtLine(int line, String name, int index, Object value) {
-    emit("line=" + line + " write-array " + name + "[" + index + "]=" + serializeValue(value));
+    emitTraceAccess(line, "write", name, "[" + index + "]", serializeValue(value));
   }
 
   public static void emitArrayWriteAtLine(int line, String name, int row, int col, Object value) {
-    emit("line=" + line + " write-array " + name + "[" + row + "][" + col + "]=" + serializeValue(value));
+    emitTraceAccess(line, "write", name, "[" + row + "," + col + "]", serializeValue(value));
   }
 
   public static <T> T readObjectFieldAtLine(int line, String name, String field, T value) {
-    emit("line=" + line + " access " + name + "." + field + "=" + serializeValue(value));
+    emitTraceAccess(line, "read", name, "[\"" + field + "\"]", serializeValue(value));
     return value;
   }
 
   public static void emitFieldWriteAtLine(int line, String name, String field, Object value) {
-    emit("line=" + line + " write " + name + "." + field + "=" + serializeValue(value));
+    emitTraceAccess(line, "write", name, "[\"" + field + "\"]", serializeValue(value));
   }
 
   public static void emitMutatingCallAtLine(int line, String name, String method) {
-    emit("line=" + line + " mutate " + name + " method=" + method);
+    emitTraceMutate(line, name, null, method);
   }
 
   public static void emitMutatingCallAtLine(int line, String name, int index, String method) {
-    emit("line=" + line + " mutate-indexed " + name + "[" + index + "] method=" + method);
+    emitTraceMutate(line, name, "[" + index + "]", method);
   }
 
   public static <K, V> V readMapAtLine(int line, String name, Map<K, V> values, K key) {
@@ -622,12 +554,11 @@ public final class TraceHooks {
   }
 
   public static void emitKeyedMutatingCallAtLine(int line, String name, String method, Object key) {
-    emit("line=" + line + " keyed-call " + name + " method=" + method + " key=" + serializeValue(key));
+    emitTraceMutate(line, name, null, method);
   }
 
   public static void emitKeyedMutatingCallAtLine(int line, String name, String method, Object key, Object value) {
-    emit("line=" + line + " keyed-call " + name + " method=" + method + " key=" + serializeValue(key)
-        + " value=" + serializeValue(value));
+    emitTraceMutate(line, name, null, method);
   }
 
   public static void emitMapSnapshotAtLine(int line, String name, Map<?, ?> values) {
@@ -656,7 +587,7 @@ public final class TraceHooks {
 
   public static <T> T popListAtLine(int line, String name, List<T> values) {
     T value = values.remove(values.size() - 1);
-    emit("line=" + line + " mutate " + name + " method=pop");
+    emitTraceMutate(line, name, null, "pop");
     return value;
   }
 
@@ -819,7 +750,7 @@ public final class TraceHooks {
 
   private static void emitIndexedState(int line, String name, Object values) {
     if (traceLimitExceeded) return;
-    emit("line=" + line + " " + name + "=" + serializeValue(values));
+    emitTraceSnapshot(line, name, serializeValue(values));
   }
 
   private static Object readField(Object object, String fieldName) {
