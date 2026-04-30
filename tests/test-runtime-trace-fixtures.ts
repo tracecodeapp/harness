@@ -45,7 +45,7 @@ const JAVA_REWRITER_CLASSPATH = [
   join(process.cwd(), 'workers', 'vendor', 'java-rewriter.jar'),
   join(process.cwd(), 'workers', 'vendor', 'javaparser-core-3.25.10.jar'),
 ].join(':');
-const JAVA_HELPER_JAR = join(process.cwd(), 'workers', 'vendor', 'java-browser-spike-helper.jar');
+const JAVA_HELPER_JAR = join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar');
 const JAVA_BIN_CANDIDATES = [
   process.env.TRACECODE_JAVA17_BIN,
   process.env.JAVA17_HOME ? join(process.env.JAVA17_HOME, 'bin', 'java') : undefined,
@@ -432,7 +432,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     await runProcess(JAVA_BIN, [
       '-cp',
       JAVA_HELPER_JAR,
-      'spike.browser.BrowserCompileAndTraceMain',
+      'tracecode.browser.BrowserCompileAndTraceMain',
       sourceFile,
       outputClassesDir,
       reportPath,
@@ -519,7 +519,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
               JavaRewriteLibrary: { rewriteSource },
             },
           },
-          spike: {
+          tracecode: {
             browser: {
               BrowserCompileAndTraceLibrary: { compileAndTrace },
             },

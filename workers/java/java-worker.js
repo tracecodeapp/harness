@@ -1,5 +1,5 @@
 const CHEERPJ_LOADER_URL = 'https://cjrtnc.leaningtech.com/4.2/loader.js';
-const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-spike-helper.jar';
+const HELPER_JAR_PATH = '/app/workers/vendor/java-browser-helper.jar';
 const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
 const REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
 const JAVAPARSER_JAR_PATH = '/app/workers/vendor/javaparser-core-3.25.10.jar';
@@ -646,7 +646,7 @@ function wrapSingleStatementLoopBodies(source) {
     output += insertsByIndex.get(index) ?? '';
     if (index < source.length) output += source[index];
   }
-  return output;
+  return output === source ? output : wrapSingleStatementLoopBodies(output);
 }
 
 function splitTopLevelJavaList(value) {
@@ -783,18 +783,22 @@ function augmentTraceCallArgumentSnapshots(source) {
 function collectJavaLocalDeclarations(line) {
   const names = [];
   const declarationPattern =
-    /\b(?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
+    /\b(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
   const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
   for (const match of line.matchAll(declarationPattern)) {
-    const name = match[1];
+    const typeSource = match[1] ?? '';
+    const name = match[2];
+    if (typeSource.includes('[')) continue;
     if (name && !skippedNames.has(name) && !name.startsWith('__tracecode')) {
       names.push(name);
     }
   }
   const enhancedForMatch = line.match(
-    /\bfor\s*\(\s*(?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/
+    /\bfor\s*\(\s*(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/
   );
-  const enhancedForName = enhancedForMatch?.[1];
+  const enhancedForType = enhancedForMatch?.[1] ?? '';
+  const enhancedForName = enhancedForMatch?.[2];
+  if (enhancedForType.includes('[')) return names;
   if (enhancedForName && !skippedNames.has(enhancedForName) && !enhancedForName.startsWith('__tracecode')) {
     names.push(enhancedForName);
   }
@@ -858,6 +862,13 @@ function appendJavaLocalSnapshotsAfterMutations(line, scopeStack) {
   );
 }
 
+function guardJavaLineEmit(line) {
+  return line.replace(
+    /^(\s*)TraceHooks\.emitLineAtLine\((.+)\);\s*$/,
+    (_match, indent, argsSource) => `${indent}if (!TraceHooks.traceLimitExceeded()) TraceHooks.emitLineAtLine(${argsSource});`
+  );
+}
+
 function augmentJavaLocalSnapshots(source) {
   const lines = source.split('\n');
   const output = [];
@@ -879,10 +890,10 @@ function augmentJavaLocalSnapshots(source) {
       continue;
     }
 
-    const transformedLine = appendJavaLocalSnapshotsAfterMutations(
+    const transformedLine = guardJavaLineEmit(appendJavaLocalSnapshotsAfterMutations(
       appendJavaLocalSnapshotsToEmitLine(line, scopeStack),
       scopeStack
-    );
+    ));
     output.push(transformedLine);
 
     const openingCount = (line.match(/{/g) ?? []).length;
@@ -1380,6 +1391,14 @@ function normalizeJavaRequest(payload) {
     };
   }
 
+  if (payload.executionStyle === 'solution-method') {
+    return {
+      ...payload,
+      sourceText: payload.code,
+      code: wrapSingleStatementLoopBodies(payload.code),
+    };
+  }
+
   if (payload.executionStyle !== 'function') {
     return payload;
   }
@@ -1495,7 +1514,7 @@ async function getCompileLibraryClass() {
   if (!compileLibraryClassPromise) {
     compileLibraryClassPromise = (async () => {
       const library = await getHelperLibrary();
-      return library.spike.browser.BrowserCompileAndTraceLibrary;
+      return library.tracecode.browser.BrowserCompileAndTraceLibrary;
     })();
   }
   return compileLibraryClassPromise;

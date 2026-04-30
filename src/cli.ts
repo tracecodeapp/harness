@@ -33,8 +33,8 @@ const ASSET_COPY_PLAN = [
     target: ['vendor', 'typescript.js'],
   },
   {
-    source: ['workers', 'vendor', 'java-browser-spike-helper.jar'],
-    target: ['vendor', 'java-browser-spike-helper.jar'],
+    source: ['workers', 'vendor', 'java-browser-helper.jar'],
+    target: ['vendor', 'java-browser-helper.jar'],
   },
   {
     source: ['workers', 'vendor', 'java-rewriter.jar'],

@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   const root = process.cwd();
   const workerPath = join(root, 'workers', 'java', 'java-worker.js');
   const augmentationPath = join(root, 'workers', 'java', 'java-source-augmentations.js');
-  const helperJarPath = join(root, 'workers', 'vendor', 'java-browser-spike-helper.jar');
+  const helperJarPath = join(root, 'workers', 'vendor', 'java-browser-helper.jar');
   const compilerJarPath = join(root, 'workers', 'vendor', 'jdk.compiler-17.jar');
   const rewriterJarPath = join(root, 'workers', 'vendor', 'java-rewriter.jar');
   const javaparserJarPath = join(root, 'workers', 'vendor', 'javaparser-core-3.25.10.jar');
@@ -37,12 +37,12 @@ async function main(): Promise<void> {
   const augmentationSource = await readFile(augmentationPath, 'utf8');
   const requiredMarkers = [
     'https://cjrtnc.leaningtech.com/4.2/loader.js',
-    '/app/workers/vendor/java-browser-spike-helper.jar',
+    '/app/workers/vendor/java-browser-helper.jar',
     '/app/workers/vendor/jdk.compiler-17.jar',
     '/app/workers/vendor/java-rewriter.jar',
     '/app/workers/vendor/javaparser-core-3.25.10.jar',
     'cheerpjRunLibrary',
-    'spike.browser.BrowserCompileAndTraceLibrary',
+    'tracecode.browser.BrowserCompileAndTraceLibrary',
     'harness.browser.JavaRewriteLibrary',
     "message.type === 'init'",
     "message.type === 'execute-with-tracing'",

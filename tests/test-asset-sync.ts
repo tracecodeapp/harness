@@ -32,7 +32,7 @@ async function main(): Promise<void> {
     'java-worker.js',
     'java-source-augmentations.js',
     'vendor/typescript.js',
-    'vendor/java-browser-spike-helper.jar',
+    'vendor/java-browser-helper.jar',
     'vendor/java-rewriter.jar',
     'vendor/javaparser-core-3.25.10.jar',
     'vendor/jdk.compiler-17.jar',

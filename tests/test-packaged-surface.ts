@@ -55,7 +55,7 @@ async function main(): Promise<void> {
     'workers/javascript/javascript-worker.js',
     'workers/java/java-worker.js',
     'workers/java/java-source-augmentations.js',
-    'workers/vendor/java-browser-spike-helper.jar',
+    'workers/vendor/java-browser-helper.jar',
     'workers/vendor/java-rewriter.jar',
     'workers/vendor/javaparser-core-3.25.10.jar',
     'workers/vendor/jdk.compiler-17.jar',

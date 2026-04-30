@@ -109,7 +109,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
       stringFiles.push({ path, source });
     },
     cheerpjRunLibrary: async () => ({
-      spike: {
+      tracecode: {
         browser: {
           BrowserCompileAndTraceLibrary: {
             compileAndTrace: async (_sourcePath: string, _classesDir: string, mainClassName: string) => {
@@ -192,7 +192,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               rewriteCalls.push({ source, executionStyle, entryName, exportsSource, exportsClassName, packageName });
               if (source.includes('lowerBound')) {
                 return `package ${packageName};
-import spike.user.TraceHooks;
+import tracecode.user.TraceHooks;
 
 class Solution {
   static int lowerBound(int[] nums, int target) {
@@ -223,7 +223,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
               }
               if (source.includes('twoSum')) {
                 return `package ${packageName};
-import spike.user.TraceHooks;
+import tracecode.user.TraceHooks;
 import java.util.*;
 
 class Solution {
@@ -255,7 +255,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
               }
               if (source.includes('buildGraph')) {
                 return `package ${packageName};
-import spike.user.TraceHooks;
+import tracecode.user.TraceHooks;
 import java.util.*;
 
 class Solution {
@@ -291,7 +291,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
               }
               if (source.includes('legacySnapshot')) {
                 return `package ${packageName};
-import spike.user.TraceHooks;
+import tracecode.user.TraceHooks;
 
 class Solution {
   public int legacySnapshot() {

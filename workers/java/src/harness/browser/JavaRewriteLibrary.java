@@ -5,6 +5,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -19,6 +21,8 @@ public final class JavaRewriteLibrary {
   private static final Pattern STRING_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.charAt\\(([^()]+)\\)");
   private static final Pattern FIELD_WRITE = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern FIELD_READ = Pattern.compile("\\b(?!System\\b|TraceHooks\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()");
+  private static final Pattern FIELD_DECLARATION = Pattern.compile(
+      "^\\s*(?:public|private|protected|static|final|transient|volatile|\\s)*([A-Za-z_][A-Za-z0-9_<>?, ]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:=\\s*.+)?;\\s*$");
   private static final Pattern LOCAL_DECLARATION = Pattern.compile(
       "^(\\s*)(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>?, ]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern MUTATING_CALL_STATEMENT = Pattern.compile(
@@ -59,9 +63,10 @@ public final class JavaRewriteLibrary {
 
   private static String rewriteJava(String source) {
     StringBuilder out = new StringBuilder();
-    out.append("import spike.user.TraceHooks;\n");
+    out.append("import tracecode.user.TraceHooks;\n");
     String[] lines = source.split("\\r?\\n", -1);
     Deque<MethodFrame> methods = new ArrayDeque<>();
+    Map<String, String> fields = new HashMap<>();
 
     for (int index = 0; index < lines.length; index++) {
       String line = lines[index];
@@ -70,7 +75,7 @@ public final class JavaRewriteLibrary {
       if (method.matches()) {
         out.append(line).append('\n');
         String name = method.group(2);
-        methods.push(new MethodFrame(name, braceDelta(line)));
+        methods.push(new MethodFrame(name, braceDelta(line), fields, method.group(3)));
         out.append(method.group(1)).append("  TraceHooks.emitCallAtLine(")
             .append(sourceLine).append(", ").append(quote(name)).append(", \"\");\n");
         continue;
@@ -78,16 +83,27 @@ public final class JavaRewriteLibrary {
 
       MethodFrame current = methods.peek();
       if (current == null) {
+        registerFieldDeclaration(fields, line);
         out.append(line).append('\n');
         continue;
       }
 
       String trimmed = line.trim();
+      if (current.initializerDepth > 0 || startsMultilineInitializer(trimmed)) {
+        out.append(line).append('\n');
+        current.initializerDepth = Math.max(0, current.initializerDepth + braceDelta(line));
+        current.depth += braceDelta(line);
+        while (!methods.isEmpty() && methods.peek().depth <= 0) {
+          methods.pop();
+        }
+        continue;
+      }
+
       if (shouldEmitLine(trimmed)) {
         out.append(indentOf(line)).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
       }
 
-      String rewrittenLine = rewriteStatement(line, sourceLine, current.name);
+      String rewrittenLine = rewriteStatement(line, sourceLine, current);
       out.append(rewrittenLine).append('\n');
 
       current.depth += braceDelta(rewrittenLine);
@@ -101,17 +117,17 @@ public final class JavaRewriteLibrary {
     return out.toString();
   }
 
-  private static String rewriteStatement(String line, int sourceLine, String methodName) {
+  private static String rewriteStatement(String line, int sourceLine, MethodFrame frame) {
     Matcher returnMatch = RETURN_STMT.matcher(line);
     if (returnMatch.matches()) {
       String indent = returnMatch.group(1);
       String expression = returnMatch.group(2);
       StringBuilder out = new StringBuilder();
-      out.append(indent).append("TraceHooks.emitReturnAtLine(").append(sourceLine).append(", ").append(quote(methodName)).append(");\n");
+      out.append(indent).append("TraceHooks.emitReturnAtLine(").append(sourceLine).append(", ").append(quote(frame.name)).append(");\n");
       if (expression == null || expression.trim().isEmpty()) {
         out.append(indent).append("return;");
       } else {
-        out.append(indent).append("return ").append(rewriteReads(expression.trim(), sourceLine)).append(';');
+        out.append(indent).append("return ").append(rewriteReads(expression.trim(), sourceLine, frame)).append(';');
       }
       return out.toString();
     }
@@ -121,7 +137,8 @@ public final class JavaRewriteLibrary {
       String indent = declaration.group(1);
       String type = declaration.group(2).trim();
       String name = declaration.group(3);
-      String value = rewriteReads(declaration.group(4).trim(), sourceLine);
+      frame.variables.put(name, normalizeJavaType(type));
+      String value = rewriteReads(declaration.group(4).trim(), sourceLine, frame);
       String prefix = line.substring(0, declaration.start(3));
       String rewritten = prefix + name + " = " + value + ";";
       if (isScalarSnapshotType(type)) {
@@ -135,7 +152,7 @@ public final class JavaRewriteLibrary {
       String indent = fieldWrite.group(1);
       String name = fieldWrite.group(2);
       String field = fieldWrite.group(3);
-      String value = rewriteReads(fieldWrite.group(4).trim(), sourceLine);
+      String value = rewriteReads(fieldWrite.group(4).trim(), sourceLine, frame);
       return indent + name + "." + field + " = " + value + "; TraceHooks.emitFieldWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ");";
     }
 
@@ -145,7 +162,7 @@ public final class JavaRewriteLibrary {
       String name = write2d.group(2);
       String row = write2d.group(3).trim();
       String col = write2d.group(4).trim();
-      String value = rewriteReads(write2d.group(5).trim(), sourceLine);
+      String value = rewriteReads(write2d.group(5).trim(), sourceLine, frame);
       return indent + name + "[" + row + "][" + col + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + row + ", " + col + ", " + name + "[" + row + "][" + col + "]);";
     }
 
@@ -154,7 +171,7 @@ public final class JavaRewriteLibrary {
       String indent = write1d.group(1);
       String name = write1d.group(2);
       String idx = write1d.group(3).trim();
-      String value = rewriteReads(write1d.group(4).trim(), sourceLine);
+      String value = rewriteReads(write1d.group(4).trim(), sourceLine, frame);
       return indent + name + "[" + idx + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + idx + ", " + name + "[" + idx + "]);";
     }
 
@@ -163,29 +180,39 @@ public final class JavaRewriteLibrary {
       String indent = mutatingCall.group(1);
       String name = mutatingCall.group(2);
       String method = mutatingCall.group(3);
-      String args = rewriteReads(mutatingCall.group(4).trim(), sourceLine);
+      String args = rewriteReads(mutatingCall.group(4).trim(), sourceLine, frame);
       return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ");";
     }
 
-    return rewriteReads(line, sourceLine);
+    return rewriteReads(line, sourceLine, frame);
   }
 
-  private static String rewriteReads(String source, int line) {
+  private static String rewriteReads(String source, int line, MethodFrame frame) {
     String next = replaceAll(STRING_CHAR_AT, source, match ->
         "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + match.group(2).trim() + ")");
-    next = replaceAll(MATRIX_READ, next, match -> {
+    final String matrixReadSource = next;
+    next = replaceAll(MATRIX_READ, matrixReadSource, match -> {
       String full = match.group(0);
       if (full.contains("TraceHooks.")) return full;
       String name = match.group(1);
-      return "TraceHooks.readIntMatrixAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ", " + match.group(3).trim() + ")";
+      if (isArrayAllocationTypeMatch(matrixReadSource, match.start())) return full;
+      if (isArrayWriteTarget(matrixReadSource, match.start(), match.end())) return full;
+      if (nextNonWhitespace(matrixReadSource, match.end()) == '[') return full;
+      String helper = matrixReadHelper(frame.typeOf(name));
+      if (helper == null) return full;
+      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ", " + match.group(3).trim() + ")";
     });
     final String arrayReadSource = next;
     next = replaceAll(ARRAY_READ, next, match -> {
       String full = match.group(0);
-      if (full.contains("TraceHooks.") || full.startsWith("new ")) return full;
+      if (full.contains("TraceHooks.")) return full;
+      if (isArrayAllocationTypeMatch(arrayReadSource, match.start())) return full;
+      if (isArrayWriteTarget(arrayReadSource, match.start(), match.end())) return full;
       if (arrayReadSource.startsWith(".length", match.end())) return full;
       String name = match.group(1);
-      return "TraceHooks.readIntArrayAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
+      String helper = arrayReadHelper(frame.typeOf(name));
+      if (helper == null) return full;
+      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
     });
     next = replaceAll(FIELD_READ, next, match -> {
       String full = match.group(0);
@@ -196,6 +223,102 @@ public final class JavaRewriteLibrary {
       return "TraceHooks.readObjectFieldAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ")";
     });
     return next;
+  }
+
+  private static void registerFieldDeclaration(Map<String, String> fields, String line) {
+    Matcher field = FIELD_DECLARATION.matcher(line);
+    if (field.matches()) {
+      fields.put(field.group(2), normalizeJavaType(field.group(1)));
+    }
+  }
+
+  private static boolean startsMultilineInitializer(String trimmed) {
+    return trimmed.contains("=") && trimmed.contains("{") && !trimmed.contains(";") &&
+        !trimmed.startsWith("if ") && !trimmed.startsWith("for ") && !trimmed.startsWith("while ") && !trimmed.startsWith("switch ");
+  }
+
+  private static boolean isArrayAllocationTypeMatch(String source, int matchStart) {
+    String prefix = source.substring(0, matchStart).replaceAll("\\s+$", "");
+    return prefix.matches("(?s).*\\bnew$");
+  }
+
+  private static boolean isArrayWriteTarget(String source, int start, int end) {
+    String before = source.substring(0, start).replaceAll("\\s+$", "");
+    if (before.endsWith("++") || before.endsWith("--")) return true;
+    String after = source.substring(end).replaceAll("^\\s+", "");
+    if (after.startsWith("++") || after.startsWith("--")) return true;
+    if (after.startsWith("=") && !after.startsWith("==")) return true;
+    if (after.length() >= 2 && "+-*/%&|^".indexOf(after.charAt(0)) >= 0 && after.charAt(1) == '=') return true;
+    return false;
+  }
+
+  private static char nextNonWhitespace(String source, int start) {
+    int index = start;
+    while (index < source.length() && Character.isWhitespace(source.charAt(index))) index++;
+    return index < source.length() ? source.charAt(index) : '\0';
+  }
+
+  private static String arrayReadHelper(String type) {
+    if (type == null) return null;
+    String normalized = normalizeJavaType(type);
+    if (!normalized.endsWith("[]")) return null;
+    String element = normalized.substring(0, normalized.length() - 2).trim();
+    if (element.endsWith("[]")) return "readObjectArrayAtLine";
+    if ("int".equals(element)) return "readIntArrayAtLine";
+    if ("boolean".equals(element)) return "readBooleanArrayAtLine";
+    if ("long".equals(element)) return "readLongArrayAtLine";
+    if ("double".equals(element)) return "readDoubleArrayAtLine";
+    if ("float".equals(element)) return "readFloatArrayAtLine";
+    if ("char".equals(element)) return "readCharArrayAtLine";
+    if ("byte".equals(element)) return "readByteArrayAtLine";
+    if ("short".equals(element)) return "readShortArrayAtLine";
+    return "readObjectArrayAtLine";
+  }
+
+  private static String matrixReadHelper(String type) {
+    if (type == null) return null;
+    String normalized = normalizeJavaType(type);
+    if (!normalized.endsWith("[][]")) return null;
+    String element = normalized.substring(0, normalized.length() - 4).trim();
+    if ("int".equals(element)) return "readIntMatrixAtLine";
+    if ("boolean".equals(element)) return "readBooleanMatrixAtLine";
+    if ("char".equals(element)) return "readCharMatrixAtLine";
+    return "readObjectMatrixAtLine";
+  }
+
+  private static String normalizeJavaType(String type) {
+    return type.trim().replaceAll("\\s+", " ").replaceAll("\\s*\\[\\s*\\]", "[]");
+  }
+
+  private static void registerParameters(Map<String, String> variables, String parametersSource) {
+    if (parametersSource == null || parametersSource.trim().isEmpty()) return;
+    for (String parameter : splitTopLevel(parametersSource)) {
+      String cleaned = parameter.replaceAll("@\\w+(?:\\([^)]*\\))?", "").replaceAll("\\bfinal\\b", "").trim();
+      Matcher name = Pattern.compile("([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\.\\.\\.)?$").matcher(cleaned);
+      if (!name.find()) continue;
+      String paramName = name.group(1);
+      String type = cleaned.substring(0, name.start()).trim();
+      if (cleaned.endsWith("...")) type += "[]";
+      if (!type.isEmpty()) variables.put(paramName, normalizeJavaType(type));
+    }
+  }
+
+  private static java.util.List<String> splitTopLevel(String source) {
+    java.util.List<String> parts = new java.util.ArrayList<>();
+    int start = 0;
+    int angleDepth = 0;
+    for (int index = 0; index < source.length(); index++) {
+      char ch = source.charAt(index);
+      if (ch == '<') angleDepth++;
+      if (ch == '>') angleDepth = Math.max(0, angleDepth - 1);
+      if (ch == ',' && angleDepth == 0) {
+        parts.add(source.substring(start, index).trim());
+        start = index + 1;
+      }
+    }
+    String tail = source.substring(start).trim();
+    if (!tail.isEmpty()) parts.add(tail);
+    return parts;
   }
 
   private static String replaceAll(Pattern pattern, String source, Replacer replacer) {
@@ -211,7 +334,7 @@ public final class JavaRewriteLibrary {
   private static boolean shouldEmitLine(String trimmed) {
     if (trimmed.isEmpty()) return false;
     if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) return false;
-    if (trimmed.equals("{") || trimmed.equals("}")) return false;
+    if (trimmed.startsWith("{") || trimmed.equals("}")) return false;
     if (trimmed.startsWith("}")) return false;
     if (trimmed.startsWith("else")) return false;
     if (trimmed.startsWith("catch") || trimmed.startsWith("finally")) return false;
@@ -264,10 +387,19 @@ public final class JavaRewriteLibrary {
   private static final class MethodFrame {
     final String name;
     int depth;
+    int initializerDepth;
+    final Map<String, String> variables;
 
-    MethodFrame(String name, int depth) {
+    MethodFrame(String name, int depth, Map<String, String> fields, String parametersSource) {
       this.name = name;
       this.depth = depth;
+      this.initializerDepth = 0;
+      this.variables = new HashMap<>(fields);
+      registerParameters(this.variables, parametersSource);
+    }
+
+    String typeOf(String variable) {
+      return variables.get(variable);
     }
   }
 

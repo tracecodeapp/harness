@@ -181,7 +181,7 @@ if (profile.capabilities.tracing.supported) {
 - `javascript-worker.js`
 - `vendor/typescript.js`
 - `java-worker.js`
-- `vendor/java-browser-spike-helper.jar`
+- `vendor/java-browser-helper.jar`
 - `vendor/java-rewriter.jar`
 - `vendor/javaparser-core-3.25.10.jar`
 - `vendor/jdk.compiler-17.jar`
@@ -194,7 +194,7 @@ By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those 
 - `/workers/javascript-worker.js`
 - `/workers/vendor/typescript.js`
 - `/workers/java-worker.js`
-- `/workers/vendor/java-browser-spike-helper.jar`
+- `/workers/vendor/java-browser-helper.jar`
 - `/workers/vendor/java-rewriter.jar`
 - `/workers/vendor/javaparser-core-3.25.10.jar`
 - `/workers/vendor/jdk.compiler-17.jar`
