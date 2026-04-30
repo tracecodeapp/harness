@@ -122,6 +122,13 @@ interface DriftCluster {
   examples: Array<{ slug: string; language: MineLanguage }>;
 }
 
+interface OperationTokenCluster {
+  token: string;
+  direction: 'missing' | 'extra';
+  count: number;
+  examples: Array<{ slug: string; language: MineLanguage; comparedTo: MineLanguage | 'expectedOutput' }>;
+}
+
 interface FailureRecord {
   slug: string;
   language: MineLanguage;
@@ -699,6 +706,49 @@ function diffKeySet(left: Record<string, number>, right: Record<string, number>)
     .map((key) => `${key}:${leftKeys.has(key) ? 'present' : 'missing'}->${rightKeys.has(key) ? 'present' : 'missing'}`);
 }
 
+function operationTokenDiffs(drift: DriftRecord): Array<{ token: string; direction: 'missing' | 'extra' }> {
+  if (!drift.signatureDiff) return [];
+  const expectedKeys = new Set(Object.keys(drift.signatureDiff.expected.accessShapeFacts));
+  const receivedKeys = new Set(Object.keys(drift.signatureDiff.received.accessShapeFacts));
+  const diffs: Array<{ token: string; direction: 'missing' | 'extra' }> = [];
+  for (const token of [...new Set([...expectedKeys, ...receivedKeys])].sort((left, right) => left.localeCompare(right))) {
+    if (expectedKeys.has(token) && !receivedKeys.has(token)) {
+      diffs.push({ token, direction: 'missing' });
+    } else if (!expectedKeys.has(token) && receivedKeys.has(token)) {
+      diffs.push({ token, direction: 'extra' });
+    }
+  }
+  return diffs;
+}
+
+function countDriftsByLanguage(drifts: DriftRecord[]): Record<MineLanguage, number> {
+  const counts = { python: 0, javascript: 0, typescript: 0, java: 0 };
+  for (const drift of drifts) {
+    counts[drift.language] += 1;
+  }
+  return counts;
+}
+
+function clusterOperationTokenDiffs(drifts: DriftRecord[]): OperationTokenCluster[] {
+  const clusters = new Map<string, OperationTokenCluster>();
+  for (const drift of drifts) {
+    for (const diff of operationTokenDiffs(drift)) {
+      const key = `${diff.direction}:${diff.token}`;
+      const cluster = clusters.get(key) ?? { ...diff, count: 0, examples: [] };
+      cluster.count += 1;
+      if (cluster.examples.length < 8) {
+        cluster.examples.push({ slug: drift.slug, language: drift.language, comparedTo: drift.comparedTo });
+      }
+      clusters.set(key, cluster);
+    }
+  }
+  return [...clusters.values()].sort((left, right) =>
+    right.count - left.count ||
+    left.direction.localeCompare(right.direction) ||
+    left.token.localeCompare(right.token)
+  );
+}
+
 function clusterDrifts(drifts: DriftRecord[]): DriftCluster[] {
   const clusters = new Map<string, DriftCluster>();
   for (const drift of drifts) {
@@ -842,6 +892,10 @@ async function main(): Promise<void> {
     }
   }
 
+  const hardFailures = failures.filter((failure) => !isTraceBudgetFailure(failure.error));
+  const driftClusters = clusterDrifts(drifts);
+  const driftCountsByLanguage = countDriftsByLanguage(drifts);
+  const operationTokenClusters = clusterOperationTokenDiffs(drifts);
   const report = {
     corpusPath,
     sourceRoot,
@@ -856,20 +910,30 @@ async function main(): Promise<void> {
     synthesizedJavaEntries,
     comparisons: compared,
     driftCount: drifts.length,
+    driftCountsByLanguage,
     failureCount: failures.length,
-    hardFailureCount: failures.filter((failure) => !isTraceBudgetFailure(failure.error)).length,
-    driftClusters: clusterDrifts(drifts),
+    hardFailureCount: hardFailures.length,
+    driftClusters,
+    operationTokenClusters,
     drifts,
     failures,
   };
   await writeReport(reportPath, report);
 
   console.log(`runtime trace final300 mining: groups=${groups.length} comparisons=${compared} drifts=${drifts.length} failures=${failures.length}`);
-  console.log(`Hard failures: ${failures.filter((failure) => !isTraceBudgetFailure(failure.error)).length}`);
+  console.log(`Hard failures: ${hardFailures.length}`);
+  console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);
   console.log(`Report: ${reportPath}`);
-  for (const cluster of clusterDrifts(drifts).slice(0, 5)) {
-    console.log(`CLUSTER x${cluster.count} ${cluster.key}`);
+  for (const cluster of driftClusters.slice(0, 5)) {
+    const examples = cluster.examples.map((example) => `${example.slug}/${example.language}`).join(', ');
+    console.log(`CLUSTER x${cluster.count} ${cluster.key} examples=${examples}`);
+  }
+  for (const cluster of operationTokenClusters.slice(0, 10)) {
+    const examples = cluster.examples
+      .map((example) => `${example.slug}/${example.language}->${example.comparedTo}`)
+      .join(', ');
+    console.log(`OP_TOKEN ${cluster.direction} x${cluster.count} ${cluster.token} examples=${examples}`);
   }
   for (const drift of drifts.slice(0, 10)) {
     console.log(`DRIFT ${drift.slug} ${drift.language} kinds=${drift.kinds.join(',')}`);
@@ -878,7 +942,6 @@ async function main(): Promise<void> {
     console.log(`FAIL ${failure.slug} ${failure.language}: ${failure.error.split('\n')[0]}`);
   }
 
-  const hardFailures = failures.filter((failure) => !isTraceBudgetFailure(failure.error));
   if (failOnFailure && hardFailures.length > 0) {
     process.exitCode = 1;
   } else if (failOnDrift && (drifts.length > 0 || hardFailures.length > 0)) {
