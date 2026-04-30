@@ -749,7 +749,14 @@ async function writeReport(reportPath: string, value: unknown): Promise<void> {
 async function main(): Promise<void> {
   const corpusPath = resolve(parseStringFlag('corpus') ?? DEFAULT_FINAL300_PATH);
   if (!existsSync(corpusPath)) {
-    throw new Error(`Final300 corpus not found. Pass --corpus=/path/to/tracecode-final300-slice.json. Tried: ${corpusPath}`);
+    throw new Error(
+      [
+        'Final300 runtime trace mining is a local/private validation path, not a public harness CI gate.',
+        'It requires a local TraceCode/algoflow checkout or an explicit --corpus path.',
+        `Tried: ${corpusPath}`,
+        'Pass --corpus=/path/to/tracecode-final300-slice.json when running outside the default local workspace.',
+      ].join('\n')
+    );
   }
   const sourceRoot = inferCorpusRoot(corpusPath);
   const limit = parseNumberFlag('limit', 20);

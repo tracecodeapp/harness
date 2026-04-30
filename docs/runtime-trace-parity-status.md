@@ -110,10 +110,13 @@ Next, shift from hand-authored fixture closure to corpus mining:
 Initial mining command:
 
 - `pnpm mine:runtime-trace-final300 -- --limit=20`
+- `pnpm local:test:runtime-trace-final300-compile`
 
-The miner defaults to `/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json` when that local corpus exists. The final300 slice lists Python, JavaScript, and TypeScript entries; the miner also synthesizes Java entries from `/Users/obinnanwachukwu/Code/algoflow/experiments/trusted-visualizer-corpus/generated-validated-java/problems/<slug>/java.java` when available.
+The miner is a local/private validation path, not public harness CI. It defaults to `/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json` when that local corpus exists. The final300 slice lists Python, JavaScript, and TypeScript entries; the miner also synthesizes Java entries from `/Users/obinnanwachukwu/Code/algoflow/experiments/trusted-visualizer-corpus/generated-validated-java/problems/<slug>/java.java` when available.
 
 Treat final300 mining as failure discovery, not a strict gate. The per-language final300 solutions are idiomatic implementations, not mechanically equivalent line-for-line fixtures, so drift clusters need triage before promotion. A cluster becomes a harness bug only after it is reduced into a small equivalent fixture that should emit the same runtime facts across languages.
+
+The local compile gate is stricter about reliability than parity: it fails on hard harness failures such as generated Java compile errors, raw payload contract violations, and worker timeouts, but it does not fail on trace-budget exits or runtime-fact drift.
 
 ## Contract Notes
 
