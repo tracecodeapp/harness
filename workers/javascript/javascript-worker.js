@@ -1075,7 +1075,7 @@ function createTraceRecorder(options = {}) {
   function shouldKeepRuntimeTraceAccessEvent(event, stats) {
     if (!event || (event.kind !== 'read' && event.kind !== 'write' && event.kind !== 'mutate')) return true;
     const pathDepth = Array.isArray(event.target?.path) ? event.target.path.length : 0;
-    if ((stats.hasCellRead || stats.hasCellWrite) && pathDepth === 1 && (event.kind === 'read' || event.kind === 'write')) {
+    if ((stats.hasCellRead || stats.hasCellWrite) && pathDepth === 1 && event.kind === 'read') {
       return false;
     }
     if (
@@ -2212,7 +2212,16 @@ function extractTraceablePropertyAccess(ts, node) {
     return null;
   }
   const receiver = unwrapParenthesizedExpression(ts, current.expression);
-  if (!receiver || !ts.isIdentifier(receiver)) {
+  if (!receiver) {
+    return null;
+  }
+  if (ts.isThis(receiver)) {
+    return {
+      variableName: 'this',
+      propertyName: current.name.text,
+    };
+  }
+  if (!ts.isIdentifier(receiver)) {
     return null;
   }
   return {
@@ -2331,9 +2340,12 @@ function createTraceWriteIndexExpression(ts, variableName, indices, value) {
 }
 
 function createTraceReadPropertyExpression(ts, variableName, propertyName) {
+  const receiverExpression = variableName === 'this'
+    ? ts.factory.createThis()
+    : ts.factory.createIdentifier(variableName);
   return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadProperty'), undefined, [
     ts.factory.createStringLiteral(variableName),
-    ts.factory.createIdentifier(variableName),
+    receiverExpression,
     ts.factory.createStringLiteral(propertyName),
   ]);
 }

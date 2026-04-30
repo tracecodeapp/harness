@@ -11,6 +11,12 @@
       "javascript": "this.graph[0].push(1);",
       "typescript": "this.graph[0].push(1);",
       "java": "this.graph.get(0).add(1);"
+    },
+    "fieldWrite": {
+      "python": "self.graph = [[] for _ in range(n)]",
+      "javascript": "this.graph = Array.from({ length: n }, () => []);",
+      "typescript": "this.graph = Array.from({ length: n }, () => []);",
+      "java": "this.graph = new ArrayList<>();"
     }
   },
   "expect": {
@@ -36,6 +42,24 @@
           "kind": "read",
           "variable": "this",
           "pathDepth": 2
+        }
+      ]
+    },
+    "fieldWrite": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "n",
+        "this"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 1
         }
       ]
     }
@@ -66,6 +90,24 @@
             "pathDepth": 2
           }
         ]
+      },
+      "fieldWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "n",
+          "self"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "self",
+            "pathDepth": 1
+          }
+        ]
       }
     },
     "java": {
@@ -91,6 +133,24 @@
             "kind": "read",
             "variable": "this",
             "pathDepth": 2
+          }
+        ]
+      },
+      "fieldWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "graph",
+          "n"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 1
           }
         ]
       }

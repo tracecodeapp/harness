@@ -1,0 +1,160 @@
+{
+  "id": "js-ops-class-constructor-field-write",
+  "functionName": "NumArray",
+  "executionStyle": "ops-class",
+  "inputs": {
+    "operations": [
+      "NumArray",
+      "sumRange"
+    ],
+    "arguments": [
+      [
+        [
+          1,
+          2,
+          3
+        ]
+      ],
+      [
+        0,
+        0
+      ]
+    ]
+  },
+  "anchors": {
+    "constructorWrite": {
+      "python": "self.prefix = [0]",
+      "javascript": "this.prefix = [0];",
+      "typescript": "this.prefix = [0];",
+      "java": "this.prefix = new int[] {0};"
+    },
+    "methodRead": {
+      "python": "return self.prefix[0]",
+      "javascript": "return this.prefix[0];",
+      "typescript": "return this.prefix[0];",
+      "java": "return this.prefix[0];"
+    }
+  },
+  "expect": {
+    "constructorWrite": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "nums",
+        "this"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "methodRead": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "left",
+        "right",
+        "this"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "constructorWrite": {
+        "eventKinds": [
+          "line",
+          "return",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "self"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "self",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "methodRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "left",
+          "right",
+          "self"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
+    "java": {
+      "constructorWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "methodRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "left",
+          "nums",
+          "right"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}
