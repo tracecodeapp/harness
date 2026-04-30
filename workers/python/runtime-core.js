@@ -569,10 +569,15 @@ def __tracecode_make_access_event(var_name, kind, indices=None, method_name=None
         event['method'] = method_name
     return event
 
+def __tracecode_is_indexable_sequence(value):
+    return isinstance(value, (list, tuple, str)) or (
+        getattr(getattr(value, '__class__', None), '__name__', '') == 'deque'
+    )
+
 def __tracecode_read_value(container, indices):
     current = container
     for index in indices:
-        if isinstance(current, dict) or isinstance(current, (list, tuple, str)):
+        if isinstance(current, dict) or __tracecode_is_indexable_sequence(current):
             current = current[index]
         else:
             current = getattr(current, index)
@@ -587,7 +592,7 @@ def __tracecode_write_value(container, indices, value):
         return value
     parent = container
     for index in indices[:-1]:
-        if isinstance(parent, dict) or isinstance(parent, (list, tuple)):
+        if isinstance(parent, dict) or __tracecode_is_indexable_sequence(parent):
             parent = parent[index]
         else:
             parent = getattr(parent, index)

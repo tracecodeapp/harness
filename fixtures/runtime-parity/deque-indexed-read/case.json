@@ -1,0 +1,63 @@
+{
+  "id": "deque-indexed-read",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "read": {
+      "python": "last = window[2]",
+      "javascript": "const last = window[2];",
+      "typescript": "const last = window[2];",
+      "java": "int last = window[2];"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "nums",
+        "window"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "window",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "last",
+          "nums",
+          "window"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "window",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}
