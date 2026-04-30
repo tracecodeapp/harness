@@ -1,0 +1,114 @@
+{
+  "id": "heapq-mutation",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      3
+    ]
+  },
+  "anchors": {
+    "push": {
+      "python": "heapq.heappush(heap, nums[0])",
+      "javascript": "heap.push(nums[0]);",
+      "typescript": "heap.push(nums[0]);",
+      "java": "heap.offer(nums[0]);"
+    },
+    "pop": {
+      "python": "value = heapq.heappop(heap)",
+      "javascript": "const value = heap.pop();",
+      "typescript": "const value = heap.pop();",
+      "java": "Integer value = heap.poll();"
+    }
+  },
+  "expect": {
+    "push": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "heap",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "append"
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "pop": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "pop"
+        }
+      ],
+      "variableSnapshots": [
+        "heap",
+        "nums"
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "push": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "append"
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "popleft"
+          }
+        ]
+      }
+    }
+  }
+}
