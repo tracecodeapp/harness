@@ -49,6 +49,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern ARRAY_INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern ARRAY_INDEXED_MAP_WRITE_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.(put|merge)\\((.*)\\);\\s*$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
@@ -284,6 +286,30 @@ public final class JavaRewriteLibrary {
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
       return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " }";
+    }
+
+    Matcher arrayIndexedMapWrite = ARRAY_INDEXED_MAP_WRITE_STATEMENT.matcher(line);
+    if (arrayIndexedMapWrite.matches() && isArrayOfMapType(frame.typeOf(arrayIndexedMapWrite.group(2)))) {
+      String indent = arrayIndexedMapWrite.group(1);
+      String name = arrayIndexedMapWrite.group(2);
+      String index = rewriteReads(arrayIndexedMapWrite.group(3).trim(), sourceLine, frame);
+      String method = arrayIndexedMapWrite.group(4);
+      java.util.List<String> args = splitTopLevel(arrayIndexedMapWrite.group(5).trim());
+      if (args.size() < 2) {
+        return rewriteReads(line, sourceLine, frame);
+      }
+      String key = rewriteReads(args.get(0), sourceLine, frame);
+      java.util.List<String> rewrittenArgs = new java.util.ArrayList<>();
+      rewrittenArgs.add(key);
+      for (int i = 1; i < args.size(); i++) {
+        rewrittenArgs.add(rewriteReads(args.get(i), sourceLine, frame));
+      }
+      String target = name + "[" + index + "]";
+      String joinedArgs = String.join(", ", rewrittenArgs);
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
+      String writeEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"write\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \",\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ".get(" + key + ")) + \"}\");";
+      return indent + target + "." + method + "(" + joinedArgs + "); " + writeEvent;
     }
 
     Matcher arrayIndexedMutatingCall = ARRAY_INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
@@ -551,6 +577,12 @@ public final class JavaRewriteLibrary {
 
   private static boolean isStringArrayType(String type) {
     return "String[]".equals(type == null ? null : normalizeJavaType(type));
+  }
+
+  private static boolean isArrayOfMapType(String type) {
+    if (type == null) return false;
+    String normalized = normalizeJavaType(type);
+    return normalized.endsWith("[]") && normalized.contains("Map");
   }
 
   private static String indexedAccessExpression(String name, String type, String index) {

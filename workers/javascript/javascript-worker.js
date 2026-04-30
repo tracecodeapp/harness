@@ -3441,20 +3441,40 @@ function __traceMutatingCall(__varName, __container, __indices, __method, ...__a
   }
   const __result = __target[__method](...__args);
   if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete'].includes(__method)) {
-    if ((__indices || []).length > 0) {
+    const __path = __indices || [];
+    const __isNestedMap = __path.length > 0 && __traceIsMapLike(__target);
+    if (__isNestedMap && __method === 'set') {
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: 'indexed-write',
+        indices: [...__path, __args[0]],
+        pathDepth: __path.length + 1,
+      });
+      return __result;
+    }
+    if (__isNestedMap && __method === 'get') {
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-read',
-        indices: __indices || [],
-        pathDepth: (__indices || []).length,
+        indices: __path,
+        pathDepth: __path.length,
+      });
+      return __result;
+    }
+    if (__path.length > 0) {
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: 'indexed-read',
+        indices: __path,
+        pathDepth: __path.length,
       });
     }
     __traceRecorder.recordAccess({
       variable: __varName,
       kind: 'mutating-call',
       method: __traceNormalizeMethodName(__target, __method, __args),
-      indices: __indices || [],
-      pathDepth: (__indices || []).length,
+      indices: __path,
+      pathDepth: __path.length,
     });
   }
   return __result;
