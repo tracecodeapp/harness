@@ -1,0 +1,64 @@
+{
+  "id": "java-list-index-remove",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      3,
+      4,
+      5
+    ]
+  },
+  "anchors": {
+    "popIndex": {
+      "python": "return values.pop(1)",
+      "javascript": "return values.splice(1, 1)[0];",
+      "typescript": "return values.splice(1, 1)[0]!;",
+      "java": "return values.remove(1);"
+    }
+  },
+  "expect": {
+    "popIndex": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "return",
+        "snapshot"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "values",
+          "method": "pop"
+        }
+      ],
+      "variableSnapshots": [
+        "nums",
+        "values"
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "popIndex": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "values",
+            "method": "pop"
+          }
+        ]
+      }
+    }
+  }
+}

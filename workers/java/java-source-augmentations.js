@@ -279,7 +279,7 @@
             if (isLastListIndexExpression(indexSource, name)) {
               return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name})`;
             }
-            return `${name}.remove(${indexSource})`;
+            return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name}, ${indexSource})`;
           });
         }
 
