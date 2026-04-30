@@ -241,7 +241,7 @@
             const keyExpression = String(keySource).trim();
             const method = String(methodSource).trim();
             const value = String(valueSource).trim();
-            const target = `((java.util.List) (${name}).get(${keyExpression}))`;
+            const target = `((java.util.Collection) (${name}).get(${keyExpression}))`;
             return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + (${keyExpression}) + "]},\\"value\\":" + TraceHooks.serializeResult(${target}) + "}"); ${target}.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}"); }`;
           });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'containsKey', (key) =>

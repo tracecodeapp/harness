@@ -792,6 +792,20 @@ def _tracecode_extract_named_attribute(node):
         return node.value.id, node.attr
     return None
 
+def _tracecode_is_annotation_node(node):
+    current = node
+    parent = getattr(current, '__trace_parent__', None)
+    while parent is not None:
+        if (
+            (isinstance(parent, ast.arg) and getattr(parent, 'annotation', None) is current) or
+            (isinstance(parent, ast.AnnAssign) and getattr(parent, 'annotation', None) is current) or
+            (isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and getattr(parent, 'returns', None) is current)
+        ):
+            return True
+        current = parent
+        parent = getattr(current, '__trace_parent__', None)
+    return False
+
 class __TracecodeAccessTransformer(ast.NodeTransformer):
     def visit_For(self, node):
         node = self.generic_visit(node)
@@ -814,13 +828,9 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         return node
 
     def visit_Subscript(self, node):
-        parent = getattr(node, '__trace_parent__', None)
-        if (
-            (isinstance(parent, ast.arg) and getattr(parent, 'annotation', None) is node) or
-            (isinstance(parent, ast.AnnAssign) and getattr(parent, 'annotation', None) is node) or
-            (isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and getattr(parent, 'returns', None) is node)
-        ):
+        if _tracecode_is_annotation_node(node):
             return self.generic_visit(node)
+        parent = getattr(node, '__trace_parent__', None)
         if isinstance(parent, ast.Subscript) and getattr(parent, 'value', None) is node:
             return self.generic_visit(node)
         if isinstance(parent, ast.Assign) and node in getattr(parent, 'targets', []):
