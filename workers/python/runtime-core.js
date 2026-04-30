@@ -815,6 +815,12 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 
     def visit_Subscript(self, node):
         parent = getattr(node, '__trace_parent__', None)
+        if (
+            (isinstance(parent, ast.arg) and getattr(parent, 'annotation', None) is node) or
+            (isinstance(parent, ast.AnnAssign) and getattr(parent, 'annotation', None) is node) or
+            (isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and getattr(parent, 'returns', None) is node)
+        ):
+            return self.generic_visit(node)
         if isinstance(parent, ast.Subscript) and getattr(parent, 'value', None) is node:
             return self.generic_visit(node)
         if isinstance(parent, ast.Assign) and node in getattr(parent, 'targets', []):
