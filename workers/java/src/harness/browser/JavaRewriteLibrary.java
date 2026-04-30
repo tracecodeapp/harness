@@ -184,6 +184,9 @@ public final class JavaRewriteLibrary {
       String name = write2d.group(2);
       String row = write2d.group(3).trim();
       String col = write2d.group(4).trim();
+      if (hasIndexSideEffect(row) || hasIndexSideEffect(col)) {
+        return rewriteReads(line, sourceLine, frame);
+      }
       String value = rewriteReads(write2d.group(5).trim(), sourceLine, frame);
       return indent + name + "[" + row + "][" + col + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + row + ", " + col + ", " + name + "[" + row + "][" + col + "]);";
     }
@@ -193,6 +196,9 @@ public final class JavaRewriteLibrary {
       String indent = write1d.group(1);
       String name = write1d.group(2);
       String idx = write1d.group(3).trim();
+      if (hasIndexSideEffect(idx)) {
+        return rewriteReads(line, sourceLine, frame);
+      }
       String value = rewriteReads(write1d.group(4).trim(), sourceLine, frame);
       return indent + name + "[" + idx + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + idx + ", " + name + "[" + idx + "]);";
     }
@@ -282,6 +288,10 @@ public final class JavaRewriteLibrary {
     if (after.startsWith("=") && !after.startsWith("==")) return true;
     if (after.length() >= 2 && "+-*/%&|^".indexOf(after.charAt(0)) >= 0 && after.charAt(1) == '=') return true;
     return false;
+  }
+
+  private static boolean hasIndexSideEffect(String source) {
+    return source.contains("++") || source.contains("--");
   }
 
   private static char nextNonWhitespace(String source, int start) {

@@ -139,6 +139,7 @@ function hasFlag(name: string): boolean {
 }
 
 function stableStringify(value: unknown): string {
+  value = normalizeOutputForComparison(value);
   if (value === undefined) return 'null';
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return '[' + value.map((item) => stableStringify(item)).join(',') + ']';
@@ -149,14 +150,28 @@ function stableStringify(value: unknown): string {
     .join(',') + '}';
 }
 
-function normalizeOutputForReport(value: unknown): unknown {
+function normalizeOutputForComparison(value: unknown): unknown {
   if (value === undefined) return null;
   if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map((item) => normalizeOutputForReport(item));
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .map(([key, child]) => [key, normalizeOutputForReport(child)])
-  );
+  if (Array.isArray(value)) return value.map((item) => normalizeOutputForComparison(item));
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  const looksLikeListNode = ('next' in input) && ('val' in input || 'value' in input);
+  const looksLikeTreeNode = ('left' in input || 'right' in input) && ('val' in input || 'value' in input);
+  const explicitType = typeof input.__type__ === 'string' && input.__type__ !== 'object' ? input.__type__ : undefined;
+  if (looksLikeListNode) output.__type__ = 'ListNode';
+  else if (looksLikeTreeNode) output.__type__ = 'TreeNode';
+  else if (explicitType) output.__type__ = explicitType;
+  for (const [key, child] of Object.entries(input)) {
+    if (key === '__id__' || key === '__class__') continue;
+    if (key === '__type__') continue;
+    output[key] = normalizeOutputForComparison(child);
+  }
+  return output;
+}
+
+function normalizeOutputForReport(value: unknown): unknown {
+  return normalizeOutputForComparison(value);
 }
 
 function increment(map: Record<string, number>, key: string): void {

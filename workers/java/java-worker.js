@@ -590,14 +590,64 @@ function startsWithJavaKeyword(source, index, keyword) {
   return !after || !isJavaIdentifierPart(after);
 }
 
+function braceDeltaForLine(line) {
+  let delta = 0;
+  scanJavaCode(line, 0, line.length, (_index, ch) => {
+    if (ch === '{') delta += 1;
+    if (ch === '}') delta -= 1;
+    return undefined;
+  });
+  return delta;
+}
+
+function isUnbracedLoopHeaderLine(line) {
+  const trimmed = line.trim();
+  return /^(?:for|while)\s*\(.*\)\s*$/.test(trimmed) && !trimmed.includes('{') && !trimmed.endsWith(';');
+}
+
+function startsBracedLoopLine(line) {
+  const trimmed = line.trim();
+  return /^(?:for|while)\s*\(.*\)\s*\{/.test(trimmed);
+}
+
+function wrapNestedBracedLoopBodies(source) {
+  const lines = source.split(/\r?\n/);
+  const output = [];
+  let changed = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const next = lines[index + 1] ?? '';
+    if (!isUnbracedLoopHeaderLine(line) || !startsBracedLoopLine(next)) {
+      output.push(line);
+      continue;
+    }
+
+    changed = true;
+    output.push(`${line} {`);
+    index += 1;
+    let depth = 0;
+    for (; index < lines.length; index += 1) {
+      const nestedLine = lines[index] ?? '';
+      output.push(nestedLine);
+      depth += braceDeltaForLine(nestedLine);
+      if (depth <= 0) break;
+    }
+    output.push(`${line.match(/^\s*/)?.[0] ?? ''}}`);
+  }
+  return changed ? output.join('\n') : source;
+}
+
 function wrapSingleStatementLoopBodies(source) {
+  source = wrapNestedBracedLoopBodies(source);
   const inserts = [];
   scanJavaCode(source, 0, source.length, (index) => {
     const keyword = source.startsWith('for', index)
       ? 'for'
       : source.startsWith('while', index)
         ? 'while'
-        : null;
+        : source.startsWith('if', index)
+          ? 'if'
+          : null;
     if (!keyword) return undefined;
 
     const before = index > 0 ? source[index - 1] : '';
