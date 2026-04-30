@@ -18,6 +18,10 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*=\\s*(.+);\\s*$");
   private static final Pattern ARRAY_WRITE_1D = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*=\\s*(.+);\\s*$");
+  private static final Pattern ARRAY_COMPOUND_WRITE_2D = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*([+\\-*/%&|^]|<<|>>|>>>)=\\s*(.+);\\s*$");
+  private static final Pattern ARRAY_COMPOUND_WRITE_1D = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*([+\\-*/%&|^]|<<|>>|>>>)=\\s*(.+);\\s*$");
   private static final Pattern STRING_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.charAt\\(([^()]+)\\)");
   private static final Pattern FIELD_WRITE = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern FIELD_READ = Pattern.compile("(?<!\\.)\\b(?!System\\b|TraceHooks\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()");
@@ -272,6 +276,37 @@ public final class JavaRewriteLibrary {
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
       return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+    }
+
+    Matcher compoundWrite2d = ARRAY_COMPOUND_WRITE_2D.matcher(line);
+    if (compoundWrite2d.matches()) {
+      String indent = compoundWrite2d.group(1);
+      String name = compoundWrite2d.group(2);
+      String row = compoundWrite2d.group(3).trim();
+      String col = compoundWrite2d.group(4).trim();
+      if (hasIndexSideEffect(row) || hasIndexSideEffect(col)) {
+        return rewriteReads(line, sourceLine, frame);
+      }
+      String operator = compoundWrite2d.group(5);
+      String value = rewriteReads(compoundWrite2d.group(6).trim(), sourceLine, frame);
+      String target = name + "[" + row + "][" + col + "]";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + row + ") + \",\" + TraceHooks.serializeResult(" + col + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
+      return indent + readEvent + " " + target + " " + operator + "= " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + row + ", " + col + ", " + target + ");";
+    }
+
+    Matcher compoundWrite1d = ARRAY_COMPOUND_WRITE_1D.matcher(line);
+    if (compoundWrite1d.matches()) {
+      String indent = compoundWrite1d.group(1);
+      String name = compoundWrite1d.group(2);
+      String idx = compoundWrite1d.group(3).trim();
+      if (hasIndexSideEffect(idx)) {
+        return rewriteReads(line, sourceLine, frame);
+      }
+      String operator = compoundWrite1d.group(4);
+      String value = rewriteReads(compoundWrite1d.group(5).trim(), sourceLine, frame);
+      String target = name + "[" + idx + "]";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + idx + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
+      return indent + readEvent + " " + target + " " + operator + "= " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + idx + ", " + target + ");";
     }
 
     Matcher write2d = ARRAY_WRITE_2D.matcher(line);

@@ -1,0 +1,63 @@
+{
+  "id": "matrix-cell-increment",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "increment": {
+      "python": "grid[1][0] += 1",
+      "javascript": "grid[1][0] += 1;",
+      "typescript": "grid[1][0] += 1;",
+      "java": "grid[1][0] += 1;"
+    }
+  },
+  "expect": {
+    "increment": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "grid"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "grid",
+          "pathDepth": 2
+        },
+        {
+          "kind": "write",
+          "variable": "grid",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "increment": {
+        "eventKinds": [
+          "line",
+          "read",
+          "write"
+        ],
+        "variableSnapshots": [],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "grid",
+            "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "grid",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
+  }
+}
