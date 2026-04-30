@@ -5,7 +5,7 @@
   "inputs": {},
   "anchors": {
     "remove": {
-      "python": "seen.pop(2)",
+      "python": "del seen[2]",
       "javascript": "seen.delete(2);",
       "typescript": "seen.delete(2);",
       "java": "seen.remove(2);"

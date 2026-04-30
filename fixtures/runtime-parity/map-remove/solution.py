@@ -1,4 +1,4 @@
 def solve():
     seen = {2: 5}
-    seen.pop(2)
+    del seen[2]
     return len(seen)
