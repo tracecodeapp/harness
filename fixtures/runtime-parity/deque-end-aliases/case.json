@@ -46,6 +46,12 @@
       "javascript": "deck.pop(); // removeLast",
       "typescript": "deck.pop(); // removeLast",
       "java": "deck.removeLast();"
+    },
+    "appendleftOfferFirst": {
+      "python": "deck.appendleft(nums[0])",
+      "javascript": "deck.unshift(nums[0]);",
+      "typescript": "deck.unshift(nums[0]);",
+      "java": "deck.offerFirst(nums[0]);"
     }
   },
   "expect": {
@@ -166,6 +172,30 @@
           "kind": "mutate",
           "variable": "deck",
           "method": "pop"
+        }
+      ]
+    },
+    "appendleftOfferFirst": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "deck",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "deck",
+          "method": "appendleft"
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
         }
       ]
     }

@@ -3,6 +3,7 @@ from collections import deque
 
 def solve(nums):
     deck = deque()
+    deck.appendleft(nums[0])
     deck.append(nums[0])
     deck.append(nums[1])
     deck.popleft()  # pollFirst

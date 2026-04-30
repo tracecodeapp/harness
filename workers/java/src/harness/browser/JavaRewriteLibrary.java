@@ -31,6 +31,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern FIELD_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
@@ -220,6 +222,23 @@ public final class JavaRewriteLibrary {
       return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
+    Matcher indexedMutatingCall = INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
+    if (indexedMutatingCall.matches() && isTrackedMutationMethod(indexedMutatingCall.group(4))) {
+      String indent = indexedMutatingCall.group(1);
+      String name = indexedMutatingCall.group(2);
+      String index = rewriteReads(indexedMutatingCall.group(3).trim(), sourceLine, frame);
+      String method = indexedMutatingCall.group(4);
+      String args = rewriteReads(indexedMutatingCall.group(5).trim(), sourceLine, frame);
+      String temp = "__tracecodeIndexedTarget" + sourceLine;
+      String target = indexedAccessExpression(name, frame.typeOf(name), index);
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
+      String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " }";
+    }
+
     Matcher write2d = ARRAY_WRITE_2D.matcher(line);
     if (write2d.matches()) {
       String indent = write2d.group(1);
@@ -371,6 +390,14 @@ public final class JavaRewriteLibrary {
     return "readObjectMatrixAtLine";
   }
 
+  private static String indexedAccessExpression(String name, String type, String index) {
+    String normalized = type == null ? "" : normalizeJavaType(type);
+    if (normalized.contains("Map")) {
+      return "((java.util.Collection)((java.util.Map)" + name + ").get(" + index + "))";
+    }
+    return "((java.util.Collection)((java.util.List)" + name + ").get(" + index + "))";
+  }
+
   private static String normalizeJavaType(String type) {
     return type.trim().replaceAll("\\s+", " ").replaceAll("\\s*\\[\\s*\\]", "[]");
   }
@@ -472,6 +499,7 @@ public final class JavaRewriteLibrary {
   private static boolean isTrackedMutationMethod(String method) {
     return "add".equals(method) || "push".equals(method) || "offer".equals(method) ||
         "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) ||
+        "addFirst".equals(method) || "offerFirst".equals(method) ||
         "remove".equals(method) || "clear".equals(method) || "poll".equals(method) ||
         "pollFirst".equals(method) || "removeFirst".equals(method) ||
         "pollLast".equals(method) || "removeLast".equals(method) || "pop".equals(method);
@@ -481,6 +509,9 @@ public final class JavaRewriteLibrary {
     if ("add".equals(method) || "push".equals(method) || "offer".equals(method) ||
         "addLast".equals(method) || "offerLast".equals(method)) {
       return "append";
+    }
+    if ("addFirst".equals(method) || "offerFirst".equals(method)) {
+      return "appendleft";
     }
     if ("poll".equals(method) || "pollFirst".equals(method) || "removeFirst".equals(method)) {
       return "popleft";

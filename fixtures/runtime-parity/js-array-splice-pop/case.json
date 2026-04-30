@@ -1,0 +1,39 @@
+{
+  "id": "js-array-splice-pop",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      10,
+      20,
+      30
+    ]
+  },
+  "anchors": {
+    "popIndex": {
+      "python": "value = nums.pop()",
+      "javascript": "const value = nums.splice(nums.length - 1, 1)[0];",
+      "typescript": "const value = nums.splice(nums.length - 1, 1)[0]!;",
+      "java": "int value = nums.remove(nums.size() - 1);"
+    }
+  },
+  "expect": {
+    "popIndex": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "nums",
+          "method": "pop"
+        }
+      ]
+    }
+  }
+}

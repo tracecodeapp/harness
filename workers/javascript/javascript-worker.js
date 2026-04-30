@@ -1794,6 +1794,7 @@ const MUTATION_METHOD_ALIASES = {
   add: 'append',
   append: 'append',
   push: 'append',
+  unshift: 'appendleft',
   offer: 'append',
   shift: 'popleft',
   poll: 'popleft',
@@ -3362,7 +3363,16 @@ function __traceNormalizeMethodName(__container, __method, __args) {
   }
   if (Array.isArray(__container)) {
     if (__method === 'push') return 'append';
+    if (__method === 'unshift') return 'appendleft';
     if (__method === 'shift') return 'popleft';
+    if (
+      __method === 'splice' &&
+      Array.isArray(__args) &&
+      __args.length === 2 &&
+      __args[1] === 1
+    ) {
+      return 'pop';
+    }
   }
   return __method;
 }

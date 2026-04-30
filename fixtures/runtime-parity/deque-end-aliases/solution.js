@@ -1,5 +1,6 @@
 function solve(nums) {
   const deck = [];
+  deck.unshift(nums[0]);
   deck.push(nums[0]);
   deck.push(nums[1]);
   deck.shift(); // pollFirst
