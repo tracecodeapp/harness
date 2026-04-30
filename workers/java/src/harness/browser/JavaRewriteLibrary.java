@@ -23,6 +23,7 @@ public final class JavaRewriteLibrary {
   private static final Pattern ARRAY_COMPOUND_WRITE_1D = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*([+\\-*/%&|^]|<<|>>|>>>)=\\s*(.+);\\s*$");
   private static final Pattern STRING_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.charAt\\(([^()]+)\\)");
+  private static final Pattern STRING_ARRAY_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.charAt\\(([^()]+)\\)");
   private static final Pattern FIELD_WRITE = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern FIELD_READ = Pattern.compile("(?<!\\.)\\b(?!System\\b|TraceHooks\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()");
   private static final Pattern FIELD_DECLARATION = Pattern.compile(
@@ -355,7 +356,12 @@ public final class JavaRewriteLibrary {
   }
 
   private static String rewriteReads(String source, int line, MethodFrame frame) {
-    String next = replaceAll(STRING_CHAR_AT, source, match ->
+    String next = replaceAll(STRING_ARRAY_CHAR_AT, source, match -> {
+      String name = match.group(1);
+      if (!isStringArrayType(frame.typeOf(name))) return match.group(0);
+      return "TraceHooks.readStringMatrixCharAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ", " + match.group(3).trim() + ")";
+    });
+    next = replaceAll(STRING_CHAR_AT, next, match ->
         "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + match.group(2).trim() + ")");
     final String matrixReadSource = next;
     next = replaceAll(MATRIX_READ, matrixReadSource, match -> {
@@ -466,6 +472,10 @@ public final class JavaRewriteLibrary {
     if ("boolean".equals(element)) return "readBooleanMatrixAtLine";
     if ("char".equals(element)) return "readCharMatrixAtLine";
     return "readObjectMatrixAtLine";
+  }
+
+  private static boolean isStringArrayType(String type) {
+    return "String[]".equals(type == null ? null : normalizeJavaType(type));
   }
 
   private static String indexedAccessExpression(String name, String type, String index) {

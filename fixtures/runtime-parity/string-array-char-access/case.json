@@ -1,0 +1,23 @@
+{
+  "id": "string-array-char-access",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": { "grid": ["ab", "cd"] },
+  "anchors": {
+    "readChar": {
+      "python": "return grid[1][0]",
+      "javascript": "return grid[1][0];",
+      "typescript": "return grid[1][0];",
+      "java": "return grid[1].charAt(0);"
+    }
+  },
+  "expect": {
+    "readChar": {
+      "eventKinds": ["line", "read", "return", "snapshot"],
+      "variableSnapshots": ["grid"],
+      "accessTargets": [
+        { "kind": "read", "variable": "grid", "pathDepth": 2 }
+      ]
+    }
+  }
+}
