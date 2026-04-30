@@ -278,6 +278,19 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   ],
                 });
               }
+              if (latestSource.includes('values.add(n); TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\"')) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(1),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 6, function: 'solve', args: { n: 4 } }),
+                    nativeJavaEvent({ kind: 'line', line: 7, function: 'solve' }),
+                    nativeJavaEvent({ kind: 'line', line: 8, function: 'solve' }),
+                    nativeJavaEvent({ kind: 'mutate', line: 8, function: 'solve', target: { variable: 'this', path: ['values'] }, method: 'append' }),
+                    nativeJavaEvent({ kind: 'return', line: 9, function: 'solve', value: 1 }),
+                  ],
+                });
+              }
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify([0, 1]),
@@ -397,6 +410,28 @@ class Solution {
     }
     TraceHooks.emitReturnAtLine(16, "buildGraph");
     return order;
+  }
+}
+
+${exportsSource.replace('public class Exports', `public class ${exportsClassName}`)}`;
+              }
+              if (source.includes('values.add(n)')) {
+                return `package ${packageName};
+import tracecode.user.TraceHooks;
+import java.util.*;
+
+class Solution {
+  private List<Integer> values;
+
+  public int solve(int n) {
+    TraceHooks.emitCallAtLine(6, "solve", "");
+    TraceHooks.emitLineAtLine(7);
+    values = new ArrayList<>();
+    TraceHooks.emitLineAtLine(8);
+    values.add(n); TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\",\\"line\\":8,\\"target\\":{\\"variable\\":\\"this\\",\\"path\\":[\\"values\\"]},\\"method\\":\\"append\\"}");
+    TraceHooks.emitLineAtLine(9);
+    TraceHooks.emitReturnAtLine(9, "solve");
+    return values.size();
   }
 }
 
@@ -860,6 +895,46 @@ class Solution {
       'Java runtime trace graph traces should not carry visualization classifications'
     );
     console.log('PASS: java worker indexed receiver graph operations emit neutral runtime trace accesses');
+
+    const fieldListCode = `import java.util.*;
+
+class Solution {
+  private List<Integer> values;
+
+  public int solve(int n) {
+    values = new ArrayList<>();
+    values.add(n);
+    return values.size();
+  }
+}`;
+
+    const fieldListExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: fieldListCode,
+      functionName: 'solve',
+      inputs: { n: 4 },
+      executionStyle: 'function',
+    });
+    assertCondition(fieldListExecute.success === true, 'Java field list mutation execution should succeed');
+    const fieldListTrace = javaTraceHooksEventsToRuntimeTrace(fieldListExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'Solution.java',
+    });
+    assertCondition(
+      fieldListTrace.events.some((event) =>
+        event.kind === 'mutate' &&
+        'variable' in event.target &&
+        event.target.variable === 'this' &&
+        event.method === 'append' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify(['values'])
+      ),
+      'Java field collection mutations should emit this-field mutate runtime events'
+    );
+    console.log('PASS: java worker rewrites field collection mutations as this-field runtime trace events');
 
     await harness.sendMessage<{ success: boolean }>('execute-code', {
       code: `class Solution {

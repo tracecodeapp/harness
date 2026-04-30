@@ -305,6 +305,12 @@ public final class JavaRewriteLibrary {
       String name = mutatingCall.group(2);
       String method = mutatingCall.group(3);
       String args = rewriteReads(mutatingCall.group(4).trim(), sourceLine, frame);
+      if (frame.isField(name)) {
+        String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"this\\\",\\\"path\\\":[\\\"" + name + "\\\"]}";
+        String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+            pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+        return indent + name + "." + method + "(" + args + "); " + mutateEvent;
+      }
       return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(normalizeMutationMethod(method)) + ");";
     }
 
@@ -636,6 +642,7 @@ public final class JavaRewriteLibrary {
     int initializerDepth;
     int headerParenDepth;
     boolean pendingAnnotation;
+    final java.util.Set<String> fields;
     final Map<String, String> variables;
 
     MethodFrame(String name, int depth, Map<String, String> fields, String parametersSource) {
@@ -644,12 +651,17 @@ public final class JavaRewriteLibrary {
       this.initializerDepth = 0;
       this.headerParenDepth = 0;
       this.pendingAnnotation = false;
+      this.fields = new java.util.HashSet<>(fields.keySet());
       this.variables = new HashMap<>(fields);
       registerParameters(this.variables, parametersSource);
     }
 
     String typeOf(String variable) {
       return variables.get(variable);
+    }
+
+    boolean isField(String variable) {
+      return fields.contains(variable);
     }
   }
 
