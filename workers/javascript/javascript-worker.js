@@ -2277,16 +2277,26 @@ function extractTraceableMutatingCall(ts, node) {
     ts.isCallExpression(receiver) &&
     ts.isPropertyAccessExpression(receiver.expression) &&
     receiver.expression.name.text === 'get' &&
-    ts.isIdentifier(unwrapParenthesizedExpression(ts, receiver.expression.expression)) &&
     receiver.arguments.length === 1
   ) {
     const mapReceiver = unwrapParenthesizedExpression(ts, receiver.expression.expression);
-    return {
-      variableName: mapReceiver.text,
-      receiverExpression: ts.factory.createIdentifier(mapReceiver.text),
-      methodName,
-      indices: [receiver.arguments[0]],
-    };
+    if (ts.isIdentifier(mapReceiver)) {
+      return {
+        variableName: mapReceiver.text,
+        receiverExpression: ts.factory.createIdentifier(mapReceiver.text),
+        methodName,
+        indices: [receiver.arguments[0]],
+      };
+    }
+    const tracedMapReceiver = extractTraceableElementAccess(ts, mapReceiver);
+    if (tracedMapReceiver) {
+      return {
+        variableName: tracedMapReceiver.variableName,
+        receiverExpression: tracedMapReceiver.receiverExpression,
+        methodName,
+        indices: [...tracedMapReceiver.indices, receiver.arguments[0]],
+      };
+    }
   }
 
   return null;
