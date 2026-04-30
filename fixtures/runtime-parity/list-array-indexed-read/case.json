@@ -1,0 +1,103 @@
+{
+  "id": "list-array-indexed-read",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "rows": [
+      [
+        2,
+        3
+      ],
+      [
+        5,
+        7
+      ]
+    ]
+  },
+  "anchors": {
+    "read": {
+      "python": "total = values[0][1] + values[1][0]",
+      "javascript": "const total = values[0][1] + values[1][0];",
+      "typescript": "const total = values[0][1] + values[1][0];",
+      "java": "int total = values.get(0)[1] + values.get(1)[0];"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "values",
+          "pathDepth": 2
+        }
+      ],
+      "variableSnapshots": [
+        "rows",
+        "values"
+      ]
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "mutate",
+        "variable": "values",
+        "method": "append",
+        "count": 2
+      },
+      {
+        "kind": "read",
+        "variable": "values",
+        "pathDepth": 2,
+        "count": 2
+      }
+    ]
+  },
+  "expectByLanguage": {
+    "python": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ],
+        "variableSnapshots": [
+          "row",
+          "rows",
+          "values"
+        ]
+      }
+    },
+    "java": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ],
+        "variableSnapshots": [
+          "rows"
+        ]
+      }
+    }
+  }
+}

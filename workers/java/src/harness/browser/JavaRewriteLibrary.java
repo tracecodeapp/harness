@@ -24,6 +24,7 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*([+\\-*/%&|^]|<<|>>|>>>)=\\s*(.+);\\s*$");
   private static final Pattern STRING_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.charAt\\(([^()]+)\\)");
   private static final Pattern STRING_ARRAY_CHAR_AT = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.charAt\\(([^()]+)\\)");
+  private static final Pattern LIST_ARRAY_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\s*\\[([^;\\]\\[]+)\\]");
   private static final Pattern FIELD_WRITE = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
   private static final Pattern FIELD_READ = Pattern.compile("(?<!\\.)\\b(?!System\\b|TraceHooks\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()");
   private static final Pattern FIELD_DECLARATION = Pattern.compile(
@@ -363,6 +364,12 @@ public final class JavaRewriteLibrary {
     });
     next = replaceAll(STRING_CHAR_AT, next, match ->
         "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + match.group(2).trim() + ")");
+    next = replaceAll(LIST_ARRAY_READ, next, match -> {
+      String name = match.group(1);
+      String helper = listArrayReadHelper(frame.typeOf(name));
+      if (helper == null) return match.group(0);
+      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ", " + match.group(3).trim() + ")";
+    });
     final String matrixReadSource = next;
     next = replaceAll(MATRIX_READ, matrixReadSource, match -> {
       String full = match.group(0);
@@ -472,6 +479,21 @@ public final class JavaRewriteLibrary {
     if ("boolean".equals(element)) return "readBooleanMatrixAtLine";
     if ("char".equals(element)) return "readCharMatrixAtLine";
     return "readObjectMatrixAtLine";
+  }
+
+  private static String listArrayReadHelper(String type) {
+    if (type == null) return null;
+    String normalized = normalizeJavaType(type);
+    if (!normalized.contains("List<") || !normalized.contains("[]")) return null;
+    if (normalized.contains("int[]")) return "readIntArrayListAtLine";
+    if (normalized.contains("long[]")) return "readLongArrayListAtLine";
+    if (normalized.contains("char[]")) return "readCharArrayListAtLine";
+    if (normalized.contains("boolean[]")) return "readBooleanArrayListAtLine";
+    if (normalized.contains("double[]")) return "readDoubleArrayListAtLine";
+    if (normalized.contains("float[]")) return "readFloatArrayListAtLine";
+    if (normalized.contains("byte[]")) return "readByteArrayListAtLine";
+    if (normalized.contains("short[]")) return "readShortArrayListAtLine";
+    return "readObjectArrayListAtLine";
   }
 
   private static boolean isStringArrayType(String type) {
