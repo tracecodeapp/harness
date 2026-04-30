@@ -1,0 +1,124 @@
+{
+  "id": "java-nested-append-parity",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 1
+  },
+  "anchors": {
+    "indexedAppend": {
+      "python": "graph[0].append(1)",
+      "javascript": "graph.get(0).push(1);",
+      "typescript": "graph.get(0)!.push(1);",
+      "java": "graph.get(0).add(1);"
+    },
+    "fieldAppend": {
+      "python": "bucket.keys.append(2)",
+      "javascript": "bucket.keys.push(2);",
+      "typescript": "bucket.keys.push(2);",
+      "java": "bucket.keys.add(2);"
+    }
+  },
+  "expect": {
+    "indexedAppend": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "graph",
+        "n"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "method": "append",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "graph",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "fieldAppend": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "bucket",
+        "graph",
+        "n"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "bucket",
+          "method": "append",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "bucket",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "fieldAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "bucket",
+          "graph",
+          "n"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "bucket",
+            "method": "append",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "indexedAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "graph",
+          "n"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "graph",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "graph",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}

@@ -674,25 +674,37 @@ def _tracecode_augassign_index(var_name, container, indices, op_name, rhs):
     current = __tracecode_read_value(container, effective_indices)
     normalized = __tracecode_normalize_indices(effective_indices)
     if normalized is not None:
-        __tracecode_record_access(
-            sys._getframe(1),
-            __tracecode_make_access_event(
-                var_name,
-                'cell-read' if len(normalized) == 2 else 'indexed-read',
-                normalized,
-            ),
-        )
+        if isinstance(container, dict):
+            __tracecode_record_access(
+                sys._getframe(1),
+                __tracecode_make_access_event(var_name, 'mutating-call', method_name='get'),
+            )
+        else:
+            __tracecode_record_access(
+                sys._getframe(1),
+                __tracecode_make_access_event(
+                    var_name,
+                    'cell-read' if len(normalized) == 2 else 'indexed-read',
+                    normalized,
+                ),
+            )
     next_value = __tracecode_apply_augmented_value(current, op_name, rhs)
     __tracecode_write_value(container, effective_indices, next_value)
     if normalized is not None:
-        __tracecode_record_access(
-            sys._getframe(1),
-            __tracecode_make_access_event(
-                var_name,
-                'cell-write' if len(normalized) == 2 else 'indexed-write',
-                normalized,
-            ),
-        )
+        if isinstance(container, dict):
+            __tracecode_record_access(
+                sys._getframe(1),
+                __tracecode_make_access_event(var_name, 'mutating-call', method_name='set'),
+            )
+        else:
+            __tracecode_record_access(
+                sys._getframe(1),
+                __tracecode_make_access_event(
+                    var_name,
+                    'cell-write' if len(normalized) == 2 else 'indexed-write',
+                    normalized,
+                ),
+            )
     return next_value
 
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
@@ -843,10 +855,9 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         if isinstance(parent, ast.AugAssign) and getattr(parent, 'target', None) is node:
             return self.generic_visit(node)
 
-        node = self.generic_visit(node)
         extracted = _tracecode_extract_named_subscript(node)
         if extracted is None or not isinstance(node.ctx, ast.Load):
-            return node
+            return self.generic_visit(node)
 
         var_name, indices = extracted
         call = ast.Call(
@@ -854,7 +865,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             args=[
                 ast.Constant(value=var_name),
                 ast.Name(id=var_name, ctx=ast.Load()),
-                ast.List(elts=indices, ctx=ast.Load()),
+                ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
             ],
             keywords=[],
         )

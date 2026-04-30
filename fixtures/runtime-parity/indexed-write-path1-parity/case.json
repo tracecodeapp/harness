@@ -1,0 +1,44 @@
+{
+  "id": "indexed-write-path1-parity",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      1
+    ]
+  },
+  "anchors": {
+    "decrement": {
+      "python": "freq[left] -= 1",
+      "javascript": "freq.set(left, freq.get(left) - 1);",
+      "typescript": "freq.set(left, freq.get(left)! - 1);",
+      "java": "freq.put(left, freq.get(left) - 1);"
+    }
+  },
+  "expect": {
+    "decrement": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "freq",
+        "left",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "freq",
+          "method": "get"
+        },
+        {
+          "kind": "mutate",
+          "variable": "freq",
+          "method": "set"
+        }
+      ]
+    }
+  }
+}

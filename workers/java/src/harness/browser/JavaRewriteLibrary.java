@@ -29,6 +29,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern FIELD_INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern FIELD_MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
@@ -204,6 +206,20 @@ public final class JavaRewriteLibrary {
       return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
+    Matcher fieldMutatingCall = FIELD_MUTATING_CALL_STATEMENT.matcher(line);
+    if (fieldMutatingCall.matches() && isTrackedMutationMethod(fieldMutatingCall.group(4))) {
+      String indent = fieldMutatingCall.group(1);
+      String name = fieldMutatingCall.group(2);
+      String field = fieldMutatingCall.group(3);
+      String method = fieldMutatingCall.group(4);
+      String args = rewriteReads(fieldMutatingCall.group(5).trim(), sourceLine, frame);
+      String target = name + "." + field;
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\\\"" + field + "\\\"]}";
+      String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+      return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+    }
+
     Matcher write2d = ARRAY_WRITE_2D.matcher(line);
     if (write2d.matches()) {
       String indent = write2d.group(1);
@@ -262,7 +278,6 @@ public final class JavaRewriteLibrary {
       if (full.contains("TraceHooks.")) return full;
       if (isArrayAllocationTypeMatch(arrayReadSource, match.start())) return full;
       if (isArrayWriteTarget(arrayReadSource, match.start(), match.end())) return full;
-      if (arrayReadSource.startsWith(".length", match.end())) return full;
       String name = match.group(1);
       String helper = arrayReadHelper(frame.typeOf(name));
       if (helper == null) return full;

@@ -1,0 +1,135 @@
+{
+  "id": "indexed-read-path1-parity",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "matrix": [
+      [
+        1,
+        2,
+        3
+      ],
+      [
+        4,
+        5,
+        6
+      ]
+    ],
+    "pizza": [
+      "A..",
+      ".A."
+    ]
+  },
+  "anchors": {
+    "matrixRowLength": {
+      "python": "cols = len(matrix[0])",
+      "javascript": "const cols = matrix[0].length;",
+      "typescript": "const cols: number = matrix[0].length;",
+      "java": "int cols = matrix[0].length;"
+    },
+    "stringRowLength": {
+      "python": "width = len(pizza[0])",
+      "javascript": "const width = pizza[0].length;",
+      "typescript": "const width: number = pizza[0].length;",
+      "java": "int width = pizza[0].length();"
+    }
+  },
+  "expect": {
+    "matrixRowLength": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "matrix",
+        "pizza"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "matrix",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "stringRowLength": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "cols",
+        "matrix",
+        "pizza"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "pizza",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "matrixRowLength": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "matrix",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "stringRowLength": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza",
+          "width"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "pizza",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "read",
+        "variable": "matrix",
+        "pathDepth": 1,
+        "count": 1
+      },
+      {
+        "kind": "read",
+        "variable": "pizza",
+        "pathDepth": 1,
+        "count": 1
+      }
+    ]
+  }
+}

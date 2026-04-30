@@ -1,0 +1,214 @@
+{
+  "id": "path-depth-polarity",
+  "functionName": "solve",
+  "executionStyle": "solution-method",
+  "inputs": {},
+  "anchors": {
+    "fieldIndexedRead": {
+      "python": "picked = self.values[1]",
+      "javascript": "const picked = this.values[1];",
+      "typescript": "const picked = this.values[1];",
+      "java": "int picked = values[0][1];"
+    },
+    "fieldIndexedWrite": {
+      "python": "self.values[2] = picked + self.values[0]",
+      "javascript": "this.values[2] = picked + this.values[0];",
+      "typescript": "this.values[2] = picked + this.values[0];",
+      "java": "values[1][0] = picked + values[0][0];"
+    }
+  },
+  "expect": {
+    "fieldIndexedRead": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "this"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2
+        }
+      ]
+    },
+    "fieldIndexedWrite": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "picked",
+        "this"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2
+        },
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "fieldIndexedRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "self"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 2
+          }
+        ]
+      },
+      "fieldIndexedWrite": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "self"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "self",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
+    "java": {
+      "fieldIndexedRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ]
+      },
+      "fieldIndexedWrite": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "write",
+        "variable": "this",
+        "pathDepth": 2,
+        "count": 1
+      },
+      {
+        "kind": "read",
+        "variable": "this",
+        "pathDepth": 2,
+        "count": 2
+      }
+    ]
+  },
+  "expectSummaryByLanguage": {
+    "python": {
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "self",
+          "pathDepth": 1,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "self",
+          "pathDepth": 1,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "self",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "self",
+          "pathDepth": 2,
+          "count": 2
+        }
+      ]
+    },
+    "java": {
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "values",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "values",
+          "pathDepth": 2,
+          "count": 2
+        }
+      ]
+    }
+  }
+}
