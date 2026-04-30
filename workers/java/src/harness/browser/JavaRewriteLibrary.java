@@ -484,10 +484,47 @@ public final class JavaRewriteLibrary {
   }
 
   private static void registerFieldDeclaration(Map<String, String> fields, String line) {
-    Matcher field = FIELD_DECLARATION.matcher(line);
+    Matcher field = FIELD_DECLARATION.matcher(stripTrailingLineComment(line));
     if (field.matches()) {
       fields.put(field.group(2), normalizeJavaType(field.group(1)));
     }
+  }
+
+  private static String stripTrailingLineComment(String line) {
+    boolean inString = false;
+    boolean inChar = false;
+    boolean escaped = false;
+    for (int index = 0; index < line.length() - 1; index++) {
+      char ch = line.charAt(index);
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch == '\\') {
+        escaped = inString || inChar;
+        continue;
+      }
+      if (inString) {
+        if (ch == '"') inString = false;
+        continue;
+      }
+      if (inChar) {
+        if (ch == '\'') inChar = false;
+        continue;
+      }
+      if (ch == '"') {
+        inString = true;
+        continue;
+      }
+      if (ch == '\'') {
+        inChar = true;
+        continue;
+      }
+      if (ch == '/' && line.charAt(index + 1) == '/') {
+        return line.substring(0, index).replaceAll("\\s+$", "");
+      }
+    }
+    return line;
   }
 
   private static boolean startsMultilineInitializer(String trimmed) {
