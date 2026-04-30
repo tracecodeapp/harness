@@ -31,8 +31,12 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern FIELD_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern COMPUTE_IF_ABSENT_MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.computeIfAbsent\\((.+),\\s*([^;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern ARRAY_INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
@@ -222,6 +226,21 @@ public final class JavaRewriteLibrary {
       return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
+    Matcher computeMutatingCall = COMPUTE_IF_ABSENT_MUTATING_CALL_STATEMENT.matcher(line);
+    if (computeMutatingCall.matches() && isTrackedMutationMethod(computeMutatingCall.group(5))) {
+      String indent = computeMutatingCall.group(1);
+      String name = computeMutatingCall.group(2);
+      String key = rewriteReads(computeMutatingCall.group(3).trim(), sourceLine, frame);
+      String fallback = computeMutatingCall.group(4).trim();
+      String method = computeMutatingCall.group(5);
+      String args = rewriteReads(computeMutatingCall.group(6).trim(), sourceLine, frame);
+      String target = name + ".computeIfAbsent(" + key + ", " + fallback + ")";
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
+      String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+      return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+    }
+
     Matcher indexedMutatingCall = INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
     if (indexedMutatingCall.matches() && isTrackedMutationMethod(indexedMutatingCall.group(4))) {
       String indent = indexedMutatingCall.group(1);
@@ -237,6 +256,22 @@ public final class JavaRewriteLibrary {
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
       return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " }";
+    }
+
+    Matcher arrayIndexedMutatingCall = ARRAY_INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
+    if (arrayIndexedMutatingCall.matches() && isTrackedMutationMethod(arrayIndexedMutatingCall.group(4))) {
+      String indent = arrayIndexedMutatingCall.group(1);
+      String name = arrayIndexedMutatingCall.group(2);
+      String index = rewriteReads(arrayIndexedMutatingCall.group(3).trim(), sourceLine, frame);
+      String method = arrayIndexedMutatingCall.group(4);
+      String args = rewriteReads(arrayIndexedMutatingCall.group(5).trim(), sourceLine, frame);
+      String target = name + "[" + index + "]";
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
+      String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
     Matcher write2d = ARRAY_WRITE_2D.matcher(line);

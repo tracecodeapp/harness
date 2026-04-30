@@ -1,0 +1,149 @@
+{
+  "id": "java-indexed-append-receivers",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      7,
+      11,
+      13
+    ]
+  },
+  "anchors": {
+    "mapAppend": {
+      "python": "buckets[nums[0]].append(nums[1])",
+      "javascript": "buckets.get(nums[0]).push(nums[1]);",
+      "typescript": "buckets.get(nums[0])!.push(nums[1]);",
+      "java": "buckets.computeIfAbsent(nums[0], k -> new ArrayList<>()).add(nums[1]);"
+    },
+    "arraySlotAppend": {
+      "python": "graph[0].append(nums[2])",
+      "javascript": "graph[0].push(nums[2]);",
+      "typescript": "graph[0].push(nums[2]);",
+      "java": "graph[0].add(nums[2]);"
+    }
+  },
+  "expect": {
+    "mapAppend": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "buckets",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "buckets",
+          "method": "append",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "arraySlotAppend": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "buckets",
+        "graph",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "method": "append",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "graph",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "mapAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "buckets",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "buckets",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "buckets",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "arraySlotAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "buckets",
+          "graph",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "graph",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "graph",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}
