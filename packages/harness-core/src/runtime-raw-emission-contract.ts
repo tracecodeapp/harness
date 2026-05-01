@@ -31,30 +31,54 @@ const FORBIDDEN_RUNTIME_TRACE_TOKENS = [
   'tree',
 ] as const;
 
+export function normalizeJavaNativeTraceJsonPayload(payload: string): string {
+  return payload
+    .replace(/(?<![A-Za-z0-9_"])-Infinity(?![A-Za-z0-9_"])/g, '"-Infinity"')
+    .replace(/(?<![A-Za-z0-9_"])Infinity(?![A-Za-z0-9_"])/g, '"Infinity"')
+    .replace(/(?<![A-Za-z0-9_"])NaN(?![A-Za-z0-9_"])/g, '"NaN"');
+}
+
 function forbiddenRuntimeTraceTokens(value: unknown): string[] {
   const tokens = new Set<string>();
-  collectForbiddenRuntimeTraceTokens(value, tokens);
+  collectForbiddenRuntimeTraceTokens(value, tokens, null, false);
   return FORBIDDEN_RUNTIME_TRACE_TOKENS.filter((token) => tokens.has(token));
 }
 
-function collectForbiddenRuntimeTraceTokens(value: unknown, tokens: Set<string>): void {
+function collectForbiddenRuntimeTraceTokens(
+  value: unknown,
+  tokens: Set<string>,
+  parentKey: string | null,
+  semanticPayload: boolean
+): void {
   if (typeof value === 'string') {
-    if ((FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(value)) {
+    if (
+      (semanticPayload || parentKey === 'kind' || parentKey === 'type' || parentKey === 'category') &&
+      (FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(value)
+    ) {
       tokens.add(value);
     }
     return;
   }
   if (value === null || typeof value !== 'object') return;
   if (Array.isArray(value)) {
-    for (const item of value) collectForbiddenRuntimeTraceTokens(item, tokens);
+    for (const item of value) collectForbiddenRuntimeTraceTokens(item, tokens, parentKey, semanticPayload);
     return;
   }
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if ((FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(key)) {
+  const entries = Object.entries(value as Record<string, unknown>);
+  const objectSemanticPayload = entries.some(([key, child]) => {
+    if (parentKey !== 'args' && (FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(key)) return true;
+    return (
+      (key === 'kind' || key === 'type' || key === 'category') &&
+      typeof child === 'string' &&
+      (FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(child)
+    );
+  });
+  for (const [key, child] of entries) {
+    if (parentKey !== 'args' && (FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(key)) {
       tokens.add(key);
     }
-    if (key === 'target' || key === 'variable') continue;
-    collectForbiddenRuntimeTraceTokens(child, tokens);
+    if (key === 'target' || key === 'variable' || key === 'function') continue;
+    collectForbiddenRuntimeTraceTokens(child, tokens, key, semanticPayload || objectSemanticPayload);
   }
 }
 
@@ -67,7 +91,7 @@ function unsupportedForbiddenPayload(label: string, value: unknown): string | nu
 function javaNativeTracePayloadKind(event: string): RuntimeRawEmissionKind | null {
   if (!event.startsWith('trace:')) return null;
   try {
-    const parsed = JSON.parse(event.slice('trace:'.length)) as { kind?: unknown };
+    const parsed = JSON.parse(normalizeJavaNativeTraceJsonPayload(event.slice('trace:'.length))) as { kind?: unknown };
     if (parsed.kind === 'line') return 'line';
     if (parsed.kind === 'call') return 'call';
     if (parsed.kind === 'return') return 'return';
@@ -90,7 +114,7 @@ export function summarizeJavaRawEmissions(events: string[]): RuntimeRawEmissionS
   for (const [index, event] of events.entries()) {
     if (event.startsWith('trace:')) {
       try {
-        const parsed = JSON.parse(event.slice('trace:'.length)) as unknown;
+        const parsed = JSON.parse(normalizeJavaNativeTraceJsonPayload(event.slice('trace:'.length))) as unknown;
         const forbiddenPayload = unsupportedForbiddenPayload(`java trace event ${index}`, parsed);
         if (forbiddenPayload) {
           unsupported.push(forbiddenPayload);

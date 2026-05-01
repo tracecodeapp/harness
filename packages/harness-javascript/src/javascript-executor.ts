@@ -79,13 +79,33 @@ function getCustomClassName(value: unknown): string | null {
   return name;
 }
 
+const RUNTIME_VALUE_MAX_DEPTH = 48;
+const RUNTIME_VALUE_MAX_ITEMS = 64;
+const RUNTIME_VALUE_MAX_OBJECT_FIELDS = 32;
+const TRACE_SERIALIZATION_LIMITS = { maxItems: RUNTIME_VALUE_MAX_ITEMS, maxFields: RUNTIME_VALUE_MAX_OBJECT_FIELDS };
+const OUTPUT_SERIALIZATION_LIMITS = { maxItems: Number.POSITIVE_INFINITY, maxFields: Number.POSITIVE_INFINITY };
+let activeSerializationLimits = TRACE_SERIALIZATION_LIMITS;
+
+type SerializationLimits = typeof TRACE_SERIALIZATION_LIMITS;
+
+function truncationMarker(total: number, emitted: number): { __truncated__: true; remaining: number } {
+  return { __truncated__: true, remaining: Math.max(0, total - emitted) };
+}
+
+function limitedEntries<T>(items: T[], maxItems: number): { values: T[]; remaining: number } {
+  return {
+    values: items.slice(0, maxItems),
+    remaining: Math.max(0, items.length - maxItems),
+  };
+}
+
 function serializeValue(
   value: unknown,
   depth = 0,
   seen = new WeakSet<object>(),
   nodeRefState: { ids: Map<object, string>; nextId: number } = { ids: new Map<object, string>(), nextId: 1 }
 ): unknown {
-  if (depth > 48) return '<max depth>';
+  if (depth > RUNTIME_VALUE_MAX_DEPTH) return '<max depth>';
   if (value === null || value === undefined) return value;
 
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -99,24 +119,41 @@ function serializeValue(
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => serializeValue(item, depth + 1, seen));
+    const limited = limitedEntries(value, activeSerializationLimits.maxItems);
+    const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
+    if (limited.remaining > 0) result.push(truncationMarker(value.length, limited.values.length));
+    return result;
   }
 
   if (value instanceof Set) {
-    return {
+    const items = [...value];
+    const limited = limitedEntries(items, activeSerializationLimits.maxItems);
+    const result: Record<string, unknown> = {
       __type__: 'set',
-      values: [...value].map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
+      values: limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
     };
+    if (limited.remaining > 0) {
+      result.__truncated__ = true;
+      result.remaining = limited.remaining;
+    }
+    return result;
   }
 
   if (value instanceof Map) {
-    return {
+    const entries = [...value.entries()];
+    const limited = limitedEntries(entries, activeSerializationLimits.maxItems);
+    const result: Record<string, unknown> = {
       __type__: 'map',
-      entries: [...value.entries()].map(([k, v]) => [
+      entries: limited.values.map(([k, v]) => [
         serializeValue(k, depth + 1, seen, nodeRefState),
         serializeValue(v, depth + 1, seen, nodeRefState),
       ]),
     };
+    if (limited.remaining > 0) {
+      result.__truncated__ = true;
+      result.remaining = limited.remaining;
+    }
+    return result;
   }
 
   if (typeof value === 'object') {
@@ -153,9 +190,13 @@ function serializeValue(
       const skipped = isTree
         ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
         : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
-      for (const [k, v] of Object.entries(nodeValue)) {
-        if (skipped.has(k)) continue;
+      const fields = Object.entries(nodeValue).filter(([k]) => !skipped.has(k));
+      for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
         out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+      }
+      if (fields.length > activeSerializationLimits.maxFields) {
+        out.__truncated__ = true;
+        out.remaining = fields.length - activeSerializationLimits.maxFields;
       }
       return out;
     }
@@ -174,12 +215,17 @@ function serializeValue(
       if (seen.has(objectValue)) return { __ref__: objectId };
       seen.add(objectValue);
       const out: Record<string, unknown> = {
-        __type__: 'object',
+        __type__: customClassName,
         __class__: customClassName,
         __id__: objectId,
       };
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const fields = Object.entries(value as Record<string, unknown>);
+      for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
         out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+      }
+      if (fields.length > activeSerializationLimits.maxFields) {
+        out.__truncated__ = true;
+        out.remaining = fields.length - activeSerializationLimits.maxFields;
       }
       seen.delete(objectValue);
       return out;
@@ -188,14 +234,33 @@ function serializeValue(
     if (seen.has(value as object)) return '<cycle>';
     seen.add(value as object);
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const fields = Object.entries(value as Record<string, unknown>);
+    for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+    }
+    if (fields.length > activeSerializationLimits.maxFields) {
+      out.__truncated__ = true;
+      out.remaining = fields.length - activeSerializationLimits.maxFields;
     }
     seen.delete(value as object);
     return out;
   }
 
   return String(value);
+}
+
+function withSerializationLimits<T>(limits: SerializationLimits, serialize: () => T): T {
+  const previous = activeSerializationLimits;
+  activeSerializationLimits = limits;
+  try {
+    return serialize();
+  } finally {
+    activeSerializationLimits = previous;
+  }
+}
+
+function serializeOutputValue(value: unknown): unknown {
+  return withSerializationLimits(OUTPUT_SERIALIZATION_LIMITS, () => serializeValue(value));
 }
 
 function extractUserErrorLine(error: unknown): number | undefined {
@@ -309,7 +374,6 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
   if (firstValue === null || firstValue === undefined) return null;
   const root: Record<string, unknown> = {
     val: firstValue,
-    value: firstValue,
     left: null,
     right: null,
   };
@@ -324,7 +388,6 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
     if (leftValue !== null && leftValue !== undefined) {
       const leftNode: Record<string, unknown> = {
         val: leftValue,
-        value: leftValue,
         left: null,
         right: null,
       };
@@ -338,7 +401,6 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
     if (rightValue !== null && rightValue !== undefined) {
       const rightNode: Record<string, unknown> = {
         val: rightValue,
-        value: rightValue,
         left: null,
         right: null,
       };
@@ -361,7 +423,6 @@ function materializeTreeInput(value: unknown): unknown {
   if (isLikelyTreeNodeValue(record)) {
     const node: Record<string, unknown> = {
       val: record.val ?? record.value ?? null,
-      value: record.val ?? record.value ?? null,
       left: materializeTreeInput(record.left ?? null),
       right: materializeTreeInput(record.right ?? null),
     };
@@ -375,7 +436,6 @@ function materializeTreeInput(value: unknown): unknown {
   if (taggedRecord.__type__ === 'TreeNode') {
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
-      value: taggedRecord.val ?? taggedRecord.value ?? null,
       left: materializeTreeInput(taggedRecord.left ?? null),
       right: materializeTreeInput(taggedRecord.right ?? null),
     };
@@ -398,12 +458,11 @@ function materializeListInput(
     if (value.length === 0) return null;
     const head: Record<string, unknown> = {
       val: value[0],
-      value: value[0],
       next: null,
     };
     let current: Record<string, unknown> = head;
     for (let i = 1; i < value.length; i++) {
-      const nextNode: Record<string, unknown> = { val: value[i], value: value[i], next: null };
+      const nextNode: Record<string, unknown> = { val: value[i], next: null };
       current.next = nextNode;
       current = nextNode;
     }
@@ -424,7 +483,6 @@ function materializeListInput(
     }
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
-      value: taggedRecord.val ?? taggedRecord.value ?? null,
       next: null,
     };
     materialized.set(record as object, node);
@@ -827,7 +885,7 @@ export async function executeJavaScriptCode(
 
     return {
       success: true,
-      output: serializeValue(output),
+      output: serializeOutputValue(output),
       consoleOutput,
     };
   } catch (error) {

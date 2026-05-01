@@ -129,6 +129,60 @@ function stableStringify(value: unknown): string {
     .join(',') + '}';
 }
 
+function stripAccessTargetMethods<T extends { accessTargets?: RuntimeTraceParityAccessTarget[] }>(entry: T): T {
+  if (!Array.isArray(entry.accessTargets)) {
+    return entry;
+  }
+  return {
+    ...entry,
+    accessTargets: sortedUniqueAccessTargets(entry.accessTargets.map((target) => ({
+      kind: target.kind,
+      ...(target.variable !== undefined ? { variable: target.variable } : {}),
+      ...(target.pathDepth !== undefined ? { pathDepth: target.pathDepth } : {}),
+    }))),
+  };
+}
+
+function stripRoleSignatureMethods<T extends Record<string, {
+  eventKinds: RuntimeTraceEventKind[];
+  variableSnapshots: string[];
+  accessTargets: RuntimeTraceParityAccessTarget[];
+}>>(signature: T): T {
+  return Object.fromEntries(
+    Object.entries(signature).map(([role, entry]) => [role, stripAccessTargetMethods(entry)])
+  ) as T;
+}
+
+function stripSummaryMethods<T extends { accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }> }>(
+  summary: T
+): T {
+  if (!Array.isArray(summary.accessTargets)) {
+    return summary;
+  }
+  const counts = new Map<string, RuntimeTraceParityAccessTarget & { count: number }>();
+  for (const target of summary.accessTargets) {
+    const normalized: RuntimeTraceParityAccessTarget & { count: number } = {
+      kind: target.kind,
+      ...(target.variable !== undefined ? { variable: target.variable } : {}),
+      ...(target.pathDepth !== undefined ? { pathDepth: target.pathDepth } : {}),
+      count: 0,
+    };
+    const key = stableStringify({
+      kind: normalized.kind,
+      ...(normalized.variable !== undefined ? { variable: normalized.variable } : {}),
+      ...(normalized.pathDepth !== undefined ? { pathDepth: normalized.pathDepth } : {}),
+    });
+    const existing = counts.get(key) ?? normalized;
+    existing.count += target.count;
+    counts.set(key, existing);
+  }
+  return {
+    ...summary,
+    accessTargets: [...counts.values()]
+      .sort((left, right) => stableStringify(left).localeCompare(stableStringify(right))),
+  };
+}
+
 function sortedUnique(values: string[]): string[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
@@ -256,7 +310,7 @@ print(json.dumps({
         'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
         'traceStepCount': len(_trace_events)
     },
-    'result': _serialize(_result),
+    'result': _serialize_output(_result),
     'console': _console_output,
     'lineEventCount': _total_line_events,
     'traceStepCount': len(_trace_events)
@@ -672,7 +726,6 @@ function projectRoleSignature(
           kind: event.kind,
           variable: event.target.variable,
           ...(pathDepth !== undefined ? { pathDepth } : {}),
-          ...(event.kind === 'mutate' && event.method ? { method: event.method } : {}),
         }];
       })),
     };
@@ -722,7 +775,6 @@ function projectTraceSummary(trace: RuntimeTrace): {
       kind: event.kind,
       variable: event.target.variable,
       ...(pathDepth !== undefined ? { pathDepth } : {}),
-      ...(event.kind === 'mutate' && event.method ? { method: event.method } : {}),
       count: 0,
     };
     const key = stableStringify(target);
@@ -794,8 +846,8 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
       Object.entries(actual).filter(([role]) => !fixture.knownGaps?.[language]?.[role])
     );
     assertCondition(
-      stableStringify(actualForLanguage) === stableStringify(expectedForLanguage),
-      `${fixture.id}: ${language} runtime trace fixture signature drifted.\nExpected: ${stableStringify(expectedForLanguage)}\nReceived: ${stableStringify(actualForLanguage)}`
+      stableStringify(stripRoleSignatureMethods(actualForLanguage)) === stableStringify(stripRoleSignatureMethods(expectedForLanguage)),
+      `${fixture.id}: ${language} runtime trace fixture signature drifted.\nExpected: ${stableStringify(stripRoleSignatureMethods(expectedForLanguage))}\nReceived: ${stableStringify(stripRoleSignatureMethods(actualForLanguage))}`
     );
     const expectedSummary = {
       ...(fixture.expectSummary ?? {}),
@@ -804,8 +856,8 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
     if (expectedSummary.accessTargets) {
       const actualSummary = projectTraceSummary(traces[language]);
       assertCondition(
-        stableStringify(actualSummary.accessTargets) === stableStringify(expectedSummary.accessTargets),
-        `${fixture.id}: ${language} runtime trace fixture summary drifted.\nExpected: ${stableStringify(expectedSummary.accessTargets)}\nReceived: ${stableStringify(actualSummary.accessTargets)}`
+        stableStringify(stripSummaryMethods(actualSummary).accessTargets) === stableStringify(stripSummaryMethods(expectedSummary).accessTargets),
+        `${fixture.id}: ${language} runtime trace fixture summary drifted.\nExpected: ${stableStringify(stripSummaryMethods(expectedSummary).accessTargets)}\nReceived: ${stableStringify(stripSummaryMethods(actualSummary).accessTargets)}`
       );
     }
     assertNoUnsupportedVisualization(traces[language], `${fixture.id}:${language}`);

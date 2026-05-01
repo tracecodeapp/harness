@@ -85,6 +85,86 @@ function rewriteWithNativeJavaRewriter(source: string, entryName = 'solve'): str
   }
 }
 
+function assertNativeJavaRewriterCompiles(source: string, entryName = 'solve'): string {
+  const rewritten = rewriteWithNativeJavaRewriter(source, entryName);
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-rewriter-compile-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Exports.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(sourcePath, rewritten, 'utf8');
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      [
+        '-cp',
+        join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'),
+        '-d',
+        classesPath,
+        sourcePath,
+      ],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    return rewritten;
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+function testJavaRuntimeValueSerializationLimit(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-serialization-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import java.util.*;
+import tracecode.user.TraceHooks;
+
+public class Main {
+  public static void main(String[] args) {
+    List<Integer> values = new ArrayList<>();
+    for (int i = 0; i < 70; i++) values.add(i);
+    Map<String, Integer> map = new LinkedHashMap<>();
+    for (int i = 0; i < 70; i++) map.put(String.valueOf(i), i);
+    System.out.println(TraceHooks.serializeResult(values));
+    System.out.println(TraceHooks.serializeResult(map));
+    System.out.println(TraceHooks.serializeOutputResult(values));
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const [listJson, mapJson, outputListJson] = output.trim().split('\n');
+    assertCondition(
+      listJson.endsWith(',{"__truncated__":true,"remaining":6}]'),
+      'Java large lists should serialize first 64 items plus truncation marker'
+    );
+    assertCondition(
+      mapJson.includes('"__truncated__":true,"remaining":6'),
+      'Java large maps should serialize truncation fields'
+    );
+    const outputList = JSON.parse(outputListJson) as unknown[];
+    assertCondition(
+      Array.isArray(outputList) && outputList.length === 70 && outputList[69] === 69,
+      'Java final output serializer should not use the trace snapshot item cap'
+    );
+    console.log('PASS: Java runtime value serialization cap');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testNativeJavaRewriterRegressionGaps(): void {
   const reflectiveTypeSource = rewriteWithNativeJavaRewriter(`import java.lang.reflect.*;
 
@@ -157,6 +237,76 @@ class Solution {
     !initializerSource.includes('TraceHooks.emitLineAtLine(7);\n      1.0') &&
       !initializerSource.includes('TraceHooks.emitLineAtLine(8);\n      2.0'),
     'Java rewriter should not insert line hooks inside multiline array initializers'
+  );
+
+  const unbracedLoopSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(char[][] board) {
+    int count = 0;
+    for (int i = 0; i < board.length; i++)
+      for (int j = 0; j < board[0].length; j++)
+        if (board[i][j] == 'X' && (i == 0 || board[i-1][j] != 'X') && (j == 0 || board[i][j-1] != 'X'))
+          count++;
+    return count;
+  }
+}`);
+  assertCondition(
+    !unbracedLoopSource.includes('for (int j = 0; j < board[0].length; j++)\n        TraceHooks.emitLineAtLine'),
+    'Java rewriter should not make a line hook the body of an unbraced nested loop'
+  );
+
+  const ternaryContinuationSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve(String s) {
+    Stack<Integer> stack = new Stack<>();
+    int num = 3;
+    stack.push(9);
+    stack.push((int) (stack.pop() / (double) num > 0
+        ? Math.floor(stack.peek() == null ? 0 : (double) stack.pop() / num)
+        : Math.ceil(stack.peek() == null ? 0 : (double) stack.pop() / num)));
+    return stack.peek();
+  }
+}`);
+  assertCondition(
+    !ternaryContinuationSource.includes('TraceHooks.emitLineAtLine(9') &&
+      !ternaryContinuationSource.includes('TraceHooks.emitLineAtLine(10'),
+    'Java rewriter should not inject standalone line hooks into ternary expression continuations'
+  );
+
+  const mutatingIndexWriteSource = rewriteWithNativeJavaRewriter(`import java.util.*;
+
+class Solution {
+  int[] solve(int[] nums) {
+    int[] result = new int[nums.length];
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    result[stack.pop()] = nums[0];
+    return result;
+  }
+}`);
+  assertCondition(
+    mutatingIndexWriteSource.includes('int __tracecodeIndex8 = stack.pop();'),
+    'Java rewriter should evaluate mutating array-write index expressions once'
+  );
+  assertCondition(
+    !mutatingIndexWriteSource.includes('result[stack.pop()] =') &&
+      !mutatingIndexWriteSource.includes('TraceHooks.emitArrayWriteAtLine(8, "result", stack.pop()'),
+    'Java rewriter should not duplicate mutating index expressions in array write hooks'
+  );
+
+  const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<Set<Integer>> groups = new ArrayList<>();
+    groups.add(new HashSet<>());
+    groups.get(0).add(1);
+    return groups.get(0).size();
+  }
+}`);
+  assertCondition(
+    indexedSetMutationSource.includes('((java.util.Set)((java.util.List)groups).get(0))'),
+    'Java rewriter should cast indexed List<Set<...>> mutation targets to Set, not List'
   );
 
   console.log('PASS: native Java rewriter preserves TC83 regression gap shapes');
@@ -265,10 +415,10 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                     nativeJavaEvent({ kind: 'call', line: 4, function: 'buildGraph', args: { n: 3 } }),
                     nativeJavaEvent({ kind: 'snapshot', line: 5, target: { variable: 'graph' }, value: [[], [], []] }),
                     nativeJavaEvent({ kind: 'read', line: 6, target: { variable: 'graph', path: [0] }, value: [] }),
-                    nativeJavaEvent({ kind: 'mutate', line: 6, target: { variable: 'graph', path: [0] }, method: 'append' }),
+                    nativeJavaEvent({ kind: 'mutate', line: 6, target: { variable: 'graph', path: [0] }, method: 'add' }),
                     nativeJavaEvent({ kind: 'snapshot', line: 6, target: { variable: 'graph' }, value: [[1], [], []] }),
                     nativeJavaEvent({ kind: 'read', line: 7, target: { variable: 'graph', path: [1] }, value: [] }),
-                    nativeJavaEvent({ kind: 'mutate', line: 7, target: { variable: 'graph', path: [1] }, method: 'append' }),
+                    nativeJavaEvent({ kind: 'mutate', line: 7, target: { variable: 'graph', path: [1] }, method: 'add' }),
                     nativeJavaEvent({ kind: 'snapshot', line: 7, target: { variable: 'graph' }, value: [[1], [2], []] }),
                     nativeJavaEvent({ kind: 'read', line: 10, target: { variable: 'graph', path: [0] }, value: [1] }),
                     nativeJavaEvent({ kind: 'line', line: 10, function: 'buildGraph' }),
@@ -286,7 +436,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                     nativeJavaEvent({ kind: 'call', line: 6, function: 'solve', args: { n: 4 } }),
                     nativeJavaEvent({ kind: 'line', line: 7, function: 'solve' }),
                     nativeJavaEvent({ kind: 'line', line: 8, function: 'solve' }),
-                    nativeJavaEvent({ kind: 'mutate', line: 8, function: 'solve', target: { variable: 'this', path: ['values'] }, method: 'append' }),
+                    nativeJavaEvent({ kind: 'mutate', line: 8, function: 'solve', target: { variable: 'this', path: ['values'] }, method: 'add' }),
                     nativeJavaEvent({ kind: 'return', line: 9, function: 'solve', value: 1 }),
                   ],
                 });
@@ -316,6 +466,9 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               packageName: string
             ) => {
               rewriteCalls.push({ source, executionStyle, entryName, exportsSource, exportsClassName, packageName });
+              if (source.includes('rewriteProbeClassNotFoundRegression')) {
+                throw new Error('Java syntax error.');
+              }
               if (source.includes('lowerBound')) {
                 return `package ${packageName};
 import tracecode.user.TraceHooks;
@@ -428,7 +581,7 @@ class Solution {
     TraceHooks.emitLineAtLine(7);
     values = new ArrayList<>();
     TraceHooks.emitLineAtLine(8);
-    values.add(n); TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\",\\"line\\":8,\\"target\\":{\\"variable\\":\\"this\\",\\"path\\":[\\"values\\"]},\\"method\\":\\"append\\"}");
+    values.add(n); TraceHooks.emit("trace:{\\"kind\\":\\"mutate\\",\\"line\\":8,\\"target\\":{\\"variable\\":\\"this\\",\\"path\\":[\\"values\\"]},\\"method\\":\\"add\\"}");
     TraceHooks.emitLineAtLine(9);
     TraceHooks.emitReturnAtLine(9, "solve");
     return values.size();
@@ -504,6 +657,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
 
 async function main(): Promise<void> {
   testNativeJavaRewriterRegressionGaps();
+  testJavaRuntimeValueSerializationLimit();
 
   const workerSource = await loadWorkerSource();
   const augmentationSource = await loadJavaSourceAugmentationSource();
@@ -513,6 +667,37 @@ async function main(): Promise<void> {
     const init = await harness.sendMessage<{ success: boolean; loadTimeMs: number }>('init');
     assertCondition(init.success === true, 'Init should succeed');
     console.log('PASS: java worker init with mocked CheerpJ bridge');
+
+    const rewriteProbeFailure = await harness.sendMessage<{
+      success: boolean;
+      error?: string | null;
+    }>('execute-code', {
+      code: `class Solution {
+  int rewriteProbeClassNotFoundRegression() {
+    return 1;
+  }
+}`,
+      functionName: 'rewriteProbeClassNotFoundRegression',
+      inputs: {},
+      executionStyle: 'function',
+    });
+
+    assertCondition(rewriteProbeFailure.success === false, 'Forced Java rewrite failure should surface as failed execution');
+    const probeSource = harness.stringFiles.findLast((file) => file.source.includes('RewriteProbe'))?.source ?? '';
+    assertCondition(
+      /package harness\.user\.job.*RewriteProbe;/.test(probeSource),
+      'Java rewrite diagnostic probe should compile in the probe package'
+    );
+    assertCondition(
+      /public class Exports.*RewriteProbe/.test(probeSource),
+      'Java rewrite diagnostic probe should include the synthetic probe exports class'
+    );
+    assertCondition(
+      probeSource.includes('Solution solution = new Solution();') &&
+        probeSource.includes('solution.rewriteProbeClassNotFoundRegression()'),
+      'Java rewrite diagnostic probe should include the generated export invocation'
+    );
+    console.log('PASS: java rewrite diagnostics compile a complete probe harness');
 
     const scriptCode = `import java.util.HashMap;
 import java.util.Map;
@@ -590,6 +775,164 @@ result = new int[] { 0, 1 };`;
       'Java function source should block-wrap sibling single-statement for loop bodies before rewrite'
     );
     console.log('PASS: java worker block-wraps single-statement for loops before rewrite');
+
+    const treeInputCode = `class TreeNode {
+  int val;
+  TreeNode left;
+  TreeNode right;
+  TreeNode(int val) { this.val = val; }
+}
+
+class Solution {
+  int solve(TreeNode root) {
+    return root == null ? 0 : root.val;
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: treeInputCode,
+      functionName: 'solve',
+      inputs: { root: [1, null, 2, 3] },
+      executionStyle: 'function',
+    });
+    const treeRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      treeRewrite?.exportsSource.includes('TreeNode root = buildTree(new Integer[] { 1, null, 2, 3 });'),
+      'Java worker should materialize level-order TreeNode array inputs when the signature expects TreeNode'
+    );
+
+    const listInputCode = `class ListNode {
+  int val;
+  ListNode next;
+  ListNode(int val) { this.val = val; }
+}
+
+class Solution {
+  int solve(ListNode head) {
+    return head == null ? 0 : head.val;
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: listInputCode,
+      functionName: 'solve',
+      inputs: { head: [1, 2, 3] },
+      executionStyle: 'function',
+    });
+    const listRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      listRewrite?.exportsSource.includes(
+        'ListNode head = TraceHooks.reindexListIds(buildList(new Object[] { 1, 2, 3 }, sequentialNextIndices(3)));'
+      ),
+      'Java worker should materialize array inputs as ListNode only when the signature expects ListNode'
+    );
+
+    const objectArrayInputCode = `class Solution {
+  int solve(Object values) {
+    return ((java.util.List<?>) values).size();
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: objectArrayInputCode,
+      functionName: 'solve',
+      inputs: { values: [1, null, [2, 3]] },
+      executionStyle: 'function',
+    });
+    const objectArrayRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      objectArrayRewrite?.exportsSource.includes(
+        'Object values = new java.util.ArrayList<Object>(java.util.Arrays.asList(1, null, new java.util.ArrayList<Object>(java.util.Arrays.asList(2, 3))));'
+      ),
+      'Java worker should materialize JSON arrays as Java lists when the signature expects Object'
+    );
+    console.log('PASS: java worker materializes canonical TreeNode/ListNode/Object array inputs');
+
+    const opsNoArgConstructorCode = `class HitCounter {
+  HitCounter() {}
+  void hit(int timestamp) {}
+  int getHits(int timestamp) { return timestamp; }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: opsNoArgConstructorCode,
+      functionName: 'HitCounter',
+      inputs: {
+        operations: ['HitCounter', 'hit', 'getHits'],
+        arguments: [[1], [2], [3]],
+      },
+      executionStyle: 'ops-class',
+    });
+    const opsNoArgConstructorRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      opsNoArgConstructorRewrite?.exportsSource.includes('instance = new HitCounter();'),
+      'Java ops-class worker should not pass fixture arguments to no-argument constructors'
+    );
+    assertCondition(
+      opsNoArgConstructorRewrite?.exportsSource.includes('instance.hit(2);') &&
+        opsNoArgConstructorRewrite.exportsSource.includes('out.add(instance.getHits(3));'),
+      'Java ops-class worker should still pass method arguments according to method signatures'
+    );
+
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: opsNoArgConstructorCode,
+      functionName: 'HitCounter',
+      inputs: {
+        operations: ['hit', 'getHits'],
+        arguments: [[2], [3]],
+      },
+      executionStyle: 'ops-class',
+    });
+    const opsImplicitConstructorRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      opsImplicitConstructorRewrite?.exportsSource.includes('HitCounter instance = new HitCounter();') &&
+        !opsImplicitConstructorRewrite.exportsSource.includes('out.add(null);\n    instance.hit(2);') &&
+        opsImplicitConstructorRewrite.exportsSource.includes('instance.hit(2);') &&
+        opsImplicitConstructorRewrite.exportsSource.includes('out.add(instance.getHits(3));'),
+      'Java ops-class worker should instantiate once without consuming the first method when constructor op is omitted'
+    );
+
+    const opsInitConstructorCode = `class Cashier {
+  Cashier(int n, int discount, int[] products, int[] prices) {}
+  double getBill(int[] product, int[] amount) { return 0.0; }
+}`;
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: opsInitConstructorCode,
+      functionName: 'Cashier',
+      inputs: {
+        operations: ['__init__', 'getBill'],
+        arguments: [[3, 50, [1, 2], [100, 200]], [[1], [2]]],
+      },
+      executionStyle: 'ops-class',
+    });
+    const opsInitConstructorRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      opsInitConstructorRewrite?.exportsSource.includes('Cashier instance = new Cashier(3, 50, new int[] { 1, 2 }, new int[] { 100, 200 });') &&
+        opsInitConstructorRewrite.exportsSource.includes('out.add(null);') &&
+        opsInitConstructorRewrite.exportsSource.includes('out.add(instance.getBill(new int[] { 1 }, new int[] { 2 }));'),
+      'Java ops-class worker should treat __init__ as the constructor operation'
+    );
+    console.log('PASS: java worker respects ops-class constructor signatures');
+
+    const resultParameterCode = `class Solution {
+  boolean canTransform(String start, String result) {
+    return start.length() == result.length();
+  }
+}`;
+    await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: resultParameterCode,
+      functionName: 'canTransform',
+      inputs: { start: 'RX', result: 'XR' },
+      executionStyle: 'function',
+    });
+    const resultParameterRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+        resultParameterRewrite?.exportsSource.includes('String result = "XR";') &&
+        resultParameterRewrite.exportsSource.includes('boolean __tracecode_result = solution.canTransform(start, result);') &&
+        resultParameterRewrite.exportsSource.includes('return TraceHooks.serializeOutputResult(__tracecode_result);'),
+      'Java worker should avoid colliding with user parameter names when storing return values'
+    );
+    console.log('PASS: java worker avoids wrapper local name collisions');
 
     const scriptWithHelperCode = `import java.util.*;
 
@@ -873,7 +1216,7 @@ class Solution {
         event.kind === 'mutate' &&
         'variable' in event.target &&
         event.target.variable === 'graph' &&
-        event.method === 'append' &&
+        event.method === 'add' &&
         'path' in event.target &&
         JSON.stringify(event.target.path) === JSON.stringify([1])
       ),
@@ -928,7 +1271,7 @@ class Solution {
         event.kind === 'mutate' &&
         'variable' in event.target &&
         event.target.variable === 'this' &&
-        event.method === 'append' &&
+        event.method === 'add' &&
         'path' in event.target &&
         JSON.stringify(event.target.path) === JSON.stringify(['values'])
       ),

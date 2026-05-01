@@ -185,7 +185,7 @@ async function assertAccessAttributionUsesExecutedLine(): Promise<void> {
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
-    'result': _serialize(_result),
+    'result': _serialize_output(_result),
     'console': _console_output,
     'userCodeStartLine': ${tracingPayload.userCodeStartLine},
     'traceLimitExceeded': _trace_limit_exceeded,
@@ -258,7 +258,7 @@ async function assertIndexedReceiverMutationsAreRecordedAsMutations(): Promise<v
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
-    'result': _serialize(_result),
+    'result': _serialize_output(_result),
     'console': _console_output,
     'userCodeStartLine': ${tracingPayload.userCodeStartLine},
     'traceLimitExceeded': _trace_limit_exceeded,
@@ -330,7 +330,7 @@ print(json.dumps({
         'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
         'traceStepCount': len(_trace_events)
     },
-    'result': _serialize(_result)
+    'result': _serialize_output(_result)
 }))
 `);
   const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: unknown[] } };
@@ -382,7 +382,7 @@ print(json.dumps({
         'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
         'traceStepCount': len(_trace_events)
     },
-    'result': _serialize(_result),
+    'result': _serialize_output(_result),
     'traceLimitExceeded': _trace_limit_exceeded,
     'timeoutReason': _timeout_reason,
     'traceStepCount': len(_trace_data)
@@ -404,11 +404,60 @@ print(json.dumps({
   console.log('PASS: Python runtime trace capture limit preserves output');
 }
 
+async function assertRuntimeValueSerializationCap(): Promise<void> {
+  const stdout = await runPythonScript(`import builtins as _builtins
+import json
+import math
+${PYTHON_CLASS_DEFINITIONS}
+${PYTHON_TRACE_SERIALIZE_FUNCTION}
+values = list(range(70))
+mapping = {str(value): value for value in values}
+visited = set(values)
+print(json.dumps({
+    'values': _serialize(values),
+    'outputValues': _serialize_output(values),
+    'mapping': _serialize(mapping),
+    'visited': _serialize(visited),
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    values: unknown[];
+    outputValues: unknown[];
+    mapping: Record<string, unknown>;
+    visited: { values?: unknown[]; __truncated__?: unknown; remaining?: unknown };
+  };
+
+  assertCondition(
+    Array.isArray(parsed.values) &&
+      parsed.values.length === 65 &&
+      JSON.stringify(parsed.values[64]) === JSON.stringify({ __truncated__: true, remaining: 6 }),
+    'Python large lists should serialize first 64 items plus truncation marker'
+  );
+  assertCondition(
+    Array.isArray(parsed.outputValues) && parsed.outputValues.length === 70 && parsed.outputValues[69] === 69,
+    'Python final output serializer should not use the trace snapshot item cap'
+  );
+  assertCondition(
+    parsed.mapping.__truncated__ === true && parsed.mapping.remaining === 6,
+    'Python large dicts should serialize truncation fields'
+  );
+  assertCondition(
+    Array.isArray(parsed.visited.values) &&
+      parsed.visited.values.length === 64 &&
+      parsed.visited.__truncated__ === true &&
+      parsed.visited.remaining === 6,
+    'Python large sets should serialize first 64 values plus truncation fields'
+  );
+
+  console.log('PASS: Python runtime value serialization cap');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertTraceReferenceIdsAreNeutral();
   await assertTraceCaptureLimitPreservesOutput();
+  await assertRuntimeValueSerializationCap();
   console.log('\nPython runtime checks passed.');
 }
 

@@ -83,6 +83,42 @@ type SerializedTreeNode = {
 };
 `;
 
+const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `
+function __tracecodeMaterializeCustomObject(value) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map((item) => __tracecodeMaterializeCustomObject(item));
+  if (typeof value !== 'object') return value;
+  if (value.__type__ === 'TreeNode' || value.__type__ === 'ListNode' || value.__ref__) return value;
+  const __typeName = typeof value.__type__ === 'string'
+    ? value.__type__
+    : (typeof value.__class__ === 'string' ? value.__class__ : null);
+  if (!__typeName) return value;
+  const __fields = { __type__: __typeName };
+  if (typeof value.__class__ === 'string') __fields.__class__ = value.__class__;
+  for (const [__key, __child] of Object.entries(value)) {
+    if (__key === '__type__' || __key === '__class__' || __key === '__id__') continue;
+    __fields[__key] = __tracecodeMaterializeCustomObject(__child);
+  }
+  let __ctor;
+  try {
+    __ctor = eval(__typeName);
+  } catch (_err) {
+    __ctor = undefined;
+  }
+  if (typeof __ctor !== 'function') return __fields;
+  const __args = Object.entries(__fields)
+    .filter(([__key]) => __key !== '__type__' && __key !== '__class__')
+    .map(([, __value]) => __value);
+  try {
+    return new __ctor(...__args);
+  } catch (_err) {
+    const __instance = Object.create(__ctor.prototype);
+    Object.assign(__instance, __fields);
+    return __instance;
+  }
+}
+`;
+
 function performanceNow() {
   if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
     return performance.now();
@@ -139,13 +175,31 @@ function getCustomClassName(value) {
   return name;
 }
 
+const RUNTIME_VALUE_MAX_DEPTH = 48;
+const RUNTIME_VALUE_MAX_ITEMS = 64;
+const RUNTIME_VALUE_MAX_OBJECT_FIELDS = 32;
+const TRACE_SERIALIZATION_LIMITS = { maxItems: RUNTIME_VALUE_MAX_ITEMS, maxFields: RUNTIME_VALUE_MAX_OBJECT_FIELDS };
+const OUTPUT_SERIALIZATION_LIMITS = { maxItems: Number.POSITIVE_INFINITY, maxFields: Number.POSITIVE_INFINITY };
+let activeSerializationLimits = TRACE_SERIALIZATION_LIMITS;
+
+function truncationMarker(total, emitted) {
+  return { __truncated__: true, remaining: Math.max(0, total - emitted) };
+}
+
+function limitedEntries(items, maxItems) {
+  return {
+    values: items.slice(0, maxItems),
+    remaining: Math.max(0, items.length - maxItems),
+  };
+}
+
 function serializeValue(
   value,
   depth = 0,
   seen = new WeakSet(),
   nodeRefState = { ids: new Map(), nextId: 1 }
 ) {
-  if (depth > 48) return '<max depth>';
+  if (depth > RUNTIME_VALUE_MAX_DEPTH) return '<max depth>';
   if (value === null || value === undefined) return value;
 
   const valueType = typeof value;
@@ -159,22 +213,39 @@ function serializeValue(
     return '<function>';
   }
   if (Array.isArray(value)) {
-    return value.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
+    const limited = limitedEntries(value, activeSerializationLimits.maxItems);
+    const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
+    if (limited.remaining > 0) result.push(truncationMarker(value.length, limited.values.length));
+    return result;
   }
   if (value instanceof Set) {
-    return {
+    const items = [...value];
+    const limited = limitedEntries(items, activeSerializationLimits.maxItems);
+    const result = {
       __type__: 'set',
-      values: [...value].map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
+      values: limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
     };
+    if (limited.remaining > 0) {
+      result.__truncated__ = true;
+      result.remaining = limited.remaining;
+    }
+    return result;
   }
   if (value instanceof Map) {
-    return {
+    const entries = [...value.entries()];
+    const limited = limitedEntries(entries, activeSerializationLimits.maxItems);
+    const result = {
       __type__: 'map',
-      entries: [...value.entries()].map(([k, v]) => [
+      entries: limited.values.map(([k, v]) => [
         serializeValue(k, depth + 1, seen, nodeRefState),
         serializeValue(v, depth + 1, seen, nodeRefState),
       ]),
     };
+    if (limited.remaining > 0) {
+      result.__truncated__ = true;
+      result.remaining = limited.remaining;
+    }
+    return result;
   }
   if (valueType === 'object') {
     if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) {
@@ -208,9 +279,13 @@ function serializeValue(
         isTree
           ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
           : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
-      for (const [k, v] of Object.entries(value)) {
-        if (skipped.has(k)) continue;
+      const fields = Object.entries(value).filter(([k]) => !skipped.has(k));
+      for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
         out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+      }
+      if (fields.length > activeSerializationLimits.maxFields) {
+        out.__truncated__ = true;
+        out.remaining = fields.length - activeSerializationLimits.maxFields;
       }
       return out;
     }
@@ -228,12 +303,17 @@ function serializeValue(
       if (seen.has(value)) return { __ref__: objectId };
       seen.add(value);
       const out = {
-        __type__: 'object',
+        __type__: customClassName,
         __class__: customClassName,
         __id__: objectId,
       };
-      for (const [k, v] of Object.entries(value)) {
+      const fields = Object.entries(value);
+      for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
         out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+      }
+      if (fields.length > activeSerializationLimits.maxFields) {
+        out.__truncated__ = true;
+        out.remaining = fields.length - activeSerializationLimits.maxFields;
       }
       seen.delete(value);
       return out;
@@ -242,14 +322,33 @@ function serializeValue(
     if (seen.has(value)) return '<cycle>';
     seen.add(value);
     const out = {};
-    for (const [k, v] of Object.entries(value)) {
+    const fields = Object.entries(value);
+    for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
+    }
+    if (fields.length > activeSerializationLimits.maxFields) {
+      out.__truncated__ = true;
+      out.remaining = fields.length - activeSerializationLimits.maxFields;
     }
     seen.delete(value);
     return out;
   }
 
   return String(value);
+}
+
+function withSerializationLimits(limits, serialize) {
+  const previous = activeSerializationLimits;
+  activeSerializationLimits = limits;
+  try {
+    return serialize();
+  } finally {
+    activeSerializationLimits = previous;
+  }
+}
+
+function serializeOutputValue(value) {
+  return withSerializationLimits(OUTPUT_SERIALIZATION_LIMITS, () => serializeValue(value));
 }
 
 function serializeTopLevelValue(value, nodeRefState) {
@@ -289,9 +388,13 @@ function serializeTopLevelValue(value, nodeRefState) {
     const skipped = isTree
       ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
       : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
-    for (const [k, v] of Object.entries(nodeValue)) {
-      if (skipped.has(k)) continue;
+    const fields = Object.entries(nodeValue).filter(([k]) => !skipped.has(k));
+    for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, 1, new WeakSet(), nodeRefState);
+    }
+    if (fields.length > activeSerializationLimits.maxFields) {
+      out.__truncated__ = true;
+      out.remaining = fields.length - activeSerializationLimits.maxFields;
     }
     return out;
   }
@@ -311,8 +414,13 @@ function serializeTopLevelValue(value, nodeRefState) {
       __class__: customClassName,
       __id__: objectId,
     };
-    for (const [k, v] of Object.entries(value)) {
+    const fields = Object.entries(value);
+    for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, 1, seen, nodeRefState);
+    }
+    if (fields.length > activeSerializationLimits.maxFields) {
+      out.__truncated__ = true;
+      out.remaining = fields.length - activeSerializationLimits.maxFields;
     }
     return out;
   }
@@ -416,7 +524,7 @@ function buildTreeNodeFromLevelOrder(values) {
   if (!Array.isArray(values) || values.length === 0) return null;
   const firstValue = values[0];
   if (firstValue === null || firstValue === undefined) return null;
-  const root = { val: firstValue, value: firstValue, left: null, right: null };
+  const root = { val: firstValue, left: null, right: null };
   const queue = [root];
   let index = 1;
 
@@ -426,7 +534,7 @@ function buildTreeNodeFromLevelOrder(values) {
 
     const leftValue = values[index++];
     if (leftValue !== null && leftValue !== undefined) {
-      node.left = { val: leftValue, value: leftValue, left: null, right: null };
+      node.left = { val: leftValue, left: null, right: null };
       queue.push(node.left);
     }
 
@@ -434,7 +542,7 @@ function buildTreeNodeFromLevelOrder(values) {
 
     const rightValue = values[index++];
     if (rightValue !== null && rightValue !== undefined) {
-      node.right = { val: rightValue, value: rightValue, left: null, right: null };
+      node.right = { val: rightValue, left: null, right: null };
       queue.push(node.right);
     }
   }
@@ -454,7 +562,6 @@ function materializeTreeInput(value) {
     const nodeValue = value;
     const node = {
       val: nodeValue.val ?? nodeValue.value ?? null,
-      value: nodeValue.val ?? nodeValue.value ?? null,
       left: materializeTreeInput(nodeValue.left ?? null),
       right: materializeTreeInput(nodeValue.right ?? null),
     };
@@ -471,10 +578,10 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
-    const head = { val: value[0], value: value[0], next: null };
+    const head = { val: value[0], next: null };
     let current = head;
     for (let i = 1; i < value.length; i++) {
-      current.next = { val: value[i], value: value[i], next: null };
+      current.next = { val: value[i], next: null };
       current = current.next;
     }
     return head;
@@ -492,7 +599,6 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
     }
     const node = {
       val: value.val ?? value.value ?? null,
-      value: value.val ?? value.value ?? null,
       next: null,
     };
     materialized.set(value, node);
@@ -1174,8 +1280,7 @@ function createTraceRecorder(options = {}) {
       const target = runtimeTraceTargetForAccess(access);
       const stats = runtimeTraceAccessStatsByVariable.get(access.variable);
       if (kind === 'mutate') {
-        const method = normalizeMutationMethod(access.method);
-        const event = { ...base, kind, target, ...(method ? { method } : {}) };
+        const event = { ...base, kind, target, ...(access.method ? { method: access.method } : {}) };
         if (shouldKeepRuntimeTraceAccessEvent(event, stats) && !pushRuntimeTraceEvent(event)) return;
       } else {
         const event = { ...base, kind, target, value: runtimeTraceAccessValue(step, access) };
@@ -1791,20 +1896,6 @@ function createSyntheticRuntimeTrace(payload, codeResult, language) {
 
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 
-const MUTATION_METHOD_ALIASES = {
-  add: 'append',
-  append: 'append',
-  push: 'append',
-  unshift: 'appendleft',
-  offer: 'append',
-  shift: 'popleft',
-  poll: 'popleft',
-  delete: 'remove',
-  remove: 'remove',
-  put: 'set',
-  set: 'set',
-};
-
 function runtimeTraceFrameIdForSyntheticStep(step) {
   const stack = Array.isArray(step?.callStack) ? step.callStack : [];
   if (stack.length > 0) {
@@ -1822,11 +1913,6 @@ function valueAtPath(value, path) {
     current = current[String(part)];
   }
   return current;
-}
-
-function normalizeMutationMethod(method) {
-  if (!method) return undefined;
-  return MUTATION_METHOD_ALIASES[method] ?? method;
 }
 
 function getTypeScriptCompiler() {
@@ -3044,11 +3130,13 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
       }
 
       if (ts.isElementAccessExpression(node)) {
+        const parent = node.parent;
         if (
           isNestedElementAccessExpression(ts, node) ||
           isAssignmentLikeLeftOperand(ts, node) ||
           isUpdateExpressionOperand(ts, node) ||
-          isDestructuringAssignmentTarget(ts, node)
+          isDestructuringAssignmentTarget(ts, node) ||
+          (parent && ts.isCallExpression(parent) && parent.expression === node)
         ) {
           return ts.visitEachChild(node, visit, context);
         }
@@ -3065,6 +3153,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         const grandparent = parent?.parent;
         if (
           isTraceablePropertyWriteLeftOperand(ts, node) ||
+          isDestructuringAssignmentTarget(ts, node) ||
           (parent && ts.isCallExpression(parent) && parent.expression === node) ||
           (parent &&
             ts.isPropertyAccessExpression(parent) &&
@@ -3397,30 +3486,8 @@ function __traceUpdateIndex(__varName, __container, __indices, __op, __isPrefix)
 }
 
 function __traceNormalizeMethodName(__container, __method, __args) {
-  if (__traceIsMapLike(__container)) {
-    if (__method === 'has') return 'containsKey';
-    if (__method === 'set') return 'set';
-    if (__method === 'get') return 'get';
-    if (__method === 'delete') return 'remove';
-  }
-  if (__container instanceof Set) {
-    if (__method === 'has') return 'contains';
-    if (__method === 'add') return 'add';
-    if (__method === 'delete') return 'remove';
-  }
-  if (Array.isArray(__container)) {
-    if (__method === 'push') return 'append';
-    if (__method === 'unshift') return 'appendleft';
-    if (__method === 'shift') return 'popleft';
-    if (
-      __method === 'splice' &&
-      Array.isArray(__args) &&
-      __args.length === 2 &&
-      __args[1] === 1
-    ) {
-      return 'pop';
-    }
-  }
+  void __container;
+  void __args;
   return __method;
 }
 
@@ -3507,6 +3574,7 @@ function buildFunctionExecutionRunner(code, executionStyle, argNames) {
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
   __target = eval(__functionName);
@@ -3516,7 +3584,7 @@ try {
 if (typeof __target !== 'function') {
   throw new Error('Function "' + __functionName + '" not found');
 }
-return __target(${argNames.join(', ')});`
+return __target(${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
     );
   }
 
@@ -3528,6 +3596,7 @@ return __target(${argNames.join(', ')});`
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
 }
@@ -3536,7 +3605,7 @@ const __method = __solver[__functionName];
 if (typeof __method !== 'function') {
   throw new Error('Method "Solution.' + __functionName + '" not found');
 }
-return __method.call(__solver, ${argNames.join(', ')});`
+return __method.call(__solver, ${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
     );
   }
 
@@ -3549,6 +3618,7 @@ return __method.call(__solver, ${argNames.join(', ')});`
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
   throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
 }
@@ -3575,6 +3645,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
   if (!Array.isArray(__callArgs)) {
     __callArgs = [__callArgs];
   }
+  __callArgs = __callArgs.map((__arg) => __tracecodeMaterializeCustomObject(__arg));
   if (__i === 0) {
     __instance = new __targetClass(...__callArgs);
     __out.push(null);
@@ -3604,6 +3675,7 @@ function buildFunctionTracingRunner(code, executionStyle, argNames) {
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${TRACING_RUNTIME_HELPERS_SOURCE}
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
   __target = eval(__functionName);
@@ -3613,7 +3685,7 @@ try {
 if (typeof __target !== 'function') {
   throw new Error('Function "' + __functionName + '" not found');
 }
-return __target(${argNames.join(', ')});`
+return __target(${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
     );
   }
 
@@ -3628,6 +3700,7 @@ return __target(${argNames.join(', ')});`
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${TRACING_RUNTIME_HELPERS_SOURCE}
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
 }
@@ -3636,7 +3709,7 @@ const __method = __solver[__functionName];
 if (typeof __method !== 'function') {
   throw new Error('Method "Solution.' + __functionName + '" not found');
 }
-return __method.call(__solver, ${argNames.join(', ')});`
+return __method.call(__solver, ${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
     );
   }
 
@@ -3652,6 +3725,7 @@ return __method.call(__solver, ${argNames.join(', ')});`
 ${JAVASCRIPT_RUNTIME_PRELUDE}
 ${TRACING_RUNTIME_HELPERS_SOURCE}
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
   throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
 }
@@ -3678,6 +3752,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
   if (!Array.isArray(__callArgs)) {
     __callArgs = [__callArgs];
   }
+  __callArgs = __callArgs.map((__arg) => __tracecodeMaterializeCustomObject(__arg));
   if (__i === 0) {
     __instance = new __targetClass(...__callArgs);
     __out.push(null);
@@ -3756,7 +3831,7 @@ async function executeCode(payload) {
 
     return {
       success: true,
-      output: serializeValue(output),
+      output: serializeOutputValue(output),
       consoleOutput,
     };
   } catch (error) {
@@ -3888,10 +3963,11 @@ async function executeWithTracing(payload) {
       );
     }
 
-    const serializedOutput = serializeValue(output);
+    const serializedTraceOutput = serializeValue(output);
+    const serializedOutput = serializeOutputValue(output);
     if (!hasNamedFunction) {
       traceRecorder.popToFunction(traceFunctionName);
-      traceRecorder.recordReturn(traceLineBounds.endLine, serializedOutput, traceFunctionName);
+      traceRecorder.recordReturn(traceLineBounds.endLine, serializedTraceOutput, traceFunctionName);
     }
 
     const executionTimeMs = performanceNow() - startedAt;

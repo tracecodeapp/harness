@@ -108,7 +108,7 @@ def _ensure_node_value_aliases(node):
 def _dict_to_tree(d):
     if d is None:
         return None
-    if not isinstance(d, dict):
+    if not isinstance(d, _builtins.dict):
         return d
     if 'val' not in d and 'value' not in d:
         return d
@@ -123,7 +123,7 @@ def _dict_to_list(d, _refs=None):
         _refs = {}
     if d is None:
         return None
-    if not isinstance(d, dict):
+    if not isinstance(d, _builtins.dict):
         return d
     if '__ref__' in d:
         return _refs.get(d.get('__ref__'))
@@ -132,7 +132,7 @@ def _dict_to_list(d, _refs=None):
     node = ListNode(d.get('val', d.get('value', 0)))
     _ensure_node_value_aliases(node)
     node_id = d.get('__id__')
-    if isinstance(node_id, str) and node_id:
+    if isinstance(node_id, _builtins.str) and node_id:
         _refs[node_id] = node
     node.next = _dict_to_list(d.get('next'), _refs)
     return node
@@ -146,10 +146,22 @@ export const TEMPLATE_PYTHON_TRACE_SERIALIZE_FUNCTION = `
 # Sentinel to mark skipped values (functions, etc.) - distinct from None
 _SKIP_SENTINEL = "__TRACECODE_SKIP__"
 _MAX_SERIALIZE_DEPTH = 48
+_MAX_SERIALIZED_ITEMS = 64
 _MAX_OBJECT_FIELDS = 32
 
 def _tracecode_ref_id(node_refs):
     return f"ref-{len(node_refs)}"
+
+def _truncation_marker(total, emitted):
+    return {"__truncated__": True, "remaining": max(0, total - emitted)}
+
+def _serialize_sequence(values, depth, node_refs):
+    values_list = _builtins.list(values)
+    emitted = min(len(values_list), _MAX_SERIALIZED_ITEMS)
+    result = [_serialize(x, depth + 1, node_refs) for x in values_list[:emitted]]
+    if emitted < len(values_list):
+        result.append(_truncation_marker(len(values_list), emitted))
+    return result
 
 def _serialize(obj, depth=0, node_refs=None):
     if node_refs is None:
@@ -164,21 +176,33 @@ def _serialize(obj, depth=0, node_refs=None):
         return obj
     if depth > _MAX_SERIALIZE_DEPTH:
         return "<max depth>"
-    elif isinstance(obj, (list, tuple)):
-        return [_serialize(x, depth + 1, node_refs) for x in obj]
+    elif isinstance(obj, (_builtins.list, _builtins.tuple)):
+        return _serialize_sequence(obj, depth, node_refs)
     elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':
-        return [_serialize(x, depth + 1, node_refs) for x in obj]
-    elif isinstance(obj, dict):
-        return {str(k): _serialize(v, depth + 1, node_refs) for k, v in obj.items()}
+        return _serialize_sequence(obj, depth, node_refs)
+    elif isinstance(obj, _builtins.dict):
+        items = _builtins.list(obj.items())
+        emitted = min(len(items), _MAX_SERIALIZED_ITEMS)
+        result = {str(k): _serialize(v, depth + 1, node_refs) for k, v in items[:emitted]}
+        if emitted < len(items):
+            result["__truncated__"] = True
+            result["remaining"] = len(items) - emitted
+        return result
     elif isinstance(obj, set):
         # Use try/except for sorting to handle heterogeneous sets
+        values = _builtins.list(obj)
+        emitted = min(len(values), _MAX_SERIALIZED_ITEMS)
         try:
-            sorted_vals = sorted([_serialize(x, depth + 1, node_refs) for x in obj])
+            sorted_vals = sorted([_serialize(x, depth + 1, node_refs) for x in values[:emitted]])
         except TypeError:
-            sorted_vals = [_serialize(x, depth + 1, node_refs) for x in obj]
-        return {"__type__": "set", "values": sorted_vals}
+            sorted_vals = [_serialize(x, depth + 1, node_refs) for x in values[:emitted]]
+        result = {"__type__": "set", "values": sorted_vals}
+        if emitted < len(values):
+            result["__truncated__"] = True
+            result["remaining"] = len(values) - emitted
+        return result
     elif isinstance(obj, TreeNode):
-        obj_ref = id(obj)
+        obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
         node_id = _tracecode_ref_id(node_refs)
@@ -194,7 +218,7 @@ def _serialize(obj, depth=0, node_refs=None):
             result["right"] = _serialize(obj.right, depth + 1, node_refs)
         return result
     elif isinstance(obj, ListNode):
-        obj_ref = id(obj)
+        obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
         node_id = _tracecode_ref_id(node_refs)
@@ -207,14 +231,14 @@ def _serialize(obj, depth=0, node_refs=None):
         result["next"] = _serialize(obj.next, depth + 1, node_refs)
         return result
     elif hasattr(obj, '__dict__'):
-        obj_ref = id(obj)
+        obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
         node_id = _tracecode_ref_id(node_refs)
         node_refs[obj_ref] = node_id
         class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
         result = {
-            "__type__": "object",
+            "__type__": class_name,
             "__class__": class_name,
             "__id__": node_id,
         }
@@ -222,19 +246,20 @@ def _serialize(obj, depth=0, node_refs=None):
             raw_fields = getattr(obj, '__dict__', None)
         except Exception:
             raw_fields = None
-        if isinstance(raw_fields, dict):
-            added = 0
+        if isinstance(raw_fields, _builtins.dict):
+            fields = []
             for key, value in raw_fields.items():
                 key_str = str(key)
                 if key_str.startswith('_'):
                     continue
                 if callable(value):
                     continue
+                fields.append((key_str, value))
+            for key_str, value in fields[:_MAX_OBJECT_FIELDS]:
                 result[key_str] = _serialize(value, depth + 1, node_refs)
-                added += 1
-                if added >= _MAX_OBJECT_FIELDS:
-                    result["__truncated__"] = True
-                    break
+            if len(fields) > _MAX_OBJECT_FIELDS:
+                result["__truncated__"] = True
+                result["remaining"] = len(fields) - _MAX_OBJECT_FIELDS
         return result
     elif callable(obj):
         # Skip functions entirely - return sentinel
@@ -242,6 +267,91 @@ def _serialize(obj, depth=0, node_refs=None):
     else:
         repr_str = repr(obj)
         # Filter out function-like representations (e.g., <function foo at 0x...>)
+        if repr_str.startswith('<') and repr_str.endswith('>'):
+            return _SKIP_SENTINEL
+        return repr_str
+
+def _serialize_output(obj, depth=0, node_refs=None):
+    if node_refs is None:
+        node_refs = {}
+    if isinstance(obj, (bool, int, str, type(None))):
+        return obj
+    elif isinstance(obj, float):
+        if not math.isfinite(obj):
+            if math.isnan(obj):
+                return "NaN"
+            return "Infinity" if obj > 0 else "-Infinity"
+        return obj
+    if depth > _MAX_SERIALIZE_DEPTH:
+        return "<max depth>"
+    elif isinstance(obj, (_builtins.list, _builtins.tuple)):
+        return [_serialize_output(x, depth + 1, node_refs) for x in obj]
+    elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':
+        return [_serialize_output(x, depth + 1, node_refs) for x in obj]
+    elif isinstance(obj, _builtins.dict):
+        return {str(k): _serialize_output(v, depth + 1, node_refs) for k, v in obj.items()}
+    elif isinstance(obj, set):
+        try:
+            sorted_vals = sorted([_serialize_output(x, depth + 1, node_refs) for x in obj])
+        except TypeError:
+            sorted_vals = [_serialize_output(x, depth + 1, node_refs) for x in obj]
+        return {"__type__": "set", "values": sorted_vals}
+    elif isinstance(obj, TreeNode):
+        obj_ref = _builtins.id(obj)
+        if obj_ref in node_refs:
+            return {"__ref__": node_refs[obj_ref]}
+        node_id = _tracecode_ref_id(node_refs)
+        node_refs[obj_ref] = node_id
+        result = {
+            "__type__": "TreeNode",
+            "__id__": node_id,
+            "val": _serialize_output(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, node_refs),
+        }
+        if hasattr(obj, 'left'):
+            result["left"] = _serialize_output(obj.left, depth + 1, node_refs)
+        if hasattr(obj, 'right'):
+            result["right"] = _serialize_output(obj.right, depth + 1, node_refs)
+        return result
+    elif isinstance(obj, ListNode):
+        obj_ref = _builtins.id(obj)
+        if obj_ref in node_refs:
+            return {"__ref__": node_refs[obj_ref]}
+        node_id = _tracecode_ref_id(node_refs)
+        node_refs[obj_ref] = node_id
+        result = {
+            "__type__": "ListNode",
+            "__id__": node_id,
+            "val": _serialize_output(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, node_refs),
+        }
+        result["next"] = _serialize_output(obj.next, depth + 1, node_refs)
+        return result
+    elif hasattr(obj, '__dict__'):
+        obj_ref = _builtins.id(obj)
+        if obj_ref in node_refs:
+            return {"__ref__": node_refs[obj_ref]}
+        node_id = _tracecode_ref_id(node_refs)
+        node_refs[obj_ref] = node_id
+        class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
+        result = {
+            "__type__": class_name,
+            "__class__": class_name,
+            "__id__": node_id,
+        }
+        try:
+            raw_fields = getattr(obj, '__dict__', None)
+        except Exception:
+            raw_fields = None
+        if isinstance(raw_fields, _builtins.dict):
+            for key, value in raw_fields.items():
+                key_str = str(key)
+                if key_str.startswith('_') or callable(value):
+                    continue
+                result[key_str] = _serialize_output(value, depth + 1, node_refs)
+        return result
+    elif callable(obj):
+        return _SKIP_SENTINEL
+    else:
+        repr_str = repr(obj)
         if repr_str.startswith('<') and repr_str.endswith('>'):
             return _SKIP_SENTINEL
         return repr_str
@@ -265,11 +375,11 @@ def _serialize(obj, depth=0):
         return obj
     if depth > _MAX_SERIALIZE_DEPTH:
         return "<max depth>"
-    elif isinstance(obj, (list, tuple)):
+    elif isinstance(obj, (_builtins.list, _builtins.tuple)):
         return [_serialize(x, depth + 1) for x in obj]
     elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':
         return [_serialize(x, depth + 1) for x in obj]
-    elif isinstance(obj, dict):
+    elif isinstance(obj, _builtins.dict):
         return {str(k): _serialize(v, depth + 1) for k, v in obj.items()}
     elif isinstance(obj, set):
         try:
@@ -286,6 +396,20 @@ def _serialize(obj, depth=0):
     elif isinstance(obj, ListNode):
         result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
         result["next"] = _serialize(obj.next, depth + 1)
+        return result
+    elif hasattr(obj, '__dict__'):
+        class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
+        result = {"__type__": class_name, "__class__": class_name}
+        try:
+            raw_fields = getattr(obj, '__dict__', None)
+        except Exception:
+            raw_fields = None
+        if isinstance(raw_fields, _builtins.dict):
+            for key, value in raw_fields.items():
+                key_str = str(key)
+                if key_str.startswith('_') or callable(value):
+                    continue
+                result[key_str] = _serialize(value, depth + 1)
         return result
     elif callable(obj):
         return None
@@ -312,9 +436,9 @@ def _serialize(obj, depth=0, state=None):
     if state["nodes"] > 600:
         return "__MAX_NODES__"
 
-    if isinstance(obj, (list, tuple)):
+    if isinstance(obj, (_builtins.list, _builtins.tuple)):
         return [_serialize(x, depth + 1, state) for x in obj]
-    elif isinstance(obj, dict):
+    elif isinstance(obj, _builtins.dict):
         return {str(k): _serialize(v, depth + 1, state) for k, v in obj.items()}
     elif isinstance(obj, set):
         serialized = [_serialize(x, depth + 1, state) for x in obj]
@@ -324,7 +448,7 @@ def _serialize(obj, depth=0, state=None):
             pass
         return {"__type__": "set", "values": serialized}
     elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and (hasattr(obj, 'left') or hasattr(obj, 'right')):
-        obj_id = id(obj)
+        obj_id = _builtins.id(obj)
         if obj_id in state["seen"]:
             return "__CYCLE__"
         state["seen"].add(obj_id)
@@ -336,7 +460,7 @@ def _serialize(obj, depth=0, state=None):
         state["seen"].remove(obj_id)
         return result
     elif (hasattr(obj, 'val') or hasattr(obj, 'value')) and hasattr(obj, 'next'):
-        obj_id = id(obj)
+        obj_id = _builtins.id(obj)
         if obj_id in state["seen"]:
             return "__CYCLE__"
         state["seen"].add(obj_id)
@@ -357,9 +481,9 @@ def _serialize(obj, depth=0):
         return "<max depth>"
     if isinstance(obj, (int, float, str, bool, type(None))):
         return obj
-    elif isinstance(obj, (list, tuple)):
+    elif isinstance(obj, (_builtins.list, _builtins.tuple)):
         return [_serialize(x, depth + 1) for x in obj]
-    elif isinstance(obj, dict):
+    elif isinstance(obj, _builtins.dict):
         return {str(k): _serialize(v, depth + 1) for k, v in obj.items()}
     elif isinstance(obj, set):
         try:

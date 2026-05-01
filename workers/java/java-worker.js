@@ -148,6 +148,8 @@ function isRecord(value) {
 
 function isListNodeShape(value) {
   if (!isRecord(value)) return false;
+  const typeName = typeof value.__type__ === 'string' ? value.__type__ : typeof value.__class__ === 'string' ? value.__class__ : null;
+  if (typeName && typeName !== 'ListNode' && typeName !== 'object') return false;
   if (!('val' in value || 'value' in value)) return false;
   if ('next' in value) return true;
   return typeof value.__id__ === 'string' && value.__id__.startsWith('list-');
@@ -155,6 +157,8 @@ function isListNodeShape(value) {
 
 function isTreeNodeShape(value) {
   if (!isRecord(value)) return false;
+  const typeName = typeof value.__type__ === 'string' ? value.__type__ : typeof value.__class__ === 'string' ? value.__class__ : null;
+  if (typeName && typeName !== 'TreeNode' && typeName !== 'object') return false;
   if (!('val' in value || 'value' in value)) return false;
   if ('left' in value || 'right' in value) return true;
   return typeof value.__id__ === 'string' && value.__id__.startsWith('tree-');
@@ -165,7 +169,28 @@ function detectFeatures(source, input) {
   return {
     hasList: /\bListNode\b/.test(source) || values.some((value) => isListNodeShape(value)),
     hasTree: /\bTreeNode\b/.test(source) || values.some((value) => isTreeNodeShape(value)),
+    hasCustomObject: values.some((value) => containsCustomObjectLiteral(value)),
+    hasMap: values.some((value) => containsPlainObjectLiteral(value)),
   };
+}
+
+function containsCustomObjectLiteral(value) {
+  if (Array.isArray(value)) return value.some((entry) => containsCustomObjectLiteral(entry));
+  if (!isRecord(value)) return false;
+  const typeName = typeof value.__type__ === 'string' ? value.__type__ : typeof value.__class__ === 'string' ? value.__class__ : null;
+  if (typeName && typeName !== 'TreeNode' && typeName !== 'ListNode' && typeName !== 'object') return true;
+  return Object.values(value).some((entry) => containsCustomObjectLiteral(entry));
+}
+
+function containsPlainObjectLiteral(value) {
+  if (Array.isArray(value)) return value.some((entry) => containsPlainObjectLiteral(entry));
+  if (!isRecord(value)) return false;
+  const typeName = typeof value.__type__ === 'string' ? value.__type__ : typeof value.__class__ === 'string' ? value.__class__ : null;
+  if (!typeName) return true;
+  if (typeName !== 'TreeNode' && typeName !== 'ListNode' && typeName !== 'object') return false;
+  return Object.entries(value)
+    .filter(([key]) => key !== '__type__' && key !== '__class__' && key !== '__id__')
+    .some(([, entry]) => containsPlainObjectLiteral(entry));
 }
 
 function toJavaScalarLiteral(value) {
@@ -173,6 +198,23 @@ function toJavaScalarLiteral(value) {
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (typeof value === 'string') return JSON.stringify(value);
   throw new Error(`Unsupported scalar literal: ${JSON.stringify(value)}`);
+}
+
+function toJavaScalarLiteralForType(value, expectedType) {
+  const normalized = expectedType ? stripGenericType(expectedType) : null;
+  if ((normalized === 'long' || normalized === 'Long') && typeof value === 'number' && Number.isInteger(value)) {
+    return `${String(value)}L`;
+  }
+  if ((normalized === 'double' || normalized === 'Double') && typeof value === 'number') {
+    return Number.isInteger(value) ? `${String(value)}.0` : String(value);
+  }
+  if ((normalized === 'float' || normalized === 'Float') && typeof value === 'number') {
+    return `${Number.isInteger(value) ? `${String(value)}.0` : String(value)}f`;
+  }
+  if (normalized === 'char' && typeof value === 'string' && value.length === 1) {
+    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  }
+  return toJavaScalarLiteral(value);
 }
 
 function toJavaArrayLiteral(value) {
@@ -224,6 +266,24 @@ function extractTypeArguments(typeSource) {
   return parts.map((part) => part.trim()).filter(Boolean);
 }
 
+function splitTopLevelCommaList(source) {
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of source) {
+    if (ch === '<' || ch === '(' || ch === '[') depth += 1;
+    if (ch === '>' || ch === ')' || ch === ']') depth -= 1;
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current) parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
 function toJavaTypedArrayLiteral(value, expectedType) {
   const normalized = stripGenericType(expectedType);
   if (!normalized.endsWith('[]')) {
@@ -266,7 +326,81 @@ function toJavaTypedArrayLiteral(value, expectedType) {
 
 function toJavaListLiteral(value, expectedType) {
   const [elementType = 'Object'] = extractTypeArguments(expectedType);
-  return `new java.util.ArrayList<>(java.util.List.of(${value.map((entry) => buildJavaExpression(entry, elementType)).join(', ')}))`;
+  return `new java.util.ArrayList<${elementType}>(java.util.Arrays.asList(${value.map((entry) => buildJavaExpression(entry, elementType)).join(', ')}))`;
+}
+
+function toJavaMapLiteral(value, expectedType) {
+  const [keyType = 'String', valueType = 'Object'] = extractTypeArguments(expectedType);
+  const entries = Object.entries(value)
+    .map(([key, child]) => `new Object[] { ${buildJavaExpression(key, keyType)}, ${buildJavaExpression(child, valueType)} }`);
+  return `typedMap(new Object[][] { ${entries.join(', ')} })`;
+}
+
+function toJavaObjectExpression(value) {
+  if (Array.isArray(value)) {
+    return `new java.util.ArrayList<Object>(java.util.Arrays.asList(${value.map((entry) => toJavaObjectExpression(entry)).join(', ')}))`;
+  }
+  if (isRecord(value)) {
+    return toJavaDynamicObjectExpression(value);
+  }
+  return toJavaScalarLiteral(value);
+}
+
+function customObjectTypeName(value) {
+  if (!isRecord(value)) return null;
+  const typeName = typeof value.__type__ === 'string' ? value.__type__ : typeof value.__class__ === 'string' ? value.__class__ : null;
+  if (!typeName || typeName === 'TreeNode' || typeName === 'ListNode' || typeName === 'object') return null;
+  return typeName;
+}
+
+function toJavaObjectFieldsExpression(value) {
+  const entries = Object.entries(value)
+    .filter(([key]) => key !== '__type__' && key !== '__class__' && key !== '__id__')
+    .map(([key, child]) => `new Object[] { ${JSON.stringify(key)}, ${toJavaDynamicObjectExpression(child)} }`);
+  return `objectFields(new Object[][] { ${entries.join(', ')} })`;
+}
+
+function toJavaDynamicObjectExpression(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) {
+    return `new java.util.ArrayList<Object>(java.util.Arrays.asList(${value.map((entry) => toJavaDynamicObjectExpression(entry)).join(', ')}))`;
+  }
+  if (isRecord(value)) {
+    const typeName = customObjectTypeName(value);
+    if (typeName) {
+      return `materializeObject(${JSON.stringify(typeName)}, ${toJavaObjectFieldsExpression(value)})`;
+    }
+    const entries = Object.entries(value)
+      .filter(([key]) => key !== '__type__' && key !== '__class__' && key !== '__id__')
+      .map(([key, child]) => `new Object[] { ${JSON.stringify(key)}, ${toJavaDynamicObjectExpression(child)} }`);
+    return `objectFields(new Object[][] { ${entries.join(', ')} })`;
+  }
+  return toJavaScalarLiteral(value);
+}
+
+function inputValueForParameter(input, key, index) {
+  if (Object.prototype.hasOwnProperty.call(input, key)) return input[key];
+  return Object.values(input)[index];
+}
+
+function inputArgumentsForParameters(rawArgs, parameters) {
+  if (parameters.length === 0) return [];
+  if (Array.isArray(rawArgs)) return rawArgs;
+  if (isRecord(rawArgs) && parameters.length > 0) {
+    return parameters.map((parameter, index) => inputValueForParameter(rawArgs, parameter.name, index));
+  }
+  return [];
+}
+
+function uniqueJavaIdentifier(baseName, usedNames) {
+  let candidate = baseName;
+  let suffix = 0;
+  while (usedNames.has(candidate)) {
+    suffix += 1;
+    candidate = `${baseName}${suffix}`;
+  }
+  usedNames.add(candidate);
+  return candidate;
 }
 
 function listLiteral(value) {
@@ -318,17 +452,18 @@ function listGraphExpression(head) {
 
   const values = nodes.map((node) => {
     const rawVal = node.val ?? node.value ?? 0;
-    if (typeof rawVal !== 'number' || !Number.isInteger(rawVal)) {
-      throw new Error(`Unsupported list node value: ${JSON.stringify(rawVal)}`);
-    }
     return rawVal;
   });
 
-  return `buildList(new int[] { ${values.join(', ')} }, new int[] { ${nextIndices.join(', ')} })`;
+  return `buildList(new Object[] { ${values.map((value) => toJavaScalarLiteral(value)).join(', ')} }, new int[] { ${nextIndices.join(', ')} })`;
 }
 
 function listExpression(value) {
   return `TraceHooks.reindexListIds(${listGraphExpression(value)})`;
+}
+
+function listArrayExpression(value) {
+  return `TraceHooks.reindexListIds(buildList(new Object[] { ${value.map((entry) => toJavaScalarLiteral(entry)).join(', ')} }, sequentialNextIndices(${value.length})))`;
 }
 
 function treeExpression(value) {
@@ -338,12 +473,29 @@ function treeExpression(value) {
   return `tree(${toJavaScalarLiteral(rawVal)}, ${left}, ${right})`;
 }
 
+function treeLevelOrderExpression(value) {
+  if (!value.every((entry) => entry === null || (typeof entry === 'number' && Number.isInteger(entry)))) {
+    throw new Error(`Unsupported tree node value: ${JSON.stringify(value.find((entry) => entry !== null && (typeof entry !== 'number' || !Number.isInteger(entry))))}`);
+  }
+  const values = value.map((entry) => (entry === null ? 'null' : String(entry))).join(', ');
+  return `buildTree(new Integer[] { ${values} })`;
+}
+
 function buildJavaExpression(value, expectedType) {
   const normalizedType = expectedType ? stripGenericType(expectedType) : null;
-  if (normalizedType === 'char' && typeof value === 'string' && value.length === 1) {
-    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  if (value === null || typeof value !== 'object') {
+    return toJavaScalarLiteralForType(value, normalizedType);
   }
   if (Array.isArray(value)) {
+    if (normalizedType === 'Object') {
+      return toJavaObjectExpression(value);
+    }
+    if (normalizedType === 'ListNode') {
+      return listArrayExpression(value);
+    }
+    if (normalizedType === 'TreeNode') {
+      return treeLevelOrderExpression(value);
+    }
     if (normalizedType?.startsWith('List<')) {
       return toJavaListLiteral(value, normalizedType);
     }
@@ -354,6 +506,10 @@ function buildJavaExpression(value, expectedType) {
   }
   if (isRecord(value) && normalizedType === 'ListNode') return listExpression(value);
   if (isRecord(value) && normalizedType === 'TreeNode') return treeExpression(value);
+  if (isRecord(value) && normalizedType?.startsWith('Map<')) return toJavaMapLiteral(value, normalizedType);
+  if (isRecord(value) && customObjectTypeName(value)) {
+    return `((${normalizedType ?? customObjectTypeName(value)}) ${toJavaDynamicObjectExpression(value)})`;
+  }
   if (isListNodeShape(value)) return listExpression(value);
   if (isTreeNodeShape(value)) return treeExpression(value);
   return toJavaScalarLiteral(value);
@@ -361,27 +517,98 @@ function buildJavaExpression(value, expectedType) {
 
 function buildHelperMethods(features) {
   const members = [];
+  if (features.hasList || features.hasCustomObject) {
+    members.push(`
+  private static Object coerceMaterializedValue(Object value, Class<?> targetType) {
+    if (value == null) {
+      return null;
+    }
+    if (targetType.isInstance(value)) {
+      return value;
+    }
+    if (targetType.isArray() && value instanceof java.util.List<?>) {
+      java.util.List<?> list = (java.util.List<?>) value;
+      Class<?> componentType = targetType.getComponentType();
+      Object array = java.lang.reflect.Array.newInstance(componentType, list.size());
+      for (int i = 0; i < list.size(); i++) {
+        java.lang.reflect.Array.set(array, i, coerceMaterializedValue(list.get(i), componentType));
+      }
+      return array;
+    }
+    if ((targetType == int.class || targetType == Integer.class) && value instanceof Number) return ((Number) value).intValue();
+    if ((targetType == long.class || targetType == Long.class) && value instanceof Number) return ((Number) value).longValue();
+    if ((targetType == double.class || targetType == Double.class) && value instanceof Number) return ((Number) value).doubleValue();
+    if ((targetType == float.class || targetType == Float.class) && value instanceof Number) return ((Number) value).floatValue();
+    if ((targetType == short.class || targetType == Short.class) && value instanceof Number) return ((Number) value).shortValue();
+    if ((targetType == byte.class || targetType == Byte.class) && value instanceof Number) return ((Number) value).byteValue();
+    if ((targetType == boolean.class || targetType == Boolean.class) && value instanceof Boolean) return value;
+    if ((targetType == char.class || targetType == Character.class) && value instanceof String && ((String) value).length() == 1) {
+      return ((String) value).charAt(0);
+    }
+    return value;
+  }`);
+  }
   if (features.hasList) {
     members.push(`
-  private static ListNode list(int val, ListNode next) {
-    ListNode node = new ListNode(val);
-    node.next = next;
-    return node;
+  private static ListNode list(Object val, ListNode next) {
+    try {
+      for (java.lang.reflect.Constructor<?> ctor : ListNode.class.getDeclaredConstructors()) {
+        Class<?>[] parameterTypes = ctor.getParameterTypes();
+        if (parameterTypes.length == 2 && parameterTypes[1] == ListNode.class) {
+          ctor.setAccessible(true);
+          return (ListNode) ctor.newInstance(coerceMaterializedValue(val, parameterTypes[0]), next);
+        }
+      }
+      for (java.lang.reflect.Constructor<?> ctor : ListNode.class.getDeclaredConstructors()) {
+        Class<?>[] parameterTypes = ctor.getParameterTypes();
+        if (parameterTypes.length == 1) {
+          ctor.setAccessible(true);
+          ListNode node = (ListNode) ctor.newInstance(coerceMaterializedValue(val, parameterTypes[0]));
+          try {
+            java.lang.reflect.Field nextField = ListNode.class.getDeclaredField("next");
+            nextField.setAccessible(true);
+            nextField.set(node, next);
+          } catch (Exception ignored) {
+          }
+          return node;
+        }
+      }
+      java.lang.reflect.Constructor<ListNode> ctor = ListNode.class.getDeclaredConstructor();
+      ctor.setAccessible(true);
+      ListNode node = ctor.newInstance();
+      java.lang.reflect.Field valField = ListNode.class.getDeclaredField("val");
+      valField.setAccessible(true);
+      valField.set(node, coerceMaterializedValue(val, valField.getType()));
+      java.lang.reflect.Field nextField = ListNode.class.getDeclaredField("next");
+      nextField.setAccessible(true);
+      nextField.set(node, next);
+      return node;
+    } catch (Exception error) {
+      throw new RuntimeException("Unable to materialize ListNode", error);
+    }
   }
 
-  private static ListNode buildList(int[] values, int[] nextIndices) {
+  private static ListNode buildList(Object[] values, int[] nextIndices) {
     if (values.length == 0) {
       return null;
     }
     ListNode[] nodes = new ListNode[values.length];
     for (int i = 0; i < values.length; i++) {
-      nodes[i] = new ListNode(values[i]);
+      nodes[i] = list(values[i], null);
     }
     for (int i = 0; i < values.length; i++) {
       int nextIndex = nextIndices[i];
       nodes[i].next = nextIndex >= 0 ? nodes[nextIndex] : null;
     }
     return nodes[0];
+  }
+
+  private static int[] sequentialNextIndices(int length) {
+    int[] indices = new int[length];
+    for (int i = 0; i < length; i++) {
+      indices[i] = i + 1 < length ? i + 1 : -1;
+    }
+    return indices;
   }`);
   }
   if (features.hasTree) {
@@ -391,33 +618,151 @@ function buildHelperMethods(features) {
     node.left = left;
     node.right = right;
     return node;
+  }
+
+  private static TreeNode buildTree(Integer[] values) {
+    if (values.length == 0 || values[0] == null) {
+      return null;
+    }
+    TreeNode root = new TreeNode(values[0]);
+    java.util.Queue<TreeNode> queue = new java.util.ArrayDeque<>();
+    queue.add(root);
+    int index = 1;
+    while (!queue.isEmpty() && index < values.length) {
+      TreeNode current = queue.remove();
+      if (values[index] != null) {
+        current.left = new TreeNode(values[index]);
+        queue.add(current.left);
+      }
+      index++;
+      if (index < values.length && values[index] != null) {
+        current.right = new TreeNode(values[index]);
+        queue.add(current.right);
+      }
+      index++;
+    }
+    return root;
   }`);
+  }
+  if (features.hasMap || features.hasCustomObject) {
+    members.push(`
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  private static <K, V> java.util.LinkedHashMap<K, V> typedMap(Object[][] entries) {
+    java.util.LinkedHashMap<K, V> map = new java.util.LinkedHashMap<>();
+    for (Object[] entry : entries) {
+      map.put((K) entry[0], (V) entry[1]);
+    }
+    return map;
+  }
+`);
+  }
+  if (features.hasCustomObject) {
+    members.push(`
+
+  private static java.util.LinkedHashMap<String, Object> objectFields(Object[][] entries) {
+    java.util.LinkedHashMap<String, Object> fields = new java.util.LinkedHashMap<>();
+    for (Object[] entry : entries) {
+      fields.put((String) entry[0], entry[1]);
+    }
+    return fields;
+  }
+
+  private static Object materializeObject(String typeName, java.util.LinkedHashMap<String, Object> fields) {
+    try {
+      Class<?> cls = Class.forName(new Object() {}.getClass().getPackageName() + "." + typeName);
+      Object[] values = fields.values().toArray();
+      for (java.lang.reflect.Constructor<?> ctor : cls.getDeclaredConstructors()) {
+        if (ctor.getParameterCount() != values.length) {
+          continue;
+        }
+        try {
+          Class<?>[] parameterTypes = ctor.getParameterTypes();
+          Object[] args = new Object[values.length];
+          for (int i = 0; i < values.length; i++) {
+            args[i] = coerceMaterializedValue(values[i], parameterTypes[i]);
+          }
+          ctor.setAccessible(true);
+          return ctor.newInstance(args);
+        } catch (Exception ignored) {
+        }
+      }
+      for (java.lang.reflect.Constructor<?> ctor : cls.getDeclaredConstructors()) {
+        if (ctor.getParameterCount() != 1 || values.length == 0) {
+          continue;
+        }
+        try {
+          Class<?>[] parameterTypes = ctor.getParameterTypes();
+          ctor.setAccessible(true);
+          Object instance = ctor.newInstance(coerceMaterializedValue(values[0], parameterTypes[0]));
+          for (java.util.Map.Entry<String, Object> entry : fields.entrySet()) {
+            try {
+              java.lang.reflect.Field field = cls.getDeclaredField(entry.getKey());
+              field.setAccessible(true);
+              field.set(instance, coerceMaterializedValue(entry.getValue(), field.getType()));
+            } catch (NoSuchFieldException ignored) {
+            }
+          }
+          return instance;
+        } catch (Exception ignored) {
+        }
+      }
+      java.lang.reflect.Constructor<?> noArg = cls.getDeclaredConstructor();
+      noArg.setAccessible(true);
+      Object instance = noArg.newInstance();
+      for (java.util.Map.Entry<String, Object> entry : fields.entrySet()) {
+        java.lang.reflect.Field field = cls.getDeclaredField(entry.getKey());
+        field.setAccessible(true);
+        field.set(instance, coerceMaterializedValue(entry.getValue(), field.getType()));
+      }
+      return instance;
+    } catch (Exception error) {
+      throw new RuntimeException("Unable to materialize " + typeName, error);
+    }
+  }
+
+`);
   }
   return members.join('\n');
 }
 
 function extractMethodParameters(source, methodName) {
+  return extractMethodParameterOverloads(source, methodName)[0] ?? [];
+}
+
+function extractMethodParameterOverloads(source, methodName) {
   const compact = source.replace(/\s+/g, ' ');
   const escapedMethod = methodName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = compact.match(new RegExp(`\\b${escapedMethod}\\s*\\(([^)]*)\\)`));
-  if (!match || !match[1] || !match[1].trim()) {
-    return [];
+  const overloads = [];
+  const pattern = new RegExp(`\\b${escapedMethod}\\s*\\(([^)]*)\\)`, 'g');
+  for (const match of compact.matchAll(pattern)) {
+    const rawParameters = match[1]?.trim();
+    if (!rawParameters) {
+      overloads.push([]);
+      continue;
+    }
+    overloads.push(
+      splitTopLevelCommaList(rawParameters)
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+        .map((segment) => {
+          const lastSpace = segment.lastIndexOf(' ');
+          if (lastSpace === -1) {
+            return { type: segment, name: segment };
+          }
+          return {
+            type: segment.slice(0, lastSpace).trim(),
+            name: segment.slice(lastSpace + 1).trim(),
+          };
+        })
+    );
   }
+  return overloads;
+}
 
-  return match[1]
-    .split(',')
-    .map((segment) => segment.trim())
-    .filter(Boolean)
-    .map((segment) => {
-      const lastSpace = segment.lastIndexOf(' ');
-      if (lastSpace === -1) {
-        return { type: segment, name: segment };
-      }
-      return {
-        type: segment.slice(0, lastSpace).trim(),
-        name: segment.slice(lastSpace + 1).trim(),
-      };
-    });
+function extractMethodParametersForArguments(source, methodName, rawArgs) {
+  const args = Array.isArray(rawArgs) ? rawArgs : [];
+  const overloads = extractMethodParameterOverloads(source, methodName);
+  return overloads.find((parameters) => parameters.length === args.length) ?? overloads[0] ?? [];
 }
 
 function extractMethodReturnType(source, methodName) {
@@ -537,6 +882,24 @@ function findMatchingBrace(source, openIndex) {
 function findSingleStatementEnd(source, bodyStart) {
   let cursor = bodyStart;
   while (/\s/.test(source[cursor] ?? '')) cursor += 1;
+  if (startsWithJavaKeyword(source, cursor, 'if')) {
+    let headerStart = cursor + 'if'.length;
+    while (/\s/.test(source[headerStart] ?? '')) headerStart += 1;
+    if (source[headerStart] === '(') {
+      const closeParen = findMatchingParen(source, headerStart);
+      if (closeParen >= 0) {
+        let nestedBodyStart = closeParen + 1;
+        while (/\s/.test(source[nestedBodyStart] ?? '')) nestedBodyStart += 1;
+        if (source[nestedBodyStart] === '{') {
+          const closeBrace = findMatchingBrace(source, nestedBodyStart);
+          if (closeBrace >= 0) return closeBrace;
+        }
+        if (source[nestedBodyStart] && source[nestedBodyStart] !== ';') {
+          return findSingleStatementEnd(source, nestedBodyStart);
+        }
+      }
+    }
+  }
   const loopKeyword = startsWithJavaKeyword(source, cursor, 'for')
     ? 'for'
     : startsWithJavaKeyword(source, cursor, 'while')
@@ -668,7 +1031,6 @@ function wrapSingleStatementLoopBodies(source) {
     const bodyChar = source[bodyStart];
     if (!bodyChar || bodyChar === '{' || bodyChar === ';') return closeParen;
     if (
-      startsWithJavaKeyword(source, bodyStart, 'if') ||
       startsWithJavaKeyword(source, bodyStart, 'switch') ||
       startsWithJavaKeyword(source, bodyStart, 'synchronized') ||
       startsWithJavaKeyword(source, bodyStart, 'try')
@@ -1453,6 +1815,14 @@ function normalizeJavaRequest(payload) {
     };
   }
 
+  if (payload.executionStyle === 'ops-class') {
+    return {
+      ...payload,
+      sourceText: payload.code,
+      code: wrapSingleStatementLoopBodies(payload.code),
+    };
+  }
+
   if (payload.executionStyle !== 'function') {
     return payload;
   }
@@ -1472,27 +1842,34 @@ function buildExportsSource(source, functionName, executionStyle, input) {
   if (executionStyle === 'ops-class') {
     const operations = Array.isArray(input.operations) ? input.operations : [];
     const argumentsList = Array.isArray(input.arguments) ? input.arguments : [];
-    const lines = [
-      `    ${functionName} instance = null;`,
-      '    java.util.List<Object> out = new java.util.ArrayList<>();',
-    ];
+    const lines = ['    java.util.List<Object> out = new java.util.ArrayList<>();'];
+    const hasConstructorOperation = operations[0] === functionName || operations[0] === '__init__' || operations[0] === 'init';
+    const constructorParameters = extractMethodParametersForArguments(source, functionName, argumentsList[0]);
+    const constructorArgs = hasConstructorOperation
+      ? inputArgumentsForParameters(argumentsList[0], constructorParameters)
+      : [];
+    const constructorInvocationArgs = constructorArgs
+      .map((arg, argIndex) => buildJavaExpression(arg, constructorParameters[argIndex]?.type))
+      .join(', ');
+    lines.push(`    ${functionName} instance = new ${functionName}(${constructorInvocationArgs});`);
+    if (hasConstructorOperation) {
+      lines.push('    out.add(null);');
+    }
 
     operations.forEach((operation, index) => {
-      const args = Array.isArray(argumentsList[index]) ? argumentsList[index] : [];
-      if (index === 0) {
-        lines.push(`    instance = new ${functionName}(${args.map((arg) => buildJavaExpression(arg)).join(', ')});`);
+      if (hasConstructorOperation && index === 0) {
+        return;
+      }
+      const operationName = String(operation);
+      const parameters = extractMethodParametersForArguments(source, operationName, argumentsList[index]);
+      const args = inputArgumentsForParameters(argumentsList[index], parameters);
+      const invocationArgs = args.map((arg, argIndex) => buildJavaExpression(arg, parameters[argIndex]?.type)).join(', ');
+      const returnType = extractMethodReturnType(source, operationName);
+      if (returnType === 'void') {
+        lines.push(`    instance.${operationName}(${invocationArgs});`);
         lines.push('    out.add(null);');
       } else {
-        const operationName = String(operation);
-        const parameters = extractMethodParameters(source, operationName);
-        const invocationArgs = args.map((arg, argIndex) => buildJavaExpression(arg, parameters[argIndex]?.type)).join(', ');
-        const returnType = extractMethodReturnType(source, operationName);
-        if (returnType === 'void') {
-          lines.push(`    instance.${operationName}(${invocationArgs});`);
-          lines.push('    out.add(null);');
-        } else {
-          lines.push(`    out.add(instance.${operationName}(${invocationArgs}));`);
-        }
+        lines.push(`    out.add(instance.${operationName}(${invocationArgs}));`);
       }
     });
 
@@ -1501,27 +1878,38 @@ ${helperMethods}
 
   public static String run() {
 ${lines.join('\n')}
-    return TraceHooks.serializeResult(out);
+    return TraceHooks.serializeOutputResult(out);
   }
 }
 `;
   }
 
   const parameters = extractMethodParameters(source, functionName);
-  const invocationArgs = (parameters.length > 0 ? parameters.map((parameter) => parameter.name) : Object.keys(input))
-    .map((key, index) => {
-      const type = parameters[index] ? parameters[index].type : undefined;
-      return buildJavaExpression(input[key], type);
-    })
-    .join(', ');
+  const returnType = extractMethodReturnType(source, functionName);
+  const invocationKeys = parameters.length > 0 ? parameters.map((parameter) => parameter.name) : Object.keys(input);
+  const usedLocalNames = new Set(['solution', ...invocationKeys]);
+  const resultLocalName = uniqueJavaIdentifier('__tracecode_result', usedLocalNames);
+  const materializedArgs = [];
+  for (let index = 0; index < invocationKeys.length; index += 1) {
+    const key = invocationKeys[index];
+    const parameter = parameters[index];
+    const type = parameter ? parameter.type : 'Object';
+    const value = inputValueForParameter(input, key, index);
+    const expression = buildJavaExpression(value, type);
+    materializedArgs.push(`    ${type} ${key} = ${expression};`);
+  }
+  const invocationArgs = invocationKeys.join(', ');
+  const invocationLine = returnType === 'void'
+    ? `    solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(null);`
+    : `    ${returnType || 'Object'} ${resultLocalName} = solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(${resultLocalName});`;
 
   return `public class Exports {
 ${helperMethods}
 
   public static String run() {
     Solution solution = new Solution();
-    Object result = solution.${functionName}(${invocationArgs});
-    return TraceHooks.serializeResult(result);
+${materializedArgs.join('\n')}
+${invocationLine}
   }
 }
 `;
@@ -1650,7 +2038,26 @@ function normalizePublicClassDeclarations(source) {
   return String(source).replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
 }
 
-async function collectCompileProbeDiagnostics(source, requestId, options) {
+function buildCompileProbeSource(payload, requestId, probeClassName, probePackageName) {
+  const exportsSource = buildExportsSource(
+    payload.code,
+    payload.functionName,
+    payload.executionStyle,
+    payload.inputs ?? {}
+  ).replaceAll(/\bpublic class Exports\b/g, `public class ${probeClassName}`);
+  return [
+    `package ${probePackageName};`,
+    '',
+    'import tracecode.user.TraceHooks;',
+    '',
+    normalizePublicClassDeclarations(payload.code).trim(),
+    '',
+    exportsSource.trim(),
+    '',
+  ].join('\n');
+}
+
+async function collectCompileProbeDiagnostics(payload, requestId, options) {
   const probeClassName = buildExportsClassName(`${requestId}RewriteProbe`);
   const probePackageName = buildPackageName(`${requestId}RewriteProbe`);
   const sourcePath = `/str/${probeClassName}.java`;
@@ -1669,7 +2076,10 @@ async function collectCompileProbeDiagnostics(source, requestId, options) {
   }
 
   try {
-    await self.cheerpOSAddStringFile(sourcePath, normalizePublicClassDeclarations(source));
+    await self.cheerpOSAddStringFile(
+      sourcePath,
+      buildCompileProbeSource(payload, requestId, probeClassName, probePackageName)
+    );
   } catch (error) {
     return {
       consoleOutput: [],
@@ -1892,7 +2302,7 @@ async function runJavaRequest(payload, requestId) {
     const diagnosticProbe = skipDiagnosticProbe
       ? { consoleOutput: [], error: null, hostCallMs: 0, diagnosticError: null }
       : await collectCompileProbeDiagnostics(
-          normalizedPayload.code,
+          normalizedPayload,
           requestId,
           payload.options
         );

@@ -109,7 +109,7 @@ function runListAppendParity(): void {
     lineSequence: [3],
     eventKindsByLine: { 3: ['line', 'mutate', 'snapshot'] },
     variableSnapshotsByLine: { 3: ['out'] },
-    accessTargetsByLine: { 3: [{ kind: 'mutate', variable: 'out', pathDepth: undefined, method: 'append' }] },
+    accessTargetsByLine: { 3: [{ kind: 'mutate', variable: 'out', pathDepth: undefined }] },
     callReturnShape: [],
   });
 }
@@ -124,7 +124,7 @@ function runMapSetParity(): void {
     lineSequence: [5],
     eventKindsByLine: { 5: ['line', 'mutate', 'snapshot'] },
     variableSnapshotsByLine: { 5: ['seen'] },
-    accessTargetsByLine: { 5: [{ kind: 'mutate', variable: 'seen', pathDepth: undefined, method: 'set' }] },
+    accessTargetsByLine: { 5: [{ kind: 'mutate', variable: 'seen', pathDepth: undefined }] },
     callReturnShape: [],
   });
 }

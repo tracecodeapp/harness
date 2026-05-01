@@ -4,7 +4,11 @@ import {
   type RuntimeTrace,
   type RuntimeTraceOptions,
 } from '../runtime-trace';
-import { assertSupportedRawEmissions, summarizeJavaRawEmissions } from '../runtime-raw-emission-contract';
+import {
+  assertSupportedRawEmissions,
+  normalizeJavaNativeTraceJsonPayload,
+  summarizeJavaRawEmissions,
+} from '../runtime-raw-emission-contract';
 
 export function normalizeJavaSerializedResult(output: unknown): unknown {
   if (typeof output !== 'string') {
@@ -120,7 +124,7 @@ function nativeJavaTraceEventsToTrace(
   let parsedEvents: RuntimeTraceEvent[] = events.map((event) => {
     let parsed: RuntimeTraceEvent;
     try {
-      parsed = JSON.parse(event.slice('trace:'.length)) as RuntimeTraceEvent;
+      parsed = JSON.parse(normalizeJavaNativeTraceJsonPayload(event.slice('trace:'.length))) as RuntimeTraceEvent;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid Java native runtime trace event: ${message}\n${event.slice(0, 500)}`);

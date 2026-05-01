@@ -15,9 +15,9 @@ public final class JavaRewriteLibrary {
       "^(\\s*)(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*\\{\\s*$");
   private static final Pattern RETURN_STMT = Pattern.compile("^(\\s*)return(?:\\s+(.+?))?;\\s*$");
   private static final Pattern ARRAY_WRITE_2D = Pattern.compile(
-      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*=\\s*(.+);\\s*$");
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
   private static final Pattern ARRAY_WRITE_1D = Pattern.compile(
-      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*=\\s*(.+);\\s*$");
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
   private static final Pattern ARRAY_COMPOUND_WRITE_2D = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*([+\\-*/%&|^]|<<|>>|>>>)=\\s*(.+);\\s*$");
   private static final Pattern ARRAY_COMPOUND_WRITE_1D = Pattern.compile(
@@ -51,6 +51,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern ARRAY_INDEXED_MAP_WRITE_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.(put|merge)\\((.*)\\);\\s*$");
+  private static final Pattern LIST_ARRAY_WRITE = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\s*\\[([^;\\]\\[]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
@@ -143,7 +145,10 @@ public final class JavaRewriteLibrary {
         continue;
       }
 
-      if (!current.pendingAnnotation && shouldEmitLine(trimmed)) {
+      boolean continuingExpression = current.expressionParenDepth > 0 || current.statementContinuation;
+      boolean suppressLineHook = current.suppressNextLineHook || continuingExpression;
+      current.suppressNextLineHook = false;
+      if (!current.pendingAnnotation && !suppressLineHook && shouldEmitLine(trimmed)) {
         out.append(indentOf(line)).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
       }
 
@@ -153,6 +158,13 @@ public final class JavaRewriteLibrary {
       if (startsMultilineControlHeader(trimmed)) {
         current.headerParenDepth = Math.max(0, parenDelta(line));
       }
+      if (startsUnbracedControlHeader(trimmed)) {
+        current.suppressNextLineHook = true;
+      }
+      if (endsWithExpressionContinuation(trimmed)) {
+        current.suppressNextLineHook = true;
+      }
+      updateExpressionContinuation(current, trimmed);
 
       current.depth += braceDelta(rewrittenLine);
       while (!methods.isEmpty() && methods.peek().depth <= 0) {
@@ -192,7 +204,7 @@ public final class JavaRewriteLibrary {
       Matcher mutatingExpression = MUTATING_CALL_EXPRESSION.matcher(declaration.group(4).trim());
       if (mutatingExpression.matches() && isTrackedMutationMethod(mutatingExpression.group(2))) {
         rewritten += " TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " +
-            quote(mutatingExpression.group(1)) + ", " + quote(normalizeMutationMethod(frame.typeOf(mutatingExpression.group(1)), mutatingExpression.group(2))) + ");";
+            quote(mutatingExpression.group(1)) + ", " + quote(mutatingExpression.group(2)) + ");";
       }
       if (isScalarSnapshotType(type)) {
         rewritten += "\n" + indent + "TraceHooks.emitLineAtLine(" + sourceLine + ", \" "+ name + "=\" + TraceHooks.serializeResult(" + name + "));";
@@ -222,7 +234,7 @@ public final class JavaRewriteLibrary {
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + (" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+          pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
       return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
@@ -238,7 +250,7 @@ public final class JavaRewriteLibrary {
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+          pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"}\");";
       return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
@@ -252,7 +264,7 @@ public final class JavaRewriteLibrary {
       String target = name + "." + field;
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\\\"" + field + "\\\"]}";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+          pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"}\");";
       return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
@@ -267,7 +279,7 @@ public final class JavaRewriteLibrary {
       String target = name + ".computeIfAbsent(" + key + ", " + fallback + ")";
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+          pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
       return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
@@ -284,7 +296,7 @@ public final class JavaRewriteLibrary {
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
       return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
@@ -312,6 +324,20 @@ public final class JavaRewriteLibrary {
       return indent + target + "." + method + "(" + joinedArgs + "); " + writeEvent;
     }
 
+    Matcher listArrayWrite = LIST_ARRAY_WRITE.matcher(line);
+    if (listArrayWrite.matches()) {
+      String indent = listArrayWrite.group(1);
+      String name = listArrayWrite.group(2);
+      String row = rewriteReads(listArrayWrite.group(3).trim(), sourceLine, frame);
+      String col = rewriteReads(listArrayWrite.group(4).trim(), sourceLine, frame);
+      String value = rewriteReads(listArrayWrite.group(5).trim(), sourceLine, frame);
+      String temp = "__tracecodeArrayListTarget" + sourceLine;
+      String target = "((int[])((java.util.List)" + name + ").get(" + row + "))";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + row + ") + \",\" + TraceHooks.serializeResult(" + col + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + "[" + col + "]) + \"}\");";
+      String writeEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"write\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + row + ") + \",\" + TraceHooks.serializeResult(" + col + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + value + ") + \"}\");";
+      return indent + "{ int[] " + temp + " = " + target + "; " + readEvent + " " + temp + "[" + col + "] = " + value + "; " + writeEvent + " }";
+    }
+
     Matcher arrayIndexedMutatingCall = ARRAY_INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
     if (arrayIndexedMutatingCall.matches() && isTrackedMutationMethod(arrayIndexedMutatingCall.group(4))) {
       String indent = arrayIndexedMutatingCall.group(1);
@@ -324,7 +350,7 @@ public final class JavaRewriteLibrary {
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + normalizeMutationMethod(method) + "\\\"}\");";
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
       return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
@@ -396,11 +422,13 @@ public final class JavaRewriteLibrary {
       String name = write2d.group(2);
       String row = write2d.group(3).trim();
       String col = write2d.group(4).trim();
-      if (hasIndexSideEffect(row) || hasIndexSideEffect(col)) {
-        return rewriteReads(line, sourceLine, frame);
-      }
       String value = rewriteReads(write2d.group(5).trim(), sourceLine, frame);
-      return indent + name + "[" + row + "][" + col + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + row + ", " + col + ", " + name + "[" + row + "][" + col + "]);";
+      String rowTemp = "__tracecodeRow" + sourceLine;
+      String colTemp = "__tracecodeCol" + sourceLine;
+      return indent + "{ int " + rowTemp + " = " + row + "; int " + colTemp + " = " + col + "; " +
+          name + "[" + rowTemp + "][" + colTemp + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" +
+          sourceLine + ", " + quote(name) + ", " + rowTemp + ", " + colTemp + ", " +
+          name + "[" + rowTemp + "][" + colTemp + "]); }";
     }
 
     Matcher write1d = ARRAY_WRITE_1D.matcher(line);
@@ -408,11 +436,11 @@ public final class JavaRewriteLibrary {
       String indent = write1d.group(1);
       String name = write1d.group(2);
       String idx = write1d.group(3).trim();
-      if (hasIndexSideEffect(idx)) {
-        return rewriteReads(line, sourceLine, frame);
-      }
       String value = rewriteReads(write1d.group(4).trim(), sourceLine, frame);
-      return indent + name + "[" + idx + "] = " + value + "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + idx + ", " + name + "[" + idx + "]);";
+      String indexTemp = "__tracecodeIndex" + sourceLine;
+      return indent + "{ int " + indexTemp + " = " + idx + "; " + name + "[" + indexTemp + "] = " + value +
+          "; TraceHooks.emitArrayWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + indexTemp + ", " +
+          name + "[" + indexTemp + "]); }";
     }
 
     Matcher mutatingCall = MUTATING_CALL_STATEMENT.matcher(line);
@@ -426,10 +454,10 @@ public final class JavaRewriteLibrary {
         String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
             pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + name + ") + \"}\");";
         String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-            pathPrefix + ",\\\"method\\\":\\\"" + normalizeMutationMethod(frame.typeOf(name), method) + "\\\"}\");";
+            pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"}\");";
         return indent + "{ " + readEvent + " " + name + "." + method + "(" + args + "); " + mutateEvent + " }";
       }
-      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(normalizeMutationMethod(frame.typeOf(name), method)) + ");";
+      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ");";
     }
 
     return rewriteReads(line, sourceLine, frame);
@@ -467,14 +495,17 @@ public final class JavaRewriteLibrary {
       if (full.contains("TraceHooks.")) return full;
       if (isArrayAllocationTypeMatch(arrayReadSource, match.start())) return full;
       if (isArrayWriteTarget(arrayReadSource, match.start(), match.end())) return full;
+      if (nextNonWhitespace(arrayReadSource, match.end()) == '[') return full;
       String name = match.group(1);
       String helper = arrayReadHelper(frame.typeOf(name));
       if (helper == null) return full;
       return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
     });
-    next = replaceAll(FIELD_READ, next, match -> {
+    final String fieldReadSource = next;
+    next = replaceAll(FIELD_READ, fieldReadSource, match -> {
       String full = match.group(0);
       if (full.contains("TraceHooks.")) return full;
+      if (isArrayWriteTarget(fieldReadSource, match.start(), match.end())) return full;
       String name = match.group(1);
       String field = match.group(2);
       if ("java".equals(name) || Character.isUpperCase(name.charAt(0)) || "out".equals(field) || "err".equals(field) || "length".equals(field)) return full;
@@ -544,6 +575,46 @@ public final class JavaRewriteLibrary {
     return parenDelta(trimmed) > 0;
   }
 
+  private static boolean startsUnbracedControlHeader(String trimmed) {
+    if (trimmed.contains("{") || trimmed.endsWith(";")) return false;
+    if (startsMultilineControlHeader(trimmed)) return false;
+    return trimmed.startsWith("if ") || trimmed.startsWith("if(") ||
+        trimmed.startsWith("while ") || trimmed.startsWith("while(") ||
+        trimmed.startsWith("for ") || trimmed.startsWith("for(") ||
+        trimmed.startsWith("else if ") || trimmed.startsWith("else if(") ||
+        trimmed.equals("else") ||
+        trimmed.startsWith("else ");
+  }
+
+  private static boolean endsWithExpressionContinuation(String trimmed) {
+    if (trimmed.isEmpty()) return false;
+    return trimmed.endsWith("||") || trimmed.endsWith("&&") ||
+        trimmed.endsWith("+") || trimmed.endsWith("-") || trimmed.endsWith("*") ||
+        trimmed.endsWith("/") || trimmed.endsWith("%") || trimmed.endsWith("?") ||
+        trimmed.endsWith(":") || trimmed.endsWith(",") ||
+        trimmed.endsWith("(") || trimmed.endsWith("[");
+  }
+
+  private static void updateExpressionContinuation(MethodFrame frame, String trimmed) {
+    if (trimmed.isEmpty() || trimmed.startsWith("//") || trimmed.startsWith("@")) {
+      return;
+    }
+    int nextParenDepth = Math.max(0, frame.expressionParenDepth + parenDelta(trimmed));
+    boolean startsStatementContinuation = !trimmed.endsWith(";") &&
+        !trimmed.endsWith("{") &&
+        !trimmed.endsWith("}") &&
+        !startsMultilineControlHeader(trimmed) &&
+        !trimmed.startsWith("if ") && !trimmed.startsWith("if(") &&
+        !trimmed.startsWith("while ") && !trimmed.startsWith("while(") &&
+        !trimmed.startsWith("for ") && !trimmed.startsWith("for(") &&
+        !trimmed.startsWith("switch ") && !trimmed.startsWith("switch(") &&
+        !trimmed.startsWith("else") &&
+        !trimmed.startsWith("catch") &&
+        !trimmed.startsWith("finally");
+    frame.expressionParenDepth = nextParenDepth;
+    frame.statementContinuation = nextParenDepth > 0 || (startsStatementContinuation && frame.depth > 0);
+  }
+
   private static boolean isArrayAllocationTypeMatch(String source, int matchStart) {
     String prefix = source.substring(0, matchStart).replaceAll("\\s+$", "");
     return prefix.matches("(?s).*\\bnew$");
@@ -560,7 +631,12 @@ public final class JavaRewriteLibrary {
   }
 
   private static boolean hasIndexSideEffect(String source) {
-    return source.contains("++") || source.contains("--");
+    if (source.contains("++") || source.contains("--")) return true;
+    Matcher call = Pattern.compile("\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\(").matcher(source);
+    while (call.find()) {
+      if (isTrackedMutationMethod(call.group(1))) return true;
+    }
+    return false;
   }
 
   private static char nextNonWhitespace(String source, int start) {
@@ -593,7 +669,12 @@ public final class JavaRewriteLibrary {
     String element = normalized.substring(0, normalized.length() - 4).trim();
     if ("int".equals(element)) return "readIntMatrixAtLine";
     if ("boolean".equals(element)) return "readBooleanMatrixAtLine";
+    if ("long".equals(element)) return "readLongMatrixAtLine";
+    if ("double".equals(element)) return "readDoubleMatrixAtLine";
+    if ("float".equals(element)) return "readFloatMatrixAtLine";
     if ("char".equals(element)) return "readCharMatrixAtLine";
+    if ("byte".equals(element)) return "readByteMatrixAtLine";
+    if ("short".equals(element)) return "readShortMatrixAtLine";
     return "readObjectMatrixAtLine";
   }
 
@@ -625,9 +706,18 @@ public final class JavaRewriteLibrary {
   private static String indexedAccessExpression(String name, String type, String index) {
     String normalized = type == null ? "" : normalizeJavaType(type);
     if (normalized.contains("Map")) {
-      return "((java.util.Collection)((java.util.Map)" + name + ").get(" + index + "))";
+      return "((" + indexedValueCastType(normalized, "java.util.Map") + ")((java.util.Map)" + name + ").get(" + index + "))";
     }
-    return "((java.util.Collection)((java.util.List)" + name + ").get(" + index + "))";
+    return "((" + indexedValueCastType(normalized, "java.util.List") + ")((java.util.List)" + name + ").get(" + index + "))";
+  }
+
+  private static String indexedValueCastType(String normalizedType, String fallback) {
+    if (normalizedType.contains("Deque<")) return "java.util.Deque";
+    if (normalizedType.contains("Queue<")) return "java.util.Queue";
+    if (normalizedType.contains("Set<")) return "java.util.Set";
+    if (normalizedType.contains("Collection<")) return "java.util.Collection";
+    if (normalizedType.contains("List<")) return "java.util.List";
+    return fallback;
   }
 
   private static String normalizeJavaType(String type) {
@@ -718,6 +808,9 @@ public final class JavaRewriteLibrary {
     if (trimmed.startsWith("{") || trimmed.equals("}")) return false;
     if (trimmed.startsWith("}")) return false;
     if (trimmed.startsWith(".")) return false;
+    if (trimmed.startsWith("case ") || trimmed.startsWith("default:")) return false;
+    if (trimmed.startsWith("?") || trimmed.startsWith(":")) return false;
+    if (trimmed.startsWith("&&") || trimmed.startsWith("||")) return false;
     if (trimmed.startsWith("else")) return false;
     if (trimmed.startsWith("catch") || trimmed.startsWith("finally")) return false;
     return true;
@@ -730,41 +823,13 @@ public final class JavaRewriteLibrary {
 
   private static boolean isTrackedMutationMethod(String method) {
     return "add".equals(method) || "push".equals(method) || "offer".equals(method) ||
+        "addAll".equals(method) ||
         "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) ||
         "addFirst".equals(method) || "offerFirst".equals(method) ||
         "remove".equals(method) || "clear".equals(method) || "poll".equals(method) ||
         "pollFirst".equals(method) || "removeFirst".equals(method) ||
         "pollLast".equals(method) || "removeLast".equals(method) || "pop".equals(method);
   }
-
-  private static String normalizeMutationMethod(String method) {
-    if ("add".equals(method) || "push".equals(method) || "offer".equals(method) ||
-        "addLast".equals(method) || "offerLast".equals(method)) {
-      return "append";
-    }
-    if ("addFirst".equals(method) || "offerFirst".equals(method)) {
-      return "appendleft";
-    }
-    if ("poll".equals(method) || "pollFirst".equals(method) || "removeFirst".equals(method)) {
-      return "popleft";
-    }
-    if ("pollLast".equals(method) || "removeLast".equals(method)) {
-      return "pop";
-    }
-    if ("put".equals(method)) {
-      return "set";
-    }
-    return method;
-  }
-
-  private static String normalizeMutationMethod(String type, String method) {
-    String normalizedType = type == null ? "" : normalizeJavaType(type);
-    if ("poll".equals(method) && normalizedType.contains("PriorityQueue")) {
-      return "pop";
-    }
-    return normalizeMutationMethod(method);
-  }
-
   private static int braceDelta(String line) {
     int delta = 0;
     boolean inString = false;
@@ -840,7 +905,10 @@ public final class JavaRewriteLibrary {
     int depth;
     int initializerDepth;
     int headerParenDepth;
+    int expressionParenDepth;
     boolean pendingAnnotation;
+    boolean suppressNextLineHook;
+    boolean statementContinuation;
     final java.util.Set<String> fields;
     final Map<String, String> variables;
 
@@ -849,7 +917,10 @@ public final class JavaRewriteLibrary {
       this.depth = depth;
       this.initializerDepth = 0;
       this.headerParenDepth = 0;
+      this.expressionParenDepth = 0;
       this.pendingAnnotation = false;
+      this.suppressNextLineHook = false;
+      this.statementContinuation = false;
       this.fields = new java.util.HashSet<>(fields.keySet());
       this.variables = new HashMap<>(fields);
       registerParameters(this.variables, parametersSource);

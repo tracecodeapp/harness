@@ -407,6 +407,45 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   console.log('PASS: execute-code map/set serialization contract');
 
+  const executeLargeValueSerialization = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+  }>('execute-code', {
+    code: `function largeValueSnapshot() {
+  const arr = Array.from({ length: 70 }, (_, i) => i);
+  const map = new Map(arr.map((value) => [String(value), value]));
+  const set = new Set(arr);
+  return { arr, map, set };
+}`,
+    functionName: 'largeValueSnapshot',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(executeLargeValueSerialization.success === true, 'Large value serialization should succeed');
+  const largeOutput = executeLargeValueSerialization.output as Record<string, unknown>;
+  const largeArray = largeOutput.arr as unknown[];
+  const largeMap = largeOutput.map as { entries?: unknown[]; __truncated__?: unknown; remaining?: unknown };
+  const largeSet = largeOutput.set as { values?: unknown[]; __truncated__?: unknown; remaining?: unknown };
+  assertCondition(
+    Array.isArray(largeArray) &&
+      largeArray.length === 70 &&
+      largeArray[69] === 69,
+    'Final output arrays should not use the trace snapshot item cap'
+  );
+  assertCondition(
+    Array.isArray(largeMap.entries) &&
+      largeMap.entries.length === 70 &&
+      largeMap.__truncated__ !== true,
+    'Final output maps should not use the trace snapshot item cap'
+  );
+  assertCondition(
+    Array.isArray(largeSet.values) &&
+      largeSet.values.length === 70 &&
+      largeSet.__truncated__ !== true,
+    'Final output sets should not use the trace snapshot item cap'
+  );
+  console.log('PASS: execute-code large final output serialization is uncapped');
+
   const executeTypeScript = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -628,7 +667,7 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   });
   assertCondition(executeTypeScriptBfsLineMapping.success === true, 'TypeScript BFS tracing should succeed');
   const queuePushLines = traceAccessEvents(executeTypeScriptBfsLineMapping)
-    .filter((event) => event.target?.variable === 'queue' && event.kind === 'mutate' && event.method === 'append')
+    .filter((event) => event.target?.variable === 'queue' && event.kind === 'mutate' && event.method === 'push')
     .map((event) => event.line);
   assertCondition(
     queuePushLines.length > 0 && queuePushLines.every((line) => line !== 16 && line !== 17 && line !== 18),
@@ -693,7 +732,7 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   });
   assertCondition(executeTypeScriptTopoLineMapping.success === true, 'TypeScript topological-sort tracing should succeed');
   const queuePushTopoLines = traceAccessEvents(executeTypeScriptTopoLineMapping)
-    .filter((event) => event.target?.variable === 'queue' && event.kind === 'mutate' && event.method === 'append')
+    .filter((event) => event.target?.variable === 'queue' && event.kind === 'mutate' && event.method === 'push')
     .map((event) => event.line);
   assertCondition(
     queuePushTopoLines.length > 0 &&
@@ -701,7 +740,7 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     'TypeScript topological-sort tracing should not attach queue.push effects to stale queue/order setup lines'
   );
   const orderPushLines = traceAccessEvents(executeTypeScriptTopoLineMapping)
-    .filter((event) => event.target?.variable === 'order' && event.kind === 'mutate' && event.method === 'append')
+    .filter((event) => event.target?.variable === 'order' && event.kind === 'mutate' && event.method === 'push')
     .map((event) => event.line);
   assertCondition(
     orderPushLines.length > 0 && orderPushLines.every((line) => line === 23),
@@ -800,6 +839,75 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   );
   assertNoRuntimeTraceVisualizerPayloadLeak(executeTypeScriptTreeInputTracing, 'typescript tree-input tracing');
   console.log('PASS: execute-with-tracing typescript tree input materialization contract');
+
+  const executeJavaScriptDestructuringPropertySwapTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  invertTree(root) {
+    if (!root) return [];
+    const invert = (node) => {
+      if (!node) return;
+      [node.left, node.right] = [node.right, node.left];
+      invert(node.left);
+      invert(node.right);
+    };
+    invert(root);
+    return [root.val, root.left.val, root.right.val];
+  }
+}`,
+    functionName: 'invertTree',
+    executionStyle: 'solution-method',
+    language: 'javascript',
+    inputs: {
+      root: [4, 2, 7],
+    },
+  });
+  assertCondition(
+    executeJavaScriptDestructuringPropertySwapTracing.success === true,
+    `JavaScript destructuring property swap tracing should succeed: ${executeJavaScriptDestructuringPropertySwapTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(executeJavaScriptDestructuringPropertySwapTracing.output) === JSON.stringify([4, 7, 2]),
+    'JavaScript destructuring property swap tracing should preserve execution semantics'
+  );
+
+  const executeTypeScriptDestructuringPropertySwapTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  invertTree(root: TreeNode | null): number[] {
+    if (!root) return [];
+    const invert = (node: TreeNode | null): void => {
+      if (!node) return;
+      [node.left, node.right] = [node.right, node.left];
+      invert(node.left);
+      invert(node.right);
+    };
+    invert(root);
+    return [root.val, root.left!.val, root.right!.val];
+  }
+}`,
+    functionName: 'invertTree',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: {
+      root: [4, 2, 7],
+    },
+  });
+  assertCondition(
+    executeTypeScriptDestructuringPropertySwapTracing.success === true,
+    `TypeScript destructuring property swap tracing should succeed: ${executeTypeScriptDestructuringPropertySwapTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(executeTypeScriptDestructuringPropertySwapTracing.output) === JSON.stringify([4, 7, 2]),
+    'TypeScript destructuring property swap tracing should preserve execution semantics'
+  );
+  console.log('PASS: execute-with-tracing JS/TS destructuring property swap contract');
 
   const executeTypeScriptReverseListTracing = await harness.sendMessage<{
     success: boolean;
@@ -1057,7 +1165,7 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
       (access) =>
         access.target?.variable === 'queue' &&
         access.kind === 'mutate' &&
-        access.method === 'append'
+        access.method === 'push'
     ) &&
       flatAccesses.some(
         (access) =>

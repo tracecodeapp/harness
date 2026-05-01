@@ -86,13 +86,12 @@ function testForbiddenRuntimeTracePayloadRejection(): void {
     traceSummary.unsupported.length === 1 &&
       traceSummary.unsupported[0]?.includes('visualization') &&
       traceSummary.unsupported[0]?.includes('objectKinds') &&
-      traceSummary.unsupported[0]?.includes('hashMaps') &&
-      traceSummary.unsupported[0]?.includes('tree'),
+      traceSummary.unsupported[0]?.includes('hashMaps'),
     'runtime trace summary should reject visualizer/semantic payload tokens'
   );
   assertThrows(
     () => assertSupportedRawEmissions(traceSummary, 'python:semantic-leak'),
-    /forbidden runtime trace token.*visualization.*objectKinds.*hashMaps.*tree/s,
+    /forbidden runtime trace token.*visualization.*objectKinds.*hashMaps/s,
     'raw contract should reject runtime trace visualizer payloads'
   );
 
@@ -133,6 +132,42 @@ function testForbiddenRuntimeTracePayloadRejection(): void {
   assertCondition(
     userTargetSummary.unsupported.length === 0,
     'raw contract should not reject user target names that match semantic tokens'
+  );
+  const userFunctionSummary = summarizeJavaRawEmissions([
+    `trace:${JSON.stringify({
+      kind: 'call',
+      line: 4,
+      function: 'tree',
+      args: {},
+    })}`,
+  ]);
+  assertCondition(
+    userFunctionSummary.unsupported.length === 0,
+    'raw contract should not reject user function names that match semantic tokens'
+  );
+  const userValueSummary = summarizeJavaRawEmissions([
+    `trace:${JSON.stringify({
+      kind: 'snapshot',
+      line: 5,
+      target: { variable: 'words' },
+      value: ['tree', 'linked-list', 'graph-adjacency'],
+    })}`,
+  ]);
+  assertCondition(
+    userValueSummary.unsupported.length === 0,
+    'raw contract should not reject ordinary user string values that match semantic tokens'
+  );
+  const userArgSummary = summarizeJavaRawEmissions([
+    `trace:${JSON.stringify({
+      kind: 'call',
+      line: 6,
+      function: 'solve',
+      args: { tree: [1, 2], 'linked-list': 'value' },
+    })}`,
+  ]);
+  assertCondition(
+    userArgSummary.unsupported.length === 0,
+    'raw contract should not reject user argument names that match semantic tokens'
   );
   console.log('PASS: raw emission contract rejects visualizer and semantic runtime payload leaks');
 }

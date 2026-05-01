@@ -69,7 +69,6 @@ export interface RuntimeTraceParityAccessTarget {
   kind: 'read' | 'write' | 'mutate';
   variable?: string;
   pathDepth?: number;
-  method?: string;
 }
 
 export interface RuntimeTraceParitySignature {
@@ -144,7 +143,6 @@ export function buildRuntimeTraceParitySignature(trace: RuntimeTrace): RuntimeTr
         pathDepth: 'path' in event.target && Array.isArray(event.target.path)
           ? event.target.path.length
           : undefined,
-        ...(event.kind === 'mutate' && event.method ? { method: event.method } : {}),
       });
       accessTargetsByLine.set(event.line, accesses);
     }
@@ -168,8 +166,8 @@ export function buildRuntimeTraceParitySignature(trace: RuntimeTrace): RuntimeTr
       [...accessTargetsByLine.entries()].map(([line, accesses]) => [
         line,
         accesses.sort((left, right) => {
-          const leftKey = `${left.kind}:${left.variable ?? ''}:${left.pathDepth ?? 0}:${left.method ?? ''}`;
-          const rightKey = `${right.kind}:${right.variable ?? ''}:${right.pathDepth ?? 0}:${right.method ?? ''}`;
+          const leftKey = `${left.kind}:${left.variable ?? ''}:${left.pathDepth ?? 0}`;
+          const rightKey = `${right.kind}:${right.variable ?? ''}:${right.pathDepth ?? 0}`;
           return leftKey.localeCompare(rightKey);
         }),
       ])

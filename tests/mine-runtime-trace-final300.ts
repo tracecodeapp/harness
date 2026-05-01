@@ -135,6 +135,34 @@ interface FailureRecord {
   error: string;
 }
 
+interface MineReport {
+  corpusPath: string;
+  sourceRoot: string;
+  offset: number;
+  limit: number;
+  maxTraceSteps: number;
+  maxLineEvents: number;
+  maxSingleLineHits: number;
+  compareRuntimeFacts: boolean;
+  includeSignatureDiffs: boolean;
+  maxReportDrifts: number;
+  maxReportFailures: number;
+  failOnFailure: boolean;
+  groupsScanned: number;
+  synthesizedJavaEntries: number;
+  comparisons: number;
+  driftCount: number;
+  driftCountsByLanguage: Record<MineLanguage, number>;
+  failureCount: number;
+  hardFailureCount: number;
+  driftClusters: DriftCluster[];
+  operationTokenClusters: OperationTokenCluster[];
+  reportedDriftCount: number;
+  reportedFailureCount: number;
+  drifts: DriftRecord[];
+  failures: FailureRecord[];
+}
+
 function parseStringFlag(name: string): string | undefined {
   const prefix = `--${name}=`;
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
@@ -145,6 +173,11 @@ function parseNumberFlag(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function tailString(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.floor(maxLength / 2))}\n...[truncated ${value.length - maxLength} chars]...\n${value.slice(value.length - Math.ceil(maxLength / 2))}`;
 }
 
 function hasFlag(name: string): boolean {
@@ -169,11 +202,47 @@ function stableStringify(value: unknown): string {
     .join(',') + '}';
 }
 
-function normalizeOutputForComparison(value: unknown): unknown {
+function collectSerializedRefs(value: unknown, refs: Map<string, Record<string, unknown>>, seen = new WeakSet<object>()): void {
+  if (value === null || typeof value !== 'object') return;
+  const objectValue = value as object;
+  if (seen.has(objectValue)) return;
+  seen.add(objectValue);
+  if (Array.isArray(value)) {
+    for (const item of value) collectSerializedRefs(item, refs, seen);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.__id__ === 'string' && record.__id__.length > 0) {
+    refs.set(record.__id__, record);
+  }
+  for (const child of Object.values(record)) {
+    collectSerializedRefs(child, refs, seen);
+  }
+}
+
+function normalizeOutputForComparison(
+  value: unknown,
+  refs?: Map<string, Record<string, unknown>>,
+  resolving = new Set<string>()
+): unknown {
+  if (!refs) {
+    const collected = new Map<string, Record<string, unknown>>();
+    collectSerializedRefs(value, collected);
+    return normalizeOutputForComparison(value, collected);
+  }
   if (value === undefined) return null;
   if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map((item) => normalizeOutputForComparison(item));
+  if (Array.isArray(value)) return value.map((item) => normalizeOutputForComparison(item, refs, resolving));
   const input = value as Record<string, unknown>;
+  if (typeof input.__ref__ === 'string' && Object.keys(input).length === 1) {
+    if (resolving.has(input.__ref__)) return { __ref__: input.__ref__ };
+    const target = refs.get(input.__ref__);
+    if (!target) return null;
+    resolving.add(input.__ref__);
+    const normalized = normalizeOutputForComparison(target, refs, resolving);
+    resolving.delete(input.__ref__);
+    return normalized;
+  }
   const output: Record<string, unknown> = {};
   const looksLikeListNode = ('next' in input) && ('val' in input || 'value' in input);
   const looksLikeTreeNode = ('left' in input || 'right' in input) && ('val' in input || 'value' in input);
@@ -184,7 +253,8 @@ function normalizeOutputForComparison(value: unknown): unknown {
   for (const [key, child] of Object.entries(input)) {
     if (key === '__id__' || key === '__class__') continue;
     if (key === '__type__') continue;
-    output[key] = normalizeOutputForComparison(child);
+    if (key === 'value' && (looksLikeListNode || looksLikeTreeNode) && 'val' in input) continue;
+    output[key] = normalizeOutputForComparison(child, refs, resolving);
   }
   return output;
 }
@@ -203,8 +273,7 @@ function targetKey(event: RuntimeTraceEvent): string | null {
   }
   if (!('variable' in event.target)) return null;
   const pathDepth = 'path' in event.target && Array.isArray(event.target.path) ? event.target.path.length : 0;
-  const method = event.kind === 'mutate' && 'method' in event && event.method ? `:${event.method}` : '';
-  return `${event.kind}:${event.target.variable}:path${pathDepth}${method}`;
+  return `${event.kind}:${event.target.variable}:path${pathDepth}`;
 }
 
 function buildMineSignature(trace: RuntimeTrace): MineSignature {
@@ -242,10 +311,31 @@ async function runProcess(command: string, args: string[], input?: string): Prom
     const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    const maxOutputChars = parseNumberFlag('max-process-output-chars', 16_000_000);
+    let truncatedStdout = false;
+    let truncatedStderr = false;
+    child.stdout.on('data', (chunk) => {
+      if (stdout.length < maxOutputChars) {
+        stdout += String(chunk).slice(0, maxOutputChars - stdout.length);
+      } else {
+        truncatedStdout = true;
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      if (stderr.length < maxOutputChars) {
+        stderr += String(chunk).slice(0, maxOutputChars - stderr.length);
+      } else {
+        truncatedStderr = true;
+      }
+    });
     child.on('error', reject);
     child.on('close', (code) => {
+      if (truncatedStdout) stdout += '\n[stdout truncated by runtime trace miner]';
+      if (truncatedStderr) stderr += '\n[stderr truncated by runtime trace miner]';
+      if (truncatedStdout || truncatedStderr) {
+        reject(new Error(`${command} process output exceeded ${maxOutputChars} chars`));
+        return;
+      }
       if (code === 0) {
         resolvePromise(stdout);
         return;
@@ -309,7 +399,7 @@ print(json.dumps({
         'lineEventCount': len([event for event in _trace_events if event.get('kind') == 'line']),
         'traceStepCount': len(_trace_events)
     },
-    'result': _serialize(_result),
+    'result': _serialize_output(_result),
     'lineEventCount': _total_line_events,
     'traceStepCount': len(_trace_events),
     'traceLimitExceeded': bool(globals().get('_trace_limit_exceeded', False)),
@@ -769,6 +859,20 @@ function clusterDrifts(drifts: DriftRecord[]): DriftCluster[] {
   return [...clusters.values()].sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
 }
 
+function trimDriftForReport(drift: DriftRecord, includeSignatureDiff: boolean): DriftRecord {
+  return {
+    ...drift,
+    ...(includeSignatureDiff ? { signatureDiff: drift.signatureDiff } : { signatureDiff: undefined }),
+  };
+}
+
+function trimFailureForReport(failure: FailureRecord, maxErrorChars: number): FailureRecord {
+  return {
+    ...failure,
+    error: tailString(failure.error, maxErrorChars),
+  };
+}
+
 function synthesizeJavaEntry(sourceRoot: string, group: Final300Entry[]): Final300Entry | null {
   if (group.some((entry) => entry.language === 'java')) return null;
   const reference = group.find((entry) => entry.language === 'python') ?? group[0];
@@ -796,6 +900,236 @@ async function writeReport(reportPath: string, value: unknown): Promise<void> {
   await writeFile(reportPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+async function loadMineGroups(corpusPath: string, sourceRoot: string): Promise<Array<[string, Final300Entry[]]>> {
+  const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as Final300Entry[];
+  const bySlug = new Map<string, Final300Entry[]>();
+  for (const entry of entries) {
+    if (!['python', 'javascript', 'typescript', 'java'].includes(entry.language)) continue;
+    const group = bySlug.get(entry.slug) ?? [];
+    group.push(entry);
+    bySlug.set(entry.slug, group);
+  }
+  for (const [slug, group] of bySlug) {
+    const javaEntry = synthesizeJavaEntry(sourceRoot, group);
+    if (javaEntry) {
+      bySlug.set(slug, [...group, javaEntry]);
+    }
+  }
+  return [...bySlug.entries()]
+    .filter(([, group]) => group.some((entry) => entry.language === 'python') && group.length > 1);
+}
+
+function mergeCountMaps<T extends string>(left: Record<T, number>, right: Record<T, number>): Record<T, number> {
+  const merged = { ...left };
+  for (const [key, value] of Object.entries(right) as Array<[T, number]>) {
+    merged[key] = (merged[key] ?? 0) + value;
+  }
+  return merged;
+}
+
+function mergeDriftClusters(reports: MineReport[]): DriftCluster[] {
+  const clusters = new Map<string, DriftCluster>();
+  for (const report of reports) {
+    for (const incoming of report.driftClusters) {
+      const cluster = clusters.get(incoming.key) ?? { key: incoming.key, count: 0, examples: [] };
+      cluster.count += incoming.count;
+      for (const example of incoming.examples) {
+        if (cluster.examples.length >= 8) break;
+        cluster.examples.push(example);
+      }
+      clusters.set(incoming.key, cluster);
+    }
+  }
+  return [...clusters.values()].sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
+}
+
+function mergeOperationTokenClusters(reports: MineReport[]): OperationTokenCluster[] {
+  const clusters = new Map<string, OperationTokenCluster>();
+  for (const report of reports) {
+    for (const incoming of report.operationTokenClusters) {
+      const key = `${incoming.direction}:${incoming.token}`;
+      const cluster = clusters.get(key) ?? {
+        token: incoming.token,
+        direction: incoming.direction,
+        count: 0,
+        examples: [],
+      };
+      cluster.count += incoming.count;
+      for (const example of incoming.examples) {
+        if (cluster.examples.length >= 8) break;
+        cluster.examples.push(example);
+      }
+      clusters.set(key, cluster);
+    }
+  }
+  return [...clusters.values()].sort((left, right) =>
+    right.count - left.count ||
+    left.direction.localeCompare(right.direction) ||
+    left.token.localeCompare(right.token)
+  );
+}
+
+function childMineArgs(reportPath: string, offset: number): string[] {
+  const blocked = new Set(['jobs', 'report', 'limit', 'offset']);
+  const args = process.argv.slice(2).filter((arg) => {
+    if (arg === '--worker') return false;
+    const match = /^--([^=]+)/.exec(arg);
+    return !match || !blocked.has(match[1]);
+  });
+  return [...args, '--worker', '--limit=1', `--offset=${offset}`, `--report=${reportPath}`];
+}
+
+async function runConcurrentMine(
+  corpusPath: string,
+  sourceRoot: string,
+  reportPath: string,
+  limit: number,
+  offset: number,
+  jobs: number
+): Promise<void> {
+  const groups = (await loadMineGroups(corpusPath, sourceRoot)).slice(offset, offset + limit);
+  const workDir = await mkdtemp(join(tmpdir(), 'tracecode-runtime-trace-mine-shards-'));
+  const scriptPath = resolve(process.argv[1]);
+  const reports: MineReport[] = [];
+  const failures: FailureRecord[] = [];
+  const workerTimeoutMs = parseNumberFlag('worker-timeout-ms', 180_000);
+  let nextIndex = 0;
+
+  async function runOne(groupIndex: number): Promise<void> {
+    const absoluteOffset = offset + groupIndex;
+    const [slug, group] = groups[groupIndex];
+    const childReportPath = join(workDir, `${String(absoluteOffset).padStart(6, '0')}.json`);
+    const output = await new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolvePromise, reject) => {
+      const child = spawn('pnpm', ['exec', 'tsx', scriptPath, ...childMineArgs(childReportPath, absoluteOffset)], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      });
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+      const timeoutId = setTimeout(() => {
+        timedOut = true;
+        try {
+          process.kill(-child.pid, 'SIGTERM');
+        } catch {
+          child.kill('SIGTERM');
+        }
+        setTimeout(() => {
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            child.kill('SIGKILL');
+          }
+        }, 5_000).unref();
+      }, workerTimeoutMs);
+      timeoutId.unref();
+      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.on('error', (error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+      child.on('close', (code) => {
+        clearTimeout(timeoutId);
+        resolvePromise({ code, stdout, stderr, timedOut });
+      });
+    });
+    if (output.code !== 0 || !existsSync(childReportPath)) {
+      for (const entry of group) {
+        failures.push({
+          slug,
+          language: entry.language,
+          error: tailString(
+            output.timedOut
+              ? `runner-process-timeout: child exceeded ${workerTimeoutMs}ms\n${output.stderr || output.stdout}`
+              : `runner-process-crash: child exited with ${output.code}\n${output.stderr || output.stdout}`,
+            12_000
+          ),
+        });
+      }
+      return;
+    }
+    reports.push(JSON.parse(await readFile(childReportPath, 'utf8')) as MineReport);
+  }
+
+  async function worker(): Promise<void> {
+    while (nextIndex < groups.length) {
+      const groupIndex = nextIndex;
+      nextIndex += 1;
+      await runOne(groupIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.max(1, jobs) }, () => worker()));
+
+  const driftCount = reports.reduce((sum, report) => sum + report.driftCount, 0);
+  const failureCount = reports.reduce((sum, report) => sum + report.failureCount, 0) + failures.length;
+  const hardFailureCount = reports.reduce((sum, report) => sum + report.hardFailureCount, 0) + failures.length;
+  const driftCountsByLanguage = reports.reduce(
+    (counts, report) => mergeCountMaps(counts, report.driftCountsByLanguage),
+    { python: 0, javascript: 0, typescript: 0, java: 0 }
+  );
+  const reportFailures = [
+    ...reports.flatMap((report) => report.failures),
+    ...failures,
+  ];
+  const maxReportDrifts = parseNumberFlag('max-report-drifts', 250);
+  const maxReportFailures = parseNumberFlag('max-report-failures', 250);
+  const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
+  const includeSignatureDiffs = hasFlag('include-signature-diffs');
+  const mergedReport: MineReport & { jobs: number; workerReportDir: string; runnerCrashCount: number } = {
+    corpusPath,
+    sourceRoot,
+    offset,
+    limit,
+    maxTraceSteps: parseNumberFlag('max-trace-steps', 10000),
+    maxLineEvents: parseNumberFlag('max-line-events', 20000),
+    maxSingleLineHits: parseNumberFlag('max-single-line-hits', 10000),
+    compareRuntimeFacts: hasFlag('compare-runtime-facts'),
+    includeSignatureDiffs,
+    maxReportDrifts,
+    maxReportFailures,
+    failOnFailure: hasFlag('fail-on-failure'),
+    groupsScanned: groups.length,
+    synthesizedJavaEntries: reports.reduce((sum, report) => sum + report.synthesizedJavaEntries, 0),
+    comparisons: reports.reduce((sum, report) => sum + report.comparisons, 0),
+    driftCount,
+    driftCountsByLanguage,
+    failureCount,
+    hardFailureCount,
+    driftClusters: mergeDriftClusters(reports),
+    operationTokenClusters: mergeOperationTokenClusters(reports),
+    reportedDriftCount: Math.min(maxReportDrifts, reports.reduce((sum, report) => sum + report.drifts.length, 0)),
+    reportedFailureCount: Math.min(maxReportFailures, reportFailures.length),
+    drifts: reports
+      .flatMap((report) => report.drifts)
+      .slice(0, maxReportDrifts)
+      .map((drift) => trimDriftForReport(drift, includeSignatureDiffs)),
+    failures: reportFailures
+      .slice(0, maxReportFailures)
+      .map((failure) => trimFailureForReport(failure, maxReportErrorChars)),
+    jobs,
+    workerReportDir: workDir,
+    runnerCrashCount: failures.length,
+    workerTimeoutMs,
+  };
+  await writeReport(reportPath, mergedReport);
+
+  console.log(`runtime trace final300 concurrent mining: groups=${groups.length} jobs=${jobs} comparisons=${mergedReport.comparisons} drifts=${driftCount} failures=${failureCount}`);
+  console.log(`Hard failures: ${hardFailureCount}`);
+  console.log(`Runner crashes recorded as failures: ${failures.length}`);
+  console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
+  console.log(`Report: ${reportPath}`);
+  console.log(`Worker reports: ${workDir}`);
+
+  if (hasFlag('fail-on-failure') && hardFailureCount > 0) {
+    process.exitCode = 1;
+  } else if (hasFlag('fail-on-drift') && (driftCount > 0 || hardFailureCount > 0)) {
+    process.exitCode = 1;
+  }
+}
+
 async function main(): Promise<void> {
   const corpusPath = resolve(parseStringFlag('corpus') ?? DEFAULT_FINAL300_PATH);
   if (!existsSync(corpusPath)) {
@@ -812,33 +1146,27 @@ async function main(): Promise<void> {
   const limit = parseNumberFlag('limit', 20);
   const offset = parseNumberFlag('offset', 0);
   const reportPath = resolve(parseStringFlag('report') ?? join(process.cwd(), 'reports', 'runtime-trace-final300-mine.json'));
+  const jobs = parseNumberFlag('jobs', 1);
+  if (jobs > 1 && !hasFlag('worker')) {
+    await runConcurrentMine(corpusPath, sourceRoot, reportPath, limit, offset, jobs);
+    process.exit(process.exitCode ?? 0);
+  }
   const maxTraceSteps = parseNumberFlag('max-trace-steps', 10000);
   const maxLineEvents = parseNumberFlag('max-line-events', 20000);
   const maxSingleLineHits = parseNumberFlag('max-single-line-hits', 10000);
   const failOnDrift = hasFlag('fail-on-drift');
   const failOnFailure = hasFlag('fail-on-failure');
   const compareRuntimeFacts = hasFlag('compare-runtime-facts');
+  const includeSignatureDiffs = hasFlag('include-signature-diffs');
+  const maxReportDrifts = parseNumberFlag('max-report-drifts', 250);
+  const maxReportFailures = parseNumberFlag('max-report-failures', 250);
+  const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
 
-  const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as Final300Entry[];
-  const bySlug = new Map<string, Final300Entry[]>();
-  for (const entry of entries) {
-    if (!['python', 'javascript', 'typescript', 'java'].includes(entry.language)) continue;
-    const group = bySlug.get(entry.slug) ?? [];
-    group.push(entry);
-    bySlug.set(entry.slug, group);
-  }
-  let synthesizedJavaEntries = 0;
-  for (const [slug, group] of bySlug) {
-    const javaEntry = synthesizeJavaEntry(sourceRoot, group);
-    if (javaEntry) {
-      bySlug.set(slug, [...group, javaEntry]);
-      synthesizedJavaEntries += 1;
-    }
-  }
-
-  const groups = [...bySlug.entries()]
-    .filter(([, group]) => group.some((entry) => entry.language === 'python') && group.length > 1)
-    .slice(offset, offset + limit);
+  const allGroups = await loadMineGroups(corpusPath, sourceRoot);
+  const groups = allGroups.slice(offset, offset + limit);
+  const synthesizedJavaEntries = groups.filter(([, group]) =>
+    group.some((entry) => entry.language === 'java' && entry.source.path.includes('generated-validated-java'))
+  ).length;
   const pythonRuntime = await loadPythonRuntimeCore();
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
   const drifts: DriftRecord[] = [];
@@ -896,6 +1224,12 @@ async function main(): Promise<void> {
   const driftClusters = clusterDrifts(drifts);
   const driftCountsByLanguage = countDriftsByLanguage(drifts);
   const operationTokenClusters = clusterOperationTokenDiffs(drifts);
+  const reportedDrifts = drifts
+    .slice(0, maxReportDrifts)
+    .map((drift) => trimDriftForReport(drift, includeSignatureDiffs));
+  const reportedFailures = failures
+    .slice(0, maxReportFailures)
+    .map((failure) => trimFailureForReport(failure, maxReportErrorChars));
   const report = {
     corpusPath,
     sourceRoot,
@@ -905,6 +1239,9 @@ async function main(): Promise<void> {
     maxLineEvents,
     maxSingleLineHits,
     compareRuntimeFacts,
+    includeSignatureDiffs,
+    maxReportDrifts,
+    maxReportFailures,
     failOnFailure,
     groupsScanned: groups.length,
     synthesizedJavaEntries,
@@ -915,8 +1252,10 @@ async function main(): Promise<void> {
     hardFailureCount: hardFailures.length,
     driftClusters,
     operationTokenClusters,
-    drifts,
-    failures,
+    reportedDriftCount: reportedDrifts.length,
+    reportedFailureCount: reportedFailures.length,
+    drifts: reportedDrifts,
+    failures: reportedFailures,
   };
   await writeReport(reportPath, report);
 

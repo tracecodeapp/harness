@@ -234,7 +234,7 @@
 
         for (const name of currentMethod.maps) {
           const nestedMapMutationPattern = new RegExp(
-            `\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)\\.(add|push|append)\\(([^;\\n]+)\\);`,
+            `\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)\\.(add|push)\\(([^;\\n]+)\\);`,
             'g'
           );
           nextLine = nextLine.replace(nestedMapMutationPattern, (_match, keySource, methodSource, valueSource) => {
@@ -283,15 +283,15 @@
           });
         }
 
-        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(get|put|set|add|append|remove)"\);\s*/g;
+        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(get|put|set|add|remove)"\);\s*/g;
         nextLine = nextLine.replace(staleMutationPattern, (match, name, method) => {
           if (currentMethod.maps.has(name) && (method === 'get' || method === 'put' || method === 'set')) {
             return '';
           }
-          if (currentMethod.sets.has(name) && (method === 'add' || method === 'append' || method === 'remove')) {
+          if (currentMethod.sets.has(name) && (method === 'add'  || method === 'remove')) {
             return '';
           }
-          if (currentMethod.adjacencyLists.has(name) && (method === 'add' || method === 'append')) {
+          if (currentMethod.adjacencyLists.has(name) && (method === 'add' )) {
             return '';
           }
           if (currentMethod.lists.has(name) && method === 'remove') {
