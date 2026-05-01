@@ -30,7 +30,7 @@ import {
 } from '../packages/harness-python/src/python-harness';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
 
-const DEFAULT_FINAL300_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
+const DEFAULT_CORPUS_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
 const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
@@ -51,9 +51,10 @@ const JAVA_BIN = JAVA_BIN_CANDIDATES.find((candidate) => candidate === 'java' ||
 
 type MineLanguage = Extract<Language, 'python' | 'javascript' | 'typescript' | 'java'>;
 
-interface Final300Entry {
+interface CorpusEntry {
   slug: string;
   family?: string;
+  compareMode?: string;
   language: MineLanguage;
   functionName: string;
   source: { kind: string; path: string };
@@ -200,6 +201,35 @@ function stableStringify(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`)
     .join(',') + '}';
+}
+
+function recursivelySortArrays(value: unknown): unknown {
+  const normalized = normalizeOutputForComparison(value);
+  if (Array.isArray(normalized)) {
+    return normalized
+      .map((item) => recursivelySortArrays(item))
+      .sort((left, right) => stableStringify(left).localeCompare(stableStringify(right)));
+  }
+  if (normalized === null || typeof normalized !== 'object') return normalized;
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(normalized as Record<string, unknown>).sort((left, right) => left.localeCompare(right))) {
+    output[key] = recursivelySortArrays((normalized as Record<string, unknown>)[key]);
+  }
+  return output;
+}
+
+function outputComparisonKey(value: unknown, compareMode?: string): string {
+  if (
+    hasFlag('loose-any-valid-output') &&
+    (compareMode === 'any-valid' || compareMode === 'unordered-array')
+  ) {
+    return stableStringify(recursivelySortArrays(value));
+  }
+  return stableStringify(value);
+}
+
+function outputsEqual(left: unknown, right: unknown, compareMode?: string): boolean {
+  return outputComparisonKey(left, compareMode) === outputComparisonKey(right, compareMode);
 }
 
 function collectSerializedRefs(value: unknown, refs: Map<string, Record<string, unknown>>, seen = new WeakSet<object>()): void {
@@ -369,7 +399,7 @@ async function runPythonScript(script: string): Promise<string> {
 
 async function executePythonTrace(
   runtime: RuntimeCore,
-  entry: Final300Entry,
+  entry: CorpusEntry,
   code: string,
   maxTraceSteps: number,
   maxLineEvents: number,
@@ -490,7 +520,7 @@ function createJavaScriptWorkerHarness(workerSource: string) {
 
 async function executeJavaScriptTrace(
   workerSource: string,
-  entry: Final300Entry,
+  entry: CorpusEntry,
   code: string,
   maxTraceSteps: number,
   maxLineEvents: number,
@@ -705,7 +735,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
 }
 
 async function executeJavaTrace(
-  entry: Final300Entry,
+  entry: CorpusEntry,
   code: string,
   maxTraceSteps: number,
   maxLineEvents: number,
@@ -742,7 +772,7 @@ function inferCorpusRoot(corpusPath: string): string {
   return dirname(dirname(dirname(normalized)));
 }
 
-function resolveSourcePath(root: string, entry: Final300Entry): string {
+function resolveSourcePath(root: string, entry: CorpusEntry): string {
   return isAbsolute(entry.source.path) ? entry.source.path : join(root, entry.source.path);
 }
 
@@ -766,12 +796,13 @@ function compareRuns(
   reference: TraceRun,
   run: TraceRun,
   compareRuntimeFacts: boolean,
-  compareOutputToReference: boolean
+  compareOutputToReference: boolean,
+  compareMode?: string
 ): DriftRecord | null {
   const kinds: string[] = [];
   let output: DriftRecord['output'];
   let signatureDiff: DriftRecord['signatureDiff'];
-  if (compareOutputToReference && stableStringify(reference.output) !== stableStringify(run.output)) {
+  if (compareOutputToReference && !outputsEqual(reference.output, run.output, compareMode)) {
     kinds.push('output');
     output = { expected: normalizeOutputForReport(reference.output), received: normalizeOutputForReport(run.output) };
   }
@@ -783,7 +814,7 @@ function compareRuns(
   return { slug, family, comparedTo: reference.language, language: run.language, kinds, output, signatureDiff };
 }
 
-function hasExpectedOutput(entry: Final300Entry): boolean {
+function hasExpectedOutput(entry: CorpusEntry): boolean {
   return Object.prototype.hasOwnProperty.call(entry, 'expectedOutput');
 }
 
@@ -873,7 +904,7 @@ function trimFailureForReport(failure: FailureRecord, maxErrorChars: number): Fa
   };
 }
 
-function synthesizeJavaEntry(sourceRoot: string, group: Final300Entry[]): Final300Entry | null {
+function synthesizeJavaEntry(sourceRoot: string, group: CorpusEntry[]): CorpusEntry | null {
   if (group.some((entry) => entry.language === 'java')) return null;
   const reference = group.find((entry) => entry.language === 'python') ?? group[0];
   if (!reference) return null;
@@ -900,9 +931,9 @@ async function writeReport(reportPath: string, value: unknown): Promise<void> {
   await writeFile(reportPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-async function loadMineGroups(corpusPath: string, sourceRoot: string): Promise<Array<[string, Final300Entry[]]>> {
-  const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as Final300Entry[];
-  const bySlug = new Map<string, Final300Entry[]>();
+async function loadMineGroups(corpusPath: string, sourceRoot: string): Promise<Array<[string, CorpusEntry[]]>> {
+  const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as CorpusEntry[];
+  const bySlug = new Map<string, CorpusEntry[]>();
   for (const entry of entries) {
     if (!['python', 'javascript', 'typescript', 'java'].includes(entry.language)) continue;
     const group = bySlug.get(entry.slug) ?? [];
@@ -1116,7 +1147,7 @@ async function runConcurrentMine(
   };
   await writeReport(reportPath, mergedReport);
 
-  console.log(`runtime trace final300 concurrent mining: groups=${groups.length} jobs=${jobs} comparisons=${mergedReport.comparisons} drifts=${driftCount} failures=${failureCount}`);
+  console.log(`runtime trace corpus concurrent mining: groups=${groups.length} jobs=${jobs} comparisons=${mergedReport.comparisons} drifts=${driftCount} failures=${failureCount}`);
   console.log(`Hard failures: ${hardFailureCount}`);
   console.log(`Runner crashes recorded as failures: ${failures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
@@ -1131,21 +1162,21 @@ async function runConcurrentMine(
 }
 
 async function main(): Promise<void> {
-  const corpusPath = resolve(parseStringFlag('corpus') ?? DEFAULT_FINAL300_PATH);
+  const corpusPath = resolve(parseStringFlag('corpus') ?? DEFAULT_CORPUS_PATH);
   if (!existsSync(corpusPath)) {
     throw new Error(
       [
-        'Final300 runtime trace mining is a local/private validation path, not a public harness CI gate.',
+        'Runtime trace corpus mining is a local/private validation path, not a public harness CI gate.',
         'It requires a local TraceCode/algoflow checkout or an explicit --corpus path.',
         `Tried: ${corpusPath}`,
-        'Pass --corpus=/path/to/tracecode-final300-slice.json when running outside the default local workspace.',
+        'Pass --corpus=/path/to/runtime-corpus.json when running outside the default local workspace.',
       ].join('\n')
     );
   }
   const sourceRoot = inferCorpusRoot(corpusPath);
   const limit = parseNumberFlag('limit', 20);
   const offset = parseNumberFlag('offset', 0);
-  const reportPath = resolve(parseStringFlag('report') ?? join(process.cwd(), 'reports', 'runtime-trace-final300-mine.json'));
+  const reportPath = resolve(parseStringFlag('report') ?? join(process.cwd(), 'reports', 'runtime-trace-corpus-mine.json'));
   const jobs = parseNumberFlag('jobs', 1);
   if (jobs > 1 && !hasFlag('worker')) {
     await runConcurrentMine(corpusPath, sourceRoot, reportPath, limit, offset, jobs);
@@ -1175,7 +1206,7 @@ async function main(): Promise<void> {
 
   for (const [slug, group] of groups) {
     const runs = new Map<MineLanguage, TraceRun>();
-    const entriesByLanguage = new Map<MineLanguage, Final300Entry>();
+    const entriesByLanguage = new Map<MineLanguage, CorpusEntry>();
     for (const entry of group.sort((left, right) => left.language.localeCompare(right.language))) {
       entriesByLanguage.set(entry.language, entry);
       const sourcePath = resolveSourcePath(sourceRoot, entry);
@@ -1187,7 +1218,7 @@ async function main(): Promise<void> {
             ? await executeJavaTrace(entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
             : await executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
         runs.set(entry.language, run);
-        if (hasExpectedOutput(entry) && stableStringify(entry.expectedOutput) !== stableStringify(run.output)) {
+        if (hasExpectedOutput(entry) && !outputsEqual(entry.expectedOutput, run.output, entry.compareMode)) {
           drifts.push({
             slug,
             family: entry.family,
@@ -1214,7 +1245,8 @@ async function main(): Promise<void> {
         reference,
         run,
         compareRuntimeFacts,
-        !entry || !hasExpectedOutput(entry)
+        !entry || !hasExpectedOutput(entry),
+        entry?.compareMode ?? group[0]?.compareMode
       );
       if (drift) drifts.push(drift);
     }
@@ -1259,7 +1291,7 @@ async function main(): Promise<void> {
   };
   await writeReport(reportPath, report);
 
-  console.log(`runtime trace final300 mining: groups=${groups.length} comparisons=${compared} drifts=${drifts.length} failures=${failures.length}`);
+  console.log(`runtime trace corpus mining: groups=${groups.length} comparisons=${compared} drifts=${drifts.length} failures=${failures.length}`);
   console.log(`Hard failures: ${hardFailures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);

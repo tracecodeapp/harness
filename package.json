@@ -88,14 +88,19 @@
     "test:runtime-trace-parity": "pnpm exec tsx tests/test-runtime-trace-parity.ts",
     "test:runtime-trace-fixtures": "pnpm exec tsx tests/test-runtime-trace-fixtures.ts",
     "report:runtime-trace-known-gaps": "pnpm exec tsx tests/report-runtime-trace-known-gaps.ts",
-    "local:test:runtime-trace-final300-compile": "pnpm exec tsx tests/mine-runtime-trace-final300.ts --limit=300 --fail-on-failure --report=reports/runtime-v4-final300-compile-gate.json",
+    "local:test:runtime-trace-final300-compile": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts --limit=300 --fail-on-failure --report=reports/runtime-v4-final300-compile-gate.json",
+    "local:build:runtime-trace-tc83": "pnpm exec tsx tests/build-runtime-trace-tc83-corpus.ts",
+    "local:test:runtime-trace-tc83-smoke": "pnpm local:build:runtime-trace-tc83 && pnpm exec tsx tests/mine-runtime-trace-corpus.ts --corpus=reports/runtime-trace-tc83-corpus.json --source-root=/Users/obinnanwachukwu/Code/algoflow --limit=83 --jobs=8 --worker-timeout-ms=180000 --max-trace-steps=10000 --loose-any-valid-output --fail-on-failure --report=reports/runtime-trace-tc83-smoke.json",
+    "local:mine:runtime-trace-tc83-parity": "pnpm local:build:runtime-trace-tc83 && pnpm exec tsx tests/mine-runtime-trace-corpus.ts --corpus=reports/runtime-trace-tc83-corpus.json --source-root=/Users/obinnanwachukwu/Code/algoflow --limit=83 --jobs=8 --worker-timeout-ms=180000 --max-trace-steps=10000 --loose-any-valid-output --compare-runtime-facts --include-signature-diffs --report=reports/runtime-trace-tc83-parity.json",
     "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
     "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
-    "mine:runtime-trace-final300": "pnpm exec tsx tests/mine-runtime-trace-final300.ts",
-    "mine:runtime-trace-final300:parallel": "pnpm exec tsx tests/mine-runtime-trace-final300.ts --jobs=8",
+    "mine:runtime-trace-final300": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts",
+    "mine:runtime-trace-final300:parallel": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts --jobs=8",
     "test:runtime-raw-emission-contract": "pnpm exec tsx tests/test-runtime-raw-emission-contract.ts",
     "test:runtime-trace-fixtures:raw-strict": "TRACECODE_STRICT_RAW_EMISSION_PARITY=1 pnpm exec tsx tests/test-runtime-trace-fixtures.ts",
-    "test:runtime-trace": "pnpm test:runtime-trace-fixtures && pnpm test:runtime-trace-fixtures:raw-strict && pnpm test:runtime-raw-emission-contract && pnpm report:runtime-trace-known-gaps"
+    "test:runtime-trace": "pnpm test:runtime-trace-fixtures && pnpm test:runtime-trace-fixtures:raw-strict && pnpm test:runtime-raw-emission-contract && pnpm report:runtime-trace-known-gaps",
+    "mine:runtime-trace-corpus": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts",
+    "mine:runtime-trace-corpus:parallel": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts --jobs=8"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
