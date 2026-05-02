@@ -21,24 +21,24 @@
     "put": {
       "eventKinds": [
         "line",
-        "mutate",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "seen"
       ],
       "accessTargets": [
         {
-          "kind": "mutate",
+          "kind": "write",
           "variable": "seen",
-          "method": "set"
+          "pathDepth": 1
         }
       ]
     },
     "get": {
       "eventKinds": [
         "line",
-        "mutate",
+        "read",
         "return",
         "snapshot"
       ],
@@ -47,9 +47,9 @@
       ],
       "accessTargets": [
         {
-          "kind": "mutate",
+          "kind": "read",
           "variable": "seen",
-          "method": "get"
+          "pathDepth": 1
         }
       ]
     }

@@ -21,22 +21,23 @@
     "decrement": {
       "eventKinds": [
         "line",
-        "mutate",
-        "snapshot"
+        "read",
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "counts"
       ],
       "accessTargets": [
         {
-          "kind": "mutate",
+          "kind": "read",
           "variable": "counts",
-          "method": "get"
+          "pathDepth": 1
         },
         {
-          "kind": "mutate",
+          "kind": "write",
           "variable": "counts",
-          "method": "set"
+          "pathDepth": 1
         }
       ]
     },
@@ -63,19 +64,18 @@
       {
         "kind": "mutate",
         "variable": "counts",
-        "method": "remove",
         "count": 1
       },
       {
-        "kind": "mutate",
+        "kind": "write",
         "variable": "counts",
-        "method": "set",
+        "pathDepth": 1,
         "count": 1
       },
       {
-        "kind": "mutate",
+        "kind": "read",
         "variable": "counts",
-        "method": "get",
+        "pathDepth": 1,
         "count": 2
       }
     ]

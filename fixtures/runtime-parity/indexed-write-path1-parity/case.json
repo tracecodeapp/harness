@@ -19,8 +19,9 @@
     "decrement": {
       "eventKinds": [
         "line",
-        "mutate",
-        "snapshot"
+        "read",
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "freq",
@@ -29,14 +30,14 @@
       ],
       "accessTargets": [
         {
-          "kind": "mutate",
+          "kind": "read",
           "variable": "freq",
-          "method": "get"
+          "pathDepth": 1
         },
         {
-          "kind": "mutate",
+          "kind": "write",
           "variable": "freq",
-          "method": "set"
+          "pathDepth": 1
         }
       ]
     }

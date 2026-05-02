@@ -15,7 +15,7 @@
     "contains": {
       "eventKinds": [
         "line",
-        "mutate",
+        "read",
         "return",
         "snapshot"
       ],
@@ -24,9 +24,9 @@
       ],
       "accessTargets": [
         {
-          "kind": "mutate",
+          "kind": "read",
           "variable": "seen",
-          "method": "containsKey"
+          "pathDepth": 1
         }
       ]
     }

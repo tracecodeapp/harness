@@ -160,6 +160,36 @@ public final class TraceHooks extends \u0073pike.user.TraceHooks {
     emitTraceMutate(line, name, null, method);
   }
 
+  public static <K, V> V readMapAtLine(int line, String name, java.util.Map<K, V> values, K key) {
+    V value = values.get(key);
+    emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
+    return value;
+  }
+
+  public static <K, V> V readMapOrDefaultAtLine(int line, String name, java.util.Map<K, V> values, K key, V defaultValue) {
+    V value = values.getOrDefault(key, defaultValue);
+    emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
+    return value;
+  }
+
+  public static boolean containsMapKeyAtLine(int line, String name, java.util.Map<?, ?> values, Object key) {
+    boolean value = values.containsKey(key);
+    emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
+    return value;
+  }
+
+  public static boolean readSetAtLine(int line, String name, java.util.Set<?> values, Object key) {
+    boolean value = values.contains(key);
+    emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
+    return value;
+  }
+
+  public static <K, V> V putMapAtLine(int line, String name, java.util.Map<K, V> values, K key, V value) {
+    V previous = values.put(key, value);
+    emitTraceWrite(line, name, "[" + serializeResult(key) + "]", values.get(key));
+    return previous;
+  }
+
   public static <T> boolean addSetAtLine(int line, String name, java.util.Set<T> values, T key) {
     boolean changed = values.add(key);
     emitTraceMutate(line, name, null, "add");
@@ -274,6 +304,14 @@ public final class TraceHooks extends \u0073pike.user.TraceHooks {
 
   private static void emitNestedListArrayRead(int line, String name, int index, int elementIndex, Object value) {
     emit("trace:{\"kind\":\"read\",\"line\":" + line + ",\"target\":{\"variable\":\"" + name + "\",\"path\":[" + serializeResult(index) + "," + serializeResult(elementIndex) + "]},\"value\":" + serializeResult(value) + "}");
+  }
+
+  private static void emitTraceRead(int line, String name, String pathJson, Object value) {
+    emit("trace:{\"kind\":\"read\",\"line\":" + line + ",\"target\":{\"variable\":" + jsonString(name) + ",\"path\":" + pathJson + "},\"value\":" + serializeResult(value) + "}");
+  }
+
+  private static void emitTraceWrite(int line, String name, String pathJson, Object value) {
+    emit("trace:{\"kind\":\"write\",\"line\":" + line + ",\"target\":{\"variable\":" + jsonString(name) + ",\"path\":" + pathJson + "},\"value\":" + serializeResult(value) + "}");
   }
 
   private static void emitTraceMutate(int line, String name, String pathJson, String method) {

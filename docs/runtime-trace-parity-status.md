@@ -1,6 +1,6 @@
 # Runtime Trace Parity Status
 
-Last updated: 2026-04-29
+Last updated: 2026-05-02
 
 ## Purpose
 
@@ -31,7 +31,7 @@ This means the runtime trace cutover is allowed to be breaking:
 ## Current Corpus
 
 - Fixture directory: `fixtures/runtime-parity`
-- Fixture count: 25
+- Fixture count: 54
 - Languages covered per fixture: Python, JavaScript, TypeScript, Java
 - Official gate: `pnpm test:runtime-trace`
 - Gate: `pnpm test:runtime-trace-fixtures`
@@ -59,7 +59,7 @@ By language:
 
 Main clusters:
 
-- No open fixture gaps in the current 25-fixture corpus.
+- No open fixture gaps in the current 54-fixture corpus.
 - The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, and Java.
 - This is a baseline, not proof of completeness. New operations should be added to the corpus as soon as they become product-relevant or are discovered through corpus mining.
 
@@ -91,6 +91,13 @@ JS/TS object-field access now passes for:
 
 The final gap-removal pass also tightened:
 
+- Python, JavaScript, TypeScript, and Java keyed map/dict reads now emit indexed `read` facts, not `mutate` facts.
+- Python, JavaScript, TypeScript, and Java keyed map/dict writes now emit indexed `write` facts, not `mutate` facts.
+- Java `Map.get`, `Map.getOrDefault`, `Map.containsKey`, `Set.contains`, and `Map.put` now emit native runtime trace reads/writes through `TraceHooks`.
+- Java ops-class execution now handles both explicit constructor operations and omitted constructor operations without treating constructor aliases as instance methods.
+- Java map/set rewrite matching no longer corrupts field receivers such as `node.children.containsKey(...)`.
+- JavaScript/TypeScript runtime trace emission no longer prunes read/write facts based on later mutation facts.
+- JavaScript/TypeScript `for` condition accesses are flushed on the condition line rather than leaking onto the next body line.
 - Java function-call snapshots so callee entry snapshots expose callee arguments without caller-local leakage.
 - Java list inputs so fixture-provided `List<T>` values are mutable and can model Java equivalents of cross-language list mutations.
 - Java `List.remove(list.size() - 1)` so it emits the cross-language `pop` mutation operation directly.
@@ -117,6 +124,19 @@ The miner is a local/private validation path, not public harness CI. It defaults
 Treat final300 mining as failure discovery, not a strict gate. The per-language final300 solutions are idiomatic implementations, not mechanically equivalent line-for-line fixtures, so drift clusters need triage before promotion. A cluster becomes a harness bug only after it is reduced into a small equivalent fixture that should emit the same runtime facts across languages.
 
 The local compile gate is stricter about reliability than parity: it fails on hard harness failures such as generated Java compile errors, raw payload contract violations, and worker timeouts, but it does not fail on trace-budget exits or runtime-fact drift.
+
+Current local mining status:
+
+- Final300 runtime corpus: 300 language entries grouped into 100 problem groups.
+- Final300 post-v4 clean check: 100 groups, 300 comparisons, 0 drifts, 0 failures.
+- Final300 report: `reports/runtime-trace-final300-000-099-post-java-v4-cleancheck.json`.
+- TC83 runtime corpus: 83 groups, 249 manifest entries, 79 synthesized Java entries in the latest run.
+- TC83 post-v4 source-root check: 83 groups, 245 comparisons, 0 hard failures.
+- TC83 output drift count: 14, all observed drifts are unordered-output/corpus compare issues, not harness crashes.
+- TC83 strict runtime-facts report remains advisory: 71 drifts were observed, mostly from non-equivalent reference implementations rather than minimized parity fixture failures.
+- TC83 reports: `reports/runtime-trace-tc83-post-java-v4-source-root.json` and `reports/runtime-trace-tc83-post-java-v4-runtime-facts.json`.
+
+Do not patch the harness directly from TC83 runtime-fact drift clusters. Reduce a drift into a small equivalent runtime-parity fixture first, then fix the native language emitter if the fixture exposes a real parity gap.
 
 ## Contract Notes
 

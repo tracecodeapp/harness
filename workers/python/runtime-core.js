@@ -646,12 +646,6 @@ def __tracecode_apply_augmented_value(current, op_name, rhs):
 def _tracecode_read_index(var_name, container, indices):
     normalized = __tracecode_normalize_indices(indices)
     if normalized is not None:
-        if isinstance(container, _builtins.dict):
-            __tracecode_record_access(
-                sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'mutating-call', method_name='get'),
-            )
-            return __tracecode_read_value(container, list(indices))
         __tracecode_record_access(
             sys._getframe(1),
             __tracecode_make_access_event(
@@ -670,7 +664,7 @@ def _tracecode_write_index(var_name, container, indices, value):
         if isinstance(container, _builtins.dict):
             __tracecode_record_access(
                 sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'mutating-call', method_name='set'),
+                __tracecode_make_access_event(var_name, 'indexed-write', normalized),
             )
             return result
         __tracecode_record_access(
@@ -708,7 +702,7 @@ def _tracecode_augassign_index(var_name, container, indices, op_name, rhs):
         if isinstance(container, _builtins.dict):
             __tracecode_record_access(
                 sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'mutating-call', method_name='get'),
+                __tracecode_make_access_event(var_name, 'indexed-read', normalized),
             )
         else:
             __tracecode_record_access(
@@ -725,7 +719,7 @@ def _tracecode_augassign_index(var_name, container, indices, op_name, rhs):
         if isinstance(container, _builtins.dict):
             __tracecode_record_access(
                 sys._getframe(1),
-                __tracecode_make_access_event(var_name, 'mutating-call', method_name='set'),
+                __tracecode_make_access_event(var_name, 'indexed-write', normalized),
             )
         else:
             __tracecode_record_access(
@@ -808,10 +802,9 @@ def _tracecode_write_attr(var_name, obj, attr_name, value):
 
 def _tracecode_contains_key(var_name, container, key):
     result = key in container
-    method_name = 'containsKey' if isinstance(container, _builtins.dict) else 'contains'
     __tracecode_record_access(
         sys._getframe(1),
-        __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name),
+        __tracecode_make_access_event(var_name, 'indexed-read', [key] if isinstance(key, (int, _builtins.str)) else None),
     )
     return result
 
@@ -819,7 +812,7 @@ def _tracecode_dict_get(var_name, container, key, default=None):
     result = container.get(key, default)
     __tracecode_record_access(
         sys._getframe(1),
-        __tracecode_make_access_event(var_name, 'mutating-call', method_name='get'),
+        __tracecode_make_access_event(var_name, 'indexed-read', [key] if isinstance(key, (int, _builtins.str)) else None),
     )
     return result
 

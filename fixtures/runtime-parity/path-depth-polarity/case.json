@@ -152,6 +152,12 @@
   "expectSummary": {
     "accessTargets": [
       {
+        "kind": "read",
+        "variable": "this",
+        "pathDepth": 1,
+        "count": 1
+      },
+      {
         "kind": "write",
         "variable": "this",
         "pathDepth": 1,

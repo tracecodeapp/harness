@@ -31,6 +31,14 @@ const FORBIDDEN_RUNTIME_TRACE_TOKENS = [
   'tree',
 ] as const;
 
+const FORBIDDEN_RUNTIME_TRACE_KEYS = new Set([
+  'visualization',
+  'objectKinds',
+  'hashMaps',
+  'graph-adjacency',
+  'linked-list',
+]);
+
 export function normalizeJavaNativeTraceJsonPayload(payload: string): string {
   return payload
     .replace(/(?<![A-Za-z0-9_"])-Infinity(?![A-Za-z0-9_"])/g, '"-Infinity"')
@@ -66,7 +74,7 @@ function collectForbiddenRuntimeTraceTokens(
   }
   const entries = Object.entries(value as Record<string, unknown>);
   const objectSemanticPayload = entries.some(([key, child]) => {
-    if (parentKey !== 'args' && (FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(key)) return true;
+    if (parentKey !== 'args' && FORBIDDEN_RUNTIME_TRACE_KEYS.has(key)) return true;
     return (
       (key === 'kind' || key === 'type' || key === 'category') &&
       typeof child === 'string' &&
@@ -74,7 +82,7 @@ function collectForbiddenRuntimeTraceTokens(
     );
   });
   for (const [key, child] of entries) {
-    if (parentKey !== 'args' && (FORBIDDEN_RUNTIME_TRACE_TOKENS as readonly string[]).includes(key)) {
+    if (parentKey !== 'args' && FORBIDDEN_RUNTIME_TRACE_KEYS.has(key)) {
       tokens.add(key);
     }
     if (key === 'target' || key === 'variable' || key === 'function') continue;

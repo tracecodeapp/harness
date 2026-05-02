@@ -1843,7 +1843,12 @@ function buildExportsSource(source, functionName, executionStyle, input) {
     const operations = Array.isArray(input.operations) ? input.operations : [];
     const argumentsList = Array.isArray(input.arguments) ? input.arguments : [];
     const lines = ['    java.util.List<Object> out = new java.util.ArrayList<>();'];
-    const hasConstructorOperation = operations[0] === functionName || operations[0] === '__init__' || operations[0] === 'init';
+    const firstOperation = operations.length > 0 ? String(operations[0]) : null;
+    const hasConstructorOperation =
+      firstOperation === functionName ||
+      firstOperation === '__init__' ||
+      firstOperation === 'init' ||
+      (firstOperation !== null && extractMethodReturnType(source, firstOperation) === null);
     const constructorParameters = extractMethodParametersForArguments(source, functionName, argumentsList[0]);
     const constructorArgs = hasConstructorOperation
       ? inputArgumentsForParameters(argumentsList[0], constructorParameters)

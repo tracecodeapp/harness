@@ -44,6 +44,11 @@
         },
         {
           "kind": "read",
+          "variable": "buckets",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
           "variable": "nums",
           "pathDepth": 1
         }

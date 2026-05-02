@@ -55,6 +55,10 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\s*\\[([^;\\]\\[]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
+  private static final Pattern MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
+  private static final Pattern MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
+  private static final Pattern MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
+  private static final Pattern COLLECTION_CONTAINS_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.contains\\(([^()\\n;]+)\\)");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
   private static final Pattern ARRAY_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]");
 
@@ -277,10 +281,13 @@ public final class JavaRewriteLibrary {
       String method = computeMutatingCall.group(5);
       String args = rewriteReads(computeMutatingCall.group(6).trim(), sourceLine, frame);
       String target = name + ".computeIfAbsent(" + key + ", " + fallback + ")";
+      String temp = "__tracecodeComputedTarget" + sourceLine;
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
-      return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " }";
     }
 
     Matcher indexedMutatingCall = INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
@@ -449,6 +456,14 @@ public final class JavaRewriteLibrary {
       String name = mutatingCall.group(2);
       String method = mutatingCall.group(3);
       String args = rewriteReads(mutatingCall.group(4).trim(), sourceLine, frame);
+      if ("put".equals(method) && isMapType(frame.typeOf(name))) {
+        java.util.List<String> parts = splitTopLevel(mutatingCall.group(4).trim());
+        if (parts.size() >= 2) {
+          String key = rewriteReads(parts.get(0), sourceLine, frame);
+          String value = rewriteReads(parts.get(1), sourceLine, frame);
+          return indent + "TraceHooks.putMapAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + key + ", " + value + ");";
+        }
+      }
       if (frame.isField(name)) {
         String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"this\\\",\\\"path\\\":[\\\"" + name + "\\\"]}";
         String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
@@ -476,6 +491,28 @@ public final class JavaRewriteLibrary {
       String helper = listArrayReadHelper(frame.typeOf(name));
       if (helper == null) return match.group(0);
       return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ", " + match.group(3).trim() + ")";
+    });
+    next = replaceAll(MAP_CONTAINS_KEY_CALL, next, match -> {
+      String name = match.group(1);
+      if (!isMapType(frame.typeOf(name))) return match.group(0);
+      return "TraceHooks.containsMapKeyAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
+    });
+    next = replaceAll(COLLECTION_CONTAINS_CALL, next, match -> {
+      String name = match.group(1);
+      if (!isSetType(frame.typeOf(name))) return match.group(0);
+      return "TraceHooks.readSetAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
+    });
+    next = replaceAll(MAP_GET_OR_DEFAULT_CALL, next, match -> {
+      String name = match.group(1);
+      if (!isMapType(frame.typeOf(name))) return match.group(0);
+      java.util.List<String> args = splitTopLevel(match.group(2).trim());
+      if (args.size() != 2) return match.group(0);
+      return "TraceHooks.readMapOrDefaultAtLine(" + line + ", " + quote(name) + ", " + name + ", " + args.get(0) + ", " + args.get(1) + ")";
+    });
+    next = replaceAll(MAP_GET_CALL, next, match -> {
+      String name = match.group(1);
+      if (!isMapType(frame.typeOf(name))) return match.group(0);
+      return "TraceHooks.readMapAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
     });
     final String matrixReadSource = next;
     next = replaceAll(MATRIX_READ, matrixReadSource, match -> {
@@ -703,6 +740,16 @@ public final class JavaRewriteLibrary {
     return normalized.endsWith("[]") && normalized.contains("Map");
   }
 
+  private static boolean isMapType(String type) {
+    if (type == null) return false;
+    return normalizeJavaType(type).contains("Map");
+  }
+
+  private static boolean isSetType(String type) {
+    if (type == null) return false;
+    return normalizeJavaType(type).contains("Set<");
+  }
+
   private static String indexedAccessExpression(String name, String type, String index) {
     String normalized = type == null ? "" : normalizeJavaType(type);
     if (normalized.contains("Map")) {
@@ -741,11 +788,47 @@ public final class JavaRewriteLibrary {
     java.util.List<String> parts = new java.util.ArrayList<>();
     int start = 0;
     int angleDepth = 0;
+    int parenDepth = 0;
+    int bracketDepth = 0;
+    int braceDepth = 0;
+    boolean inString = false;
+    boolean inChar = false;
+    boolean escaped = false;
     for (int index = 0; index < source.length(); index++) {
       char ch = source.charAt(index);
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch == '\\') {
+        escaped = inString || inChar;
+        continue;
+      }
+      if (inString) {
+        if (ch == '"') inString = false;
+        continue;
+      }
+      if (inChar) {
+        if (ch == '\'') inChar = false;
+        continue;
+      }
+      if (ch == '"') {
+        inString = true;
+        continue;
+      }
+      if (ch == '\'') {
+        inChar = true;
+        continue;
+      }
       if (ch == '<') angleDepth++;
       if (ch == '>') angleDepth = Math.max(0, angleDepth - 1);
-      if (ch == ',' && angleDepth == 0) {
+      if (ch == '(') parenDepth++;
+      if (ch == ')') parenDepth = Math.max(0, parenDepth - 1);
+      if (ch == '[') bracketDepth++;
+      if (ch == ']') bracketDepth = Math.max(0, bracketDepth - 1);
+      if (ch == '{') braceDepth++;
+      if (ch == '}') braceDepth = Math.max(0, braceDepth - 1);
+      if (ch == ',' && angleDepth == 0 && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0) {
         parts.add(source.substring(start, index).trim());
         start = index + 1;
       }

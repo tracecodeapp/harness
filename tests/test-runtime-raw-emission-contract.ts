@@ -157,6 +157,18 @@ function testForbiddenRuntimeTracePayloadRejection(): void {
     userValueSummary.unsupported.length === 0,
     'raw contract should not reject ordinary user string values that match semantic tokens'
   );
+  const userTreeFieldSummary = summarizeJavaRawEmissions([
+    `trace:${JSON.stringify({
+      kind: 'snapshot',
+      line: 5,
+      target: { variable: 'segmentTree' },
+      value: { tree: [1, 2, 3], size: 3 },
+    })}`,
+  ]);
+  assertCondition(
+    userTreeFieldSummary.unsupported.length === 0,
+    'raw contract should not reject ordinary user object fields named tree'
+  );
   const userArgSummary = summarizeJavaRawEmissions([
     `trace:${JSON.stringify({
       kind: 'call',

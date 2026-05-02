@@ -1178,48 +1178,6 @@ function createTraceRecorder(options = {}) {
     runtimeTraceAccessStatsByVariable.set(variable, stats);
   }
 
-  function shouldKeepRuntimeTraceAccessEvent(event, stats) {
-    if (!event || (event.kind !== 'read' && event.kind !== 'write' && event.kind !== 'mutate')) return true;
-    const pathDepth = Array.isArray(event.target?.path) ? event.target.path.length : 0;
-    if ((stats.hasCellRead || stats.hasCellWrite) && pathDepth === 1 && event.kind === 'read') {
-      return false;
-    }
-    if (
-      event.kind === 'mutate' &&
-      stats.hasIndexedWrite &&
-      pathDepth === 0 &&
-      !(stats.hasNestedMutatingCall && pathDepth > 1) &&
-      !stats.hasCellRead &&
-      !stats.hasCellWrite
-    ) {
-      return false;
-    }
-    if (
-      event.kind === 'read' &&
-      pathDepth === 1 &&
-      stats.hasMutatingCall &&
-      !stats.hasNestedMutatingCall &&
-      !stats.hasIndexedWrite &&
-      !stats.hasCellRead &&
-      !stats.hasCellWrite
-    ) {
-      return false;
-    }
-    return true;
-  }
-
-  function pruneRuntimeTraceAccessEvents(variable) {
-    const stats = runtimeTraceAccessStatsByVariable.get(variable);
-    if (!stats) return;
-    for (let index = runtimeTraceEvents.length - 1; index >= 0; index -= 1) {
-      const event = runtimeTraceEvents[index];
-      if (!event || !event.target || event.target.variable !== variable) continue;
-      if (!shouldKeepRuntimeTraceAccessEvent(event, stats)) {
-        runtimeTraceEvents.splice(index, 1);
-      }
-    }
-  }
-
   function appendRuntimeTraceEventsForStep(step) {
     if (traceLimitExceeded && timeoutReason === 'trace-limit' && step?.event !== 'timeout') {
       return;
@@ -1275,16 +1233,14 @@ function createTraceRecorder(options = {}) {
 
     for (const access of step.accesses ?? []) {
       updateRuntimeTraceAccessStats(access);
-      pruneRuntimeTraceAccessEvents(access.variable);
       const kind = runtimeTraceKindForAccess(access);
       const target = runtimeTraceTargetForAccess(access);
-      const stats = runtimeTraceAccessStatsByVariable.get(access.variable);
       if (kind === 'mutate') {
         const event = { ...base, kind, target, ...(access.method ? { method: access.method } : {}) };
-        if (shouldKeepRuntimeTraceAccessEvent(event, stats) && !pushRuntimeTraceEvent(event)) return;
+        if (!pushRuntimeTraceEvent(event)) return;
       } else {
         const event = { ...base, kind, target, value: runtimeTraceAccessValue(step, access) };
-        if (shouldKeepRuntimeTraceAccessEvent(event, stats) && !pushRuntimeTraceEvent(event)) return;
+        if (!pushRuntimeTraceEvent(event)) return;
       }
     }
   }
@@ -2725,7 +2681,7 @@ function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNam
     ts.factory.createBinaryExpression(
       tracedLineCall,
       ts.SyntaxKind.CommaToken,
-      condition
+      wrapTraceCondition(ts, condition)
     )
   );
   return ts.factory.updateForStatement(
@@ -3509,8 +3465,9 @@ function __traceMutatingCall(__varName, __container, __indices, __method, ...__a
   const __result = __target[__method](...__args);
   if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete'].includes(__method)) {
     const __path = __indices || [];
+    const __isMapLike = __traceIsMapLike(__target);
     const __isNestedMap = __path.length > 0 && __traceIsMapLike(__target);
-    if (__isNestedMap && __method === 'set') {
+    if (__isMapLike && __method === 'set') {
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-write',
@@ -3519,12 +3476,21 @@ function __traceMutatingCall(__varName, __container, __indices, __method, ...__a
       });
       return __result;
     }
-    if (__isNestedMap && __method === 'get') {
+    if (__isMapLike && (__method === 'get' || __method === 'has')) {
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-read',
-        indices: __path,
-        pathDepth: __path.length,
+        indices: [...__path, __args[0]],
+        pathDepth: __path.length + 1,
+      });
+      return __result;
+    }
+    if (__target instanceof Set && __method === 'has') {
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: 'indexed-read',
+        indices: [...__path, __args[0]],
+        pathDepth: __path.length + 1,
       });
       return __result;
     }
