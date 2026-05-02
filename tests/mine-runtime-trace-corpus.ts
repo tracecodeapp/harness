@@ -863,6 +863,32 @@ function parseShapeToken(token: string): { kind: string; depth: string } | null 
   return { kind: match[1], depth: match[2] };
 }
 
+function parseAccessToken(token: string): { kind: string; variable: string; depth: string } | null {
+  const match = /^(read|write|mutate):([^:]+):path(\d+)$/.exec(token);
+  if (!match) return null;
+  return { kind: match[1], variable: match[2], depth: match[3] };
+}
+
+function accessVariables(signature: MineSignature): Set<string> {
+  return new Set(
+    Object.keys(signature.accessFacts)
+      .map((token) => parseAccessToken(token)?.variable)
+      .filter((variable): variable is string => Boolean(variable))
+  );
+}
+
+function missingAccessVariables(expected: MineSignature, received: MineSignature): string[] {
+  const receivedVariables = new Set([...received.snapshotVariables, ...accessVariables(received)]);
+  return [
+    ...new Set(
+      Object.keys(expected.accessFacts)
+        .filter((token) => !(token in received.accessFacts))
+        .map((token) => parseAccessToken(token)?.variable)
+        .filter((variable): variable is string => Boolean(variable) && !receivedVariables.has(variable))
+    ),
+  ].sort((left, right) => left.localeCompare(right));
+}
+
 function shapeKindSet(signature: MineSignature): Set<string> {
   return new Set(
     Object.keys(signature.accessShapeFacts)
@@ -915,6 +941,7 @@ function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
   const receivedDepths = shapeDepthsByKind(received);
   const callRatio = expected.callCount === 0 ? received.callCount : received.callCount / expected.callCount;
   const callStructureLooksDifferent = callRatio >= 4 || callRatio <= 0.25;
+  const missingVariables = missingAccessVariables(expected, received);
 
   if (expectedKinds.size === 0 || receivedKinds.size === 0) {
     evidence.push('one side has no runtime access shape facts');
@@ -923,6 +950,14 @@ function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
 
   if (callStructureLooksDifferent) {
     evidence.push(`call-count ratio is ${callRatio.toFixed(2)}, suggesting different helper/library structure`);
+  }
+
+  if (missingVariables.length > 0) {
+    evidence.push(`missing access variables absent from received trace: ${missingVariables.join(', ')}`);
+  }
+
+  if (missingVariables.length > 0) {
+    return { ...drift, classification: 'implementation-drift', confidence: 'high', evidence };
   }
 
   if (setEquals(expectedKinds, receivedKinds)) {
