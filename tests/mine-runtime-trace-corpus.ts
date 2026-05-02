@@ -158,6 +158,8 @@ interface MineReport {
   maxTraceSteps: number;
   maxLineEvents: number;
   maxSingleLineHits: number;
+  referenceLanguage: MineLanguage;
+  comparisonLanguages: MineLanguage[];
   compareRuntimeFacts: boolean;
   includeSignatureDiffs: boolean;
   maxReportDrifts: number;
@@ -182,6 +184,27 @@ interface MineReport {
 function parseStringFlag(name: string): string | undefined {
   const prefix = `--${name}=`;
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
+}
+
+function parseReferenceLanguage(): MineLanguage {
+  const raw = parseStringFlag('reference-language') ?? 'python';
+  if (raw === 'python' || raw === 'javascript' || raw === 'typescript' || raw === 'java') return raw;
+  throw new Error(`Unsupported --reference-language=${raw}. Expected python, javascript, typescript, or java.`);
+}
+
+function parseMineLanguageListFlag(name: string, fallback: MineLanguage[]): MineLanguage[] {
+  const raw = parseStringFlag(name);
+  if (!raw) return fallback;
+  const languages = raw.split(',').map((language) => language.trim()).filter(Boolean);
+  const parsed: MineLanguage[] = [];
+  for (const language of languages) {
+    if (language === 'python' || language === 'javascript' || language === 'typescript' || language === 'java') {
+      parsed.push(language);
+    } else {
+      throw new Error(`Unsupported --${name} entry ${language}. Expected python, javascript, typescript, or java.`);
+    }
+  }
+  return [...new Set(parsed)];
 }
 
 function parseNumberFlag(name: string, fallback: number): number {
@@ -901,6 +924,49 @@ function extraAccessVariables(expected: MineSignature, received: MineSignature):
   ].sort((left, right) => left.localeCompare(right));
 }
 
+function accessOperationKindsByVariable(signature: MineSignature): Map<string, Set<string>> {
+  const operations = new Map<string, Set<string>>();
+  for (const token of Object.keys(signature.accessFacts)) {
+    const parsed = parseAccessToken(token);
+    if (!parsed) continue;
+    const kinds = operations.get(parsed.variable) ?? new Set<string>();
+    kinds.add(parsed.kind);
+    operations.set(parsed.variable, kinds);
+  }
+  return operations;
+}
+
+function missingAccessTokens(expected: MineSignature, received: MineSignature): string[] {
+  return Object.keys(expected.accessFacts)
+    .filter((token) => !(token in received.accessFacts))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function extraAccessTokens(expected: MineSignature, received: MineSignature): string[] {
+  return Object.keys(received.accessFacts)
+    .filter((token) => !(token in expected.accessFacts))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function operationReplacedOnSameVariable(tokens: string[], other: MineSignature): boolean {
+  if (tokens.length === 0) return false;
+  const otherOperations = accessOperationKindsByVariable(other);
+  return tokens.every((token) => {
+    const parsed = parseAccessToken(token);
+    if (!parsed) return false;
+    const operations = otherOperations.get(parsed.variable);
+    return Boolean(operations && [...operations].some((kind) => kind !== parsed.kind));
+  });
+}
+
+function accessIntroducedOnSnapshotOnlyVariable(expected: MineSignature, received: MineSignature): boolean {
+  const expectedOperations = accessOperationKindsByVariable(expected);
+  return extraAccessTokens(expected, received).some((token) => {
+    const parsed = parseAccessToken(token);
+    return Boolean(parsed && !expectedOperations.has(parsed.variable));
+  });
+}
+
 function shapeKindSet(signature: MineSignature): Set<string> {
   return new Set(
     Object.keys(signature.accessShapeFacts)
@@ -953,8 +1019,12 @@ function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
   const receivedDepths = shapeDepthsByKind(received);
   const callRatio = expected.callCount === 0 ? received.callCount : received.callCount / expected.callCount;
   const callStructureLooksDifferent = callRatio >= 4 || callRatio <= 0.25;
+  const callCountsDiffer = expected.callCount !== received.callCount;
   const missingVariables = missingAccessVariables(expected, received);
   const extraVariables = extraAccessVariables(expected, received);
+  const missingOperationsReplaced = operationReplacedOnSameVariable(missingAccessTokens(expected, received), received);
+  const extraOperationsReplaced = operationReplacedOnSameVariable(extraAccessTokens(expected, received), expected);
+  const introducedSnapshotOnlyAccess = accessIntroducedOnSnapshotOnlyVariable(expected, received);
 
   if (expectedKinds.size === 0 || receivedKinds.size === 0) {
     evidence.push('one side has no runtime access shape facts');
@@ -963,6 +1033,8 @@ function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
 
   if (callStructureLooksDifferent) {
     evidence.push(`call-count ratio is ${callRatio.toFixed(2)}, suggesting different helper/library structure`);
+  } else if (callCountsDiffer) {
+    evidence.push(`call count differs: expected=${expected.callCount} received=${received.callCount}`);
   }
 
   if (missingVariables.length > 0) {
@@ -973,7 +1045,23 @@ function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
     evidence.push(`extra access variables absent from expected trace: ${extraVariables.join(', ')}`);
   }
 
-  if (missingVariables.length > 0 || extraVariables.length > 0 || callStructureLooksDifferent) {
+  if (missingOperationsReplaced || extraOperationsReplaced) {
+    evidence.push('access operations are represented by different operation kinds on the same variables');
+  }
+
+  if (introducedSnapshotOnlyAccess) {
+    evidence.push('received trace introduces access operations on variables that were snapshot-only in expected trace');
+  }
+
+  if (
+    missingVariables.length > 0 ||
+    extraVariables.length > 0 ||
+    callStructureLooksDifferent ||
+    callCountsDiffer ||
+    missingOperationsReplaced ||
+    extraOperationsReplaced ||
+    introducedSnapshotOnlyAccess
+  ) {
     return { ...drift, classification: 'implementation-drift', confidence: 'high', evidence };
   }
 
@@ -1379,6 +1467,8 @@ async function runConcurrentMine(
   const maxReportFailures = parseNumberFlag('max-report-failures', 250);
   const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
   const includeSignatureDiffs = hasFlag('include-signature-diffs');
+  const referenceLanguage = parseReferenceLanguage();
+  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java']);
   const mergedReport: MineReport & { jobs: number; workerReportDir: string; runnerCrashCount: number } = {
     corpusPath,
     sourceRoot,
@@ -1387,6 +1477,8 @@ async function runConcurrentMine(
     maxTraceSteps: parseNumberFlag('max-trace-steps', 10000),
     maxLineEvents: parseNumberFlag('max-line-events', 20000),
     maxSingleLineHits: parseNumberFlag('max-single-line-hits', 10000),
+    referenceLanguage,
+    comparisonLanguages,
     compareRuntimeFacts: hasFlag('compare-runtime-facts'),
     includeSignatureDiffs,
     maxReportDrifts,
@@ -1460,6 +1552,8 @@ async function main(): Promise<void> {
   const failOnFailure = hasFlag('fail-on-failure');
   const compareRuntimeFacts = hasFlag('compare-runtime-facts');
   const includeSignatureDiffs = hasFlag('include-signature-diffs');
+  const referenceLanguage = parseReferenceLanguage();
+  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java']);
   const maxReportDrifts = parseNumberFlag('max-report-drifts', 250);
   const maxReportFailures = parseNumberFlag('max-report-failures', 250);
   const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
@@ -1503,9 +1597,10 @@ async function main(): Promise<void> {
         failures.push({ slug, language: entry.language, error: error instanceof Error ? error.message : String(error) });
       }
     }
-    const reference = runs.get('python');
+    const reference = runs.get(referenceLanguage);
     if (!reference) continue;
-    for (const language of ['javascript', 'typescript', 'java'] as MineLanguage[]) {
+    for (const language of comparisonLanguages) {
+      if (language === referenceLanguage) continue;
       const run = runs.get(language);
       if (!run) continue;
       compared += 1;
@@ -1542,6 +1637,8 @@ async function main(): Promise<void> {
     maxTraceSteps,
     maxLineEvents,
     maxSingleLineHits,
+    referenceLanguage,
+    comparisonLanguages,
     compareRuntimeFacts,
     includeSignatureDiffs,
     maxReportDrifts,

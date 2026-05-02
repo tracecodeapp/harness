@@ -1,0 +1,59 @@
+{
+  "id": "helper-list-param-mutation",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "value": 7
+  },
+  "anchors": {
+    "helperAppend": {
+      "python": "out.append(value)",
+      "javascript": "out.push(value);",
+      "typescript": "out.push(value);",
+      "java": "out.add(value);"
+    }
+  },
+  "expect": {
+    "helperAppend": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "out",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "out",
+          "method": "append"
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "helperAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "out",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "out",
+            "method": "append"
+          }
+        ]
+      }
+    }
+  }
+}
