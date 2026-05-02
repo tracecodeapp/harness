@@ -117,6 +117,20 @@ interface DriftRecord {
   };
 }
 
+type DriftClassificationKind = 'fixture-worthy' | 'implementation-drift' | 'metric-sensitive';
+
+interface ClassifiedDriftRecord extends DriftRecord {
+  classification: DriftClassificationKind;
+  confidence: 'high' | 'medium' | 'low';
+  evidence: string[];
+}
+
+interface DriftClassificationSummary {
+  counts: Record<DriftClassificationKind, number>;
+  byLanguage: Record<MineLanguage, Record<DriftClassificationKind, number>>;
+  examples: Record<DriftClassificationKind, Array<{ slug: string; language: MineLanguage; evidence: string[] }>>;
+}
+
 interface DriftCluster {
   key: string;
   count: number;
@@ -158,9 +172,10 @@ interface MineReport {
   hardFailureCount: number;
   driftClusters: DriftCluster[];
   operationTokenClusters: OperationTokenCluster[];
+  classificationSummary: DriftClassificationSummary;
   reportedDriftCount: number;
   reportedFailureCount: number;
-  drifts: DriftRecord[];
+  drifts: Array<DriftRecord | ClassifiedDriftRecord>;
   failures: FailureRecord[];
 }
 
@@ -842,6 +857,169 @@ function operationTokenDiffs(drift: DriftRecord): Array<{ token: string; directi
   return diffs;
 }
 
+function parseShapeToken(token: string): { kind: string; depth: string } | null {
+  const match = /^(read|write|mutate):\*:path(\d+)$/.exec(token);
+  if (!match) return null;
+  return { kind: match[1], depth: match[2] };
+}
+
+function shapeKindSet(signature: MineSignature): Set<string> {
+  return new Set(
+    Object.keys(signature.accessShapeFacts)
+      .map((token) => parseShapeToken(token)?.kind)
+      .filter((kind): kind is string => Boolean(kind))
+  );
+}
+
+function shapeDepthsByKind(signature: MineSignature): Map<string, Set<string>> {
+  const depths = new Map<string, Set<string>>();
+  for (const token of Object.keys(signature.accessShapeFacts)) {
+    const parsed = parseShapeToken(token);
+    if (!parsed) continue;
+    const existing = depths.get(parsed.kind) ?? new Set<string>();
+    existing.add(parsed.depth);
+    depths.set(parsed.kind, existing);
+  }
+  return depths;
+}
+
+function setEquals<T>(left: Set<T>, right: Set<T>): boolean {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
+  const evidence: string[] = [];
+  if (!drift.signatureDiff) {
+    return {
+      ...drift,
+      classification: 'implementation-drift',
+      confidence: drift.kinds.includes('output') ? 'high' : 'medium',
+      evidence: drift.kinds.includes('output')
+        ? ['output differs from the comparison target']
+        : ['no runtime signature diff was available for operation-level classification'],
+    };
+  }
+
+  const expected = drift.signatureDiff.expected;
+  const received = drift.signatureDiff.received;
+  const diffs = operationTokenDiffs(drift);
+  const missing = diffs.filter((diff) => diff.direction === 'missing').map((diff) => diff.token);
+  const extra = diffs.filter((diff) => diff.direction === 'extra').map((diff) => diff.token);
+  const expectedKinds = shapeKindSet(expected);
+  const receivedKinds = shapeKindSet(received);
+  const expectedDepths = shapeDepthsByKind(expected);
+  const receivedDepths = shapeDepthsByKind(received);
+  const callRatio = expected.callCount === 0 ? received.callCount : received.callCount / expected.callCount;
+  const callStructureLooksDifferent = callRatio >= 4 || callRatio <= 0.25;
+
+  if (expectedKinds.size === 0 || receivedKinds.size === 0) {
+    evidence.push('one side has no runtime access shape facts');
+    return { ...drift, classification: 'implementation-drift', confidence: 'high', evidence };
+  }
+
+  if (callStructureLooksDifferent) {
+    evidence.push(`call-count ratio is ${callRatio.toFixed(2)}, suggesting different helper/library structure`);
+  }
+
+  if (setEquals(expectedKinds, receivedKinds)) {
+    const changedDepths = [...expectedKinds].filter((kind) =>
+      !setEquals(expectedDepths.get(kind) ?? new Set(), receivedDepths.get(kind) ?? new Set())
+    );
+    if (changedDepths.length > 0) {
+      evidence.push(`same operation kinds with different path depths for ${changedDepths.join(', ')}`);
+      return {
+        ...drift,
+        classification: 'metric-sensitive',
+        confidence: callStructureLooksDifferent ? 'medium' : 'high',
+        evidence,
+      };
+    }
+    evidence.push('same operation kinds with count/name sensitivity only');
+    return { ...drift, classification: 'metric-sensitive', confidence: 'high', evidence };
+  }
+
+  const missingMutate = missing.some((token) => token.startsWith('mutate:'));
+  const missingWrite = missing.some((token) => token.startsWith('write:'));
+  const missingRead = missing.some((token) => token.startsWith('read:'));
+  const hasCompensatingWrite = extra.some((token) => token.startsWith('write:'));
+  const hasCompensatingMutate = extra.some((token) => token.startsWith('mutate:'));
+  const hasCompensatingRead = extra.some((token) => token.startsWith('read:'));
+
+  if (
+    missing.length > 0 &&
+    extra.length <= 1 &&
+    !callStructureLooksDifferent &&
+    (missingMutate || missingWrite || missingRead) &&
+    !(missingMutate && hasCompensatingWrite) &&
+    !(missingWrite && hasCompensatingMutate)
+  ) {
+    evidence.push(`missing runtime operation shapes: ${missing.join(', ')}`);
+    if (extra.length > 0) evidence.push(`only small extra shape set: ${extra.join(', ')}`);
+    return { ...drift, classification: 'fixture-worthy', confidence: extra.length === 0 ? 'high' : 'medium', evidence };
+  }
+
+  if (
+    (missingMutate && hasCompensatingWrite) ||
+    (missingWrite && hasCompensatingMutate) ||
+    (missingRead && hasCompensatingRead)
+  ) {
+    evidence.push('operation shapes are replaced by a different representation rather than simply missing');
+    evidence.push(`missing=${missing.join(', ') || 'none'} extra=${extra.join(', ') || 'none'}`);
+    return { ...drift, classification: 'implementation-drift', confidence: 'medium', evidence };
+  }
+
+  if (evidence.length > 0 || missing.length + extra.length >= 4) {
+    evidence.push(`large shape diff: missing=${missing.join(', ') || 'none'} extra=${extra.join(', ') || 'none'}`);
+    return { ...drift, classification: 'implementation-drift', confidence: evidence.length > 1 ? 'high' : 'medium', evidence };
+  }
+
+  evidence.push(`small shape diff: missing=${missing.join(', ') || 'none'} extra=${extra.join(', ') || 'none'}`);
+  return { ...drift, classification: 'metric-sensitive', confidence: 'low', evidence };
+}
+
+function emptyClassificationCounts(): Record<DriftClassificationKind, number> {
+  return {
+    'fixture-worthy': 0,
+    'implementation-drift': 0,
+    'metric-sensitive': 0,
+  };
+}
+
+function summarizeClassifiedDrifts(drifts: ClassifiedDriftRecord[]): DriftClassificationSummary {
+  const byLanguage: Record<MineLanguage, Record<DriftClassificationKind, number>> = {
+    python: emptyClassificationCounts(),
+    javascript: emptyClassificationCounts(),
+    typescript: emptyClassificationCounts(),
+    java: emptyClassificationCounts(),
+  };
+  const summary: DriftClassificationSummary = {
+    counts: emptyClassificationCounts(),
+    byLanguage,
+    examples: {
+      'fixture-worthy': [],
+      'implementation-drift': [],
+      'metric-sensitive': [],
+    },
+  };
+  for (const drift of drifts) {
+    summary.counts[drift.classification] += 1;
+    summary.byLanguage[drift.language][drift.classification] += 1;
+    const examples = summary.examples[drift.classification];
+    if (examples.length < 12) {
+      examples.push({ slug: drift.slug, language: drift.language, evidence: drift.evidence.slice(0, 3) });
+    }
+  }
+  return summary;
+}
+
+function isClassifiedDrift(drift: DriftRecord | ClassifiedDriftRecord): drift is ClassifiedDriftRecord {
+  return 'classification' in drift && 'confidence' in drift && Array.isArray((drift as ClassifiedDriftRecord).evidence);
+}
+
 function countDriftsByLanguage(drifts: DriftRecord[]): Record<MineLanguage, number> {
   const counts = { python: 0, javascript: 0, typescript: 0, java: 0 };
   for (const drift of drifts) {
@@ -890,11 +1068,11 @@ function clusterDrifts(drifts: DriftRecord[]): DriftCluster[] {
   return [...clusters.values()].sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
 }
 
-function trimDriftForReport(drift: DriftRecord, includeSignatureDiff: boolean): DriftRecord {
+function trimDriftForReport<T extends DriftRecord>(drift: T, includeSignatureDiff: boolean): T {
   return {
     ...drift,
     ...(includeSignatureDiff ? { signatureDiff: drift.signatureDiff } : { signatureDiff: undefined }),
-  };
+  } as T;
 }
 
 function trimFailureForReport(failure: FailureRecord, maxErrorChars: number): FailureRecord {
@@ -998,6 +1176,38 @@ function mergeOperationTokenClusters(reports: MineReport[]): OperationTokenClust
     left.direction.localeCompare(right.direction) ||
     left.token.localeCompare(right.token)
   );
+}
+
+function mergeClassificationSummaries(reports: MineReport[]): DriftClassificationSummary {
+  const merged: DriftClassificationSummary = {
+    counts: emptyClassificationCounts(),
+    byLanguage: {
+      python: emptyClassificationCounts(),
+      javascript: emptyClassificationCounts(),
+      typescript: emptyClassificationCounts(),
+      java: emptyClassificationCounts(),
+    },
+    examples: {
+      'fixture-worthy': [],
+      'implementation-drift': [],
+      'metric-sensitive': [],
+    },
+  };
+  for (const report of reports) {
+    const summary = report.classificationSummary;
+    if (!summary) continue;
+    for (const classification of Object.keys(merged.counts) as DriftClassificationKind[]) {
+      merged.counts[classification] += summary.counts[classification] ?? 0;
+      for (const language of Object.keys(merged.byLanguage) as MineLanguage[]) {
+        merged.byLanguage[language][classification] += summary.byLanguage?.[language]?.[classification] ?? 0;
+      }
+      for (const example of summary.examples[classification] ?? []) {
+        if (merged.examples[classification].length >= 12) break;
+        merged.examples[classification].push(example);
+      }
+    }
+  }
+  return merged;
 }
 
 function childMineArgs(reportPath: string, offset: number): string[] {
@@ -1105,6 +1315,14 @@ async function runConcurrentMine(
     ...reports.flatMap((report) => report.failures),
     ...failures,
   ];
+  const classifiedDrifts = reports
+    .flatMap((report) => report.drifts)
+    .map((drift) => (isClassifiedDrift(drift) ? drift : classifyRuntimeDrift(drift as DriftRecord)));
+  const mergedClassificationSummary = mergeClassificationSummaries(reports);
+  const classificationSummary =
+    Object.values(mergedClassificationSummary.counts).reduce((sum, count) => sum + count, 0) > 0
+      ? mergedClassificationSummary
+      : summarizeClassifiedDrifts(classifiedDrifts);
   const maxReportDrifts = parseNumberFlag('max-report-drifts', 250);
   const maxReportFailures = parseNumberFlag('max-report-failures', 250);
   const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
@@ -1131,10 +1349,10 @@ async function runConcurrentMine(
     hardFailureCount,
     driftClusters: mergeDriftClusters(reports),
     operationTokenClusters: mergeOperationTokenClusters(reports),
-    reportedDriftCount: Math.min(maxReportDrifts, reports.reduce((sum, report) => sum + report.drifts.length, 0)),
+    classificationSummary,
+    reportedDriftCount: Math.min(maxReportDrifts, classifiedDrifts.length),
     reportedFailureCount: Math.min(maxReportFailures, reportFailures.length),
-    drifts: reports
-      .flatMap((report) => report.drifts)
+    drifts: classifiedDrifts
       .slice(0, maxReportDrifts)
       .map((drift) => trimDriftForReport(drift, includeSignatureDiffs)),
     failures: reportFailures
@@ -1151,6 +1369,7 @@ async function runConcurrentMine(
   console.log(`Hard failures: ${hardFailureCount}`);
   console.log(`Runner crashes recorded as failures: ${failures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
+  console.log(`Drift classifications: ${Object.entries(mergedReport.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
   console.log(`Report: ${reportPath}`);
   console.log(`Worker reports: ${workDir}`);
 
@@ -1253,10 +1472,11 @@ async function main(): Promise<void> {
   }
 
   const hardFailures = failures.filter((failure) => !isTraceBudgetFailure(failure.error));
+  const classifiedDrifts = drifts.map((drift) => classifyRuntimeDrift(drift));
   const driftClusters = clusterDrifts(drifts);
   const driftCountsByLanguage = countDriftsByLanguage(drifts);
   const operationTokenClusters = clusterOperationTokenDiffs(drifts);
-  const reportedDrifts = drifts
+  const reportedDrifts = classifiedDrifts
     .slice(0, maxReportDrifts)
     .map((drift) => trimDriftForReport(drift, includeSignatureDiffs));
   const reportedFailures = failures
@@ -1284,6 +1504,7 @@ async function main(): Promise<void> {
     hardFailureCount: hardFailures.length,
     driftClusters,
     operationTokenClusters,
+    classificationSummary: summarizeClassifiedDrifts(classifiedDrifts),
     reportedDriftCount: reportedDrifts.length,
     reportedFailureCount: reportedFailures.length,
     drifts: reportedDrifts,
@@ -1294,6 +1515,7 @@ async function main(): Promise<void> {
   console.log(`runtime trace corpus mining: groups=${groups.length} comparisons=${compared} drifts=${drifts.length} failures=${failures.length}`);
   console.log(`Hard failures: ${hardFailures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
+  console.log(`Drift classifications: ${Object.entries(report.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);
   console.log(`Report: ${reportPath}`);
   for (const cluster of driftClusters.slice(0, 5)) {
