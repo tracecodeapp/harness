@@ -13,7 +13,8 @@
       "python": "out.append(num)",
       "javascript": "out.push(num);",
       "typescript": "out.push(num);",
-      "java": "out.add(num);"
+      "java": "out.add(num);",
+      "cpp": "out.push_back(num);"
     }
   },
   "expect": {

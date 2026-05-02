@@ -233,11 +233,74 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   ],
 };
 
+const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
+  language: 'cpp',
+  maturity: 'experimental',
+  capabilities: {
+    execution: {
+      styles: {
+        function: false,
+        solutionMethod: true,
+        opsClass: true,
+        script: false,
+        interviewMode: false,
+      },
+      timeouts: {
+        clientTimeouts: true,
+        runtimeTimeouts: true,
+      },
+    },
+    tracing: {
+      supported: true,
+      events: {
+        line: true,
+        call: true,
+        return: true,
+        exception: false,
+        stdout: true,
+        timeout: true,
+      },
+      controls: {
+        maxTraceSteps: true,
+        maxLineEvents: false,
+        maxSingleLineHits: false,
+        maxStoredEvents: true,
+        minimalTrace: false,
+      },
+      fidelity: {
+        preciseLineMapping: true,
+        stableFunctionNames: true,
+        callStack: false,
+      },
+    },
+    diagnostics: {
+      compileErrors: true,
+      runtimeErrors: true,
+      mappedErrorLines: true,
+      stackTraces: false,
+    },
+    structures: {
+      treeNodeRefs: true,
+      listNodeRefs: true,
+      mapSerialization: true,
+      setSerialization: true,
+      graphSerialization: true,
+      cycleReferences: true,
+    },
+  },
+  notes: [
+    'C++ uses a focused browser-local Clang/LLD/WASI compiler lane with TraceCode-owned execution glue.',
+    'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
+    'Tracing currently emits generated-driver v4 call, line, return, stdout, and timeout events only.',
+  ],
+};
+
 export const LANGUAGE_RUNTIME_PROFILES: Record<Language, LanguageRuntimeProfile> = {
   python: PYTHON_RUNTIME_PROFILE,
   javascript: JAVASCRIPT_RUNTIME_PROFILE,
   typescript: TYPESCRIPT_RUNTIME_PROFILE,
   java: JAVA_RUNTIME_PROFILE,
+  cpp: CPP_RUNTIME_PROFILE,
 };
 
 export const SUPPORTED_LANGUAGES: readonly Language[] = Object.freeze(

@@ -10,7 +10,8 @@
       "python": "total += i",
       "javascript": "total += i;",
       "typescript": "total += i;",
-      "java": "total += i;"
+      "java": "total += i;",
+      "cpp": "total += i;"
     }
   },
   "expect": {

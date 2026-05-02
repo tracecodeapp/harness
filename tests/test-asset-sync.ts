@@ -30,12 +30,20 @@ async function main(): Promise<void> {
     'pyodide/runtime-core.js',
     'javascript-worker.js',
     'java-worker.js',
+    'cpp-worker.js',
+    'cpp/tracecode_runtime.hpp',
     'java-source-augmentations.js',
     'vendor/typescript.js',
     'vendor/java-browser-helper.jar',
     'vendor/java-rewriter.jar',
     'vendor/javaparser-core-3.25.10.jar',
     'vendor/jdk.compiler-17.jar',
+    'vendor/cpp/yowasp/bundle.js',
+    'vendor/cpp/yowasp/llvm-resources.tar',
+    'vendor/cpp/yowasp/llvm.core.wasm',
+    'vendor/cpp/yowasp/llvm.core2.wasm',
+    'vendor/cpp/yowasp/llvm.core3.wasm',
+    'vendor/cpp/yowasp/llvm.core4.wasm',
   ];
 
   for (const relativePath of requiredFiles) {
@@ -48,6 +56,7 @@ async function main(): Promise<void> {
   assertCondition(rootEntries.includes('pyodide-worker.js'), 'Asset sync should flatten the Python worker into the target root');
   assertCondition(rootEntries.includes('javascript-worker.js'), 'Asset sync should flatten the JavaScript worker into the target root');
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
+  assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'

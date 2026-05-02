@@ -8,13 +8,15 @@
       "python": "box.value = 7",
       "javascript": "box.value = 7;",
       "typescript": "box.value = 7;",
-      "java": "box.value = 7;"
+      "java": "box.value = 7;",
+      "cpp": "box.value = 7;"
     },
     "read": {
       "python": "return box.value",
       "javascript": "return box.value;",
       "typescript": "return box.value;",
-      "java": "return box.value;"
+      "java": "return box.value;",
+      "cpp": "return box.value;"
     }
   },
   "expect": {

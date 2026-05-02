@@ -10,7 +10,8 @@
       "python": "return text[1]",
       "javascript": "return text[1];",
       "typescript": "return text[1];",
-      "java": "return text.charAt(1);"
+      "java": "return text.charAt(1);",
+      "cpp": "return text[1];"
     }
   },
   "expect": {
@@ -31,6 +32,21 @@
           "pathDepth": 1
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "cpp": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "text"
+        ],
+        "accessTargets": []
+      }
     }
   }
 }

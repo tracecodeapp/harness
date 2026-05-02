@@ -138,7 +138,32 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.mapSerialization',
     'structures.setSerialization',
     'structures.cycleReferences',
-          ],
+  ],
+  cpp: [
+    'execution.styles.solutionMethod',
+    'execution.styles.opsClass',
+    'execution.timeouts.clientTimeouts',
+    'execution.timeouts.runtimeTimeouts',
+    'tracing.supported',
+    'tracing.events.line',
+    'tracing.events.call',
+    'tracing.events.return',
+    'tracing.events.stdout',
+    'tracing.events.timeout',
+    'tracing.controls.maxTraceSteps',
+    'tracing.controls.maxStoredEvents',
+    'tracing.fidelity.preciseLineMapping',
+    'tracing.fidelity.stableFunctionNames',
+    'diagnostics.compileErrors',
+    'diagnostics.runtimeErrors',
+    'diagnostics.mappedErrorLines',
+    'structures.treeNodeRefs',
+    'structures.listNodeRefs',
+    'structures.mapSerialization',
+    'structures.setSerialization',
+    'structures.graphSerialization',
+    'structures.cycleReferences',
+  ],
 };
 
 function assertProfileCoverageAlignment(profile: LanguageRuntimeProfile): void {
@@ -322,6 +347,7 @@ async function main(): Promise<void> {
   assertCondition(SUPPORTED_LANGUAGES.includes('javascript'), 'SUPPORTED_LANGUAGES should include javascript');
   assertCondition(SUPPORTED_LANGUAGES.includes('typescript'), 'SUPPORTED_LANGUAGES should include typescript');
   assertCondition(SUPPORTED_LANGUAGES.includes('java'), 'SUPPORTED_LANGUAGES should include java');
+  assertCondition(SUPPORTED_LANGUAGES.includes('cpp'), 'SUPPORTED_LANGUAGES should include cpp');
   assertCondition(
     stableStringify(SUPPORTED_LANGUAGES) === stableStringify(profiles.map((profile) => profile.language)),
     'SUPPORTED_LANGUAGES should stay aligned with the runtime profile registry'
@@ -340,11 +366,13 @@ async function main(): Promise<void> {
   const javascriptClient = browserHarness.getClient('javascript');
   const typescriptClient = browserHarness.getClient('typescript');
   const javaClient = browserHarness.getClient('java');
+  const cppClient = browserHarness.getClient('cpp');
   for (const [name, client] of [
     ['python', pythonClient],
     ['javascript', javascriptClient],
     ['typescript', typescriptClient],
     ['java', javaClient],
+    ['cpp', cppClient],
   ] as const) {
     assertCondition(
       typeof (client as { getCapabilities?: unknown }).getCapabilities === 'undefined',
@@ -367,8 +395,9 @@ async function main(): Promise<void> {
   const javascriptProfile = getLanguageRuntimeProfile('javascript');
   const typescriptProfile = getLanguageRuntimeProfile('typescript');
   const javaProfile = getLanguageRuntimeProfile('java');
+  const cppProfile = getLanguageRuntimeProfile('cpp');
   for (const profile of profiles) {
-    const expectedMaturity = profile.language === 'java' ? 'experimental' : 'stable';
+    const expectedMaturity = profile.language === 'java' || profile.language === 'cpp' ? 'experimental' : 'stable';
     assertCondition(
       profile.maturity === expectedMaturity,
       `${profile.language} should be marked ${expectedMaturity} in this release`
@@ -396,6 +425,8 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function execution');
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
+  assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ should support solution-method execution');
+  assertCondition(cppProfile.capabilities.tracing.supported, 'C++ should support generated-driver v4 trace events');
   console.log('PASS: runtime capability profile matrix');
 
   const unsupportedProfile = createUnsupportedProfile();

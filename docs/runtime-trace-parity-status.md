@@ -11,7 +11,9 @@ The Runtime Trace parity corpus defines the language-agnostic harness contract f
 - which values were read, written, or mutated
 - which calls, returns, stdout writes, exceptions, timeouts, or snapshots occurred
 
-The fixture corpus must not encode semantic classification such as graph adjacency, linked lists, hash maps, or other visualizer-era structures. Those belong in the semantic engine and downstream runtime-fact attachment.
+Runtime trace frames use a post-line state model. A `line` event means the source line has executed, and snapshots/access facts attached to that line describe the state and runtime facts after that line's operation. Runtime trace playback is not a debugger-style "next line to execute" cursor. Declarations, assignments, mutations, and returns should therefore attach their resulting state to the source line that caused the state, not to the following line. Loop and branch condition lines still emit when the condition is evaluated; because condition evaluation normally does not mutate local state, the post-condition state is usually the same values that entered the condition plus any read facts caused by evaluating it.
+
+The fixture corpus must not encode higher-level classification such as graph adjacency, linked lists, hash maps, or tree roles. Runtime traces should stay limited to execution facts; downstream consumers can derive presentation-specific meaning separately.
 
 ## Cutover Goal
 
@@ -25,14 +27,47 @@ This means the runtime trace cutover is allowed to be breaking:
 
 - Prefer exposing missing runtime facts as visible fixture gaps over masking them in the runtime trace adapter.
 - Prefer deleting old trace dependencies once a language emits runtime trace natively.
-- Do not add semantic classification or visualizer-specific recovery logic to runtime trace emission.
+- Do not add higher-level classification or presentation-specific recovery logic to runtime trace emission.
 - Do not make frontend correctness depend on both the old trace contract and the runtime trace contract at the same time.
+
+## TraceHooks Contract
+
+`TraceHooks` is the shared name for the runtime-facing instrumentation boundary across languages. Java already exposes this boundary as `tracecode.user.TraceHooks`; C++ now exposes `tracecode::TraceHooks`; Python, JavaScript, and TypeScript should use the same conceptual name for the code that observes execution and emits runtime facts.
+
+`TraceHooks` owns language-specific mechanics only:
+
+- observing source-line execution
+- recording neutral reads, writes, and mutations
+- recording calls, returns, stdout, exceptions, and timeouts
+- snapshotting visible runtime state
+- enforcing trace budgets
+- assembling public `RuntimeTrace` events
+
+`TraceHooks` must not own higher-level meaning:
+
+- no graph/list/tree/hash-map classification
+- no presentation selection
+- no algorithm-family inference
+- no language-specific payload category unless the category is accepted into the shared runtime trace contract
+
+All language implementations should use the same vocabulary even if their underlying mechanics differ:
+
+- `emitPostLineFrame` / completed-line frame emission
+- `recordRead`
+- `recordWrite`
+- `recordMutation`
+- `emitCall`
+- `emitReturn`
+- `emitException`
+- `flushCompletedLine`
+
+The public contract is `RuntimeTrace`, not the implementation shape of `TraceHooks`. A language may internally observe pre-line signals, AST-rewritten statement completions, bytecode callbacks, or explicit helper calls, but `TraceHooks` must expose the same post-line runtime trace model to consumers.
 
 ## Current Corpus
 
 - Fixture directory: `fixtures/runtime-parity`
-- Fixture count: 57
-- Languages covered per fixture: Python, JavaScript, TypeScript, Java
+- Fixture count: 58
+- Languages covered per fixture: Python, JavaScript, TypeScript, Java, C++ where `solution.cpp` exists
 - Official gate: `pnpm test:runtime-trace`
 - Gate: `pnpm test:runtime-trace-fixtures`
 - Strict raw parity gate: `pnpm test:runtime-trace-fixtures:raw-strict`
@@ -59,7 +94,7 @@ By language:
 
 Main clusters:
 
-- No open fixture gaps in the current 57-fixture corpus.
+- No open fixture gaps in the current 58-fixture corpus.
 - The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, and Java.
 - This is a baseline, not proof of completeness. New operations should be added to the corpus as soon as they become product-relevant or are discovered through corpus mining.
 
@@ -105,7 +140,7 @@ The final gap-removal pass also tightened:
 - Java mutation-line snapshots so locals first declared by the mutation assignment do not leak as same-line state facts.
 - JS/TS console logging and thrown exceptions so stdout and caught exception fixtures are line-attached runtime facts.
 - Python dict/set membership, dict writes/reads, set mutations, object field access, and raised exceptions so they emit neutral runtime facts.
-- Python and Java keyed field-map reads/writes now emit access to the owning object plus field and key path, matching JavaScript/TypeScript field `Map` behavior without visualizer-side recovery.
+- Python and Java keyed field-map reads/writes now emit access to the owning object plus field and key path, matching JavaScript/TypeScript field `Map` behavior without presentation-side recovery.
 - TypeScript `as`/type-assertion receivers now preserve keyed parent mutation attribution, so `(map.get(key) as T[]).push(value)` emits the same neutral runtime mutation as JavaScript `map.get(key).push(value)`.
 - Java object-field map operations now emit keyed owner paths, so `node.children.get/put/containsKey/putIfAbsent(key, ...)` produces `node.children[key]` runtime facts instead of field-only reads or generic mutations.
 

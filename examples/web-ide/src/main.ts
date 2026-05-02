@@ -123,6 +123,32 @@ result = new int[] {};
     seen.put(value, index);
 }`,
   },
+  cpp: {
+    functionName: 'twoSum',
+    executionStyle: 'solution-method',
+    inputs: {
+      nums: [2, 7, 11, 15],
+      target: 9,
+    },
+    code: `#include <unordered_map>
+#include <vector>
+using namespace std;
+
+class Solution {
+public:
+  vector<int> twoSum(vector<int>& nums, int target) {
+    unordered_map<int, int> seen;
+    for (int index = 0; index < nums.size(); ++index) {
+      int complement = target - nums[index];
+      if (seen.count(complement)) {
+        return {seen[complement], index};
+      }
+      seen[nums[index]] = index;
+    }
+    return {};
+  }
+};`,
+  },
 };
 
 const getExtension = (lang: Language) => {
@@ -130,6 +156,7 @@ const getExtension = (lang: Language) => {
   if (lang === 'javascript') return '.js';
   if (lang === 'typescript') return '.ts';
   if (lang === 'java') return '.java';
+  if (lang === 'cpp') return '.cpp';
   return '.txt';
 };
 
@@ -138,6 +165,7 @@ const getEditorLanguage = (lang: Language): string => {
   if (lang === 'javascript') return 'javascript';
   if (lang === 'python') return 'python';
   if (lang === 'java') return 'java';
+  if (lang === 'cpp') return 'cpp';
   return 'plaintext';
 };
 

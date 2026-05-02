@@ -10,7 +10,8 @@
       "python": "return n * solve(n - 1)",
       "javascript": "return n * solve(n - 1);",
       "typescript": "return n * solve(n - 1);",
-      "java": "return n * solve(n - 1);"
+      "java": "return n * solve(n - 1);",
+      "cpp": "return n * solve(n - 1);"
     }
   },
   "expect": {

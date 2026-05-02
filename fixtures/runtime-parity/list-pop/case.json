@@ -14,7 +14,8 @@
       "python": "value = nums.pop()",
       "javascript": "const value = nums.pop();",
       "typescript": "const value = nums.pop()!;",
-      "java": "int value = nums.remove(nums.size() - 1);"
+      "java": "int value = nums.remove(nums.size() - 1);",
+      "cpp": "nums.pop_back();"
     }
   },
   "expect": {
@@ -34,6 +35,28 @@
           "method": "pop"
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "cpp": {
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "nums",
+            "method": "pop"
+          }
+        ]
+      }
     }
   }
 }

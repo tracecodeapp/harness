@@ -14,7 +14,8 @@
       "python": "return nums[0]",
       "javascript": "return nums[0];",
       "typescript": "return nums[0];",
-      "java": "return nums[0];"
+      "java": "return nums[0];",
+      "cpp": "return nums[0];"
     }
   },
   "expect": {

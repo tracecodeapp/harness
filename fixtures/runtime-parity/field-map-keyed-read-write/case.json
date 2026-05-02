@@ -11,13 +11,15 @@
       "python": "self.counts[key] = self.counts.get(key, 0) + 1",
       "javascript": "this.counts.set(key, (this.counts.get(key) ?? 0) + 1);",
       "typescript": "this.counts.set(key, (this.counts.get(key) ?? 0) + 1);",
-      "java": "this.counts.put(key, this.counts.getOrDefault(key, 0) + 1);"
+      "java": "this.counts.put(key, this.counts.getOrDefault(key, 0) + 1);",
+      "cpp": "this->counts[key] = this->counts[key] + 1;"
     },
     "read": {
       "python": "return self.counts.get(key, 0)",
       "javascript": "return this.counts.has(key) ? this.counts.get(key) : 0;",
       "typescript": "return this.counts.has(key) ? this.counts.get(key) ?? 0 : 0;",
-      "java": "return this.counts.containsKey(key) ? this.counts.get(key) : 0;"
+      "java": "return this.counts.containsKey(key) ? this.counts.get(key) : 0;",
+      "cpp": "return this->counts.count(key) ? this->counts[key] : 0;"
     }
   },
   "expect": {

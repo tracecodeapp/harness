@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { createBrowserHarness, resolveBrowserHarnessAssets } from '../packages/harness-browser/src';
+import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -55,6 +56,17 @@ class MockWorker {
         return;
       }
 
+      if (type === 'compile-run') {
+        this.onmessage?.({
+          data: {
+            id,
+            type,
+            payload: { success: true, output: payload ?? null, consoleOutput: [] },
+          },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
       if (type === 'execute-with-tracing') {
         this.onmessage?.({
           data: {
@@ -65,7 +77,14 @@ class MockWorker {
               output: null,
               events: [],
               sourceText: '',
-              trace: [],
+              trace: {
+                schemaVersion: 'runtime-trace-2026-04-28',
+                language: 'cpp',
+                runId: 'cpp:run',
+                events: [],
+                lineEventCount: 0,
+                traceStepCount: 0,
+              },
               consoleOutput: [],
               executionTimeMs: 1,
               lineEventCount: 0,
@@ -91,6 +110,12 @@ async function main(): Promise<void> {
     const defaultAssets = resolveBrowserHarnessAssets();
     assertCondition(defaultAssets.pythonWorker === '/workers/pyodide-worker.js', 'Default python worker path should resolve');
     assertCondition(defaultAssets.javaWorker === '/workers/java-worker.js', 'Default java worker path should resolve');
+    assertCondition(defaultAssets.cppWorker === '/workers/cpp-worker.js', 'Default C++ worker path should resolve');
+    assertCondition(defaultAssets.cppClangWasm === '/workers/vendor/cpp/clang.wasm', 'Default C++ clang path should resolve');
+    assertCondition(
+      defaultAssets.cppCompilerBundle === '/workers/vendor/cpp/yowasp/bundle.js',
+      'Default C++ compiler bundle path should resolve'
+    );
     assertCondition(
       defaultAssets.typescriptCompiler === '/workers/vendor/typescript.js',
       'Default TypeScript compiler path should resolve'
@@ -101,18 +126,24 @@ async function main(): Promise<void> {
       assets: {
         javascriptWorker: 'workers/js-runtime.js',
         pythonWorker: 'https://cdn.example.com/python-worker.js',
+        cppClangWasm: 'https://cdn.example.com/cpp/clang.wasm',
+        cppCompilerBundle: 'https://cdn.example.com/cpp/bundle.js',
       },
     });
     assertCondition(customAssets.pythonWorker === 'https://cdn.example.com/python-worker.js', 'Explicit asset URLs should be preserved');
+    assertCondition(customAssets.cppClangWasm === 'https://cdn.example.com/cpp/clang.wasm', 'Explicit C++ asset URLs should be preserved');
+    assertCondition(customAssets.cppCompilerBundle === 'https://cdn.example.com/cpp/bundle.js', 'Explicit C++ compiler bundle URLs should be preserved');
     assertCondition(customAssets.javascriptWorker === '/sdk-assets/workers/js-runtime.js', 'Relative custom assets should join assetBaseUrl');
     console.log('PASS: browser harness asset resolution');
 
     const harnessA = createBrowserHarness({ assetBaseUrl: '/instance-a' });
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });
     assertCondition(harnessA.isLanguageSupported('java'), 'Browser harness should expose Java support');
+    assertCondition(harnessA.isLanguageSupported('cpp'), 'Browser harness should expose C++ support');
 
     await harnessA.getClient('javascript').init();
     await harnessA.getClient('java').init();
+    await harnessA.getClient('cpp').init();
     await harnessB.getClient('python').init();
 
     assertCondition(
@@ -122,6 +153,10 @@ async function main(): Promise<void> {
     assertCondition(
       workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/java-worker.js')),
       'Harness A should use its own Java worker URL'
+    );
+    assertCondition(
+      workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js')),
+      'Harness A should use its own C++ worker URL'
     );
     assertCondition(
       workerInstances.some((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js?dev=')),
@@ -154,6 +189,62 @@ async function main(): Promise<void> {
       'Java runtime should route interview-mode executeCode through the browser harness client'
     );
     console.log('PASS: browser harness routes Java interview-mode requests');
+
+    const cppExecuteResult = await harnessA
+      .getClient('cpp')
+      .executeCode('class Solution { public: int add(int a, int b) { return a + b; } };', 'add', {}, 'solution-method');
+    assertCondition(cppExecuteResult.success, 'C++ runtime should route solution-method executeCode through the browser harness client');
+    const cppTraceResult = await harnessA
+      .getClient('cpp')
+      .executeWithTracing('class Solution { public: int add(int a, int b) { return a + b; } };', 'add', {}, {}, 'solution-method');
+    assertCondition(cppTraceResult.success, 'C++ runtime should route solution-method executeWithTracing through the browser harness client');
+    console.log('PASS: browser harness routes C++ runtime requests');
+
+    class HangingCppWorker extends MockWorker {
+      postMessage(message: WorkerMessage): void {
+        const payload = message.payload as { code?: string } | undefined;
+        if (message.type === 'compile-run' && payload?.code?.includes('while(true)')) {
+          return;
+        }
+        super.postMessage(message);
+      }
+    }
+
+    const beforeTimeoutWorkerCount = workerInstances.length;
+    // @ts-expect-error test stub
+    globalThis.Worker = HangingCppWorker;
+    const timeoutClient = new CppWorkerClient({
+      workerUrl: '/workers/cpp-worker.js',
+      clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
+      lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
+      sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+      runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
+      compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+      executionTimeoutMs: 5,
+    });
+    const timeoutResult = await timeoutClient.executeCode(
+      'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };',
+      'add',
+      { a: 1, b: 2 },
+      'solution-method'
+    );
+    assertCondition(timeoutResult.success === false, 'C++ client timeout should return a failed execution result');
+    assertCondition(
+      String(timeoutResult.error).includes('timed out'),
+      `C++ client timeout should explain the timeout, received ${String(timeoutResult.error)}`
+    );
+    assertCondition(workerInstances[beforeTimeoutWorkerCount]?.terminated === true, 'C++ client timeout should terminate the stuck worker');
+    const recoveryResult = await timeoutClient.executeCode(
+      'class Solution { public: int add(int a, int b) { return a + b; } };',
+      'add',
+      { a: 1, b: 2 },
+      'solution-method'
+    );
+    assertCondition(recoveryResult.success, 'C++ client should recover by creating a fresh worker after timeout');
+    timeoutClient.terminate();
+    // @ts-expect-error test stub
+    globalThis.Worker = MockWorker;
+    console.log('PASS: C++ worker client hard timeout terminates and recovers');
 
     harnessB.disposeLanguage('python');
     assertCondition(Boolean(survivingWorker?.terminated), 'disposeLanguage should terminate the targeted runtime');

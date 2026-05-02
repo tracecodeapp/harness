@@ -8,13 +8,15 @@
       "python": "box.length = 4",
       "javascript": "box.length = 4;",
       "typescript": "box.length = 4;",
-      "java": "box.length = 4;"
+      "java": "box.length = 4;",
+      "cpp": "box.length = 4;"
     },
     "read": {
       "python": "return box.length",
       "javascript": "return box.length;",
       "typescript": "return box.length;",
-      "java": "return box.length;"
+      "java": "return box.length;",
+      "cpp": "return box.length;"
     }
   },
   "expect": {

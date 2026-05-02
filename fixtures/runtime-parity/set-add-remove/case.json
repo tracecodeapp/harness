@@ -8,13 +8,15 @@
       "python": "seen.add(2)",
       "javascript": "seen.add(2);",
       "typescript": "seen.add(2);",
-      "java": "seen.add(2);"
+      "java": "seen.add(2);",
+      "cpp": "seen.insert(2);"
     },
     "remove": {
       "python": "seen.remove(2)",
       "javascript": "seen.delete(2);",
       "typescript": "seen.delete(2);",
-      "java": "seen.remove(2);"
+      "java": "seen.remove(2);",
+      "cpp": "seen.erase(2);"
     }
   },
   "expect": {
@@ -51,6 +53,44 @@
           "method": "remove"
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "cpp": {
+      "add": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "seen",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "remove": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "method": "remove"
+          }
+        ]
+      }
     }
   }
 }

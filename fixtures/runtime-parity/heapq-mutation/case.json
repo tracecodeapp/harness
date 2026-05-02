@@ -12,13 +12,15 @@
       "python": "heapq.heappush(heap, nums[0])",
       "javascript": "heap.push(nums[0]);",
       "typescript": "heap.push(nums[0]);",
-      "java": "heap.offer(nums[0]);"
+      "java": "heap.offer(nums[0]);",
+      "cpp": "heap.push(nums[0]);"
     },
     "pop": {
       "python": "value = heapq.heappop(heap)",
       "javascript": "const value = heap.pop();",
       "typescript": "const value = heap.pop();",
-      "java": "Integer value = heap.poll();"
+      "java": "Integer value = heap.poll();",
+      "cpp": "heap.pop();"
     }
   },
   "expect": {
@@ -100,6 +102,51 @@
         "variableSnapshots": [
           "heap",
           "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "pop"
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "push": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "append"
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums",
+          "value"
         ],
         "accessTargets": [
           {

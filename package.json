@@ -80,6 +80,9 @@
     "test:java-sync": "pnpm exec tsx tests/test-java-harness-sync.ts",
     "test:python-runtime": "pnpm exec tsx tests/test-python-runtime.ts",
     "test:java-runtime": "pnpm exec tsx tests/test-java-runtime.ts",
+    "test:cpp-runtime": "pnpm exec tsx tests/test-cpp-runtime.ts",
+    "test:cpp-rewriter": "pnpm exec tsx tests/test-cpp-rewriter.ts",
+    "test:cpp-browser-worker": "pnpm exec tsx tests/test-cpp-browser-worker.ts",
     "test:js-runtime": "pnpm exec tsx tests/test-javascript-runtime.ts",
     "test:python-harness-sync": "pnpm run test:python-sync",
     "test:java-harness-sync": "pnpm run test:java-sync",
@@ -92,8 +95,8 @@
     "local:build:runtime-trace-tc83": "pnpm exec tsx tests/build-runtime-trace-tc83-corpus.ts",
     "local:test:runtime-trace-tc83-smoke": "pnpm local:build:runtime-trace-tc83 && pnpm exec tsx tests/mine-runtime-trace-corpus.ts --corpus=reports/runtime-trace-tc83-corpus.json --source-root=/Users/obinnanwachukwu/Code/algoflow --limit=83 --jobs=8 --worker-timeout-ms=180000 --max-trace-steps=10000 --loose-any-valid-output --fail-on-failure --report=reports/runtime-trace-tc83-smoke.json",
     "local:mine:runtime-trace-tc83-parity": "pnpm local:build:runtime-trace-tc83 && pnpm exec tsx tests/mine-runtime-trace-corpus.ts --corpus=reports/runtime-trace-tc83-corpus.json --source-root=/Users/obinnanwachukwu/Code/algoflow --limit=83 --jobs=8 --worker-timeout-ms=180000 --max-trace-steps=10000 --loose-any-valid-output --reference-language=javascript --comparison-languages=typescript,java --compare-runtime-facts --include-signature-diffs --report=reports/runtime-trace-tc83-parity.json",
-    "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
-    "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
+    "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:cpp-rewriter && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
+    "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:cpp-rewriter && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
     "mine:runtime-trace-final300": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts",
     "mine:runtime-trace-final300:parallel": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts --jobs=8",
     "test:runtime-raw-emission-contract": "pnpm exec tsx tests/test-runtime-raw-emission-contract.ts",
@@ -104,8 +107,8 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "pyodide": "^0.29.0",
     "playwright": "^1.53.2",
+    "pyodide": "^0.29.0",
     "tsup": "^8.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0"
@@ -115,5 +118,8 @@
       "dompurify": "3.4.1",
       "picomatch": "4.0.4"
     }
+  },
+  "dependencies": {
+    "@yowasp/clang": "22.0.0-git20542-10"
   }
 }

@@ -14,7 +14,8 @@
       "python": "total += nums[i]",
       "javascript": "total += nums[i];",
       "typescript": "total += nums[i];",
-      "java": "total += nums[i];"
+      "java": "total += nums[i];",
+      "cpp": "total += nums[i];"
     }
   },
   "expect": {

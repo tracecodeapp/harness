@@ -10,13 +10,15 @@
       "python": "self.graph[0].append(1)",
       "javascript": "this.graph[0].push(1);",
       "typescript": "this.graph[0].push(1);",
-      "java": "this.graph.get(0).add(1);"
+      "java": "this.graph.get(0).add(1);",
+      "cpp": "this->graph[0].push_back(1);"
     },
     "fieldWrite": {
       "python": "self.graph = [[] for _ in range(n)]",
       "javascript": "this.graph = Array.from({ length: n }, () => []);",
       "typescript": "this.graph = Array.from({ length: n }, () => []);",
-      "java": "this.graph = new ArrayList<>();"
+      "java": "this.graph = new ArrayList<>();",
+      "cpp": "this->graph = vector<vector<int>>(n);"
     }
   },
   "expect": {
