@@ -889,6 +889,18 @@ function missingAccessVariables(expected: MineSignature, received: MineSignature
   ].sort((left, right) => left.localeCompare(right));
 }
 
+function extraAccessVariables(expected: MineSignature, received: MineSignature): string[] {
+  const expectedVariables = new Set([...expected.snapshotVariables, ...accessVariables(expected)]);
+  return [
+    ...new Set(
+      Object.keys(received.accessFacts)
+        .filter((token) => !(token in expected.accessFacts))
+        .map((token) => parseAccessToken(token)?.variable)
+        .filter((variable): variable is string => Boolean(variable) && !expectedVariables.has(variable))
+    ),
+  ].sort((left, right) => left.localeCompare(right));
+}
+
 function shapeKindSet(signature: MineSignature): Set<string> {
   return new Set(
     Object.keys(signature.accessShapeFacts)
@@ -942,6 +954,7 @@ function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
   const callRatio = expected.callCount === 0 ? received.callCount : received.callCount / expected.callCount;
   const callStructureLooksDifferent = callRatio >= 4 || callRatio <= 0.25;
   const missingVariables = missingAccessVariables(expected, received);
+  const extraVariables = extraAccessVariables(expected, received);
 
   if (expectedKinds.size === 0 || receivedKinds.size === 0) {
     evidence.push('one side has no runtime access shape facts');
@@ -956,7 +969,11 @@ function classifyRuntimeDrift(drift: DriftRecord): ClassifiedDriftRecord {
     evidence.push(`missing access variables absent from received trace: ${missingVariables.join(', ')}`);
   }
 
-  if (missingVariables.length > 0) {
+  if (extraVariables.length > 0) {
+    evidence.push(`extra access variables absent from expected trace: ${extraVariables.join(', ')}`);
+  }
+
+  if (missingVariables.length > 0 || extraVariables.length > 0 || callStructureLooksDifferent) {
     return { ...drift, classification: 'implementation-drift', confidence: 'high', evidence };
   }
 
