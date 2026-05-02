@@ -1,0 +1,36 @@
+{
+  "id": "object-field-map-keyed-access",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": { "key": "a" },
+  "anchors": {
+    "writeKey": {
+      "python": "node.children[key] = 1",
+      "javascript": "node.children[key] = 1;",
+      "typescript": "node.children[key] = 1;",
+      "java": "node.children.put(key, 1);"
+    },
+    "readKey": {
+      "python": "return node.children[key]",
+      "javascript": "return node.children[key];",
+      "typescript": "return node.children[key];",
+      "java": "return node.children.get(key);"
+    }
+  },
+  "expect": {
+    "writeKey": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["key", "node"],
+      "accessTargets": [
+        { "kind": "write", "variable": "node", "pathDepth": 2 }
+      ]
+    },
+    "readKey": {
+      "eventKinds": ["line", "read", "return", "snapshot"],
+      "variableSnapshots": ["key", "node"],
+      "accessTargets": [
+        { "kind": "read", "variable": "node", "pathDepth": 2 }
+      ]
+    }
+  }
+}

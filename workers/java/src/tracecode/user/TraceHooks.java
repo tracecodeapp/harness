@@ -214,6 +214,16 @@ public final class TraceHooks extends \u0073pike.user.TraceHooks {
     return previous;
   }
 
+  public static <K, V> V putFieldMapIfAbsentAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key, V value) {
+    V previous = values.putIfAbsent(key, value);
+    if (previous == null) {
+      emitTraceWrite(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", values.get(key));
+    } else {
+      emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", previous);
+    }
+    return previous;
+  }
+
   public static <T> boolean addSetAtLine(int line, String name, java.util.Set<T> values, T key) {
     boolean changed = values.add(key);
     emitTraceMutate(line, name, null, "add");

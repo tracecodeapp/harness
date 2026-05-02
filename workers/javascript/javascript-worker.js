@@ -2133,6 +2133,9 @@ function unwrapParenthesizedExpression(ts, node) {
   while (
     current &&
     (ts.isParenthesizedExpression(current) ||
+      (typeof ts.isAsExpression === 'function' && ts.isAsExpression(current)) ||
+      (typeof ts.isTypeAssertionExpression === 'function' && ts.isTypeAssertionExpression(current)) ||
+      (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(current)) ||
       (typeof ts.isNonNullExpression === 'function' && ts.isNonNullExpression(current)))
   ) {
     current = current.expression;

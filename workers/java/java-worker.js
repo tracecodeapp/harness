@@ -1349,6 +1349,9 @@ function rewriteJavaObjectFieldReads(expression, objectNames, lineNumber) {
   for (const name of objectNames) {
     const fieldPattern = new RegExp(`\\b${escapeRegExp(name)}\\.([A-Za-z_][A-Za-z0-9_]*)\\b`, 'g');
     output = output.replace(fieldPattern, (match, field, offset, fullSource) => {
+      const marker = fullSource.lastIndexOf('TraceHooks.', offset);
+      const delimiter = Math.max(fullSource.lastIndexOf(';', offset), fullSource.lastIndexOf('\n', offset));
+      if (marker > delimiter) return match;
       const nextChar = fullSource[offset + match.length] ?? '';
       if (nextChar === '(') return match;
       return `TraceHooks.readObjectFieldAtLine(${lineNumber}, "${name}", "${field}", ${match})`;

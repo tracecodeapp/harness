@@ -62,6 +62,9 @@ public final class JavaRewriteLibrary {
   private static final Pattern THIS_FIELD_MAP_GET_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
   private static final Pattern THIS_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
   private static final Pattern THIS_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
+  private static final Pattern OBJECT_FIELD_MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
+  private static final Pattern OBJECT_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
+  private static final Pattern OBJECT_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
   private static final Pattern ARRAY_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]");
 
@@ -276,6 +279,15 @@ public final class JavaRewriteLibrary {
           String key = rewriteReads(parts.get(0), sourceLine, frame);
           String value = rewriteReads(parts.get(1), sourceLine, frame);
           return indent + "TraceHooks.putFieldMapAtLine(" + sourceLine + ", \"this\", " + quote(field) + ", " + target + ", " + key + ", " + value + ");";
+        }
+      }
+      if (!"this".equals(name) && ("put".equals(method) || "putIfAbsent".equals(method)) && isMapType(frame.typeOf(field))) {
+        java.util.List<String> parts = splitTopLevel(rawArgs);
+        if (parts.size() >= 2) {
+          String key = rewriteReads(parts.get(0), sourceLine, frame);
+          String value = rewriteReads(parts.get(1), sourceLine, frame);
+          String hook = "putIfAbsent".equals(method) ? "putFieldMapIfAbsentAtLine" : "putFieldMapAtLine";
+          return indent + "TraceHooks." + hook + "(" + sourceLine + ", " + quote(name) + ", " + quote(field) + ", " + target + ", " + key + ", " + value + ");";
         }
       }
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\\\"" + field + "\\\"]}";
@@ -529,6 +541,26 @@ public final class JavaRewriteLibrary {
       String field = match.group(1);
       if (!isMapType(frame.typeOf(field))) return match.group(0);
       return "TraceHooks.readFieldMapAtLine(" + line + ", \"this\", " + quote(field) + ", this." + field + ", " + match.group(2).trim() + ")";
+    });
+    next = replaceAll(OBJECT_FIELD_MAP_CONTAINS_KEY_CALL, next, match -> {
+      String name = match.group(1);
+      String field = match.group(2);
+      if (!isMapType(frame.typeOf(field))) return match.group(0);
+      return "TraceHooks.containsFieldMapKeyAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + match.group(3).trim() + ")";
+    });
+    next = replaceAll(OBJECT_FIELD_MAP_GET_OR_DEFAULT_CALL, next, match -> {
+      String name = match.group(1);
+      String field = match.group(2);
+      if (!isMapType(frame.typeOf(field))) return match.group(0);
+      java.util.List<String> args = splitTopLevel(match.group(3).trim());
+      if (args.size() != 2) return match.group(0);
+      return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + args.get(0) + ", " + args.get(1) + ")";
+    });
+    next = replaceAll(OBJECT_FIELD_MAP_GET_CALL, next, match -> {
+      String name = match.group(1);
+      String field = match.group(2);
+      if (!isMapType(frame.typeOf(field))) return match.group(0);
+      return "TraceHooks.readFieldMapAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + match.group(3).trim() + ")";
     });
     next = replaceAll(MAP_CONTAINS_KEY_CALL, next, match -> {
       String name = match.group(1);
@@ -962,7 +994,7 @@ public final class JavaRewriteLibrary {
   private static boolean isTrackedMutationMethod(String method) {
     return "add".equals(method) || "push".equals(method) || "offer".equals(method) ||
         "addAll".equals(method) ||
-        "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) ||
+        "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) || "putIfAbsent".equals(method) ||
         "addFirst".equals(method) || "offerFirst".equals(method) ||
         "remove".equals(method) || "clear".equals(method) || "poll".equals(method) ||
         "pollFirst".equals(method) || "removeFirst".equals(method) ||
