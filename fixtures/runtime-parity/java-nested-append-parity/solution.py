@@ -4,7 +4,8 @@ class Bucket:
 
 
 def solve(n):
-    graph = {0: []}
+    graph = {}
+    graph[0] = []
     graph[0].append(1)
     bucket = Bucket()
     bucket.keys.append(2)

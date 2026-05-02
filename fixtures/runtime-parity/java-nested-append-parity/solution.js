@@ -5,7 +5,8 @@ class Bucket {
 }
 
 function solve(n) {
-  const graph = new Map([[0, []]]);
+  const graph = new Map();
+  graph.set(0, []);
   graph.get(0).push(1);
   const bucket = new Bucket();
   bucket.keys.push(2);

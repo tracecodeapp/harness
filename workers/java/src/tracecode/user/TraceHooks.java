@@ -166,15 +166,33 @@ public final class TraceHooks extends \u0073pike.user.TraceHooks {
     return value;
   }
 
+  public static <K, V> V readFieldMapAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key) {
+    V value = values.get(key);
+    emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", value);
+    return value;
+  }
+
   public static <K, V> V readMapOrDefaultAtLine(int line, String name, java.util.Map<K, V> values, K key, V defaultValue) {
     V value = values.getOrDefault(key, defaultValue);
     emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
     return value;
   }
 
+  public static <K, V> V readFieldMapOrDefaultAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key, V defaultValue) {
+    V value = values.getOrDefault(key, defaultValue);
+    emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", value);
+    return value;
+  }
+
   public static boolean containsMapKeyAtLine(int line, String name, java.util.Map<?, ?> values, Object key) {
     boolean value = values.containsKey(key);
     emitTraceRead(line, name, "[" + serializeResult(key) + "]", value);
+    return value;
+  }
+
+  public static boolean containsFieldMapKeyAtLine(int line, String ownerName, String field, java.util.Map<?, ?> values, Object key) {
+    boolean value = values.containsKey(key);
+    emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", value);
     return value;
   }
 
@@ -187,6 +205,12 @@ public final class TraceHooks extends \u0073pike.user.TraceHooks {
   public static <K, V> V putMapAtLine(int line, String name, java.util.Map<K, V> values, K key, V value) {
     V previous = values.put(key, value);
     emitTraceWrite(line, name, "[" + serializeResult(key) + "]", values.get(key));
+    return previous;
+  }
+
+  public static <K, V> V putFieldMapAtLine(int line, String ownerName, String field, java.util.Map<K, V> values, K key, V value) {
+    V previous = values.put(key, value);
+    emitTraceWrite(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", values.get(key));
     return previous;
   }
 

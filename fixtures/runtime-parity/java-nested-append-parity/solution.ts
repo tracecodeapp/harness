@@ -7,7 +7,8 @@ class Bucket {
 }
 
 function solve(n: number): number {
-  const graph = new Map<number, number[]>([[0, []]]);
+  const graph = new Map<number, number[]>();
+  graph.set(0, []);
   graph.get(0)!.push(1);
   const bucket = new Bucket();
   bucket.keys.push(2);

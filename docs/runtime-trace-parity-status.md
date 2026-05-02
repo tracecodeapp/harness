@@ -31,7 +31,7 @@ This means the runtime trace cutover is allowed to be breaking:
 ## Current Corpus
 
 - Fixture directory: `fixtures/runtime-parity`
-- Fixture count: 54
+- Fixture count: 55
 - Languages covered per fixture: Python, JavaScript, TypeScript, Java
 - Official gate: `pnpm test:runtime-trace`
 - Gate: `pnpm test:runtime-trace-fixtures`
@@ -59,7 +59,7 @@ By language:
 
 Main clusters:
 
-- No open fixture gaps in the current 54-fixture corpus.
+- No open fixture gaps in the current 55-fixture corpus.
 - The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, and Java.
 - This is a baseline, not proof of completeness. New operations should be added to the corpus as soon as they become product-relevant or are discovered through corpus mining.
 
@@ -105,6 +105,7 @@ The final gap-removal pass also tightened:
 - Java mutation-line snapshots so locals first declared by the mutation assignment do not leak as same-line state facts.
 - JS/TS console logging and thrown exceptions so stdout and caught exception fixtures are line-attached runtime facts.
 - Python dict/set membership, dict writes/reads, set mutations, object field access, and raised exceptions so they emit neutral runtime facts.
+- Python and Java keyed field-map reads/writes now emit access to the owning object plus field and key path, matching JavaScript/TypeScript field `Map` behavior without visualizer-side recovery.
 
 ## Near-Term Priority
 
@@ -133,8 +134,8 @@ Current local mining status:
 - TC83 runtime corpus: 83 groups, 249 manifest entries, 79 synthesized Java entries in the latest run.
 - TC83 post-v4 source-root check: 83 groups, 245 comparisons, 0 hard failures.
 - TC83 output drift count: 14, all observed drifts are unordered-output/corpus compare issues, not harness crashes.
-- TC83 strict runtime-facts report remains advisory: 71 drifts were observed, mostly from non-equivalent reference implementations rather than minimized parity fixture failures.
-- TC83 reports: `reports/runtime-trace-tc83-post-java-v4-source-root.json` and `reports/runtime-trace-tc83-post-java-v4-runtime-facts.json`.
+- TC83 strict runtime-facts report remains advisory: 58 drifts were observed after promoting keyed field-map access into a fixture-backed harness fix. Remaining drifts still need triage because most TC83 implementations are not minimized equivalent parity fixtures.
+- TC83 reports: `reports/runtime-trace-tc83-post-java-v4-source-root.json`, `reports/runtime-trace-tc83-post-java-v4-runtime-facts.json`, and `reports/runtime-trace-tc83-parity.json`.
 
 Do not patch the harness directly from TC83 runtime-fact drift clusters. Reduce a drift into a small equivalent runtime-parity fixture first, then fix the native language emitter if the fixture exposes a real parity gap.
 

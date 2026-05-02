@@ -14,7 +14,7 @@
       "python": "buckets[nums[0]].append(nums[1])",
       "javascript": "buckets.get(nums[0]).push(nums[1]);",
       "typescript": "buckets.get(nums[0])!.push(nums[1]);",
-      "java": "buckets.computeIfAbsent(nums[0], k -> new ArrayList<>()).add(nums[1]);"
+      "java": "buckets.get(nums[0]).add(nums[1]);"
     },
     "arraySlotAppend": {
       "python": "graph[0].append(nums[2])",

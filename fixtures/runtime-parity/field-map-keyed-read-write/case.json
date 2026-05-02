@@ -1,0 +1,76 @@
+{
+  "id": "field-map-keyed-read-write",
+  "functionName": "Counter",
+  "executionStyle": "ops-class",
+  "inputs": {
+    "operations": ["Counter", "bump", "read"],
+    "arguments": [[], ["a"], ["a"]]
+  },
+  "anchors": {
+    "bump": {
+      "python": "self.counts[key] = self.counts.get(key, 0) + 1",
+      "javascript": "this.counts.set(key, (this.counts.get(key) ?? 0) + 1);",
+      "typescript": "this.counts.set(key, (this.counts.get(key) ?? 0) + 1);",
+      "java": "this.counts.put(key, this.counts.getOrDefault(key, 0) + 1);"
+    },
+    "read": {
+      "python": "return self.counts.get(key, 0)",
+      "javascript": "return this.counts.has(key) ? this.counts.get(key) : 0;",
+      "typescript": "return this.counts.has(key) ? this.counts.get(key) ?? 0 : 0;",
+      "java": "return this.counts.containsKey(key) ? this.counts.get(key) : 0;"
+    }
+  },
+  "expect": {
+    "bump": {
+      "eventKinds": ["line", "read", "snapshot", "write"],
+      "variableSnapshots": ["key", "this"],
+      "accessTargets": [
+        { "kind": "read", "variable": "this", "pathDepth": 2 },
+        { "kind": "write", "variable": "this", "pathDepth": 2 }
+      ]
+    },
+    "read": {
+      "eventKinds": ["line", "read", "return", "snapshot"],
+      "variableSnapshots": ["key", "this"],
+      "accessTargets": [
+        { "kind": "read", "variable": "this", "pathDepth": 2 }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "bump": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["key", "self"],
+        "accessTargets": [
+          { "kind": "read", "variable": "self", "pathDepth": 2 },
+          { "kind": "write", "variable": "self", "pathDepth": 2 }
+        ]
+      },
+      "read": {
+        "eventKinds": ["line", "read", "return", "snapshot"],
+        "variableSnapshots": ["key", "self"],
+        "accessTargets": [
+          { "kind": "read", "variable": "self", "pathDepth": 2 }
+        ]
+      }
+    },
+    "java": {
+      "bump": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["key"],
+        "accessTargets": [
+          { "kind": "read", "variable": "this", "pathDepth": 2 },
+          { "kind": "write", "variable": "this", "pathDepth": 2 }
+        ]
+      },
+      "read": {
+        "eventKinds": ["line", "read", "return", "snapshot"],
+        "variableSnapshots": ["key"],
+        "accessTargets": [
+          { "kind": "read", "variable": "this", "pathDepth": 2 }
+        ]
+      }
+    }
+  }
+}
