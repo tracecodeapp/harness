@@ -73,6 +73,16 @@ interface FixtureCase {
   anchors: Record<string, Record<Language, string>>;
   lineSequenceAnchors?: Record<string, Record<Language, string>>;
   expectLineSequence?: string[];
+  expectLineSnapshots?: Array<{
+    role: string;
+    includes?: Record<string, unknown>;
+    excludes?: string[];
+  }>;
+  expectLineSnapshotsByLanguage?: Partial<Record<Language, Array<{
+    role: string;
+    includes?: Record<string, unknown>;
+    excludes?: string[];
+  }>>>;
   expect: Record<string, {
     eventKinds: RuntimeTraceEventKind[];
     variableSnapshots: string[];
@@ -774,6 +784,42 @@ function projectLineSequence(trace: RuntimeTrace, roleLines: Record<string, numb
   });
 }
 
+function projectLineSnapshotFrames(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>
+): Array<{ role: string; snapshots: Record<string, unknown> }> {
+  const rolesByLine = new Map<number, string[]>();
+  for (const [role, line] of Object.entries(roleLines)) {
+    const roles = rolesByLine.get(line) ?? [];
+    roles.push(role);
+    rolesByLine.set(line, roles);
+  }
+  for (const roles of rolesByLine.values()) {
+    roles.sort((left, right) => left.localeCompare(right));
+  }
+
+  const frames: Array<{ role: string; snapshots: Record<string, unknown> }> = [];
+  let activeFrames: Array<{ role: string; snapshots: Record<string, unknown> }> = [];
+  for (const event of trace.events) {
+    if (event.kind === 'line' && typeof event.line === 'number') {
+      const roles = rolesByLine.get(event.line) ?? [];
+      activeFrames = roles.map((role) => ({ role, snapshots: {} }));
+      frames.push(...activeFrames);
+      continue;
+    }
+    if (
+      event.kind === 'snapshot' &&
+      activeFrames.length > 0 &&
+      'variable' in event.target
+    ) {
+      for (const frame of activeFrames) {
+        frame.snapshots[event.target.variable] = event.value;
+      }
+    }
+  }
+  return frames;
+}
+
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
@@ -903,6 +949,47 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
         stableStringify(actualLineSequence) === stableStringify(fixture.expectLineSequence),
         `${fixture.id}: ${language} runtime trace line sequence drifted.\nExpected: ${stableStringify(fixture.expectLineSequence)}\nReceived: ${stableStringify(actualLineSequence)}`
       );
+    }
+    const expectedLineSnapshots = fixture.expectLineSnapshotsByLanguage?.[language] ?? fixture.expectLineSnapshots;
+    if (expectedLineSnapshots) {
+      const lineSequenceRoleLines = Object.fromEntries(
+        Object.entries({
+          ...fixture.anchors,
+          ...(fixture.lineSequenceAnchors ?? {}),
+        }).map(([role, anchors]) => [
+          role,
+          findAnchorLine(sources[language], anchors[language]),
+        ])
+      );
+      const actualLineFrames = projectLineSnapshotFrames(trace, lineSequenceRoleLines);
+      assertCondition(
+        actualLineFrames.length >= expectedLineSnapshots.length,
+        `${fixture.id}: ${language} runtime trace line snapshot frame count drifted.\nExpected at least: ${expectedLineSnapshots.length}\nReceived: ${actualLineFrames.length}`
+      );
+      for (let index = 0; index < expectedLineSnapshots.length; index += 1) {
+        const expectedFrame = expectedLineSnapshots[index];
+        const actualFrame = actualLineFrames[index];
+        assertCondition(
+          actualFrame?.role === expectedFrame.role,
+          `${fixture.id}: ${language} runtime trace line snapshot role drifted at frame ${index}.\nExpected: ${expectedFrame.role}\nReceived: ${actualFrame?.role ?? '<missing>'}`
+        );
+        for (const [name, expectedValue] of Object.entries(expectedFrame.includes ?? {})) {
+          assertCondition(
+            Object.prototype.hasOwnProperty.call(actualFrame.snapshots, name),
+            `${fixture.id}: ${language} runtime trace line snapshot missing variable "${name}" at frame ${index} (${expectedFrame.role}).\nSnapshots: ${stableStringify(actualFrame.snapshots)}`
+          );
+          assertCondition(
+            stableStringify(actualFrame.snapshots[name]) === stableStringify(expectedValue),
+            `${fixture.id}: ${language} runtime trace line snapshot value drifted for "${name}" at frame ${index} (${expectedFrame.role}).\nExpected: ${stableStringify(expectedValue)}\nReceived: ${stableStringify(actualFrame.snapshots[name])}`
+          );
+        }
+        for (const name of expectedFrame.excludes ?? []) {
+          assertCondition(
+            !Object.prototype.hasOwnProperty.call(actualFrame.snapshots, name),
+            `${fixture.id}: ${language} runtime trace line snapshot unexpectedly included variable "${name}" at frame ${index} (${expectedFrame.role}).\nSnapshots: ${stableStringify(actualFrame.snapshots)}`
+          );
+        }
+      }
     }
     const expected = {
       ...fixture.expect,

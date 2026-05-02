@@ -3,7 +3,15 @@
   "functionName": "search",
   "executionStyle": "function",
   "inputs": {
-    "nums": [4, 5, 6, 7, 0, 1, 2],
+    "nums": [
+      4,
+      5,
+      6,
+      7,
+      0,
+      1,
+      2
+    ],
     "target": 0
   },
   "anchors": {},
@@ -89,5 +97,315 @@
     "hitCheck",
     "returnHit"
   ],
-  "expect": {}
+  "expect": {},
+  "expectLineSnapshots": [
+    {
+      "role": "initLeft",
+      "includes": {
+        "left": 0
+      },
+      "excludes": [
+        "right",
+        "mid"
+      ]
+    },
+    {
+      "role": "initRight",
+      "includes": {
+        "left": 0,
+        "right": 6
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "condition",
+      "includes": {
+        "left": 0,
+        "right": 6
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "mid",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "hitCheck",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "leftSortedCheck",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "targetInLeftCheck",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "moveLeft",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "condition",
+      "includes": {
+        "left": 4,
+        "right": 6
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "mid",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "hitCheck",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "leftSortedCheck",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "targetInLeftCheck",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "moveRight",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 5
+      }
+    },
+    {
+      "role": "condition",
+      "includes": {
+        "left": 4,
+        "right": 4
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "mid",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 4
+      }
+    },
+    {
+      "role": "hitCheck",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 4
+      }
+    },
+    {
+      "role": "returnHit",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 4
+      }
+    }
+  ],
+  "expectLineSnapshotsByLanguage": {
+    "python": [
+      {
+        "role": "initLeft",
+        "includes": {
+          "left": 0
+        },
+        "excludes": [
+          "right",
+          "mid"
+        ]
+      },
+      {
+        "role": "initRight",
+        "includes": {
+          "left": 0,
+          "right": 6
+        },
+        "excludes": [
+          "mid"
+        ]
+      },
+      {
+        "role": "condition",
+        "includes": {
+          "left": 0,
+          "right": 6
+        },
+        "excludes": [
+          "mid"
+        ]
+      },
+      {
+        "role": "mid",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "hitCheck",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "leftSortedCheck",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "targetInLeftCheck",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "moveLeft",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "condition",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "mid",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "hitCheck",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "leftSortedCheck",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "targetInLeftCheck",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "moveRight",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 5
+        }
+      },
+      {
+        "role": "condition",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 5
+        }
+      },
+      {
+        "role": "mid",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 4
+        }
+      },
+      {
+        "role": "hitCheck",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 4
+        }
+      },
+      {
+        "role": "returnHit",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 4
+        }
+      }
+    ]
+  }
 }
