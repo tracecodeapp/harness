@@ -36,7 +36,8 @@
         "snapshot"
       ],
       "variableSnapshots": [
-        "grid"
+        "grid",
+        "value"
       ],
       "accessTargets": [
         {
@@ -69,28 +70,6 @@
           "pathDepth": 2
         }
       ]
-    }
-  },
-  "expectByLanguage": {
-    "java": {
-      "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "grid",
-          "value"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "grid",
-            "pathDepth": 2
-          }
-        ]
-      }
     }
   },
   "expectSummary": {

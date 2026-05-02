@@ -2016,6 +2016,33 @@ function shouldTraceStatement(ts, statement) {
   );
 }
 
+function shouldMapStatementLineForFunctionContext(ts, statement) {
+  return (
+    shouldTraceStatement(ts, statement) ||
+    ts.isWhileStatement(statement) ||
+    ts.isForStatement(statement) ||
+    ts.isForOfStatement(statement)
+  );
+}
+
+function isPostLineStateStatement(ts, statement) {
+  if (ts.isVariableStatement(statement)) {
+    return true;
+  }
+  if (!ts.isExpressionStatement(statement)) {
+    return false;
+  }
+  const expression = statement.expression;
+  if (
+    ts.isBinaryExpression(expression) &&
+    isAssignmentOperatorToken(ts, expression.operatorToken.kind) &&
+    ts.isIdentifier(expression.left)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function getNodeNameText(ts, nameNode) {
   if (!nameNode) return null;
   if (ts.isIdentifier(nameNode) || ts.isPrivateIdentifier(nameNode)) {
@@ -2117,7 +2144,7 @@ function buildLineFunctionMap(ts, sourceFile, defaultFunctionName) {
       return;
     }
 
-    if (ts.isStatement(node) && shouldTraceStatement(ts, node)) {
+    if (ts.isStatement(node) && shouldMapStatementLineForFunctionContext(ts, node)) {
       mapStatementLine(node, currentFunctionName, currentFunctionStartLine, includeThisSnapshot);
     }
 
@@ -2740,15 +2767,21 @@ function instrumentStatementList(
       ts.getOriginalNode(visitedStatement) ??
       visitedStatement;
     if (shouldTraceStatement(ts, visitedStatement)) {
+      const tracedLineStatement = createTraceLineStatement(
+        ts,
+        sourceFile,
+        originalStatement,
+        variableNames,
+        lineFunctionMap,
+        defaultFunctionName
+      );
+      if (isPostLineStateStatement(ts, visitedStatement)) {
+        nextStatements.push(visitedStatement);
+        nextStatements.push(tracedLineStatement);
+        continue;
+      }
       nextStatements.push(
-        createTraceLineStatement(
-          ts,
-          sourceFile,
-          originalStatement,
-          variableNames,
-          lineFunctionMap,
-          defaultFunctionName
-        )
+        tracedLineStatement
       );
       nextStatements.push(visitedStatement);
       nextStatements.push(createAttachPendingAccessesStatement(ts));

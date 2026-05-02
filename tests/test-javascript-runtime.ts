@@ -1203,7 +1203,10 @@ result = twoSum([2, 7, 11, 15], 9);`,
   });
   assertCondition(scriptTracing.success === true, 'Script tracing should succeed');
   assertCondition(traceEvents(scriptTracing).length > 3, 'Script tracing should include multiple executable steps');
-  assertCondition(traceEvents(scriptTracing)[0]?.function === '<module>', 'Script tracing should use <module> function name');
+  assertCondition(
+    traceEvents(scriptTracing).some((event) => event.function === '<module>'),
+    'Script tracing should include <module> function events'
+  );
   assertCondition(
     traceEvents(scriptTracing).some((event) => event.function === 'twoSum'),
     'Script tracing should include named function events'

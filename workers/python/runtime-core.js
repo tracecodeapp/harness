@@ -56,6 +56,7 @@ def _custom_print(*args, **kwargs):
     _console_output.append(output)
     try:
         _frame = sys._getframe(1)
+        TraceHooks.flush_completed_line(_frame)
         __tracecode_append_trace_step(_frame, {
             'line': _frame.f_lineno,
             'event': 'stdout',
@@ -76,7 +77,7 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard'}
-_internal_funcs = {'_serialize', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_delete_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_indices', '__tracecode_make_access_event', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_delete_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -502,6 +503,50 @@ def __tracecode_append_trace_events_for_step(step):
                 if not __tracecode_append_runtime_event({**base, 'kind': kind, 'target': target, 'value': __tracecode_access_value(step, access)}):
                     return
 
+class TraceHooks:
+    """
+    RuntimeTrace is post-line: public line frames describe a source line after it
+    completed. Python sys.settrace reports line events before execution, so the
+    Python runtime keeps the legacy step pending and flushes it when execution
+    advances to the next line or returns.
+    """
+
+    @staticmethod
+    def _resolve_previous_step(frame):
+        if frame is None:
+            return None
+        previous_index = _last_trace_index_by_frame.get(_tracecode_builtin_id(frame))
+        if previous_index is None or previous_index < 0 or previous_index >= len(_trace_data):
+            return None
+        previous_step = _trace_data[previous_index]
+        return previous_step if isinstance(previous_step, _builtins.dict) else None
+
+    @staticmethod
+    def _append_step_runtime_events(step):
+        if step.get('__runtime_flushed'):
+            return
+        step['__runtime_flushed'] = True
+        globals()['__tracecode_append_trace_events_for_step'](step)
+
+    @staticmethod
+    def flush_completed_line(frame):
+        previous_step = TraceHooks._resolve_previous_step(frame)
+        if previous_step is None:
+            return
+        if previous_step.get('event') != 'line':
+            globals()['__tracecode_attach_accesses_to_previous_step'](frame)
+            return
+        if previous_step.get('__runtime_flushed'):
+            return
+        local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
+        accesses = globals()['__tracecode_flush_accesses'](frame)
+        previous_step['variables'] = local_vars
+        previous_step['variableSources'] = local_sources
+        previous_step['accesses'] = accesses
+        previous_step['callStack'] = _snapshot_call_stack()
+        previous_step['stdoutLineCount'] = len(_console_output)
+        TraceHooks._append_step_runtime_events(previous_step)
+
 def __tracecode_append_trace_step(frame, step):
     global _trace_limit_exceeded, _timeout_reason
     if _trace_limit_exceeded and (not isinstance(step, _builtins.dict) or step.get('event') != 'timeout'):
@@ -513,7 +558,10 @@ def __tracecode_append_trace_step(frame, step):
         _pending_accesses.clear()
         return
     _trace_data.append(step)
-    __tracecode_append_trace_events_for_step(step)
+    if not (isinstance(step, _builtins.dict) and step.get('event') == 'line'):
+        if isinstance(step, _builtins.dict):
+            step['__runtime_flushed'] = True
+        __tracecode_append_trace_events_for_step(step)
     if frame is not None:
         _last_trace_index_by_frame[_tracecode_builtin_id(frame)] = len(_trace_data) - 1
 
@@ -840,6 +888,7 @@ def _tracecode_enumerate(var_name, container, *args, **kwargs):
 
 def _tracecode_exception_value(line_number, error):
     frame = sys._getframe(1)
+    TraceHooks.flush_completed_line(frame)
     __tracecode_append_trace_step(frame, {
         'line': line_number,
         'event': 'exception',
@@ -1300,9 +1349,9 @@ def _tracer(frame, event, arg):
     
     # Fast counter for any loops
     if event == 'line':
-        __tracecode_attach_accesses_to_previous_step(frame)
         if frame.f_code.co_filename == '<user_code>' and frame.f_lineno in _tracecode_collapsed_literal_lines:
             return _tracer
+        TraceHooks.flush_completed_line(frame)
         _total_line_events += 1
         
         # Check total line events
@@ -1406,7 +1455,7 @@ def _tracer(frame, event, arg):
             'accesses': []
         })
     elif event == 'return':
-        __tracecode_attach_accesses_to_previous_step(frame)
+        TraceHooks.flush_completed_line(frame)
         if not _MINIMAL_TRACE:
             local_vars, local_sources = _snapshot_locals(frame, with_sources=True)
             __tracecode_append_trace_step(frame, {
@@ -1432,7 +1481,7 @@ def _tracer(frame, event, arg):
 _real_globals = __builtins__['globals'] if isinstance(__builtins__, _builtins.dict) else getattr(__builtins__, 'globals')
 _real_list = __builtins__['list'] if isinstance(__builtins__, _builtins.dict) else getattr(__builtins__, 'list')
 _globals_dict = _real_globals()
-_preserve = {"TreeNode", "ListNode", 'sys', 'json', 'math', 'ast', 'print', '__builtins__', '__name__', '__doc__', '__package__', '__loader__', '__spec__'} | _TRACECODE_TYPING_GLOBALS
+_preserve = {"TreeNode", "ListNode", "TraceHooks", 'sys', 'json', 'math', 'ast', 'print', '__builtins__', '__name__', '__doc__', '__package__', '__loader__', '__spec__'} | _TRACECODE_TYPING_GLOBALS
 for _k in _real_list(_globals_dict.keys()):
     if not _k.startswith('_') and _k not in _preserve:
         _globals_dict.pop(_k, None)

@@ -35,6 +35,8 @@ public final class JavaRewriteLibrary {
       "^\\s*(?:public|private|protected|static|final|transient|volatile|\\s)*([A-Za-z_][A-Za-z0-9_<>?, \\[\\]]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:=\\s*.+)?;\\s*$");
   private static final Pattern LOCAL_DECLARATION = Pattern.compile(
       "^(\\s*)(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>?, \\[\\]]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
+  private static final Pattern LOCAL_ASSIGNMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*=(?!=)\\s*(.+);\\s*$");
   private static final Pattern MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern FIELD_INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
@@ -156,7 +158,8 @@ public final class JavaRewriteLibrary {
       }
 
       boolean continuingExpression = current.expressionParenDepth > 0 || current.statementContinuation;
-      boolean suppressLineHook = current.suppressNextLineHook || continuingExpression;
+      boolean postLineStateStatement = emitsPostLineState(trimmed, current);
+      boolean suppressLineHook = current.suppressNextLineHook || continuingExpression || postLineStateStatement;
       current.suppressNextLineHook = false;
       if (!current.pendingAnnotation && !suppressLineHook && shouldEmitLine(trimmed)) {
         out.append(indentOf(line)).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
@@ -216,10 +219,17 @@ public final class JavaRewriteLibrary {
         rewritten += " TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " +
             quote(mutatingExpression.group(1)) + ", " + quote(mutatingExpression.group(2)) + ");";
       }
-      if (isScalarSnapshotType(type)) {
-        rewritten += "\n" + indent + "TraceHooks.emitLineAtLine(" + sourceLine + ", \" "+ name + "=\" + TraceHooks.serializeResult(" + name + "));";
-      }
+      rewritten += "\n" + indent + "TraceHooks.emitLineAtLine(" + sourceLine + ", \" "+ name + "=\" + TraceHooks.serializeResult(" + name + "));";
       return rewritten;
+    }
+
+    Matcher assignment = LOCAL_ASSIGNMENT.matcher(line);
+    if (assignment.matches() && frame.variables.containsKey(assignment.group(2))) {
+      String indent = assignment.group(1);
+      String name = assignment.group(2);
+      String value = rewriteReads(assignment.group(3).trim(), sourceLine, frame);
+      return indent + name + " = " + value + ";\n" +
+          indent + "TraceHooks.emitLineAtLine(" + sourceLine + ", \" " + name + "=\" + TraceHooks.serializeResult(" + name + "));";
     }
 
     Matcher fieldWrite = FIELD_WRITE.matcher(line);
@@ -509,6 +519,13 @@ public final class JavaRewriteLibrary {
     }
 
     return rewriteReads(line, sourceLine, frame);
+  }
+
+  private static boolean emitsPostLineState(String trimmed, MethodFrame frame) {
+    if (trimmed.startsWith("for ")) return false;
+    if (LOCAL_DECLARATION.matcher(trimmed).matches()) return true;
+    Matcher assignment = LOCAL_ASSIGNMENT.matcher(trimmed);
+    return assignment.matches() && frame.variables.containsKey(assignment.group(2));
   }
 
   private static String rewriteReads(String source, int line, MethodFrame frame) {

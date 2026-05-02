@@ -26,6 +26,7 @@
       ],
       "variableSnapshots": [
         "i",
+        "num",
         "nums",
         "total"
       ],
@@ -47,51 +48,5 @@
         "count": 3
       }
     ]
-  },
-  "expectByLanguage": {
-    "python": {
-      "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "num",
-          "nums",
-          "total"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "nums",
-            "pathDepth": 1
-          }
-        ]
-      }
-    },
-    "java": {
-      "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "num",
-          "nums",
-          "total"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "nums",
-            "pathDepth": 1
-          }
-        ]
-      }
-    }
   }
 }

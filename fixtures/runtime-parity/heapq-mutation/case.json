@@ -109,6 +109,93 @@
           }
         ]
       }
+    },
+    "python": {
+      "push": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "append"
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "pop"
+          }
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums",
+          "value"
+        ]
+      }
+    },
+    "javascript": {
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "pop"
+          }
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums",
+          "value"
+        ]
+      }
+    },
+    "typescript": {
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "heap",
+            "method": "pop"
+          }
+        ],
+        "variableSnapshots": [
+          "heap",
+          "nums",
+          "value"
+        ]
+      }
     }
   }
 }

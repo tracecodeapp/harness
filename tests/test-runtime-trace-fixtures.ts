@@ -71,6 +71,8 @@ interface FixtureCase {
   executionStyle: RuntimeExecutionStyle;
   inputs: Record<string, unknown>;
   anchors: Record<string, Record<Language, string>>;
+  lineSequenceAnchors?: Record<string, Record<Language, string>>;
+  expectLineSequence?: string[];
   expect: Record<string, {
     eventKinds: RuntimeTraceEventKind[];
     variableSnapshots: string[];
@@ -107,6 +109,28 @@ type RuntimeCore = {
     options?: Record<string, unknown>
   ) => { code: string };
 };
+
+const ALL_FIXTURE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java'];
+
+function selectedFixtureNames(allFixtureNames: string[]): string[] {
+  const rawFilter = process.env.TRACECODE_RUNTIME_TRACE_FIXTURE;
+  if (!rawFilter) return allFixtureNames;
+  const selected = new Set(rawFilter.split(',').map((entry) => entry.trim()).filter(Boolean));
+  return allFixtureNames.filter((fixtureName) => selected.has(fixtureName));
+}
+
+function selectedFixtureLanguages(): Language[] {
+  const rawFilter = process.env.TRACECODE_RUNTIME_TRACE_LANGUAGES;
+  if (!rawFilter) return ALL_FIXTURE_LANGUAGES;
+  const selected = rawFilter.split(',').map((entry) => entry.trim()).filter(Boolean);
+  for (const language of selected) {
+    assertCondition(
+      ALL_FIXTURE_LANGUAGES.includes(language as Language),
+      `Unsupported runtime trace fixture language filter: ${language}`
+    );
+  }
+  return selected as Language[];
+}
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -734,6 +758,22 @@ function projectRoleSignature(
   return byRole;
 }
 
+function projectLineSequence(trace: RuntimeTrace, roleLines: Record<string, number>): string[] {
+  const rolesByLine = new Map<number, string[]>();
+  for (const [role, line] of Object.entries(roleLines)) {
+    const roles = rolesByLine.get(line) ?? [];
+    roles.push(role);
+    rolesByLine.set(line, roles);
+  }
+  for (const roles of rolesByLine.values()) {
+    roles.sort((left, right) => left.localeCompare(right));
+  }
+  return trace.events.flatMap((event) => {
+    if (event.kind !== 'line' || typeof event.line !== 'number') return [];
+    return rolesByLine.get(event.line) ?? [];
+  });
+}
+
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
@@ -799,42 +839,71 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
     java: await readFile(join(fixtureDir, 'Solution.java'), 'utf8'),
   };
 
-  const runs: Record<Language, FixtureTraceRun> = {
-    python: await executePythonTrace(sources.python, fixture),
-    javascript: await executeJavaScriptTrace('javascript', workerSource, sources.javascript, fixture),
-    typescript: await executeJavaScriptTrace('typescript', workerSource, sources.typescript, fixture),
-    java: await executeJavaTrace(sources.java, fixture),
-  };
-  const traces: Record<Language, RuntimeTrace> = {
-    python: runs.python.trace,
-    javascript: runs.javascript.trace,
-    typescript: runs.typescript.trace,
-    java: runs.java.trace,
-  };
+  const languages = selectedFixtureLanguages();
+  const runs = {} as Partial<Record<Language, FixtureTraceRun>>;
+  for (const language of languages) {
+    if (language === 'python') runs.python = await executePythonTrace(sources.python, fixture);
+    if (language === 'javascript') {
+      runs.javascript = await executeJavaScriptTrace('javascript', workerSource, sources.javascript, fixture);
+    }
+    if (language === 'typescript') {
+      runs.typescript = await executeJavaScriptTrace('typescript', workerSource, sources.typescript, fixture);
+    }
+    if (language === 'java') runs.java = await executeJavaTrace(sources.java, fixture);
+  }
+  const traces = Object.fromEntries(
+    Object.entries(runs).map(([language, run]) => [language, run.trace])
+  ) as Partial<Record<Language, RuntimeTrace>>;
   if (process.env.TRACECODE_DEBUG_RUNTIME_TRACE_FIXTURE === fixture.id) {
     for (const language of Object.keys(traces) as Language[]) {
       console.log(`DEBUG ${fixture.id}:${language}`);
-      console.log(JSON.stringify(traces[language].events, null, 2));
+      console.log(JSON.stringify(traces[language]?.events, null, 2));
     }
   }
-  const rawParityMismatches = compareRawEmissionParity(
-    runs.python.rawSummary,
-    [runs.python.rawSummary, runs.javascript.rawSummary, runs.typescript.rawSummary, runs.java.rawSummary]
-  );
-  if (rawParityMismatches.length > 0 && process.env.TRACECODE_STRICT_RAW_EMISSION_PARITY === '1') {
-    throw new Error(
-      `${fixture.id}: raw runtime emission parity mismatch.\n${JSON.stringify(rawParityMismatches, null, 2)}`
+  if (languages.length === ALL_FIXTURE_LANGUAGES.length) {
+    const completeRuns = runs as Record<Language, FixtureTraceRun>;
+    const rawParityMismatches = compareRawEmissionParity(
+      completeRuns.python.rawSummary,
+      [
+        completeRuns.python.rawSummary,
+        completeRuns.javascript.rawSummary,
+        completeRuns.typescript.rawSummary,
+        completeRuns.java.rawSummary,
+      ]
     );
+    if (rawParityMismatches.length > 0 && process.env.TRACECODE_STRICT_RAW_EMISSION_PARITY === '1') {
+      throw new Error(
+        `${fixture.id}: raw runtime emission parity mismatch.\n${JSON.stringify(rawParityMismatches, null, 2)}`
+      );
+    }
   }
 
   for (const language of Object.keys(traces) as Language[]) {
+    const trace = traces[language];
+    assertCondition(Boolean(trace), `${fixture.id}: ${language} trace was not produced`);
     const roleLines = Object.fromEntries(
       Object.entries(fixture.anchors).map(([role, anchors]) => [
         role,
         findAnchorLine(sources[language], anchors[language]),
       ])
     );
-    const actual = projectRoleSignature(traces[language], roleLines);
+    const actual = projectRoleSignature(trace, roleLines);
+    if (fixture.expectLineSequence) {
+      const lineSequenceRoleLines = Object.fromEntries(
+        Object.entries({
+          ...fixture.anchors,
+          ...(fixture.lineSequenceAnchors ?? {}),
+        }).map(([role, anchors]) => [
+          role,
+          findAnchorLine(sources[language], anchors[language]),
+        ])
+      );
+      const actualLineSequence = projectLineSequence(trace, lineSequenceRoleLines);
+      assertCondition(
+        stableStringify(actualLineSequence) === stableStringify(fixture.expectLineSequence),
+        `${fixture.id}: ${language} runtime trace line sequence drifted.\nExpected: ${stableStringify(fixture.expectLineSequence)}\nReceived: ${stableStringify(actualLineSequence)}`
+      );
+    }
     const expected = {
       ...fixture.expect,
       ...(fixture.expectByLanguage?.[language] ?? {}),
@@ -854,25 +923,25 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
       ...(fixture.expectSummaryByLanguage?.[language] ?? {}),
     };
     if (expectedSummary.accessTargets) {
-      const actualSummary = projectTraceSummary(traces[language]);
+      const actualSummary = projectTraceSummary(trace);
       assertCondition(
         stableStringify(stripSummaryMethods(actualSummary).accessTargets) === stableStringify(stripSummaryMethods(expectedSummary).accessTargets),
         `${fixture.id}: ${language} runtime trace fixture summary drifted.\nExpected: ${stableStringify(stripSummaryMethods(expectedSummary).accessTargets)}\nReceived: ${stableStringify(stripSummaryMethods(actualSummary).accessTargets)}`
       );
     }
-    assertNoUnsupportedVisualization(traces[language], `${fixture.id}:${language}`);
+    assertNoUnsupportedVisualization(trace, `${fixture.id}:${language}`);
     if (fixture.expectOpaqueRefs) {
-      assertOpaqueRefs(traces[language], `${fixture.id}:${language}`);
+      assertOpaqueRefs(trace, `${fixture.id}:${language}`);
     }
   }
 }
 
 async function main(): Promise<void> {
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
-  const fixtureNames = (await readdir(FIXTURES_DIR, { withFileTypes: true }))
+  const fixtureNames = selectedFixtureNames((await readdir(FIXTURES_DIR, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .sort();
+    .sort());
 
   for (const fixtureName of fixtureNames) {
     await runFixture(fixtureName, workerSource);

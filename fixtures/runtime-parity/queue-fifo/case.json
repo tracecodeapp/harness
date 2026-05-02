@@ -70,6 +70,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "first",
           "num",
           "nums",
           "queue"
@@ -92,6 +93,48 @@
         ],
         "variableSnapshots": [
           "num",
+          "nums",
+          "queue"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue",
+            "method": "popleft"
+          }
+        ]
+      }
+    },
+    "javascript": {
+      "popleft": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "first",
+          "nums",
+          "queue"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue",
+            "method": "popleft"
+          }
+        ]
+      }
+    },
+    "typescript": {
+      "popleft": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "first",
           "nums",
           "queue"
         ],

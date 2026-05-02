@@ -35,5 +35,67 @@
         }
       ]
     }
+  },
+  "expectByLanguage": {
+    "python": {
+      "popIndex": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "nums",
+            "method": "pop"
+          }
+        ]
+      }
+    },
+    "javascript": {
+      "popIndex": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "nums",
+            "method": "pop"
+          }
+        ]
+      }
+    },
+    "typescript": {
+      "popIndex": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "nums",
+            "method": "pop"
+          }
+        ]
+      }
+    }
   }
 }
