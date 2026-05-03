@@ -19,7 +19,8 @@
       "python": "total += grid[i][j]",
       "javascript": "total += grid[i][j];",
       "typescript": "total += grid[i][j];",
-      "java": "total += grid[i][j];"
+      "java": "total += grid[i][j];",
+      "csharp": "total += grid[i][j];"
     }
   },
   "expect": {

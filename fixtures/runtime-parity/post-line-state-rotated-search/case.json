@@ -20,61 +20,71 @@
       "python": "left = 0",
       "javascript": "let left = 0;",
       "typescript": "let left = 0;",
-      "java": "int left = 0;"
+      "java": "int left = 0;",
+      "csharp": "int left = 0;"
     },
     "initRight": {
       "python": "right = len(nums) - 1",
       "javascript": "let right = nums.length - 1;",
       "typescript": "let right = nums.length - 1;",
-      "java": "int right = nums.length - 1;"
+      "java": "int right = nums.length - 1;",
+      "csharp": "int right = nums.Length - 1;"
     },
     "condition": {
       "python": "while left <= right:",
       "javascript": "while (left <= right) {",
       "typescript": "while (left <= right) {",
-      "java": "while (left <= right) {"
+      "java": "while (left <= right) {",
+      "csharp": "while (left <= right)"
     },
     "mid": {
       "python": "mid = left + (right - left) // 2",
       "javascript": "let mid = left + Math.floor((right - left) / 2);",
       "typescript": "let mid = left + Math.floor((right - left) / 2);",
-      "java": "int mid = left + (right - left) / 2;"
+      "java": "int mid = left + (right - left) / 2;",
+      "csharp": "int mid = left + (right - left) / 2;"
     },
     "hitCheck": {
       "python": "if nums[mid] == target:",
       "javascript": "if (nums[mid] === target) {",
       "typescript": "if (nums[mid] === target) {",
-      "java": "if (nums[mid] == target) {"
+      "java": "if (nums[mid] == target) {",
+      "csharp": "if (nums[mid] == target)"
     },
     "returnHit": {
       "python": "return mid",
       "javascript": "return mid;",
       "typescript": "return mid;",
-      "java": "return mid;"
+      "java": "return mid;",
+      "csharp": "return mid;"
     },
     "leftSortedCheck": {
       "python": "if nums[left] <= nums[mid]:",
       "javascript": "if (nums[left] <= nums[mid]) {",
       "typescript": "if (nums[left] <= nums[mid]) {",
-      "java": "if (nums[left] <= nums[mid]) {"
+      "java": "if (nums[left] <= nums[mid]) {",
+      "csharp": "if (nums[left] <= nums[mid])"
     },
     "targetInLeftCheck": {
       "python": "if nums[left] <= target and target < nums[mid]:",
       "javascript": "if (nums[left] <= target && target < nums[mid]) {",
       "typescript": "if (nums[left] <= target && target < nums[mid]) {",
-      "java": "if (nums[left] <= target && target < nums[mid]) {"
+      "java": "if (nums[left] <= target && target < nums[mid]) {",
+      "csharp": "if (nums[left] <= target && target < nums[mid])"
     },
     "moveRight": {
       "python": "right = mid - 1",
       "javascript": "right = mid - 1;",
       "typescript": "right = mid - 1;",
-      "java": "right = mid - 1;"
+      "java": "right = mid - 1;",
+      "csharp": "right = mid - 1;"
     },
     "moveLeft": {
       "python": "left = mid + 1",
       "javascript": "left = mid + 1;",
       "typescript": "left = mid + 1;",
-      "java": "left = mid + 1;"
+      "java": "left = mid + 1;",
+      "csharp": "left = mid + 1;"
     }
   },
   "expectLineSequence": [

@@ -233,11 +233,76 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   ],
 };
 
+const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
+  language: 'csharp',
+  maturity: 'experimental',
+  capabilities: {
+    execution: {
+      styles: {
+        function: false,
+        solutionMethod: true,
+        opsClass: true,
+        script: false,
+        interviewMode: false,
+      },
+      timeouts: {
+        clientTimeouts: true,
+        runtimeTimeouts: true,
+      },
+    },
+    tracing: {
+      supported: true,
+      events: {
+        line: true,
+        call: true,
+        return: true,
+        exception: true,
+        stdout: true,
+        timeout: true,
+      },
+      controls: {
+        maxTraceSteps: true,
+        maxLineEvents: false,
+        maxSingleLineHits: false,
+        maxStoredEvents: false,
+        minimalTrace: false,
+      },
+      fidelity: {
+        preciseLineMapping: true,
+        stableFunctionNames: true,
+        callStack: false,
+      },
+    },
+    diagnostics: {
+      compileErrors: true,
+      runtimeErrors: true,
+      mappedErrorLines: true,
+      stackTraces: false,
+    },
+    structures: {
+      treeNodeRefs: true,
+      listNodeRefs: true,
+      mapSerialization: false,
+      setSerialization: false,
+      graphSerialization: false,
+      cycleReferences: false,
+    },
+  },
+  notes: [
+    'C# support is browser-local and experimental.',
+    'The first C# slice supports LeetCode-style public class Solution methods.',
+    'ListNode and TreeNode inputs are hydrated from LeetCode-style arrays or object-shaped JSON.',
+    'Tracing currently supports line, call, return, stdout, and simple local variable write events.',
+    'Structural visualization is added after execution and diagnostics are proven.',
+  ],
+};
+
 export const LANGUAGE_RUNTIME_PROFILES: Record<Language, LanguageRuntimeProfile> = {
   python: PYTHON_RUNTIME_PROFILE,
   javascript: JAVASCRIPT_RUNTIME_PROFILE,
   typescript: TYPESCRIPT_RUNTIME_PROFILE,
   java: JAVA_RUNTIME_PROFILE,
+  csharp: CSHARP_RUNTIME_PROFILE,
 };
 
 export const SUPPORTED_LANGUAGES: readonly Language[] = Object.freeze(

@@ -10,7 +10,8 @@
       "python": "return text[1]",
       "javascript": "return text[1];",
       "typescript": "return text[1];",
-      "java": "return text.charAt(1);"
+      "java": "return text.charAt(1);",
+      "csharp": "return text[1].ToString();"
     }
   },
   "expect": {

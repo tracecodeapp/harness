@@ -19,7 +19,8 @@
       "python": "self.items.append(value)",
       "javascript": "this.items.push(value);",
       "typescript": "this.items.push(value);",
-      "java": "items.add(value);"
+      "java": "items.add(value);",
+      "csharp": "this.items.Add(value);"
     }
   },
   "expect": {
@@ -78,6 +79,32 @@
       }
     },
     "java": {
+      "fieldAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "method": "append",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "csharp": {
       "fieldAppend": {
         "eventKinds": [
           "line",

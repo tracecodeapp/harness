@@ -216,6 +216,33 @@ async function runLanguageExampleSmoke(
   options.assertTrace?.(traceResult);
 }
 
+async function runCSharpExampleSmoke(page: import('playwright').Page): Promise<void> {
+  await page.selectOption('#language', 'csharp');
+  await page.click('#run');
+  try {
+    await page.waitForFunction(
+      () => {
+        const output = document.querySelector('#execution-output');
+        const text = output?.textContent;
+        if (!text) return false;
+
+        try {
+          const parsed = JSON.parse(text) as { success?: boolean; output?: unknown };
+          return parsed.success === true && parsed.output === 5;
+        } catch {
+          return false;
+        }
+      },
+      undefined,
+      { timeout: 240_000 }
+    );
+  } catch (error) {
+    throw new Error(`Example csharp execution did not finish: ${await readExampleSmokeDiagnostics(page)}`, {
+      cause: error,
+    });
+  }
+}
+
 function runtimeTraceEvents(trace: unknown): unknown[] {
   if (Array.isArray(trace)) return trace;
   if (trace && typeof trace === 'object' && Array.isArray((trace as { events?: unknown }).events)) {
@@ -247,6 +274,7 @@ export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> 
         traceTimeoutMs: language === 'python' || language === 'java' ? 240_000 : 60_000,
       });
     }
+    await runCSharpExampleSmoke(page);
   } finally {
     await browser.close();
   }

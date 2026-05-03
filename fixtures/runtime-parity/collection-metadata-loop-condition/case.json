@@ -14,13 +14,15 @@
       "python": "for i in range(len(nums)):",
       "javascript": "for (let i = 0; i < nums.length; i++) {",
       "typescript": "for (let i = 0; i < nums.length; i++) {",
-      "java": "for (int i = 0; i < nums.length; i++) {"
+      "java": "for (int i = 0; i < nums.length; i++) {",
+      "csharp": "for (int i = 0; i < nums.Length; i++)"
     },
     "elementRead": {
       "python": "total += nums[i]",
       "javascript": "total += nums[i];",
       "typescript": "total += nums[i];",
-      "java": "total += nums[i];"
+      "java": "total += nums[i];",
+      "csharp": "total += nums[i];"
     }
   },
   "expect": {
@@ -65,5 +67,20 @@
         "count": 3
       }
     ]
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "loopCondition": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "total"
+        ],
+        "accessTargets": []
+      }
+    }
   }
 }

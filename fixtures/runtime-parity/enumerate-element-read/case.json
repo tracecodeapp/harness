@@ -14,7 +14,8 @@
       "python": "for i, num in enumerate(nums):",
       "javascript": "const num = nums[i];",
       "typescript": "const num = nums[i];",
-      "java": "int num = nums[i];"
+      "java": "int num = nums[i];",
+      "csharp": "int num = nums[i];"
     }
   },
   "expect": {

@@ -91,6 +91,8 @@ async function main(): Promise<void> {
     const defaultAssets = resolveBrowserHarnessAssets();
     assertCondition(defaultAssets.pythonWorker === '/workers/pyodide-worker.js', 'Default python worker path should resolve');
     assertCondition(defaultAssets.javaWorker === '/workers/java-worker.js', 'Default java worker path should resolve');
+    assertCondition(defaultAssets.csharpWorker === '/workers/csharp-worker.js', 'Default C# worker path should resolve');
+    assertCondition(defaultAssets.csharpAssetBaseUrl === '/workers/vendor/csharp', 'Default C# asset base URL should resolve');
     assertCondition(
       defaultAssets.typescriptCompiler === '/workers/vendor/typescript.js',
       'Default TypeScript compiler path should resolve'
@@ -101,18 +103,22 @@ async function main(): Promise<void> {
       assets: {
         javascriptWorker: 'workers/js-runtime.js',
         pythonWorker: 'https://cdn.example.com/python-worker.js',
+        csharpAssetBaseUrl: 'runtimes/csharp',
       },
     });
     assertCondition(customAssets.pythonWorker === 'https://cdn.example.com/python-worker.js', 'Explicit asset URLs should be preserved');
     assertCondition(customAssets.javascriptWorker === '/sdk-assets/workers/js-runtime.js', 'Relative custom assets should join assetBaseUrl');
+    assertCondition(customAssets.csharpAssetBaseUrl === '/sdk-assets/runtimes/csharp', 'Relative C# asset base should join assetBaseUrl');
     console.log('PASS: browser harness asset resolution');
 
     const harnessA = createBrowserHarness({ assetBaseUrl: '/instance-a' });
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });
     assertCondition(harnessA.isLanguageSupported('java'), 'Browser harness should expose Java support');
+    assertCondition(harnessA.isLanguageSupported('csharp'), 'Browser harness should expose C# support');
 
     await harnessA.getClient('javascript').init();
     await harnessA.getClient('java').init();
+    await harnessA.getClient('csharp').init();
     await harnessB.getClient('python').init();
 
     assertCondition(
@@ -122,6 +128,10 @@ async function main(): Promise<void> {
     assertCondition(
       workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/java-worker.js')),
       'Harness A should use its own Java worker URL'
+    );
+    assertCondition(
+      workerInstances.some((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js')),
+      'Harness A should use its own C# worker URL'
     );
     assertCondition(
       workerInstances.some((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js?dev=')),
@@ -154,6 +164,19 @@ async function main(): Promise<void> {
       'Java runtime should route interview-mode executeCode through the browser harness client'
     );
     console.log('PASS: browser harness routes Java interview-mode requests');
+
+    const csharpExecuteResult = await harnessA
+      .getClient('csharp')
+      .executeCode('public class Solution { public int Add(int a, int b) => a + b; }', 'Add', { a: 2, b: 3 }, 'solution-method');
+    assertCondition(csharpExecuteResult.success, 'C# runtime should route solution-method executeCode through the browser harness client');
+    console.log('PASS: browser harness routes C# runtime requests');
+
+    const activeCSharpWorker = [...workerInstances]
+      .reverse()
+      .find((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js'));
+    harnessA.disposeLanguage('csharp');
+    assertCondition(Boolean(activeCSharpWorker?.terminated), 'disposeLanguage should terminate the C# worker');
+    console.log('PASS: browser harness disposeLanguage terminates C# runtime');
 
     harnessB.disposeLanguage('python');
     assertCondition(Boolean(survivingWorker?.terminated), 'disposeLanguage should terminate the targeted runtime');

@@ -12,7 +12,8 @@
       "python": "freq[1] = freq.get(1, 0) + 1",
       "javascript": "freq.set(1, (freq.get(1) || 0) + 1);",
       "typescript": "freq.set(1, (freq.get(1) || 0) + 1);",
-      "java": "freq.put(1, freq.getOrDefault(1, 0) + 1);"
+      "java": "freq.put(1, freq.getOrDefault(1, 0) + 1);",
+      "csharp": "freq[1] = current + 1;"
     }
   },
   "expect": {
@@ -41,6 +42,28 @@
       ]
     }
   },
+  "expectByLanguage": {
+    "csharp": {
+      "update": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "freq",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "freq",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  },
   "expectSummary": {
     "accessTargets": [
       {
@@ -56,5 +79,23 @@
         "count": 4
       }
     ]
+  },
+  "expectSummaryByLanguage": {
+    "csharp": {
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "freq",
+          "pathDepth": 1,
+          "count": 4
+        },
+        {
+          "kind": "write",
+          "variable": "freq",
+          "pathDepth": 1,
+          "count": 3
+        }
+      ]
+    }
   }
 }

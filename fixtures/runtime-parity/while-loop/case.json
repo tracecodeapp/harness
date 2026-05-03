@@ -10,7 +10,8 @@
       "python": "total += i",
       "javascript": "total += i;",
       "typescript": "total += i;",
-      "java": "total += i;"
+      "java": "total += i;",
+      "csharp": "total += i;"
     }
   },
   "expect": {
@@ -25,6 +26,22 @@
         "total"
       ],
       "accessTargets": []
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "body": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "total"
+        ],
+        "accessTargets": []
+      }
     }
   }
 }

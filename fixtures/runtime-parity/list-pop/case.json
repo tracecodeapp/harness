@@ -14,7 +14,8 @@
       "python": "value = nums.pop()",
       "javascript": "const value = nums.pop();",
       "typescript": "const value = nums.pop()!;",
-      "java": "int value = nums.remove(nums.size() - 1);"
+      "java": "int value = nums.remove(nums.size() - 1);",
+      "csharp": "values.RemoveAt(values.Count - 1);"
     }
   },
   "expect": {
@@ -92,6 +93,26 @@
           {
             "kind": "mutate",
             "variable": "nums",
+            "method": "pop"
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "pop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "values",
             "method": "pop"
           }
         ]

@@ -10,7 +10,8 @@
       "python": "dp[1][key] = 3",
       "javascript": "dp[1].set(key, 3);",
       "typescript": "dp[1].set(key, 3);",
-      "java": "dp[1].merge(key, 3, Integer::sum);"
+      "java": "dp[1].merge(key, 3, Integer::sum);",
+      "csharp": "dp[1][key] = 3;"
     }
   },
   "expect": {
@@ -42,5 +43,52 @@
         "count": 1
       }
     ]
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "dp",
+          "first",
+          "key",
+          "second"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "second",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "dp",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
+  },
+  "expectSummaryByLanguage": {
+    "csharp": {
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "second",
+          "pathDepth": 1,
+          "count": 1
+        }
+      ]
+    }
   }
 }

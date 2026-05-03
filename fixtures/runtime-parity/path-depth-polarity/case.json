@@ -8,13 +8,15 @@
       "python": "picked = self.values[1]",
       "javascript": "const picked = this.values[1];",
       "typescript": "const picked = this.values[1];",
-      "java": "int picked = values[0][1];"
+      "java": "int picked = values[0][1];",
+      "csharp": "int picked = values[0][1];"
     },
     "fieldIndexedWrite": {
       "python": "self.values[2] = picked + self.values[0]",
       "javascript": "this.values[2] = picked + this.values[0];",
       "typescript": "this.values[2] = picked + this.values[0];",
-      "java": "values[1][0] = picked + values[0][0];"
+      "java": "values[1][0] = picked + values[0][0];",
+      "csharp": "values[1][0] = picked + values[0][0];"
     }
   },
   "expect": {
@@ -149,6 +151,48 @@
           }
         ]
       }
+    },
+    "csharp": {
+      "fieldIndexedRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "picked"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ]
+      },
+      "fieldIndexedWrite": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ]
+      }
     }
   },
   "expectSummary": {
@@ -209,6 +253,22 @@
       ]
     },
     "java": {
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "values",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "values",
+          "pathDepth": 2,
+          "count": 2
+        }
+      ]
+    },
+    "csharp": {
       "accessTargets": [
         {
           "kind": "write",

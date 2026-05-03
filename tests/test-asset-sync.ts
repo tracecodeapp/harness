@@ -31,11 +31,16 @@ async function main(): Promise<void> {
     'javascript-worker.js',
     'java-worker.js',
     'java-source-augmentations.js',
+    'csharp-worker.js',
     'vendor/typescript.js',
     'vendor/java-browser-helper.jar',
     'vendor/java-rewriter.jar',
     'vendor/javaparser-core-3.25.10.jar',
     'vendor/jdk.compiler-17.jar',
+    'vendor/csharp/_framework/dotnet.js',
+    'vendor/csharp/_framework/dotnet.native.wasm',
+    'vendor/csharp/_framework/dotnet.runtime.js',
+    'vendor/csharp/_framework/blazor.boot.json',
   ];
 
   for (const relativePath of requiredFiles) {
@@ -48,6 +53,7 @@ async function main(): Promise<void> {
   assertCondition(rootEntries.includes('pyodide-worker.js'), 'Asset sync should flatten the Python worker into the target root');
   assertCondition(rootEntries.includes('javascript-worker.js'), 'Asset sync should flatten the JavaScript worker into the target root');
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
+  assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'

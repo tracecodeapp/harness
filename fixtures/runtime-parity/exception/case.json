@@ -10,7 +10,8 @@
       "python": "raise ValueError(\"bad input\")",
       "javascript": "throw new Error(\"bad input\");",
       "typescript": "throw new Error(\"bad input\");",
-      "java": "throw new IllegalArgumentException(\"bad input\");"
+      "java": "throw new IllegalArgumentException(\"bad input\");",
+      "csharp": "throw new System.InvalidOperationException(\"bad input\");"
     }
   },
   "expect": {
@@ -45,6 +46,16 @@
         "variableSnapshots": [
           "n"
         ],
+        "accessTargets": []
+      }
+    },
+    "csharp": {
+      "throw": {
+        "eventKinds": [
+          "exception",
+          "line"
+        ],
+        "variableSnapshots": [],
         "accessTargets": []
       }
     }

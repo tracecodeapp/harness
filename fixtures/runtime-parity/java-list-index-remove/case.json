@@ -14,7 +14,8 @@
       "python": "return values.pop(1)",
       "javascript": "return values.splice(1, 1)[0];",
       "typescript": "return values.splice(1, 1)[0]!;",
-      "java": "return values.remove(1);"
+      "java": "return values.remove(1);",
+      "csharp": "values.RemoveAt(1);"
     }
   },
   "expect": {
@@ -45,6 +46,26 @@
           "line",
           "mutate",
           "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "values",
+            "method": "pop"
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "popIndex": {
+        "eventKinds": [
+          "line",
+          "mutate",
           "snapshot"
         ],
         "variableSnapshots": [

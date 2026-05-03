@@ -14,7 +14,8 @@
       "python": "nums[1] = 9",
       "javascript": "nums[1] = 9;",
       "typescript": "nums[1] = 9;",
-      "java": "nums[1] = 9;"
+      "java": "nums[1] = 9;",
+      "csharp": "nums[1] = 9;"
     }
   },
   "expect": {
@@ -34,6 +35,27 @@
           "pathDepth": 1
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      }
     }
   }
 }

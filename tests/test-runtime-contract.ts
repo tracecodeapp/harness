@@ -139,6 +139,26 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.setSerialization',
     'structures.cycleReferences',
           ],
+  csharp: [
+    'execution.styles.solutionMethod',
+    'execution.timeouts.clientTimeouts',
+    'execution.timeouts.runtimeTimeouts',
+    'tracing.supported',
+    'tracing.events.line',
+    'tracing.events.call',
+    'tracing.events.return',
+    'tracing.events.exception',
+    'tracing.events.stdout',
+    'tracing.events.timeout',
+    'tracing.controls.maxTraceSteps',
+    'tracing.fidelity.preciseLineMapping',
+    'tracing.fidelity.stableFunctionNames',
+    'diagnostics.compileErrors',
+    'diagnostics.runtimeErrors',
+    'diagnostics.mappedErrorLines',
+    'structures.treeNodeRefs',
+    'structures.listNodeRefs',
+  ],
 };
 
 function assertProfileCoverageAlignment(profile: LanguageRuntimeProfile): void {
@@ -322,6 +342,7 @@ async function main(): Promise<void> {
   assertCondition(SUPPORTED_LANGUAGES.includes('javascript'), 'SUPPORTED_LANGUAGES should include javascript');
   assertCondition(SUPPORTED_LANGUAGES.includes('typescript'), 'SUPPORTED_LANGUAGES should include typescript');
   assertCondition(SUPPORTED_LANGUAGES.includes('java'), 'SUPPORTED_LANGUAGES should include java');
+  assertCondition(SUPPORTED_LANGUAGES.includes('csharp'), 'SUPPORTED_LANGUAGES should include csharp');
   assertCondition(
     stableStringify(SUPPORTED_LANGUAGES) === stableStringify(profiles.map((profile) => profile.language)),
     'SUPPORTED_LANGUAGES should stay aligned with the runtime profile registry'
@@ -340,11 +361,13 @@ async function main(): Promise<void> {
   const javascriptClient = browserHarness.getClient('javascript');
   const typescriptClient = browserHarness.getClient('typescript');
   const javaClient = browserHarness.getClient('java');
+  const csharpClient = browserHarness.getClient('csharp');
   for (const [name, client] of [
     ['python', pythonClient],
     ['javascript', javascriptClient],
     ['typescript', typescriptClient],
     ['java', javaClient],
+    ['csharp', csharpClient],
   ] as const) {
     assertCondition(
       typeof (client as { getCapabilities?: unknown }).getCapabilities === 'undefined',
@@ -367,8 +390,9 @@ async function main(): Promise<void> {
   const javascriptProfile = getLanguageRuntimeProfile('javascript');
   const typescriptProfile = getLanguageRuntimeProfile('typescript');
   const javaProfile = getLanguageRuntimeProfile('java');
+  const csharpProfile = getLanguageRuntimeProfile('csharp');
   for (const profile of profiles) {
-    const expectedMaturity = profile.language === 'java' ? 'experimental' : 'stable';
+    const expectedMaturity = profile.language === 'java' || profile.language === 'csharp' ? 'experimental' : 'stable';
     assertCondition(
       profile.maturity === expectedMaturity,
       `${profile.language} should be marked ${expectedMaturity} in this release`
@@ -396,6 +420,11 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function execution');
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
+  assertCondition(csharpProfile.capabilities.execution.styles.solutionMethod, 'C# should support solution-method execution');
+  assertCondition(csharpProfile.capabilities.tracing.supported, 'C# should support basic tracing');
+  assertCondition(csharpProfile.capabilities.diagnostics.compileErrors, 'C# should support compile diagnostics');
+  assertCondition(csharpProfile.capabilities.structures.listNodeRefs, 'C# should advertise ListNode hydration');
+  assertCondition(csharpProfile.capabilities.structures.treeNodeRefs, 'C# should advertise TreeNode hydration');
   console.log('PASS: runtime capability profile matrix');
 
   const unsupportedProfile = createUnsupportedProfile();

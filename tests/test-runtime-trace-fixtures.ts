@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
@@ -46,6 +47,7 @@ const JAVA_REWRITER_CLASSPATH = [
   join(process.cwd(), 'workers', 'vendor', 'javaparser-core-3.25.10.jar'),
 ].join(':');
 const JAVA_HELPER_JAR = join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar');
+const CSHARP_ASSET_DIR = join(process.cwd(), 'workers', 'vendor', 'csharp');
 const JAVA_BIN_CANDIDATES = [
   process.env.TRACECODE_JAVA17_BIN,
   process.env.JAVA17_HOME ? join(process.env.JAVA17_HOME, 'bin', 'java') : undefined,
@@ -120,7 +122,7 @@ type RuntimeCore = {
   ) => { code: string };
 };
 
-const ALL_FIXTURE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java'];
+const ALL_FIXTURE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java', 'csharp'];
 
 function selectedFixtureNames(allFixtureNames: string[]): string[] {
   const rawFilter = process.env.TRACECODE_RUNTIME_TRACE_FIXTURE;
@@ -243,6 +245,7 @@ function fixtureLanguageFile(language: Language): string {
   if (language === 'python') return 'solution.py';
   if (language === 'javascript') return 'solution.js';
   if (language === 'typescript') return 'solution.ts';
+  if (language === 'csharp') return 'solution.cs';
   return 'Solution.java';
 }
 
@@ -317,6 +320,9 @@ interface FixtureTraceRun {
   trace: RuntimeTrace;
   rawSummary: RuntimeRawEmissionSummary;
 }
+
+type CSharpExecute = (requestJson: string) => string;
+let csharpExecutePromise: Promise<CSharpExecute> | null = null;
 
 async function executePythonTrace(code: string, fixture: FixtureCase): Promise<FixtureTraceRun> {
   const runtime = await loadPythonRuntimeCore();
@@ -462,6 +468,88 @@ async function executeJavaScriptTrace(
 
 function normalizeTopLevelPublicClasses(source: string): string {
   return source.replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
+}
+
+async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
+  if (csharpExecutePromise) return csharpExecutePromise;
+
+  csharpExecutePromise = (async () => {
+    const dotnetJsPath = join(CSHARP_ASSET_DIR, '_framework', 'dotnet.js');
+    if (!existsSync(dotnetJsPath)) {
+      throw new Error('Missing C# WASM assets. Run `pnpm run spike:csharp:publish` and sync workers/vendor/csharp.');
+    }
+
+    const { dotnet } = (await import(pathToFileURL(dotnetJsPath).href)) as {
+      dotnet: {
+        withApplicationArguments(...args: string[]): {
+          create(): Promise<{
+            getAssemblyExports(assemblyName: string): Promise<Record<string, unknown>>;
+            getConfig(): { mainAssemblyName: string };
+          }>;
+        };
+      };
+    };
+
+    const runtime = await dotnet.withApplicationArguments('runtime-trace-fixtures').create();
+    const config = runtime.getConfig();
+    const exports = await runtime.getAssemblyExports(config.mainAssemblyName);
+    const compilerHost = exports.TraceCode?.CSharpHost?.CompilerHost as { Execute?: unknown } | undefined;
+    if (typeof compilerHost?.Execute !== 'function') {
+      throw new Error('Unable to locate TraceCode.CSharpHost.CompilerHost.Execute export.');
+    }
+    return compilerHost.Execute as CSharpExecute;
+  })();
+
+  return csharpExecutePromise;
+}
+
+async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<FixtureTraceRun> {
+  const execute = await loadCSharpExecuteExport();
+  const raw = execute(JSON.stringify({
+    source: code,
+    functionName: fixture.functionName,
+    inputs: fixture.inputs,
+    executionStyle: fixture.executionStyle,
+    trace: true,
+    timeoutMs: 19_000,
+    maxTraceSteps: 1000,
+  }));
+  const parsed = JSON.parse(raw) as {
+    success: boolean;
+    error?: string;
+    events?: RuntimeTrace['events'];
+    consoleOutput?: string[];
+  };
+  if (!parsed.success) {
+    throw new Error(`C# tracing failed for ${fixture.id}: ${parsed.error ?? 'unknown error'}`);
+  }
+
+  const baseEvents = Array.isArray(parsed.events) ? parsed.events : [];
+  const consoleOutput = parsed.consoleOutput ?? [];
+  const events = [
+    ...baseEvents,
+    ...consoleOutput.map((text) => ({
+      kind: 'stdout' as const,
+      runId: 'csharp:run',
+      file: 'UserCode.cs',
+      text,
+    })),
+  ];
+  const trace: RuntimeTrace = {
+    schemaVersion: 'runtime-trace-2026-04-28',
+    language: 'csharp',
+    runId: `csharp:${fixture.id}`,
+    events: events.map((event) => ({
+      ...event,
+      runId: `csharp:${fixture.id}`,
+      file: 'solution.cs',
+    })),
+    lineEventCount: events.filter((event) => event.kind === 'line').length,
+    traceStepCount: events.length,
+  };
+  const rawSummary = summarizeRuntimeTraceEmissions(trace);
+  assertSupportedRawEmissions(rawSummary, `${fixture.id}:csharp`);
+  return { trace, rawSummary };
 }
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {
@@ -878,24 +966,29 @@ function projectTraceSummary(trace: RuntimeTrace): {
 async function runFixture(fixtureName: string, workerSource: string): Promise<void> {
   const fixtureDir = join(FIXTURES_DIR, fixtureName);
   const fixture = JSON.parse(await readFile(join(fixtureDir, 'case.json'), 'utf8')) as FixtureCase;
-  const sources = {
+  const csharpSourcePath = join(fixtureDir, 'solution.cs');
+  const sources: Partial<Record<Language, string>> = {
     python: await readFile(join(fixtureDir, 'solution.py'), 'utf8'),
     javascript: await readFile(join(fixtureDir, 'solution.js'), 'utf8'),
     typescript: await readFile(join(fixtureDir, 'solution.ts'), 'utf8'),
     java: await readFile(join(fixtureDir, 'Solution.java'), 'utf8'),
   };
+  if (existsSync(csharpSourcePath)) {
+    sources.csharp = await readFile(csharpSourcePath, 'utf8');
+  }
 
-  const languages = selectedFixtureLanguages();
+  const languages = selectedFixtureLanguages().filter((language) => language !== 'csharp' || sources.csharp);
   const runs = {} as Partial<Record<Language, FixtureTraceRun>>;
   for (const language of languages) {
-    if (language === 'python') runs.python = await executePythonTrace(sources.python, fixture);
+    if (language === 'python') runs.python = await executePythonTrace(sources.python!, fixture);
     if (language === 'javascript') {
-      runs.javascript = await executeJavaScriptTrace('javascript', workerSource, sources.javascript, fixture);
+      runs.javascript = await executeJavaScriptTrace('javascript', workerSource, sources.javascript!, fixture);
     }
     if (language === 'typescript') {
-      runs.typescript = await executeJavaScriptTrace('typescript', workerSource, sources.typescript, fixture);
+      runs.typescript = await executeJavaScriptTrace('typescript', workerSource, sources.typescript!, fixture);
     }
-    if (language === 'java') runs.java = await executeJavaTrace(sources.java, fixture);
+    if (language === 'java') runs.java = await executeJavaTrace(sources.java!, fixture);
+    if (language === 'csharp' && sources.csharp) runs.csharp = await executeCSharpTrace(sources.csharp, fixture);
   }
   const traces = Object.fromEntries(
     Object.entries(runs).map(([language, run]) => [language, run.trace])
@@ -906,16 +999,11 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
       console.log(JSON.stringify(traces[language]?.events, null, 2));
     }
   }
-  if (languages.length === ALL_FIXTURE_LANGUAGES.length) {
-    const completeRuns = runs as Record<Language, FixtureTraceRun>;
+  if (languages.includes('python')) {
+    const completeRuns = runs as Partial<Record<Language, FixtureTraceRun>> & { python: FixtureTraceRun };
     const rawParityMismatches = compareRawEmissionParity(
       completeRuns.python.rawSummary,
-      [
-        completeRuns.python.rawSummary,
-        completeRuns.javascript.rawSummary,
-        completeRuns.typescript.rawSummary,
-        completeRuns.java.rawSummary,
-      ]
+      Object.values(completeRuns).map((run) => run.rawSummary)
     );
     if (rawParityMismatches.length > 0 && process.env.TRACECODE_STRICT_RAW_EMISSION_PARITY === '1') {
       throw new Error(
@@ -930,7 +1018,7 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
     const roleLines = Object.fromEntries(
       Object.entries(fixture.anchors).map(([role, anchors]) => [
         role,
-        findAnchorLine(sources[language], anchors[language]),
+        findAnchorLine(sources[language]!, anchors[language]),
       ])
     );
     const actual = projectRoleSignature(trace, roleLines);
@@ -941,7 +1029,7 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
           ...(fixture.lineSequenceAnchors ?? {}),
         }).map(([role, anchors]) => [
           role,
-          findAnchorLine(sources[language], anchors[language]),
+          findAnchorLine(sources[language]!, anchors[language]),
         ])
       );
       const actualLineSequence = projectLineSequence(trace, lineSequenceRoleLines);
@@ -958,7 +1046,7 @@ async function runFixture(fixtureName: string, workerSource: string): Promise<vo
           ...(fixture.lineSequenceAnchors ?? {}),
         }).map(([role, anchors]) => [
           role,
-          findAnchorLine(sources[language], anchors[language]),
+          findAnchorLine(sources[language]!, anchors[language]),
         ])
       );
       const actualLineFrames = projectLineSnapshotFrames(trace, lineSequenceRoleLines);

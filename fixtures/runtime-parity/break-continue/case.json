@@ -16,19 +16,22 @@
       "python": "continue",
       "javascript": "continue;",
       "typescript": "continue;",
-      "java": "continue;"
+      "java": "continue;",
+      "csharp": "continue;"
     },
     "break": {
       "python": "break",
       "javascript": "break;",
       "typescript": "break;",
-      "java": "break;"
+      "java": "break;",
+      "csharp": "break;"
     },
     "add": {
       "python": "total += nums[i]",
       "javascript": "total += nums[i];",
       "typescript": "total += nums[i];",
-      "java": "total += nums[i];"
+      "java": "total += nums[i];",
+      "csharp": "total += nums[i];"
     }
   },
   "expect": {

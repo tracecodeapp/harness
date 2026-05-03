@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, cp, mkdir, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 
 const ASSET_COPY_PLAN = [
@@ -29,6 +29,10 @@ const ASSET_COPY_PLAN = [
     target: ['java-source-augmentations.js'],
   },
   {
+    source: ['workers', 'csharp', 'csharp-worker.js'],
+    target: ['csharp-worker.js'],
+  },
+  {
     source: ['workers', 'vendor', 'typescript.js'],
     target: ['vendor', 'typescript.js'],
   },
@@ -47,6 +51,10 @@ const ASSET_COPY_PLAN = [
   {
     source: ['workers', 'vendor', 'jdk.compiler-17.jar'],
     target: ['vendor', 'jdk.compiler-17.jar'],
+  },
+  {
+    source: ['workers', 'vendor', 'csharp'],
+    target: ['vendor', 'csharp'],
   },
 ] as const;
 
@@ -80,8 +88,13 @@ async function syncAssets(targetDir: string): Promise<void> {
   for (const asset of ASSET_COPY_PLAN) {
     const sourcePath = join(packageRoot, ...asset.source);
     const targetPath = join(resolvedTargetDir, ...asset.target);
+    const sourceStat = await stat(sourcePath);
     await ensureParentDir(targetPath);
-    await copyFile(sourcePath, targetPath);
+    if (sourceStat.isDirectory()) {
+      await cp(sourcePath, targetPath, { recursive: true, force: true });
+    } else {
+      await copyFile(sourcePath, targetPath);
+    }
   }
 
   console.log(`Synced harness assets to ${resolvedTargetDir}`);

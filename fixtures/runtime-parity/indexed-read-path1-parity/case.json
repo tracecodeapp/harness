@@ -25,13 +25,15 @@
       "python": "cols = len(matrix[0])",
       "javascript": "const cols = matrix[0].length;",
       "typescript": "const cols: number = matrix[0].length;",
-      "java": "int cols = matrix[0].length;"
+      "java": "int cols = matrix[0].length;",
+      "csharp": "int cols = matrix[0].Length;"
     },
     "stringRowLength": {
       "python": "width = len(pizza[0])",
       "javascript": "const width = pizza[0].length;",
       "typescript": "const width: number = pizza[0].length;",
-      "java": "int width = pizza[0].length();"
+      "java": "int width = pizza[0].length();",
+      "csharp": "int width = pizza[0].Length;"
     }
   },
   "expect": {
@@ -90,5 +92,23 @@
         "count": 1
       }
     ]
+  },
+  "expectSummaryByLanguage": {
+    "csharp": {
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "matrix",
+          "pathDepth": 1,
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "pizza",
+          "pathDepth": 1,
+          "count": 1
+        }
+      ]
+    }
   }
 }

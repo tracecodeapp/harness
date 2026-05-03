@@ -10,7 +10,8 @@
       "python": "out.append(value)",
       "javascript": "out.push(value);",
       "typescript": "out.push(value);",
-      "java": "out.add(value);"
+      "java": "out.add(value);",
+      "csharp": "outList.Add(value);"
     }
   },
   "expect": {
@@ -50,6 +51,26 @@
           {
             "kind": "mutate",
             "variable": "out",
+            "method": "append"
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "helperAppend": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "outList",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "outList",
             "method": "append"
           }
         ]

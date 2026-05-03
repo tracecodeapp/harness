@@ -11,7 +11,8 @@
       "python": "self.graph[0].append(value)",
       "javascript": "this.graph.get(0).push(value);",
       "typescript": "this.graph.get(0)!.push(value);",
-      "java": "graph.get(0).add(value);"
+      "java": "graph.get(0).add(value);",
+      "csharp": "this.graph[0].Add(value);"
     }
   },
   "expect": {
@@ -36,6 +37,16 @@
       }
     },
     "java": {
+      "nestedFieldAppend": {
+        "eventKinds": ["line", "mutate", "read", "snapshot"],
+        "variableSnapshots": ["value"],
+        "accessTargets": [
+          { "kind": "mutate", "variable": "this", "method": "append", "pathDepth": 2 },
+          { "kind": "read", "variable": "this", "pathDepth": 2 }
+        ]
+      }
+    },
+    "csharp": {
       "nestedFieldAppend": {
         "eventKinds": ["line", "mutate", "read", "snapshot"],
         "variableSnapshots": ["value"],

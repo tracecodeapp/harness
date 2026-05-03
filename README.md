@@ -1,6 +1,6 @@
 # TraceCode Harness
 
-Browser-first execution and tracing harness for Python, JavaScript, TypeScript, and an experimental Java lane.
+Browser-first execution and tracing harness for Python, JavaScript, TypeScript, experimental Java, and experimental C# lanes.
 
 `@tracecode/harness` is a browser-consumable runtime SDK for code execution and tracing: explicit browser runtime creation, package-managed worker assets, and no app-specific storage/bootstrap contract in the public API.
 
@@ -14,6 +14,7 @@ It includes:
 
 - browser-hosted execution for Python, JavaScript, and TypeScript
 - an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
+- an experimental browser-local C# lane for LeetCode-style `public class Solution` method execution
 - trace capture and normalized runtime contracts
 - browser worker assets and asset sync tooling
 
@@ -40,7 +41,7 @@ Consuming apps are expected to own their own UI, persistence, product logic, and
 ## What You Get
 
 - shared runtime contract types and trace adapters
-- browser runtime clients for Python, JavaScript, TypeScript, and Java
+- browser runtime clients for Python, JavaScript, TypeScript, Java, and C#
 - published worker assets plus a CLI to copy them into your app
 - capability profiles for honest per-language support claims
 - regression coverage for runtime parity, packaging, and consumer smoke tests
@@ -154,7 +155,7 @@ The returned harness exposes:
 Configuration:
 
 - `assetBaseUrl?: string`
-- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker }>`
+- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl }>`
 - `debug?: boolean`
 
 Example:
@@ -185,6 +186,8 @@ if (profile.capabilities.tracing.supported) {
 - `vendor/java-rewriter.jar`
 - `vendor/javaparser-core-3.25.10.jar`
 - `vendor/jdk.compiler-17.jar`
+- `csharp-worker.js`
+- `vendor/csharp/**`
 
 By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those assets as:
 
@@ -198,6 +201,8 @@ By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those 
 - `/workers/vendor/java-rewriter.jar`
 - `/workers/vendor/javaparser-core-3.25.10.jar`
 - `/workers/vendor/jdk.compiler-17.jar`
+- `/workers/csharp-worker.js`
+- `/workers/vendor/csharp`
 
 Advanced consumers can override individual asset URLs through the `assets` option.
 
@@ -226,11 +231,17 @@ Current language status:
 - `javascript`: stable
 - `typescript`: stable
 - `java`: experimental, browser-local Java 17 lane
+- `csharp`: experimental, browser-local .NET WASM + Roslyn lane
 
 Current Java scope:
 
 - supported: `function`, `solution-method`, `ops-class`, `script`, `interviewMode`, tracing, compile diagnostics, and neutral runtime trace facts
 - script mode uses an empty function name with `executionStyle: "function"` and reads the top-level `result` variable
+
+Current C# scope:
+
+- supported: `solution-method` execution for `public class Solution`, generated drivers including `void` methods, `ListNode`/`TreeNode` prelude classes and JSON hydration, stdout capture, runtime errors, mapped Roslyn compile diagnostics, soft loop timeouts, trace-step budgets, block-bodied and expression-bodied method tracing, basic line/call/return-value/simple-write tracing, one-dimensional array indexed read/write tracing including simple compound writes, and initial `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/`Queue<T>`/`Stack<T>` wrapper tracing for `var`, explicit local declarations, target-typed `new()`, collection initializers, common one-argument constructors, and `Dictionary`/`HashSet` comparer constructor overloads
+- not yet supported: broad multi-argument collection constructors beyond the current comparer overloads, NuGet packages, async/threading APIs, project files, multiple source files, unsafe code, or full expression/value tracing fidelity
 
 ## Example Consumer
 

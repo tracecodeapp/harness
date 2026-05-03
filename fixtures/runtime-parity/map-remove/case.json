@@ -8,7 +8,8 @@
       "python": "del seen[2]",
       "javascript": "seen.delete(2);",
       "typescript": "seen.delete(2);",
-      "java": "seen.remove(2);"
+      "java": "seen.remove(2);",
+      "csharp": "seen.Remove(2);"
     }
   },
   "expect": {
@@ -28,6 +29,27 @@
           "method": "remove"
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "remove": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "method": "remove"
+          }
+        ]
+      }
     }
   }
 }

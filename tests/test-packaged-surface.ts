@@ -55,11 +55,16 @@ async function main(): Promise<void> {
     'workers/javascript/javascript-worker.js',
     'workers/java/java-worker.js',
     'workers/java/java-source-augmentations.js',
+    'workers/csharp/csharp-worker.js',
     'workers/vendor/java-browser-helper.jar',
     'workers/vendor/java-rewriter.jar',
     'workers/vendor/javaparser-core-3.25.10.jar',
     'workers/vendor/jdk.compiler-17.jar',
     'workers/vendor/typescript.js',
+    'workers/vendor/csharp/_framework/dotnet.js',
+    'workers/vendor/csharp/_framework/dotnet.native.wasm',
+    'workers/vendor/csharp/_framework/dotnet.runtime.js',
+    'workers/vendor/csharp/_framework/blazor.boot.json',
   ];
 
   for (const relativePath of requiredPackagedFiles) {

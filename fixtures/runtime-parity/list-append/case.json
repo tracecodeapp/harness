@@ -13,7 +13,8 @@
       "python": "out.append(num)",
       "javascript": "out.push(num);",
       "typescript": "out.push(num);",
-      "java": "out.add(num);"
+      "java": "out.add(num);",
+      "csharp": "outList.Add(num);"
     }
   },
   "expect": {
@@ -35,6 +36,28 @@
           "method": "append"
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "append": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "outList"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "outList",
+            "method": "append"
+          }
+        ]
+      }
     }
   }
 }

@@ -8,13 +8,15 @@
       "python": "counts[\"a\"] -= 1",
       "javascript": "counts.set(\"a\", counts.get(\"a\") - 1);",
       "typescript": "counts.set(\"a\", counts.get(\"a\")! - 1);",
-      "java": "counts.put(\"a\", counts.get(\"a\") - 1);"
+      "java": "counts.put(\"a\", counts.get(\"a\") - 1);",
+      "csharp": "counts[\"a\"] = counts[\"a\"] - 1;"
     },
     "remove": {
       "python": "counts.pop(\"b\")",
       "javascript": "counts.delete(\"b\");",
       "typescript": "counts.delete(\"b\");",
-      "java": "counts.remove(\"b\");"
+      "java": "counts.remove(\"b\");",
+      "csharp": "counts.Remove(\"b\");"
     }
   },
   "expect": {
@@ -59,6 +61,50 @@
       ]
     }
   },
+  "expectByLanguage": {
+    "csharp": {
+      "decrement": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "counts",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "counts",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "remove": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "counts",
+            "method": "remove"
+          }
+        ]
+      }
+    }
+  },
   "expectSummary": {
     "accessTargets": [
       {
@@ -79,5 +125,29 @@
         "count": 2
       }
     ]
+  },
+  "expectSummaryByLanguage": {
+    "csharp": {
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "method": "remove",
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1,
+          "count": 2
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1,
+          "count": 3
+        }
+      ]
+    }
   }
 }

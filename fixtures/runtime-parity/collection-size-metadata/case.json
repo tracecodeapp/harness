@@ -14,13 +14,15 @@
       "python": "n = len(nums)",
       "javascript": "const n = nums.length;",
       "typescript": "const n = nums.length;",
-      "java": "int n = nums.length;"
+      "java": "int n = nums.length;",
+      "csharp": "int n = nums.Length;"
     },
     "mapSize": {
       "python": "m = len(seen)",
       "javascript": "const m = seen.size;",
       "typescript": "const m = seen.size;",
-      "java": "int m = seen.size();"
+      "java": "int m = seen.size();",
+      "csharp": "int m = seen.Count;"
     }
   },
   "expect": {
@@ -53,5 +55,35 @@
   },
   "expectSummary": {
     "accessTargets": []
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "arraySize": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "n",
+          "nums",
+          "total"
+        ],
+        "accessTargets": []
+      },
+      "mapSize": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "m",
+          "n",
+          "nums",
+          "seen",
+          "total"
+        ],
+        "accessTargets": []
+      }
+    }
   }
 }

@@ -8,7 +8,8 @@
       "python": "grid[1][0] += 1",
       "javascript": "grid[1][0] += 1;",
       "typescript": "grid[1][0] += 1;",
-      "java": "grid[1][0] += 1;"
+      "java": "grid[1][0] += 1;",
+      "csharp": "grid[1][0] += 1;"
     }
   },
   "expect": {

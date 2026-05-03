@@ -26,13 +26,15 @@
       "python": "self.prefix = [0]",
       "javascript": "this.prefix = [0];",
       "typescript": "this.prefix = [0];",
-      "java": "this.prefix = new int[] {0};"
+      "java": "this.prefix = new int[] {0};",
+      "csharp": "this.prefix = new int[] { 0 };"
     },
     "methodRead": {
       "python": "return self.prefix[0]",
       "javascript": "return this.prefix[0];",
       "typescript": "return this.prefix[0];",
-      "java": "return this.prefix[0];"
+      "java": "return this.prefix[0];",
+      "csharp": "return this.prefix[left];"
     }
   },
   "expect": {
@@ -152,6 +154,44 @@
             "kind": "read",
             "variable": "this",
             "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "constructorWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "methodRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "left",
+          "right"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2
           }
         ]
       }

@@ -6,6 +6,8 @@ export interface BrowserHarnessAssets {
   pythonSnippets: string;
   javascriptWorker: string;
   javaWorker: string;
+  csharpWorker: string;
+  csharpAssetBaseUrl: string;
   typescriptCompiler: string;
 }
 
@@ -17,6 +19,8 @@ export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarne
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
   javaWorker: 'java-worker.js',
+  csharpWorker: 'csharp-worker.js',
+  csharpAssetBaseUrl: 'vendor/csharp',
   typescriptCompiler: 'vendor/typescript.js',
 });
 
@@ -67,6 +71,11 @@ export function resolveBrowserHarnessAssets(options: {
       assets.javascriptWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javascriptWorker
     ),
     javaWorker: resolveAssetPath(assetBaseUrl, assets.javaWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javaWorker),
+    csharpWorker: resolveAssetPath(assetBaseUrl, assets.csharpWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpWorker),
+    csharpAssetBaseUrl: resolveAssetPath(
+      assetBaseUrl,
+      assets.csharpAssetBaseUrl ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpAssetBaseUrl
+    ),
     typescriptCompiler: resolveAssetPath(
       assetBaseUrl,
       assets.typescriptCompiler ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.typescriptCompiler

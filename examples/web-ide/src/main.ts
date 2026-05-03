@@ -123,6 +123,21 @@ result = new int[] {};
     seen.put(value, index);
 }`,
   },
+  csharp: {
+    functionName: 'Add',
+    executionStyle: 'solution-method',
+    inputs: {
+      a: 2,
+      b: 3,
+    },
+    code: `public class Solution
+{
+    public int Add(int a, int b)
+    {
+        return a + b;
+    }
+}`,
+  },
 };
 
 const getExtension = (lang: Language) => {
@@ -130,6 +145,7 @@ const getExtension = (lang: Language) => {
   if (lang === 'javascript') return '.js';
   if (lang === 'typescript') return '.ts';
   if (lang === 'java') return '.java';
+  if (lang === 'csharp') return '.cs';
   return '.txt';
 };
 
@@ -138,6 +154,7 @@ const getEditorLanguage = (lang: Language): string => {
   if (lang === 'javascript') return 'javascript';
   if (lang === 'python') return 'python';
   if (lang === 'java') return 'java';
+  if (lang === 'csharp') return 'csharp';
   return 'plaintext';
 };
 
@@ -349,7 +366,7 @@ async function traceCode(): Promise<void> {
 // Event Listeners
 // ----------------------------------------------------------------------
 languageSelect.innerHTML = SUPPORTED_LANGUAGES.map((language) => {
-  const label = language.charAt(0).toUpperCase() + language.slice(1);
+  const label = language === 'csharp' ? 'C#' : language.charAt(0).toUpperCase() + language.slice(1);
   return `<option value="${language}">${label}</option>`;
 }).join('');
 

@@ -15,6 +15,8 @@ const SCANNED_FILES = [
   'packages/harness-browser/src/javascript-worker-client.ts',
   'packages/harness-browser/src/java-runtime-client.ts',
   'packages/harness-browser/src/java-worker-client.ts',
+  'packages/harness-browser/src/csharp-runtime-client.ts',
+  'packages/harness-browser/src/csharp-worker-client.ts',
   'packages/harness-browser/src/pyodide-worker-client.ts',
   'packages/harness-browser/src/python-runtime-client.ts',
   'packages/harness-browser/src/runtime-assets.ts',
@@ -32,6 +34,7 @@ const SCANNED_FILES = [
   'workers/javascript/javascript-worker.js',
   'workers/java/java-worker.js',
   'workers/java/java-source-augmentations.js',
+  'workers/csharp/csharp-worker.js',
   'workers/python/pyodide-worker.js',
   'workers/python/runtime-core.js',
 ];

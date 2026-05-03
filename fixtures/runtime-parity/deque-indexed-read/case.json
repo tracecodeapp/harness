@@ -14,7 +14,8 @@
       "python": "last = window[2]",
       "javascript": "const last = window[2];",
       "typescript": "const last = window[2];",
-      "java": "int last = window[2];"
+      "java": "int last = window[2];",
+      "csharp": "int last = window[2];"
     }
   },
   "expect": {
@@ -36,6 +37,29 @@
           "pathDepth": 1
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "last",
+          "nums",
+          "window"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "window",
+            "pathDepth": 1
+          }
+        ]
+      }
     }
   }
 }

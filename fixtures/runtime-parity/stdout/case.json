@@ -10,7 +10,8 @@
       "python": "print(n)",
       "javascript": "console.log(n);",
       "typescript": "console.log(n);",
-      "java": "System.out.println(n);"
+      "java": "System.out.println(n);",
+      "csharp": "System.Console.WriteLine(n);"
     }
   },
   "expect": {
@@ -60,6 +61,18 @@
           "line",
           "snapshot",
           "stdout"
+        ],
+        "variableSnapshots": [
+          "n"
+        ],
+        "accessTargets": []
+      }
+    },
+    "csharp": {
+      "print": {
+        "eventKinds": [
+          "line",
+          "snapshot"
         ],
         "variableSnapshots": [
           "n"

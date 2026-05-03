@@ -10,7 +10,8 @@
       "python": "stack[-1][\"items\"].append(value)",
       "javascript": "stack[stack.length - 1].items.push(value);",
       "typescript": "stack[stack.length - 1].items.push(value);",
-      "java": "stack.peek().items.add(value);"
+      "java": "stack.peek().items.add(value);",
+      "csharp": "stack[stack.Count - 1].items.Add(value);"
     }
   },
   "expect": {
@@ -40,6 +41,40 @@
       ]
     }
   },
+  "expectByLanguage": {
+    "csharp": {
+      "append": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "stack",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "stack",
+            "pathDepth": 2,
+            "method": "append"
+          },
+          {
+            "kind": "read",
+            "variable": "stack",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "stack",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
+  },
   "expectSummary": {
     "accessTargets": [
       {
@@ -62,5 +97,36 @@
         "count": 1
       }
     ]
+  },
+  "expectSummaryByLanguage": {
+    "csharp": {
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "stack",
+          "pathDepth": 2,
+          "method": "append",
+          "count": 1
+        },
+        {
+          "kind": "mutate",
+          "variable": "stack",
+          "method": "append",
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "stack",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "stack",
+          "pathDepth": 1,
+          "count": 2
+        }
+      ]
+    }
   }
 }

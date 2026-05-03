@@ -115,7 +115,9 @@ export function generateSolutionScript(
   
   return `
 import json
+import math
 import sys
+import builtins as _builtins
 from typing import *
 
 ${PYTHON_CLASS_DEFINITIONS}

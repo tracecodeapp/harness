@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishTrimmed>false</PublishTrimmed>
+    <WasmMainJSPath>main.mjs</WasmMainJSPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.10.0" />
+  </ItemGroup>
+
+  <Target Name="TraceCodeIncludeCompilerReferenceAssembliesInVfs" BeforeTargets="WasmBuildApp">
+    <ItemGroup>
+      <TraceCodeCompilerReference Include="$(TargetDir)*.dll" />
+      <WasmFilesToIncludeInFileSystem
+        Include="@(TraceCodeCompilerReference)"
+        TargetPath="/tracecode-refs/%(TraceCodeCompilerReference.FileName)%(TraceCodeCompilerReference.Extension)" />
+    </ItemGroup>
+  </Target>
+</Project>

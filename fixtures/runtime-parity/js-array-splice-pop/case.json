@@ -14,7 +14,8 @@
       "python": "value = nums.pop()",
       "javascript": "const value = nums.splice(nums.length - 1, 1)[0];",
       "typescript": "const value = nums.splice(nums.length - 1, 1)[0]!;",
-      "java": "int value = nums.remove(nums.size() - 1);"
+      "java": "int value = nums.remove(nums.size() - 1);",
+      "csharp": "values.RemoveAt(values.Count - 1);"
     }
   },
   "expect": {
@@ -92,6 +93,26 @@
           {
             "kind": "mutate",
             "variable": "nums",
+            "method": "pop"
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "popIndex": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "values",
             "method": "pop"
           }
         ]

@@ -12,7 +12,8 @@
       "python": "freq[left] -= 1",
       "javascript": "freq.set(left, freq.get(left) - 1);",
       "typescript": "freq.set(left, freq.get(left)! - 1);",
-      "java": "freq.put(left, freq.get(left) - 1);"
+      "java": "freq.put(left, freq.get(left) - 1);",
+      "csharp": "freq[left] = freq[left] - 1;"
     }
   },
   "expect": {
@@ -40,6 +41,35 @@
           "pathDepth": 1
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "decrement": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "freq",
+          "left",
+          "nums"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "freq",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "freq",
+            "pathDepth": 1
+          }
+        ]
+      }
     }
   }
 }

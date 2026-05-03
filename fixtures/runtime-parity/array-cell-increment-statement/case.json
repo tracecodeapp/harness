@@ -19,13 +19,15 @@
       "python": "grid[0][1] += 1",
       "javascript": "grid[0][1]++;",
       "typescript": "grid[0][1]++;",
-      "java": "grid[0][1]++;"
+      "java": "grid[0][1]++;",
+      "csharp": "grid[0][1]++;"
     },
     "dec": {
       "python": "grid[1][0] -= 1",
       "javascript": "--grid[1][0];",
       "typescript": "--grid[1][0];",
-      "java": "--grid[1][0];"
+      "java": "--grid[1][0];",
+      "csharp": "--grid[1][0];"
     }
   },
   "expect": {

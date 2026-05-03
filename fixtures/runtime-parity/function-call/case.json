@@ -10,7 +10,8 @@
       "python": "def helper(x):",
       "javascript": "function helper(x) {",
       "typescript": "function helper(x: number): number {",
-      "java": "public int helper(int x) {"
+      "java": "public int helper(int x) {",
+      "csharp": "public int helper(int x)"
     }
   },
   "expect": {
@@ -23,6 +24,17 @@
         "x"
       ],
       "accessTargets": []
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "helperEntry": {
+        "eventKinds": [
+          "call"
+        ],
+        "variableSnapshots": [],
+        "accessTargets": []
+      }
     }
   }
 }

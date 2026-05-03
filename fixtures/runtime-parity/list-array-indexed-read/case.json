@@ -19,7 +19,8 @@
       "python": "total = values[0][1] + values[1][0]",
       "javascript": "const total = values[0][1] + values[1][0];",
       "typescript": "const total = values[0][1] + values[1][0];",
-      "java": "int total = values.get(0)[1] + values.get(1)[0];"
+      "java": "int total = values.get(0)[1] + values.get(1)[0];",
+      "csharp": "int total = values[0][1] + values[1][0];"
     }
   },
   "expect": {
@@ -57,6 +58,36 @@
         "count": 2
       }
     ]
+  },
+  "expectSummaryByLanguage": {
+    "csharp": {
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "values",
+          "method": "append",
+          "count": 2
+        },
+        {
+          "kind": "read",
+          "variable": "rows",
+          "pathDepth": 1,
+          "count": 2
+        },
+        {
+          "kind": "read",
+          "variable": "values",
+          "pathDepth": 1,
+          "count": 2
+        },
+        {
+          "kind": "read",
+          "variable": "values",
+          "pathDepth": 2,
+          "count": 2
+        }
+      ]
+    }
   },
   "expectByLanguage": {
     "python": {
@@ -110,6 +141,32 @@
           "snapshot"
         ],
         "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ],
+        "variableSnapshots": [
+          "rows",
+          "total",
+          "values"
+        ]
+      }
+    },
+    "csharp": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 1
+          },
           {
             "kind": "read",
             "variable": "values",

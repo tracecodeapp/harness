@@ -8,13 +8,15 @@
       "python": "box.value = 7",
       "javascript": "box.value = 7;",
       "typescript": "box.value = 7;",
-      "java": "box.value = 7;"
+      "java": "box.value = 7;",
+      "csharp": "box.value = 7;"
     },
     "read": {
       "python": "return box.value",
       "javascript": "return box.value;",
       "typescript": "return box.value;",
-      "java": "return box.value;"
+      "java": "return box.value;",
+      "csharp": "return box.value;"
     }
   },
   "expect": {
@@ -52,6 +54,27 @@
           "pathDepth": 1
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "box"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "box",
+            "pathDepth": 1
+          }
+        ]
+      }
     }
   }
 }
