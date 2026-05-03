@@ -171,6 +171,30 @@ async function main(): Promise<void> {
     assertCondition(csharpExecuteResult.success, 'C# runtime should route solution-method executeCode through the browser harness client');
     console.log('PASS: browser harness routes C# runtime requests');
 
+    const csharpTraceResult = await harnessA
+      .getClient('csharp')
+      .executeWithTracing(
+        'public class Solution { public int Add(int a, int b) { return a + b; } }',
+        'Add',
+        { a: 2, b: 3 },
+        { maxTraceSteps: 10 },
+        'solution-method'
+      );
+    assertCondition(csharpTraceResult.success, 'C# runtime should route executeWithTracing through the browser harness client');
+    assertCondition(csharpTraceResult.trace.language === 'csharp', 'C# runtime should adapt worker events into a C# runtime trace');
+    console.log('PASS: browser harness routes C# tracing requests');
+
+    const csharpOpsClassResult = await harnessA
+      .getClient('csharp')
+      .executeCode(
+        'public class Counter { public Counter(int start) {} public int Inc(int delta) => delta; }',
+        'Counter',
+        { operations: ['Counter', 'Inc'], arguments: [[1], [2]] },
+        'ops-class'
+      );
+    assertCondition(csharpOpsClassResult.success, 'C# runtime should route ops-class executeCode through the browser harness client');
+    console.log('PASS: browser harness routes C# ops-class requests');
+
     const activeCSharpWorker = [...workerInstances]
       .reverse()
       .find((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js'));
