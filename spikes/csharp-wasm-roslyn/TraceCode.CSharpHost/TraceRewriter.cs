@@ -59,6 +59,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         MethodDeclarationSyntax methodNode = ConvertExpressionBodiedMethod(node);
+        List<string> wrappedCollectionParameters = GetRewritableCollectionParameterNames(methodNode).ToList();
+        if (wrappedCollectionParameters.Count > 0)
+        {
+            methodNode = methodNode.WithParameterList(RewriteCollectionParameterTypes(methodNode.ParameterList, wrappedCollectionParameters.ToHashSet(StringComparer.Ordinal)));
+            foreach (string collectionParameter in wrappedCollectionParameters)
+            {
+                collectionVariables.Add(collectionParameter);
+            }
+        }
+
         methodNames.Push(methodNode.Identifier.ValueText);
         variableScopes.Push(new HashSet<string>(
             methodNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
@@ -84,6 +94,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             foreach (string collectionParameter in collectionParameters)
             {
                 collectionParameterVariables.Remove(collectionParameter);
+            }
+            foreach (string collectionParameter in wrappedCollectionParameters)
+            {
+                collectionVariables.Remove(collectionParameter);
             }
             declaredLocalVariables.Pop();
             variableScopes.Pop();
@@ -174,16 +188,18 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return base.VisitLocalFunctionStatement(node);
         }
 
-        methodNames.Push(node.Identifier.ValueText);
+        LocalFunctionStatementSyntax localFunctionNode = node;
+
+        methodNames.Push(localFunctionNode.Identifier.ValueText);
         variableScopes.Push(new HashSet<string>(
-            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
+            localFunctionNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
         ));
         declaredLocalVariables.Push(new HashSet<string>(
-            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
+            localFunctionNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
         ));
-        List<string> collectionParameters = GetCollectionParameterNames(node).ToList();
+        List<string> collectionParameters = GetCollectionParameterNames(localFunctionNode).ToList();
         foreach (string collectionParameter in collectionParameters)
         {
             collectionParameterVariables.Add(collectionParameter);
@@ -192,7 +208,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         LocalFunctionStatementSyntax rewritten;
         try
         {
-            rewritten = (LocalFunctionStatementSyntax)base.VisitLocalFunctionStatement(node)!;
+            rewritten = (LocalFunctionStatementSyntax)base.VisitLocalFunctionStatement(localFunctionNode)!;
         }
         finally
         {
@@ -213,19 +229,34 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         int line = GetLine(node);
         string arguments = string.Join(
             ", ",
-            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText)
+            localFunctionNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText)
         );
         StatementSyntax callStatement = TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
+            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(localFunctionNode.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
         );
 
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements.Insert(0, callStatement);
         if (IsVoidReturnType(rewritten.ReturnType))
         {
-            statements = statements.Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line));
+            statements = statements.Add(CreateImplicitReturnStatement(localFunctionNode.Identifier.ValueText, line));
         }
 
         return rewritten.WithBody(rewritten.Body.WithStatements(statements));
+    }
+
+    public override SyntaxNode? VisitParenthesizedLambdaExpression(ParenthesizedLambdaExpressionSyntax node)
+    {
+        return node;
+    }
+
+    public override SyntaxNode? VisitSimpleLambdaExpression(SimpleLambdaExpressionSyntax node)
+    {
+        return node;
+    }
+
+    public override SyntaxNode? VisitAnonymousMethodExpression(AnonymousMethodExpressionSyntax node)
+    {
+        return node;
     }
 
     private static bool IsVoidReturnType(TypeSyntax returnType)
@@ -239,6 +270,139 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Return({Literal(methodName)}, {line});"
         );
+    }
+
+    private static IEnumerable<string> GetRewritableCollectionParameterNames(MethodDeclarationSyntax method)
+    {
+        if (method.Modifiers.Any(SyntaxKind.PublicKeyword)
+            || method.Parent is not ClassDeclarationSyntax classDeclaration)
+        {
+            yield break;
+        }
+
+        List<(ParameterSyntax Parameter, int Index)> collectionParameters = method.ParameterList.Parameters
+            .Select((parameter, index) => (Parameter: parameter, Index: index))
+            .Where(item =>
+                item.Parameter.Type is not null
+                && TryGetGenericType(item.Parameter.Type, out string typeName, out _)
+                && IsSupportedCollectionType(typeName)
+            )
+            .ToList();
+        if (collectionParameters.Count == 0)
+        {
+            yield break;
+        }
+
+        foreach ((ParameterSyntax parameter, int index) in collectionParameters)
+        {
+            if (ShouldRewriteCollectionParameter(classDeclaration, method.Identifier.ValueText, index, parameter.Identifier.ValueText))
+            {
+                yield return parameter.Identifier.ValueText;
+            }
+        }
+    }
+
+    private static ParameterListSyntax RewriteCollectionParameterTypes(ParameterListSyntax parameterList, IReadOnlySet<string> parameterNames)
+    {
+        return parameterList.WithParameters(SyntaxFactory.SeparatedList(
+            parameterList.Parameters.Select(parameter =>
+                parameterNames.Contains(parameter.Identifier.ValueText)
+                    && parameter.Type is not null
+                    && TryRewriteCollectionDeclarationType(parameter.Type, out TypeSyntax? replacementType)
+                    ? parameter.WithType(replacementType!)
+                    : parameter
+            )
+        ));
+    }
+
+    private static bool ShouldRewriteCollectionParameter(
+        ClassDeclarationSyntax classDeclaration,
+        string methodName,
+        int parameterIndex,
+        string parameterName)
+    {
+        bool hasPublicLocalCollectionCall = false;
+
+        foreach (InvocationExpressionSyntax invocation in classDeclaration.DescendantNodes().OfType<InvocationExpressionSyntax>())
+        {
+            if (!IsInvocationOfMethod(invocation, methodName))
+            {
+                continue;
+            }
+
+            SeparatedSyntaxList<ArgumentSyntax> arguments = invocation.ArgumentList.Arguments;
+            if (arguments.Count <= parameterIndex
+                || arguments[parameterIndex].NameColon is not null
+                || arguments[parameterIndex].RefOrOutKeyword.RawKind != 0)
+            {
+                return false;
+            }
+
+            ExpressionSyntax argument = arguments[parameterIndex].Expression;
+            if (argument is not IdentifierNameSyntax identifier)
+            {
+                return false;
+            }
+
+            MethodDeclarationSyntax? containingMethod = invocation.FirstAncestorOrSelf<MethodDeclarationSyntax>();
+            if (containingMethod?.Identifier.ValueText == methodName
+                && string.Equals(identifier.Identifier.ValueText, parameterName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (containingMethod is not null
+                && containingMethod.Modifiers.Any(SyntaxKind.PublicKeyword)
+                && HasSupportedLocalCollectionInitializer(containingMethod, identifier.Identifier.ValueText))
+            {
+                hasPublicLocalCollectionCall = true;
+                continue;
+            }
+
+            return false;
+        }
+
+        return hasPublicLocalCollectionCall;
+    }
+
+    private static bool IsInvocationOfMethod(InvocationExpressionSyntax invocation, string methodName)
+    {
+        return invocation.Expression switch
+        {
+            IdentifierNameSyntax identifier => string.Equals(identifier.Identifier.ValueText, methodName, StringComparison.Ordinal),
+            MemberAccessExpressionSyntax memberAccess => string.Equals(memberAccess.Name.Identifier.ValueText, methodName, StringComparison.Ordinal),
+            _ => false,
+        };
+    }
+
+    private static bool HasSupportedLocalCollectionInitializer(MethodDeclarationSyntax method, string variableName)
+    {
+        foreach (VariableDeclaratorSyntax variable in method.Body?.DescendantNodes().OfType<VariableDeclaratorSyntax>() ?? Enumerable.Empty<VariableDeclaratorSyntax>())
+        {
+            if (!string.Equals(variable.Identifier.ValueText, variableName, StringComparison.Ordinal)
+                || variable.Initializer?.Value is not ExpressionSyntax initializer)
+            {
+                continue;
+            }
+
+            TypeSyntax? declaredType = (variable.Parent as VariableDeclarationSyntax)?.Type;
+            if (initializer is ObjectCreationExpressionSyntax objectCreation
+                && TryGetGenericType(objectCreation.Type, out string createdTypeName, out _)
+                && IsSupportedCollectionType(createdTypeName))
+            {
+                return true;
+            }
+
+            if (initializer is ImplicitObjectCreationExpressionSyntax
+                && declaredType is not null
+                && TryGetGenericType(declaredType, out string declaredTypeName, out _)
+                && IsSupportedCollectionType(declaredTypeName))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsTrivialDataConstructor(ConstructorDeclarationSyntax node)
@@ -577,6 +741,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (IsAssignmentLeft(node)
             || IsUnaryMutationOperand(node)
             || IsWithinElementAccessAssignmentLeftChain(node)
+            || IsWithinTupleAssignmentLeft(node)
             || IsWithinElementAccessUnaryMutationChain(node)
             || IsAddInvocationReceiver(node))
         {
@@ -654,6 +819,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (IsAssignmentLeft(node)
             || IsUnaryMutationOperand(node)
             || IsWithinAssignmentLeftChain(node)
+            || IsWithinTupleAssignmentLeft(node)
             || IsAddInvocationReceiver(node)
             || IsCollectionMetadataAccess(node))
         {
@@ -806,6 +972,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
             || !collectionParameterVariables.Contains(receiver.Identifier.ValueText)
+            || collectionVariables.Contains(receiver.Identifier.ValueText)
             || invocation.ArgumentList.Arguments.Any(argument => argument.NameColon is not null || argument.RefOrOutKeyword.RawKind != 0))
         {
             yield break;
@@ -1227,6 +1394,32 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         return IsAssignmentLeft(current);
+    }
+
+    private static bool IsWithinTupleAssignmentLeft(SyntaxNode node)
+    {
+        SyntaxNode current = node;
+        while (true)
+        {
+            if (current.Parent is ElementAccessExpressionSyntax parentElement && parentElement.Expression == current)
+            {
+                current = parentElement;
+                continue;
+            }
+
+            if (current.Parent is MemberAccessExpressionSyntax parentMember && parentMember.Expression == current)
+            {
+                current = parentMember;
+                continue;
+            }
+
+            break;
+        }
+
+        return current.Parent is ArgumentSyntax argument
+            && argument.Parent is TupleExpressionSyntax tuple
+            && tuple.Parent is AssignmentExpressionSyntax assignment
+            && assignment.Left == tuple;
     }
 
     private static bool IsWithinElementAccessUnaryMutationChain(SyntaxNode node)
