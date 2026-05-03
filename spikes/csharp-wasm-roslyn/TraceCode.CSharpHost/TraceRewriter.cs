@@ -6,60 +6,48 @@ namespace TraceCode.CSharpHost;
 
 public sealed class TraceRewriter : CSharpSyntaxRewriter
 {
-    private static readonly HashSet<string> SupportedNodeFields = new(StringComparer.Ordinal)
-    {
-        "val",
-        "value",
-        "next",
-        "left",
-        "right",
-        "length",
-        "keys",
-        "items",
-        "graph",
-        "children",
-        "counts",
-        "prefix",
-        "Children",
-        "IsEnd",
-        "Word",
-        "Key",
-        "Val",
-        "Prev",
-        "Next",
-        "Head",
-        "Tail",
-        "Cache",
-        "capacity",
-        "cache",
-        "head",
-        "tail",
-    };
-
     private readonly Stack<string> methodNames = new();
     private readonly Stack<HashSet<string>> variableScopes = new();
     private readonly HashSet<string> collectionVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> collectionParameterVariables = new(StringComparer.Ordinal);
+    private readonly HashSet<string> memberNames;
     private readonly bool emitTraceEvents;
     private int returnValueCounter;
     private int exceptionValueCounter;
     private int conditionValueCounter;
 
-    private TraceRewriter(bool emitTraceEvents)
+    private TraceRewriter(bool emitTraceEvents, IEnumerable<string> memberNames)
     {
         this.emitTraceEvents = emitTraceEvents;
+        this.memberNames = memberNames.ToHashSet(StringComparer.Ordinal);
     }
 
     public static SyntaxTree Instrument(SyntaxTree userTree, bool emitTraceEvents)
     {
         CompilationUnitSyntax root = userTree.GetCompilationUnitRoot();
-        var rewriter = new TraceRewriter(emitTraceEvents);
+        var rewriter = new TraceRewriter(emitTraceEvents, GetDeclaredMemberNames(root));
         var rewritten = (CompilationUnitSyntax)rewriter.Visit(root)!;
         return CSharpSyntaxTree.Create(
             rewritten,
             (CSharpParseOptions)userTree.Options,
             path: userTree.FilePath
         );
+    }
+
+    private static IEnumerable<string> GetDeclaredMemberNames(CompilationUnitSyntax root)
+    {
+        foreach (FieldDeclarationSyntax field in root.DescendantNodes().OfType<FieldDeclarationSyntax>())
+        {
+            foreach (VariableDeclaratorSyntax variable in field.Declaration.Variables)
+            {
+                yield return variable.Identifier.ValueText;
+            }
+        }
+
+        foreach (PropertyDeclarationSyntax property in root.DescendantNodes().OfType<PropertyDeclarationSyntax>())
+        {
+            yield return property.Identifier.ValueText;
+        }
     }
 
     public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
@@ -120,6 +108,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return base.VisitConstructorDeclaration(node);
         }
 
+        if (IsTrivialDataConstructor(node))
+        {
+            return node;
+        }
+
         methodNames.Push(node.Identifier.ValueText);
         variableScopes.Push(new HashSet<string>(
             node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
@@ -154,6 +147,91 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return rewritten.WithBody(rewritten.Body!.WithStatements(rewritten.Body.Statements.Insert(0, callStatement)));
     }
 
+    public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
+    {
+        if (node.Body is null)
+        {
+            return base.VisitLocalFunctionStatement(node);
+        }
+
+        methodNames.Push(node.Identifier.ValueText);
+        variableScopes.Push(new HashSet<string>(
+            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
+            StringComparer.Ordinal
+        ));
+        List<string> collectionParameters = GetCollectionParameterNames(node).ToList();
+        foreach (string collectionParameter in collectionParameters)
+        {
+            collectionParameterVariables.Add(collectionParameter);
+        }
+
+        LocalFunctionStatementSyntax rewritten;
+        try
+        {
+            rewritten = (LocalFunctionStatementSyntax)base.VisitLocalFunctionStatement(node)!;
+        }
+        finally
+        {
+            foreach (string collectionParameter in collectionParameters)
+            {
+                collectionParameterVariables.Remove(collectionParameter);
+            }
+            variableScopes.Pop();
+            methodNames.Pop();
+        }
+
+        if (!emitTraceEvents)
+        {
+            return rewritten;
+        }
+
+        int line = GetLine(node);
+        string arguments = string.Join(
+            ", ",
+            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText)
+        );
+        StatementSyntax callStatement = TraceStatement(
+            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
+        );
+
+        return rewritten.WithBody(rewritten.Body!.WithStatements(rewritten.Body.Statements.Insert(0, callStatement)));
+    }
+
+    private static bool IsTrivialDataConstructor(ConstructorDeclarationSyntax node)
+    {
+        if (node.Body is null || node.Body.Statements.Count == 0)
+        {
+            return false;
+        }
+
+        var parameterNames = node.ParameterList.Parameters
+            .Select(parameter => parameter.Identifier.ValueText)
+            .ToHashSet(StringComparer.Ordinal);
+        return node.Body.Statements.All(statement =>
+            statement is ExpressionStatementSyntax expressionStatement
+            && expressionStatement.Expression is AssignmentExpressionSyntax assignment
+            && assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            && IsInstanceFieldLikeAssignmentTarget(assignment.Left)
+            && IsTrivialConstructorValue(assignment.Right, parameterNames)
+        );
+    }
+
+    private static bool IsInstanceFieldLikeAssignmentTarget(ExpressionSyntax expression)
+    {
+        return expression is IdentifierNameSyntax
+            || expression is MemberAccessExpressionSyntax
+            {
+                Expression: ThisExpressionSyntax,
+            };
+    }
+
+    private static bool IsTrivialConstructorValue(ExpressionSyntax expression, ISet<string> parameterNames)
+    {
+        return expression is LiteralExpressionSyntax
+            || expression is DefaultExpressionSyntax
+            || expression is IdentifierNameSyntax identifier && parameterNames.Contains(identifier.Identifier.ValueText);
+    }
+
     private static MethodDeclarationSyntax ConvertExpressionBodiedMethod(MethodDeclarationSyntax node)
     {
         if (node.Body is not null || node.ExpressionBody is null)
@@ -182,7 +260,20 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             .WithSemicolonToken(default);
     }
 
-    private static IEnumerable<string> GetCollectionParameterNames(MethodDeclarationSyntax node)
+    private static IEnumerable<string> GetCollectionParameterNames(BaseMethodDeclarationSyntax node)
+    {
+        foreach (ParameterSyntax parameter in node.ParameterList.Parameters)
+        {
+            if (parameter.Type is not null
+                && TryGetGenericType(parameter.Type, out string typeName, out _)
+                && IsSupportedCollectionType(typeName))
+            {
+                yield return parameter.Identifier.ValueText;
+            }
+        }
+    }
+
+    private static IEnumerable<string> GetCollectionParameterNames(LocalFunctionStatementSyntax node)
     {
         foreach (ParameterSyntax parameter in node.ParameterList.Parameters)
         {
@@ -390,23 +481,46 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private IEnumerable<StatementSyntax> RewriteIfStatement(IfStatementSyntax ifStatement, int line)
     {
+        IfStatementSyntax expandedIfStatement = ExpandIfEmbeddedStatements(ifStatement);
         if (ContainsPatternDeclaration(ifStatement.Condition))
         {
             foreach (StatementSyntax snapshotStatement in CreateSnapshotStatements(line))
             {
                 yield return snapshotStatement;
             }
-            yield return ifStatement;
+            yield return expandedIfStatement;
             yield break;
         }
 
         string tempName = $"__tracecode_condition_{conditionValueCounter++}";
-        yield return TraceStatement($"bool {tempName} = {ifStatement.Condition};");
+        yield return TraceStatement($"bool {tempName} = {expandedIfStatement.Condition};");
         foreach (StatementSyntax snapshotStatement in CreateSnapshotStatements(line))
         {
             yield return snapshotStatement;
         }
-        yield return ifStatement.WithCondition(SyntaxFactory.IdentifierName(tempName));
+        yield return expandedIfStatement.WithCondition(SyntaxFactory.IdentifierName(tempName));
+    }
+
+    private IfStatementSyntax ExpandIfEmbeddedStatements(IfStatementSyntax ifStatement)
+    {
+        IfStatementSyntax expanded = ifStatement.WithStatement(ExpandEmbeddedStatement(ifStatement.Statement));
+        if (ifStatement.Else is { Statement: StatementSyntax elseStatement } elseClause)
+        {
+            expanded = expanded.WithElse(elseClause.WithStatement(ExpandEmbeddedStatement(elseStatement)));
+        }
+
+        return expanded;
+    }
+
+    private StatementSyntax ExpandEmbeddedStatement(StatementSyntax statement)
+    {
+        if (statement is BlockSyntax)
+        {
+            return statement;
+        }
+
+        int line = GetLine(statement);
+        return SyntaxFactory.Block(ExpandStatement(statement, line));
     }
 
     public override SyntaxNode? VisitElementAccessExpression(ElementAccessExpressionSyntax node)
@@ -493,9 +607,18 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return base.VisitMemberAccessExpression(node);
         }
 
-        if (IsAssignmentLeft(node) || IsUnaryMutationOperand(node) || IsWithinAssignmentLeftChain(node) || IsAddInvocationReceiver(node))
+        if (IsAssignmentLeft(node)
+            || IsUnaryMutationOperand(node)
+            || IsWithinAssignmentLeftChain(node)
+            || IsAddInvocationReceiver(node)
+            || IsCollectionMetadataAccess(node))
         {
             return node;
+        }
+
+        if (IsInvocationMethodAccess(node))
+        {
+            return base.VisitMemberAccessExpression(node);
         }
 
         if (!TryGetMemberAccessPath(node, out string variable, out List<string>? path))
@@ -639,16 +762,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
             || !collectionParameterVariables.Contains(receiver.Identifier.ValueText)
-            || !string.Equals(memberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal)
-            || invocation.ArgumentList.Arguments.Count != 1)
+            || invocation.ArgumentList.Arguments.Any(argument => argument.NameColon is not null || argument.RefOrOutKeyword.RawKind != 0))
         {
             yield break;
         }
 
         string variable = receiver.Identifier.ValueText;
-        string argument = invocation.ArgumentList.Arguments[0].Expression.ToString();
+        string method = memberAccess.Name.Identifier.ValueText;
+        string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
         yield return TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal("Add")}, new object?[] {{ {argument} }});"
+            $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal(method)}, new object?[] {{ {args} }});"
         );
     }
 
@@ -750,7 +873,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || receiverField.Expression is not ElementAccessExpressionSyntax elementAccess
             || elementAccess.Expression is not IdentifierNameSyntax identifier
             || elementAccess.ArgumentList.Arguments.Count != 1
-            || !SupportedNodeFields.Contains(receiverField.Name.Identifier.ValueText)
             || !string.Equals(invocationMemberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal))
         {
             yield break;
@@ -892,7 +1014,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         );
     }
 
-    private static StatementSyntax RewriteFieldIndexedWriteStatement(StatementSyntax statement, int line)
+    private StatementSyntax RewriteFieldIndexedWriteStatement(StatementSyntax statement, int line)
     {
         if (statement is not ExpressionStatementSyntax expressionStatement
             || expressionStatement.Expression is not AssignmentExpressionSyntax assignment
@@ -904,8 +1026,15 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string left = elementAccess.ToString();
-        string right = assignment.Right.ToString();
         string pathExpression = CreateObjectArrayExpression(path, index);
+        if (assignment.Right.IsKind(SyntaxKind.NullLiteralExpression))
+        {
+            return TraceStatement(
+                $"{{ TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, null, {line}); {left} = null; }}"
+            );
+        }
+
+        string right = assignment.Right.ToString();
         return TraceStatement(
             $"{left} = TraceCode.Internal.TraceCodeTrace.FieldWrite({right}, {Literal(variable)}, {pathExpression}, {line});"
         );
@@ -976,7 +1105,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         );
     }
 
-    private static StatementSyntax RewriteFieldWriteStatement(StatementSyntax statement, int line)
+    private StatementSyntax RewriteFieldWriteStatement(StatementSyntax statement, int line)
     {
         if (statement is not ExpressionStatementSyntax expressionStatement
             || expressionStatement.Expression is not AssignmentExpressionSyntax assignment
@@ -988,8 +1117,15 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string left = memberAccess.ToString();
-        string right = CreateFieldWriteValueExpression(assignment.Right, path);
         string pathExpression = CreateStringArrayExpression(path);
+        if (assignment.Right.IsKind(SyntaxKind.NullLiteralExpression))
+        {
+            return TraceStatement(
+                $"{{ TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, null, {line}); {left} = null; }}"
+            );
+        }
+
+        string right = assignment.Right.ToString();
         return TraceStatement(
             $"{left} = TraceCode.Internal.TraceCodeTrace.FieldWrite({right}, {Literal(variable)}, {pathExpression}, {line});"
         );
@@ -1049,6 +1185,18 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && memberAccess.Parent is InvocationExpressionSyntax;
     }
 
+    private static bool IsInvocationMethodAccess(SyntaxNode node)
+    {
+        return node.Parent is InvocationExpressionSyntax invocation
+            && invocation.Expression == node;
+    }
+
+    private static bool IsCollectionMetadataAccess(MemberAccessExpressionSyntax node)
+    {
+        return node.Expression is not ElementAccessExpressionSyntax
+            && node.Name.Identifier.ValueText is "Length" or "LongLength" or "Rank" or "Count";
+    }
+
     private static bool IsRangeIndex(string expression)
     {
         return expression.Contains("..", StringComparison.Ordinal)
@@ -1071,7 +1219,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             .Any(node => node is DeclarationPatternSyntax or RecursivePatternSyntax);
     }
 
-    private static bool TryGetMemberAccessPath(
+    private bool TryGetMemberAccessPath(
         MemberAccessExpressionSyntax memberAccess,
         out string variable,
         out List<string> path
@@ -1083,13 +1231,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         while (current is MemberAccessExpressionSyntax currentMember)
         {
             string field = currentMember.Name.Identifier.ValueText;
-            if (!SupportedNodeFields.Contains(field))
-            {
-                variable = string.Empty;
-                path.Clear();
-                return false;
-            }
-
             path.Insert(0, field);
             current = currentMember.Expression;
         }
@@ -1097,7 +1238,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (current is IdentifierNameSyntax identifier)
         {
             variable = identifier.Identifier.ValueText;
-            return path.Count > 0;
+            return path.Count > 0 && IsTraceableValueRoot(variable);
         }
 
         if (current is ThisExpressionSyntax)
@@ -1109,6 +1250,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         variable = string.Empty;
         path.Clear();
         return false;
+    }
+
+    private bool IsTraceableValueRoot(string variable)
+    {
+        if (memberNames.Contains(variable))
+        {
+            return true;
+        }
+
+        return variableScopes.Any(scope => scope.Contains(variable));
     }
 
     private static bool TryGetNestedElementAccess(
@@ -1136,7 +1287,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return true;
     }
 
-    private static bool TryGetFieldElementAccessPath(
+    private bool TryGetFieldElementAccessPath(
         ElementAccessExpressionSyntax elementAccess,
         out string variable,
         out List<string> path,
@@ -1166,23 +1317,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private static string CreateObjectArrayExpression(IReadOnlyList<string> values, string finalExpression)
     {
         return $"new object?[] {{ {string.Join(", ", values.Select(Literal).Append(finalExpression))} }}";
-    }
-
-    private static string CreateFieldWriteValueExpression(ExpressionSyntax right, IReadOnlyList<string> path)
-    {
-        if (!right.IsKind(SyntaxKind.NullLiteralExpression) || path.Count == 0)
-        {
-            return right.ToString();
-        }
-
-        return path[^1] switch
-        {
-            "next" => "(ListNode?)null",
-            "left" or "right" => "(TreeNode?)null",
-            "Word" => "(string?)null",
-            "Next" or "Prev" => "(LRUNode?)null",
-            _ => right.ToString(),
-        };
     }
 
     private static string CreateCompoundArrayValueExpression(
