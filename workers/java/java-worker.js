@@ -2224,49 +2224,114 @@ function cloneNativeSnapshotEventAtLine(event, line) {
   }
 }
 
-function buildLoopBodyLineMap(sourceText) {
+function parseNativeSnapshotVariable(event) {
+  if (!String(event).startsWith('trace:')) return null;
+  try {
+    const parsed = JSON.parse(String(event).slice('trace:'.length));
+    if (parsed.kind !== 'snapshot') return null;
+    const variable = parsed.target && typeof parsed.target.variable === 'string'
+      ? parsed.target.variable
+      : null;
+    return variable;
+  } catch {
+    return null;
+  }
+}
+
+function collectJavaLineDeclarationsForHeaderExpansion(line) {
+  const names = [];
+  const declarationPattern =
+    /\b(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
+  const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
+  for (const match of line.matchAll(declarationPattern)) {
+    const typeSource = match[1] ?? '';
+    const name = match[2];
+    if (!name || skippedNames.has(name) || name.startsWith('__tracecode')) continue;
+    if (typeSource.includes('[')) continue;
+    names.push(name);
+  }
+  return names;
+}
+
+function collectJavaControlHeaderDeclarations(line) {
+  const forMatch = /\bfor\s*\(\s*(?:final\s+)?(?:[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^;=(){}:]+>)?|\w+(?:\s*\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:)/.exec(line);
+  return forMatch?.[1] ? [forMatch[1]] : [];
+}
+
+function buildControlHeaderInfo(sourceText) {
   if (typeof sourceText !== 'string' || sourceText.length === 0) return null;
   const lines = sourceText.split(/\r?\n/);
-  const loopBodyLineToHeaderLine = new Map();
+  const loopBodyLineToHeader = new Map();
+  const headerLineToExcludedVariables = new Map();
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    if (!/\b(?:for|while)\s*\(/.test(line) || !line.includes('{')) continue;
+    const isLoopHeader = /\b(?:for|while)\s*\(/.test(line);
+    const isControlHeader = /\b(?:for|while|if|else\s+if)\s*\(/.test(line);
+    if (!isControlHeader || !line.includes('{')) continue;
 
     for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
       const trimmed = lines[bodyIndex].trim();
       if (trimmed.length === 0) continue;
       if (trimmed.startsWith('}')) break;
-      loopBodyLineToHeaderLine.set(bodyIndex + 1, index + 1);
+      const headerInfo = {
+        line: index + 1,
+        excludedVariables: new Set(collectJavaLineDeclarationsForHeaderExpansion(lines[bodyIndex])),
+        headerVariables: new Set(collectJavaControlHeaderDeclarations(line)),
+      };
+      if (isLoopHeader) loopBodyLineToHeader.set(bodyIndex + 1, headerInfo);
+      headerLineToExcludedVariables.set(index + 1, headerInfo.excludedVariables);
       break;
     }
   }
 
-  return loopBodyLineToHeaderLine.size > 0 ? loopBodyLineToHeaderLine : null;
+  if (loopBodyLineToHeader.size === 0 && headerLineToExcludedVariables.size === 0) return null;
+  return { loopBodyLineToHeader, headerLineToExcludedVariables };
 }
 
 function expandLoopHeaderTraceEvents(events, sourceText) {
   if (!Array.isArray(events) || events.length === 0) return events;
-  const loopBodyLineToHeaderLine = buildLoopBodyLineMap(sourceText);
-  if (!loopBodyLineToHeaderLine) return events;
+  const controlHeaderInfo = buildControlHeaderInfo(sourceText);
+  if (!controlHeaderInfo) return events;
+  const { loopBodyLineToHeader, headerLineToExcludedVariables } = controlHeaderInfo;
 
   const expanded = [];
+  const latestSnapshotByVariable = new Map();
   for (let index = 0; index < events.length; index += 1) {
     const event = events[index];
     const line = parseTraceLineNumber(event);
-    const headerLine = line === null ? undefined : loopBodyLineToHeaderLine.get(line);
+    const snapshotVariable = parseNativeSnapshotVariable(event);
+    if (
+      line !== null &&
+      snapshotVariable &&
+      headerLineToExcludedVariables.get(line)?.has(snapshotVariable)
+    ) {
+      continue;
+    }
+    const headerInfo = line === null ? undefined : loopBodyLineToHeader.get(line);
+    const headerLine = headerInfo?.line;
     const previousLine = expanded.length > 0 ? parseTraceLineNumber(expanded[expanded.length - 1]) : null;
     if (headerLine !== undefined && isBareTraceLineEvent(event) && previousLine !== headerLine) {
       expanded.push(buildBareTraceLineEvent(headerLine, event));
+      for (const [variable, snapshotEvent] of latestSnapshotByVariable) {
+        if (headerInfo.excludedVariables.has(variable)) continue;
+        const clonedSnapshot = cloneNativeSnapshotEventAtLine(snapshotEvent, headerLine);
+        if (clonedSnapshot) expanded.push(clonedSnapshot);
+      }
     }
     if (headerLine !== undefined && isBareTraceLineEvent(event)) {
       for (let lookahead = index + 1; lookahead < events.length; lookahead += 1) {
         if (parseTraceLineNumber(events[lookahead]) !== line) break;
+        const variable = parseNativeSnapshotVariable(events[lookahead]);
+        if (!variable || !headerInfo.headerVariables.has(variable)) continue;
         const clonedSnapshot = cloneNativeSnapshotEventAtLine(events[lookahead], headerLine);
         if (clonedSnapshot) expanded.push(clonedSnapshot);
       }
     }
     expanded.push(event);
+    if (snapshotVariable) {
+      latestSnapshotByVariable.set(snapshotVariable, event);
+    }
   }
   return expanded;
 }

@@ -13,15 +13,13 @@
       "python": "queue.append(num)",
       "javascript": "queue.push(num);",
       "typescript": "queue.push(num);",
-      "java": "queue.offer(num);",
-      "cpp": "queue.push(num);"
+      "java": "queue.offer(num);"
     },
     "popleft": {
       "python": "first = queue.popleft()",
       "javascript": "const first = queue.shift();",
       "typescript": "const first = queue.shift()!;",
-      "java": "int first = queue.poll();",
-      "cpp": "queue.pop();"
+      "java": "int first = queue.poll();"
     }
   },
   "expect": {
@@ -72,6 +70,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "first",
           "num",
           "nums",
           "queue"
@@ -106,15 +105,15 @@
         ]
       }
     },
-    "cpp": {
-      "append": {
+    "javascript": {
+      "popleft": {
         "eventKinds": [
           "line",
           "mutate",
           "snapshot"
         ],
         "variableSnapshots": [
-          "num",
+          "first",
           "nums",
           "queue"
         ],
@@ -122,10 +121,12 @@
           {
             "kind": "mutate",
             "variable": "queue",
-            "method": "append"
+            "method": "popleft"
           }
         ]
-      },
+      }
+    },
+    "typescript": {
       "popleft": {
         "eventKinds": [
           "line",

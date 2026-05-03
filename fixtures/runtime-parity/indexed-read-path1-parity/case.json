@@ -42,6 +42,7 @@
         "snapshot"
       ],
       "variableSnapshots": [
+        "cols",
         "matrix",
         "pizza"
       ],
@@ -62,7 +63,8 @@
       "variableSnapshots": [
         "cols",
         "matrix",
-        "pizza"
+        "pizza",
+        "width"
       ],
       "accessTargets": [
         {
@@ -71,49 +73,6 @@
           "pathDepth": 1
         }
       ]
-    }
-  },
-  "expectByLanguage": {
-    "java": {
-      "matrixRowLength": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "cols",
-          "matrix",
-          "pizza"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "matrix",
-            "pathDepth": 1
-          }
-        ]
-      },
-      "stringRowLength": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "cols",
-          "matrix",
-          "pizza",
-          "width"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "pizza",
-            "pathDepth": 1
-          }
-        ]
-      }
     }
   },
   "expectSummary": {

@@ -25,6 +25,7 @@
         "snapshot"
       ],
       "variableSnapshots": [
+        "last",
         "nums",
         "window"
       ],
@@ -35,29 +36,6 @@
           "pathDepth": 1
         }
       ]
-    }
-  },
-  "expectByLanguage": {
-    "java": {
-      "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "last",
-          "nums",
-          "window"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "window",
-            "pathDepth": 1
-          }
-        ]
-      }
     }
   }
 }

@@ -76,11 +76,12 @@
         "variableSnapshots": [
           "row",
           "rows",
+          "total",
           "values"
         ]
       }
     },
-    "java": {
+    "javascript": {
       "read": {
         "eventKinds": [
           "line",
@@ -95,7 +96,30 @@
           }
         ],
         "variableSnapshots": [
-          "rows"
+          "rows",
+          "total",
+          "values"
+        ]
+      }
+    },
+    "typescript": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ],
+        "variableSnapshots": [
+          "rows",
+          "total",
+          "values"
         ]
       }
     }

@@ -34,6 +34,7 @@
         "snapshot"
       ],
       "variableSnapshots": [
+        "alias",
         "head"
       ],
       "accessTargets": []

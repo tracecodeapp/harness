@@ -5,7 +5,6 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
@@ -41,9 +40,6 @@ import {
 const FIXTURES_DIR = join(process.cwd(), 'fixtures', 'runtime-parity');
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
-const CPP_WORKER_PATH = join(process.cwd(), 'workers', 'cpp', 'cpp-worker.js');
-const CPP_RUNTIME_HEADER_PATH = join(process.cwd(), 'workers', 'cpp', 'tracecode_runtime.hpp');
-const CPP_COMPILER_BUNDLE_PATH = join(process.cwd(), 'node_modules', '@yowasp', 'clang', 'gen', 'bundle.js');
 const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
 const JAVA_REWRITER_CLASSPATH = [
   join(process.cwd(), 'workers', 'vendor', 'java-rewriter.jar'),
@@ -59,7 +55,6 @@ const JAVA_BIN_CANDIDATES = [
   'java',
 ].filter((candidate): candidate is string => Boolean(candidate));
 const JAVA_BIN = JAVA_BIN_CANDIDATES.find((candidate) => candidate === 'java' || existsSync(candidate)) ?? 'java';
-type TraceFixtureLanguage = Language;
 
 // The fixture gate verifies that each language runtime emits the default
 // runtime trace contract directly instead of depending on post-hoc coercion.
@@ -75,13 +70,25 @@ interface FixtureCase {
   functionName: string;
   executionStyle: RuntimeExecutionStyle;
   inputs: Record<string, unknown>;
-  anchors: Record<string, Partial<Record<TraceFixtureLanguage, string>>>;
+  anchors: Record<string, Record<Language, string>>;
+  lineSequenceAnchors?: Record<string, Record<Language, string>>;
+  expectLineSequence?: string[];
+  expectLineSnapshots?: Array<{
+    role: string;
+    includes?: Record<string, unknown>;
+    excludes?: string[];
+  }>;
+  expectLineSnapshotsByLanguage?: Partial<Record<Language, Array<{
+    role: string;
+    includes?: Record<string, unknown>;
+    excludes?: string[];
+  }>>>;
   expect: Record<string, {
     eventKinds: RuntimeTraceEventKind[];
     variableSnapshots: string[];
     accessTargets: RuntimeTraceParityAccessTarget[];
   }>;
-  expectByLanguage?: Partial<Record<TraceFixtureLanguage, Record<string, {
+  expectByLanguage?: Partial<Record<Language, Record<string, {
     eventKinds: RuntimeTraceEventKind[];
     variableSnapshots: string[];
     accessTargets: RuntimeTraceParityAccessTarget[];
@@ -89,11 +96,11 @@ interface FixtureCase {
   expectSummary?: {
     accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   };
-  expectSummaryByLanguage?: Partial<Record<TraceFixtureLanguage, {
+  expectSummaryByLanguage?: Partial<Record<Language, {
     accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   }>>;
   expectOpaqueRefs?: boolean;
-  knownGaps?: Partial<Record<TraceFixtureLanguage, Record<string, string>>>;
+  knownGaps?: Partial<Record<Language, Record<string, string>>>;
 }
 
 type RuntimeCore = {
@@ -112,6 +119,28 @@ type RuntimeCore = {
     options?: Record<string, unknown>
   ) => { code: string };
 };
+
+const ALL_FIXTURE_LANGUAGES: Language[] = ['python', 'javascript', 'typescript', 'java'];
+
+function selectedFixtureNames(allFixtureNames: string[]): string[] {
+  const rawFilter = process.env.TRACECODE_RUNTIME_TRACE_FIXTURE;
+  if (!rawFilter) return allFixtureNames;
+  const selected = new Set(rawFilter.split(',').map((entry) => entry.trim()).filter(Boolean));
+  return allFixtureNames.filter((fixtureName) => selected.has(fixtureName));
+}
+
+function selectedFixtureLanguages(): Language[] {
+  const rawFilter = process.env.TRACECODE_RUNTIME_TRACE_LANGUAGES;
+  if (!rawFilter) return ALL_FIXTURE_LANGUAGES;
+  const selected = rawFilter.split(',').map((entry) => entry.trim()).filter(Boolean);
+  for (const language of selected) {
+    assertCondition(
+      ALL_FIXTURE_LANGUAGES.includes(language as Language),
+      `Unsupported runtime trace fixture language filter: ${language}`
+    );
+  }
+  return selected as Language[];
+}
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -210,12 +239,11 @@ function findAnchorLine(source: string, needle: string): number {
   return index + 1;
 }
 
-function fixtureLanguageFile(language: TraceFixtureLanguage): string {
+function fixtureLanguageFile(language: Language): string {
   if (language === 'python') return 'solution.py';
   if (language === 'javascript') return 'solution.js';
   if (language === 'typescript') return 'solution.ts';
-  if (language === 'java') return 'Solution.java';
-  return 'solution.cpp';
+  return 'Solution.java';
 }
 
 async function runProcess(command: string, args: string[]): Promise<string> {
@@ -698,108 +726,6 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
   }
 }
 
-async function createCppWorkerHarness(): Promise<{
-  executeWithTracing: (code: string, fixture: FixtureCase) => Promise<ExecutionResult>;
-}> {
-  const workerSource = await readFile(CPP_WORKER_PATH, 'utf8');
-  const compilerBundle = await import(pathToFileURL(CPP_COMPILER_BUNDLE_PATH).href);
-  const readAsset = async (url: string) => {
-    const pathname = String(url).replace('file://', '');
-    const data = await readFile(pathname);
-    return {
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
-      text: async () => data.toString('utf8'),
-    };
-  };
-  const sandbox: Record<string, unknown> = {
-    console,
-    TextEncoder,
-    TextDecoder,
-    WebAssembly,
-    Date,
-    performance,
-    Uint8Array,
-    BigInt,
-    Map,
-    Set,
-    Error,
-    JSON,
-    Object,
-    String,
-    Number,
-    Math,
-    RegExp,
-    Promise,
-    postMessage() {},
-    fetch: readAsset,
-    crypto: globalThis.crypto,
-    __tracecodeCppCompilerBundle: compilerBundle,
-  };
-  sandbox.globalThis = sandbox;
-  sandbox.self = sandbox;
-
-  const context = vm.createContext(sandbox);
-  const script = new vm.Script(
-    `${workerSource}\nglobalThis.__tracecodeCppFixture = { handleInit, handleExecuteWithTracing };`,
-    {
-      importModuleDynamically(specifier) {
-        return import(specifier);
-      },
-    }
-  );
-  await script.runInContext(context);
-  const bridge = sandbox.__tracecodeCppFixture as {
-    handleInit: (payload: unknown) => Promise<unknown>;
-    handleExecuteWithTracing: (payload: unknown) => Promise<ExecutionResult>;
-  } | undefined;
-  assertCondition(Boolean(bridge), 'Unable to load C++ fixture worker bridge');
-
-  await bridge!.handleInit({
-    assets: {
-      compilerBundleUrl: pathToFileURL(CPP_COMPILER_BUNDLE_PATH).href,
-      clangWasmUrl: 'file:///missing/clang.wasm',
-      lldWasmUrl: 'file:///missing/lld.wasm',
-      sysrootUrl: 'file:///missing/sysroot.tar',
-      runtimeHeaderUrl: pathToFileURL(CPP_RUNTIME_HEADER_PATH).href,
-    },
-  });
-
-  return {
-    executeWithTracing: async (code: string, fixture: FixtureCase) =>
-      bridge!.handleExecuteWithTracing({
-        code,
-        functionName: fixture.functionName,
-        inputs: fixture.inputs,
-        executionStyle: fixture.executionStyle,
-        options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
-      }),
-  };
-}
-
-async function executeCppTrace(
-  harness: Awaited<ReturnType<typeof createCppWorkerHarness>>,
-  code: string,
-  fixture: FixtureCase
-): Promise<FixtureTraceRun> {
-  const result = await harness.executeWithTracing(code, fixture);
-  if (!result.success) {
-    throw new Error(`C++ tracing failed for ${fixture.id}: ${result.error ?? 'unknown error'}`);
-  }
-  const rawSummary = summarizeRuntimeTraceEmissions(result.trace);
-  assertSupportedRawEmissions(rawSummary, `${fixture.id}:cpp`);
-  assertCondition(
-    Array.isArray((result.trace as unknown as { events?: unknown[] }).events),
-    `${fixture.id}:cpp worker trace must be native runtime trace`
-  );
-  return {
-    trace: result.trace,
-    rawSummary,
-  };
-}
-
 function projectRoleSignature(
   trace: RuntimeTrace,
   roleLines: Record<string, number>
@@ -840,6 +766,58 @@ function projectRoleSignature(
   }
 
   return byRole;
+}
+
+function projectLineSequence(trace: RuntimeTrace, roleLines: Record<string, number>): string[] {
+  const rolesByLine = new Map<number, string[]>();
+  for (const [role, line] of Object.entries(roleLines)) {
+    const roles = rolesByLine.get(line) ?? [];
+    roles.push(role);
+    rolesByLine.set(line, roles);
+  }
+  for (const roles of rolesByLine.values()) {
+    roles.sort((left, right) => left.localeCompare(right));
+  }
+  return trace.events.flatMap((event) => {
+    if (event.kind !== 'line' || typeof event.line !== 'number') return [];
+    return rolesByLine.get(event.line) ?? [];
+  });
+}
+
+function projectLineSnapshotFrames(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>
+): Array<{ role: string; snapshots: Record<string, unknown> }> {
+  const rolesByLine = new Map<number, string[]>();
+  for (const [role, line] of Object.entries(roleLines)) {
+    const roles = rolesByLine.get(line) ?? [];
+    roles.push(role);
+    rolesByLine.set(line, roles);
+  }
+  for (const roles of rolesByLine.values()) {
+    roles.sort((left, right) => left.localeCompare(right));
+  }
+
+  const frames: Array<{ role: string; snapshots: Record<string, unknown> }> = [];
+  let activeFrames: Array<{ role: string; snapshots: Record<string, unknown> }> = [];
+  for (const event of trace.events) {
+    if (event.kind === 'line' && typeof event.line === 'number') {
+      const roles = rolesByLine.get(event.line) ?? [];
+      activeFrames = roles.map((role) => ({ role, snapshots: {} }));
+      frames.push(...activeFrames);
+      continue;
+    }
+    if (
+      event.kind === 'snapshot' &&
+      activeFrames.length > 0 &&
+      'variable' in event.target
+    ) {
+      for (const frame of activeFrames) {
+        frame.snapshots[event.target.variable] = event.value;
+      }
+    }
+  }
+  return frames;
 }
 
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
@@ -897,63 +875,122 @@ function projectTraceSummary(trace: RuntimeTrace): {
   };
 }
 
-async function runFixture(
-  fixtureName: string,
-  workerSource: string,
-  cppHarness: Awaited<ReturnType<typeof createCppWorkerHarness>> | null
-): Promise<void> {
+async function runFixture(fixtureName: string, workerSource: string): Promise<void> {
   const fixtureDir = join(FIXTURES_DIR, fixtureName);
   const fixture = JSON.parse(await readFile(join(fixtureDir, 'case.json'), 'utf8')) as FixtureCase;
-  const sources: Partial<Record<TraceFixtureLanguage, string>> = {
+  const sources = {
     python: await readFile(join(fixtureDir, 'solution.py'), 'utf8'),
     javascript: await readFile(join(fixtureDir, 'solution.js'), 'utf8'),
     typescript: await readFile(join(fixtureDir, 'solution.ts'), 'utf8'),
     java: await readFile(join(fixtureDir, 'Solution.java'), 'utf8'),
   };
-  const cppSourcePath = join(fixtureDir, fixtureLanguageFile('cpp'));
-  if (existsSync(cppSourcePath)) {
-    sources.cpp = await readFile(cppSourcePath, 'utf8');
-  }
 
-  const runs: Partial<Record<TraceFixtureLanguage, FixtureTraceRun>> = {
-    python: await executePythonTrace(sources.python!, fixture),
-    javascript: await executeJavaScriptTrace('javascript', workerSource, sources.javascript!, fixture),
-    typescript: await executeJavaScriptTrace('typescript', workerSource, sources.typescript!, fixture),
-    java: await executeJavaTrace(sources.java!, fixture),
-  };
-  if (cppHarness && sources.cpp) {
-    runs.cpp = await executeCppTrace(cppHarness, sources.cpp, fixture);
+  const languages = selectedFixtureLanguages();
+  const runs = {} as Partial<Record<Language, FixtureTraceRun>>;
+  for (const language of languages) {
+    if (language === 'python') runs.python = await executePythonTrace(sources.python, fixture);
+    if (language === 'javascript') {
+      runs.javascript = await executeJavaScriptTrace('javascript', workerSource, sources.javascript, fixture);
+    }
+    if (language === 'typescript') {
+      runs.typescript = await executeJavaScriptTrace('typescript', workerSource, sources.typescript, fixture);
+    }
+    if (language === 'java') runs.java = await executeJavaTrace(sources.java, fixture);
   }
   const traces = Object.fromEntries(
-    Object.entries(runs).map(([language, run]) => [language, run!.trace])
-  ) as Partial<Record<TraceFixtureLanguage, RuntimeTrace>>;
-  const languages = Object.keys(traces) as TraceFixtureLanguage[];
+    Object.entries(runs).map(([language, run]) => [language, run.trace])
+  ) as Partial<Record<Language, RuntimeTrace>>;
   if (process.env.TRACECODE_DEBUG_RUNTIME_TRACE_FIXTURE === fixture.id) {
-    for (const language of languages) {
+    for (const language of Object.keys(traces) as Language[]) {
       console.log(`DEBUG ${fixture.id}:${language}`);
-      console.log(JSON.stringify(traces[language]!.events, null, 2));
+      console.log(JSON.stringify(traces[language]?.events, null, 2));
     }
   }
-  const rawParityMismatches = compareRawEmissionParity(
-    runs.python!.rawSummary,
-    [runs.python!, runs.javascript!, runs.typescript!, runs.java!].map((run) => run.rawSummary)
-  );
-  if (rawParityMismatches.length > 0 && process.env.TRACECODE_STRICT_RAW_EMISSION_PARITY === '1') {
-    throw new Error(
-      `${fixture.id}: raw runtime emission parity mismatch.\n${JSON.stringify(rawParityMismatches, null, 2)}`
+  if (languages.length === ALL_FIXTURE_LANGUAGES.length) {
+    const completeRuns = runs as Record<Language, FixtureTraceRun>;
+    const rawParityMismatches = compareRawEmissionParity(
+      completeRuns.python.rawSummary,
+      [
+        completeRuns.python.rawSummary,
+        completeRuns.javascript.rawSummary,
+        completeRuns.typescript.rawSummary,
+        completeRuns.java.rawSummary,
+      ]
     );
+    if (rawParityMismatches.length > 0 && process.env.TRACECODE_STRICT_RAW_EMISSION_PARITY === '1') {
+      throw new Error(
+        `${fixture.id}: raw runtime emission parity mismatch.\n${JSON.stringify(rawParityMismatches, null, 2)}`
+      );
+    }
   }
 
-  for (const language of languages) {
+  for (const language of Object.keys(traces) as Language[]) {
+    const trace = traces[language];
+    assertCondition(Boolean(trace), `${fixture.id}: ${language} trace was not produced`);
     const roleLines = Object.fromEntries(
-      Object.entries(fixture.anchors)
-        .filter(([, anchors]) => Boolean(anchors[language]))
-        .map(([role, anchors]) => [
-          role,
-          findAnchorLine(sources[language]!, anchors[language]!),
-        ])
+      Object.entries(fixture.anchors).map(([role, anchors]) => [
+        role,
+        findAnchorLine(sources[language], anchors[language]),
+      ])
     );
-    const actual = projectRoleSignature(traces[language]!, roleLines);
+    const actual = projectRoleSignature(trace, roleLines);
+    if (fixture.expectLineSequence) {
+      const lineSequenceRoleLines = Object.fromEntries(
+        Object.entries({
+          ...fixture.anchors,
+          ...(fixture.lineSequenceAnchors ?? {}),
+        }).map(([role, anchors]) => [
+          role,
+          findAnchorLine(sources[language], anchors[language]),
+        ])
+      );
+      const actualLineSequence = projectLineSequence(trace, lineSequenceRoleLines);
+      assertCondition(
+        stableStringify(actualLineSequence) === stableStringify(fixture.expectLineSequence),
+        `${fixture.id}: ${language} runtime trace line sequence drifted.\nExpected: ${stableStringify(fixture.expectLineSequence)}\nReceived: ${stableStringify(actualLineSequence)}`
+      );
+    }
+    const expectedLineSnapshots = fixture.expectLineSnapshotsByLanguage?.[language] ?? fixture.expectLineSnapshots;
+    if (expectedLineSnapshots) {
+      const lineSequenceRoleLines = Object.fromEntries(
+        Object.entries({
+          ...fixture.anchors,
+          ...(fixture.lineSequenceAnchors ?? {}),
+        }).map(([role, anchors]) => [
+          role,
+          findAnchorLine(sources[language], anchors[language]),
+        ])
+      );
+      const actualLineFrames = projectLineSnapshotFrames(trace, lineSequenceRoleLines);
+      assertCondition(
+        actualLineFrames.length >= expectedLineSnapshots.length,
+        `${fixture.id}: ${language} runtime trace line snapshot frame count drifted.\nExpected at least: ${expectedLineSnapshots.length}\nReceived: ${actualLineFrames.length}`
+      );
+      for (let index = 0; index < expectedLineSnapshots.length; index += 1) {
+        const expectedFrame = expectedLineSnapshots[index];
+        const actualFrame = actualLineFrames[index];
+        assertCondition(
+          actualFrame?.role === expectedFrame.role,
+          `${fixture.id}: ${language} runtime trace line snapshot role drifted at frame ${index}.\nExpected: ${expectedFrame.role}\nReceived: ${actualFrame?.role ?? '<missing>'}`
+        );
+        for (const [name, expectedValue] of Object.entries(expectedFrame.includes ?? {})) {
+          assertCondition(
+            Object.prototype.hasOwnProperty.call(actualFrame.snapshots, name),
+            `${fixture.id}: ${language} runtime trace line snapshot missing variable "${name}" at frame ${index} (${expectedFrame.role}).\nSnapshots: ${stableStringify(actualFrame.snapshots)}`
+          );
+          assertCondition(
+            stableStringify(actualFrame.snapshots[name]) === stableStringify(expectedValue),
+            `${fixture.id}: ${language} runtime trace line snapshot value drifted for "${name}" at frame ${index} (${expectedFrame.role}).\nExpected: ${stableStringify(expectedValue)}\nReceived: ${stableStringify(actualFrame.snapshots[name])}`
+          );
+        }
+        for (const name of expectedFrame.excludes ?? []) {
+          assertCondition(
+            !Object.prototype.hasOwnProperty.call(actualFrame.snapshots, name),
+            `${fixture.id}: ${language} runtime trace line snapshot unexpectedly included variable "${name}" at frame ${index} (${expectedFrame.role}).\nSnapshots: ${stableStringify(actualFrame.snapshots)}`
+          );
+        }
+      }
+    }
     const expected = {
       ...fixture.expect,
       ...(fixture.expectByLanguage?.[language] ?? {}),
@@ -973,31 +1010,28 @@ async function runFixture(
       ...(fixture.expectSummaryByLanguage?.[language] ?? {}),
     };
     if (expectedSummary.accessTargets) {
-      const actualSummary = projectTraceSummary(traces[language]);
+      const actualSummary = projectTraceSummary(trace);
       assertCondition(
         stableStringify(stripSummaryMethods(actualSummary).accessTargets) === stableStringify(stripSummaryMethods(expectedSummary).accessTargets),
         `${fixture.id}: ${language} runtime trace fixture summary drifted.\nExpected: ${stableStringify(stripSummaryMethods(expectedSummary).accessTargets)}\nReceived: ${stableStringify(stripSummaryMethods(actualSummary).accessTargets)}`
       );
     }
-    assertNoUnsupportedVisualization(traces[language]!, `${fixture.id}:${language}`);
+    assertNoUnsupportedVisualization(trace, `${fixture.id}:${language}`);
     if (fixture.expectOpaqueRefs) {
-      assertOpaqueRefs(traces[language]!, `${fixture.id}:${language}`);
+      assertOpaqueRefs(trace, `${fixture.id}:${language}`);
     }
   }
 }
 
 async function main(): Promise<void> {
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
-  const cppHarness = existsSync(CPP_WORKER_PATH) && existsSync(CPP_COMPILER_BUNDLE_PATH)
-    ? await createCppWorkerHarness()
-    : null;
-  const fixtureNames = (await readdir(FIXTURES_DIR, { withFileTypes: true }))
+  const fixtureNames = selectedFixtureNames((await readdir(FIXTURES_DIR, { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
-    .sort();
+    .sort());
 
   for (const fixtureName of fixtureNames) {
-    await runFixture(fixtureName, workerSource, cppHarness);
+    await runFixture(fixtureName, workerSource);
   }
   console.log(`PASS: runtime trace fixture parity (${fixtureNames.length} fixtures)`);
 }

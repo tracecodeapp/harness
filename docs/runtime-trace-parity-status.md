@@ -32,7 +32,7 @@ This means the runtime trace cutover is allowed to be breaking:
 
 ## TraceHooks Contract
 
-`TraceHooks` is the shared name for the runtime-facing instrumentation boundary across languages. Java already exposes this boundary as `tracecode.user.TraceHooks`; C++ now exposes `tracecode::TraceHooks`; Python, JavaScript, and TypeScript should use the same conceptual name for the code that observes execution and emits runtime facts.
+`TraceHooks` is the shared name for the runtime-facing instrumentation boundary across languages. Java already exposes this boundary as `tracecode.user.TraceHooks`; Python, JavaScript, and TypeScript should use the same conceptual name for the code that observes execution and emits runtime facts.
 
 `TraceHooks` owns language-specific mechanics only:
 
@@ -66,8 +66,8 @@ The public contract is `RuntimeTrace`, not the implementation shape of `TraceHoo
 ## Current Corpus
 
 - Fixture directory: `fixtures/runtime-parity`
-- Fixture count: 58
-- Languages covered per fixture: Python, JavaScript, TypeScript, Java, C++ where `solution.cpp` exists
+- Fixture count: 59
+- Languages covered per fixture: Python, JavaScript, TypeScript, Java
 - Official gate: `pnpm test:runtime-trace`
 - Gate: `pnpm test:runtime-trace-fixtures`
 - Strict raw parity gate: `pnpm test:runtime-trace-fixtures:raw-strict`
@@ -94,7 +94,7 @@ By language:
 
 Main clusters:
 
-- No open fixture gaps in the current 58-fixture corpus.
+- No open fixture gaps in the current 59-fixture corpus.
 - The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, and Java.
 - This is a baseline, not proof of completeness. New operations should be added to the corpus as soon as they become product-relevant or are discovered through corpus mining.
 
@@ -150,37 +150,22 @@ Next, shift from hand-authored fixture closure to corpus mining:
 
 - Add a small failure-mining runner that executes generated or harvested snippets against the runtime trace parity signature.
 - Promote every minimized failure into `fixtures/runtime-parity` before fixing it.
-- Keep fixes in native language instrumentation where possible. Raw runtime assembly should stay mechanical and must not accumulate semantic coercion.
+- Keep fixes in native language instrumentation where possible. Raw runtime assembly should stay mechanical and must not accumulate higher-level coercion.
 
-Initial mining command:
+Useful mining commands:
 
-- `pnpm mine:runtime-trace-final300 -- --limit=20`
-- `pnpm local:test:runtime-trace-final300-compile`
+- `pnpm mine:runtime-trace-corpus -- --limit=20`
+- `pnpm mine:runtime-trace-corpus:parallel`
 
-The miner is a local/private validation path, not public harness CI. It defaults to `/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json` when that local corpus exists. The final300 slice lists Python, JavaScript, and TypeScript entries; the miner also synthesizes Java entries from `/Users/obinnanwachukwu/Code/algoflow/experiments/trusted-visualizer-corpus/generated-validated-java/problems/<slug>/java.java` when available.
-
-Treat final300 mining as failure discovery, not a strict gate. The per-language final300 solutions are idiomatic implementations, not mechanically equivalent line-for-line fixtures, so drift clusters need triage before promotion. A cluster becomes a harness bug only after it is reduced into a small equivalent fixture that should emit the same runtime facts across languages.
+Treat corpus mining as failure discovery, not a strict gate. Harvested per-language solutions are often idiomatic implementations, not mechanically equivalent line-for-line fixtures, so drift clusters need triage before promotion. A cluster becomes a harness bug only after it is reduced into a small equivalent fixture that should emit the same runtime facts across languages.
 
 The local compile gate is stricter about reliability than parity: it fails on hard harness failures such as generated Java compile errors, raw payload contract violations, and worker timeouts, but it does not fail on trace-budget exits or runtime-fact drift.
 
-Current local mining status:
-
-- Final300 runtime corpus: 300 language entries grouped into 100 problem groups.
-- Final300 post-v4 clean check: 100 groups, 300 comparisons, 0 drifts, 0 failures.
-- Final300 report: `reports/runtime-trace-final300-000-099-post-java-v4-cleancheck.json`.
-- TC83 runtime corpus: 83 groups, 249 manifest entries, 79 synthesized Java entries in the latest run.
-- TC83 post-v4 source-root check: 83 groups, 245 comparisons, 0 hard failures.
-- TC83 output drift count: 14, all observed drifts are unordered-output/corpus compare issues, not harness crashes.
-- TC83 strict runtime-facts report remains advisory and now uses JavaScript as the aligned reference lane with TypeScript and Java as comparison lanes. This avoids treating `data/problems` Python as the universal runtime-fact baseline when the JS/TS/Java practice sources follow a different implementation shape.
-- TC83 aligned strict runtime-facts report: 83 groups, 162 aligned comparisons, 38 drifts, 0 hard failures. Remaining drifts are implementation/corpus representation drift rather than minimized equivalent parity failures.
-- TC83 strict runtime-facts reports include `classificationSummary` and per-drift `classification`, `confidence`, and `evidence`. Latest aligned split: 0 `fixture-worthy`, 38 `implementation-drift`, and 0 `metric-sensitive`. Use `fixture-worthy` as the queue for reduced fixture promotion, `implementation-drift` for likely corpus or solution-structure differences, and `metric-sensitive` for cases where the same runtime operation kinds are present but current scoring/display metrics are sensitive to path depth, count, or naming.
-- TC83 reports: `reports/runtime-trace-tc83-post-java-v4-source-root.json`, `reports/runtime-trace-tc83-post-java-v4-runtime-facts.json`, and `reports/runtime-trace-tc83-parity.json`.
-
-Do not patch the harness directly from TC83 runtime-fact drift clusters. Reduce a drift into a small equivalent runtime-parity fixture first, then fix the native language emitter if the fixture exposes a real parity gap.
+Do not patch the harness directly from mined runtime-fact drift clusters. Reduce a drift into a small equivalent runtime-parity fixture first, then fix the native language emitter if the fixture exposes a real parity gap.
 
 ## Contract Notes
 
-A fixture is allowed to declare `knownGaps` for a language and role. The gate still executes that language and verifies that no legacy visualization classification leaks into runtime trace events, but skips parity comparison for the marked role.
+A fixture is allowed to declare `knownGaps` for a language and role. The gate still executes that language and verifies that no unsupported classification leaks into runtime trace events, but skips parity comparison for the marked role.
 
 A `knownGaps` entry is not a waiver for future behavior. When a harness fix lands, remove the corresponding gap entry in the same change so the baseline tightens over time.
 
@@ -190,7 +175,7 @@ The current raw-event assembly seams are temporary migration scaffolding. They m
 
 No language may introduce a raw payload category on its own. A payload such as `array-length` must either not exist or be accepted as a shared cross-language contract concept with parity coverage before higher layers are allowed to consume it.
 
-Runtime trace events must not carry visualizer-era or semantic classification payloads. The raw emission contract rejects any runtime trace event containing `visualization`, `objectKinds`, `hashMaps`, `graph-adjacency`, `linked-list`, or `tree`. If this trips on a legitimate data snapshot, reduce that case and decide whether the runtime serializer needs a neutral representation before widening the contract.
+Runtime trace events must not carry presentation-era or higher-level classification payloads. The raw emission contract rejects any runtime trace event containing `visualization`, `objectKinds`, `hashMaps`, `graph-adjacency`, `linked-list`, or `tree`. If this trips on a legitimate data snapshot, reduce that case and decide whether the runtime serializer needs a neutral representation before widening the contract.
 
 ## Raw Emission Contract
 

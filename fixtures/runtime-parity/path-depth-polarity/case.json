@@ -25,6 +25,7 @@
         "snapshot"
       ],
       "variableSnapshots": [
+        "picked",
         "this"
       ],
       "accessTargets": [
@@ -69,6 +70,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "picked",
           "self"
         ],
         "accessTargets": [

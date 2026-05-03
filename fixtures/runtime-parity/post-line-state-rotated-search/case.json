@@ -1,0 +1,411 @@
+{
+  "id": "post-line-state-rotated-search",
+  "functionName": "search",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      4,
+      5,
+      6,
+      7,
+      0,
+      1,
+      2
+    ],
+    "target": 0
+  },
+  "anchors": {},
+  "lineSequenceAnchors": {
+    "initLeft": {
+      "python": "left = 0",
+      "javascript": "let left = 0;",
+      "typescript": "let left = 0;",
+      "java": "int left = 0;"
+    },
+    "initRight": {
+      "python": "right = len(nums) - 1",
+      "javascript": "let right = nums.length - 1;",
+      "typescript": "let right = nums.length - 1;",
+      "java": "int right = nums.length - 1;"
+    },
+    "condition": {
+      "python": "while left <= right:",
+      "javascript": "while (left <= right) {",
+      "typescript": "while (left <= right) {",
+      "java": "while (left <= right) {"
+    },
+    "mid": {
+      "python": "mid = left + (right - left) // 2",
+      "javascript": "let mid = left + Math.floor((right - left) / 2);",
+      "typescript": "let mid = left + Math.floor((right - left) / 2);",
+      "java": "int mid = left + (right - left) / 2;"
+    },
+    "hitCheck": {
+      "python": "if nums[mid] == target:",
+      "javascript": "if (nums[mid] === target) {",
+      "typescript": "if (nums[mid] === target) {",
+      "java": "if (nums[mid] == target) {"
+    },
+    "returnHit": {
+      "python": "return mid",
+      "javascript": "return mid;",
+      "typescript": "return mid;",
+      "java": "return mid;"
+    },
+    "leftSortedCheck": {
+      "python": "if nums[left] <= nums[mid]:",
+      "javascript": "if (nums[left] <= nums[mid]) {",
+      "typescript": "if (nums[left] <= nums[mid]) {",
+      "java": "if (nums[left] <= nums[mid]) {"
+    },
+    "targetInLeftCheck": {
+      "python": "if nums[left] <= target and target < nums[mid]:",
+      "javascript": "if (nums[left] <= target && target < nums[mid]) {",
+      "typescript": "if (nums[left] <= target && target < nums[mid]) {",
+      "java": "if (nums[left] <= target && target < nums[mid]) {"
+    },
+    "moveRight": {
+      "python": "right = mid - 1",
+      "javascript": "right = mid - 1;",
+      "typescript": "right = mid - 1;",
+      "java": "right = mid - 1;"
+    },
+    "moveLeft": {
+      "python": "left = mid + 1",
+      "javascript": "left = mid + 1;",
+      "typescript": "left = mid + 1;",
+      "java": "left = mid + 1;"
+    }
+  },
+  "expectLineSequence": [
+    "initLeft",
+    "initRight",
+    "condition",
+    "mid",
+    "hitCheck",
+    "leftSortedCheck",
+    "targetInLeftCheck",
+    "moveLeft",
+    "condition",
+    "mid",
+    "hitCheck",
+    "leftSortedCheck",
+    "targetInLeftCheck",
+    "moveRight",
+    "condition",
+    "mid",
+    "hitCheck",
+    "returnHit"
+  ],
+  "expect": {},
+  "expectLineSnapshots": [
+    {
+      "role": "initLeft",
+      "includes": {
+        "left": 0
+      },
+      "excludes": [
+        "right",
+        "mid"
+      ]
+    },
+    {
+      "role": "initRight",
+      "includes": {
+        "left": 0,
+        "right": 6
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "condition",
+      "includes": {
+        "left": 0,
+        "right": 6
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "mid",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "hitCheck",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "leftSortedCheck",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "targetInLeftCheck",
+      "includes": {
+        "left": 0,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "moveLeft",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 3
+      }
+    },
+    {
+      "role": "condition",
+      "includes": {
+        "left": 4,
+        "right": 6
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "mid",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "hitCheck",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "leftSortedCheck",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "targetInLeftCheck",
+      "includes": {
+        "left": 4,
+        "right": 6,
+        "mid": 5
+      }
+    },
+    {
+      "role": "moveRight",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 5
+      }
+    },
+    {
+      "role": "condition",
+      "includes": {
+        "left": 4,
+        "right": 4
+      },
+      "excludes": [
+        "mid"
+      ]
+    },
+    {
+      "role": "mid",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 4
+      }
+    },
+    {
+      "role": "hitCheck",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 4
+      }
+    },
+    {
+      "role": "returnHit",
+      "includes": {
+        "left": 4,
+        "right": 4,
+        "mid": 4
+      }
+    }
+  ],
+  "expectLineSnapshotsByLanguage": {
+    "python": [
+      {
+        "role": "initLeft",
+        "includes": {
+          "left": 0
+        },
+        "excludes": [
+          "right",
+          "mid"
+        ]
+      },
+      {
+        "role": "initRight",
+        "includes": {
+          "left": 0,
+          "right": 6
+        },
+        "excludes": [
+          "mid"
+        ]
+      },
+      {
+        "role": "condition",
+        "includes": {
+          "left": 0,
+          "right": 6
+        },
+        "excludes": [
+          "mid"
+        ]
+      },
+      {
+        "role": "mid",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "hitCheck",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "leftSortedCheck",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "targetInLeftCheck",
+        "includes": {
+          "left": 0,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "moveLeft",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "condition",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 3
+        }
+      },
+      {
+        "role": "mid",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "hitCheck",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "leftSortedCheck",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "targetInLeftCheck",
+        "includes": {
+          "left": 4,
+          "right": 6,
+          "mid": 5
+        }
+      },
+      {
+        "role": "moveRight",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 5
+        }
+      },
+      {
+        "role": "condition",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 5
+        }
+      },
+      {
+        "role": "mid",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 4
+        }
+      },
+      {
+        "role": "hitCheck",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 4
+        }
+      },
+      {
+        "role": "returnHit",
+        "includes": {
+          "left": 4,
+          "right": 4,
+          "mid": 4
+        }
+      }
+    ]
+  }
+}

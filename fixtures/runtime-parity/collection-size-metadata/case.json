@@ -30,6 +30,7 @@
         "snapshot"
       ],
       "variableSnapshots": [
+        "n",
         "nums",
         "total"
       ],
@@ -41,42 +42,13 @@
         "snapshot"
       ],
       "variableSnapshots": [
+        "m",
         "n",
         "nums",
         "seen",
         "total"
       ],
       "accessTargets": []
-    }
-  },
-  "expectByLanguage": {
-    "java": {
-      "arraySize": {
-        "eventKinds": [
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "n",
-          "nums",
-          "total"
-        ],
-        "accessTargets": []
-      },
-      "mapSize": {
-        "eventKinds": [
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "m",
-          "n",
-          "nums",
-          "seen",
-          "total"
-        ],
-        "accessTargets": []
-      }
     }
   },
   "expectSummary": {

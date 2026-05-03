@@ -4,7 +4,7 @@
   }
 
   function parseNativeTraceLine(line) {
-    const match = line.match(/TraceHooks\.emit(?:Line|Call|Return)AtLine\((\d+)\b/);
+    const match = line.match(/TraceHooks\.[A-Za-z0-9_]+AtLine\((\d+)\b/);
     if (!match) return null;
     const lineNumber = Number.parseInt(match[1], 10);
     return Number.isFinite(lineNumber) && lineNumber > 0 ? lineNumber : null;

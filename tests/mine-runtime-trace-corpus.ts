@@ -150,6 +150,17 @@ interface FailureRecord {
   error: string;
 }
 
+interface TemporalInvariantViolation {
+  slug: string;
+  language: MineLanguage;
+  kind: 'body-local-leaked-to-control-header';
+  variable: string;
+  declarationLine: number;
+  observedLine: number;
+  headerLine?: number;
+  evidence: string;
+}
+
 interface MineReport {
   corpusPath: string;
   sourceRoot: string;
@@ -177,6 +188,9 @@ interface MineReport {
   classificationSummary: DriftClassificationSummary;
   reportedDriftCount: number;
   reportedFailureCount: number;
+  temporalInvariantViolationCount: number;
+  reportedTemporalInvariantViolationCount: number;
+  temporalInvariantViolations: TemporalInvariantViolation[];
   drifts: Array<DriftRecord | ClassifiedDriftRecord>;
   failures: FailureRecord[];
 }
@@ -239,6 +253,109 @@ function stableStringify(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`)
     .join(',') + '}';
+}
+
+function collectDeclaredVariables(language: MineLanguage, sourceLine: string): string[] {
+  if (language === 'python') return [];
+  const declarations: string[] = [];
+  if (language === 'javascript' || language === 'typescript') {
+    const declarationPattern = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g;
+    for (const match of sourceLine.matchAll(declarationPattern)) {
+      if (match[1]) declarations.push(match[1]);
+    }
+    return declarations;
+  }
+
+  const skipped = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
+  const declarationPattern =
+    /\b(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
+  for (const match of sourceLine.matchAll(declarationPattern)) {
+    const typeSource = match[1] ?? '';
+    const name = match[2];
+    if (!name || skipped.has(name) || name.startsWith('__tracecode')) continue;
+    if (typeSource.includes('[')) continue;
+    declarations.push(name);
+  }
+  return declarations;
+}
+
+function buildControlBodyFirstLineMap(sourceText: string): Map<number, number> {
+  const lines = sourceText.split(/\r?\n/);
+  const bodyLineToHeaderLine = new Map<number, number>();
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!/\b(?:for|while|if|else\s+if)\s*\(/.test(line) || !line.includes('{')) continue;
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
+      const trimmed = lines[bodyIndex].trim();
+      if (trimmed.length === 0) continue;
+      if (trimmed.startsWith('}')) break;
+      bodyLineToHeaderLine.set(bodyIndex + 1, index + 1);
+      break;
+    }
+  }
+  return bodyLineToHeaderLine;
+}
+
+function projectSnapshotFrames(trace: RuntimeTrace): Array<{ line: number; snapshots: Record<string, unknown> }> {
+  const frames: Array<{ line: number; snapshots: Record<string, unknown> }> = [];
+  let activeFrame: { line: number; snapshots: Record<string, unknown> } | null = null;
+  for (const event of trace.events) {
+    if (event.kind === 'line' && typeof event.line === 'number') {
+      activeFrame = { line: event.line, snapshots: {} };
+      frames.push(activeFrame);
+      continue;
+    }
+    if (activeFrame && event.kind === 'snapshot' && 'variable' in event.target) {
+      activeFrame.snapshots[event.target.variable] = event.value;
+    }
+  }
+  return frames;
+}
+
+function auditTemporalInvariants(entry: CorpusEntry, sourceText: string, trace: RuntimeTrace): TemporalInvariantViolation[] {
+  if (entry.language === 'python') return [];
+  const lines = sourceText.split(/\r?\n/);
+  const frames = projectSnapshotFrames(trace);
+  const violations: TemporalInvariantViolation[] = [];
+  const bodyLineToHeaderLine = buildControlBodyFirstLineMap(sourceText);
+  const declarations = new Map<number, string[]>();
+  const seenViolations = new Set<string>();
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    const names = collectDeclaredVariables(entry.language, lines[index]);
+    if (names.length === 0) continue;
+    declarations.set(lineNumber, names);
+  }
+
+  for (const [declarationLine, names] of declarations) {
+    const headerLine = bodyLineToHeaderLine.get(declarationLine);
+    if (headerLine === undefined) continue;
+    for (let index = 0; index < frames.length - 1; index += 1) {
+      const headerFrame = frames[index];
+      const nextFrame = frames[index + 1];
+      if (headerFrame.line !== headerLine || nextFrame.line !== declarationLine) continue;
+      for (const name of names) {
+        if (Object.prototype.hasOwnProperty.call(headerFrame.snapshots, name)) {
+          const key = `${entry.slug}:${entry.language}:${name}:${headerLine}:${declarationLine}`;
+          if (seenViolations.has(key)) continue;
+          seenViolations.add(key);
+          violations.push({
+            slug: entry.slug,
+            language: entry.language,
+            kind: 'body-local-leaked-to-control-header',
+            variable: name,
+            declarationLine,
+            observedLine: headerLine,
+            headerLine,
+            evidence: `variable "${name}" declared on line ${declarationLine} was present on preceding control header line ${headerLine}`,
+          });
+        }
+      }
+    }
+  }
+
+  return violations;
 }
 
 function recursivelySortArrays(value: unknown): unknown {
@@ -1458,6 +1575,7 @@ async function runConcurrentMine(
   const classifiedDrifts = reports
     .flatMap((report) => report.drifts)
     .map((drift) => (isClassifiedDrift(drift) ? drift : classifyRuntimeDrift(drift as DriftRecord)));
+  const temporalInvariantViolations = reports.flatMap((report) => report.temporalInvariantViolations ?? []);
   const mergedClassificationSummary = mergeClassificationSummaries(reports);
   const classificationSummary =
     Object.values(mergedClassificationSummary.counts).reduce((sum, count) => sum + count, 0) > 0
@@ -1496,6 +1614,9 @@ async function runConcurrentMine(
     classificationSummary,
     reportedDriftCount: Math.min(maxReportDrifts, classifiedDrifts.length),
     reportedFailureCount: Math.min(maxReportFailures, reportFailures.length),
+    temporalInvariantViolationCount: temporalInvariantViolations.length,
+    reportedTemporalInvariantViolationCount: Math.min(250, temporalInvariantViolations.length),
+    temporalInvariantViolations: temporalInvariantViolations.slice(0, 250),
     drifts: classifiedDrifts
       .slice(0, maxReportDrifts)
       .map((drift) => trimDriftForReport(drift, includeSignatureDiffs)),
@@ -1514,6 +1635,7 @@ async function runConcurrentMine(
   console.log(`Runner crashes recorded as failures: ${failures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Drift classifications: ${Object.entries(mergedReport.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
+  console.log(`Temporal invariant violations: ${mergedReport.temporalInvariantViolationCount}`);
   console.log(`Report: ${reportPath}`);
   console.log(`Worker reports: ${workDir}`);
 
@@ -1567,6 +1689,7 @@ async function main(): Promise<void> {
   const workerSource = await readFile(JAVASCRIPT_WORKER_PATH, 'utf8');
   const drifts: DriftRecord[] = [];
   const failures: FailureRecord[] = [];
+  const temporalInvariantViolations: TemporalInvariantViolation[] = [];
   let compared = 0;
 
   for (const [slug, group] of groups) {
@@ -1583,6 +1706,7 @@ async function main(): Promise<void> {
             ? await executeJavaTrace(entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
             : await executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
         runs.set(entry.language, run);
+        temporalInvariantViolations.push(...auditTemporalInvariants(entry, code, run.trace));
         if (hasExpectedOutput(entry) && !outputsEqual(entry.expectedOutput, run.output, entry.compareMode)) {
           drifts.push({
             slug,
@@ -1656,6 +1780,9 @@ async function main(): Promise<void> {
     classificationSummary: summarizeClassifiedDrifts(classifiedDrifts),
     reportedDriftCount: reportedDrifts.length,
     reportedFailureCount: reportedFailures.length,
+    temporalInvariantViolationCount: temporalInvariantViolations.length,
+    reportedTemporalInvariantViolationCount: Math.min(250, temporalInvariantViolations.length),
+    temporalInvariantViolations: temporalInvariantViolations.slice(0, 250),
     drifts: reportedDrifts,
     failures: reportedFailures,
   };
@@ -1665,6 +1792,7 @@ async function main(): Promise<void> {
   console.log(`Hard failures: ${hardFailures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Drift classifications: ${Object.entries(report.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
+  console.log(`Temporal invariant violations: ${report.temporalInvariantViolationCount}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);
   console.log(`Report: ${reportPath}`);
   for (const cluster of driftClusters.slice(0, 5)) {
