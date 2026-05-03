@@ -20,6 +20,20 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         "children",
         "counts",
         "prefix",
+        "Children",
+        "IsEnd",
+        "Word",
+        "Key",
+        "Val",
+        "Prev",
+        "Next",
+        "Head",
+        "Tail",
+        "Cache",
+        "capacity",
+        "cache",
+        "head",
+        "tail",
     };
 
     private readonly Stack<string> methodNames = new();
@@ -285,6 +299,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             yield return mutationStatement;
         }
+        foreach (StatementSyntax mutationStatement in CreateIdentifierReceiverMutationStatements(executableStatement))
+        {
+            yield return mutationStatement;
+        }
         foreach (StatementSyntax mutationStatement in CreateIndexedReceiverMutationStatements(executableStatement, line))
         {
             yield return mutationStatement;
@@ -430,6 +448,24 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         var rewritten = (ElementAccessExpressionSyntax)base.VisitElementAccessExpression(node)!;
+        if (rewritten.Expression is IdentifierNameSyntax rectangularIdentifier
+            && !collectionVariables.Contains(rectangularIdentifier.Identifier.ValueText)
+            && rewritten.ArgumentList.Arguments.Count == 2)
+        {
+            int rectangularLine = GetLine(node);
+            string rectangularArrayExpression = rewritten.Expression.ToString();
+            string rowExpression = rewritten.ArgumentList.Arguments[0].Expression.ToString();
+            string columnExpression = rewritten.ArgumentList.Arguments[1].Expression.ToString();
+            if (IsRangeIndex(rowExpression) || IsRangeIndex(columnExpression))
+            {
+                return rewritten;
+            }
+
+            return SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.ArrayRead({rectangularArrayExpression}, {rowExpression}, {columnExpression}, {Literal(rectangularIdentifier.Identifier.ValueText)}, {rectangularLine})"
+            );
+        }
+
         if (rewritten.Expression is not IdentifierNameSyntax identifier
             || collectionVariables.Contains(identifier.Identifier.ValueText)
             || rewritten.ArgumentList.Arguments.Count != 1)
@@ -616,6 +652,27 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         );
     }
 
+    private IEnumerable<StatementSyntax> CreateIdentifierReceiverMutationStatements(StatementSyntax statement)
+    {
+        if (statement is not ExpressionStatementSyntax expressionStatement
+            || expressionStatement.Expression is not InvocationExpressionSyntax invocation
+            || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
+            || memberAccess.Expression is not IdentifierNameSyntax receiver
+            || collectionVariables.Contains(receiver.Identifier.ValueText)
+            || collectionParameterVariables.Contains(receiver.Identifier.ValueText)
+            || !string.Equals(memberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal)
+            || invocation.ArgumentList.Arguments.Count != 1)
+        {
+            yield break;
+        }
+
+        string variable = receiver.Identifier.ValueText;
+        string argument = invocation.ArgumentList.Arguments[0].Expression.ToString();
+        yield return TraceStatement(
+            $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal("Add")}, new object?[] {{ {argument} }});"
+        );
+    }
+
     private IEnumerable<StatementSyntax> CreateIndexedReceiverMutationStatements(StatementSyntax statement, int line)
     {
         if (statement is not ExpressionStatementSyntax expressionStatement
@@ -623,7 +680,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not ElementAccessExpressionSyntax receiver
             || receiver.Expression is not IdentifierNameSyntax identifier
-            || !collectionVariables.Contains(identifier.Identifier.ValueText)
             || !string.Equals(memberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal)
             || receiver.ArgumentList.Arguments.Count != 1)
         {
@@ -693,7 +749,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || invocationMemberAccess.Expression is not MemberAccessExpressionSyntax receiverField
             || receiverField.Expression is not ElementAccessExpressionSyntax elementAccess
             || elementAccess.Expression is not IdentifierNameSyntax identifier
-            || !collectionVariables.Contains(identifier.Identifier.ValueText)
             || elementAccess.ArgumentList.Arguments.Count != 1
             || !SupportedNodeFields.Contains(receiverField.Name.Identifier.ValueText)
             || !string.Equals(invocationMemberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal))
@@ -782,6 +837,31 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
             return TraceStatement(
                 $"TraceCode.Internal.TraceCodeTrace.ArrayWrite({nestedVariable}, {firstIndex}, {secondIndex}, {nestedValueExpression}, {Literal(nestedVariable)}, {line});"
+            );
+        }
+
+        if (elementAccess.Expression is IdentifierNameSyntax rectangularIdentifier
+            && !collectionVariables.Contains(rectangularIdentifier.Identifier.ValueText)
+            && elementAccess.ArgumentList.Arguments.Count == 2)
+        {
+            string rectangularArrayExpression = elementAccess.Expression.ToString();
+            string rowExpression = elementAccess.ArgumentList.Arguments[0].Expression.ToString();
+            string columnExpression = elementAccess.ArgumentList.Arguments[1].Expression.ToString();
+            if (IsRangeIndex(rowExpression) || IsRangeIndex(columnExpression))
+            {
+                return statement;
+            }
+
+            string rectangularValueExpression = assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+                ? assignment.Right.ToString()
+                : CreateCompoundNestedArrayValueExpression(assignment, rectangularIdentifier.Identifier.ValueText, rowExpression, columnExpression, line);
+            if (string.IsNullOrWhiteSpace(rectangularValueExpression))
+            {
+                return statement;
+            }
+
+            return TraceStatement(
+                $"TraceCode.Internal.TraceCodeTrace.ArrayWrite({rectangularArrayExpression}, {rowExpression}, {columnExpression}, {rectangularValueExpression}, {Literal(rectangularIdentifier.Identifier.ValueText)}, {line});"
             );
         }
 
@@ -1099,6 +1179,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             "next" => "(ListNode?)null",
             "left" or "right" => "(TreeNode?)null",
+            "Word" => "(string?)null",
+            "Next" or "Prev" => "(LRUNode?)null",
             _ => right.ToString(),
         };
     }

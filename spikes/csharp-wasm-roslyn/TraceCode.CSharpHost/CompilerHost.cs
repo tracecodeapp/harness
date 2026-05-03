@@ -215,18 +215,23 @@ public static class TraceCodeDriver
         string methodName = method.Identifier.ValueText;
         bool returnsVoid = method.ReturnType is PredefinedTypeSyntax predefinedType
             && predefinedType.Keyword.IsKind(SyntaxKind.VoidKeyword);
-        string arguments = string.Join(
-            ", ",
-            method.ParameterList.Parameters.Select((parameter, index) =>
-            {
-                string parameterName = parameter.Identifier.ValueText;
-                string parameterType = parameter.Type?.ToString() ?? "object";
-                return $"TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index})";
-            })
-        );
+        var parameterReads = method.ParameterList.Parameters.Select((parameter, index) =>
+        {
+            string parameterName = parameter.Identifier.ValueText;
+            string parameterType = parameter.Type?.ToString() ?? "object";
+            return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index});";
+        }).ToList();
+        string readStatements = string.Join("\n", parameterReads);
+        string arguments = string.Join(", ", method.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText));
         string invocation = $"solution.{methodName}({arguments})";
+        string? firstParameterName = method.ParameterList.Parameters.FirstOrDefault()?.Identifier.ValueText;
+        bool returnsMutatedFirstParameter = returnsVoid
+            && firstParameterName is not null
+            && MutatesParameter(method, firstParameterName);
         string driverBody = returnsVoid
-            ? $"{invocation};\n        return null;"
+            ? returnsMutatedFirstParameter
+                ? $"{invocation};\n        return {firstParameterName};"
+                : $"{invocation};\n        return null;"
             : $"return {invocation};";
 
         return $$"""
@@ -237,10 +242,42 @@ public static class TraceCodeDriver
     public static object? Run()
     {
         var solution = new Solution();
+{{readStatements}}
         {{driverBody}}
     }
 }
 """;
+    }
+
+    private static bool MutatesParameter(MethodDeclarationSyntax method, string parameterName)
+    {
+        bool hasElementAssignment = method
+            .DescendantNodes()
+            .OfType<AssignmentExpressionSyntax>()
+            .Any(assignment => IsParameterElementAccess(assignment.Left, parameterName));
+        if (hasElementAssignment)
+        {
+            return true;
+        }
+
+        return method
+            .DescendantNodes()
+            .Any(node =>
+                node is PrefixUnaryExpressionSyntax prefix && IsParameterElementAccess(prefix.Operand, parameterName)
+                || node is PostfixUnaryExpressionSyntax postfix && IsParameterElementAccess(postfix.Operand, parameterName)
+            );
+    }
+
+    private static bool IsParameterElementAccess(ExpressionSyntax expression, string parameterName)
+    {
+        ExpressionSyntax current = expression;
+        while (current is ElementAccessExpressionSyntax elementAccess)
+        {
+            current = elementAccess.Expression;
+        }
+
+        return current is IdentifierNameSyntax identifier
+            && string.Equals(identifier.Identifier.ValueText, parameterName, StringComparison.Ordinal);
     }
 
     private static ClassDeclarationSyntax FindClass(SyntaxTree userTree, string className)
@@ -835,6 +872,13 @@ public class TreeNode
             return value;
         }
 
+        public static T ArrayRead<T>(T[,] array, int row, int column, string variable, int line)
+        {
+            T value = array[row, column];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            return value;
+        }
+
         public static T ArrayRead<T>(TraceCodeList<T[]> list, int row, int column, string variable, int line)
         {
             T value = list[row][column];
@@ -896,6 +940,12 @@ public class TreeNode
         public static void ArrayWrite<T>(T[][] array, int row, int column, T value, string variable, int line)
         {
             array[row][column] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+        }
+
+        public static void ArrayWrite<T>(T[,] array, int row, int column, T value, string variable, int line)
+        {
+            array[row, column] = value;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
         }
 
