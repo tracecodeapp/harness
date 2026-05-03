@@ -8,6 +8,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 {
     private readonly Stack<string> methodNames = new();
     private readonly Stack<HashSet<string>> variableScopes = new();
+    private readonly Stack<HashSet<string>> declaredLocalVariables = new();
     private readonly HashSet<string> collectionVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> collectionParameterVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> memberNames;
@@ -63,6 +64,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             methodNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
         ));
+        declaredLocalVariables.Push(new HashSet<string>(
+            methodNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
+            StringComparer.Ordinal
+        ));
         List<string> collectionParameters = GetCollectionParameterNames(methodNode).ToList();
         foreach (string collectionParameter in collectionParameters)
         {
@@ -80,6 +85,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             {
                 collectionParameterVariables.Remove(collectionParameter);
             }
+            declaredLocalVariables.Pop();
             variableScopes.Pop();
             methodNames.Pop();
         }
@@ -118,6 +124,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
         ));
+        declaredLocalVariables.Push(new HashSet<string>(
+            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
+            StringComparer.Ordinal
+        ));
 
         ConstructorDeclarationSyntax rewritten;
         try
@@ -126,6 +136,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
         finally
         {
+            declaredLocalVariables.Pop();
             variableScopes.Pop();
             methodNames.Pop();
         }
@@ -159,6 +170,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
         ));
+        declaredLocalVariables.Push(new HashSet<string>(
+            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
+            StringComparer.Ordinal
+        ));
         List<string> collectionParameters = GetCollectionParameterNames(node).ToList();
         foreach (string collectionParameter in collectionParameters)
         {
@@ -176,6 +191,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             {
                 collectionParameterVariables.Remove(collectionParameter);
             }
+            declaredLocalVariables.Pop();
             variableScopes.Pop();
             methodNames.Pop();
         }
@@ -901,8 +917,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (statement is LocalDeclarationStatementSyntax localDeclaration)
         {
             HashSet<string> currentScope = variableScopes.Peek();
+            HashSet<string> currentDeclarations = declaredLocalVariables.Peek();
             foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
             {
+                currentDeclarations.Add(variable.Identifier.ValueText);
                 if (variable.Initializer is not null)
                 {
                     currentScope.Add(variable.Identifier.ValueText);
@@ -914,7 +932,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && expressionStatement.Expression is AssignmentExpressionSyntax assignment
             && assignment.Left is IdentifierNameSyntax identifier)
         {
-            variableScopes.Peek().Add(identifier.Identifier.ValueText);
+            string name = identifier.Identifier.ValueText;
+            if (IsDeclaredLocalVariable(name) || !memberNames.Contains(name))
+            {
+                variableScopes.Peek().Add(name);
+            }
         }
     }
 
@@ -1109,25 +1131,46 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         if (statement is not ExpressionStatementSyntax expressionStatement
             || expressionStatement.Expression is not AssignmentExpressionSyntax assignment
-            || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
-            || assignment.Left is not MemberAccessExpressionSyntax memberAccess
+            || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression))
+        {
+            return statement;
+        }
+
+        if (assignment.Left is IdentifierNameSyntax identifier
+            && TryGetImplicitThisFieldPath(identifier, out string implicitThisPathExpression))
+        {
+            string left = identifier.ToString();
+            if (assignment.Right.IsKind(SyntaxKind.NullLiteralExpression))
+            {
+                return TraceStatement(
+                    $"{{ TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal("this")}, {implicitThisPathExpression}, null, {line}); {left} = null; }}"
+                );
+            }
+
+            string implicitRight = assignment.Right.ToString();
+            return TraceStatement(
+                $"{left} = TraceCode.Internal.TraceCodeTrace.FieldWrite({implicitRight}, {Literal("this")}, {implicitThisPathExpression}, {line});"
+            );
+        }
+
+        if (assignment.Left is not MemberAccessExpressionSyntax memberAccess
             || !TryGetMemberAccessPath(memberAccess, out string variable, out List<string>? path))
         {
             return statement;
         }
 
-        string left = memberAccess.ToString();
+        string memberLeft = memberAccess.ToString();
         string pathExpression = CreateStringArrayExpression(path);
         if (assignment.Right.IsKind(SyntaxKind.NullLiteralExpression))
         {
             return TraceStatement(
-                $"{{ TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, null, {line}); {left} = null; }}"
+                $"{{ TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite({Literal(variable)}, {pathExpression}, null, {line}); {memberLeft} = null; }}"
             );
         }
 
         string right = assignment.Right.ToString();
         return TraceStatement(
-            $"{left} = TraceCode.Internal.TraceCodeTrace.FieldWrite({right}, {Literal(variable)}, {pathExpression}, {line});"
+            $"{memberLeft} = TraceCode.Internal.TraceCodeTrace.FieldWrite({right}, {Literal(variable)}, {pathExpression}, {line});"
         );
     }
 
@@ -1260,6 +1303,24 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         return variableScopes.Any(scope => scope.Contains(variable));
+    }
+
+    private bool IsDeclaredLocalVariable(string variable)
+    {
+        return declaredLocalVariables.Any(scope => scope.Contains(variable));
+    }
+
+    private bool TryGetImplicitThisFieldPath(IdentifierNameSyntax identifier, out string pathExpression)
+    {
+        string name = identifier.Identifier.ValueText;
+        if (!memberNames.Contains(name) || IsDeclaredLocalVariable(name))
+        {
+            pathExpression = string.Empty;
+            return false;
+        }
+
+        pathExpression = CreateStringArrayExpression(new[] { name });
+        return true;
     }
 
     private static bool TryGetNestedElementAccess(
