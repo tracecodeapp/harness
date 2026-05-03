@@ -132,6 +132,7 @@ public static partial class CompilerHost
             FindClass(userTree, request.FunctionName);
             return $$"""
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
@@ -142,9 +143,14 @@ public static class TraceCodeDriver
     {
         string[] operations = TraceCode.Internal.TraceCodeJsonInput.Read<string[]>("operations", 0) ?? Array.Empty<string>();
         JsonElement[][] arguments = TraceCode.Internal.TraceCodeJsonInput.Read<JsonElement[][]>("arguments", 1) ?? Array.Empty<JsonElement[]>();
+        if (operations.Length != arguments.Length)
+        {
+            throw new InvalidOperationException("operations and arguments must have the same length");
+        }
+
         Type targetType = typeof({{request.FunctionName}});
         object? instance = null;
-        object? last = null;
+        List<object?> output = new List<object?>();
 
         for (int i = 0; i < operations.Length; i++)
         {
@@ -154,7 +160,7 @@ public static class TraceCodeDriver
             {
                 ConstructorInfo constructor = SelectConstructor(targetType.GetConstructors(BindingFlags.Public | BindingFlags.Instance), rawArgs.Length);
                 instance = constructor.Invoke(ConvertArgs(rawArgs, constructor.GetParameters()));
-                last = null;
+                output.Add(null);
                 continue;
             }
 
@@ -164,10 +170,10 @@ public static class TraceCodeDriver
             }
 
             MethodInfo method = SelectMethod(targetType, operation, rawArgs.Length);
-            last = method.Invoke(instance, ConvertArgs(rawArgs, method.GetParameters()));
+            output.Add(method.Invoke(instance, ConvertArgs(rawArgs, method.GetParameters())));
         }
 
-        return last;
+        return output;
     }
 
     private static ConstructorInfo SelectConstructor(ConstructorInfo[] constructors, int arity)

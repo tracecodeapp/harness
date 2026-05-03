@@ -14,7 +14,7 @@ It includes:
 
 - browser-hosted execution for Python, JavaScript, and TypeScript
 - an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
-- an experimental browser-local C# lane for LeetCode-style `public class Solution` method execution
+- an experimental browser-local C# lane for LeetCode-style `public class Solution` and `ops-class` execution
 - trace capture and normalized runtime contracts
 - browser worker assets and asset sync tooling
 
@@ -240,7 +240,7 @@ Current Java scope:
 
 Current C# scope:
 
-- supported: `solution-method` execution for `public class Solution`, generated drivers including `void` methods, `ListNode`/`TreeNode` prelude classes and JSON hydration, stdout capture, runtime errors, mapped Roslyn compile diagnostics, soft loop timeouts, trace-step budgets, block-bodied and expression-bodied method tracing, basic line/call/return-value/simple-write tracing, one-dimensional array indexed read/write tracing including simple compound writes, and initial `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/`Queue<T>`/`Stack<T>` wrapper tracing for `var`, explicit local declarations, target-typed `new()`, collection initializers, common one-argument constructors, and `Dictionary`/`HashSet` comparer constructor overloads
+- supported: `solution-method` execution for `public class Solution`, `ops-class` execution with JS/TS/Java-style operation-output arrays, generated drivers including `void` methods, `ListNode`/`TreeNode` prelude classes and JSON hydration, stdout capture, runtime errors, mapped Roslyn compile diagnostics, soft loop timeouts, trace-step budgets, block-bodied and expression-bodied method tracing, basic line/call/return-value/simple-write tracing, one-dimensional array indexed read/write tracing including simple compound writes, and initial `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/`Queue<T>`/`Stack<T>` wrapper tracing for `var`, explicit local declarations, target-typed `new()`, collection initializers, common one-argument constructors, and `Dictionary`/`HashSet` comparer constructor overloads
 - not yet supported: broad multi-argument collection constructors beyond the current comparer overloads, NuGet packages, async/threading APIs, project files, multiple source files, unsafe code, or full expression/value tracing fidelity
 
 ## Example Consumer

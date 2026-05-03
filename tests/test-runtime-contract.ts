@@ -141,6 +141,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
           ],
   csharp: [
     'execution.styles.solutionMethod',
+    'execution.styles.opsClass',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
     'tracing.supported',
@@ -421,6 +422,7 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
   assertCondition(csharpProfile.capabilities.execution.styles.solutionMethod, 'C# should support solution-method execution');
+  assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
   assertCondition(csharpProfile.capabilities.tracing.supported, 'C# should support basic tracing');
   assertCondition(csharpProfile.capabilities.diagnostics.compileErrors, 'C# should support compile diagnostics');
   assertCondition(csharpProfile.capabilities.structures.listNodeRefs, 'C# should advertise ListNode hydration');

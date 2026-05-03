@@ -93,7 +93,7 @@ async function runWorkerCase(
   inputs: Record<string, unknown>,
   assetBaseUrl: string,
   trace = false,
-  options: { timeoutMs?: number; maxTraceSteps?: number } = {}
+  options: { timeoutMs?: number; maxTraceSteps?: number; executionStyle?: 'solution-method' | 'ops-class' } = {}
 ): Promise<CSharpWorkerResponse> {
   return page.evaluate(
     async ({ code, functionName, inputs, assetBaseUrl, trace, options }) => {
@@ -127,7 +127,7 @@ async function runWorkerCase(
         code,
         functionName,
         inputs,
-        executionStyle: 'solution-method',
+        executionStyle: options.executionStyle ?? 'solution-method',
         assetBaseUrl,
         ...options,
       });
@@ -602,6 +602,32 @@ async function main(): Promise<void> {
     const twoSum = await runWorkerCase(page, fixture('two-sum.cs'), 'TwoSum', { nums: [2, 7, 11, 15], target: 9 }, assetBaseUrl);
     assertCondition(twoSum.success, `C# worker TwoSum should succeed: ${twoSum.error ?? 'unknown error'}`);
     assertCondition(JSON.stringify(twoSum.output) === JSON.stringify([0, 1]), 'C# worker TwoSum should return [0,1]');
+
+    const opsClass = await runWorkerCase(
+      page,
+      [
+        'public class Counter {',
+        '  private int value;',
+        '  public Counter(int start) { value = start; }',
+        '  public int Inc(int delta) { value += delta; return value; }',
+        '  public void Reset() { value = 0; }',
+        '  public int Get() { return value; }',
+        '}',
+      ].join('\n'),
+      'Counter',
+      {
+        operations: ['Counter', 'Inc', 'Inc', 'Reset', 'Get'],
+        arguments: [[1], [2], [3], [], []],
+      },
+      assetBaseUrl,
+      false,
+      { executionStyle: 'ops-class' }
+    );
+    assertCondition(opsClass.success, `C# worker ops-class case should succeed: ${opsClass.error ?? 'unknown error'}`);
+    assertCondition(
+      JSON.stringify(opsClass.output) === JSON.stringify([null, 3, 6, null, 0]),
+      `C# worker ops-class case should return operation outputs, received ${JSON.stringify(opsClass.output)}`
+    );
 
     const listNodeInput = await runWorkerCase(
       page,
