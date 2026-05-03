@@ -4,6 +4,7 @@ using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -16,6 +17,7 @@ public static partial class CompilerHost
     {
         PropertyNameCaseInsensitive = true,
         IncludeFields = true,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
 
     [JSExport]
@@ -101,8 +103,13 @@ public static partial class CompilerHost
             path: "UserCode.cs"
         );
         SyntaxTree userTree = TraceRewriter.Instrument(originalUserTree, request.Trace);
+        SyntaxTree globalUsingsTree = CSharpSyntaxTree.ParseText(
+            GenerateGlobalUsingsSource(),
+            new CSharpParseOptions(LanguageVersion.CSharp12),
+            path: "TraceCodeGlobalUsings.cs"
+        );
         SyntaxTree runtimeTree = CSharpSyntaxTree.ParseText(
-            GenerateRuntimeSource(request.Inputs),
+            GenerateRuntimeSource(request.Inputs, originalUserTree),
             new CSharpParseOptions(LanguageVersion.CSharp12),
             path: "TraceCodeRuntime.cs"
         );
@@ -114,7 +121,7 @@ public static partial class CompilerHost
 
         return CSharpCompilation.Create(
             assemblyName: "TraceCode.UserCode." + Guid.NewGuid().ToString("N"),
-            syntaxTrees: new[] { userTree, runtimeTree, driverTree },
+            syntaxTrees: new[] { globalUsingsTree, userTree, runtimeTree, driverTree },
             references: ResolveReferences(),
             options: new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary,
@@ -129,7 +136,8 @@ public static partial class CompilerHost
     {
         if (string.Equals(request.ExecutionStyle, "ops-class", StringComparison.Ordinal))
         {
-            FindClass(userTree, request.FunctionName);
+            ClassDeclarationSyntax targetClass = FindClass(userTree, request.FunctionName);
+            string className = targetClass.Identifier.ValueText;
             return $$"""
 using System;
 using System.Collections.Generic;
@@ -148,7 +156,7 @@ public static class TraceCodeDriver
             throw new InvalidOperationException("operations and arguments must have the same length");
         }
 
-        Type targetType = typeof({{request.FunctionName}});
+        Type targetType = typeof({{className}});
         object? instance = null;
         List<object?> output = new List<object?>();
 
@@ -156,7 +164,7 @@ public static class TraceCodeDriver
         {
             string operation = operations[i];
             JsonElement[] rawArgs = i < arguments.Length ? arguments[i] : Array.Empty<JsonElement>();
-            if (operation == {{JsonSerializer.Serialize(request.FunctionName)}})
+            if (string.Equals(operation, {{JsonSerializer.Serialize(className)}}, StringComparison.OrdinalIgnoreCase))
             {
                 ConstructorInfo constructor = SelectConstructor(targetType.GetConstructors(BindingFlags.Public | BindingFlags.Instance), rawArgs.Length);
                 instance = constructor.Invoke(ConvertArgs(rawArgs, constructor.GetParameters()));
@@ -186,7 +194,7 @@ public static class TraceCodeDriver
     {
         return targetType
             .GetMethods(BindingFlags.Public | BindingFlags.Instance)
-            .FirstOrDefault(method => method.Name == name && method.GetParameters().Length == arity)
+            .FirstOrDefault(method => string.Equals(method.Name, name, StringComparison.OrdinalIgnoreCase) && method.GetParameters().Length == arity)
             ?? throw new InvalidOperationException($"No method {name} with {arity} arguments.");
     }
 
@@ -203,7 +211,8 @@ public static class TraceCodeDriver
 """;
         }
 
-        MethodDeclarationSyntax method = FindSolutionMethod(userTree, request.FunctionName);
+        MethodDeclarationSyntax method = FindSolutionMethod(userTree, request.FunctionName, request.Inputs);
+        string methodName = method.Identifier.ValueText;
         bool returnsVoid = method.ReturnType is PredefinedTypeSyntax predefinedType
             && predefinedType.Keyword.IsKind(SyntaxKind.VoidKeyword);
         string arguments = string.Join(
@@ -215,7 +224,7 @@ public static class TraceCodeDriver
                 return $"TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index})";
             })
         );
-        string invocation = $"solution.{request.FunctionName}({arguments})";
+        string invocation = $"solution.{methodName}({arguments})";
         string driverBody = returnsVoid
             ? $"{invocation};\n        return null;"
             : $"return {invocation};";
@@ -240,12 +249,20 @@ public static class TraceCodeDriver
         ClassDeclarationSyntax? candidate = root
             .DescendantNodes()
             .OfType<ClassDeclarationSyntax>()
-            .FirstOrDefault(type => type.Identifier.ValueText == className);
+            .FirstOrDefault(type => string.Equals(type.Identifier.ValueText, className, StringComparison.Ordinal))
+            ?? root
+                .DescendantNodes()
+                .OfType<ClassDeclarationSyntax>()
+                .FirstOrDefault(type => string.Equals(type.Identifier.ValueText, className, StringComparison.OrdinalIgnoreCase));
 
         return candidate ?? throw new InvalidOperationException($"Expected class {className}.");
     }
 
-    private static MethodDeclarationSyntax FindSolutionMethod(SyntaxTree userTree, string functionName)
+    private static MethodDeclarationSyntax FindSolutionMethod(
+        SyntaxTree userTree,
+        string functionName,
+        IReadOnlyDictionary<string, JsonElement> inputs
+    )
     {
         CompilationUnitSyntax root = userTree.GetCompilationUnitRoot();
         var solutionClasses = root
@@ -255,12 +272,29 @@ public static class TraceCodeDriver
 
         var candidates = solutionClasses
             .SelectMany(type => type.Members.OfType<MethodDeclarationSyntax>())
-            .Where(method => method.Identifier.ValueText == functionName)
+            .Where(method => string.Equals(method.Identifier.ValueText, functionName, StringComparison.Ordinal))
             .ToList();
 
         if (candidates.Count == 0)
         {
+            candidates = solutionClasses
+                .SelectMany(type => type.Members.OfType<MethodDeclarationSyntax>())
+                .Where(method => string.Equals(method.Identifier.ValueText, functionName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+
+        if (candidates.Count == 0)
+        {
             throw new InvalidOperationException($"Expected public method Solution.{functionName}.");
+        }
+
+        MethodDeclarationSyntax? compatibleCandidate = candidates
+            .OrderByDescending(method => method.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.PublicKeyword)))
+            .ThenByDescending(method => ScoreInputCompatibility(method, inputs))
+            .FirstOrDefault(method => ScoreInputCompatibility(method, inputs) > int.MinValue);
+        if (compatibleCandidate is not null)
+        {
+            return compatibleCandidate;
         }
 
         MethodDeclarationSyntax? publicCandidate = candidates.FirstOrDefault(method =>
@@ -268,10 +302,101 @@ public static class TraceCodeDriver
         return publicCandidate ?? candidates[0];
     }
 
-    private static string GenerateRuntimeSource(IReadOnlyDictionary<string, JsonElement> inputs)
+    private static int ScoreInputCompatibility(
+        MethodDeclarationSyntax method,
+        IReadOnlyDictionary<string, JsonElement> inputs
+    )
+    {
+        int score = 0;
+        string[] keys = inputs.Keys.ToArray();
+        for (int index = 0; index < method.ParameterList.Parameters.Count; index++)
+        {
+            ParameterSyntax parameter = method.ParameterList.Parameters[index];
+            if (parameter.Type is null)
+            {
+                continue;
+            }
+
+            JsonElement input = inputs.TryGetValue(parameter.Identifier.ValueText, out JsonElement named)
+                ? named
+                : index < keys.Length && inputs.TryGetValue(keys[index], out JsonElement positional)
+                    ? positional
+                    : default;
+            int parameterScore = ScoreJsonCompatibility(input, parameter.Type.ToString());
+            if (parameterScore == int.MinValue)
+            {
+                return int.MinValue;
+            }
+
+            score += parameterScore;
+        }
+
+        return score;
+    }
+
+    private static int ScoreJsonCompatibility(JsonElement value, string typeName)
+    {
+        string normalizedType = typeName.Replace(" ", string.Empty, StringComparison.Ordinal);
+        if (normalizedType is "object" or "System.Object")
+        {
+            return 1;
+        }
+
+        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return 0;
+        }
+
+        if (normalizedType.EndsWith("[]", StringComparison.Ordinal))
+        {
+            if (value.ValueKind != JsonValueKind.Array)
+            {
+                return int.MinValue;
+            }
+
+            string elementType = normalizedType[..^2];
+            int score = 2;
+            foreach (JsonElement item in value.EnumerateArray())
+            {
+                int itemScore = ScoreJsonCompatibility(item, elementType);
+                if (itemScore == int.MinValue)
+                {
+                    return int.MinValue;
+                }
+
+                score += itemScore;
+            }
+
+            return score;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.String when normalizedType is "string" or "System.String" => 4,
+            JsonValueKind.True or JsonValueKind.False when normalizedType is "bool" or "Boolean" or "System.Boolean" => 4,
+            JsonValueKind.Number when normalizedType is "double" or "Double" or "System.Double"
+                or "float" or "Single" or "System.Single"
+                or "decimal" or "Decimal" or "System.Decimal" => 4,
+            JsonValueKind.Number when normalizedType is "int" or "Int32" or "System.Int32"
+                or "long" or "Int64" or "System.Int64" => 4,
+            _ => int.MinValue,
+        };
+    }
+
+    private static string GenerateGlobalUsingsSource()
+    {
+        return """
+global using System;
+global using System.Collections.Generic;
+global using System.Linq;
+""";
+    }
+
+    private static string GenerateRuntimeSource(IReadOnlyDictionary<string, JsonElement> inputs, SyntaxTree userTree)
     {
         string inputsJson = JsonSerializer.Serialize(inputs, JsonOptions);
         string inputsBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(inputsJson));
+        string preludeSource = GenerateNodePreludeSource(userTree);
 
         return $$"""
 using System;
@@ -279,7 +404,35 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
+{{preludeSource}}
+
+namespace TraceCode.Internal
+{
+    public static class TraceCodeJsonInput
+    {
+        private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+        {
+            PropertyNameCaseInsensitive = true,
+            IncludeFields = true,
+            NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+        };
+""" + GenerateRuntimeSourceTail(inputsBase64);
+    }
+
+    private static string GenerateNodePreludeSource(SyntaxTree userTree)
+    {
+        CompilationUnitSyntax root = userTree.GetCompilationUnitRoot();
+        var classNames = root
+            .DescendantNodes()
+            .OfType<ClassDeclarationSyntax>()
+            .Select(type => type.Identifier.ValueText)
+            .ToHashSet(StringComparer.Ordinal);
+        StringBuilder builder = new();
+        if (!classNames.Contains("ListNode"))
+        {
+            builder.AppendLine("""
 public class ListNode
 {
     public int val;
@@ -291,7 +444,12 @@ public class ListNode
         this.next = next;
     }
 }
+""");
+        }
 
+        if (!classNames.Contains("TreeNode"))
+        {
+            builder.AppendLine("""
 public class TreeNode
 {
     public int val;
@@ -305,17 +463,15 @@ public class TreeNode
         this.right = right;
     }
 }
+""");
+        }
 
-namespace TraceCode.Internal
-{
-    public static class TraceCodeJsonInput
+        return builder.ToString();
+    }
+
+    private static string GenerateRuntimeSourceTail(string inputsBase64)
     {
-        private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-        {
-            PropertyNameCaseInsensitive = true,
-            IncludeFields = true,
-        };
-
+        return $$"""
         private static readonly JsonElement Root = JsonSerializer.Deserialize<JsonElement>(
             Encoding.UTF8.GetString(System.Convert.FromBase64String("{{inputsBase64}}")),
             JsonOptions
@@ -357,6 +513,16 @@ namespace TraceCode.Internal
                 return ReadTreeNode(value, new Dictionary<string, TreeNode>(StringComparer.Ordinal));
             }
 
+            if (targetType == typeof(object[]))
+            {
+                return ReadObjectArray(value);
+            }
+
+            if (targetType == typeof(object[][]))
+            {
+                return value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
+            }
+
             return JsonSerializer.Deserialize(value.GetRawText(), targetType, JsonOptions);
         }
 
@@ -372,7 +538,41 @@ namespace TraceCode.Internal
                 return (T?)(object?)ReadTreeNode(value, new Dictionary<string, TreeNode>(StringComparer.Ordinal));
             }
 
+            if (typeof(T) == typeof(object[]))
+            {
+                return (T?)(object?)ReadObjectArray(value);
+            }
+
+            if (typeof(T) == typeof(object[][]))
+            {
+                return (T?)(object?)value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
+            }
+
             return JsonSerializer.Deserialize<T>(value.GetRawText(), JsonOptions);
+        }
+
+        private static object[] ReadObjectArray(JsonElement value)
+        {
+            return value.EnumerateArray().Select(ReadObjectValue).ToArray();
+        }
+
+        private static object? ReadObjectValue(JsonElement value)
+        {
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.TryGetInt64(out long longValue) ? longValue : value.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null or JsonValueKind.Undefined => null,
+                JsonValueKind.Array => ReadObjectArray(value),
+                JsonValueKind.Object => value.EnumerateObject().ToDictionary(
+                    property => property.Name,
+                    property => ReadObjectValue(property.Value),
+                    StringComparer.Ordinal
+                ),
+                _ => null,
+            };
         }
 
         private static ListNode? ReadListNode(JsonElement value, IDictionary<string, ListNode> refs)
@@ -613,6 +813,21 @@ namespace TraceCode.Internal
             return value;
         }
 
+        public static T ArrayRead<T>(IList<T> list, int index, string variable, int line)
+        {
+            T value = list[index];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
+            return value;
+        }
+
+        public static TValue ArrayRead<TKey, TValue>(IDictionary<TKey, TValue> dictionary, TKey key, string variable, int line)
+            where TKey : notnull
+        {
+            TValue value = dictionary[key];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, value, line);
+            return value;
+        }
+
         public static T ArrayRead<T>(T[][] array, int row, int column, string variable, int line)
         {
             T value = array[row][column];
@@ -658,6 +873,24 @@ namespace TraceCode.Internal
         {
             array[index] = value;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line);
+        }
+
+        public static void ArrayWrite<T>(IList<T> list, int index, T value, string variable, int line)
+        {
+            list[index] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line);
+        }
+
+        public static void ArrayWrite<TKey, TValue>(
+            IDictionary<TKey, TValue> dictionary,
+            TKey key,
+            TValue value,
+            string variable,
+            int line
+        ) where TKey : notnull
+        {
+            dictionary[key] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, key, value, line);
         }
 
         public static void ArrayWrite<T>(T[][] array, int row, int column, T value, string variable, int line)

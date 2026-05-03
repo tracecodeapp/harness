@@ -24,7 +24,7 @@ type RuntimeEntry = {
   slug: string;
   family?: string;
   compareMode?: string;
-  language: 'python' | 'javascript' | 'typescript';
+  language: 'python' | 'javascript' | 'typescript' | 'csharp';
   supportExpectation: 'supported-now';
   functionName: string;
   source: { kind: 'file'; path: string };
@@ -124,6 +124,18 @@ async function main(): Promise<void> {
       });
     } else {
       missing.push(`${slug}: missing TypeScript practice solution`);
+    }
+
+    const csharpPath = join('data', 'reference-solutions', 'csharp', 'practice', `${slug}.cs`);
+    if (existsSync(join(sourceRoot, csharpPath))) {
+      entries.push({
+        ...base,
+        language: 'csharp',
+        source: { kind: 'file', path: csharpPath },
+        runtimeExecutionStyle: isOpsClass ? 'ops-class' : 'solution-method',
+      });
+    } else {
+      missing.push(`${slug}: missing C# practice solution`);
     }
   }
 

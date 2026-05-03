@@ -326,6 +326,19 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             yield break;
         }
 
+        if (returnStatement.Expression.IsKind(SyntaxKind.NullLiteralExpression))
+        {
+            yield return TraceStatement(
+                $"TraceCode.Internal.TraceCodeTrace.Return({Literal(methodName)}, {line}, null);"
+            );
+            foreach (StatementSyntax snapshotStatement in CreateSnapshotStatements(line))
+            {
+                yield return snapshotStatement;
+            }
+            yield return returnStatement;
+            yield break;
+        }
+
         string tempName = $"__tracecode_return_{returnValueCounter++}";
         yield return TraceStatement($"var {tempName} = {returnStatement.Expression};");
         yield return TraceStatement(
@@ -359,6 +372,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private IEnumerable<StatementSyntax> RewriteIfStatement(IfStatementSyntax ifStatement, int line)
     {
+        if (ContainsPatternDeclaration(ifStatement.Condition))
+        {
+            foreach (StatementSyntax snapshotStatement in CreateSnapshotStatements(line))
+            {
+                yield return snapshotStatement;
+            }
+            yield return ifStatement;
+            yield break;
+        }
+
         string tempName = $"__tracecode_condition_{conditionValueCounter++}";
         yield return TraceStatement($"bool {tempName} = {ifStatement.Condition};");
         foreach (StatementSyntax snapshotStatement in CreateSnapshotStatements(line))
@@ -386,6 +409,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         if (TryGetNestedElementAccess(node, out string nestedVariable, out string firstIndex, out string secondIndex))
         {
+            if (IsRangeIndex(firstIndex) || IsRangeIndex(secondIndex))
+            {
+                return base.VisitElementAccessExpression(node);
+            }
+
             int nestedLine = GetLine(node);
             return SyntaxFactory.ParseExpression(
                 $"TraceCode.Internal.TraceCodeTrace.ArrayRead({nestedVariable}, {firstIndex}, {secondIndex}, {Literal(nestedVariable)}, {nestedLine})"
@@ -412,6 +440,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         int line = GetLine(node);
         string arrayExpression = rewritten.Expression.ToString();
         string indexExpression = rewritten.ArgumentList.Arguments[0].Expression.ToString();
+        if (IsRangeIndex(indexExpression))
+        {
+            return rewritten;
+        }
+
         return SyntaxFactory.ParseExpression(
             $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {indexExpression}, {Literal(identifier.Identifier.ValueText)}, {line})"
         );
@@ -517,6 +550,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         VariableDeclaratorSyntax rewritten = (VariableDeclaratorSyntax)base.VisitVariableDeclarator(node)!;
         TypeSyntax? declaredType = (node.Parent as VariableDeclarationSyntax)?.Type;
+        if (IsInsideAnonymousFunction(node))
+        {
+            return rewritten;
+        }
+
         if (rewritten.Initializer?.Value is not ExpressionSyntax creation
             || !TryRewriteCollectionCreation(creation, rewritten.Identifier.ValueText, declaredType, out ExpressionSyntax? replacement))
         {
@@ -729,6 +767,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         if (TryGetNestedElementAccess(elementAccess, out string nestedVariable, out string firstIndex, out string secondIndex))
         {
+            if (IsRangeIndex(firstIndex) || IsRangeIndex(secondIndex))
+            {
+                return statement;
+            }
+
             string nestedValueExpression = assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
                 ? assignment.Right.ToString()
                 : CreateCompoundNestedArrayValueExpression(assignment, nestedVariable, firstIndex, secondIndex, line);
@@ -751,6 +794,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string arrayExpression = elementAccess.Expression.ToString();
         string indexExpression = elementAccess.ArgumentList.Arguments[0].Expression.ToString();
+        if (IsRangeIndex(indexExpression))
+        {
+            return statement;
+        }
+
         string valueExpression = assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
             ? assignment.Right.ToString()
             : CreateCompoundArrayValueExpression(assignment, arrayExpression, indexExpression, identifier.Identifier.ValueText, line);
@@ -816,6 +864,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         if (TryGetNestedElementAccess(elementAccess, out string nestedVariable, out string firstIndex, out string secondIndex))
         {
+            if (IsRangeIndex(firstIndex) || IsRangeIndex(secondIndex))
+            {
+                return statement;
+            }
+
             string currentNestedValue = $"TraceCode.Internal.TraceCodeTrace.ArrayRead({nestedVariable}, {firstIndex}, {secondIndex}, {Literal(nestedVariable)}, {line})";
             return TraceStatement(
                 $"TraceCode.Internal.TraceCodeTrace.ArrayWrite({nestedVariable}, {firstIndex}, {secondIndex}, {currentNestedValue} {operatorText} 1, {Literal(nestedVariable)}, {line});"
@@ -831,6 +884,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string arrayExpression = elementAccess.Expression.ToString();
         string indexExpression = elementAccess.ArgumentList.Arguments[0].Expression.ToString();
+        if (IsRangeIndex(indexExpression))
+        {
+            return statement;
+        }
+
         string variableName = identifier.Identifier.ValueText;
         string currentValue = CreateArrayReadExpression(arrayExpression, indexExpression, variableName, line);
         return TraceStatement(
@@ -850,7 +908,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string left = memberAccess.ToString();
-        string right = assignment.Right.ToString();
+        string right = CreateFieldWriteValueExpression(assignment.Right, path);
         string pathExpression = CreateStringArrayExpression(path);
         return TraceStatement(
             $"{left} = TraceCode.Internal.TraceCodeTrace.FieldWrite({right}, {Literal(variable)}, {pathExpression}, {line});"
@@ -909,6 +967,28 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && memberAccess.Expression == node
             && string.Equals(memberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal)
             && memberAccess.Parent is InvocationExpressionSyntax;
+    }
+
+    private static bool IsRangeIndex(string expression)
+    {
+        return expression.Contains("..", StringComparison.Ordinal)
+            || expression.StartsWith("^", StringComparison.Ordinal);
+    }
+
+    private static bool IsInsideAnonymousFunction(SyntaxNode node)
+    {
+        return node.Ancestors().Any(ancestor =>
+            ancestor is ParenthesizedLambdaExpressionSyntax
+                or SimpleLambdaExpressionSyntax
+                or AnonymousMethodExpressionSyntax
+        );
+    }
+
+    private static bool ContainsPatternDeclaration(ExpressionSyntax expression)
+    {
+        return expression
+            .DescendantNodesAndSelf()
+            .Any(node => node is DeclarationPatternSyntax or RecursivePatternSyntax);
     }
 
     private static bool TryGetMemberAccessPath(
@@ -1006,6 +1086,21 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private static string CreateObjectArrayExpression(IReadOnlyList<string> values, string finalExpression)
     {
         return $"new object?[] {{ {string.Join(", ", values.Select(Literal).Append(finalExpression))} }}";
+    }
+
+    private static string CreateFieldWriteValueExpression(ExpressionSyntax right, IReadOnlyList<string> path)
+    {
+        if (!right.IsKind(SyntaxKind.NullLiteralExpression) || path.Count == 0)
+        {
+            return right.ToString();
+        }
+
+        return path[^1] switch
+        {
+            "next" => "(ListNode?)null",
+            "left" or "right" => "(TreeNode?)null",
+            _ => right.ToString(),
+        };
     }
 
     private static string CreateCompoundArrayValueExpression(

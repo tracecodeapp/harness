@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
 import type { Language, RuntimeExecutionStyle } from '../packages/harness-core/src/runtime-types';
@@ -33,6 +34,7 @@ import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src
 const DEFAULT_CORPUS_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpus/tracecode-final300-slice.json';
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
+const CSHARP_ASSET_DIR = join(process.cwd(), 'workers', 'vendor', 'csharp');
 const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
 const JAVA_REWRITER_CLASSPATH = [
   join(process.cwd(), 'workers', 'vendor', 'java-rewriter.jar'),
@@ -49,7 +51,7 @@ const JAVA_BIN_CANDIDATES = [
 ].filter((candidate): candidate is string => Boolean(candidate));
 const JAVA_BIN = JAVA_BIN_CANDIDATES.find((candidate) => candidate === 'java' || existsSync(candidate)) ?? 'java';
 
-type MineLanguage = Extract<Language, 'python' | 'javascript' | 'typescript' | 'java'>;
+type MineLanguage = Extract<Language, 'python' | 'javascript' | 'typescript' | 'java' | 'csharp'>;
 
 interface CorpusEntry {
   slug: string;
@@ -195,6 +197,9 @@ interface MineReport {
   failures: FailureRecord[];
 }
 
+type CSharpExecute = (requestJson: string) => string;
+let csharpExecutePromise: Promise<CSharpExecute> | null = null;
+
 function parseStringFlag(name: string): string | undefined {
   const prefix = `--${name}=`;
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
@@ -202,8 +207,8 @@ function parseStringFlag(name: string): string | undefined {
 
 function parseReferenceLanguage(): MineLanguage {
   const raw = parseStringFlag('reference-language') ?? 'python';
-  if (raw === 'python' || raw === 'javascript' || raw === 'typescript' || raw === 'java') return raw;
-  throw new Error(`Unsupported --reference-language=${raw}. Expected python, javascript, typescript, or java.`);
+  if (raw === 'python' || raw === 'javascript' || raw === 'typescript' || raw === 'java' || raw === 'csharp') return raw;
+  throw new Error(`Unsupported --reference-language=${raw}. Expected python, javascript, typescript, java, or csharp.`);
 }
 
 function parseMineLanguageListFlag(name: string, fallback: MineLanguage[]): MineLanguage[] {
@@ -212,10 +217,10 @@ function parseMineLanguageListFlag(name: string, fallback: MineLanguage[]): Mine
   const languages = raw.split(',').map((language) => language.trim()).filter(Boolean);
   const parsed: MineLanguage[] = [];
   for (const language of languages) {
-    if (language === 'python' || language === 'javascript' || language === 'typescript' || language === 'java') {
+    if (language === 'python' || language === 'javascript' || language === 'typescript' || language === 'java' || language === 'csharp') {
       parsed.push(language);
     } else {
-      throw new Error(`Unsupported --${name} entry ${language}. Expected python, javascript, typescript, or java.`);
+      throw new Error(`Unsupported --${name} entry ${language}. Expected python, javascript, typescript, java, or csharp.`);
     }
   }
   return [...new Set(parsed)];
@@ -695,6 +700,95 @@ async function executeJavaScriptTrace(
   if (!result.success) throw new Error(`${entry.language} tracing failed: ${result.error ?? 'unknown error'}`);
   const trace = result.trace;
   return { language: entry.language, output: result.output, trace, signature: buildMineSignature(trace) };
+}
+
+async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
+  if (csharpExecutePromise) return csharpExecutePromise;
+
+  csharpExecutePromise = (async () => {
+    const dotnetJsPath = join(CSHARP_ASSET_DIR, '_framework', 'dotnet.js');
+    if (!existsSync(dotnetJsPath)) {
+      throw new Error('Missing C# WASM assets. Run `pnpm run spike:csharp:publish` and sync workers/vendor/csharp.');
+    }
+
+    const { dotnet } = (await import(pathToFileURL(dotnetJsPath).href)) as {
+      dotnet: {
+        withApplicationArguments(...args: string[]): {
+          create(): Promise<{
+            getAssemblyExports(assemblyName: string): Promise<Record<string, unknown>>;
+            getConfig(): { mainAssemblyName: string };
+          }>;
+        };
+      };
+    };
+
+    const runtime = await dotnet.withApplicationArguments('runtime-trace-corpus-mine').create();
+    const config = runtime.getConfig();
+    const exports = await runtime.getAssemblyExports(config.mainAssemblyName);
+    const compilerHost = exports.TraceCode?.CSharpHost?.CompilerHost as { Execute?: unknown } | undefined;
+    if (typeof compilerHost?.Execute !== 'function') {
+      throw new Error('Unable to locate TraceCode.CSharpHost.CompilerHost.Execute export.');
+    }
+    return compilerHost.Execute as CSharpExecute;
+  })();
+
+  return csharpExecutePromise;
+}
+
+async function executeCSharpTrace(
+  entry: CorpusEntry,
+  code: string,
+  maxTraceSteps: number
+): Promise<TraceRun> {
+  const execute = await loadCSharpExecuteExport();
+  const raw = execute(JSON.stringify({
+    source: code,
+    functionName: entry.functionName,
+    inputs: entry.inputs,
+    executionStyle: entry.runtimeExecutionStyle ?? 'solution-method',
+    trace: true,
+    timeoutMs: 19_000,
+    maxTraceSteps,
+  }));
+  const parsed = JSON.parse(raw) as {
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    events?: RuntimeTraceEvent[];
+    consoleOutput?: string[];
+    executionTimeMs?: number;
+    traceLimitExceeded?: boolean;
+    timeoutReason?: string;
+  };
+  if (!parsed.success) {
+    throw new Error(`csharp tracing failed: ${parsed.error ?? 'unknown error'}`);
+  }
+
+  const baseEvents = Array.isArray(parsed.events) ? parsed.events : [];
+  const consoleOutput = parsed.consoleOutput ?? [];
+  const runId = `mine:${entry.slug}:csharp`;
+  const events: RuntimeTraceEvent[] = [
+    ...baseEvents,
+    ...consoleOutput.map((text): RuntimeTraceEvent => ({
+      kind: 'stdout',
+      runId,
+      file: entry.source.path,
+      text,
+    })),
+  ];
+  const trace: RuntimeTrace = {
+    schemaVersion: 'runtime-trace-2026-04-28',
+    language: 'csharp',
+    runId,
+    events: events.map((event) => ({
+      ...event,
+      runId,
+      file: entry.source.path,
+    })),
+    lineEventCount: events.filter((event) => event.kind === 'line').length,
+    traceStepCount: events.length,
+  };
+  return { language: 'csharp', output: parsed.output, trace, signature: buildMineSignature(trace) };
 }
 
 
@@ -1252,6 +1346,7 @@ function summarizeClassifiedDrifts(drifts: ClassifiedDriftRecord[]): DriftClassi
     javascript: emptyClassificationCounts(),
     typescript: emptyClassificationCounts(),
     java: emptyClassificationCounts(),
+    csharp: emptyClassificationCounts(),
   };
   const summary: DriftClassificationSummary = {
     counts: emptyClassificationCounts(),
@@ -1278,7 +1373,7 @@ function isClassifiedDrift(drift: DriftRecord | ClassifiedDriftRecord): drift is
 }
 
 function countDriftsByLanguage(drifts: DriftRecord[]): Record<MineLanguage, number> {
-  const counts = { python: 0, javascript: 0, typescript: 0, java: 0 };
+  const counts = { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0 };
   for (const drift of drifts) {
     counts[drift.language] += 1;
   }
@@ -1370,7 +1465,7 @@ async function loadMineGroups(corpusPath: string, sourceRoot: string): Promise<A
   const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as CorpusEntry[];
   const bySlug = new Map<string, CorpusEntry[]>();
   for (const entry of entries) {
-    if (!['python', 'javascript', 'typescript', 'java'].includes(entry.language)) continue;
+    if (!['python', 'javascript', 'typescript', 'java', 'csharp'].includes(entry.language)) continue;
     const group = bySlug.get(entry.slug) ?? [];
     group.push(entry);
     bySlug.set(entry.slug, group);
@@ -1443,6 +1538,7 @@ function mergeClassificationSummaries(reports: MineReport[]): DriftClassificatio
       javascript: emptyClassificationCounts(),
       typescript: emptyClassificationCounts(),
       java: emptyClassificationCounts(),
+      csharp: emptyClassificationCounts(),
     },
     examples: {
       'fixture-worthy': [],
@@ -1566,7 +1662,7 @@ async function runConcurrentMine(
   const hardFailureCount = reports.reduce((sum, report) => sum + report.hardFailureCount, 0) + failures.length;
   const driftCountsByLanguage = reports.reduce(
     (counts, report) => mergeCountMaps(counts, report.driftCountsByLanguage),
-    { python: 0, javascript: 0, typescript: 0, java: 0 }
+    { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0 }
   );
   const reportFailures = [
     ...reports.flatMap((report) => report.failures),
@@ -1586,7 +1682,7 @@ async function runConcurrentMine(
   const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
   const includeSignatureDiffs = hasFlag('include-signature-diffs');
   const referenceLanguage = parseReferenceLanguage();
-  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java']);
+  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java', 'csharp']);
   const mergedReport: MineReport & { jobs: number; workerReportDir: string; runnerCrashCount: number } = {
     corpusPath,
     sourceRoot,
@@ -1675,7 +1771,7 @@ async function main(): Promise<void> {
   const compareRuntimeFacts = hasFlag('compare-runtime-facts');
   const includeSignatureDiffs = hasFlag('include-signature-diffs');
   const referenceLanguage = parseReferenceLanguage();
-  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java']);
+  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java', 'csharp']);
   const maxReportDrifts = parseNumberFlag('max-report-drifts', 250);
   const maxReportFailures = parseNumberFlag('max-report-failures', 250);
   const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
@@ -1704,7 +1800,9 @@ async function main(): Promise<void> {
           ? await executePythonTrace(pythonRuntime, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
           : entry.language === 'java'
             ? await executeJavaTrace(entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
-            : await executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
+            : entry.language === 'csharp'
+              ? await executeCSharpTrace(entry, code, maxTraceSteps)
+              : await executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
         runs.set(entry.language, run);
         temporalInvariantViolations.push(...auditTemporalInvariants(entry, code, run.trace));
         if (hasExpectedOutput(entry) && !outputsEqual(entry.expectedOutput, run.output, entry.compareMode)) {

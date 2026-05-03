@@ -281,20 +281,126 @@ public static class RuntimeTraceSink
             || value is uint
             || value is long
             || value is ulong
-            || value is float
-            || value is double
             || value is decimal)
         {
             return value;
         }
 
+        if (value is float floatValue)
+        {
+            return float.IsFinite(floatValue) ? floatValue : floatValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (value is double doubleValue)
+        {
+            return double.IsFinite(doubleValue) ? doubleValue : doubleValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         Type type = value.GetType();
+        if (type.FullName?.StartsWith("System.ValueTuple`", StringComparison.Ordinal) == true)
+        {
+            return NormalizeValueTuple(value, depth, seen);
+        }
+
+        if (value is System.Collections.IDictionary dictionary)
+        {
+            return NormalizeDictionary(dictionary, depth, seen);
+        }
+
+        if (value is Array array)
+        {
+            return NormalizeArray(array, depth, seen);
+        }
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            return NormalizeEnumerable(enumerable, depth, seen);
+        }
+
         return type.Name switch
         {
             "ListNode" => NormalizeListNode(value, depth, seen),
             "TreeNode" => NormalizeTreeNode(value, depth, seen),
-            _ => value,
+            _ => NormalizeObject(value, depth, seen),
         };
+    }
+
+    private static object? NormalizeValueTuple(object tuple, int depth, ISet<object> seen)
+    {
+        if (depth >= MaxNodeDepth)
+        {
+            return tuple.ToString();
+        }
+
+        return tuple
+            .GetType()
+            .GetFields()
+            .Where(field => field.Name.StartsWith("Item", StringComparison.Ordinal))
+            .OrderBy(field => field.Name, StringComparer.Ordinal)
+            .Select(field => NormalizeTraceValue(field.GetValue(tuple), depth + 1, seen))
+            .ToList();
+    }
+
+    private static object? NormalizeDictionary(System.Collections.IDictionary dictionary, int depth, ISet<object> seen)
+    {
+        if (depth >= MaxNodeDepth || !seen.Add(dictionary))
+        {
+            return new List<object?>();
+        }
+
+        var entries = new List<Dictionary<string, object?>>();
+        foreach (System.Collections.DictionaryEntry entry in dictionary)
+        {
+            entries.Add(new Dictionary<string, object?>
+            {
+                ["key"] = NormalizeTraceValue(entry.Key, depth + 1, seen),
+                ["value"] = NormalizeTraceValue(entry.Value, depth + 1, seen),
+            });
+        }
+
+        return entries;
+    }
+
+    private static object? NormalizeArray(Array array, int depth, ISet<object> seen)
+    {
+        if (depth >= MaxNodeDepth || !seen.Add(array))
+        {
+            return new List<object?>();
+        }
+
+        return NormalizeArrayDimension(array, 0, new int[array.Rank], depth, seen);
+    }
+
+    private static object? NormalizeArrayDimension(Array array, int dimension, int[] indices, int depth, ISet<object> seen)
+    {
+        var values = new List<object?>();
+        int lower = array.GetLowerBound(dimension);
+        int upper = array.GetUpperBound(dimension);
+        for (int index = lower; index <= upper; index++)
+        {
+            indices[dimension] = index;
+            values.Add(dimension == array.Rank - 1
+                ? NormalizeTraceValue(array.GetValue(indices), depth + 1, seen)
+                : NormalizeArrayDimension(array, dimension + 1, indices, depth + 1, seen));
+        }
+
+        return values;
+    }
+
+    private static object? NormalizeEnumerable(System.Collections.IEnumerable enumerable, int depth, ISet<object> seen)
+    {
+        if (depth >= MaxNodeDepth || !seen.Add(enumerable))
+        {
+            return new List<object?>();
+        }
+
+        var values = new List<object?>();
+        foreach (object? item in enumerable)
+        {
+            values.Add(NormalizeTraceValue(item, depth + 1, seen));
+        }
+
+        return values;
     }
 
     private static object? NormalizeListNode(object node, int depth, ISet<object> seen)
@@ -333,6 +439,48 @@ public static class RuntimeTraceSink
             ["left"] = left is null ? null : NormalizeTraceValue(left, depth + 1, seen),
             ["right"] = right is null ? null : NormalizeTraceValue(right, depth + 1, seen),
         };
+    }
+
+    private static object? NormalizeObject(object value, int depth, ISet<object> seen)
+    {
+        Type type = value.GetType();
+        if (type.Namespace?.StartsWith("System", StringComparison.Ordinal) == true)
+        {
+            return value;
+        }
+
+        if (depth >= MaxNodeDepth || !seen.Add(value))
+        {
+            return new Dictionary<string, object?> { ["__ref__"] = type.Name };
+        }
+
+        var result = new Dictionary<string, object?>
+        {
+            ["__type__"] = type.Name,
+        };
+
+        foreach (System.Reflection.FieldInfo field in type.GetFields(
+            System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.Instance
+        ))
+        {
+            result[field.Name] = NormalizeTraceValue(field.GetValue(value), depth + 1, seen);
+        }
+
+        foreach (System.Reflection.PropertyInfo property in type.GetProperties(
+            System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.Instance
+        ))
+        {
+            if (!property.CanRead || property.GetIndexParameters().Length > 0)
+            {
+                continue;
+            }
+
+            result[property.Name] = NormalizeTraceValue(property.GetValue(value), depth + 1, seen);
+        }
+
+        return result.Count > 1 ? result : value;
     }
 }
 
