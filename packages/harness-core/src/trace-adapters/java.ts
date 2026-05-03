@@ -115,6 +115,139 @@ function removeSameLineMutationDeclarationSnapshotEvents(
   });
 }
 
+function collectJavaLineDeclarationsForHeaderExpansion(line: string): string[] {
+  const names: string[] = [];
+  const declarationPattern =
+    /\b(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
+  const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
+  for (const match of line.matchAll(declarationPattern)) {
+    const typeSource = match[1] ?? '';
+    const name = match[2];
+    if (!name || skippedNames.has(name) || name.startsWith('__tracecode')) continue;
+    if (typeSource.includes('[')) continue;
+    names.push(name);
+  }
+  return names;
+}
+
+function collectJavaControlHeaderDeclarations(line: string): string[] {
+  const forMatch = /\bfor\s*\(\s*(?:final\s+)?(?:[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^;=(){}:]+>)?|\w+(?:\s*\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:)/.exec(line);
+  return forMatch?.[1] ? [forMatch[1]] : [];
+}
+
+interface JavaLoopHeaderInfo {
+  line: number;
+  excludedVariables: Set<string>;
+  headerVariables: Set<string>;
+}
+
+function buildJavaControlHeaderInfo(sourceText: string | undefined): {
+  loopBodyLineToHeader: Map<number, JavaLoopHeaderInfo>;
+  headerLineToExcludedVariables: Map<number, Set<string>>;
+} | null {
+  if (typeof sourceText !== 'string' || sourceText.length === 0) return null;
+  const lines = sourceText.split(/\r?\n/);
+  const loopBodyLineToHeader = new Map<number, JavaLoopHeaderInfo>();
+  const headerLineToExcludedVariables = new Map<number, Set<string>>();
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    const isLoopHeader = /\b(?:for|while)\s*\(/.test(line);
+    const isControlHeader = /\b(?:for|while|if|else\s+if)\s*\(/.test(line);
+    if (!isControlHeader || !line.includes('{')) continue;
+
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex += 1) {
+      const trimmed = (lines[bodyIndex] ?? '').trim();
+      if (trimmed.length === 0) continue;
+      if (trimmed.startsWith('}')) break;
+      const headerInfo: JavaLoopHeaderInfo = {
+        line: index + 1,
+        excludedVariables: new Set(collectJavaLineDeclarationsForHeaderExpansion(lines[bodyIndex] ?? '')),
+        headerVariables: new Set(collectJavaControlHeaderDeclarations(line)),
+      };
+      if (isLoopHeader) loopBodyLineToHeader.set(bodyIndex + 1, headerInfo);
+      headerLineToExcludedVariables.set(index + 1, headerInfo.excludedVariables);
+      break;
+    }
+  }
+
+  if (loopBodyLineToHeader.size === 0 && headerLineToExcludedVariables.size === 0) return null;
+  return { loopBodyLineToHeader, headerLineToExcludedVariables };
+}
+
+function eventLine(event: RuntimeTraceEvent): number | null {
+  return typeof event.line === 'number' && Number.isFinite(event.line) && event.line > 0
+    ? event.line
+    : null;
+}
+
+function eventSnapshotVariable(event: RuntimeTraceEvent): string | null {
+  if (event.kind !== 'snapshot') return null;
+  const target = event.target;
+  if (!target || typeof target !== 'object' || !('variable' in target)) return null;
+  const variable = target.variable;
+  return typeof variable === 'string' && variable.length > 0 ? variable : null;
+}
+
+function cloneRuntimeEventAtLine(event: RuntimeTraceEvent, line: number): RuntimeTraceEvent {
+  return { ...event, line };
+}
+
+function expandJavaLoopHeaderTraceEvents(
+  events: RuntimeTraceEvent[],
+  sourceText: string | undefined
+): RuntimeTraceEvent[] {
+  if (events.length === 0) return events;
+  const controlHeaderInfo = buildJavaControlHeaderInfo(sourceText);
+  if (!controlHeaderInfo) return events;
+  const { loopBodyLineToHeader, headerLineToExcludedVariables } = controlHeaderInfo;
+
+  const expanded: RuntimeTraceEvent[] = [];
+  const latestSnapshotByVariable = new Map<string, RuntimeTraceEvent>();
+  let lastLineEventLine: number | null = null;
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    const line = eventLine(event);
+    const snapshotVariable = eventSnapshotVariable(event);
+    if (
+      line !== null &&
+      snapshotVariable &&
+      headerLineToExcludedVariables.get(line)?.has(snapshotVariable)
+    ) {
+      continue;
+    }
+
+    const headerInfo = line === null ? undefined : loopBodyLineToHeader.get(line);
+    const headerLine = headerInfo?.line;
+    if (headerLine !== undefined && event.kind === 'line' && lastLineEventLine !== headerLine) {
+      expanded.push(cloneRuntimeEventAtLine(event, headerLine));
+      for (const [variable, snapshotEvent] of latestSnapshotByVariable) {
+        if (headerInfo.excludedVariables.has(variable)) continue;
+        expanded.push(cloneRuntimeEventAtLine(snapshotEvent, headerLine));
+      }
+      lastLineEventLine = headerLine;
+    }
+
+    if (headerLine !== undefined && event.kind === 'line') {
+      for (let lookahead = index + 1; lookahead < events.length; lookahead += 1) {
+        if (eventLine(events[lookahead]) !== line) break;
+        const variable = eventSnapshotVariable(events[lookahead]);
+        if (!variable || !headerInfo.headerVariables.has(variable)) continue;
+        expanded.push(cloneRuntimeEventAtLine(events[lookahead], headerLine));
+      }
+    }
+
+    expanded.push(event);
+    if (event.kind === 'line') {
+      lastLineEventLine = line;
+    }
+    if (snapshotVariable) {
+      latestSnapshotByVariable.set(snapshotVariable, event);
+    }
+  }
+  return expanded;
+}
+
 function nativeJavaTraceEventsToTrace(
   events: string[],
   sourceText: string | undefined,
@@ -136,6 +269,7 @@ function nativeJavaTraceEventsToTrace(
     };
   });
   parsedEvents = removeSameLineMutationDeclarationSnapshotEvents(parsedEvents, sourceText);
+  parsedEvents = expandJavaLoopHeaderTraceEvents(parsedEvents, sourceText);
 
   return {
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,

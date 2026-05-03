@@ -165,6 +165,70 @@ public class Main {
   }
 }
 
+function testJavaRuntimeMultiSnapshotFragments(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-multi-snapshot-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import tracecode.user.TraceHooks;
+
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    TraceHooks.emitLineAtLine(1, " nums=[1,2] target=2");
+    TraceHooks.emitCallAtLine(2, "search", " nums=[1,2] target=2");
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const events = output.trim().split('\n');
+    const trace = javaTraceHooksEventsToRuntimeTrace(events, undefined, { runId: 'java:test' });
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'call' &&
+        event.line === 2 &&
+        JSON.stringify(event.args) === JSON.stringify({ nums: [1, 2], target: 2 })
+      ),
+      'Java call hooks should convert live argument fragments into native JSON args'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'snapshot' &&
+        event.line === 1 &&
+        'variable' in event.target &&
+        event.target.variable === 'nums' &&
+        JSON.stringify(event.value) === JSON.stringify([1, 2])
+      ) &&
+        trace.events.some((event) =>
+          event.kind === 'snapshot' &&
+          event.line === 2 &&
+          'variable' in event.target &&
+          event.target.variable === 'target' &&
+          event.value === 2
+        ),
+      'Java line/call hooks should split multi-variable live fragments into native snapshot events'
+    );
+    console.log('PASS: Java native hooks split multi-variable live snapshots');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testNativeJavaRewriterRegressionGaps(): void {
   const reflectiveTypeSource = rewriteWithNativeJavaRewriter(`import java.lang.reflect.*;
 
@@ -658,6 +722,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
 async function main(): Promise<void> {
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
+  testJavaRuntimeMultiSnapshotFragments();
 
   const workerSource = await loadWorkerSource();
   const augmentationSource = await loadJavaSourceAugmentationSource();
@@ -822,7 +887,7 @@ class Solution {
     const listRewrite = harness.rewriteCalls.at(-1);
     assertCondition(
       listRewrite?.exportsSource.includes(
-        'ListNode head = TraceHooks.reindexListIds(buildList(new Object[] { 1, 2, 3 }, sequentialNextIndices(3)));'
+        'ListNode head = buildList(new Object[] { 1, 2, 3 }, sequentialNextIndices(3));'
       ),
       'Java worker should materialize array inputs as ListNode only when the signature expects ListNode'
     );

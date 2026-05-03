@@ -96,6 +96,212 @@
     return null;
   }
 
+  function splitTopLevelJavaList(value) {
+    const parts = [];
+    let start = 0;
+    let parenDepth = 0;
+    let bracketDepth = 0;
+    let braceDepth = 0;
+    let angleDepth = 0;
+    let quote = null;
+    let escaped = false;
+    for (let index = 0; index < value.length; index += 1) {
+      const ch = value[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (quote) {
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        continue;
+      }
+      if (ch === '(') parenDepth += 1;
+      if (ch === ')') parenDepth = Math.max(0, parenDepth - 1);
+      if (ch === '[') bracketDepth += 1;
+      if (ch === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+      if (ch === '{') braceDepth += 1;
+      if (ch === '}') braceDepth = Math.max(0, braceDepth - 1);
+      if (ch === '<') angleDepth += 1;
+      if (ch === '>') angleDepth = Math.max(0, angleDepth - 1);
+      if (ch === ',' && parenDepth === 0 && bracketDepth === 0 && braceDepth === 0 && angleDepth === 0) {
+        parts.push(value.slice(start, index).trim());
+        start = index + 1;
+      }
+    }
+    const tail = value.slice(start).trim();
+    if (tail.length > 0) parts.push(tail);
+    return parts;
+  }
+
+  function parseJavaParameterNames(parametersSource) {
+    return splitTopLevelJavaList(parametersSource)
+      .map((parameter) => parameter.replace(/@\w+(?:\([^)]*\))?/g, '').replace(/\bfinal\b/g, '').trim())
+      .map((parameter) => parameter.match(/([A-Za-z_][A-Za-z0-9_]*)\s*(?:\.\.\.)?$/)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+  }
+
+  function augmentTraceCallArgumentSnapshots(source) {
+    const lines = source.split('\n');
+    const methodStack = [];
+    const methodStartPattern =
+      /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+
+    return lines.map((line) => {
+      const methodMatch = line.match(methodStartPattern);
+      if (methodMatch) {
+        methodStack.push({
+          name: methodMatch[2],
+          params: parseJavaParameterNames(methodMatch[3] ?? ''),
+          depth: 1,
+          patchedCall: false,
+        });
+        return line;
+      }
+
+      const currentMethod = methodStack[methodStack.length - 1];
+      let nextLine = line;
+      if (currentMethod && !currentMethod.patchedCall && currentMethod.params.length > 0) {
+        const callPattern = new RegExp(
+          `^(\\s*)TraceHooks\\.emitCallAtLine\\((\\d+),\\s*"${escapeRegExp(currentMethod.name)}",\\s*([^)]*)\\);\\s*$`
+        );
+        const callMatch = line.match(callPattern);
+        if (callMatch) {
+          const serializedArgs = currentMethod.params
+            .map((paramName) => ` + " ${paramName}=" + TraceHooks.serializeResult(${paramName})`)
+            .join('');
+          nextLine = `${callMatch[1]}TraceHooks.emitCallAtLine(${callMatch[2]}, "${currentMethod.name}", ""${serializedArgs});`;
+          currentMethod.patchedCall = true;
+        }
+      }
+
+      if (currentMethod) {
+        currentMethod.depth += braceDelta(nextLine);
+        while (methodStack.length > 0 && methodStack[methodStack.length - 1].depth <= 0) {
+          methodStack.pop();
+        }
+      }
+
+      return nextLine;
+    }).join('\n');
+  }
+
+  function collectJavaLocalDeclarations(line) {
+    const names = [];
+    const trimmedLine = String(line).trim();
+    if (trimmedLine.startsWith('//') || trimmedLine.startsWith('/*') || trimmedLine.startsWith('*')) return names;
+    const declarationPattern =
+      /\b(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
+    const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
+    for (const match of line.matchAll(declarationPattern)) {
+      const typeSource = match[1] ?? '';
+      const name = match[2];
+      if (typeSource.includes('[')) continue;
+      if (name && !skippedNames.has(name) && !name.startsWith('__tracecode')) names.push(name);
+    }
+    const enhancedForMatch = line.match(
+      /\bfor\s*\(\s*(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/
+    );
+    const enhancedForType = enhancedForMatch?.[1] ?? '';
+    const enhancedForName = enhancedForMatch?.[2];
+    if (!enhancedForType.includes('[') && enhancedForName && !skippedNames.has(enhancedForName) && !enhancedForName.startsWith('__tracecode')) {
+      names.push(enhancedForName);
+    }
+    return names;
+  }
+
+  function visibleJavaLocalNames(scopeStack) {
+    const names = [];
+    const seen = new Set();
+    for (const scope of scopeStack) {
+      for (const name of scope.names) {
+        if (!seen.has(name)) {
+          names.push(name);
+          seen.add(name);
+        }
+      }
+    }
+    return names;
+  }
+
+  function isUnbracedForDeclarationLine(line) {
+    return /^\s*for\s*\(/.test(line) && !(line.includes('{'));
+  }
+
+  function traceEmitAlreadyIncludesVariable(emitExpression, name) {
+    return new RegExp(`\\b${escapeRegExp(name)}=`).test(emitExpression);
+  }
+
+  function appendJavaLocalSnapshotsToEmitLine(line, scopeStack) {
+    const visibleNames = visibleJavaLocalNames(scopeStack);
+    if (visibleNames.length === 0 || !line.includes('TraceHooks.emitLineAtLine(')) return line;
+
+    return line.replace(/TraceHooks\.emitLineAtLine\((\d+)(?:,\s*([^;]*?))?\);/g, (match, lineNumber, snapshotExpression) => {
+      const emitExpression = snapshotExpression ?? '';
+      const additions = visibleNames
+        .filter((name) => !traceEmitAlreadyIncludesVariable(emitExpression, name))
+        .map((name) => ` + " ${name}=" + TraceHooks.serializeResult(${name})`)
+        .join('');
+      if (!additions) return match;
+      const prefix = emitExpression.trim().length > 0 ? emitExpression.trim() : '""';
+      return `TraceHooks.emitLineAtLine(${Number.parseInt(lineNumber, 10)}, ${prefix}${additions});`;
+    });
+  }
+
+  function guardJavaLineEmit(line) {
+    return line.replace(
+      /^(\s*)TraceHooks\.emitLineAtLine\((.+)\);\s*$/,
+      (_match, indent, argsSource) => `${indent}if (!TraceHooks.traceLimitExceeded()) TraceHooks.emitLineAtLine(${argsSource});`
+    );
+  }
+
+  function augmentJavaLocalSnapshots(source) {
+    const lines = source.split('\n');
+    const output = [];
+    const scopeStack = [];
+    const methodStartPattern =
+      /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+
+    for (const line of lines) {
+      const leadingClosingCount = line.match(/^\s*}+/)?.[0].replace(/\s/g, '').length ?? 0;
+      for (let index = 0; index < leadingClosingCount; index += 1) {
+        if (scopeStack.length > 0) scopeStack.pop();
+      }
+
+      const methodMatch = line.match(methodStartPattern);
+      if (methodMatch) {
+        scopeStack.push({ names: parseJavaParameterNames(methodMatch[3] ?? '') });
+        output.push(line);
+        continue;
+      }
+
+      output.push(guardJavaLineEmit(appendJavaLocalSnapshotsToEmitLine(line, scopeStack)));
+
+      const openingCount = (line.match(/{/g) ?? []).length;
+      const closingCount = Math.max(0, (line.match(/}/g) ?? []).length - leadingClosingCount);
+      const declarations = collectJavaLocalDeclarations(line);
+      for (let index = 0; index < openingCount; index += 1) {
+        scopeStack.push({ names: index === 0 ? declarations : [] });
+      }
+      if (openingCount === 0 && declarations.length > 0 && !isUnbracedForDeclarationLine(line)) {
+        const currentScope = scopeStack[scopeStack.length - 1];
+        if (currentScope) currentScope.names.push(...declarations);
+      }
+      for (let index = 0; index < closingCount; index += 1) {
+        if (scopeStack.length > 0) scopeStack.pop();
+      }
+    }
+
+    return output.join('\n');
+  }
+
   function replaceJavaReceiverCall(source, receiverName, methodName, replacer) {
     const callPattern = new RegExp(`\\b${escapeRegExp(receiverName)}\\.${methodName}\\(`, 'g');
     let output = '';
@@ -178,11 +384,24 @@
   function augmentJavaCollectionOperations(source, sourceText) {
     const lines = source.split('\n');
     const methodStack = [];
+    let generatedExportsClassDepth = null;
     const resolveOriginalLine = buildOriginalLineResolver(sourceText);
     const methodStartPattern =
       /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+    const generatedExportsClassPattern = /^\s*(?:(?:public|private|protected|static|final)\s+)*class\s+Exports[A-Za-z0-9_]*\s*\{/;
 
     return lines.map((line, lineIndex) => {
+      if (generatedExportsClassDepth !== null) {
+        generatedExportsClassDepth += braceDelta(line);
+        if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+        return line;
+      }
+      if (generatedExportsClassPattern.test(line)) {
+        generatedExportsClassDepth = Math.max(0, braceDelta(line));
+        if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+        return line;
+      }
+
       const methodMatch = line.match(methodStartPattern);
       if (methodMatch) {
         methodStack.push({
@@ -223,7 +442,7 @@
           );
           nextLine = nextLine.replace(indexedAddPattern, (_match, indexSource, valueSource) => {
             const indexExpression = String(indexSource).trim();
-            return `{ TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}).add(${String(valueSource).trim()}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add"); }`;
+            return `{ TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}).add(${String(valueSource).trim()}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add"); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
 
           const listGetPattern = new RegExp(`\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)`, 'g');
@@ -242,7 +461,7 @@
             const method = String(methodSource).trim();
             const value = String(valueSource).trim();
             const target = `((java.util.Collection) (${name}).get(${keyExpression}))`;
-            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyExpression}) + "]},\\"value\\":null}"); ${target}.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}"); }`;
+            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyExpression}) + "]},\\"value\\":null}"); ${target}.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}"); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'containsKey', (key) =>
             `TraceHooks.containsMapKeyAtLine(${lineNumber}, "${name}", ${name}, ${key})`
@@ -311,6 +530,8 @@
 
   const api = {
     augmentJavaCollectionOperations,
+    augmentJavaLocalSnapshots,
+    augmentTraceCallArgumentSnapshots,
   };
 
   root.TraceCodeJavaSourceAugmentations = api;
