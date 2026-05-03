@@ -282,8 +282,8 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     structures: {
       treeNodeRefs: true,
       listNodeRefs: true,
-      mapSerialization: false,
-      setSerialization: false,
+      mapSerialization: true,
+      setSerialization: true,
       graphSerialization: false,
       cycleReferences: false,
     },
@@ -292,6 +292,7 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'C# support is browser-local and experimental.',
     'The first C# slice supports LeetCode-style public class Solution methods.',
     'ListNode and TreeNode inputs are hydrated from LeetCode-style arrays or object-shaped JSON.',
+    'Dictionary, HashSet, List, and array return values serialize through the browser-local worker.',
     'Tracing currently supports line, call, return, stdout, and simple local variable write events.',
     'Structural visualization is added after execution and diagnostics are proven.',
   ],

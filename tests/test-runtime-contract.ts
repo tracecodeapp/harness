@@ -159,6 +159,8 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'diagnostics.mappedErrorLines',
     'structures.treeNodeRefs',
     'structures.listNodeRefs',
+    'structures.mapSerialization',
+    'structures.setSerialization',
   ],
 };
 
@@ -427,6 +429,8 @@ async function main(): Promise<void> {
   assertCondition(csharpProfile.capabilities.diagnostics.compileErrors, 'C# should support compile diagnostics');
   assertCondition(csharpProfile.capabilities.structures.listNodeRefs, 'C# should advertise ListNode hydration');
   assertCondition(csharpProfile.capabilities.structures.treeNodeRefs, 'C# should advertise TreeNode hydration');
+  assertCondition(csharpProfile.capabilities.structures.mapSerialization, 'C# should advertise map serialization');
+  assertCondition(csharpProfile.capabilities.structures.setSerialization, 'C# should advertise set serialization');
   console.log('PASS: runtime capability profile matrix');
 
   const unsupportedProfile = createUnsupportedProfile();

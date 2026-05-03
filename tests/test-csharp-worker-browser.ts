@@ -254,6 +254,36 @@ async function main(): Promise<void> {
     assertCondition(!timedOut.success, 'C# worker infinite loop should fail');
     assertCondition(timedOut.timeoutReason === 'client-timeout', 'C# worker infinite loop should use client-timeout');
 
+    const runtimeError = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class Solution {',
+        '  public int Crash(int value) {',
+        '    Console.WriteLine("before crash " + value);',
+        '    throw new InvalidOperationException("bad input");',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Crash',
+      { value: 7 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(!runtimeError.success, 'C# worker runtime-error case should fail');
+    assertCondition(
+      runtimeError.error?.includes('bad input') === true,
+      `C# worker runtime-error case should preserve exception message, received ${runtimeError.error}`
+    );
+    assertCondition(
+      runtimeError.consoleOutput?.includes('before crash 7') === true,
+      `C# worker runtime-error case should preserve stdout, received ${JSON.stringify(runtimeError.consoleOutput)}`
+    );
+    assertCondition(
+      runtimeError.events?.some((event) => event.kind === 'line' && event.line === 4) === true,
+      `C# worker runtime-error case should preserve pre-exception line trace, received ${JSON.stringify(runtimeError.events)}`
+    );
+
     const tracedArray = await runWorkerCase(
       page,
       [
@@ -354,6 +384,73 @@ async function main(): Promise<void> {
     assertCondition(
       tracedCollections.events?.some((event) => event.kind === 'write' && event.target?.variable === 'seen' && event.target.path?.[0] === 4) === true,
       `C# worker traced collections case should include dictionary keyed write, received ${JSON.stringify(tracedCollections.events)}`
+    );
+
+    const collectionOutput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public object[] BuildCollections(int value) {',
+        '    var counts = new Dictionary<string, int>();',
+        '    counts["a"] = value;',
+        '    counts["b"] = value + 1;',
+        '    var seen = new HashSet<int>();',
+        '    seen.Add(value);',
+        '    seen.Add(value + 2);',
+        '    var list = new List<int> { value, value + 1 };',
+        '    int[][] matrix = new int[][] { new int[] { value, value + 1 }, new int[] { value + 2 } };',
+        '    return new object[] { counts, seen, list, matrix };',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildCollections',
+      { value: 4 },
+      assetBaseUrl
+    );
+    assertCondition(
+      collectionOutput.success,
+      `C# worker collection output case should succeed: ${collectionOutput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(collectionOutput.output) === JSON.stringify([{ a: 4, b: 5 }, [4, 6], [4, 5], [[4, 5], [6]]]),
+      `C# worker collection output case should serialize collections, received ${JSON.stringify(collectionOutput.output)}`
+    );
+
+    const tracedCollectionOutput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public object[] BuildCollections(int value) {',
+        '    var counts = new Dictionary<string, int>();',
+        '    counts["a"] = value;',
+        '    var seen = new HashSet<int>();',
+        '    seen.Add(value);',
+        '    return new object[] { counts, seen };',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildCollections',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedCollectionOutput.success,
+      `C# worker traced collection output case should succeed: ${tracedCollectionOutput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(tracedCollectionOutput.output) === JSON.stringify([{ a: 4 }, [4]]),
+      `C# worker traced collection output case should serialize output collections, received ${JSON.stringify(tracedCollectionOutput.output)}`
+    );
+    assertCondition(
+      tracedCollectionOutput.events?.some((event) => event.kind === 'snapshot' && event.target?.variable === 'counts') === true,
+      `C# worker traced collection output case should include dictionary snapshots, received ${JSON.stringify(tracedCollectionOutput.events)}`
+    );
+    assertCondition(
+      tracedCollectionOutput.events?.some((event) => event.kind === 'snapshot' && event.target?.variable === 'seen') === true,
+      `C# worker traced collection output case should include set snapshots, received ${JSON.stringify(tracedCollectionOutput.events)}`
     );
 
     const tracedExplicitCollections = await runWorkerCase(
@@ -985,8 +1082,20 @@ async function main(): Promise<void> {
     const compileError = await runWorkerCase(page, fixture('compile-error.cs'), 'Add', { a: 2, b: 3 }, assetBaseUrl);
     assertCondition(!compileError.success, 'C# worker compile-error fixture should fail');
     assertCondition(
+      compileError.error?.includes("Cannot implicitly convert type 'string' to 'int'") === true,
+      `C# worker compile-error fixture should preserve Roslyn diagnostic text, received ${compileError.error}`
+    );
+    assertCondition(
       compileError.diagnostics?.some((diagnostic) => diagnostic.file.endsWith('UserCode.cs') && diagnostic.line === 5) === true,
       `C# worker diagnostics should map to UserCode.cs line 5, received ${JSON.stringify(compileError.diagnostics)}`
+    );
+    assertCondition(
+      compileError.diagnostics?.some((diagnostic) =>
+        diagnostic.file.endsWith('UserCode.cs')
+        && diagnostic.line === 5
+        && diagnostic.column > 0
+        && diagnostic.message.includes("Cannot implicitly convert type 'string' to 'int'")) === true,
+      `C# worker diagnostics should include mapped line/column/message, received ${JSON.stringify(compileError.diagnostics)}`
     );
 
     const voidReturn = await runWorkerCase(page, fixture('void-return.cs'), 'Add', { a: 2, b: 3 }, assetBaseUrl);
