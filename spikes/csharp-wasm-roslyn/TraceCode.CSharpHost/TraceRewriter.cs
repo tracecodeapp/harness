@@ -104,7 +104,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
         );
 
-        return rewritten.WithBody(rewritten.Body!.WithStatements(rewritten.Body.Statements.Insert(0, callStatement)));
+        SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements.Insert(0, callStatement);
+        if (IsVoidReturnType(rewritten.ReturnType))
+        {
+            statements = statements.Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line));
+        }
+
+        return rewritten.WithBody(rewritten.Body.WithStatements(statements));
     }
 
     public override SyntaxNode? VisitConstructorDeclaration(ConstructorDeclarationSyntax node)
@@ -155,7 +161,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
         );
 
-        return rewritten.WithBody(rewritten.Body!.WithStatements(rewritten.Body.Statements.Insert(0, callStatement)));
+        SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements
+            .Insert(0, callStatement)
+            .Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line));
+        return rewritten.WithBody(rewritten.Body.WithStatements(statements));
     }
 
     public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
@@ -210,7 +219,26 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
         );
 
-        return rewritten.WithBody(rewritten.Body!.WithStatements(rewritten.Body.Statements.Insert(0, callStatement)));
+        SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements.Insert(0, callStatement);
+        if (IsVoidReturnType(rewritten.ReturnType))
+        {
+            statements = statements.Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line));
+        }
+
+        return rewritten.WithBody(rewritten.Body.WithStatements(statements));
+    }
+
+    private static bool IsVoidReturnType(TypeSyntax returnType)
+    {
+        return returnType is PredefinedTypeSyntax predefinedType
+            && predefinedType.Keyword.IsKind(SyntaxKind.VoidKeyword);
+    }
+
+    private static StatementSyntax CreateImplicitReturnStatement(string methodName, int line)
+    {
+        return TraceStatement(
+            $"TraceCode.Internal.TraceCodeTrace.Return({Literal(methodName)}, {line});"
+        );
     }
 
     private static bool IsTrivialDataConstructor(ConstructorDeclarationSyntax node)
