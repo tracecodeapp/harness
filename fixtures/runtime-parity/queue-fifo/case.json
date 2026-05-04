@@ -86,6 +86,27 @@
         ]
       }
     },
+    "java": {
+      "popleft": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "num",
+          "nums",
+          "queue"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue",
+            "method": "popleft"
+          }
+        ]
+      }
+    },
     "javascript": {
       "popleft": {
         "eventKinds": [

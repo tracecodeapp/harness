@@ -154,25 +154,6 @@
         ]
       }
     },
-    "java": {
-      "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
-          }
-        ],
-        "variableSnapshots": [
-          "rows"
-        ]
-      }
-    },
     "csharp": {
       "read": {
         "eventKinds": [
