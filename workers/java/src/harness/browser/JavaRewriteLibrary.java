@@ -255,7 +255,8 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + (" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
-      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+      String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher frontFieldMutatingCall = FRONT_FIELD_MUTATING_CALL_STATEMENT.matcher(line);
@@ -271,7 +272,8 @@ public final class JavaRewriteLibrary {
           pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"}\");";
-      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+      String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher fieldMutatingCall = FIELD_MUTATING_CALL_STATEMENT.matcher(line);
@@ -303,7 +305,8 @@ public final class JavaRewriteLibrary {
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\\\"" + field + "\\\"]}";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"}\");";
-      return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+      String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+      return indent + "{ " + target + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher computeMutatingCall = COMPUTE_IF_ABSENT_MUTATING_CALL_STATEMENT.matcher(line);
@@ -321,7 +324,8 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
-      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " }";
+      String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher indexedMutatingCall = INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
@@ -338,7 +342,8 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
-      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " }";
+      String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + temp + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher arrayIndexedMapWrite = ARRAY_INDEXED_MAP_WRITE_STATEMENT.matcher(line);
@@ -392,7 +397,8 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
-      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " }";
+      String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher update2d = ARRAY_UPDATE_2D.matcher(line);
@@ -507,15 +513,24 @@ public final class JavaRewriteLibrary {
           return indent + "TraceHooks.putMapAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + key + ", " + value + ");";
         }
       }
+      if ("set".equals(method) && isListType(frame.typeOf(name))) {
+        java.util.List<String> parts = splitTopLevel(mutatingCall.group(4).trim());
+        if (parts.size() >= 2) {
+          String index = rewriteReads(parts.get(0), sourceLine, frame);
+          String value = rewriteReads(parts.get(1), sourceLine, frame);
+          return indent + "TraceHooks.writeListAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + index + ", " + value + ");";
+        }
+      }
       if (frame.isField(name)) {
         String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"this\\\",\\\"path\\\":[\\\"" + name + "\\\"]}";
         String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
             pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + name + ") + \"}\");";
         String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
             pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"}\");";
-        return indent + "{ " + readEvent + " " + name + "." + method + "(" + args + "); " + mutateEvent + " }";
+        String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", \"this\", this);";
+        return indent + "{ " + readEvent + " " + name + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
       }
-      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ");";
+      return indent + name + "." + method + "(" + args + "); TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + "); TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
     }
 
     return rewriteReads(line, sourceLine, frame);
@@ -604,6 +619,9 @@ public final class JavaRewriteLibrary {
     });
     next = replaceAll(MAP_GET_CALL, next, match -> {
       String name = match.group(1);
+      if (isListType(frame.typeOf(name))) {
+        return "TraceHooks.readListAtLine(" + line + ", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
+      }
       if (!isMapType(frame.typeOf(name))) return match.group(0);
       if (frame.isField(name)) {
         return "TraceHooks.readFieldMapAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + match.group(2).trim() + ")";
@@ -847,6 +865,11 @@ public final class JavaRewriteLibrary {
     return normalizeJavaType(type).contains("Set<");
   }
 
+  private static boolean isListType(String type) {
+    if (type == null) return false;
+    return normalizeJavaType(type).contains("List<");
+  }
+
   private static String indexedAccessExpression(String name, String type, String index) {
     String normalized = type == null ? "" : normalizeJavaType(type);
     if (normalized.contains("Map")) {
@@ -1014,7 +1037,7 @@ public final class JavaRewriteLibrary {
         "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) || "putIfAbsent".equals(method) ||
         "addFirst".equals(method) || "offerFirst".equals(method) ||
         "remove".equals(method) || "clear".equals(method) || "poll".equals(method) ||
-        "pollFirst".equals(method) || "removeFirst".equals(method) ||
+        "pollFirst".equals(method) || "removeFirst".equals(method) || "set".equals(method) ||
         "pollLast".equals(method) || "removeLast".equals(method) || "pop".equals(method);
   }
   private static int braceDelta(String line) {

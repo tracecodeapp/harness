@@ -966,6 +966,7 @@ function createTraceRecorder(options = {}) {
 
   function snapshotCallStack() {
     return callStack.map((frame) => ({
+      id: frame.id,
       function: frame.function,
       args: frame.args,
       line: frame.line,
@@ -1096,6 +1097,7 @@ function createTraceRecorder(options = {}) {
         : {}),
       ...(access.method ? { method: access.method } : {}),
       ...(access.pathDepth ? { pathDepth: access.pathDepth } : {}),
+      ...(Object.prototype.hasOwnProperty.call(access, 'value') ? { value: access.value } : {}),
     }));
   }
 
@@ -1137,9 +1139,9 @@ function createTraceRecorder(options = {}) {
     const stack = Array.isArray(step?.callStack) ? step.callStack : [];
     if (stack.length > 0) {
       const frame = stack[stack.length - 1];
-      return `${frame.function}:${frame.line}`;
+      return `${frame.function}:${frame.line}:${frame.id ?? 'unknown'}`;
     }
-    return `${step.function}:${step.line}`;
+    return `${step.function}:${step.line}:root`;
   }
 
   function runtimeTraceTargetForAccess(access) {
@@ -1157,7 +1159,13 @@ function createTraceRecorder(options = {}) {
   }
 
   function runtimeTraceAccessValue(step, access) {
+    if (access && Object.prototype.hasOwnProperty.call(access, 'value')) return access.value;
     return valueAtPath(step?.variables?.[access.variable], access.indices);
+  }
+
+  function traceStepFrameId(step) {
+    const stack = Array.isArray(step?.callStack) ? step.callStack : [];
+    return stack.length > 0 ? stack[stack.length - 1]?.id : undefined;
   }
 
   function updateRuntimeTraceAccessStats(access) {
@@ -1250,6 +1258,7 @@ function createTraceRecorder(options = {}) {
     if (previous.event !== 'line' || nextStep.event !== 'line') return false;
     if (previous.line !== nextStep.line) return false;
     if (previous.function !== nextStep.function) return false;
+    if ((previous.accesses?.length ?? 0) > 0 || (nextStep.accesses?.length ?? 0) > 0) return false;
     return sameCallStackVisit(previous.callStack, nextStep.callStack);
   }
 
@@ -1404,6 +1413,7 @@ function createTraceRecorder(options = {}) {
       if (traceLimitExceeded) {
         return;
       }
+      this.attachPendingAccessesToPreviousLine();
       const normalizedArgs = sanitizeVariables(args);
       const frame = {
         id: nextFrameId++,
@@ -1449,6 +1459,9 @@ function createTraceRecorder(options = {}) {
           ? { method: event.method }
           : {}),
         ...(event.pathDepth === 1 || event.pathDepth === 2 || event.pathDepth === 3 ? { pathDepth: event.pathDepth } : {}),
+        ...(Object.prototype.hasOwnProperty.call(event, 'value')
+          ? { value: this.serialize(event.value) }
+          : {}),
       };
 
       const existing = pendingAccessesByFrame.get(frameId) ?? [];
@@ -1497,11 +1510,11 @@ function createTraceRecorder(options = {}) {
       for (let index = trace.length - 1; index >= 0; index -= 1) {
         const step = trace[index];
         if (!step || step.event !== 'line') continue;
+        if (traceStepFrameId(step) !== frameId) continue;
         step.accesses = [...(step.accesses ?? []), ...attachable];
         appendRuntimeTraceEventsForStep({
           ...step,
           event: '__access_only__',
-          variables: {},
           accesses: attachable,
         });
         return;
@@ -2083,7 +2096,8 @@ function inferTraceFunctionName(ts, node, fallbackFunctionName) {
   }
 
   if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
-    const parent = node.parent;
+    const originalNode = ts.getOriginalNode(node);
+    const parent = node.parent ?? originalNode?.parent;
     if (parent && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
       return parent.name.text;
     }
@@ -2678,7 +2692,7 @@ function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variabl
   const guardedBreak = ts.factory.createIfStatement(
     ts.factory.createPrefixUnaryExpression(
       ts.SyntaxKind.ExclamationToken,
-      whileStatement.expression
+      wrapTraceCondition(ts, whileStatement.expression)
     ),
     ts.factory.createBreakStatement(),
     undefined
@@ -2723,9 +2737,17 @@ function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNam
   );
 }
 
-function rewriteForOfStatementForTracing(ts, sourceFile, forOfStatement, variableNames, lineFunctionMap, defaultFunctionName) {
+function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement, variableNames, lineFunctionMap, defaultFunctionName) {
   const originalNode = ts.getOriginalNode(forOfStatement) ?? forOfStatement;
   const visitedBodyBlock = ensureBlockStatement(ts, forOfStatement.statement);
+  const createHeaderLine = () => createTraceLineStatement(
+    ts,
+    sourceFile,
+    originalNode,
+    variableNames,
+    lineFunctionMap,
+    defaultFunctionName
+  );
   const initialTracedLine = createTraceLineStatement(
     ts,
     sourceFile,
@@ -2734,6 +2756,30 @@ function rewriteForOfStatementForTracing(ts, sourceFile, forOfStatement, variabl
     lineFunctionMap,
     defaultFunctionName
   );
+  const bodyTracedLine = createHeaderLine();
+  const rewriteContinueForHeader = (node) => {
+    if (ts.isFunctionLike(node)) return node;
+    if (
+      node !== visitedBodyBlock &&
+      (ts.isForStatement(node) ||
+        ts.isForInStatement(node) ||
+        ts.isForOfStatement(node) ||
+        ts.isWhileStatement(node) ||
+        ts.isDoStatement(node))
+    ) {
+      return node;
+    }
+    if (ts.isContinueStatement(node) && !node.label) {
+      return ts.factory.createBlock([createHeaderLine(), node], true);
+    }
+    return ts.visitEachChild(node, rewriteContinueForHeader, context);
+  };
+  const bodyStatements = visitedBodyBlock.statements.map((statement) => ts.visitNode(statement, rewriteContinueForHeader));
+  const bodyBlock = ts.factory.updateBlock(visitedBodyBlock, [
+    createAttachPendingAccessesStatement(ts),
+    ...bodyStatements,
+    bodyTracedLine,
+  ]);
 
   return ts.factory.createBlock(
     [
@@ -2743,8 +2789,9 @@ function rewriteForOfStatementForTracing(ts, sourceFile, forOfStatement, variabl
         forOfStatement.awaitModifier,
         forOfStatement.initializer,
         forOfStatement.expression,
-        visitedBodyBlock
+        bodyBlock
       ),
+      createAttachPendingAccessesStatement(ts),
     ],
     true
   );
@@ -3243,6 +3290,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         return rewriteForOfStatementForTracing(
           ts,
           sourceFile,
+          context,
           visited,
           variableNames,
           lineFunctionMap,
@@ -3404,6 +3452,7 @@ function __traceWriteIndex(__varName, __container, __indices, __value) {
       kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
       indices: __normalized,
       pathDepth: __normalized.length,
+      value: __result,
     });
   }
   return __result;
@@ -3446,6 +3495,7 @@ function __traceAugAssignIndex(__varName, __container, __indices, __op, __rhs) {
       kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
       indices: __normalized,
       pathDepth: __normalized.length,
+      value: __next,
     });
   }
   return __next;
@@ -3472,6 +3522,7 @@ function __traceUpdateIndex(__varName, __container, __indices, __op, __isPrefix)
       kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
       indices: __normalized,
       pathDepth: __normalized.length,
+      value: __next,
     });
   }
   return __isPrefix ? __next : __current;

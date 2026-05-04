@@ -459,11 +459,11 @@ function listGraphExpression(head) {
 }
 
 function listExpression(value) {
-  return `TraceHooks.reindexListIds(${listGraphExpression(value)})`;
+  return listGraphExpression(value);
 }
 
 function listArrayExpression(value) {
-  return `TraceHooks.reindexListIds(buildList(new Object[] { ${value.map((entry) => toJavaScalarLiteral(entry)).join(', ')} }, sequentialNextIndices(${value.length})))`;
+  return `buildList(new Object[] { ${value.map((entry) => toJavaScalarLiteral(entry)).join(', ')} }, sequentialNextIndices(${value.length}))`;
 }
 
 function treeExpression(value) {
