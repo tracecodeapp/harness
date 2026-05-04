@@ -87,6 +87,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "this",
           "value"
         ],
         "accessTargets": [

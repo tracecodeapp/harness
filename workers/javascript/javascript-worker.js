@@ -2554,8 +2554,9 @@ function createTraceThrowExpression(ts, sourceFile, node) {
   );
 }
 
-function createSnapshotFactory(ts, variableNames, includeThis = false) {
-  const properties = variableNames.map((name) =>
+function createSnapshotFactory(ts, variableNames, includeThis = false, excludedVariableNames = []) {
+  const excludedVariables = new Set(excludedVariableNames);
+  const properties = variableNames.filter((name) => !excludedVariables.has(name)).map((name) =>
     ts.factory.createPropertyAssignment(
       ts.factory.createIdentifier(name),
       ts.factory.createCallExpression(
@@ -2624,7 +2625,43 @@ function functionLikeSnapshotsReceiver(ts, functionLikeNode) {
   );
 }
 
-function createTraceLineStatement(ts, sourceFile, statement, variableNames, lineFunctionMap, defaultFunctionName) {
+function firstTraceableBodyStatement(ts, statement) {
+  if (!statement) return null;
+  if (!ts.isBlock(statement)) return statement;
+  for (const child of statement.statements) {
+    if (!ts.isEmptyStatement(child)) return child;
+  }
+  return null;
+}
+
+function collectStatementDeclaredVariableNames(ts, statement) {
+  const names = new Set();
+  if (!statement || !ts.isVariableStatement(statement)) return [];
+  for (const declaration of statement.declarationList.declarations) {
+    addBindingNames(ts, declaration.name, names);
+  }
+  return [...names];
+}
+
+function collectControlHeaderExcludedVariableNames(ts, statement) {
+  if (ts.isWhileStatement(statement) || ts.isForStatement(statement) || ts.isForOfStatement(statement)) {
+    return collectStatementDeclaredVariableNames(ts, firstTraceableBodyStatement(ts, statement.statement));
+  }
+  if (ts.isIfStatement(statement)) {
+    return collectStatementDeclaredVariableNames(ts, firstTraceableBodyStatement(ts, statement.thenStatement));
+  }
+  return [];
+}
+
+function createTraceLineStatement(
+  ts,
+  sourceFile,
+  statement,
+  variableNames,
+  lineFunctionMap,
+  defaultFunctionName,
+  excludedVariableNames = []
+) {
   const lineNumber = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line + 1;
   const functionContext = lineFunctionMap.get(lineNumber);
   const traceFunctionName = functionContext?.functionName ?? defaultFunctionName;
@@ -2639,7 +2676,7 @@ function createTraceLineStatement(ts, sourceFile, statement, variableNames, line
       undefined,
       [
         ts.factory.createNumericLiteral(lineNumber),
-        createSnapshotFactory(ts, variableNames, includeThisSnapshot),
+        createSnapshotFactory(ts, variableNames, includeThisSnapshot, excludedVariableNames),
         ts.factory.createStringLiteral(traceFunctionName),
         ts.factory.createNumericLiteral(traceFunctionStartLine),
       ]
@@ -2680,13 +2717,15 @@ function wrapTraceCondition(ts, expression) {
 
 function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variableNames, lineFunctionMap, defaultFunctionName) {
   const originalNode = ts.getOriginalNode(whileStatement) ?? whileStatement;
+  const excludedVariableNames = collectControlHeaderExcludedVariableNames(ts, whileStatement);
   const tracedLine = createTraceLineStatement(
     ts,
     sourceFile,
     originalNode,
     variableNames,
     lineFunctionMap,
-    defaultFunctionName
+    defaultFunctionName,
+    excludedVariableNames
   );
   const visitedBodyBlock = ensureBlockStatement(ts, whileStatement.statement);
   const guardedBreak = ts.factory.createIfStatement(
@@ -2712,13 +2751,15 @@ function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variabl
 
 function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNames, lineFunctionMap, defaultFunctionName) {
   const originalNode = ts.getOriginalNode(forStatement) ?? forStatement;
+  const excludedVariableNames = collectControlHeaderExcludedVariableNames(ts, forStatement);
   const tracedLineCall = createTraceLineStatement(
     ts,
     sourceFile,
     originalNode,
     variableNames,
     lineFunctionMap,
-    defaultFunctionName
+    defaultFunctionName,
+    excludedVariableNames
   ).expression;
   const condition = forStatement.condition ?? ts.factory.createTrue();
   const tracedCondition = ts.factory.createParenthesizedExpression(
@@ -2740,13 +2781,15 @@ function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNam
 function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement, variableNames, lineFunctionMap, defaultFunctionName) {
   const originalNode = ts.getOriginalNode(forOfStatement) ?? forOfStatement;
   const visitedBodyBlock = ensureBlockStatement(ts, forOfStatement.statement);
+  const excludedVariableNames = collectControlHeaderExcludedVariableNames(ts, forOfStatement);
   const createHeaderLine = () => createTraceLineStatement(
     ts,
     sourceFile,
     originalNode,
     variableNames,
     lineFunctionMap,
-    defaultFunctionName
+    defaultFunctionName,
+    excludedVariableNames
   );
   const initialTracedLine = createTraceLineStatement(
     ts,
@@ -2776,7 +2819,6 @@ function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement
   };
   const bodyStatements = visitedBodyBlock.statements.map((statement) => ts.visitNode(statement, rewriteContinueForHeader));
   const bodyBlock = ts.factory.updateBlock(visitedBodyBlock, [
-    createAttachPendingAccessesStatement(ts),
     ...bodyStatements,
     bodyTracedLine,
   ]);
@@ -2820,7 +2862,8 @@ function instrumentStatementList(
         originalStatement,
         variableNames,
         lineFunctionMap,
-        defaultFunctionName
+        defaultFunctionName,
+        collectControlHeaderExcludedVariableNames(ts, originalStatement)
       );
       if (isPostLineStateStatement(ts, visitedStatement)) {
         nextStatements.push(visitedStatement);

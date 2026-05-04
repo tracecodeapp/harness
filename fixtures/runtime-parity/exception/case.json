@@ -36,19 +36,6 @@
         "accessTargets": []
       }
     },
-    "java": {
-      "throw": {
-        "eventKinds": [
-          "exception",
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "n"
-        ],
-        "accessTargets": []
-      }
-    },
     "csharp": {
       "throw": {
         "eventKinds": [

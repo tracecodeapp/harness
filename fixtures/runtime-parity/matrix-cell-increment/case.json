@@ -36,5 +36,29 @@
         }
       ]
     }
+  },
+  "expectByLanguage": {
+    "java": {
+      "increment": {
+        "eventKinds": [
+          "line",
+          "read",
+          "write"
+        ],
+        "variableSnapshots": [],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "grid",
+            "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "grid",
+            "pathDepth": 2
+          }
+        ]
+      }
+    }
   }
 }

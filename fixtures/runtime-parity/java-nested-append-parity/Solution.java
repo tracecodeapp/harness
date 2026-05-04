@@ -12,6 +12,6 @@ class Solution {
     Bucket bucket = new Bucket();
     bucket.keys = new ArrayList<>();
     bucket.keys.add(2);
-    return graph.get(0).size() + bucket.keys.size();
+    return graph.size() + bucket.keys.size();
   }
 }

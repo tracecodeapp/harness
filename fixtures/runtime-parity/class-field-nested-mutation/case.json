@@ -122,7 +122,8 @@
         ],
         "variableSnapshots": [
           "graph",
-          "n"
+          "n",
+          "this"
         ],
         "accessTargets": [
           {

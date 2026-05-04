@@ -5,6 +5,6 @@ class Solution {
     Map<Integer, List<Integer>> graph = new HashMap<>();
     graph.put(0, new ArrayList<>());
     graph.get(0).add(1);
-    return graph.get(0);
+    return graph.values().iterator().next();
   }
 }

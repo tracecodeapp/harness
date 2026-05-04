@@ -45,6 +45,25 @@
     ]
   },
   "expectByLanguage": {
+    "java": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "key"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "dp",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
     "csharp": {
       "write": {
         "eventKinds": [
