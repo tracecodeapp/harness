@@ -218,8 +218,8 @@ function expandJavaLoopHeaderTraceEvents(
     }
 
     const headerInfo = line === null ? undefined : loopBodyLineToHeader.get(line);
-    const headerLine = headerInfo?.line;
-    if (headerLine !== undefined && event.kind === 'line' && lastLineEventLine !== headerLine) {
+    if (headerInfo && event.kind === 'line' && lastLineEventLine !== headerInfo.line) {
+      const headerLine: number = headerInfo.line;
       expanded.push(cloneRuntimeEventAtLine(event, headerLine));
       for (const [variable, snapshotEvent] of latestSnapshotByVariable) {
         if (headerInfo.excludedVariables.has(variable)) continue;
@@ -228,7 +228,8 @@ function expandJavaLoopHeaderTraceEvents(
       lastLineEventLine = headerLine;
     }
 
-    if (headerLine !== undefined && event.kind === 'line') {
+    if (headerInfo && event.kind === 'line') {
+      const headerLine: number = headerInfo.line;
       for (let lookahead = index + 1; lookahead < events.length; lookahead += 1) {
         if (eventLine(events[lookahead]) !== line) break;
         const variable = eventSnapshotVariable(events[lookahead]);
