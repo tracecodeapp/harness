@@ -215,6 +215,30 @@ async function main(): Promise<void> {
       `C# worker traced conditional assignment case should return 9, received ${JSON.stringify(tracedConditionalAssignment.output)}`
     );
 
+    const tracedTargetTypedReturn = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int[] EmptyIfOdd(int n) {',
+        '    if (n % 2 == 1) return [];',
+        '    return [n];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'EmptyIfOdd',
+      { n: 3 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedTargetTypedReturn.success,
+      `C# worker traced target-typed return case should compile: ${tracedTargetTypedReturn.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(tracedTargetTypedReturn.output) === JSON.stringify([]),
+      `C# worker traced target-typed return case should return [], received ${JSON.stringify(tracedTargetTypedReturn.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',

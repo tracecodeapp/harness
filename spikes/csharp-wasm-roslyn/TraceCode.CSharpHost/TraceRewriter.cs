@@ -7,6 +7,7 @@ namespace TraceCode.CSharpHost;
 public sealed class TraceRewriter : CSharpSyntaxRewriter
 {
     private readonly Stack<string> methodNames = new();
+    private readonly Stack<string> methodReturnTypes = new();
     private readonly Stack<HashSet<string>> variableScopes = new();
     private readonly Stack<HashSet<string>> declaredLocalVariables = new();
     private readonly HashSet<string> collectionVariables = new(StringComparer.Ordinal);
@@ -97,6 +98,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         methodNames.Push(methodNode.Identifier.ValueText);
+        methodReturnTypes.Push(methodNode.ReturnType.ToString());
         variableScopes.Push(new HashSet<string>(
             methodNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
@@ -128,6 +130,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             }
             declaredLocalVariables.Pop();
             variableScopes.Pop();
+            methodReturnTypes.Pop();
             methodNames.Pop();
         }
 
@@ -218,6 +221,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         LocalFunctionStatementSyntax localFunctionNode = node;
 
         methodNames.Push(localFunctionNode.Identifier.ValueText);
+        methodReturnTypes.Push(localFunctionNode.ReturnType.ToString());
         variableScopes.Push(new HashSet<string>(
             localFunctionNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
             StringComparer.Ordinal
@@ -245,6 +249,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             }
             declaredLocalVariables.Pop();
             variableScopes.Pop();
+            methodReturnTypes.Pop();
             methodNames.Pop();
         }
 
@@ -687,7 +692,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string tempName = $"__tracecode_return_{returnValueCounter++}";
-        yield return TraceStatement($"var {tempName} = {returnStatement.Expression};");
+        yield return TraceStatement($"{GetCurrentReturnTempType()} {tempName} = {returnStatement.Expression};");
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Return({Literal(methodName)}, {line}, {tempName});"
         );
@@ -696,6 +701,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             yield return snapshotStatement;
         }
         yield return TraceStatement($"return {tempName};");
+    }
+
+    private string GetCurrentReturnTempType()
+    {
+        return methodReturnTypes.Count > 0 ? methodReturnTypes.Peek() : "var";
     }
 
     private IEnumerable<StatementSyntax> RewriteThrowStatement(ThrowStatementSyntax throwStatement, int line)
