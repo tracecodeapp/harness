@@ -11,6 +11,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private readonly Stack<HashSet<string>> declaredLocalVariables = new();
     private readonly HashSet<string> collectionVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> collectionParameterVariables = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (string TypeName, string TypeArguments)> collectionVariableTypes = new(StringComparer.Ordinal);
     private readonly HashSet<string> memberNames;
     private readonly HashSet<string> memberCollectionNames;
     private readonly bool emitTraceEvents;
@@ -607,7 +608,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             RewriteFieldWriteStatement(
                 RewriteFieldIndexedWriteStatement(
                     RewriteArrayWriteStatement(
-                        RewriteCollectionAssignmentStatement(statement),
+                        RewriteCollectionAssignmentStatement(statement, line),
                         line
                     ),
                     line
@@ -1053,6 +1054,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         collectionVariables.Add(node.Identifier.ValueText);
+        TrackCollectionVariable(node.Identifier.ValueText, declaredType, creation);
         return rewritten.WithInitializer(rewritten.Initializer.WithValue(replacement!));
     }
 
@@ -1082,14 +1084,19 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             : rewritten;
     }
 
-    private StatementSyntax RewriteCollectionAssignmentStatement(StatementSyntax statement)
+    private StatementSyntax RewriteCollectionAssignmentStatement(StatementSyntax statement, int line)
     {
         if (statement is not ExpressionStatementSyntax expressionStatement
             || expressionStatement.Expression is not AssignmentExpressionSyntax assignment
             || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
             || assignment.Left is not IdentifierNameSyntax identifier
-            || !collectionVariables.Contains(identifier.Identifier.ValueText)
-            || !TryRewriteCollectionCreation(assignment.Right, identifier.Identifier.ValueText, null, out ExpressionSyntax? replacement))
+            || !collectionVariables.Contains(identifier.Identifier.ValueText))
+        {
+            return statement;
+        }
+
+        if (!TryRewriteCollectionCreation(assignment.Right, identifier.Identifier.ValueText, null, out ExpressionSyntax? replacement)
+            && !TryRewriteCollectionFactoryAssignment(assignment.Right, identifier.Identifier.ValueText, line, out replacement))
         {
             return statement;
         }
@@ -1844,6 +1851,81 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {indexExpression}, {Literal(variableName)}, {line})";
     }
 
+    private void TrackCollectionVariable(string variableName, TypeSyntax? declaredType, ExpressionSyntax creation)
+    {
+        TypeSyntax? collectionType = GetCollectionCreationType(creation, declaredType);
+        if (collectionType is not null
+            && TryGetGenericType(collectionType, out string typeName, out string typeArguments)
+            && IsSupportedCollectionType(typeName))
+        {
+            collectionVariableTypes[variableName] = (typeName, typeArguments);
+        }
+    }
+
+    private static TypeSyntax? GetCollectionCreationType(ExpressionSyntax creation, TypeSyntax? declaredType)
+    {
+        return creation switch
+        {
+            ObjectCreationExpressionSyntax objectCreation => objectCreation.Type,
+            ImplicitObjectCreationExpressionSyntax => declaredType,
+            _ => null,
+        };
+    }
+
+    private bool TryRewriteCollectionFactoryAssignment(
+        ExpressionSyntax value,
+        string variableName,
+        int line,
+        out ExpressionSyntax? replacement
+    )
+    {
+        replacement = null;
+        if (!collectionVariableTypes.TryGetValue(variableName, out var collectionType)
+            || value is not InvocationExpressionSyntax invocation
+            || !IsCollectionFactoryInvocation(collectionType.TypeName, invocation)
+            || GetTraceCollectionTypeName(collectionType.TypeName) is not string wrapperType)
+        {
+            return false;
+        }
+
+        replacement = SyntaxFactory.ParseExpression(
+            $"new TraceCode.Internal.{wrapperType}<{collectionType.TypeArguments}>({Literal(variableName)}, {line}, {value})"
+        );
+        return true;
+    }
+
+    private static bool IsCollectionFactoryInvocation(string typeName, InvocationExpressionSyntax invocation)
+    {
+        if (invocation.Expression is not MemberAccessExpressionSyntax memberAccess)
+        {
+            return false;
+        }
+
+        string methodName = memberAccess.Name.Identifier.ValueText;
+        return typeName switch
+        {
+            "List" => methodName is "GetRange" or "ToList",
+            "Dictionary" => methodName is "ToDictionary",
+            "HashSet" => methodName is "ToHashSet",
+            _ => false,
+        };
+    }
+
+    private static string? GetTraceCollectionTypeName(string typeName)
+    {
+        return typeName switch
+        {
+            "List" => "TraceCodeList",
+            "Dictionary" => "TraceCodeDictionary",
+            "HashSet" => "TraceCodeHashSet",
+            "Queue" => "TraceCodeQueue",
+            "PriorityQueue" => "TraceCodePriorityQueue",
+            "LinkedList" => "TraceCodeLinkedList",
+            "Stack" => "TraceCodeStack",
+            _ => null,
+        };
+    }
+
     private static bool TryRewriteCollectionCreation(
         ExpressionSyntax creation,
         string variableName,
@@ -1853,13 +1935,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         replacement = null;
 
-        TypeSyntax? collectionType = creation switch
-        {
-            ObjectCreationExpressionSyntax objectCreation => objectCreation.Type,
-            ImplicitObjectCreationExpressionSyntax => declaredType,
-            _ => null,
-        };
-
+        TypeSyntax? collectionType = GetCollectionCreationType(creation, declaredType);
         if (collectionType is null)
         {
             return false;
@@ -1895,31 +1971,12 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         string initializer = initializerSyntax is null
             ? string.Empty
             : $" {initializerSyntax}";
-        replacement = typeName switch
-        {
-            "List" => SyntaxFactory.ParseExpression(
-                $"new TraceCode.Internal.TraceCodeList<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
-            ),
-            "Dictionary" => SyntaxFactory.ParseExpression(
-                $"new TraceCode.Internal.TraceCodeDictionary<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
-            ),
-            "HashSet" => SyntaxFactory.ParseExpression(
-                $"new TraceCode.Internal.TraceCodeHashSet<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
-            ),
-            "Queue" => SyntaxFactory.ParseExpression(
-                $"new TraceCode.Internal.TraceCodeQueue<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
-            ),
-            "PriorityQueue" => SyntaxFactory.ParseExpression(
-                $"new TraceCode.Internal.TraceCodePriorityQueue<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
-            ),
-            "LinkedList" => SyntaxFactory.ParseExpression(
-                $"new TraceCode.Internal.TraceCodeLinkedList<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
-            ),
-            "Stack" => SyntaxFactory.ParseExpression(
-                $"new TraceCode.Internal.TraceCodeStack<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
-            ),
-            _ => null,
-        };
+        string? wrapperType = GetTraceCollectionTypeName(typeName);
+        replacement = wrapperType is null
+            ? null
+            : SyntaxFactory.ParseExpression(
+                $"new TraceCode.Internal.{wrapperType}<{typeArguments}>({Literal(variableName)}, {line}{constructorArguments}){initializer}"
+            );
 
         return replacement is not null;
     }

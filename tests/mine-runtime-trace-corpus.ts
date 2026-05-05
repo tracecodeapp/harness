@@ -245,6 +245,7 @@ function hasFlag(name: string): boolean {
 function isTraceBudgetFailure(error: string): boolean {
   return /Exceeded \d+ trace steps/.test(error) ||
     error.includes('trace limit exceeded') ||
+    error.includes('trace step limit exceeded') ||
     error.includes('timeoutReason') && error.includes('trace-limit');
 }
 

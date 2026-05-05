@@ -654,6 +654,81 @@ async function main(): Promise<void> {
       `C# worker nested object-list input case should return true, received ${JSON.stringify(nestedObjectListInput.output)}`
     );
 
+    const dictionaryInput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public string ReadDictionary(Dictionary<string, string> values) {',
+        '    return values["user2"];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadDictionary',
+      { values: { user1: 'variant_a', user2: 'variant_b' } },
+      assetBaseUrl
+    );
+    assertCondition(
+      dictionaryInput.success,
+      `C# worker dictionary input case should hydrate values: ${dictionaryInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      dictionaryInput.output === 'variant_b',
+      `C# worker dictionary input case should return variant_b, received ${JSON.stringify(dictionaryInput.output)}`
+    );
+
+    const tracedNestedInterfaceList = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public string ReadNestedInterface(IList<IList<string>> rows) {',
+        '    return rows[0][0] + rows[0][1];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadNestedInterface',
+      { rows: [['a', 'b']] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedNestedInterfaceList.success,
+      `C# worker traced nested interface-list case should compile: ${tracedNestedInterfaceList.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedNestedInterfaceList.output === 'ab',
+      `C# worker traced nested interface-list case should return "ab", received ${JSON.stringify(tracedNestedInterfaceList.output)}`
+    );
+
+    const tracedDictionaryArrayValue = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int IncrementBucket(int value) {',
+        '    var map = new Dictionary<int, int[]>();',
+        '    map[value] = new int[] { 1, 2 };',
+        '    map[value][0]++;',
+        '    map[value][1] = value;',
+        '    return map[value][0] + map[value][1];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'IncrementBucket',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedDictionaryArrayValue.success,
+      `C# worker traced dictionary array-value case should compile: ${tracedDictionaryArrayValue.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedDictionaryArrayValue.output === 6,
+      `C# worker traced dictionary array-value case should return 6, received ${JSON.stringify(tracedDictionaryArrayValue.output)}`
+    );
+
     const collectionReassignment = await runWorkerCase(
       page,
       [
@@ -680,6 +755,33 @@ async function main(): Promise<void> {
     assertCondition(
       JSON.stringify(collectionReassignment.output) === JSON.stringify([5, 6]),
       `C# worker traced collection reassignment case should return [5,6], received ${JSON.stringify(collectionReassignment.output)}`
+    );
+
+    const collectionFactoryAssignment = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int[] SliceAndAppend(int value) {',
+        '    var items = new List<int> { value, value + 1, value + 2 };',
+        '    items = items.GetRange(0, 2);',
+        '    items.Add(value + 3);',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SliceAndAppend',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      collectionFactoryAssignment.success,
+      `C# worker traced collection factory assignment case should compile: ${collectionFactoryAssignment.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(collectionFactoryAssignment.output) === JSON.stringify([4, 5, 7]),
+      `C# worker traced collection factory assignment case should return [4,5,7], received ${JSON.stringify(collectionFactoryAssignment.output)}`
     );
 
     const tracedExplicitCollections = await runWorkerCase(
