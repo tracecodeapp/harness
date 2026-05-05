@@ -1268,6 +1268,13 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line);
         }
 
+        public static void ArrayWrite(char[] array, int index, int value, string variable, int line)
+        {
+            char charValue = (char)value;
+            array[index] = charValue;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, charValue, line);
+        }
+
         public static void ArrayWrite<T>(IList<T> list, int index, T value, string variable, int line)
         {
             list[index] = value;

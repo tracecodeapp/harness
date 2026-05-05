@@ -275,6 +275,32 @@ async function main(): Promise<void> {
       `C# worker traced private trie-object case should return 1, received ${JSON.stringify(tracedPrivateTrieObject.output)}`
     );
 
+    const tracedCharArrayUnaryWrite = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public string AdjustDigits(int n) {',
+        '    char[] digits = n.ToString().ToCharArray();',
+        '    digits[0]--;',
+        '    digits[1] = \'9\';',
+        '    return new string(digits);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AdjustDigits',
+      { n: 54 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedCharArrayUnaryWrite.success,
+      `C# worker traced char-array unary write case should compile: ${tracedCharArrayUnaryWrite.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedCharArrayUnaryWrite.output === '49',
+      `C# worker traced char-array unary write case should return 49, received ${JSON.stringify(tracedCharArrayUnaryWrite.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',
