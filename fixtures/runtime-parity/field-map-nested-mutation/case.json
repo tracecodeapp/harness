@@ -38,7 +38,7 @@
     "java": {
       "nestedFieldAppend": {
         "eventKinds": ["line", "mutate", "read", "snapshot"],
-        "variableSnapshots": ["value"],
+        "variableSnapshots": ["graph", "value"],
         "accessTargets": [
           { "kind": "mutate", "variable": "this", "method": "append", "pathDepth": 2 },
           { "kind": "read", "variable": "this", "pathDepth": 2 }

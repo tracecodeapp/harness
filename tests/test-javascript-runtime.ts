@@ -32,7 +32,7 @@ type RuntimeTraceEvent = {
   function?: string;
   frameId?: string;
   value?: unknown;
-  target?: { variable?: string; path?: Array<string | number> };
+  target?: { variable?: string; path?: Array<string | number>; scope?: string };
   method?: string;
 };
 
@@ -178,6 +178,42 @@ async function main(): Promise<void> {
     'Set for-of tracing should keep line anchors'
   );
   console.log('PASS: execute-with-tracing preserves Set for-of semantics');
+
+  const globalPropertyTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const best = Number.NEGATIVE_INFINITY;
+  const values = [best];
+  return values[0];
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(globalPropertyTracing.success === true, `Global property tracing should succeed: ${globalPropertyTracing.error ?? 'unknown error'}`);
+  const numberRead = traceAccessEvents(globalPropertyTracing).find((event) =>
+    event.kind === 'read' &&
+    event.target?.variable === 'Number' &&
+    event.target.path?.[0] === 'NEGATIVE_INFINITY'
+  );
+  assertCondition(
+    numberRead?.target?.scope === 'global',
+    'Runtime trace should mark non-local property receivers as global by construction'
+  );
+  const valuesRead = traceAccessEvents(globalPropertyTracing).find((event) =>
+    event.kind === 'read' &&
+    event.target?.variable === 'values' &&
+    event.target.path?.[0] === 0
+  );
+  assertCondition(
+    valuesRead?.target?.scope !== 'global',
+    'Runtime trace should not mark locally declared receivers as global'
+  );
+  console.log('PASS: execute-with-tracing marks global property receivers');
 
   const execute = await harness.sendMessage<{
     success: boolean;

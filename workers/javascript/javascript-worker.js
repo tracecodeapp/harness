@@ -1097,6 +1097,7 @@ function createTraceRecorder(options = {}) {
         : {}),
       ...(access.method ? { method: access.method } : {}),
       ...(access.pathDepth ? { pathDepth: access.pathDepth } : {}),
+      ...(access.scope ? { scope: access.scope } : {}),
       ...(Object.prototype.hasOwnProperty.call(access, 'value') ? { value: access.value } : {}),
     }));
   }
@@ -1146,10 +1147,17 @@ function createTraceRecorder(options = {}) {
 
   function runtimeTraceTargetForAccess(access) {
     const indices = Array.isArray(access?.indices) ? access.indices : [];
+    const scope = typeof access?.scope === 'string' && access.scope.length > 0
+      ? access.scope
+      : undefined;
+    const base = {
+      variable: access.variable,
+      ...(scope ? { scope } : {}),
+    };
     if (indices.length > 0) {
-      return { variable: access.variable, path: indices };
+      return { ...base, path: indices };
     }
-    return { variable: access.variable };
+    return base;
   }
 
   function runtimeTraceKindForAccess(access) {
@@ -1459,6 +1467,9 @@ function createTraceRecorder(options = {}) {
           ? { method: event.method }
           : {}),
         ...(event.pathDepth === 1 || event.pathDepth === 2 || event.pathDepth === 3 ? { pathDepth: event.pathDepth } : {}),
+        ...(typeof event.scope === 'string' && event.scope.length > 0
+          ? { scope: event.scope }
+          : {}),
         ...(Object.prototype.hasOwnProperty.call(event, 'value')
           ? { value: this.serialize(event.value) }
           : {}),
@@ -2311,6 +2322,7 @@ function extractTraceablePropertyAccess(ts, node) {
     return {
       variableName: 'this',
       propertyName: current.name.text,
+      scope: 'receiver',
     };
   }
   if (!ts.isIdentifier(receiver)) {
@@ -2320,6 +2332,11 @@ function extractTraceablePropertyAccess(ts, node) {
     variableName: receiver.text,
     propertyName: current.name.text,
   };
+}
+
+function runtimeScopeForTraceableReceiver(receiverName, localVariableNames) {
+  if (receiverName === 'this') return 'receiver';
+  return localVariableNames.has(receiverName) ? 'local' : 'global';
 }
 
 function extractTraceableMutatingCall(ts, node) {
@@ -2453,15 +2470,19 @@ function createTraceWriteIndexExpression(ts, variableName, indices, value) {
   ]);
 }
 
-function createTraceReadPropertyExpression(ts, variableName, propertyName) {
+function createTraceReadPropertyExpression(ts, variableName, propertyName, scope) {
   const receiverExpression = variableName === 'this'
     ? ts.factory.createThis()
     : ts.factory.createIdentifier(variableName);
-  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadProperty'), undefined, [
+  const args = [
     ts.factory.createStringLiteral(variableName),
     receiverExpression,
     ts.factory.createStringLiteral(propertyName),
-  ]);
+  ];
+  if (scope) {
+    args.push(ts.factory.createStringLiteral(scope));
+  }
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadProperty'), undefined, args);
 }
 
 function createTraceWritePropertyExpression(ts, variableName, propertyName, value) {
@@ -3070,6 +3091,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
   );
 
   const variableNames = collectTraceVariableNames(ts, sourceFile);
+  const localVariableNames = new Set(variableNames);
   const effectiveFunctionName =
     typeof traceFunctionName === 'string' && traceFunctionName.length > 0
       ? traceFunctionName
@@ -3209,7 +3231,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           return createTraceReadPropertyExpression(
             ts,
             tracedAccess.variableName,
-            tracedAccess.propertyName
+            tracedAccess.propertyName,
+            tracedAccess.scope ?? runtimeScopeForTraceableReceiver(tracedAccess.variableName, localVariableNames)
           );
         }
       }
@@ -3431,13 +3454,14 @@ function __traceIsMetadataProperty(__container, __propertyName) {
   return false;
 }
 
-function __traceReadProperty(__varName, __container, __propertyName) {
+function __traceReadProperty(__varName, __container, __propertyName, __scope) {
   if (!__traceIsMetadataProperty(__container, __propertyName)) {
     __traceRecorder.recordAccess({
       variable: __varName,
       kind: 'indexed-read',
       indices: [__propertyName],
       pathDepth: 1,
+      ...(__scope ? { scope: __scope } : {}),
     });
   }
   return __container?.[__propertyName];
