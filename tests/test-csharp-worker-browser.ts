@@ -332,6 +332,33 @@ async function main(): Promise<void> {
       `C# worker traced collection reassignment case should return 7, received ${JSON.stringify(tracedCollectionReassignment.output)}`
     );
 
+    const tracedNestedDictionaryList = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int NestedDictionaryList(int value) {',
+        '    var scopes = new List<Dictionary<string, int>>();',
+        '    scopes.Add(new Dictionary<string, int>());',
+        '    scopes[scopes.Count - 1]["x"] = value;',
+        '    return scopes[0].ContainsKey("x") ? scopes[0]["x"] : -1;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'NestedDictionaryList',
+      { value: 11 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedNestedDictionaryList.success,
+      `C# worker traced nested dictionary-list case should compile: ${tracedNestedDictionaryList.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedNestedDictionaryList.output === 11,
+      `C# worker traced nested dictionary-list case should return 11, received ${JSON.stringify(tracedNestedDictionaryList.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',
@@ -795,6 +822,29 @@ async function main(): Promise<void> {
     assertCondition(
       objectArrayInput.output === 6,
       `C# worker object-array input case should return 6, received ${JSON.stringify(objectArrayInput.output)}`
+    );
+
+    const objectArrayIntegralInput = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public bool ReadsIntegralObjectNumbers(object values) {',
+        '    object?[] items = (object?[])values;',
+        '    return items[0] is int && items[1] is int;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadsIntegralObjectNumbers',
+      { values: [1, 2] },
+      assetBaseUrl
+    );
+    assertCondition(
+      objectArrayIntegralInput.success,
+      `C# worker object-array integral input case should hydrate: ${objectArrayIntegralInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      objectArrayIntegralInput.output === true,
+      `C# worker object-array integral input case should preserve ints, received ${JSON.stringify(objectArrayIntegralInput.output)}`
     );
 
     const dictionaryInput = await runWorkerCase(

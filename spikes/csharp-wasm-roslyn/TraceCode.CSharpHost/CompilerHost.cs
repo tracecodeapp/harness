@@ -831,7 +831,7 @@ public class TreeNode
             return value.ValueKind switch
             {
                 JsonValueKind.String => value.GetString(),
-                JsonValueKind.Number => value.TryGetInt64(out long longValue) ? longValue : value.GetDouble(),
+                JsonValueKind.Number => ReadObjectNumber(value),
                 JsonValueKind.True => true,
                 JsonValueKind.False => false,
                 JsonValueKind.Null or JsonValueKind.Undefined => null,
@@ -843,6 +843,35 @@ public class TreeNode
                 ),
                 _ => null,
             };
+        }
+
+        private static object ReadObjectNumber(JsonElement value)
+        {
+            if (value.TryGetInt32(out int intValue))
+            {
+                return intValue;
+            }
+
+            if (value.TryGetInt64(out long longValue))
+            {
+                return longValue;
+            }
+
+            double doubleValue = value.GetDouble();
+            if (double.IsFinite(doubleValue) && Math.Truncate(doubleValue) == doubleValue)
+            {
+                if (doubleValue >= int.MinValue && doubleValue <= int.MaxValue)
+                {
+                    return (int)doubleValue;
+                }
+
+                if (doubleValue >= long.MinValue && doubleValue <= long.MaxValue)
+                {
+                    return (long)doubleValue;
+                }
+            }
+
+            return doubleValue;
         }
 
         private static ListNode? ReadListNode(JsonElement value, IDictionary<string, ListNode> refs)
@@ -1215,6 +1244,32 @@ public class TreeNode
             return value;
         }
 
+        public static TValue ArrayRead<TKey, TValue>(
+            IList<Dictionary<TKey, TValue>> list,
+            int row,
+            TKey key,
+            string variable,
+            int line
+        ) where TKey : notnull
+        {
+            TValue value = list[row][key];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line);
+            return value;
+        }
+
+        public static TValue ArrayRead<TKey, TValue>(
+            IList<TraceCodeDictionary<TKey, TValue>> list,
+            int row,
+            TKey key,
+            string variable,
+            int line
+        ) where TKey : notnull
+        {
+            TValue value = list[row][key];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line);
+            return value;
+        }
+
         public static char ArrayRead(string text, int index, string variable, int line)
         {
             char value = text[index];
@@ -1366,6 +1421,32 @@ public class TreeNode
         {
             list[row][column] = value;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+        }
+
+        public static void ArrayWrite<TKey, TValue>(
+            IList<Dictionary<TKey, TValue>> list,
+            int row,
+            TKey key,
+            TValue value,
+            string variable,
+            int line
+        ) where TKey : notnull
+        {
+            list[row][key] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line);
+        }
+
+        public static void ArrayWrite<TKey, TValue>(
+            IList<TraceCodeDictionary<TKey, TValue>> list,
+            int row,
+            TKey key,
+            TValue value,
+            string variable,
+            int line
+        ) where TKey : notnull
+        {
+            list[row][key] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line);
         }
 
         public static void ArrayWrite<TKey, TValue>(
