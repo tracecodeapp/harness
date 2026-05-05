@@ -678,6 +678,32 @@ async function main(): Promise<void> {
       `C# worker nested object-list input case should return true, received ${JSON.stringify(nestedObjectListInput.output)}`
     );
 
+    const objectArrayInput = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int SumObjectArray(object values) {',
+        '    int total = 0;',
+        '    foreach (object item in (IEnumerable<object>)values) total += Convert.ToInt32(item);',
+        '    return total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SumObjectArray',
+      { values: [1, 2, 3] },
+      assetBaseUrl
+    );
+    assertCondition(
+      objectArrayInput.success,
+      `C# worker object-array input case should hydrate arrays as object[]: ${objectArrayInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      objectArrayInput.output === 6,
+      `C# worker object-array input case should return 6, received ${JSON.stringify(objectArrayInput.output)}`
+    );
+
     const dictionaryInput = await runWorkerCase(
       page,
       [
@@ -1181,6 +1207,36 @@ async function main(): Promise<void> {
     );
     assertCondition(listNodeInput.success, `C# worker ListNode input case should succeed: ${listNodeInput.error ?? 'unknown error'}`);
     assertCondition(listNodeInput.output === 10, `C# worker ListNode input case should return 10, received ${JSON.stringify(listNodeInput.output)}`);
+
+    const requiredConstructorListNodeInput = await runWorkerCase(
+      page,
+      [
+        'public class ListNode {',
+        '  public int val;',
+        '  public ListNode next;',
+        '  public ListNode(int val) {',
+        '    this.val = val;',
+        '    this.next = null;',
+        '  }',
+        '}',
+        'public class Solution {',
+        '  public int HeadValue(ListNode head) {',
+        '    return head.val;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'HeadValue',
+      { head: [7, 8] },
+      assetBaseUrl
+    );
+    assertCondition(
+      requiredConstructorListNodeInput.success,
+      `C# worker required-constructor ListNode input case should succeed: ${requiredConstructorListNodeInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      requiredConstructorListNodeInput.output === 7,
+      `C# worker required-constructor ListNode input case should return 7, received ${JSON.stringify(requiredConstructorListNodeInput.output)}`
+    );
 
     const nullableListNodeInput = await runWorkerCase(
       page,

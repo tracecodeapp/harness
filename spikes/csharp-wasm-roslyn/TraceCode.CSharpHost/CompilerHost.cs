@@ -593,6 +593,11 @@ public class TreeNode
                 return value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
             }
 
+            if (targetType == typeof(object))
+            {
+                return ReadObjectValue(value);
+            }
+
             if (ShouldUseStructuredObjectReader(value, targetType))
             {
                 return ReadStructuredValue(value, targetType, new Dictionary<string, object>(StringComparer.Ordinal));
@@ -621,6 +626,11 @@ public class TreeNode
             if (typeof(T) == typeof(object[][]))
             {
                 return (T?)(object?)value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
+            }
+
+            if (typeof(T) == typeof(object))
+            {
+                return (T?)ReadObjectValue(value);
             }
 
             if (ShouldUseStructuredObjectReader(value, typeof(T)))
@@ -843,8 +853,8 @@ public class TreeNode
 
             if (value.ValueKind == JsonValueKind.Array)
             {
-                ListNode sentinel = new();
-                ListNode cursor = sentinel;
+                ListNode? head = null;
+                ListNode? cursor = null;
                 foreach (JsonElement item in value.EnumerateArray())
                 {
                     if (item.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
@@ -852,11 +862,20 @@ public class TreeNode
                         continue;
                     }
 
-                    cursor.next = new ListNode(item.GetInt32());
-                    cursor = cursor.next;
+                    ListNode node = new(item.GetInt32());
+                    if (head is null)
+                    {
+                        head = node;
+                    }
+                    else
+                    {
+                        cursor!.next = node;
+                    }
+
+                    cursor = node;
                 }
 
-                return sentinel.next;
+                return head;
             }
 
             if (value.ValueKind == JsonValueKind.Object)
