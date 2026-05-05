@@ -1678,7 +1678,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         return expression
             .DescendantNodesAndSelf()
-            .Any(node => node is DeclarationPatternSyntax or RecursivePatternSyntax);
+            .Any(node => node is DeclarationPatternSyntax or RecursivePatternSyntax or DeclarationExpressionSyntax);
     }
 
     private bool TryGetMemberAccessPath(

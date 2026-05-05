@@ -599,6 +599,11 @@ public class TreeNode
                 return ReadObjectValue(value);
             }
 
+            if (TryReadObjectValueDictionary(value, targetType, out object? objectValueDictionary))
+            {
+                return objectValueDictionary;
+            }
+
             if (ShouldUseStructuredObjectReader(value, targetType))
             {
                 return ReadStructuredValue(value, targetType, new Dictionary<string, object>(StringComparer.Ordinal));
@@ -632,6 +637,11 @@ public class TreeNode
             if (typeof(T) == typeof(object))
             {
                 return (T?)ReadObjectValue(value);
+            }
+
+            if (TryReadObjectValueDictionary(value, typeof(T), out object? objectValueDictionary))
+            {
+                return (T?)objectValueDictionary;
             }
 
             if (ShouldUseStructuredObjectReader(value, typeof(T)))
@@ -701,6 +711,11 @@ public class TreeNode
 
             if (IsSupportedDictionaryType(effectiveType))
             {
+                if (TryReadObjectValueDictionary(value, effectiveType, out object? objectValueDictionary))
+                {
+                    return objectValueDictionary;
+                }
+
                 return JsonSerializer.Deserialize(value.GetRawText(), effectiveType, JsonOptions);
             }
 
@@ -770,19 +785,33 @@ public class TreeNode
 
         private static bool IsSupportedDictionaryType(Type type)
         {
-            if (typeof(System.Collections.IDictionary).IsAssignableFrom(type))
-            {
-                return true;
-            }
+            return TryGetSupportedDictionaryTypes(type, out _, out _);
+        }
 
+        private static bool TryGetSupportedDictionaryTypes(Type type, out Type keyType, out Type valueType)
+        {
             if (type.IsGenericType && IsDictionaryGenericType(type.GetGenericTypeDefinition()))
             {
+                Type[] args = type.GetGenericArguments();
+                keyType = args[0];
+                valueType = args[1];
                 return true;
             }
 
-            return type
+            Type? interfaceType = type
                 .GetInterfaces()
-                .Any(candidate => candidate.IsGenericType && IsDictionaryGenericType(candidate.GetGenericTypeDefinition()));
+                .FirstOrDefault(candidate => candidate.IsGenericType && IsDictionaryGenericType(candidate.GetGenericTypeDefinition()));
+            if (interfaceType is not null)
+            {
+                Type[] args = interfaceType.GetGenericArguments();
+                keyType = args[0];
+                valueType = args[1];
+                return true;
+            }
+
+            keyType = typeof(object);
+            valueType = typeof(object);
+            return false;
         }
 
         private static bool IsDictionaryGenericType(Type type)
@@ -790,6 +819,45 @@ public class TreeNode
             return type == typeof(Dictionary<,>)
                 || type == typeof(IDictionary<,>)
                 || type == typeof(IReadOnlyDictionary<,>);
+        }
+
+        private static bool TryReadObjectValueDictionary(JsonElement value, Type targetType, out object? dictionary)
+        {
+            Type effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+            if (value.ValueKind != JsonValueKind.Object
+                || !TryGetSupportedDictionaryTypes(effectiveType, out Type keyType, out Type valueType)
+                || valueType != typeof(object))
+            {
+                dictionary = null;
+                return false;
+            }
+
+            Type dictionaryType = effectiveType.IsInterface || effectiveType.IsAbstract
+                ? typeof(Dictionary<,>).MakeGenericType(keyType, typeof(object))
+                : effectiveType;
+            System.Collections.IDictionary result = (System.Collections.IDictionary)Activator.CreateInstance(dictionaryType)!;
+            foreach (JsonProperty property in value.EnumerateObject())
+            {
+                result[ReadDictionaryKey(property.Name, keyType)] = ReadObjectValue(property.Value);
+            }
+
+            dictionary = result;
+            return true;
+        }
+
+        private static object ReadDictionaryKey(string key, Type keyType)
+        {
+            if (keyType == typeof(string) || keyType == typeof(object))
+            {
+                return key;
+            }
+
+            if (keyType.IsEnum)
+            {
+                return Enum.Parse(keyType, key, ignoreCase: true);
+            }
+
+            return System.Convert.ChangeType(key, keyType, System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private static object CreateStructuredObject(JsonElement value, Type targetType, IDictionary<string, object> refs)

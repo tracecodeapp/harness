@@ -423,6 +423,33 @@ async function main(): Promise<void> {
       `C# worker traced shadowed collection-helper case should return 13, received ${JSON.stringify(tracedShadowedCollectionHelper.output)}`
     );
 
+    const tracedOutVarCondition = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public string ReadOutVar(Dictionary<string, List<string>> graph, string key) {',
+        '    if (graph != null && graph.TryGetValue(key, out var urls) && urls != null) {',
+        '      return urls[0];',
+        '    }',
+        '    return "";',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadOutVar',
+      { graph: { home: ['about'] }, key: 'home' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedOutVarCondition.success,
+      `C# worker traced out-var condition case should compile: ${tracedOutVarCondition.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedOutVarCondition.output === 'about',
+      `C# worker traced out-var condition case should return about, received ${JSON.stringify(tracedOutVarCondition.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',
@@ -932,6 +959,32 @@ async function main(): Promise<void> {
     assertCondition(
       dictionaryInput.output === 'variant_b',
       `C# worker dictionary input case should return variant_b, received ${JSON.stringify(dictionaryInput.output)}`
+    );
+
+    const objectValueDictionaryInput = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public string ReadObjectValueDictionary(List<Dictionary<string, object>> users) {',
+        '    string id = (string)users[0]["id"];',
+        '    int priority = Convert.ToInt32(users[0]["priority"]);',
+        '    return id + ":" + priority;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadObjectValueDictionary',
+      { users: [{ id: 'alice', priority: 2 }] },
+      assetBaseUrl
+    );
+    assertCondition(
+      objectValueDictionaryInput.success,
+      `C# worker object-value dictionary input case should hydrate: ${objectValueDictionaryInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      objectValueDictionaryInput.output === 'alice:2',
+      `C# worker object-value dictionary input case should return alice:2, received ${JSON.stringify(objectValueDictionaryInput.output)}`
     );
 
     const tracedNestedInterfaceList = await runWorkerCase(
