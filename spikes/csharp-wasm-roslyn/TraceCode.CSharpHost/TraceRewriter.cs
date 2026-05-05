@@ -757,7 +757,22 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         int line = GetLine(statement);
-        return SyntaxFactory.Block(ExpandStatement(statement, line));
+        return SyntaxFactory.Block(ExpandScopedEmbeddedStatement(statement, line));
+    }
+
+    private List<StatementSyntax> ExpandScopedEmbeddedStatement(StatementSyntax statement, int line)
+    {
+        variableScopes.Push(new HashSet<string>(StringComparer.Ordinal));
+        declaredLocalVariables.Push(new HashSet<string>(StringComparer.Ordinal));
+        try
+        {
+            return ExpandStatement(statement, line).ToList();
+        }
+        finally
+        {
+            declaredLocalVariables.Pop();
+            variableScopes.Pop();
+        }
     }
 
     public override SyntaxNode? VisitElementAccessExpression(ElementAccessExpressionSyntax node)

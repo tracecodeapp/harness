@@ -183,6 +183,38 @@ async function main(): Promise<void> {
       `C# worker traced Add should include return event with value 5, received ${JSON.stringify(tracedAdd.events)}`
     );
 
+    const tracedConditionalAssignment = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int DecodeFirst(string s) {',
+        '    char first = s[0];',
+        '    long single;',
+        '    if (first == \'*\')',
+        '      single = 9;',
+        '    else if (first == \'0\')',
+        '      single = 0;',
+        '    else',
+        '      single = 1;',
+        '    long dpPrev = single;',
+        '    return (int)dpPrev;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'DecodeFirst',
+      { s: '*' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedConditionalAssignment.success,
+      `C# worker traced conditional assignment case should compile: ${tracedConditionalAssignment.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedConditionalAssignment.output === 9,
+      `C# worker traced conditional assignment case should return 9, received ${JSON.stringify(tracedConditionalAssignment.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',
