@@ -521,7 +521,7 @@ public static class RuntimeTraceSink
             }
         }
 
-        return result.Count > 1 ? result : value;
+        return result;
     }
 }
 

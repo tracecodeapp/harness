@@ -239,6 +239,42 @@ async function main(): Promise<void> {
       `C# worker traced target-typed return case should return [], received ${JSON.stringify(tracedTargetTypedReturn.output)}`
     );
 
+    const tracedPrivateTrieObject = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  private class TrieNode {',
+        '    public TrieNode[] Children = new TrieNode[2];',
+        '  }',
+        '  public int BuildTrie(int value) {',
+        '    TrieNode root = new TrieNode();',
+        '    Insert(root, value);',
+        '    return 1;',
+        '  }',
+        '  private void Insert(TrieNode root, int value) {',
+        '    TrieNode node = root;',
+        '    for (int bit = 8; bit >= 0; bit--) {',
+        '      int b = (value >> bit) & 1;',
+        '      if (node.Children[b] == null) node.Children[b] = new TrieNode();',
+        '      node = node.Children[b];',
+        '    }',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildTrie',
+      { value: 5 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedPrivateTrieObject.success,
+      `C# worker traced private trie-object case should serialize: ${tracedPrivateTrieObject.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedPrivateTrieObject.output === 1,
+      `C# worker traced private trie-object case should return 1, received ${JSON.stringify(tracedPrivateTrieObject.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',

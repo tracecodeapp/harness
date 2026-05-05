@@ -20,6 +20,7 @@ public static partial class CompilerHost
         PropertyNameCaseInsensitive = true,
         IncludeFields = true,
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+        MaxDepth = 256,
     };
 
     [JSExport]
