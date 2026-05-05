@@ -1277,6 +1277,13 @@ public class TreeNode
             return value;
         }
 
+        public static char ArrayRead(StringBuilder text, int index, string variable, int line)
+        {
+            char value = text[index];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
+            return value;
+        }
+
         public static char ArrayRead(IList<string> list, int row, int column, string variable, int line)
         {
             char value = list[row][column];
@@ -1327,6 +1334,19 @@ public class TreeNode
         {
             char charValue = (char)value;
             array[index] = charValue;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, charValue, line);
+        }
+
+        public static void ArrayWrite(StringBuilder text, int index, char value, string variable, int line)
+        {
+            text[index] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line);
+        }
+
+        public static void ArrayWrite(StringBuilder text, int index, int value, string variable, int line)
+        {
+            char charValue = (char)value;
+            text[index] = charValue;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, charValue, line);
         }
 

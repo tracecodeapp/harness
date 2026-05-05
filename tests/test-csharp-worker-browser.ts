@@ -301,6 +301,33 @@ async function main(): Promise<void> {
       `C# worker traced char-array unary write case should return 49, received ${JSON.stringify(tracedCharArrayUnaryWrite.output)}`
     );
 
+    const tracedStringBuilderIndexedAccess = await runWorkerCase(
+      page,
+      [
+        'using System.Text;',
+        'public class Solution {',
+        '  public string ShiftFirst(string value) {',
+        '    var builder = new StringBuilder(value);',
+        '    char first = builder[0];',
+        '    builder[0]++;',
+        '    return first + ":" + builder.ToString();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ShiftFirst',
+      { value: 'abc' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedStringBuilderIndexedAccess.success,
+      `C# worker traced StringBuilder indexed access case should compile: ${tracedStringBuilderIndexedAccess.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedStringBuilderIndexedAccess.output === 'a:bbc',
+      `C# worker traced StringBuilder indexed access case should return a:bbc, received ${JSON.stringify(tracedStringBuilderIndexedAccess.output)}`
+    );
+
     const tracedCollectionReassignment = await runWorkerCase(
       page,
       [
