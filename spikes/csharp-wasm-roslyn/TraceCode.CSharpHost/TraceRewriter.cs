@@ -385,7 +385,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
             if (containingMethod is not null
                 && containingMethod.Modifiers.Any(SyntaxKind.PublicKeyword)
-                && HasSupportedLocalCollectionInitializer(containingMethod, identifier.Identifier.ValueText))
+                && HasSupportedLocalCollectionInitializer(invocation, identifier.Identifier.ValueText))
             {
                 hasPublicLocalCollectionCall = true;
                 continue;
@@ -407,34 +407,71 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         };
     }
 
-    private static bool HasSupportedLocalCollectionInitializer(MethodDeclarationSyntax method, string variableName)
+    private static bool HasSupportedLocalCollectionInitializer(InvocationExpressionSyntax invocation, string variableName)
     {
-        foreach (VariableDeclaratorSyntax variable in method.Body?.DescendantNodes().OfType<VariableDeclaratorSyntax>() ?? Enumerable.Empty<VariableDeclaratorSyntax>())
+        foreach (BlockSyntax block in invocation.Ancestors().OfType<BlockSyntax>())
         {
-            if (!string.Equals(variable.Identifier.ValueText, variableName, StringComparison.Ordinal)
-                || variable.Initializer?.Value is not ExpressionSyntax initializer)
+            StatementSyntax? containingStatement = invocation
+                .AncestorsAndSelf()
+                .OfType<StatementSyntax>()
+                .FirstOrDefault(statement => statement.Parent == block);
+            foreach (StatementSyntax statement in block.Statements)
             {
-                continue;
-            }
+                if (statement == containingStatement || statement.SpanStart > invocation.SpanStart)
+                {
+                    break;
+                }
 
-            TypeSyntax? declaredType = (variable.Parent as VariableDeclarationSyntax)?.Type;
-            if (initializer is ObjectCreationExpressionSyntax objectCreation
-                && TryGetGenericType(objectCreation.Type, out string createdTypeName, out _)
-                && IsSupportedCollectionType(createdTypeName))
-            {
-                return true;
-            }
-
-            if (initializer is ImplicitObjectCreationExpressionSyntax
-                && declaredType is not null
-                && TryGetGenericType(declaredType, out string declaredTypeName, out _)
-                && IsSupportedCollectionType(declaredTypeName))
-            {
-                return true;
+                bool? declarationSupport = GetLocalCollectionInitializerSupport(statement, variableName);
+                if (declarationSupport.HasValue)
+                {
+                    return declarationSupport.Value;
+                }
             }
         }
 
         return false;
+    }
+
+    private static bool? GetLocalCollectionInitializerSupport(StatementSyntax statement, string variableName)
+    {
+        VariableDeclarationSyntax? declaration = statement switch
+        {
+            LocalDeclarationStatementSyntax localDeclaration => localDeclaration.Declaration,
+            ForStatementSyntax forStatement => forStatement.Declaration,
+            _ => null,
+        };
+        if (declaration is null)
+        {
+            return null;
+        }
+
+        foreach (VariableDeclaratorSyntax variable in declaration.Variables)
+        {
+            if (!string.Equals(variable.Identifier.ValueText, variableName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            return variable.Initializer?.Value is ExpressionSyntax initializer
+                && IsSupportedCollectionInitializer(initializer, declaration.Type);
+        }
+
+        return null;
+    }
+
+    private static bool IsSupportedCollectionInitializer(ExpressionSyntax initializer, TypeSyntax declaredType)
+    {
+        if (initializer is ObjectCreationExpressionSyntax objectCreation
+            && TryGetGenericType(objectCreation.Type, out string createdTypeName, out _)
+            && IsSupportedCollectionType(createdTypeName))
+        {
+            return true;
+        }
+
+        return initializer is ImplicitObjectCreationExpressionSyntax
+            && TryGetGenericType(declaredType, out string declaredTypeName, out _)
+            && IsSupportedCollectionType(declaredTypeName);
     }
 
     private static bool IsTrivialDataConstructor(ConstructorDeclarationSyntax node)

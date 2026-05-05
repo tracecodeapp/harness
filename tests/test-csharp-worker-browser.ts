@@ -359,6 +359,43 @@ async function main(): Promise<void> {
       `C# worker traced nested dictionary-list case should return 11, received ${JSON.stringify(tracedNestedDictionaryList.output)}`
     );
 
+    const tracedShadowedCollectionHelper = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int ShadowedListHelper(int value) {',
+        '    var positions = new List<List<int>>();',
+        '    foreach (int seed in new int[] { value }) {',
+        '      var pos = new List<int>();',
+        '      pos.Add(seed);',
+        '      positions.Add(pos);',
+        '    }',
+        '    foreach (var row in positions) {',
+        '      var pos = row;',
+        '      return First(pos);',
+        '    }',
+        '    return -1;',
+        '  }',
+        '  private int First(List<int> values) {',
+        '    return values[0];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ShadowedListHelper',
+      { value: 13 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedShadowedCollectionHelper.success,
+      `C# worker traced shadowed collection-helper case should compile: ${tracedShadowedCollectionHelper.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedShadowedCollectionHelper.output === 13,
+      `C# worker traced shadowed collection-helper case should return 13, received ${JSON.stringify(tracedShadowedCollectionHelper.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',
