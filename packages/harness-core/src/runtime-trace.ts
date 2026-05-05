@@ -16,8 +16,8 @@ export type RuntimeTraceEventKind =
   | 'control';
 
 export type RuntimeTraceTarget =
-  | { variable: string }
-  | { variable: string; path: Array<string | number> }
+  | { variable: string; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
+  | { variable: string; path: Array<string | number>; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
   | { objectId: string; path?: Array<string | number> };
 
 interface RuntimeTraceBaseEvent {

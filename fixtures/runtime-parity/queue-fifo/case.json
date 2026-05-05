@@ -92,7 +92,6 @@
           "snapshot"
         ],
         "variableSnapshots": [
-          "num",
           "nums",
           "queue"
         ],
