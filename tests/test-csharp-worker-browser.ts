@@ -453,6 +453,47 @@ async function main(): Promise<void> {
       `C# worker traced collection output case should include set snapshots, received ${JSON.stringify(tracedCollectionOutput.events)}`
     );
 
+    const polymorphicOutput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class NestedInteger {',
+        '  public string __type__ = "NestedInteger";',
+        '  public List<NestedInteger> list = new List<NestedInteger>();',
+        '}',
+        'public class NestedIntegerInt : NestedInteger {',
+        '  public int value;',
+        '}',
+        'public class Solution {',
+        '  public NestedInteger BuildNested(int value) {',
+        '    var root = new NestedInteger();',
+        '    root.list.Add(new NestedIntegerInt { value = value });',
+        '    var child = new NestedInteger();',
+        '    child.list.Add(new NestedIntegerInt { value = value + 1 });',
+        '    root.list.Add(child);',
+        '    return root;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildNested',
+      { value: 4 },
+      assetBaseUrl
+    );
+    assertCondition(
+      polymorphicOutput.success,
+      `C# worker polymorphic output case should succeed: ${polymorphicOutput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(polymorphicOutput.output) === JSON.stringify({
+        __type__: 'NestedInteger',
+        list: [
+          { __type__: 'NestedInteger', value: 4, list: [] },
+          { __type__: 'NestedInteger', list: [{ __type__: 'NestedInteger', value: 5, list: [] }] },
+        ],
+      }),
+      `C# worker polymorphic output case should preserve derived fields, received ${JSON.stringify(polymorphicOutput.output)}`
+    );
+
     const tracedExplicitCollections = await runWorkerCase(
       page,
       [

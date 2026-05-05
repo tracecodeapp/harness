@@ -307,6 +307,11 @@ public static class RuntimeTraceSink
             return typeValue.FullName ?? typeValue.Name;
         }
 
+        if (type.FullName?.StartsWith("System.Collections.Generic.LinkedListNode`1", StringComparison.Ordinal) == true)
+        {
+            return NormalizeFrameworkLinkedListNode(value, depth, seen);
+        }
+
         if (type.FullName?.StartsWith("System.ValueTuple`", StringComparison.Ordinal) == true)
         {
             return NormalizeValueTuple(value, depth, seen);
@@ -451,6 +456,21 @@ public static class RuntimeTraceSink
         };
     }
 
+    private static object? NormalizeFrameworkLinkedListNode(object node, int depth, ISet<object> seen)
+    {
+        if (depth >= MaxNodeDepth || !seen.Add(node))
+        {
+            return new Dictionary<string, object?> { ["__ref__"] = "LinkedListNode" };
+        }
+
+        object? value = node.GetType().GetProperty("Value")?.GetValue(node);
+        return new Dictionary<string, object?>
+        {
+            ["__type__"] = "LinkedListNode",
+            ["value"] = NormalizeTraceValue(value, depth + 1, seen),
+        };
+    }
+
     private static object? NormalizeObject(object value, int depth, ISet<object> seen)
     {
         Type type = value.GetType();
@@ -482,12 +502,23 @@ public static class RuntimeTraceSink
                 | System.Reflection.BindingFlags.Instance
         ))
         {
-            if (!property.CanRead || property.GetIndexParameters().Length > 0)
+            if (!property.CanRead
+                || property.GetIndexParameters().Length > 0
+                || property.PropertyType.IsByRef
+                || property.PropertyType.IsByRefLike)
             {
                 continue;
             }
 
-            result[property.Name] = NormalizeTraceValue(property.GetValue(value), depth + 1, seen);
+            try
+            {
+                result[property.Name] = NormalizeTraceValue(property.GetValue(value), depth + 1, seen);
+            }
+            catch
+            {
+                // Some framework properties expose by-ref/pointer-backed values that System.Text.Json
+                // cannot represent in the browser host; skip them instead of failing the trace.
+            }
         }
 
         return result.Count > 1 ? result : value;

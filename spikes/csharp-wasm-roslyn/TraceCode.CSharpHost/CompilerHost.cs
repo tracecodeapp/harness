@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
@@ -164,7 +165,9 @@ public static class TraceCodeDriver
         {
             string operation = operations[i];
             JsonElement[] rawArgs = i < arguments.Length ? arguments[i] : Array.Empty<JsonElement>();
-            if (string.Equals(operation, {{JsonSerializer.Serialize(className)}}, StringComparison.OrdinalIgnoreCase))
+            if (instance is null && (i == 0
+                || string.Equals(operation, {{JsonSerializer.Serialize(className)}}, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(operation, "__init__", StringComparison.OrdinalIgnoreCase)))
             {
                 ConstructorInfo constructor = SelectConstructor(targetType.GetConstructors(BindingFlags.Public | BindingFlags.Instance), rawArgs.Length);
                 instance = constructor.Invoke(ConvertArgs(rawArgs, constructor.GetParameters()));
@@ -898,6 +901,27 @@ public class TreeNode
             return value;
         }
 
+        public static T ArrayRead<T>(IList<T[]> list, int row, int column, string variable, int line)
+        {
+            T value = list[row][column];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            return value;
+        }
+
+        public static T ArrayRead<T>(IList<T>[] array, int row, int column, string variable, int line)
+        {
+            T value = array[row][column];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            return value;
+        }
+
+        public static T ArrayRead<T>(List<List<T>> list, int row, int column, string variable, int line)
+        {
+            T value = list[row][column];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            return value;
+        }
+
         public static char ArrayRead(string text, int index, string variable, int line)
         {
             char value = text[index];
@@ -905,10 +929,30 @@ public class TreeNode
             return value;
         }
 
+        public static char ArrayRead(IList<string> list, int row, int column, string variable, int line)
+        {
+            char value = list[row][column];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            return value;
+        }
+
         public static char ArrayRead(string[] array, int row, int column, string variable, int line)
         {
             char value = array[row][column];
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            return value;
+        }
+
+        public static TValue ArrayRead<TKey, TValue>(
+            Dictionary<TKey, TValue>[] array,
+            int row,
+            TKey key,
+            string variable,
+            int line
+        ) where TKey : notnull
+        {
+            TValue value = array[row][key];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line);
             return value;
         }
 
@@ -959,6 +1003,37 @@ public class TreeNode
         {
             array[row, column] = value;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+        }
+
+        public static void ArrayWrite<T>(IList<T[]> list, int row, int column, T value, string variable, int line)
+        {
+            list[row][column] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+        }
+
+        public static void ArrayWrite<T>(IList<T>[] array, int row, int column, T value, string variable, int line)
+        {
+            array[row][column] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+        }
+
+        public static void ArrayWrite<T>(List<List<T>> list, int row, int column, T value, string variable, int line)
+        {
+            list[row][column] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+        }
+
+        public static void ArrayWrite<TKey, TValue>(
+            Dictionary<TKey, TValue>[] array,
+            int row,
+            TKey key,
+            TValue value,
+            string variable,
+            int line
+        ) where TKey : notnull
+        {
+            array[row][key] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1289,6 +1364,31 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
+        public TraceCodePriorityQueue(string variable, int line, IComparer<TPriority>? comparer)
+            : base(comparer)
+        {
+            this.variable = variable;
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
+        public TraceCodePriorityQueue(string variable, int line, IEnumerable<(TElement Element, TPriority Priority)> items)
+            : base(items)
+        {
+            this.variable = variable;
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
+        public TraceCodePriorityQueue(
+            string variable,
+            int line,
+            IEnumerable<(TElement Element, TPriority Priority)> items,
+            IComparer<TPriority>? comparer)
+            : base(items, comparer)
+        {
+            this.variable = variable;
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
         public new void Enqueue(TElement element, TPriority priority)
         {
             base.Enqueue(element, priority);
@@ -1479,8 +1579,189 @@ public class TreeNode
             return null;
         }
 
-        string json = JsonSerializer.Serialize(output, output.GetType(), JsonOptions);
+        object? normalized = NormalizeOutputValue(
+            output,
+            0,
+            new HashSet<object>(ReferenceEqualityComparer.Instance)
+        );
+        string json = JsonSerializer.Serialize(normalized, normalized?.GetType() ?? typeof(object), JsonOptions);
         return JsonSerializer.Deserialize<JsonElement>(json, JsonOptions);
+    }
+
+    private static object? NormalizeOutputValue(object? value, int depth, ISet<object> seen)
+    {
+        if (value is null
+            || value is string
+            || value is bool
+            || value is byte
+            || value is sbyte
+            || value is short
+            || value is ushort
+            || value is int
+            || value is uint
+            || value is long
+            || value is ulong
+            || value is float
+            || value is double
+            || value is decimal
+            || value is char
+            || value is JsonElement)
+        {
+            return value;
+        }
+
+        if (depth > 64)
+        {
+            return "<max depth>";
+        }
+
+        Type type = value.GetType();
+        if (type.IsEnum)
+        {
+            return value.ToString();
+        }
+
+        if (type.Namespace?.StartsWith("System", StringComparison.Ordinal) == true
+            && value is not System.Collections.IDictionary
+            && value is not System.Collections.IEnumerable)
+        {
+            return value;
+        }
+
+        if (value is System.Collections.IDictionary dictionary)
+        {
+            if (!seen.Add(value))
+            {
+                return new Dictionary<string, object?> { ["__ref__"] = type.Name };
+            }
+
+            var result = new Dictionary<string, object?>();
+            foreach (System.Collections.DictionaryEntry entry in dictionary)
+            {
+                result[NormalizeOutputKey(entry.Key)] = NormalizeOutputValue(entry.Value, depth + 1, seen);
+            }
+
+            return result;
+        }
+
+        if (value is Array array)
+        {
+            if (!seen.Add(value))
+            {
+                return new List<object?>();
+            }
+
+            return NormalizeOutputArray(array, 0, new int[array.Rank], depth, seen);
+        }
+
+        if (value is System.Collections.IEnumerable enumerable)
+        {
+            if (!seen.Add(value))
+            {
+                return new List<object?>();
+            }
+
+            var result = new List<object?>();
+            foreach (object? item in enumerable)
+            {
+                result.Add(NormalizeOutputValue(item, depth + 1, seen));
+            }
+
+            return result;
+        }
+
+        return NormalizeOutputObject(value, type, depth, seen);
+    }
+
+    private static string NormalizeOutputKey(object? key)
+    {
+        return key switch
+        {
+            null => "null",
+            string text => text,
+            bool flag => flag ? "true" : "false",
+            IFormattable formattable => formattable.ToString(null, CultureInfo.InvariantCulture),
+            _ => Convert.ToString(key, CultureInfo.InvariantCulture) ?? "null",
+        };
+    }
+
+    private static object? NormalizeOutputArray(Array array, int dimension, int[] indices, int depth, ISet<object> seen)
+    {
+        var values = new List<object?>();
+        int lower = array.GetLowerBound(dimension);
+        int upper = array.GetUpperBound(dimension);
+        for (int index = lower; index <= upper; index++)
+        {
+            indices[dimension] = index;
+            values.Add(dimension == array.Rank - 1
+                ? NormalizeOutputValue(array.GetValue(indices), depth + 1, seen)
+                : NormalizeOutputArray(array, dimension + 1, indices, depth + 1, seen));
+        }
+
+        return values;
+    }
+
+    private static object? NormalizeOutputObject(object value, Type type, int depth, ISet<object> seen)
+    {
+        if (!seen.Add(value))
+        {
+            return new Dictionary<string, object?> { ["__ref__"] = type.Name };
+        }
+
+        var result = new Dictionary<string, object?>();
+        AddOutputFieldMembers(result, value, type, depth, seen);
+        AddOutputPropertyMembers(result, value, type, depth, seen);
+        return result.Count > 0 ? result : value;
+    }
+
+    private static void AddOutputFieldMembers(
+        IDictionary<string, object?> result,
+        object value,
+        Type type,
+        int depth,
+        ISet<object> seen
+    )
+    {
+        foreach (FieldInfo field in OrderOutputMembers(type.GetFields(BindingFlags.Public | BindingFlags.Instance)))
+        {
+            result[field.Name] = NormalizeOutputValue(field.GetValue(value), depth + 1, seen);
+        }
+    }
+
+    private static void AddOutputPropertyMembers(
+        IDictionary<string, object?> result,
+        object value,
+        Type type,
+        int depth,
+        ISet<object> seen
+    )
+    {
+        foreach (PropertyInfo property in OrderOutputMembers(type.GetProperties(BindingFlags.Public | BindingFlags.Instance)))
+        {
+            if (result.ContainsKey(property.Name)
+                || !property.CanRead
+                || property.GetIndexParameters().Length > 0
+                || property.PropertyType.IsByRef
+                || property.PropertyType.IsByRefLike)
+            {
+                continue;
+            }
+
+            try
+            {
+                result[property.Name] = NormalizeOutputValue(property.GetValue(value), depth + 1, seen);
+            }
+            catch
+            {
+                // Keep output serialization best-effort for user-defined objects with throwing accessors.
+            }
+        }
+    }
+
+    private static IEnumerable<T> OrderOutputMembers<T>(IEnumerable<T> members)
+        where T : MemberInfo
+    {
+        return members.OrderBy(member => member.Name == "__type__" ? 0 : 1);
     }
 
     private static string SerializeError(
