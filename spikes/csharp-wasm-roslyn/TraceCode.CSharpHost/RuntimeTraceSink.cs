@@ -3,7 +3,10 @@ namespace TraceCode.CSharpHost;
 public static class RuntimeTraceSink
 {
     private const int MaxNodeDepth = 64;
+    private const int MaxCollectionItems = 64;
+    private const int MaxObjectFields = 32;
     private static readonly List<RuntimeTraceEvent> Events = new();
+    private static readonly HashSet<string> SnapshottedVariablesInCurrentLine = new(StringComparer.Ordinal);
     private static DateTime deadlineUtc;
     private static int? maxTraceSteps;
     private static int currentLine;
@@ -11,6 +14,7 @@ public static class RuntimeTraceSink
     public static void Reset()
     {
         Events.Clear();
+        SnapshottedVariablesInCurrentLine.Clear();
         deadlineUtc = DateTime.UtcNow.AddSeconds(2);
         maxTraceSteps = null;
         currentLine = 0;
@@ -31,6 +35,7 @@ public static class RuntimeTraceSink
     public static void Line(int line, string? function)
     {
         currentLine = line;
+        SnapshottedVariablesInCurrentLine.Clear();
         Add(new RuntimeTraceEvent
         {
             Kind = "line",
@@ -195,6 +200,11 @@ public static class RuntimeTraceSink
 
     public static void Snapshot(string variable, object? value)
     {
+        if (!MarkSnapshot(variable, currentLine))
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "snapshot",
@@ -206,6 +216,11 @@ public static class RuntimeTraceSink
 
     public static void Snapshot(string variable, object? value, int line)
     {
+        if (!MarkSnapshot(variable, line))
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "snapshot",
@@ -213,6 +228,11 @@ public static class RuntimeTraceSink
             Target = new RuntimeTraceTarget { Variable = variable },
             Value = value,
         });
+    }
+
+    private static bool MarkSnapshot(string variable, int line)
+    {
+        return SnapshottedVariablesInCurrentLine.Add($"{line}:{variable}");
     }
 
     public static int CurrentLine => currentLine;
@@ -366,6 +386,11 @@ public static class RuntimeTraceSink
         var entries = new List<Dictionary<string, object?>>();
         foreach (System.Collections.DictionaryEntry entry in dictionary)
         {
+            if (entries.Count >= MaxCollectionItems)
+            {
+                break;
+            }
+
             entries.Add(new Dictionary<string, object?>
             {
                 ["key"] = NormalizeTraceValue(entry.Key, depth + 1, seen),
@@ -391,7 +416,8 @@ public static class RuntimeTraceSink
         var values = new List<object?>();
         int lower = array.GetLowerBound(dimension);
         int upper = array.GetUpperBound(dimension);
-        for (int index = lower; index <= upper; index++)
+        int limitedUpper = Math.Min(upper, lower + MaxCollectionItems - 1);
+        for (int index = lower; index <= limitedUpper; index++)
         {
             indices[dimension] = index;
             values.Add(dimension == array.Rank - 1
@@ -412,6 +438,11 @@ public static class RuntimeTraceSink
         var values = new List<object?>();
         foreach (object? item in enumerable)
         {
+            if (values.Count >= MaxCollectionItems)
+            {
+                break;
+            }
+
             values.Add(NormalizeTraceValue(item, depth + 1, seen));
         }
 
@@ -489,12 +520,19 @@ public static class RuntimeTraceSink
             ["__type__"] = type.Name,
         };
 
+        int emittedFields = 0;
         foreach (System.Reflection.FieldInfo field in type.GetFields(
             System.Reflection.BindingFlags.Public
                 | System.Reflection.BindingFlags.Instance
         ))
         {
+            if (emittedFields >= MaxObjectFields)
+            {
+                return result;
+            }
+
             result[field.Name] = NormalizeTraceValue(field.GetValue(value), depth + 1, seen);
+            emittedFields++;
         }
 
         foreach (System.Reflection.PropertyInfo property in type.GetProperties(
@@ -502,6 +540,11 @@ public static class RuntimeTraceSink
                 | System.Reflection.BindingFlags.Instance
         ))
         {
+            if (emittedFields >= MaxObjectFields)
+            {
+                break;
+            }
+
             if (!property.CanRead
                 || property.GetIndexParameters().Length > 0
                 || property.PropertyType.IsByRef
@@ -513,6 +556,7 @@ public static class RuntimeTraceSink
             try
             {
                 result[property.Name] = NormalizeTraceValue(property.GetValue(value), depth + 1, seen);
+                emittedFields++;
             }
             catch
             {

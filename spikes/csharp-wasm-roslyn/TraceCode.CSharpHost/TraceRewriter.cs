@@ -1106,7 +1106,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         if (!TryRewriteCollectionCreation(assignment.Right, identifier.Identifier.ValueText, null, out ExpressionSyntax? replacement)
-            && !TryRewriteCollectionFactoryAssignment(assignment.Right, identifier.Identifier.ValueText, line, out replacement))
+            && !TryRewriteCollectionFactoryAssignment(assignment.Right, identifier.Identifier.ValueText, line, out replacement)
+            && !TryRewriteCollectionCompatibleAssignment(assignment.Right, identifier.Identifier.ValueText, line, out replacement))
         {
             return statement;
         }
@@ -1893,6 +1894,28 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (!collectionVariableTypes.TryGetValue(variableName, out var collectionType)
             || value is not InvocationExpressionSyntax invocation
             || !IsCollectionFactoryInvocation(collectionType.TypeName, invocation)
+            || GetTraceCollectionTypeName(collectionType.TypeName) is not string wrapperType)
+        {
+            return false;
+        }
+
+        replacement = SyntaxFactory.ParseExpression(
+            $"new TraceCode.Internal.{wrapperType}<{collectionType.TypeArguments}>({Literal(variableName)}, {line}, {value})"
+        );
+        return true;
+    }
+
+    private bool TryRewriteCollectionCompatibleAssignment(
+        ExpressionSyntax value,
+        string variableName,
+        int line,
+        out ExpressionSyntax? replacement
+    )
+    {
+        replacement = null;
+        if (!collectionVariableTypes.TryGetValue(variableName, out var collectionType)
+            || value.IsKind(SyntaxKind.NullLiteralExpression)
+            || value is DefaultExpressionSyntax
             || GetTraceCollectionTypeName(collectionType.TypeName) is not string wrapperType)
         {
             return false;

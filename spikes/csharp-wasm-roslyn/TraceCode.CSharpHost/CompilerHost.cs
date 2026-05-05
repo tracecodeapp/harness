@@ -40,7 +40,6 @@ public static partial class CompilerHost
             {
                 return SerializeError("Invalid C# execution request.", stopwatch, capturedOut);
             }
-            RuntimeTraceSink.Configure(request.TimeoutMs, request.Trace ? request.MaxTraceSteps : null);
 
             CSharpCompilation compilation = CreateCompilation(request);
             using MemoryStream peStream = new();
@@ -64,6 +63,7 @@ public static partial class CompilerHost
             }
 
             Assembly userAssembly = Assembly.Load(peStream.ToArray());
+            RuntimeTraceSink.Configure(request.TimeoutMs, request.Trace ? request.MaxTraceSteps : null);
             object? output = InvokeDriver(userAssembly);
             return Serialize(new CSharpExecuteResponse
             {

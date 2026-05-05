@@ -301,6 +301,37 @@ async function main(): Promise<void> {
       `C# worker traced char-array unary write case should return 49, received ${JSON.stringify(tracedCharArrayUnaryWrite.output)}`
     );
 
+    const tracedCollectionReassignment = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int ReassignPoppedDictionary(int value) {',
+        '    var stack = new Stack<Dictionary<string, int>>();',
+        '    var count = new Dictionary<string, int>();',
+        '    count["a"] = value;',
+        '    stack.Push(count);',
+        '    count = new Dictionary<string, int>();',
+        '    var previous = stack.Pop();',
+        '    count = previous;',
+        '    return count["a"];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReassignPoppedDictionary',
+      { value: 7 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedCollectionReassignment.success,
+      `C# worker traced collection reassignment case should compile: ${tracedCollectionReassignment.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedCollectionReassignment.output === 7,
+      `C# worker traced collection reassignment case should return 7, received ${JSON.stringify(tracedCollectionReassignment.output)}`
+    );
+
     const tracedExpressionBody = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) => a + b; }',
