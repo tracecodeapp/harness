@@ -297,6 +297,16 @@ public static class RuntimeTraceSink
         }
 
         Type type = value.GetType();
+        if (value is Delegate)
+        {
+            return null;
+        }
+
+        if (value is Type typeValue)
+        {
+            return typeValue.FullName ?? typeValue.Name;
+        }
+
         if (type.FullName?.StartsWith("System.ValueTuple`", StringComparison.Ordinal) == true)
         {
             return NormalizeValueTuple(value, depth, seen);

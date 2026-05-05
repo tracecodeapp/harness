@@ -532,6 +532,86 @@ async function main(): Promise<void> {
       `C# worker traced interview collections case should include Stack Pop, received ${JSON.stringify(tracedInterviewCollections.events)}`
     );
 
+    const tracedNestedContains = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public bool HasEdge(string from, string to) {',
+        '    var adj = new Dictionary<string, HashSet<string>>();',
+        '    adj[from] = new HashSet<string> { to };',
+        '    return adj[from].Contains(to);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'HasEdge',
+      { from: 'a', to: 'b' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedNestedContains.success,
+      `C# worker traced nested Contains case should succeed: ${tracedNestedContains.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedNestedContains.output === true,
+      `C# worker traced nested Contains case should return true, received ${JSON.stringify(tracedNestedContains.output)}`
+    );
+    assertCondition(
+      tracedNestedContains.events?.some((event) =>
+        event.kind === 'read'
+        && event.target?.variable === 'adj'
+        && event.target.path?.[0] === 'a'
+        && event.target.path?.[1] === 'b') === true,
+      `C# worker traced nested Contains case should include adj[from].Contains(to) read, received ${JSON.stringify(tracedNestedContains.events)}`
+    );
+
+    const tracedFieldMapRemove = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class FieldMap {',
+        '  public Dictionary<string, int> counts;',
+        '  public FieldMap() {',
+        '    this.counts = new Dictionary<string, int>();',
+        '    this.counts["a"] = 1;',
+        '    this.counts["b"] = 2;',
+        '  }',
+        '  public object RemoveKey(string key) {',
+        '    this.counts.Remove(key);',
+        '    return null;',
+        '  }',
+        '  public int Count() {',
+        '    return this.counts.Count;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'FieldMap',
+      {
+        operations: ['FieldMap', 'RemoveKey', 'Count'],
+        arguments: [[], ['b'], []],
+      },
+      assetBaseUrl,
+      true,
+      { executionStyle: 'ops-class' }
+    );
+    assertCondition(
+      tracedFieldMapRemove.success,
+      `C# worker traced field map Remove case should succeed: ${tracedFieldMapRemove.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(tracedFieldMapRemove.output) === JSON.stringify([null, null, 1]),
+      `C# worker traced field map Remove case should return operation outputs, received ${JSON.stringify(tracedFieldMapRemove.output)}`
+    );
+    assertCondition(
+      tracedFieldMapRemove.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.target?.variable === 'this'
+        && event.target.path?.[0] === 'counts'
+        && event.method === 'Remove') === true,
+      `C# worker traced field map Remove case should include this.counts Remove mutation, received ${JSON.stringify(tracedFieldMapRemove.events)}`
+    );
+
     const tracedCollectionInitializers = await runWorkerCase(
       page,
       [

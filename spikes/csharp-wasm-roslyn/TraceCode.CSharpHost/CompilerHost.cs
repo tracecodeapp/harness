@@ -843,6 +843,18 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
         }
 
+        public static bool ContainsRead(bool contains, string variable, object? key, int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key!, contains, line);
+            return contains;
+        }
+
+        public static bool ContainsRead(bool contains, string variable, object?[] path, int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, path, contains, line);
+            return contains;
+        }
+
         public static T ArrayRead<T>(T[] array, int index, string variable, int line)
         {
             T value = array[index];
