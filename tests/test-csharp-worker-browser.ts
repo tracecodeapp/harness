@@ -599,6 +599,29 @@ async function main(): Promise<void> {
       `C# worker custom Node output case should include object type, received ${JSON.stringify(customNodeOutput.output)}`
     );
 
+    const nestedObjectListInput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public bool ReadNestedObjects(List<List<object>> rows) {',
+        '    return (string)rows[0][0] == "USD" && System.Convert.ToDouble(rows[0][1]) == 0.9;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadNestedObjects',
+      { rows: [['USD', 0.9]] },
+      assetBaseUrl
+    );
+    assertCondition(
+      nestedObjectListInput.success,
+      `C# worker nested object-list input case should succeed: ${nestedObjectListInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      nestedObjectListInput.output === true,
+      `C# worker nested object-list input case should return true, received ${JSON.stringify(nestedObjectListInput.output)}`
+    );
+
     const collectionReassignment = await runWorkerCase(
       page,
       [

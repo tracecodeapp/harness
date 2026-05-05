@@ -677,6 +677,11 @@ public class TreeNode
                 return value.GetString();
             }
 
+            if (effectiveType == typeof(object))
+            {
+                return ReadObjectValue(value);
+            }
+
             if (effectiveType.IsPrimitive || effectiveType.IsEnum || effectiveType == typeof(decimal))
             {
                 return JsonSerializer.Deserialize(value.GetRawText(), effectiveType, JsonOptions);
