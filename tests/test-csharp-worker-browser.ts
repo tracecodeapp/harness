@@ -494,6 +494,139 @@ async function main(): Promise<void> {
       `C# worker polymorphic output case should preserve derived fields, received ${JSON.stringify(polymorphicOutput.output)}`
     );
 
+    const nestedNodeType = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public class TreeNode {',
+        '    public int val;',
+        '    public TreeNode left;',
+        '    public TreeNode right;',
+        '    public TreeNode(int val = 0, TreeNode left = null, TreeNode right = null) {',
+        '      this.val = val;',
+        '      this.left = left;',
+        '      this.right = right;',
+        '    }',
+        '  }',
+        '  public int BuildNestedNode(int value) {',
+        '    var root = new TreeNode(value, new TreeNode(value + 1), null);',
+        '    return root.val + root.left.val;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildNestedNode',
+      { value: 4 },
+      assetBaseUrl
+    );
+    assertCondition(
+      nestedNodeType.success,
+      `C# worker nested TreeNode type case should compile: ${nestedNodeType.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      nestedNodeType.output === 9,
+      `C# worker nested TreeNode type case should return 9, received ${JSON.stringify(nestedNodeType.output)}`
+    );
+
+    const nestedNodeInput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public class Node {',
+        '    public int val;',
+        '    public List<Node> children;',
+        '    public Node(int val) {',
+        '      this.val = val;',
+        '      this.children = new List<Node>();',
+        '    }',
+        '    public Node(int val, List<Node> children) {',
+        '      this.val = val;',
+        '      this.children = children;',
+        '    }',
+        '  }',
+        '  public int SumNode(Node root) {',
+        '    int total = root.val;',
+        '    foreach (var child in root.children) total += child.val;',
+        '    return total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SumNode',
+      { root: { __type__: 'Node', val: 1, children: [{ __type__: 'Node', val: 3, children: [] }] } },
+      assetBaseUrl
+    );
+    assertCondition(
+      nestedNodeInput.success,
+      `C# worker nested Node input case should compile and hydrate: ${nestedNodeInput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      nestedNodeInput.output === 4,
+      `C# worker nested Node input case should return 4, received ${JSON.stringify(nestedNodeInput.output)}`
+    );
+
+    const customNodeOutput = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public class Node {',
+        '    public int val;',
+        '    public List<Node> children;',
+        '    public Node(int val, List<Node> children) {',
+        '      this.val = val;',
+        '      this.children = children;',
+        '    }',
+        '  }',
+        '  public Node BuildNode(int value) {',
+        '    return new Node(value, new List<Node> { new Node(value + 1, new List<Node>()) });',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildNode',
+      { value: 4 },
+      assetBaseUrl
+    );
+    assertCondition(
+      customNodeOutput.success,
+      `C# worker custom Node output case should succeed: ${customNodeOutput.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(customNodeOutput.output) === JSON.stringify({
+        __type__: 'Node',
+        val: 4,
+        children: [{ __type__: 'Node', val: 5, children: [] }],
+      }),
+      `C# worker custom Node output case should include object type, received ${JSON.stringify(customNodeOutput.output)}`
+    );
+
+    const collectionReassignment = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int[] ReassignList(int value) {',
+        '    List<int> items = new List<int> { value };',
+        '    items = new List<int>(2);',
+        '    items.Add(value + 1);',
+        '    items.Add(value + 2);',
+        '    return items.ToArray();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReassignList',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      collectionReassignment.success,
+      `C# worker traced collection reassignment case should compile: ${collectionReassignment.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(collectionReassignment.output) === JSON.stringify([5, 6]),
+      `C# worker traced collection reassignment case should return [5,6], received ${JSON.stringify(collectionReassignment.output)}`
+    );
+
     const tracedExplicitCollections = await runWorkerCase(
       page,
       [

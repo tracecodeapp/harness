@@ -606,7 +606,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         StatementSyntax executableStatement = RewriteArrayUnaryWriteStatement(
             RewriteFieldWriteStatement(
                 RewriteFieldIndexedWriteStatement(
-                    RewriteArrayWriteStatement(statement, line),
+                    RewriteArrayWriteStatement(
+                        RewriteCollectionAssignmentStatement(statement),
+                        line
+                    ),
                     line
                 ),
                 line
@@ -1062,6 +1065,21 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return hasRewrittenCollectionInitializer
             ? rewritten.WithDeclaration(rewritten.Declaration.WithType(replacementType!))
             : rewritten;
+    }
+
+    private StatementSyntax RewriteCollectionAssignmentStatement(StatementSyntax statement)
+    {
+        if (statement is not ExpressionStatementSyntax expressionStatement
+            || expressionStatement.Expression is not AssignmentExpressionSyntax assignment
+            || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            || assignment.Left is not IdentifierNameSyntax identifier
+            || !collectionVariables.Contains(identifier.Identifier.ValueText)
+            || !TryRewriteCollectionCreation(assignment.Right, identifier.Identifier.ValueText, null, out ExpressionSyntax? replacement))
+        {
+            return statement;
+        }
+
+        return expressionStatement.WithExpression(assignment.WithRight(replacement!));
     }
 
     private static IEnumerable<StatementSyntax> CreateWriteStatements(StatementSyntax statement, int line)

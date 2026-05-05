@@ -6,6 +6,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -216,12 +217,13 @@ public static class TraceCodeDriver
 
         MethodDeclarationSyntax method = FindSolutionMethod(userTree, request.FunctionName, request.Inputs);
         string methodName = method.Identifier.ValueText;
+        ISet<string> nestedSolutionTypeNames = GetNestedSolutionTypeNames(method);
         bool returnsVoid = method.ReturnType is PredefinedTypeSyntax predefinedType
             && predefinedType.Keyword.IsKind(SyntaxKind.VoidKeyword);
         var parameterReads = method.ParameterList.Parameters.Select((parameter, index) =>
         {
             string parameterName = parameter.Identifier.ValueText;
-            string parameterType = parameter.Type?.ToString() ?? "object";
+            string parameterType = GetDriverParameterType(parameter, nestedSolutionTypeNames);
             return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index});";
         }).ToList();
         string readStatements = string.Join("\n", parameterReads);
@@ -250,6 +252,34 @@ public static class TraceCodeDriver
     }
 }
 """;
+    }
+
+    private static ISet<string> GetNestedSolutionTypeNames(MethodDeclarationSyntax method)
+    {
+        if (method.Parent is not ClassDeclarationSyntax solutionClass)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        return solutionClass.Members
+            .OfType<ClassDeclarationSyntax>()
+            .Select(type => type.Identifier.ValueText)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
+    private static string GetDriverParameterType(ParameterSyntax parameter, ISet<string> nestedSolutionTypeNames)
+    {
+        string parameterType = parameter.Type?.ToString() ?? "object";
+        foreach (string nestedTypeName in nestedSolutionTypeNames)
+        {
+            parameterType = Regex.Replace(
+                parameterType,
+                $@"(?<![\w.]){Regex.Escape(nestedTypeName)}(?![\w])",
+                $"Solution.{nestedTypeName}"
+            );
+        }
+
+        return parameterType;
     }
 
     private static bool MutatesParameter(MethodDeclarationSyntax method, string parameterName)
@@ -442,6 +472,7 @@ global using System.Linq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -464,8 +495,7 @@ namespace TraceCode.Internal
     private static string GenerateNodePreludeSource(SyntaxTree userTree)
     {
         CompilationUnitSyntax root = userTree.GetCompilationUnitRoot();
-        var classNames = root
-            .DescendantNodes()
+        var classNames = root.Members
             .OfType<ClassDeclarationSyntax>()
             .Select(type => type.Identifier.ValueText)
             .ToHashSet(StringComparer.Ordinal);
@@ -563,6 +593,11 @@ public class TreeNode
                 return value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
             }
 
+            if (ShouldUseStructuredObjectReader(value, targetType))
+            {
+                return ReadStructuredValue(value, targetType, new Dictionary<string, object>(StringComparer.Ordinal));
+            }
+
             return JsonSerializer.Deserialize(value.GetRawText(), targetType, JsonOptions);
         }
 
@@ -588,7 +623,156 @@ public class TreeNode
                 return (T?)(object?)value.EnumerateArray().Select(item => ReadObjectArray(item)).ToArray();
             }
 
+            if (ShouldUseStructuredObjectReader(value, typeof(T)))
+            {
+                return (T?)ReadStructuredValue(value, typeof(T), new Dictionary<string, object>(StringComparer.Ordinal));
+            }
+
             return JsonSerializer.Deserialize<T>(value.GetRawText(), JsonOptions);
+        }
+
+        private static bool ShouldUseStructuredObjectReader(JsonElement value, Type targetType)
+        {
+            Type effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+            if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return false;
+            }
+
+            if (effectiveType == typeof(string)
+                || effectiveType.IsPrimitive
+                || effectiveType.IsEnum
+                || effectiveType == typeof(decimal)
+                || effectiveType == typeof(DateTime)
+                || effectiveType == typeof(JsonElement))
+            {
+                return false;
+            }
+
+            return value.ValueKind == JsonValueKind.Object
+                || value.ValueKind == JsonValueKind.Array && IsSupportedStructuredSequenceType(effectiveType);
+        }
+
+        private static bool IsSupportedStructuredSequenceType(Type targetType)
+        {
+            if (targetType.IsArray)
+            {
+                return true;
+            }
+
+            return targetType.IsGenericType
+                && targetType.GetGenericTypeDefinition() == typeof(List<>);
+        }
+
+        private static object? ReadStructuredValue(JsonElement value, Type targetType, IDictionary<string, object> refs)
+        {
+            Type effectiveType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+            if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            {
+                return null;
+            }
+
+            if (effectiveType == typeof(string))
+            {
+                return value.GetString();
+            }
+
+            if (effectiveType.IsPrimitive || effectiveType.IsEnum || effectiveType == typeof(decimal))
+            {
+                return JsonSerializer.Deserialize(value.GetRawText(), effectiveType, JsonOptions);
+            }
+
+            if (effectiveType.IsArray)
+            {
+                Type elementType = effectiveType.GetElementType() ?? typeof(object);
+                JsonElement[] values = value.EnumerateArray().ToArray();
+                Array array = Array.CreateInstance(elementType, values.Length);
+                for (int i = 0; i < values.Length; i++)
+                {
+                    array.SetValue(ReadStructuredValue(values[i], elementType, refs), i);
+                }
+                return array;
+            }
+
+            if (effectiveType.IsGenericType && effectiveType.GetGenericTypeDefinition() == typeof(List<>))
+            {
+                Type elementType = effectiveType.GetGenericArguments()[0];
+                System.Collections.IList list = (System.Collections.IList)Activator.CreateInstance(effectiveType)!;
+                foreach (JsonElement item in value.EnumerateArray())
+                {
+                    list.Add(ReadStructuredValue(item, elementType, refs));
+                }
+                return list;
+            }
+
+            if (value.ValueKind != JsonValueKind.Object)
+            {
+                return JsonSerializer.Deserialize(value.GetRawText(), effectiveType, JsonOptions);
+            }
+
+            if (TryReadStringProperty(value, "__ref__", out string? refId))
+            {
+                return refs.TryGetValue(refId, out object? referenced)
+                    ? referenced
+                    : throw new InvalidOperationException($"Unknown object reference \"{refId}\".");
+            }
+
+            object instance = CreateStructuredObject(value, effectiveType, refs);
+            if (TryReadStringProperty(value, "__id__", out string? id))
+            {
+                refs[id] = instance;
+            }
+
+            foreach (FieldInfo field in effectiveType.GetFields(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (TryGetProperty(value, field.Name, out JsonElement property))
+                {
+                    field.SetValue(instance, ReadStructuredValue(property, field.FieldType, refs));
+                }
+            }
+
+            foreach (PropertyInfo property in effectiveType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!property.CanWrite
+                    || property.GetIndexParameters().Length > 0
+                    || !TryGetProperty(value, property.Name, out JsonElement propertyValue))
+                {
+                    continue;
+                }
+
+                property.SetValue(instance, ReadStructuredValue(propertyValue, property.PropertyType, refs));
+            }
+
+            return instance;
+        }
+
+        private static object CreateStructuredObject(JsonElement value, Type targetType, IDictionary<string, object> refs)
+        {
+            foreach (ConstructorInfo constructor in targetType
+                .GetConstructors(BindingFlags.Public | BindingFlags.Instance)
+                .OrderByDescending(candidate => candidate.GetParameters().Length))
+            {
+                ParameterInfo[] parameters = constructor.GetParameters();
+                if (!parameters.All(parameter => TryGetProperty(value, parameter.Name ?? string.Empty, out _) || parameter.HasDefaultValue))
+                {
+                    continue;
+                }
+
+                object?[] args = parameters.Select(parameter =>
+                    TryGetProperty(value, parameter.Name ?? string.Empty, out JsonElement property)
+                        ? ReadStructuredValue(property, parameter.ParameterType, refs)
+                        : parameter.DefaultValue
+                ).ToArray();
+                return constructor.Invoke(args);
+            }
+
+            ConstructorInfo? parameterless = targetType.GetConstructor(Type.EmptyTypes);
+            if (parameterless is not null)
+            {
+                return parameterless.Invoke(null);
+            }
+
+            throw new InvalidOperationException($"Cannot hydrate input object of type {targetType.FullName}.");
         }
 
         private static object[] ReadObjectArray(JsonElement value)
@@ -1709,6 +1893,10 @@ public class TreeNode
         }
 
         var result = new Dictionary<string, object?>();
+        if (type.Name is not ("ListNode" or "TreeNode"))
+        {
+            result["__type__"] = type.Name;
+        }
         AddOutputFieldMembers(result, value, type, depth, seen);
         AddOutputPropertyMembers(result, value, type, depth, seen);
         return result.Count > 0 ? result : value;
