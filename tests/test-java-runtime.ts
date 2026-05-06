@@ -1224,6 +1224,44 @@ class Solution {
     );
     console.log('PASS: java worker rewrites Map.getOrDefault default updates');
 
+    const mapOfListsCode = `import java.util.*;
+
+class Solution {
+  public int solve(int[] arr) {
+    Map<Integer, List<Integer>> valueIndices = new HashMap<>();
+    for (int i = 0; i < arr.length; i++) {
+      valueIndices.computeIfAbsent(arr[i], k -> new ArrayList<>()).add(i);
+    }
+    int total = 0;
+    for (int j : valueIndices.get(arr[0])) {
+      total += j;
+    }
+    return total;
+  }
+}`;
+
+    const mapOfListsExecute = await harness.sendMessage<{ success: boolean; error?: string }>('execute-with-tracing', {
+      code: mapOfListsCode,
+      functionName: 'solve',
+      inputs: { arr: [11, 22, 11] },
+      executionStyle: 'function',
+    });
+
+    assertCondition(
+      mapOfListsExecute.success === true,
+      `Java Map<K,List<V>> get execution should compile and trace: ${mapOfListsExecute.error ?? ''}`
+    );
+    const mapOfListsSource = latestSourceContaining(harness.stringFiles, 'Map<Integer, List<Integer>> valueIndices');
+    assertCondition(
+      mapOfListsSource.includes('TraceHooks.readMapAtLine(10, "valueIndices", valueIndices,'),
+      'Java worker should classify Map<K,List<V>>.get as a keyed map read, not a list index read'
+    );
+    assertCondition(
+      !mapOfListsSource.includes('TraceHooks.readListAtLine(10, "valueIndices", valueIndices'),
+      'Java worker should not rewrite Map<K,List<V>>.get to readListAtLine'
+    );
+    console.log('PASS: java worker rewrites Map<K,List<V>>.get as keyed map reads');
+
     const graphCode = `import java.util.*;
 
 class Solution {

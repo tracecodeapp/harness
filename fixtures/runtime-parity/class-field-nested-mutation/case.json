@@ -121,6 +121,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "graph",
           "n"
         ],
         "accessTargets": [
@@ -144,6 +145,7 @@
           "write"
         ],
         "variableSnapshots": [
+          "graph",
           "n"
         ],
         "accessTargets": [

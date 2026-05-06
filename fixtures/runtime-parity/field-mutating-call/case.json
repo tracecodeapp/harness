@@ -87,19 +87,18 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "items",
           "value"
         ],
         "accessTargets": [
           {
             "kind": "mutate",
-            "variable": "this",
-            "method": "append",
-            "pathDepth": 1
+            "variable": "items",
+            "method": "append"
           },
           {
             "kind": "read",
-            "variable": "this",
-            "pathDepth": 1
+            "variable": "items"
           }
         ]
       }

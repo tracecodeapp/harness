@@ -201,17 +201,14 @@
       /\b(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?==)/g;
     const skippedNames = new Set(['class', 'interface', 'enum', 'record', 'return', 'new']);
     for (const match of line.matchAll(declarationPattern)) {
-      const typeSource = match[1] ?? '';
       const name = match[2];
-      if (typeSource.includes('[')) continue;
       if (name && !skippedNames.has(name) && !name.startsWith('__tracecode')) names.push(name);
     }
     const enhancedForMatch = line.match(
       /\bfor\s*\(\s*(?:final\s+)?((?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/
     );
-    const enhancedForType = enhancedForMatch?.[1] ?? '';
     const enhancedForName = enhancedForMatch?.[2];
-    if (!enhancedForType.includes('[') && enhancedForName && !skippedNames.has(enhancedForName) && !enhancedForName.startsWith('__tracecode')) {
+    if (enhancedForName && !skippedNames.has(enhancedForName) && !enhancedForName.startsWith('__tracecode')) {
       names.push(enhancedForName);
     }
     return names;
@@ -233,6 +230,10 @@
 
   function isUnbracedForDeclarationLine(line) {
     return /^\s*for\s*\(/.test(line) && !(line.includes('{'));
+  }
+
+  function isControlHeaderDeclarationLine(line) {
+    return /^\s*(?:for|if|while|switch|catch)\s*\(/.test(line);
   }
 
   function traceEmitAlreadyIncludesVariable(emitExpression, name) {
@@ -283,14 +284,24 @@
       }
 
       output.push(guardJavaLineEmit(appendJavaLocalSnapshotsToEmitLine(line, scopeStack)));
-
+      const declarations = collectJavaLocalDeclarations(line);
+      const declarationsBelongToCurrentScope =
+        declarations.length > 0 && !isControlHeaderDeclarationLine(line);
+      if (declarationsBelongToCurrentScope) {
+        const currentScope = scopeStack[scopeStack.length - 1];
+        if (currentScope) currentScope.names.push(...declarations);
+      }
       const openingCount = (line.match(/{/g) ?? []).length;
       const closingCount = Math.max(0, (line.match(/}/g) ?? []).length - leadingClosingCount);
-      const declarations = collectJavaLocalDeclarations(line);
       for (let index = 0; index < openingCount; index += 1) {
-        scopeStack.push({ names: index === 0 ? declarations : [] });
+        scopeStack.push({ names: index === 0 && !declarationsBelongToCurrentScope ? declarations : [] });
       }
-      if (openingCount === 0 && declarations.length > 0 && !isUnbracedForDeclarationLine(line)) {
+      if (
+        openingCount === 0 &&
+        declarations.length > 0 &&
+        !declarationsBelongToCurrentScope &&
+        !isUnbracedForDeclarationLine(line)
+      ) {
         const currentScope = scopeStack[scopeStack.length - 1];
         if (currentScope) currentScope.names.push(...declarations);
       }

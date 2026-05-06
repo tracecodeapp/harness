@@ -1204,7 +1204,6 @@ function collectJavaLocalDeclarations(line) {
   for (const match of line.matchAll(declarationPattern)) {
     const typeSource = match[1] ?? '';
     const name = match[2];
-    if (typeSource.includes('[')) continue;
     if (name && !skippedNames.has(name) && !name.startsWith('__tracecode')) {
       names.push(name);
     }
@@ -1214,7 +1213,6 @@ function collectJavaLocalDeclarations(line) {
   );
   const enhancedForType = enhancedForMatch?.[1] ?? '';
   const enhancedForName = enhancedForMatch?.[2];
-  if (enhancedForType.includes('[')) return names;
   if (enhancedForName && !skippedNames.has(enhancedForName) && !enhancedForName.startsWith('__tracecode')) {
     names.push(enhancedForName);
   }
@@ -1237,6 +1235,10 @@ function visibleJavaLocalNames(scopeStack) {
 
 function isUnbracedForDeclarationLine(line) {
   return /^\s*for\s*\(/.test(line) && !(line.includes('{'));
+}
+
+function isControlHeaderDeclarationLine(line) {
+  return /^\s*(?:for|if|while|switch|catch)\s*\(/.test(line);
 }
 
 function traceEmitAlreadyIncludesVariable(emitExpression, name) {
@@ -1312,13 +1314,28 @@ function augmentJavaLocalSnapshots(source) {
     ));
     output.push(transformedLine);
 
+    const declarations = collectJavaLocalDeclarations(line);
+    const declarationsBelongToCurrentScope =
+      declarations.length > 0 && !isControlHeaderDeclarationLine(line);
+    if (declarationsBelongToCurrentScope) {
+      const currentScope = scopeStack[scopeStack.length - 1];
+      if (currentScope) {
+        for (const name of declarations) {
+          currentScope.names.push(name);
+        }
+      }
+    }
     const openingCount = (line.match(/{/g) ?? []).length;
     const closingCount = Math.max(0, (line.match(/}/g) ?? []).length - leadingClosingCount);
-    const declarations = collectJavaLocalDeclarations(line);
     for (let index = 0; index < openingCount; index += 1) {
-      scopeStack.push({ names: index === 0 ? declarations : [] });
+      scopeStack.push({ names: index === 0 && !declarationsBelongToCurrentScope ? declarations : [] });
     }
-    if (openingCount === 0 && declarations.length > 0 && !isUnbracedForDeclarationLine(line)) {
+    if (
+      openingCount === 0 &&
+      declarations.length > 0 &&
+      !declarationsBelongToCurrentScope &&
+      !isUnbracedForDeclarationLine(line)
+    ) {
       const currentScope = scopeStack[scopeStack.length - 1];
       if (currentScope) {
         for (const name of declarations) {
