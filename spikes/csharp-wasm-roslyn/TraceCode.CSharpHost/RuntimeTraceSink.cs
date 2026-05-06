@@ -10,6 +10,7 @@ public static class RuntimeTraceSink
     private static DateTime deadlineUtc;
     private static int? maxTraceSteps;
     private static int currentLine;
+    private static bool traceLimitExceeded;
 
     public static void Reset()
     {
@@ -18,6 +19,7 @@ public static class RuntimeTraceSink
         deadlineUtc = DateTime.UtcNow.AddSeconds(2);
         maxTraceSteps = null;
         currentLine = 0;
+        traceLimitExceeded = false;
     }
 
     public static void Configure(int timeoutMs, int? traceStepLimit)
@@ -32,8 +34,15 @@ public static class RuntimeTraceSink
         return Events.ToList();
     }
 
+    public static bool TraceLimitExceeded => traceLimitExceeded;
+
     public static void Line(int line, string? function)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         currentLine = line;
         SnapshottedVariablesInCurrentLine.Clear();
         Add(new RuntimeTraceEvent
@@ -46,6 +55,11 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "call",
@@ -56,6 +70,11 @@ public static class RuntimeTraceSink
 
     public static void Call(string function, int line, IReadOnlyList<object?> args)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "call",
@@ -67,6 +86,11 @@ public static class RuntimeTraceSink
 
     public static void Return(string function, int line, object? value = null)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "return",
@@ -78,6 +102,11 @@ public static class RuntimeTraceSink
 
     public static void Exception(int line, string? message)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "exception",
@@ -88,6 +117,11 @@ public static class RuntimeTraceSink
 
     public static void Write(string variable, object? value, int line)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "write",
@@ -104,6 +138,11 @@ public static class RuntimeTraceSink
 
     public static void IndexedRead(string variable, IReadOnlyList<object?> path, object? value, int line)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "read",
@@ -124,6 +163,11 @@ public static class RuntimeTraceSink
 
     public static void IndexedWrite(string variable, IReadOnlyList<object?> path, object? value, int line)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "write",
@@ -144,6 +188,11 @@ public static class RuntimeTraceSink
 
     public static void FieldRead(string variable, IReadOnlyList<object?> path, object? value, int line)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "read",
@@ -164,6 +213,11 @@ public static class RuntimeTraceSink
 
     public static void FieldWrite(string variable, IReadOnlyList<object?> path, object? value, int line)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "write",
@@ -184,6 +238,11 @@ public static class RuntimeTraceSink
 
     public static void Mutate(string variable, IReadOnlyList<object?>? path, string method, IReadOnlyList<object?> args)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         Add(new RuntimeTraceEvent
         {
             Kind = "mutate",
@@ -200,6 +259,11 @@ public static class RuntimeTraceSink
 
     public static void Snapshot(string variable, object? value)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         if (!MarkSnapshot(variable, currentLine))
         {
             return;
@@ -216,6 +280,11 @@ public static class RuntimeTraceSink
 
     public static void Snapshot(string variable, object? value, int line)
     {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
         if (!MarkSnapshot(variable, line))
         {
             return;
@@ -256,12 +325,8 @@ public static class RuntimeTraceSink
     {
         if (enforceTraceBudget && maxTraceSteps is int limit && Events.Count >= limit)
         {
-            Events.Add(new RuntimeTraceEvent
-            {
-                Kind = "timeout",
-                Message = "C# trace step limit exceeded.",
-            });
-            throw new TraceLimitExceededException("C# trace step limit exceeded.");
+            traceLimitExceeded = true;
+            return;
         }
 
         NormalizeTraceEvent(traceEvent);

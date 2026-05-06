@@ -332,8 +332,8 @@ async function testWorkerResultMapping(): Promise<void> {
     );
 
     MockCSharpWorker.responses.push({
-      success: false,
-      error: 'C# trace step limit exceeded.',
+      success: true,
+      output: 5,
       consoleOutput: [],
       events: [{ kind: 'line', runId: 'csharp:run', file: 'UserCode.cs', line: 3 }],
       executionTimeMs: 13,
@@ -348,7 +348,8 @@ async function testWorkerResultMapping(): Promise<void> {
       { maxTraceSteps: 1 },
       'solution-method'
     );
-    assertCondition(!traceLimited.success, 'C# trace-limited execution should fail');
+    assertCondition(traceLimited.success, 'C# trace-limited execution should preserve success');
+    assertCondition(traceLimited.output === 5, 'C# trace-limited execution should preserve output');
     assertCondition(traceLimited.traceLimitExceeded === true, 'C# trace-limited execution should set traceLimitExceeded');
     assertCondition(traceLimited.timeoutReason === 'trace-limit', 'C# trace-limited execution should preserve timeoutReason');
 

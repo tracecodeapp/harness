@@ -19,6 +19,7 @@ interface CSharpWorkerResponse {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE_ROOT = join(ROOT, 'spikes', 'csharp-wasm-roslyn', 'fixtures');
+const WORKER_REQUEST_TIMEOUT_MS = 60_000;
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -96,34 +97,63 @@ async function runWorkerCase(
   options: { timeoutMs?: number; maxTraceSteps?: number; executionStyle?: 'solution-method' | 'ops-class' } = {}
 ): Promise<CSharpWorkerResponse> {
   return page.evaluate(
-    async ({ code, functionName, inputs, assetBaseUrl, trace, options }) => {
-      const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
-      let nextId = 0;
+    async ({ code, functionName, inputs, assetBaseUrl, trace, options, workerRequestTimeoutMs }) => {
+      const harnessKey = '__tracecodeCSharpWorkerHarness';
+      async function createHarness() {
+        const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
+        let nextId = 0;
+        const pending = new Map();
 
-      function send(type, payload) {
-        const id = String(++nextId);
-        return new Promise((resolve, reject) => {
-          const timeoutId = setTimeout(() => {
-            worker.terminate();
-            reject(new Error(`C# worker request timed out: ${type}`));
-          }, 30_000);
-
-          worker.addEventListener('message', function onMessage(event) {
-            if (event.data?.id !== id) return;
-            worker.removeEventListener('message', onMessage);
+        function terminate(error = new Error('C# worker terminated')) {
+          worker.terminate();
+          for (const { reject, timeoutId } of pending.values()) {
             clearTimeout(timeoutId);
-            if (event.data.type === 'error') {
-              reject(new Error(event.data.payload?.error ?? 'C# worker error'));
-              return;
-            }
-            resolve(event.data.payload);
-          });
-          worker.postMessage({ id, type, payload });
+            reject(error);
+          }
+          pending.clear();
+          globalThis[harnessKey] = undefined;
+        }
+
+        worker.addEventListener('message', (event) => {
+          const id = event.data?.id;
+          if (!id || !pending.has(id)) return;
+          const { resolve, reject, timeoutId } = pending.get(id);
+          pending.delete(id);
+          clearTimeout(timeoutId);
+          if (event.data.type === 'error') {
+            reject(new Error(event.data.payload?.error ?? 'C# worker error'));
+            return;
+          }
+          resolve(event.data.payload);
         });
+
+        worker.addEventListener('error', (event) => {
+          terminate(new Error(event.message || 'C# worker failed'));
+        });
+
+        function send(type, payload) {
+          const id = String(++nextId);
+          return new Promise((resolve, reject) => {
+            const timeoutId = setTimeout(() => {
+              terminate(new Error(`C# worker request timed out: ${type}`));
+            }, workerRequestTimeoutMs);
+            pending.set(id, { resolve, reject, timeoutId });
+            worker.postMessage({ id, type, payload });
+          });
+        }
+
+        const harness = { assetBaseUrl, send, terminate };
+        await send('init', { assetBaseUrl });
+        return harness;
       }
 
-      await send('init', { assetBaseUrl });
-      const result = await send(trace ? 'execute-with-tracing' : 'execute-code', {
+      let harness = globalThis[harnessKey];
+      if (!harness || harness.assetBaseUrl !== assetBaseUrl) {
+        harness = await createHarness();
+        globalThis[harnessKey] = harness;
+      }
+
+      const result = await harness.send(trace ? 'execute-with-tracing' : 'execute-code', {
         code,
         functionName,
         inputs,
@@ -131,10 +161,9 @@ async function runWorkerCase(
         assetBaseUrl,
         ...options,
       });
-      worker.terminate();
       return result;
     },
-    { code, functionName, inputs, assetBaseUrl, trace, options }
+    { code, functionName, inputs, assetBaseUrl, trace, options, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
   ) as Promise<CSharpWorkerResponse>;
 }
 
@@ -328,6 +357,143 @@ async function main(): Promise<void> {
       `C# worker traced StringBuilder indexed access case should return a:bbc, received ${JSON.stringify(tracedStringBuilderIndexedAccess.output)}`
     );
 
+    const tracedStringBuilderAppend = await runWorkerCase(
+      page,
+      [
+        'using System.Text;',
+        'public class Solution {',
+        '  public string AppendBuilder(string value) {',
+        '    var builder = new StringBuilder();',
+        '    builder.Append(value);',
+        '    builder.Append("!");',
+        '    return builder.ToString();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AppendBuilder',
+      { value: 'hi' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedStringBuilderAppend.success,
+      `C# worker traced StringBuilder append case should compile: ${tracedStringBuilderAppend.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedStringBuilderAppend.output === 'hi!',
+      `C# worker traced StringBuilder append case should return hi!, received ${JSON.stringify(tracedStringBuilderAppend.output)}`
+    );
+    assertCondition(
+      tracedStringBuilderAppend.events?.filter((event) => event.kind === 'mutate' && event.target?.variable === 'builder' && event.method === 'Append').length === 2,
+      `C# worker traced StringBuilder append case should include two builder Append mutates, received ${JSON.stringify(tracedStringBuilderAppend.events)}`
+    );
+
+    const tracedRectangular3d = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int Rectangular3d(int value) {',
+        '    int[,,] dp = new int[2, 2, 2];',
+        '    dp[1, 0, 1] = value;',
+        '    dp[1, 0, 1]++;',
+        '    return dp[1, 0, 1];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Rectangular3d',
+      { value: 7 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedRectangular3d.success,
+      `C# worker traced rectangular 3D array case should compile: ${tracedRectangular3d.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedRectangular3d.output === 8,
+      `C# worker traced rectangular 3D array case should return 8, received ${JSON.stringify(tracedRectangular3d.output)}`
+    );
+    assertCondition(
+      tracedRectangular3d.events?.some((event) => event.kind === 'write' && event.target?.variable === 'dp' && event.target.path?.length === 3) === true,
+      `C# worker traced rectangular 3D array case should include a dp path-3 write, received ${JSON.stringify(tracedRectangular3d.events)}`
+    );
+    assertCondition(
+      tracedRectangular3d.events?.some((event) => event.kind === 'read' && event.target?.variable === 'dp' && event.target.path?.length === 3) === true,
+      `C# worker traced rectangular 3D array case should include a dp path-3 read, received ${JSON.stringify(tracedRectangular3d.events)}`
+    );
+
+    const tracedIndexedQueueReceiver = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int IndexedQueue(int value) {',
+        '    var queues = new Queue<int>[2];',
+        '    queues[1] = new Queue<int>();',
+        '    queues[1].Enqueue(value);',
+        '    int peek = queues[1].Peek();',
+        '    queues[1].Dequeue();',
+        '    return peek;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'IndexedQueue',
+      { value: 9 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedIndexedQueueReceiver.success,
+      `C# worker traced indexed queue receiver case should compile: ${tracedIndexedQueueReceiver.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedIndexedQueueReceiver.output === 9,
+      `C# worker traced indexed queue receiver case should return 9, received ${JSON.stringify(tracedIndexedQueueReceiver.output)}`
+    );
+    assertCondition(
+      tracedIndexedQueueReceiver.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'queues' && event.target.path?.length === 1 && event.method === 'Enqueue') === true,
+      `C# worker traced indexed queue receiver case should include queues Enqueue mutate, received ${JSON.stringify(tracedIndexedQueueReceiver.events)}`
+    );
+    assertCondition(
+      tracedIndexedQueueReceiver.events?.some((event) => event.kind === 'read' && event.target?.variable === 'queues' && event.target.path?.length === 2) === true,
+      `C# worker traced indexed queue receiver case should include queues path-2 read, received ${JSON.stringify(tracedIndexedQueueReceiver.events)}`
+    );
+
+    const tracedCollectionField = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private HashSet<int> seen = new HashSet<int>();',
+        '  public bool FieldHashSet(int value) {',
+        '    seen.Clear();',
+        '    seen.Add(value);',
+        '    return seen.Contains(value);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'FieldHashSet',
+      { value: 5 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedCollectionField.success,
+      `C# worker traced collection field case should compile: ${tracedCollectionField.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedCollectionField.output === true,
+      `C# worker traced collection field case should return true, received ${JSON.stringify(tracedCollectionField.output)}`
+    );
+    assertCondition(
+      tracedCollectionField.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'seen' && event.method === 'Add') === true,
+      `C# worker traced collection field case should include seen Add mutate, received ${JSON.stringify(tracedCollectionField.events)}`
+    );
+    assertCondition(
+      tracedCollectionField.events?.some((event) => event.kind === 'read' && event.target?.variable === 'seen') === true,
+      `C# worker traced collection field case should include seen read, received ${JSON.stringify(tracedCollectionField.events)}`
+    );
+
     const tracedCollectionReassignment = await runWorkerCase(
       page,
       [
@@ -505,9 +671,11 @@ async function main(): Promise<void> {
       true,
       { maxTraceSteps: 2 }
     );
-    assertCondition(!traceLimited.success, 'C# worker trace-limited Add should fail');
+    assertCondition(traceLimited.success, `C# worker trace-limited Add should preserve execution success: ${traceLimited.error ?? 'unknown error'}`);
+    assertCondition(traceLimited.output === 5, `C# worker trace-limited Add should preserve output, received ${JSON.stringify(traceLimited.output)}`);
     assertCondition(traceLimited.traceLimitExceeded === true, 'C# worker trace-limited Add should set traceLimitExceeded');
     assertCondition(traceLimited.timeoutReason === 'trace-limit', 'C# worker trace-limited Add should use trace-limit');
+    assertCondition((traceLimited.events?.length ?? 0) <= 2, `C# worker trace-limited Add should bound returned events, received ${traceLimited.events?.length ?? 0}`);
 
     const timedOut = await runWorkerCase(
       page,
@@ -1445,6 +1613,48 @@ async function main(): Promise<void> {
     assertCondition(
       JSON.stringify(opsClass.output) === JSON.stringify([null, 3, 6, null, 0]),
       `C# worker ops-class case should return operation outputs, received ${JSON.stringify(opsClass.output)}`
+    );
+
+    const opsClassTreeConstructor = await runWorkerCase(
+      page,
+      [
+        'public class TreeNode {',
+        '  public int val;',
+        '  public TreeNode left;',
+        '  public TreeNode right;',
+        '  public TreeNode(int val = 0, TreeNode left = null, TreeNode right = null) {',
+        '    this.val = val;',
+        '    this.left = left;',
+        '    this.right = right;',
+        '  }',
+        '}',
+        'public class BSTIterator {',
+        '  private readonly TreeNode root;',
+        '  public BSTIterator(TreeNode root) { this.root = root; }',
+        '  public int Next() { return root.left.val; }',
+        '  public bool HasNext() { return root.right != null; }',
+        '}',
+      ].join('\n'),
+      'BSTIterator',
+      {
+        operations: ['BSTIterator', 'Next', 'HasNext'],
+        arguments: [
+          [{ __type__: 'TreeNode', val: 7, left: { __type__: 'TreeNode', val: 3, left: null, right: null }, right: { __type__: 'TreeNode', val: 15, left: null, right: null } }],
+          [],
+          [],
+        ],
+      },
+      assetBaseUrl,
+      false,
+      { executionStyle: 'ops-class' }
+    );
+    assertCondition(
+      opsClassTreeConstructor.success,
+      `C# worker ops-class TreeNode constructor case should succeed: ${opsClassTreeConstructor.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(opsClassTreeConstructor.output) === JSON.stringify([null, 3, true]),
+      `C# worker ops-class TreeNode constructor case should return operation outputs, received ${JSON.stringify(opsClassTreeConstructor.output)}`
     );
 
     const listNodeInput = await runWorkerCase(

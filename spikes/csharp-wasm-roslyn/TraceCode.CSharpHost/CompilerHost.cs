@@ -71,12 +71,20 @@ public static partial class CompilerHost
                 Output = NormalizeOutput(output),
                 ConsoleOutput = SplitConsoleOutput(capturedOut),
                 Events = RuntimeTraceSink.Snapshot(),
+                TraceLimitExceeded = RuntimeTraceSink.TraceLimitExceeded,
+                TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? "trace-limit" : null,
                 ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
             });
         }
         catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException timeout)
         {
-            return SerializeError(timeout.Message, stopwatch, capturedOut, timeoutReason: "client-timeout");
+            return SerializeError(
+                timeout.Message,
+                stopwatch,
+                capturedOut,
+                traceLimitExceeded: RuntimeTraceSink.TraceLimitExceeded,
+                timeoutReason: "client-timeout"
+            );
         }
         catch (Exception error) when (error.GetBaseException() is TraceLimitExceededException traceLimit)
         {
@@ -694,6 +702,11 @@ public class TreeNode
                 return null;
             }
 
+            if (effectiveType == typeof(JsonElement))
+            {
+                return value;
+            }
+
             if (effectiveType == typeof(string))
             {
                 return value.GetString();
@@ -1182,6 +1195,12 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
         }
 
+        public static T IndexedRead<T>(string variable, object?[] path, T value, int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, path, value, line);
+            return value;
+        }
+
         public static bool ContainsRead(bool contains, string variable, object? key, int line)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key!, contains, line);
@@ -1274,6 +1293,13 @@ public class TreeNode
         {
             T value = array[row, column];
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            return value;
+        }
+
+        public static T ArrayRead<T>(T[,,] array, int first, int second, int third, string variable, int line)
+        {
+            T value = array[first, second, third];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { first, second, third }, value, line);
             return value;
         }
 
@@ -1485,6 +1511,12 @@ public class TreeNode
         {
             array[row, column] = value;
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+        }
+
+        public static void ArrayWrite<T>(T[,,] array, int first, int second, int third, T value, string variable, int line)
+        {
+            array[first, second, third] = value;
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { first, second, third }, value, line);
         }
 
         public static void ArrayWrite<T>(IList<T[]> list, int row, int column, T value, string variable, int line)

@@ -1,7 +1,7 @@
 {
   "mainAssemblyName": "TraceCode.CSharpHost.dll",
   "resources": {
-    "hash": "sha256-Cs3H56YwnYJV/nzJPigCNagkewU30Akca5oBf5jzxtM=",
+    "hash": "sha256-UUOr0x/Ez3Xk2XMxhI/5CZCtXWd441gvMNsqE/ALJJs=",
     "jsModuleNative": {
       "dotnet.native.js": "sha256-+OpRxxdcqlMlmktq/t8R3CnwAYXdhf696NBUxhI56xc="
     },
@@ -184,7 +184,7 @@
       "System.Xml.XmlSerializer.wasm": "sha256-d/M5IH8qcXXLNDy97/KUvDi33f11fxWMeUaVFpHg2q8=",
       "System.Xml.XPath.wasm": "sha256-HUS8szSza2cRCRjGVoNoH2nnMYSCLN5zQr4HKglNjZk=",
       "System.Xml.XPath.XDocument.wasm": "sha256-QsC7K+sEcJJHKBfCv9oaIPWdJybxfBJMcQhKlre9lvc=",
-      "TraceCode.CSharpHost.wasm": "sha256-oE+quylLE35txiwiVAaSzXc+8rmW0PzawK11oojnN+o=",
+      "TraceCode.CSharpHost.wasm": "sha256-KRGPaocsn+oA3/Qkcf7DlX9mS1RS6vTk/HmKQrO3NKo=",
       "WindowsBase.wasm": "sha256-0S3aTPxIY5utRW4mJ5RZ5lffEc1lDE9yDxVNEzqtoYk="
     },
     "satelliteResources": {
@@ -750,7 +750,7 @@
         "supportFiles/168_System.Xml.XPath.XDocument.dll": "sha256-iR3/MYqIBGxWa4DBFSvzZWvaMUeNXIJi5fvch+6PHCI="
       },
       "/tracecode-refs/TraceCode.CSharpHost.dll": {
-        "supportFiles/169_TraceCode.CSharpHost.dll": "sha256-iMRRqZU2UpZ72GhYFqjnTgYScIbZvoBv0a0w1oAKeQA="
+        "supportFiles/169_TraceCode.CSharpHost.dll": "sha256-7GfxrLb6ImUjIzX8ZuTUCtzBLsDgSOVRziVqPnL99ls="
       },
       "/tracecode-refs/WindowsBase.dll": {
         "supportFiles/170_WindowsBase.dll": "sha256-XaF8C+fzJBte06fJsscVP7HevaeEvEkxeVo5Gc6SXE8="

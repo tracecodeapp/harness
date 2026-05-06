@@ -121,7 +121,6 @@
           "snapshot"
         ],
         "variableSnapshots": [
-          "graph",
           "n"
         ],
         "accessTargets": [
@@ -145,7 +144,6 @@
           "write"
         ],
         "variableSnapshots": [
-          "graph",
           "n"
         ],
         "accessTargets": [
@@ -179,6 +177,11 @@
             "kind": "read",
             "variable": "this",
             "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "graph",
+            "pathDepth": 1
           }
         ]
       },
@@ -189,6 +192,7 @@
           "write"
         ],
         "variableSnapshots": [
+          "graph",
           "n"
         ],
         "accessTargets": [
