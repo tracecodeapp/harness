@@ -15,6 +15,7 @@
       "javascript": "const n = nums.length;",
       "typescript": "const n = nums.length;",
       "java": "int n = nums.length;",
+      "cpp": "int n = nums.size();",
       "csharp": "int n = nums.Length;"
     },
     "mapSize": {
@@ -22,6 +23,7 @@
       "javascript": "const m = seen.size;",
       "typescript": "const m = seen.size;",
       "java": "int m = seen.size();",
+      "cpp": "int m = seen.size();",
       "csharp": "int m = seen.Count;"
     }
   },

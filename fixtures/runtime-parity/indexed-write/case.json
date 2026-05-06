@@ -15,7 +15,8 @@
       "javascript": "nums[1] = 9;",
       "typescript": "nums[1] = 9;",
       "java": "nums[1] = 9;",
-      "csharp": "nums[1] = 9;"
+      "csharp": "nums[1] = 9;",
+      "cpp": "nums[1] = 9;"
     }
   },
   "expect": {

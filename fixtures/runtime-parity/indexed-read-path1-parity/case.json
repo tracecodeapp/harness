@@ -26,14 +26,16 @@
       "javascript": "const cols = matrix[0].length;",
       "typescript": "const cols: number = matrix[0].length;",
       "java": "int cols = matrix[0].length;",
-      "csharp": "int cols = matrix[0].Length;"
+      "csharp": "int cols = matrix[0].Length;",
+      "cpp": "int cols = matrix[0].size();"
     },
     "stringRowLength": {
       "python": "width = len(pizza[0])",
       "javascript": "const width = pizza[0].length;",
       "typescript": "const width: number = pizza[0].length;",
       "java": "int width = pizza[0].length();",
-      "csharp": "int width = pizza[0].Length;"
+      "csharp": "int width = pizza[0].Length;",
+      "cpp": "int width = pizza[0].size();"
     }
   },
   "expect": {

@@ -11,7 +11,8 @@
       "javascript": "function helper(x) {",
       "typescript": "function helper(x: number): number {",
       "java": "public int helper(int x) {",
-      "csharp": "public int helper(int x)"
+      "csharp": "public int helper(int x)",
+      "cpp": "int helper(int x) {"
     }
   },
   "expect": {
@@ -28,6 +29,15 @@
   },
   "expectByLanguage": {
     "csharp": {
+      "helperEntry": {
+        "eventKinds": [
+          "call"
+        ],
+        "variableSnapshots": [],
+        "accessTargets": []
+      }
+    },
+    "cpp": {
       "helperEntry": {
         "eventKinds": [
           "call"

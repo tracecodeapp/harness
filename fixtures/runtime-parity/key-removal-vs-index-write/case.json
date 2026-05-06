@@ -9,14 +9,16 @@
       "javascript": "counts.set(\"a\", counts.get(\"a\") - 1);",
       "typescript": "counts.set(\"a\", counts.get(\"a\")! - 1);",
       "java": "counts.put(\"a\", counts.get(\"a\") - 1);",
-      "csharp": "counts[\"a\"] = counts[\"a\"] - 1;"
+      "csharp": "counts[\"a\"] = counts[\"a\"] - 1;",
+      "cpp": "counts[\"a\"] = counts[\"a\"] - 1;"
     },
     "remove": {
       "python": "counts.pop(\"b\")",
       "javascript": "counts.delete(\"b\");",
       "typescript": "counts.delete(\"b\");",
       "java": "counts.remove(\"b\");",
-      "csharp": "counts.Remove(\"b\");"
+      "csharp": "counts.Remove(\"b\");",
+      "cpp": "counts.erase(\"b\");"
     }
   },
   "expect": {

@@ -20,6 +20,7 @@
       "javascript": "grid[0][1]++;",
       "typescript": "grid[0][1]++;",
       "java": "grid[0][1]++;",
+      "cpp": "grid[0][1]++;",
       "csharp": "grid[0][1]++;"
     },
     "dec": {
@@ -27,6 +28,7 @@
       "javascript": "--grid[1][0];",
       "typescript": "--grid[1][0];",
       "java": "--grid[1][0];",
+      "cpp": "--grid[1][0];",
       "csharp": "--grid[1][0];"
     }
   },

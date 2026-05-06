@@ -16,6 +16,7 @@
       "javascript": "deck.push(nums[0]);",
       "typescript": "deck.push(nums[0]);",
       "java": "deck.offerLast(nums[0]);",
+      "cpp": "deck.push_back(nums[0]);",
       "csharp": "deck.AddLast(nums[0]);"
     },
     "appendAddLast": {
@@ -23,6 +24,7 @@
       "javascript": "deck.push(nums[1]);",
       "typescript": "deck.push(nums[1]);",
       "java": "deck.addLast(nums[1]);",
+      "cpp": "deck.push_back(nums[1]);",
       "csharp": "deck.AddLast(nums[1]);"
     },
     "popleftPollFirst": {
@@ -30,6 +32,7 @@
       "javascript": "deck.shift(); // pollFirst",
       "typescript": "deck.shift(); // pollFirst",
       "java": "deck.pollFirst();",
+      "cpp": "deck.pop_front(); // pollFirst",
       "csharp": "deck.RemoveFirst();"
     },
     "popleftRemoveFirst": {
@@ -37,6 +40,7 @@
       "javascript": "deck.shift(); // removeFirst",
       "typescript": "deck.shift(); // removeFirst",
       "java": "deck.removeFirst();",
+      "cpp": "deck.pop_front(); // removeFirst",
       "csharp": "deck.RemoveFirst();"
     },
     "popPollLast": {
@@ -44,6 +48,7 @@
       "javascript": "deck.pop(); // pollLast",
       "typescript": "deck.pop(); // pollLast",
       "java": "deck.pollLast();",
+      "cpp": "deck.pop_back(); // pollLast",
       "csharp": "deck.RemoveLast();"
     },
     "popRemoveLast": {
@@ -51,6 +56,7 @@
       "javascript": "deck.pop(); // removeLast",
       "typescript": "deck.pop(); // removeLast",
       "java": "deck.removeLast();",
+      "cpp": "deck.pop_back(); // removeLast",
       "csharp": "deck.RemoveLast();"
     },
     "appendleftOfferFirst": {
@@ -58,6 +64,7 @@
       "javascript": "deck.unshift(nums[0]);",
       "typescript": "deck.unshift(nums[0]);",
       "java": "deck.offerFirst(nums[0]);",
+      "cpp": "deck.push_front(nums[0]);",
       "csharp": "deck.AddFirst(nums[0]);"
     }
   },

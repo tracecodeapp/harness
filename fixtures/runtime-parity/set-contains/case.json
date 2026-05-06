@@ -9,6 +9,7 @@
       "javascript": "return seen.has(2);",
       "typescript": "return seen.has(2);",
       "java": "return seen.contains(2);",
+      "cpp": "return seen.count(2) > 0;",
       "csharp": "return seen.Contains(2);"
     }
   },

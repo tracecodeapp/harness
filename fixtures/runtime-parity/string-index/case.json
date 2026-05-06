@@ -11,6 +11,7 @@
       "javascript": "return text[1];",
       "typescript": "return text[1];",
       "java": "return text.charAt(1);",
+      "cpp": "return text[1];",
       "csharp": "return text[1].ToString();"
     }
   },
@@ -32,6 +33,21 @@
           "pathDepth": 1
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "cpp": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "text"
+        ],
+        "accessTargets": []
+      }
     }
   }
 }

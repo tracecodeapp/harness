@@ -298,12 +298,76 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   ],
 };
 
+const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
+  language: 'cpp',
+  maturity: 'experimental',
+  capabilities: {
+    execution: {
+      styles: {
+        function: true,
+        solutionMethod: true,
+        opsClass: true,
+        script: true,
+        interviewMode: true,
+      },
+      timeouts: {
+        clientTimeouts: true,
+        runtimeTimeouts: true,
+      },
+    },
+    tracing: {
+      supported: true,
+      events: {
+        line: true,
+        call: true,
+        return: true,
+        exception: false,
+        stdout: true,
+        timeout: true,
+      },
+      controls: {
+        maxTraceSteps: true,
+        maxLineEvents: true,
+        maxSingleLineHits: true,
+        maxStoredEvents: true,
+        minimalTrace: true,
+      },
+      fidelity: {
+        preciseLineMapping: true,
+        stableFunctionNames: true,
+        callStack: true,
+      },
+    },
+    diagnostics: {
+      compileErrors: true,
+      runtimeErrors: true,
+      mappedErrorLines: true,
+      stackTraces: false,
+    },
+    structures: {
+      treeNodeRefs: true,
+      listNodeRefs: true,
+      mapSerialization: true,
+      setSerialization: true,
+      graphSerialization: true,
+      cycleReferences: true,
+    },
+  },
+  notes: [
+    'C++ uses a focused browser-local Clang/LLD/WASI compiler lane with TraceCode-owned execution glue.',
+    'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
+    'Script-style C++ uses an empty function name with executionStyle="function"; the snippet must assign a serializable result variable.',
+    'Interview-mode C++ reuses the tracing compiler path with a trace budget and returns a non-trace execution result.',
+  ],
+};
+
 export const LANGUAGE_RUNTIME_PROFILES: Record<Language, LanguageRuntimeProfile> = {
   python: PYTHON_RUNTIME_PROFILE,
   javascript: JAVASCRIPT_RUNTIME_PROFILE,
   typescript: TYPESCRIPT_RUNTIME_PROFILE,
   java: JAVA_RUNTIME_PROFILE,
   csharp: CSHARP_RUNTIME_PROFILE,
+  cpp: CPP_RUNTIME_PROFILE,
 };
 
 export const SUPPORTED_LANGUAGES: readonly Language[] = Object.freeze(

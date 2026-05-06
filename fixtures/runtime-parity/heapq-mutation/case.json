@@ -13,14 +13,16 @@
       "javascript": "heap.push(nums[0]);",
       "typescript": "heap.push(nums[0]);",
       "java": "heap.offer(nums[0]);",
-      "csharp": "heap.Enqueue(nums[0], nums[0]);"
+      "csharp": "heap.Enqueue(nums[0], nums[0]);",
+      "cpp": "heap.push(nums[0]);"
     },
     "pop": {
       "python": "value = heapq.heappop(heap)",
       "javascript": "const value = heap.pop();",
       "typescript": "const value = heap.pop();",
       "java": "Integer value = heap.poll();",
-      "csharp": "int value = heap.Dequeue();"
+      "csharp": "int value = heap.Dequeue();",
+      "cpp": "heap.pop();"
     }
   },
   "expect": {

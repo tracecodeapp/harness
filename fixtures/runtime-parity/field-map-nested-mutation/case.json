@@ -3,8 +3,16 @@
   "functionName": "Bag",
   "executionStyle": "ops-class",
   "inputs": {
-    "operations": ["Bag", "add"],
-    "arguments": [[], [3]]
+    "operations": [
+      "Bag",
+      "add"
+    ],
+    "arguments": [
+      [],
+      [
+        3
+      ]
+    ]
   },
   "anchors": {
     "nestedFieldAppend": {
@@ -12,47 +20,115 @@
       "javascript": "this.graph.get(0).push(value);",
       "typescript": "this.graph.get(0)!.push(value);",
       "java": "graph.get(0).add(value);",
+      "cpp": "this->graph[0].push_back(value);",
       "csharp": "this.graph[0].Add(value);"
     }
   },
   "expect": {
     "nestedFieldAppend": {
-      "eventKinds": ["line", "mutate", "read", "snapshot"],
-      "variableSnapshots": ["this", "value"],
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "this",
+        "value"
+      ],
       "accessTargets": [
-        { "kind": "mutate", "variable": "this", "method": "append", "pathDepth": 2 },
-        { "kind": "read", "variable": "this", "pathDepth": 2 }
+        {
+          "kind": "mutate",
+          "variable": "this",
+          "method": "append",
+          "pathDepth": 2
+        },
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2
+        }
       ]
     }
   },
   "expectByLanguage": {
     "python": {
       "nestedFieldAppend": {
-        "eventKinds": ["line", "mutate", "read", "snapshot"],
-        "variableSnapshots": ["self", "value"],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "self",
+          "value"
+        ],
         "accessTargets": [
-          { "kind": "mutate", "variable": "self", "method": "append", "pathDepth": 2 },
-          { "kind": "read", "variable": "self", "pathDepth": 2 }
+          {
+            "kind": "mutate",
+            "variable": "self",
+            "method": "append",
+            "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 2
+          }
         ]
       }
     },
     "java": {
       "nestedFieldAppend": {
-        "eventKinds": ["line", "mutate", "read", "snapshot"],
-        "variableSnapshots": ["graph", "value"],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "graph",
+          "value"
+        ],
         "accessTargets": [
-          { "kind": "mutate", "variable": "this", "method": "append", "pathDepth": 2 },
-          { "kind": "read", "variable": "this", "pathDepth": 2 }
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "method": "append",
+            "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2
+          }
         ]
       }
     },
     "csharp": {
       "nestedFieldAppend": {
-        "eventKinds": ["line", "mutate", "read", "snapshot"],
-        "variableSnapshots": ["value"],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "value"
+        ],
         "accessTargets": [
-          { "kind": "mutate", "variable": "this", "method": "append", "pathDepth": 2 },
-          { "kind": "read", "variable": "this", "pathDepth": 2 }
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "method": "append",
+            "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2
+          }
         ]
       }
     }

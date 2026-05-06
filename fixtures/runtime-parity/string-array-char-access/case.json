@@ -14,6 +14,7 @@
       "javascript": "return grid[1][0];",
       "typescript": "return grid[1][0];",
       "java": "return grid[1].charAt(0);",
+      "cpp": "return grid[1][0];",
       "csharp": "return grid[1][0].ToString();"
     }
   },

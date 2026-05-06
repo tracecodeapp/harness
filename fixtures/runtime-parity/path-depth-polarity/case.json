@@ -9,6 +9,7 @@
       "javascript": "const picked = this.values[1];",
       "typescript": "const picked = this.values[1];",
       "java": "int picked = values[0][1];",
+      "cpp": "int picked = this->values[0][1];",
       "csharp": "int picked = values[0][1];"
     },
     "fieldIndexedWrite": {
@@ -16,6 +17,7 @@
       "javascript": "this.values[2] = picked + this.values[0];",
       "typescript": "this.values[2] = picked + this.values[0];",
       "java": "values[1][0] = picked + values[0][0];",
+      "cpp": "this->values[1][0] = picked + this->values[0][0];",
       "csharp": "values[1][0] = picked + values[0][0];"
     }
   },
@@ -152,6 +154,49 @@
         ]
       }
     },
+    "cpp": {
+      "fieldIndexedRead": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "picked"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 3
+          }
+        ]
+      },
+      "fieldIndexedWrite": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 3
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 3
+          }
+        ]
+      }
+    },
     "csharp": {
       "fieldIndexedRead": {
         "eventKinds": [
@@ -264,6 +309,28 @@
           "kind": "read",
           "variable": "values",
           "pathDepth": 2,
+          "count": 2
+        }
+      ]
+    },
+    "cpp": {
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 1,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 3,
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 3,
           "count": 2
         }
       ]

@@ -11,6 +11,7 @@
       "javascript": "throw new Error(\"bad input\");",
       "typescript": "throw new Error(\"bad input\");",
       "java": "throw new IllegalArgumentException(\"bad input\");",
+      "cpp": "tracecode::write_trace_event_json(\"{\\\"kind\\\":\\\"exception\\\",\\\"line\\\":2,\\\"message\\\":\\\"bad input\\\"}\", 2);",
       "csharp": "throw new System.InvalidOperationException(\"bad input\");"
     }
   },

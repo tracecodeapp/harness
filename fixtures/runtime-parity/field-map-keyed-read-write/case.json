@@ -24,6 +24,7 @@
       "javascript": "this.counts.set(key, (this.counts.get(key) ?? 0) + 1);",
       "typescript": "this.counts.set(key, (this.counts.get(key) ?? 0) + 1);",
       "java": "this.counts.put(key, this.counts.getOrDefault(key, 0) + 1);",
+      "cpp": "this->counts[key] = this->counts[key] + 1;",
       "csharp": "this.counts[key] = (this.counts.ContainsKey(key) ? this.counts[key] : 0) + 1;"
     },
     "read": {
@@ -31,6 +32,7 @@
       "javascript": "return this.counts.has(key) ? this.counts.get(key) : 0;",
       "typescript": "return this.counts.has(key) ? this.counts.get(key) ?? 0 : 0;",
       "java": "return this.counts.containsKey(key) ? this.counts.get(key) : 0;",
+      "cpp": "return this->counts.count(key) ? this->counts[key] : 0;",
       "csharp": "return this.counts[key];"
     }
   },

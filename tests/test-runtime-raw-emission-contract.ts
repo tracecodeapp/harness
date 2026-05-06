@@ -64,6 +64,7 @@ function testJavaKnownPayloads(): void {
     `trace:${JSON.stringify({ kind: 'mutate', line: 6, target: { variable: 'out' }, method: 'append' })}`,
     `trace:${JSON.stringify({ kind: 'stdout', line: 9, text: 'ok' })}`,
     `trace:${JSON.stringify({ kind: 'exception', line: 10, message: 'boom' })}`,
+    `trace:${JSON.stringify({ kind: 'timeout', line: 10, message: 'budget exceeded' })}`,
     `trace:${JSON.stringify({ kind: 'return', line: 11, function: 'solve', value: 1 })}`,
   ]);
   assertSupportedRawEmissions(summary, 'java:known');
@@ -184,6 +185,60 @@ function testForbiddenRuntimeTracePayloadRejection(): void {
   console.log('PASS: raw emission contract rejects visualizer and semantic runtime payload leaks');
 }
 
+function testCppKnownRuntimeTracePayloads(): void {
+  const cppTrace = trace('cpp', [
+    {
+      kind: 'call',
+      runId: 'cpp:test',
+      line: 3,
+      function: 'solve',
+      args: {
+        head: {
+          __type__: 'ListNode',
+          __id__: 'ref-0',
+          val: 1,
+          next: { __ref__: 'ref-0' },
+        },
+      },
+    },
+    { kind: 'line', runId: 'cpp:test', line: 4, function: 'solve' },
+    {
+      kind: 'snapshot',
+      runId: 'cpp:test',
+      line: 5,
+      target: { variable: 'adjacency' },
+      value: [[1, 2], [2], []],
+    },
+    { kind: 'read', runId: 'cpp:test', line: 6, target: { variable: 'adjacency', path: [0] }, value: [1, 2] },
+    { kind: 'mutate', runId: 'cpp:test', line: 7, target: { variable: 'adjacency', path: [1] }, method: 'push_back' },
+    { kind: 'write', runId: 'cpp:test', line: 8, target: { variable: 'distance', path: [2] }, value: 3 },
+    { kind: 'control', runId: 'cpp:test', line: 8, control: 'continue' },
+    { kind: 'stdout', runId: 'cpp:test', text: 'ok' },
+    {
+      kind: 'return',
+      runId: 'cpp:test',
+      line: 9,
+      function: 'solve',
+      value: {
+        __type__: 'TreeNode',
+        __id__: 'ref-0',
+        val: 1,
+        left: { __type__: 'TreeNode', __id__: 'ref-1', val: 2, left: null, right: null },
+        right: { __ref__: 'ref-1' },
+      },
+    },
+    { kind: 'timeout', runId: 'cpp:test', message: 'C++ trace budget exceeded' },
+  ]);
+
+  const summary = summarizeRuntimeTraceEmissions(cppTrace);
+  assertSupportedRawEmissions(summary, 'cpp:known');
+  assertCondition(summary.unsupported.length === 0, 'known C++ runtime trace payloads should be supported');
+  for (const kind of ['call', 'line', 'snapshot', 'read', 'write', 'mutate', 'control', 'stdout', 'return', 'timeout'] as const) {
+    assertCondition(summary.kinds.includes(kind), `C++ raw summary should include ${kind}`);
+  }
+  console.log('PASS: raw emission contract accepts C++ generic runtime trace payloads');
+}
+
 function testRawParityComparison(): void {
   const pythonTrace = trace('python', [
     { kind: 'line', runId: 'python:test', line: 1, function: 'solve' },
@@ -208,6 +263,7 @@ function testRawParityComparison(): void {
 testJavaUnknownPayloadRejection();
 testJavaKnownPayloads();
 testForbiddenRuntimeTracePayloadRejection();
+testCppKnownRuntimeTracePayloads();
 testRawParityComparison();
 
 console.log('\nRuntime raw emission contract tests passed.');

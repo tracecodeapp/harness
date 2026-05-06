@@ -15,7 +15,8 @@
       "javascript": "const value = nums.pop();",
       "typescript": "const value = nums.pop()!;",
       "java": "int value = nums.remove(nums.size() - 1);",
-      "csharp": "values.RemoveAt(values.Count - 1);"
+      "csharp": "values.RemoveAt(values.Count - 1);",
+      "cpp": "nums.pop_back();"
     }
   },
   "expect": {

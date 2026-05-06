@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 
 import { copyFile, cp, mkdir, stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const require = createRequire(pathToFileURL(process.argv[1] ?? join(process.cwd(), 'tracecode-harness.js')));
 
 const ASSET_COPY_PLAN = [
   {
@@ -31,6 +35,44 @@ const ASSET_COPY_PLAN = [
   {
     source: ['workers', 'csharp', 'csharp-worker.js'],
     target: ['csharp-worker.js'],
+  },
+  {
+    source: ['workers', 'cpp', 'cpp-worker.js'],
+    target: ['cpp-worker.js'],
+  },
+  {
+    source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
+    target: ['cpp', 'tracecode_runtime.hpp'],
+  },
+  {
+    packageName: '@yowasp/clang',
+    source: ['gen', 'bundle.js'],
+    target: ['vendor', 'cpp', 'yowasp', 'bundle.js'],
+  },
+  {
+    packageName: '@yowasp/clang',
+    source: ['gen', 'llvm-resources.tar'],
+    target: ['vendor', 'cpp', 'yowasp', 'llvm-resources.tar'],
+  },
+  {
+    packageName: '@yowasp/clang',
+    source: ['gen', 'llvm.core.wasm'],
+    target: ['vendor', 'cpp', 'yowasp', 'llvm.core.wasm'],
+  },
+  {
+    packageName: '@yowasp/clang',
+    source: ['gen', 'llvm.core2.wasm'],
+    target: ['vendor', 'cpp', 'yowasp', 'llvm.core2.wasm'],
+  },
+  {
+    packageName: '@yowasp/clang',
+    source: ['gen', 'llvm.core3.wasm'],
+    target: ['vendor', 'cpp', 'yowasp', 'llvm.core3.wasm'],
+  },
+  {
+    packageName: '@yowasp/clang',
+    source: ['gen', 'llvm.core4.wasm'],
+    target: ['vendor', 'cpp', 'yowasp', 'llvm.core4.wasm'],
   },
   {
     source: ['workers', 'vendor', 'typescript.js'],
@@ -81,12 +123,20 @@ function getPackageRoot(): string {
   return resolve(dirname(cliEntrypoint), '..');
 }
 
+function resolveAssetSourcePath(packageRoot: string, asset: typeof ASSET_COPY_PLAN[number]): string {
+  if ('packageName' in asset) {
+    const packageEntrypoint = require.resolve(asset.packageName);
+    return join(dirname(dirname(packageEntrypoint)), ...asset.source);
+  }
+  return join(packageRoot, ...asset.source);
+}
+
 async function syncAssets(targetDir: string): Promise<void> {
   const packageRoot = getPackageRoot();
   const resolvedTargetDir = resolve(process.cwd(), targetDir);
 
   for (const asset of ASSET_COPY_PLAN) {
-    const sourcePath = join(packageRoot, ...asset.source);
+    const sourcePath = resolveAssetSourcePath(packageRoot, asset);
     const targetPath = join(resolvedTargetDir, ...asset.target);
     const sourceStat = await stat(sourcePath);
     await ensureParentDir(targetPath);

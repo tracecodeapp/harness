@@ -9,7 +9,8 @@
       "javascript": "return seen.has(2);",
       "typescript": "return seen.has(2);",
       "java": "return seen.containsKey(2);",
-      "csharp": "return seen.ContainsKey(2);"
+      "csharp": "return seen.ContainsKey(2);",
+      "cpp": "return seen.count(2);"
     }
   },
   "expect": {

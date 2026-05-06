@@ -138,7 +138,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.mapSerialization',
     'structures.setSerialization',
     'structures.cycleReferences',
-          ],
+  ],
   csharp: [
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
@@ -161,6 +161,38 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.listNodeRefs',
     'structures.mapSerialization',
     'structures.setSerialization',
+  ],
+  cpp: [
+    'execution.styles.function',
+    'execution.styles.solutionMethod',
+    'execution.styles.opsClass',
+    'execution.styles.script',
+    'execution.styles.interviewMode',
+    'execution.timeouts.clientTimeouts',
+    'execution.timeouts.runtimeTimeouts',
+    'tracing.supported',
+    'tracing.events.line',
+    'tracing.events.call',
+    'tracing.events.return',
+    'tracing.events.stdout',
+    'tracing.events.timeout',
+    'tracing.controls.maxTraceSteps',
+    'tracing.controls.maxLineEvents',
+    'tracing.controls.maxSingleLineHits',
+    'tracing.controls.maxStoredEvents',
+    'tracing.controls.minimalTrace',
+    'tracing.fidelity.preciseLineMapping',
+    'tracing.fidelity.stableFunctionNames',
+    'tracing.fidelity.callStack',
+    'diagnostics.compileErrors',
+    'diagnostics.runtimeErrors',
+    'diagnostics.mappedErrorLines',
+    'structures.treeNodeRefs',
+    'structures.listNodeRefs',
+    'structures.mapSerialization',
+    'structures.setSerialization',
+    'structures.graphSerialization',
+    'structures.cycleReferences',
   ],
 };
 
@@ -346,6 +378,7 @@ async function main(): Promise<void> {
   assertCondition(SUPPORTED_LANGUAGES.includes('typescript'), 'SUPPORTED_LANGUAGES should include typescript');
   assertCondition(SUPPORTED_LANGUAGES.includes('java'), 'SUPPORTED_LANGUAGES should include java');
   assertCondition(SUPPORTED_LANGUAGES.includes('csharp'), 'SUPPORTED_LANGUAGES should include csharp');
+  assertCondition(SUPPORTED_LANGUAGES.includes('cpp'), 'SUPPORTED_LANGUAGES should include cpp');
   assertCondition(
     stableStringify(SUPPORTED_LANGUAGES) === stableStringify(profiles.map((profile) => profile.language)),
     'SUPPORTED_LANGUAGES should stay aligned with the runtime profile registry'
@@ -365,12 +398,14 @@ async function main(): Promise<void> {
   const typescriptClient = browserHarness.getClient('typescript');
   const javaClient = browserHarness.getClient('java');
   const csharpClient = browserHarness.getClient('csharp');
+  const cppClient = browserHarness.getClient('cpp');
   for (const [name, client] of [
     ['python', pythonClient],
     ['javascript', javascriptClient],
     ['typescript', typescriptClient],
     ['java', javaClient],
     ['csharp', csharpClient],
+    ['cpp', cppClient],
   ] as const) {
     assertCondition(
       typeof (client as { getCapabilities?: unknown }).getCapabilities === 'undefined',
@@ -394,8 +429,9 @@ async function main(): Promise<void> {
   const typescriptProfile = getLanguageRuntimeProfile('typescript');
   const javaProfile = getLanguageRuntimeProfile('java');
   const csharpProfile = getLanguageRuntimeProfile('csharp');
+  const cppProfile = getLanguageRuntimeProfile('cpp');
   for (const profile of profiles) {
-    const expectedMaturity = profile.language === 'java' || profile.language === 'csharp' ? 'experimental' : 'stable';
+    const expectedMaturity = profile.language === 'java' || profile.language === 'csharp' || profile.language === 'cpp' ? 'experimental' : 'stable';
     assertCondition(
       profile.maturity === expectedMaturity,
       `${profile.language} should be marked ${expectedMaturity} in this release`
@@ -431,6 +467,12 @@ async function main(): Promise<void> {
   assertCondition(csharpProfile.capabilities.structures.treeNodeRefs, 'C# should advertise TreeNode hydration');
   assertCondition(csharpProfile.capabilities.structures.mapSerialization, 'C# should advertise map serialization');
   assertCondition(csharpProfile.capabilities.structures.setSerialization, 'C# should advertise set serialization');
+  assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ should support function execution');
+  assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ should support solution-method execution');
+  assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ should support ops-class execution');
+  assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ should support script execution');
+  assertCondition(cppProfile.capabilities.execution.styles.interviewMode, 'C++ should support interview mode');
+  assertCondition(cppProfile.capabilities.tracing.supported, 'C++ should support generated-driver v4 trace events');
   console.log('PASS: runtime capability profile matrix');
 
   const unsupportedProfile = createUnsupportedProfile();

@@ -11,7 +11,8 @@
       "javascript": "out.push(value);",
       "typescript": "out.push(value);",
       "java": "out.add(value);",
-      "csharp": "outList.Add(value);"
+      "csharp": "outList.Add(value);",
+      "cpp": "out.push_back(value);"
     }
   },
   "expect": {

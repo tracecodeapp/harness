@@ -17,7 +17,8 @@
       "javascript": "return head.val;",
       "typescript": "return head.val;",
       "java": "return head.val;",
-      "csharp": "return head.val;"
+      "csharp": "return head.val;",
+      "cpp": "return head->val;"
     }
   },
   "expect": {

@@ -10,7 +10,9 @@ export type RuntimeRawEmissionKind =
   | 'snapshot'
   | 'read'
   | 'write'
-  | 'mutate';
+  | 'mutate'
+  | 'timeout'
+  | 'control';
 
 export interface RuntimeRawEmissionSummary {
   language: Language;
@@ -104,11 +106,13 @@ function javaNativeTracePayloadKind(event: string): RuntimeRawEmissionKind | nul
     if (parsed.kind === 'call') return 'call';
     if (parsed.kind === 'return') return 'return';
     if (parsed.kind === 'exception') return 'exception';
+    if (parsed.kind === 'timeout') return 'timeout';
     if (parsed.kind === 'stdout') return 'stdout';
     if (parsed.kind === 'snapshot') return 'snapshot';
     if (parsed.kind === 'read') return 'read';
     if (parsed.kind === 'write') return 'write';
     if (parsed.kind === 'mutate') return 'mutate';
+    if (parsed.kind === 'control') return 'control';
   } catch {
     return null;
   }
@@ -160,11 +164,13 @@ export function summarizeRuntimeTraceEmissions(trace: RuntimeTrace): RuntimeRawE
     if (event.kind === 'call') kinds.push('call');
     if (event.kind === 'return') kinds.push('return');
     if (event.kind === 'exception') kinds.push('exception');
+    if (event.kind === 'timeout') kinds.push('timeout');
     if (event.kind === 'stdout') kinds.push('stdout');
     if (event.kind === 'snapshot') kinds.push('snapshot');
     if (event.kind === 'read') kinds.push('read');
     if (event.kind === 'write') kinds.push('write');
     if (event.kind === 'mutate') kinds.push('mutate');
+    if (event.kind === 'control') kinds.push('control');
   }
   return {
     language: trace.language,

@@ -15,14 +15,16 @@
       "javascript": "buckets.get(nums[0]).push(nums[1]);",
       "typescript": "buckets.get(nums[0])!.push(nums[1]);",
       "java": "buckets.get(nums[0]).add(nums[1]);",
-      "csharp": "buckets[nums[0]].Add(nums[1]);"
+      "csharp": "buckets[nums[0]].Add(nums[1]);",
+      "cpp": "buckets[nums[0]].push_back(nums[1]);"
     },
     "arraySlotAppend": {
       "python": "graph[0].append(nums[2])",
       "javascript": "graph[0].push(nums[2]);",
       "typescript": "graph[0].push(nums[2]);",
       "java": "graph[0].add(nums[2]);",
-      "csharp": "graph[0].Add(nums[2]);"
+      "csharp": "graph[0].Add(nums[2]);",
+      "cpp": "graph[0].push_back(nums[2]);"
     }
   },
   "expect": {

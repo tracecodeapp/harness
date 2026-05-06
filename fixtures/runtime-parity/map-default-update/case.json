@@ -13,7 +13,8 @@
       "javascript": "freq.set(1, (freq.get(1) || 0) + 1);",
       "typescript": "freq.set(1, (freq.get(1) || 0) + 1);",
       "java": "freq.put(1, freq.getOrDefault(1, 0) + 1);",
-      "csharp": "freq[1] = current + 1;"
+      "csharp": "freq[1] = current + 1;",
+      "cpp": "freq[1] = (freq.count(1) ? freq[1] : 0) + 1;"
     }
   },
   "expect": {

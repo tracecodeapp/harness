@@ -27,14 +27,16 @@
       "javascript": "this.prefix = [0];",
       "typescript": "this.prefix = [0];",
       "java": "this.prefix = new int[] {0};",
-      "csharp": "this.prefix = new int[] { 0 };"
+      "csharp": "this.prefix = new int[] { 0 };",
+      "cpp": "tracecode::TraceHooks::setCurrentLine(5); tracecode::TraceHooks::emitPostLineFrame(5, \"NumArray\"); tracecode::emit_snapshot_value(\"nums\", nums, 5); this->prefix = vector<int>{0};"
     },
     "methodRead": {
       "python": "return self.prefix[0]",
       "javascript": "return this.prefix[0];",
       "typescript": "return this.prefix[0];",
       "java": "return this.prefix[0];",
-      "csharp": "return this.prefix[left];"
+      "csharp": "return this.prefix[left];",
+      "cpp": "return this->prefix[0];"
     }
   },
   "expect": {

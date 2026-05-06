@@ -15,7 +15,8 @@
       "javascript": "total += nums[i];",
       "typescript": "total += nums[i];",
       "java": "total += nums[i];",
-      "csharp": "total += nums[i];"
+      "csharp": "total += nums[i];",
+      "cpp": "total += nums[i];"
     }
   },
   "expect": {

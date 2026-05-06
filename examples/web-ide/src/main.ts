@@ -138,6 +138,24 @@ result = new int[] {};
     }
 }`,
   },
+  cpp: {
+    functionName: '',
+    executionStyle: 'function',
+    inputs: {},
+    code: `vector<int> nums = {2, 7, 11, 15};
+int target = 9;
+vector<int> result;
+unordered_map<int, int> seen;
+
+for (int index = 0; index < nums.size(); ++index) {
+  int complement = target - nums[index];
+  if (seen.count(complement)) {
+    result = {seen[complement], index};
+    break;
+  }
+  seen[nums[index]] = index;
+}`,
+  },
 };
 
 const getExtension = (lang: Language) => {
@@ -146,6 +164,7 @@ const getExtension = (lang: Language) => {
   if (lang === 'typescript') return '.ts';
   if (lang === 'java') return '.java';
   if (lang === 'csharp') return '.cs';
+  if (lang === 'cpp') return '.cpp';
   return '.txt';
 };
 
@@ -155,9 +174,9 @@ const getEditorLanguage = (lang: Language): string => {
   if (lang === 'python') return 'python';
   if (lang === 'java') return 'java';
   if (lang === 'csharp') return 'csharp';
+  if (lang === 'cpp') return 'cpp';
   return 'plaintext';
 };
-
 // ----------------------------------------------------------------------
 // Harness Setup
 // ----------------------------------------------------------------------

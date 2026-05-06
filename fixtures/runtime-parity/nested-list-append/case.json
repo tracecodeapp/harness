@@ -11,7 +11,8 @@
       "javascript": "graph[0].push(1);",
       "typescript": "graph[0].push(1);",
       "java": "graph.get(0).add(1);",
-      "csharp": "graph[0].Add(1);"
+      "csharp": "graph[0].Add(1);",
+      "cpp": "graph[0].push_back(1);"
     }
   },
   "expect": {

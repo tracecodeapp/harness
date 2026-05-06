@@ -9,6 +9,12 @@ export interface BrowserHarnessAssets {
   csharpWorker: string;
   csharpAssetBaseUrl: string;
   typescriptCompiler: string;
+  cppWorker: string;
+  cppClangWasm: string;
+  cppLldWasm: string;
+  cppSysroot: string;
+  cppRuntimeHeader: string;
+  cppCompilerBundle: string;
 }
 
 export type BrowserHarnessAssetOverrides = Partial<BrowserHarnessAssets>;
@@ -22,6 +28,12 @@ export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarne
   csharpWorker: 'csharp-worker.js',
   csharpAssetBaseUrl: 'vendor/csharp',
   typescriptCompiler: 'vendor/typescript.js',
+  cppWorker: 'cpp-worker.js',
+  cppClangWasm: 'vendor/cpp/clang.wasm',
+  cppLldWasm: 'vendor/cpp/lld.wasm',
+  cppSysroot: 'vendor/cpp/sysroot.tar',
+  cppRuntimeHeader: 'cpp/tracecode_runtime.hpp',
+  cppCompilerBundle: 'vendor/cpp/yowasp/bundle.js',
 });
 
 function isExplicitAssetPath(pathname: string): boolean {
@@ -79,6 +91,18 @@ export function resolveBrowserHarnessAssets(options: {
     typescriptCompiler: resolveAssetPath(
       assetBaseUrl,
       assets.typescriptCompiler ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.typescriptCompiler
+    ),
+    cppWorker: resolveAssetPath(assetBaseUrl, assets.cppWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppWorker),
+    cppClangWasm: resolveAssetPath(assetBaseUrl, assets.cppClangWasm ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppClangWasm),
+    cppLldWasm: resolveAssetPath(assetBaseUrl, assets.cppLldWasm ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppLldWasm),
+    cppSysroot: resolveAssetPath(assetBaseUrl, assets.cppSysroot ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppSysroot),
+    cppRuntimeHeader: resolveAssetPath(
+      assetBaseUrl,
+      assets.cppRuntimeHeader ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppRuntimeHeader
+    ),
+    cppCompilerBundle: resolveAssetPath(
+      assetBaseUrl,
+      assets.cppCompilerBundle ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerBundle
     ),
   };
 }

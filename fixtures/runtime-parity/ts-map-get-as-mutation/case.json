@@ -9,16 +9,33 @@
       "javascript": "graph.get(0).push(1);",
       "typescript": "(graph.get(0) as number[]).push(1);",
       "java": "graph.get(0).add(1);",
+      "cpp": "graph[0].push_back(1);",
       "csharp": "graph[0].Add(1);"
     }
   },
   "expect": {
     "append": {
-      "eventKinds": ["line", "mutate", "read", "snapshot"],
-      "variableSnapshots": ["graph"],
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "graph"
+      ],
       "accessTargets": [
-        { "kind": "mutate", "variable": "graph", "method": "append", "pathDepth": 1 },
-        { "kind": "read", "variable": "graph", "pathDepth": 1 }
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "method": "append",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "graph",
+          "pathDepth": 1
+        }
       ]
     }
   }

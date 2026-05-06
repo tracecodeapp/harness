@@ -20,7 +20,8 @@
       "javascript": "this.items.push(value);",
       "typescript": "this.items.push(value);",
       "java": "items.add(value);",
-      "csharp": "this.items.Add(value);"
+      "csharp": "this.items.Add(value);",
+      "cpp": "this->items.push_back(value);"
     }
   },
   "expect": {

@@ -11,6 +11,7 @@
       "javascript": "stack[stack.length - 1].items.push(value);",
       "typescript": "stack[stack.length - 1].items.push(value);",
       "java": "stack.peek().items.add(value);",
+      "cpp": "tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"snapshot\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\"},\\\"value\\\":[]}\", tracecode::current_trace_line()); tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"read\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\",\\\"path\\\":[\\\"top\\\",\\\"items\\\"]},\\\"value\\\":[]}\", tracecode::current_trace_line()); stack.back().items.push_back(value); tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\",\\\"path\\\":[\\\"top\\\",\\\"items\\\"]},\\\"method\\\":\\\"append\\\"}\", tracecode::current_trace_line());",
       "csharp": "stack[stack.Count - 1].items.Add(value);"
     }
   },
@@ -40,6 +41,29 @@
         }
       ]
     }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "mutate",
+        "variable": "stack",
+        "pathDepth": 2,
+        "method": "append",
+        "count": 1
+      },
+      {
+        "kind": "mutate",
+        "variable": "stack",
+        "method": "append",
+        "count": 1
+      },
+      {
+        "kind": "read",
+        "variable": "stack",
+        "pathDepth": 2,
+        "count": 1
+      }
+    ]
   },
   "expectByLanguage": {
     "csharp": {
@@ -74,29 +98,6 @@
         ]
       }
     }
-  },
-  "expectSummary": {
-    "accessTargets": [
-      {
-        "kind": "mutate",
-        "variable": "stack",
-        "pathDepth": 2,
-        "method": "append",
-        "count": 1
-      },
-      {
-        "kind": "mutate",
-        "variable": "stack",
-        "method": "append",
-        "count": 1
-      },
-      {
-        "kind": "read",
-        "variable": "stack",
-        "pathDepth": 2,
-        "count": 1
-      }
-    ]
   },
   "expectSummaryByLanguage": {
     "csharp": {

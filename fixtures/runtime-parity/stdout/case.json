@@ -11,6 +11,7 @@
       "javascript": "console.log(n);",
       "typescript": "console.log(n);",
       "java": "System.out.println(n);",
+      "cpp": "std::printf(\"%d\\n\", n);",
       "csharp": "System.Console.WriteLine(n);"
     }
   },
@@ -61,6 +62,18 @@
           "line",
           "snapshot",
           "stdout"
+        ],
+        "variableSnapshots": [
+          "n"
+        ],
+        "accessTargets": []
+      }
+    },
+    "cpp": {
+      "print": {
+        "eventKinds": [
+          "line",
+          "snapshot"
         ],
         "variableSnapshots": [
           "n"

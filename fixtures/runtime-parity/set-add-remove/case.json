@@ -9,6 +9,7 @@
       "javascript": "seen.add(2);",
       "typescript": "seen.add(2);",
       "java": "seen.add(2);",
+      "cpp": "seen.insert(2);",
       "csharp": "seen.Add(2);"
     },
     "remove": {
@@ -16,6 +17,7 @@
       "javascript": "seen.delete(2);",
       "typescript": "seen.delete(2);",
       "java": "seen.remove(2);",
+      "cpp": "seen.erase(2);",
       "csharp": "seen.Remove(2);"
     }
   },
@@ -56,6 +58,42 @@
     }
   },
   "expectByLanguage": {
+    "cpp": {
+      "add": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "seen",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "remove": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "method": "remove"
+          }
+        ]
+      }
+    },
     "csharp": {
       "add": {
         "eventKinds": [

@@ -11,6 +11,7 @@
       "javascript": "dp[1].set(key, 3);",
       "typescript": "dp[1].set(key, 3);",
       "java": "dp[1].merge(key, 3, Integer::sum);",
+      "cpp": "dp[1][key] = 3;",
       "csharp": "dp[1][key] = 3;"
     }
   },
@@ -34,17 +35,27 @@
       ]
     }
   },
-  "expectSummary": {
-    "accessTargets": [
-      {
-        "kind": "write",
-        "variable": "dp",
-        "pathDepth": 2,
-        "count": 1
-      }
-    ]
-  },
   "expectByLanguage": {
+    "java": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "dp",
+          "key"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "dp",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
     "csharp": {
       "write": {
         "eventKinds": [
@@ -72,6 +83,16 @@
         ]
       }
     }
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "write",
+        "variable": "dp",
+        "pathDepth": 2,
+        "count": 1
+      }
+    ]
   },
   "expectSummaryByLanguage": {
     "csharp": {

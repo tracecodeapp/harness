@@ -30,6 +30,8 @@ async function main(): Promise<void> {
     'pyodide/runtime-core.js',
     'javascript-worker.js',
     'java-worker.js',
+    'cpp-worker.js',
+    'cpp/tracecode_runtime.hpp',
     'java-source-augmentations.js',
     'csharp-worker.js',
     'vendor/typescript.js',
@@ -41,6 +43,12 @@ async function main(): Promise<void> {
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
     'vendor/csharp/_framework/blazor.boot.json',
+    'vendor/cpp/yowasp/bundle.js',
+    'vendor/cpp/yowasp/llvm-resources.tar',
+    'vendor/cpp/yowasp/llvm.core.wasm',
+    'vendor/cpp/yowasp/llvm.core2.wasm',
+    'vendor/cpp/yowasp/llvm.core3.wasm',
+    'vendor/cpp/yowasp/llvm.core4.wasm',
   ];
 
   for (const relativePath of requiredFiles) {
@@ -54,6 +62,7 @@ async function main(): Promise<void> {
   assertCondition(rootEntries.includes('javascript-worker.js'), 'Asset sync should flatten the JavaScript worker into the target root');
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
   assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
+  assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'

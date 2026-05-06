@@ -9,14 +9,16 @@
       "javascript": "seen.set(2, 5);",
       "typescript": "seen.set(2, 5);",
       "java": "seen.put(2, 5);",
-      "csharp": "seen[2] = 5;"
+      "csharp": "seen[2] = 5;",
+      "cpp": "seen[2] = 5;"
     },
     "get": {
       "python": "return seen[2]",
       "javascript": "return seen.get(2);",
       "typescript": "return seen.get(2)!;",
       "java": "return seen.get(2);",
-      "csharp": "return seen[2];"
+      "csharp": "return seen[2];",
+      "cpp": "return seen[2];"
     }
   },
   "expect": {

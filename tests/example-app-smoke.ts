@@ -135,7 +135,7 @@ export function startPreviewServer(
 
 async function runLanguageExampleSmoke(
   page: import('playwright').Page,
-  language: 'python' | 'javascript' | 'typescript' | 'java',
+  language: 'python' | 'javascript' | 'typescript' | 'java' | 'cpp',
   options: {
     executionTimeoutMs: number;
     traceTimeoutMs: number;
@@ -268,10 +268,10 @@ export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> 
     page.setDefaultTimeout(180_000);
     await page.goto(previewUrl, { waitUntil: 'networkidle' });
 
-    for (const language of ['python', 'javascript', 'typescript', 'java'] as const) {
+    for (const language of ['python', 'javascript', 'typescript', 'java', 'cpp'] as const) {
       await runLanguageExampleSmoke(page, language, {
-        executionTimeoutMs: language === 'python' || language === 'java' ? 240_000 : 60_000,
-        traceTimeoutMs: language === 'python' || language === 'java' ? 240_000 : 60_000,
+        executionTimeoutMs: language === 'python' || language === 'java' || language === 'cpp' ? 240_000 : 60_000,
+        traceTimeoutMs: language === 'python' || language === 'java' || language === 'cpp' ? 240_000 : 60_000,
       });
     }
     await runCSharpExampleSmoke(page);

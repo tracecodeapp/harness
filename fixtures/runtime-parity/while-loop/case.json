@@ -11,6 +11,7 @@
       "javascript": "total += i;",
       "typescript": "total += i;",
       "java": "total += i;",
+      "cpp": "total += i;",
       "csharp": "total += i;"
     }
   },

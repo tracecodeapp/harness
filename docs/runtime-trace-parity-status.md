@@ -1,6 +1,6 @@
 # Runtime Trace Parity Status
 
-Last updated: 2026-05-02
+Last updated: 2026-05-04
 
 ## Purpose
 
@@ -67,7 +67,7 @@ The public contract is `RuntimeTrace`, not the implementation shape of `TraceHoo
 
 - Fixture directory: `fixtures/runtime-parity`
 - Fixture count: 59
-- Languages covered per fixture: Python, JavaScript, TypeScript, Java
+- Languages covered per fixture: Python, JavaScript, TypeScript, Java, C#, C++
 - Official gate: `pnpm test:runtime-trace`
 - Gate: `pnpm test:runtime-trace-fixtures`
 - Strict raw parity gate: `pnpm test:runtime-trace-fixtures:raw-strict`
@@ -77,7 +77,7 @@ The public contract is `RuntimeTrace`, not the implementation shape of `TraceHoo
 
 `pnpm test:runtime-trace` is part of both `pnpm test` and `pnpm test:ci`. Any runtime instrumentation change that alters cross-language runtime trace parity, introduces unsupported raw payloads, or reopens known gaps should fail before merge.
 
-Python, JavaScript, TypeScript, and Java browser runtime clients now return runtime trace directly at `result.trace`; the browser clients no longer expose legacy trace steps. Java `TraceHooks` now emits native `trace:` event payloads, and Java worker-client results carry runtime trace at `trace`. The public Java runtime boundary is runtime trace-only. The old synthetic `javaEvents` fixture field has been removed from the contract so fixture results cannot accidentally mask actual Java harness behavior.
+Python, JavaScript, TypeScript, Java, C#, and C++ browser runtime clients now return runtime trace directly at `result.trace`; the browser clients no longer expose legacy trace steps. Java `TraceHooks` now emits native `trace:` event payloads, and Java worker-client results carry runtime trace at `trace`. C# emits native runtime trace events from its browser-local Roslyn/.NET compiler host. C++ emits native runtime trace events from the browser-local compiler/runtime worker. The public Java, C#, and C++ runtime boundaries are runtime trace-only. The old synthetic `javaEvents` fixture field has been removed from the contract so fixture results cannot accidentally mask actual Java harness behavior.
 
 The remaining legacy seams are internal raw worker traces used by migration checks and Python fixture execution while raw language instrumentation is normalized into runtime trace events. These are not supported public trace contracts.
 
@@ -88,6 +88,7 @@ Current known gap count: 0
 By language:
 
 - Java: 0
+- C++: 0
 - JavaScript: 0
 - Python: 0
 - TypeScript: 0
@@ -95,7 +96,7 @@ By language:
 Main clusters:
 
 - No open fixture gaps in the current 59-fixture corpus.
-- The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, and Java.
+- The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, Java, and C++.
 - This is a baseline, not proof of completeness. New operations should be added to the corpus as soon as they become product-relevant or are discovered through corpus mining.
 
 ## Recently Tightened
@@ -110,6 +111,16 @@ Java local snapshot completeness now passes for the core loop and mutation fixtu
 The fix was made in Java runtime source augmentation so Java emits the missing local snapshots itself before the raw runtime assembly seam sees the trace.
 
 Java object-field access also now passes for `object-field-read-write/write` and `object-field-read-write/read`. Java emits field read/write hooks as neutral access facts instead of relying on legacy visualization-shaped object payloads.
+
+C++ now participates in the 59-fixture runtime parity corpus. The C++ fixture gate compiles and runs each fixture through the browser-local C++ worker, emits native `RuntimeTrace` events, and rejects unsupported visualization-era payloads. C++ declaration lines now follow the post-line state model, so initialized locals are visible on the source line that creates them.
+
+C++ also supports playground script-style execution through the public runtime API. A script request uses `executionStyle="function"` with an empty function name and must assign a serializable top-level `result` variable. The worker wraps those top-level statements in generated C++ glue, maps trace lines back to `UserCode.cpp`, and emits a native `<script>` call/return frame. C++ interview mode uses the same instrumented compiler path with a trace budget, then returns the standard non-trace execution result shape.
+
+C++ trace controls now match the public profile for `maxLineEvents`, `maxSingleLineHits`, `minimalTrace`, and call-stack attachment. `maxLineEvents` and `maxSingleLineHits` are enforced inside the generated C++/Wasm runtime as hard trace aborts with `line-limit` and `single-line-limit` timeout reasons, which keeps runaway loops bounded before the broader execution hardening pass.
+
+C++ execution hardening now has a two-layer timeout contract. Instrumented runs first use runtime trace guards for trace budgets, line-event budgets, and single-line hit budgets. If compile or runtime execution still blocks the worker, `CppWorkerClient` terminates and recreates the worker, returns `client-timeout` metadata, and keeps interview-mode errors sanitized as `Time Limit Exceeded`.
+
+C++ also passes the full isolated generated C++ Algoflow corpus compile/run gate with no output mismatches: 2,256 scanned, 2,256 passed, 0 failures. The same run compared expected outputs against the other available language corpus entries: Java matched 2,256/2,256, while JavaScript, TypeScript, and Python each matched 2,093/2,256 where corresponding corpus entries exist. The local full gate is `pnpm local:mine:cpp-algoflow-corpus:isolated`, which intentionally runs with `--no-trace` because the full corpus gate is for output parity while trace semantics are covered by the runtime fixture corpus.
 
 JS/TS indexed access now passes for:
 
@@ -186,7 +197,7 @@ The harness now has a TraceLang-style raw runtime emission contract before runti
 
 This contract rejects unsupported raw runtime payloads before they can become adapter behavior. For example, a Java-only payload such as `array-length` is invalid unless it is first added as a shared contract concept across languages.
 
-The fixture gate also computes coarse raw emission categories for each language. By default, unsupported emissions fail and raw cross-language parity mismatches are advisory. Raw parity mismatches are also available as a strict gate:
+The fixture gate also computes coarse raw emission categories for each language. C++ is included in unsupported-emission checks, while strict raw category parity currently compares the Python, JavaScript, TypeScript, Java, and C# reference-compatible set. By default, unsupported emissions fail and raw cross-language parity mismatches are advisory. Raw parity mismatches are also available as a strict gate:
 
 - `pnpm test:runtime-trace-fixtures:raw-strict`
 

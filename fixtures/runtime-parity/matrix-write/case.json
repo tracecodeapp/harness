@@ -16,7 +16,8 @@
       "javascript": "grid[0][1] = 7;",
       "typescript": "grid[0][1] = 7;",
       "java": "grid[0][1] = 7;",
-      "csharp": "grid[0][1] = 7;"
+      "csharp": "grid[0][1] = 7;",
+      "cpp": "grid[0][1] = 7;"
     }
   },
   "expect": {

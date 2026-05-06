@@ -9,6 +9,8 @@ import { JavaWorkerClient } from './java-worker-client';
 import { createJavaRuntimeClient } from './java-runtime-client';
 import { CSharpWorkerClient } from './csharp-worker-client';
 import { createCSharpRuntimeClient } from './csharp-runtime-client';
+import { CppWorkerClient } from './cpp-worker-client';
+import { createCppRuntimeClient } from './cpp-runtime-client';
 import { PyodideWorkerClient } from './pyodide-worker-client';
 import { createPythonRuntimeClient } from './python-runtime-client';
 import {
@@ -49,6 +51,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
   private readonly javaScriptWorkerClient: JavaScriptWorkerClient;
   private readonly javaWorkerClient: JavaWorkerClient;
   private readonly csharpWorkerClient: CSharpWorkerClient;
+  private readonly cppWorkerClient: CppWorkerClient;
   private readonly clients: Record<Language, RuntimeClient>;
 
   constructor(options: CreateBrowserHarnessOptions = {}) {
@@ -70,12 +73,22 @@ class BrowserHarnessRuntime implements BrowserHarness {
       assetBaseUrl: this.assets.csharpAssetBaseUrl,
       debug: options.debug,
     });
+    this.cppWorkerClient = new CppWorkerClient({
+      workerUrl: this.assets.cppWorker,
+      clangWasmUrl: this.assets.cppClangWasm,
+      lldWasmUrl: this.assets.cppLldWasm,
+      sysrootUrl: this.assets.cppSysroot,
+      runtimeHeaderUrl: this.assets.cppRuntimeHeader,
+      compilerBundleUrl: this.assets.cppCompilerBundle,
+      debug: options.debug,
+    });
     this.clients = {
       python: createPythonRuntimeClient(this.pythonWorkerClient),
       javascript: createJavaScriptRuntimeClient('javascript', this.javaScriptWorkerClient),
       typescript: createJavaScriptRuntimeClient('typescript', this.javaScriptWorkerClient),
       java: createJavaRuntimeClient(this.javaWorkerClient),
       csharp: createCSharpRuntimeClient(this.csharpWorkerClient),
+      cpp: createCppRuntimeClient(this.cppWorkerClient),
     };
   }
 
@@ -112,6 +125,10 @@ class BrowserHarnessRuntime implements BrowserHarness {
       this.csharpWorkerClient.terminate();
       return;
     }
+    if (language === 'cpp') {
+      this.cppWorkerClient.terminate();
+      return;
+    }
     this.javaScriptWorkerClient.terminate();
   }
 
@@ -120,6 +137,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
     this.javaScriptWorkerClient.terminate();
     this.javaWorkerClient.terminate();
     this.csharpWorkerClient.terminate();
+    this.cppWorkerClient.terminate();
   }
 }
 

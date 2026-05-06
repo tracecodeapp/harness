@@ -9,6 +9,7 @@
       "javascript": "box.length = 4;",
       "typescript": "box.length = 4;",
       "java": "box.length = 4;",
+      "cpp": "box.length = 4;",
       "csharp": "box.length = 4;"
     },
     "read": {
@@ -16,6 +17,7 @@
       "javascript": "return box.length;",
       "typescript": "return box.length;",
       "java": "return box.length;",
+      "cpp": "return box.length;",
       "csharp": "return box.length;"
     }
   },

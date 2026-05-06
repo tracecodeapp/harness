@@ -11,6 +11,7 @@
       "javascript": "return 0;",
       "typescript": "return 0;",
       "java": "return 0;",
+      "cpp": "return 0;",
       "csharp": "return 0;"
     }
   },

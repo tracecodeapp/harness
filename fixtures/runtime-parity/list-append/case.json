@@ -14,7 +14,8 @@
       "javascript": "out.push(num);",
       "typescript": "out.push(num);",
       "java": "out.add(num);",
-      "csharp": "outList.Add(num);"
+      "csharp": "outList.Add(num);",
+      "cpp": "out.push_back(num);"
     }
   },
   "expect": {

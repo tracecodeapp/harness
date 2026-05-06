@@ -951,7 +951,8 @@ public final class JavaRewriteLibrary {
 
   private static boolean isListType(String type) {
     if (type == null) return false;
-    return normalizeJavaType(type).contains("List<");
+    String normalized = normalizeJavaType(type);
+    return normalized.contains("List<") && !normalized.contains("Map");
   }
 
   private static String indexedAccessExpression(String name, String type, String index) {

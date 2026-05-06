@@ -12,7 +12,8 @@ export type RuntimeTraceEventKind =
   | 'snapshot'
   | 'stdout'
   | 'exception'
-  | 'timeout';
+  | 'timeout'
+  | 'control';
 
 export type RuntimeTraceTarget =
   | { variable: string; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
@@ -35,6 +36,7 @@ export type RuntimeTraceEvent =
   | (RuntimeTraceBaseEvent & { kind: 'mutate'; line: number; target: RuntimeTraceTarget; method?: string; args?: unknown[] })
   | (RuntimeTraceBaseEvent & { kind: 'snapshot'; line: number; target: RuntimeTraceTarget; value: unknown })
   | (RuntimeTraceBaseEvent & { kind: 'stdout'; text: string })
+  | (RuntimeTraceBaseEvent & { kind: 'control'; line: number; control: 'break' | 'continue' })
   | (RuntimeTraceBaseEvent & { kind: 'exception' | 'timeout'; message: string });
 
 export interface RuntimeTrace {

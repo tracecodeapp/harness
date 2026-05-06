@@ -9,7 +9,8 @@
       "javascript": "seen.delete(2);",
       "typescript": "seen.delete(2);",
       "java": "seen.remove(2);",
-      "csharp": "seen.Remove(2);"
+      "csharp": "seen.Remove(2);",
+      "cpp": "seen.erase(2);"
     }
   },
   "expect": {

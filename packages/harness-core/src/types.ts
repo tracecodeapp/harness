@@ -31,6 +31,21 @@ export interface CodeExecutionResult {
   error?: string;
   errorLine?: number;
   consoleOutput?: string[];
+  timeoutReason?:
+    | 'trace-limit'
+    | 'line-limit'
+    | 'single-line-limit'
+    | 'recursion-limit'
+    | 'memory-limit'
+    | 'client-timeout';
+  diagnosticStage?:
+    | 'compile'
+    | 'runtime'
+    | 'trace'
+    | 'interview'
+    | 'driver-compile'
+    | 'trace-driver-compile'
+    | 'driver-link';
 }
 
 // Complete execution result

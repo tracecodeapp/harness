@@ -15,6 +15,7 @@
       "javascript": "const num = nums[i];",
       "typescript": "const num = nums[i];",
       "java": "int num = nums[i];",
+      "cpp": "int num = nums[i];",
       "csharp": "int num = nums[i];"
     }
   },

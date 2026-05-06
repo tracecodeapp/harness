@@ -17,6 +17,7 @@
       "javascript": "continue;",
       "typescript": "continue;",
       "java": "continue;",
+      "cpp": "continue;",
       "csharp": "continue;"
     },
     "break": {
@@ -24,6 +25,7 @@
       "javascript": "break;",
       "typescript": "break;",
       "java": "break;",
+      "cpp": "break;",
       "csharp": "break;"
     },
     "add": {
@@ -31,6 +33,7 @@
       "javascript": "total += nums[i];",
       "typescript": "total += nums[i];",
       "java": "total += nums[i];",
+      "cpp": "total += nums[i];",
       "csharp": "total += nums[i];"
     }
   },
@@ -77,6 +80,55 @@
           "pathDepth": 1
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "cpp": {
+      "continue": {
+        "eventKinds": [
+          "control",
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "i",
+          "nums",
+          "total"
+        ],
+        "accessTargets": []
+      },
+      "break": {
+        "eventKinds": [
+          "control",
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "i",
+          "nums",
+          "total"
+        ],
+        "accessTargets": []
+      },
+      "add": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "i",
+          "nums",
+          "total"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          }
+        ]
+      }
     }
   }
 }

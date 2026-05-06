@@ -14,6 +14,7 @@
       "javascript": "queue.push(num);",
       "typescript": "queue.push(num);",
       "java": "queue.offer(num);",
+      "cpp": "queue.push(num);",
       "csharp": "queue.Enqueue(num);"
     },
     "popleft": {
@@ -21,6 +22,7 @@
       "javascript": "const first = queue.shift();",
       "typescript": "const first = queue.shift()!;",
       "java": "int first = queue.poll();",
+      "cpp": "queue.pop();",
       "csharp": "int first = queue.Dequeue();"
     }
   },

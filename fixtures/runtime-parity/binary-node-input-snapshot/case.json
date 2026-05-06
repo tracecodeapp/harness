@@ -19,6 +19,7 @@
       "javascript": "return root.val;",
       "typescript": "return root.val;",
       "java": "return root.val;",
+      "cpp": "return root->val;",
       "csharp": "return root.val;"
     }
   },

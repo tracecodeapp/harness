@@ -11,14 +11,16 @@
       "javascript": "node.children[key] = 1;",
       "typescript": "node.children[key] = 1;",
       "java": "node.children.put(key, 1);",
-      "csharp": "node.children[key] = 1;"
+      "csharp": "node.children[key] = 1;",
+      "cpp": "node.children[key] = 1;"
     },
     "readKey": {
       "python": "return node.children[key]",
       "javascript": "return node.children[key];",
       "typescript": "return node.children[key];",
       "java": "return node.children.get(key);",
-      "csharp": "return node.children[key];"
+      "csharp": "return node.children[key];",
+      "cpp": "return node.children[key];"
     }
   },
   "expect": {
