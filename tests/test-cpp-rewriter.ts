@@ -141,6 +141,21 @@ assertCondition(controlDriver.includes('\\"kind\\":\\"control\\"'), 'control tra
 assertCondition(controlDriver.includes('\\"control\\":\\"continue\\"'), 'continue should be captured as a control event');
 assertCondition(controlDriver.includes('\\"control\\":\\"break\\"'), 'break should be captured as a control event');
 
+const exceptionSource = [
+  'class Solution {',
+  'public:',
+  '  int safe(int value) {',
+  '    if (value < 0) throw std::runtime_error("negative");',
+  '    return value;',
+  '  }',
+  '};',
+].join('\n');
+const exceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 }, { tracing: true });
+const nonTracingExceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 });
+assertCondition(exceptionDriver.includes('\\"kind\\":\\"exception\\"'), 'lowered throw should emit native exception events when tracing');
+assertCondition(exceptionDriver.includes('\\"message\\":\\"negative\\"'), 'lowered throw should preserve common literal exception messages');
+assertCondition(!nonTracingExceptionDriver.includes('\\"kind\\":\\"exception\\"'), 'non-tracing lowered throws should not emit trace markers');
+
 const fieldSource = [
   'struct Node { unordered_map<string, int> children; };',
   'class Solution {',

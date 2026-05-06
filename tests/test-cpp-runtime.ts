@@ -538,6 +538,39 @@ if (!traced.trace.events.some((event) => event.kind === 'line' && event.callStac
   throw new Error('C++ tracing should attach callStack frames to runtime events, received ' + JSON.stringify(traced.trace.events));
 }
 
+const exceptionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    '#include <stdexcept>',
+    'class Solution {',
+    '  int risky(int value) {',
+    '    if (value < 0) throw std::runtime_error("negative");',
+    '    return value + 1;',
+    '  }',
+    'public:',
+    '  int recover(int value) {',
+    '    try {',
+    '      return risky(value);',
+    '    } catch (const std::exception&) {',
+    '      return 42;',
+    '    }',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'recover',
+  inputs: { value: -1 },
+  options: {},
+});
+if (!exceptionTrace.success || exceptionTrace.output !== 42) {
+  throw new Error('C++ lowered exception tracing should recover successfully, received ' + JSON.stringify(exceptionTrace));
+}
+const exceptionEvent = exceptionTrace.trace.events.find((event) => event.kind === 'exception');
+if (!exceptionEvent || exceptionEvent.line !== 4 || exceptionEvent.message !== 'negative') {
+  throw new Error('C++ lowered exception tracing should emit the throw line and message, received ' + JSON.stringify(exceptionTrace.trace.events));
+}
+if (!exceptionEvent.callStack?.some((frame) => frame.function === 'risky')) {
+  throw new Error('C++ lowered exception tracing should attach the throwing frame, received ' + JSON.stringify(exceptionTrace.trace.events));
+}
+
 const scriptResult = await sandbox.__tracecodeCppTest.handleCompileRun({
   code: [
     'vector<int> nums = {2, 7, 11, 15};',

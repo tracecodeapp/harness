@@ -184,6 +184,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.events.line',
     'tracing.events.call',
     'tracing.events.return',
+    'tracing.events.exception',
     'tracing.events.stdout',
     'tracing.events.timeout',
     'tracing.controls.maxTraceSteps',
@@ -486,6 +487,7 @@ async function main(): Promise<void> {
   assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ should support script execution');
   assertCondition(cppProfile.capabilities.execution.styles.interviewMode, 'C++ should support interview mode');
   assertCondition(cppProfile.capabilities.tracing.supported, 'C++ should support generated-driver v4 trace events');
+  assertCondition(cppProfile.capabilities.tracing.events.exception, 'C++ should support lowered exception trace events');
   console.log('PASS: runtime capability profile matrix');
 
   const unsupportedProfile = createUnsupportedProfile();

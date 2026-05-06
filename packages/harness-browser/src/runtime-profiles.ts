@@ -324,7 +324,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         line: true,
         call: true,
         return: true,
-        exception: false,
+        exception: true,
         stdout: true,
         timeout: true,
       },

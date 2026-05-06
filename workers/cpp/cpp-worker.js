@@ -947,21 +947,44 @@ function cppNoExceptionDefaultReturn(returnType) {
   return `${String(returnType || '').replace(/[&]/g, '').replace(/\bconst\b/g, '').trim()}()`;
 }
 
-function cppThrowReplacementForReturnType(returnType) {
-  const defaultValue = cppNoExceptionDefaultReturn(returnType);
-  return defaultValue
-    ? `{ __tracecode_exception_pending = true; return ${defaultValue}; }`
-    : `{ __tracecode_exception_pending = true; return; }`;
+function cppExceptionMessageForThrowExpression(expression) {
+  const rawExpression = String(expression || '').trim();
+  const stringMatch = rawExpression.match(/"((?:\\.|[^"\\])*)"/);
+  if (stringMatch) {
+    try {
+      return JSON.parse(`"${stringMatch[1]}"`);
+    } catch {
+      return stringMatch[1];
+    }
+  }
+  return 'C++ exception thrown.';
 }
 
-function rewriteCppThrowsWithoutExceptions(source) {
+function cppExceptionTraceInstrumentation(lineNumber, message) {
+  const eventJson = `{"kind":"exception","line":${lineNumber},"message":${jsonStringLiteral(message)}}`;
+  return `tracecode::write_trace_event_json(std::string(${cppStringLiteral(eventJson)}), ${lineNumber});`;
+}
+
+function cppThrowReplacementForReturnType(returnType, options = {}) {
+  const defaultValue = cppNoExceptionDefaultReturn(returnType);
+  const traceInstrumentation = options.traceLine
+    ? `${cppExceptionTraceInstrumentation(options.traceLine, options.message || 'C++ exception thrown.')} `
+    : '';
+  return defaultValue
+    ? `{ ${traceInstrumentation}__tracecode_exception_pending = true; return ${defaultValue}; }`
+    : `{ ${traceInstrumentation}__tracecode_exception_pending = true; return; }`;
+}
+
+function rewriteCppThrowsWithoutExceptions(source, options = {}) {
   if (!/\bthrow\b/.test(source)) return source;
   const lines = source.split(/\r?\n/);
   const output = [];
   const frames = [];
   let depth = 0;
 
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const lineNumber = index + 1;
     let rewritten = line;
     const lambdaMatch = line.match(/\[[^\]]*\]\s*\([^)]*\)\s*->\s*([^{]+?)\s*\{/);
     const functionMatch = line.match(/^\s*(?!if\b|for\b|while\b|switch\b|catch\b)(?:[A-Za-z_][\w:<>?,*&\s]*?)\s+([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{/);
@@ -975,7 +998,14 @@ function rewriteCppThrowsWithoutExceptions(source) {
 
     const activeFrame = frames.at(-1);
     if (/\bthrow\b/.test(rewritten) && activeFrame) {
-      rewritten = rewritten.replace(/throw\s+[^;]+;/g, cppThrowReplacementForReturnType(activeFrame.returnType));
+      rewritten = rewritten.replace(/throw(?:\s+([^;]+))?\s*;/g, (_match, expression) => (
+        cppThrowReplacementForReturnType(activeFrame.returnType, {
+          ...(options.emitTraceEvents ? {
+            traceLine: lineNumber,
+            message: cppExceptionMessageForThrowExpression(expression),
+          } : {}),
+        })
+      ));
     }
 
     output.push(rewritten);
@@ -1054,18 +1084,20 @@ function rewriteCppTryCatchWithoutExceptions(source) {
   return output;
 }
 
-function lowerCppExceptionSyntaxForNoExceptions(source) {
+function lowerCppExceptionSyntaxForNoExceptions(source, options = {}) {
   if (!/\b(?:try|throw|catch)\b/.test(source)) return source;
-  const lowered = rewriteCppThrowsWithoutExceptions(rewriteCppTryCatchWithoutExceptions(source));
+  const lowered = rewriteCppThrowsWithoutExceptions(rewriteCppTryCatchWithoutExceptions(source), options);
   return `static bool __tracecode_exception_pending = false;\n${lowered}`;
 }
 
-function normalizeCppUserSource(source) {
+function normalizeCppUserSource(source, options = {}) {
   const withoutUnsupportedIncludes = String(source || '')
     .split(/\r?\n/)
     .map((line) => (/^\s*#\s*include\s*<bits\/stdc\+\+\.h>\s*$/.test(line) ? '' : line))
     .join('\n');
-  return lowerCppExceptionSyntaxForNoExceptions(withoutUnsupportedIncludes);
+  return lowerCppExceptionSyntaxForNoExceptions(withoutUnsupportedIncludes, {
+    emitTraceEvents: options.tracing === true,
+  });
 }
 
 function splitTopLevelCommaList(source) {
@@ -2601,7 +2633,7 @@ function normalizeOpsArguments(value) {
 }
 
 function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
-  userCode = normalizeCppUserSource(userCode);
+  userCode = normalizeCppUserSource(userCode, options);
   const aliases = collectCppTypeAliases(userCode);
   const { operations, argumentsList } = getOpsClassInputs(inputs || {});
   let firstOperationIndex = 1;
@@ -3052,7 +3084,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
 }
 
 function buildDriverSource(userCode, functionName, inputs, options = {}) {
-  userCode = normalizeCppUserSource(userCode);
+  userCode = normalizeCppUserSource(userCode, options);
   const aliases = collectCppTypeAliases(userCode);
   const signature = parseMethodSignature(userCode, functionName, {
     parameterCount: Object.keys(inputs || {}).length,
@@ -3143,8 +3175,8 @@ function scriptLineCount(source) {
   return String(source || '').split(/\r?\n/).length;
 }
 
-function buildScriptWrapperSource(userCode) {
-  userCode = normalizeCppUserSource(userCode);
+function buildScriptWrapperSource(userCode, options = {}) {
+  userCode = normalizeCppUserSource(userCode, options);
   const userLineCount = scriptLineCount(userCode);
   return `auto ${CPP_SCRIPT_FUNCTION_NAME}() {
 #line 1 "UserCode.cpp"
@@ -3155,9 +3187,9 @@ ${userCode}
 }
 
 function buildScriptDriverSource(userCode, options = {}) {
-  userCode = normalizeCppUserSource(userCode);
+  userCode = normalizeCppUserSource(userCode, options);
   const userLineCount = scriptLineCount(userCode);
-  const wrappedSource = buildScriptWrapperSource(userCode);
+  const wrappedSource = buildScriptWrapperSource(userCode, options);
   const sourceForDriver = options.tracing === true
     ? instrumentCppSourceForTracing(wrappedSource, CPP_SCRIPT_FUNCTION_NAME)
     : wrappedSource;
