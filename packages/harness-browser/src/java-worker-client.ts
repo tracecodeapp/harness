@@ -55,7 +55,7 @@ export interface JavaTraceExecutionOptions {
 
 const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 25_000;
-const INIT_TIMEOUT_MS = 25_000;
+const INIT_TIMEOUT_MS = 120_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 
@@ -254,7 +254,29 @@ export class JavaWorkerClient {
     }
 
     this.isInitializing = true;
-    this.initPromise = this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
+    this.initPromise = (async () => {
+      try {
+        return await this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const shouldRetry =
+          message.includes('Worker request timed out: init') ||
+          message.includes('Worker was terminated') ||
+          message.includes('Java worker error') ||
+          message.includes('failed to initialize in time');
+
+        if (!shouldRetry) {
+          throw error;
+        }
+
+        if (this.debug) {
+          console.warn('[JavaWorkerClient] init failed, resetting worker and retrying once', { message });
+        }
+
+        this.terminateAndReset(error instanceof Error ? error : new Error(message));
+        return this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
+      }
+    })();
     try {
       return await this.initPromise;
     } catch (error) {

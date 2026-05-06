@@ -19,13 +19,15 @@
       "python": "value = grid[0][1]",
       "javascript": "const value = grid[0][1];",
       "typescript": "const value = grid[0][1];",
-      "java": "int value = grid[0][1];"
+      "java": "int value = grid[0][1];",
+      "cpp": "int value = grid[0][1]; tracecode::emit_snapshot_value(\"value\", value, tracecode::current_trace_line());"
     },
     "write": {
       "python": "grid[1][0] = value + grid[0][0]",
       "javascript": "grid[1][0] = value + grid[0][0];",
       "typescript": "grid[1][0] = value + grid[0][0];",
-      "java": "grid[1][0] = value + grid[0][0];"
+      "java": "grid[1][0] = value + grid[0][0];",
+      "cpp": "grid[1][0] = value + grid[0][0];"
     }
   },
   "expect": {
@@ -87,5 +89,23 @@
         "count": 2
       }
     ]
+  },
+  "expectSummaryByLanguage": {
+    "cpp": {
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "grid",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "read",
+          "variable": "grid",
+          "pathDepth": 2,
+          "count": 3
+        }
+      ]
+    }
   }
 }

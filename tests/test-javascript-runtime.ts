@@ -713,7 +713,7 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     .filter((event) => event.target?.variable === 'graph' && event.kind === 'read')
     .map((event) => event.line);
   assertCondition(
-    graphReadLines.length > 0 && graphReadLines.every((line) => line !== 18 && line !== 21),
+    graphReadLines.length > 0 && graphReadLines.every((line) => line !== 18 && line !== 20),
     'TypeScript BFS tracing should not attach graph neighbor reads to blank separator lines'
   );
   console.log('PASS: execute-with-tracing typescript BFS line alignment contract');

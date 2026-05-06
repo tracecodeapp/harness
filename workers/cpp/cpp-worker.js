@@ -1,7 +1,14 @@
 const RESULT_MARKER = '__TRACECODE_RESULT__';
 const TRACE_EVENT_MARKER = '__TRACECODE_EVENT__';
+const TRACE_STATUS_MARKER = '__TRACECODE_TRACE_STATUS__';
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
 const CPP_STANDARD = 'c++23';
+const CPP_SCRIPT_FUNCTION_NAME = '__tracecode_script_main';
+const DEFAULT_MAX_STORED_EVENTS = 50_000;
+const DEFAULT_INTERVIEW_MAX_TRACE_STEPS = 10_000;
+const DEFAULT_INTERVIEW_MAX_LINE_EVENTS = 12_000;
+const DEFAULT_INTERVIEW_MAX_SINGLE_LINE_HITS = 1_000;
+const CPP_PROGRAM_STACK_SIZE = 8 * 1024 * 1024;
 const ESUCCESS = 0;
 const EBADF = 8;
 const EEXIST = 20;
@@ -914,6 +921,153 @@ function stripComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 }
 
+function cppNoExceptionDefaultReturn(returnType) {
+  const normalized = stripCppTypeQualifiers(String(returnType || 'void'));
+  if (!normalized || normalized === 'void') return '';
+  if (normalized.endsWith('*') || normalized === 'nullptr_t') return 'nullptr';
+  if (normalized === 'bool') return 'false';
+  if (normalized === 'string') return 'std::string()';
+  if (
+    normalized.startsWith('vector<') ||
+    normalized.startsWith('array<') ||
+    normalized.startsWith('deque<') ||
+    normalized.startsWith('queue<') ||
+    normalized.startsWith('priority_queue<') ||
+    normalized.startsWith('stack<') ||
+    normalized.startsWith('unordered_map<') ||
+    normalized.startsWith('map<') ||
+    normalized.startsWith('unordered_set<') ||
+    normalized.startsWith('set<') ||
+    normalized.startsWith('pair<') ||
+    normalized.startsWith('tuple<')
+  ) return '{}';
+  if (/^(?:unsigned)?(?:short|int|long|longlong|longlongint|size_t|std::size_t|float|double|longdouble)$/.test(normalized)) {
+    return '0';
+  }
+  return `${String(returnType || '').replace(/[&]/g, '').replace(/\bconst\b/g, '').trim()}()`;
+}
+
+function cppThrowReplacementForReturnType(returnType) {
+  const defaultValue = cppNoExceptionDefaultReturn(returnType);
+  return defaultValue
+    ? `{ __tracecode_exception_pending = true; return ${defaultValue}; }`
+    : `{ __tracecode_exception_pending = true; return; }`;
+}
+
+function rewriteCppThrowsWithoutExceptions(source) {
+  if (!/\bthrow\b/.test(source)) return source;
+  const lines = source.split(/\r?\n/);
+  const output = [];
+  const frames = [];
+  let depth = 0;
+
+  for (const line of lines) {
+    let rewritten = line;
+    const lambdaMatch = line.match(/\[[^\]]*\]\s*\([^)]*\)\s*->\s*([^{]+?)\s*\{/);
+    const functionMatch = line.match(/^\s*(?!if\b|for\b|while\b|switch\b|catch\b)(?:[A-Za-z_][\w:<>?,*&\s]*?)\s+([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{/);
+    if (lambdaMatch) {
+      frames.push({ depth: depth + braceDeltaForLine(line), returnType: lambdaMatch[1].trim() });
+    } else if (functionMatch) {
+      const prefix = line.slice(0, line.indexOf(functionMatch[1])).trim();
+      const returnType = cleanCppReturnType(prefix);
+      frames.push({ depth: depth + braceDeltaForLine(line), returnType });
+    }
+
+    const activeFrame = frames.at(-1);
+    if (/\bthrow\b/.test(rewritten) && activeFrame) {
+      rewritten = rewritten.replace(/throw\s+[^;]+;/g, cppThrowReplacementForReturnType(activeFrame.returnType));
+    }
+
+    output.push(rewritten);
+    depth += braceDeltaForLine(line);
+    while (frames.length > 0 && depth < frames.at(-1).depth) frames.pop();
+  }
+
+  return output.join('\n');
+}
+
+function rewriteTryBodyReturnsForNoExceptions(tryBody, catchBody, tryId = 0) {
+  const trimmedCatch = catchBody.trim();
+  let returnIndex = 0;
+  return tryBody.replace(/^(\s*)return(?:\s+(.+?))?\s*;\s*$/gm, (match, indent, expression) => {
+    if (!trimmedCatch) return match;
+    if (!expression) {
+      return `${indent}if (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${trimmedCatch} }\n${indent}return;`;
+    }
+    const trimmedExpression = String(expression).trim();
+    if (trimmedExpression.startsWith('{')) {
+      return `${indent}if (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${trimmedCatch} }\n${indent}return ${trimmedExpression};`;
+    }
+    const localName = `__tracecode_try_return_${tryId}_${returnIndex++}`;
+    return [
+      `${indent}auto ${localName} = (${trimmedExpression});`,
+      `${indent}if (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${trimmedCatch} }`,
+      `${indent}return ${localName};`,
+    ].join('\n');
+  });
+}
+
+function rewriteCppTryCatchWithoutExceptions(source) {
+  if (!/\btry\s*\{/.test(source)) return source;
+  let output = '';
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    const tryMatch = /\btry\s*\{/.exec(source.slice(cursor));
+    if (!tryMatch) {
+      output += source.slice(cursor);
+      break;
+    }
+    const tryStart = cursor + tryMatch.index;
+    const tryOpenBrace = source.indexOf('{', tryStart);
+    const tryCloseBrace = findMatchingBrace(source, tryOpenBrace);
+    if (tryOpenBrace < 0 || tryCloseBrace < 0) {
+      output += source.slice(cursor);
+      break;
+    }
+    const catchMatch = /^\s*catch\s*\([^)]*\)\s*\{/.exec(source.slice(tryCloseBrace + 1));
+    if (!catchMatch) {
+      output += source.slice(cursor, tryCloseBrace + 1);
+      cursor = tryCloseBrace + 1;
+      continue;
+    }
+    const catchStart = tryCloseBrace + 1 + catchMatch.index;
+    const catchOpenBrace = source.indexOf('{', catchStart);
+    const catchCloseBrace = findMatchingBrace(source, catchOpenBrace);
+    if (catchOpenBrace < 0 || catchCloseBrace < 0) {
+      output += source.slice(cursor);
+      break;
+    }
+
+    const tryBody = source.slice(tryOpenBrace + 1, tryCloseBrace);
+    const catchBody = source.slice(catchOpenBrace + 1, catchCloseBrace);
+    const loweredTryBody = rewriteTryBodyReturnsForNoExceptions(tryBody, catchBody, tryStart);
+    const loweredCatch = catchBody.trim()
+      ? `\nif (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${catchBody.trim()} }\n`
+      : '\n__tracecode_exception_pending = false;\n';
+
+    output += source.slice(cursor, tryStart);
+    output += `{ __tracecode_exception_pending = false;${loweredTryBody}${loweredCatch}}`;
+    cursor = catchCloseBrace + 1;
+  }
+
+  return output;
+}
+
+function lowerCppExceptionSyntaxForNoExceptions(source) {
+  if (!/\b(?:try|throw|catch)\b/.test(source)) return source;
+  const lowered = rewriteCppThrowsWithoutExceptions(rewriteCppTryCatchWithoutExceptions(source));
+  return `static bool __tracecode_exception_pending = false;\n${lowered}`;
+}
+
+function normalizeCppUserSource(source) {
+  const withoutUnsupportedIncludes = String(source || '')
+    .split(/\r?\n/)
+    .map((line) => (/^\s*#\s*include\s*<bits\/stdc\+\+\.h>\s*$/.test(line) ? '' : line))
+    .join('\n');
+  return lowerCppExceptionSyntaxForNoExceptions(withoutUnsupportedIncludes);
+}
+
 function splitTopLevelCommaList(source) {
   const parts = [];
   let current = '';
@@ -945,28 +1099,64 @@ function findMatchingParen(source, openIndex) {
   return -1;
 }
 
-function parseMethodSignature(source, functionName) {
+function findMatchingBrace(source, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const ch = source[index];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function parseMethodSignature(source, functionName, options = {}) {
+  if (Number.isFinite(options.parameterCount)) {
+    const inputNames = new Set(options.inputNames || []);
+    const candidates = parseCppFunctionSignatures(source)
+      .filter((signature) => signature.name === functionName)
+      .filter((signature) => signature.parameters.length === options.parameterCount);
+    const namedCandidate = candidates.find((signature) =>
+      signature.parameters.every((parameter) => inputNames.size === 0 || inputNames.has(parameter.name))
+    );
+    if (namedCandidate) return namedCandidate;
+    if (candidates.length > 0) return candidates[candidates.length - 1];
+  }
+
   const cleaned = stripComments(source);
   const escaped = functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const namePattern = new RegExp(`\\b${escaped}\\s*\\(`, 'g');
   let match = null;
   let openParenIndex = -1;
   let closeParenIndex = -1;
+  let foundSignatureMatch = false;
 
   while ((match = namePattern.exec(cleaned))) {
+    const previousPrefix = cleaned.slice(0, match.index).trimEnd();
+    const previousChar = previousPrefix.at(-1);
+    if (previousChar === '.' || previousPrefix.endsWith('->')) continue;
     openParenIndex = cleaned.indexOf('(', match.index);
     closeParenIndex = findMatchingParen(cleaned, openParenIndex);
     if (closeParenIndex < 0) continue;
+    const afterSignature = cleaned.slice(closeParenIndex + 1, closeParenIndex + 96);
+    if (!/^\s*(?:(?:const|noexcept|override|final)\b\s*|[&]\s*)*(?:\{|:)/.test(afterSignature)) continue;
+    foundSignatureMatch = true;
     break;
   }
 
-  if (!match || openParenIndex < 0 || closeParenIndex < 0) {
+  if (!foundSignatureMatch || !match || openParenIndex < 0 || closeParenIndex < 0) {
+    const functionField = parseFunctionFieldSignature(cleaned, functionName);
+    if (functionField) return functionField;
     throw new Error(`Unable to find C++ Solution method "${functionName}".`);
   }
 
   const signaturePrefix = cleaned.slice(0, match.index);
   const returnTypeMatch = signaturePrefix.match(/([A-Za-z_][\w:\s<>,*&]*?)\s*$/);
   if (!returnTypeMatch) {
+    const functionField = parseFunctionFieldSignature(cleaned, functionName);
+    if (functionField) return functionField;
     throw new Error(`Unable to parse C++ Solution method "${functionName}" return type.`);
   }
 
@@ -984,7 +1174,84 @@ function parseMethodSignature(source, functionName) {
 
   const functionNameOffset = match.index;
   const line = cleaned.slice(0, functionNameOffset).split(/\r?\n/).length;
-  return { returnType: returnTypeMatch[1].trim(), parameters, line };
+  return { returnType: cleanCppReturnType(returnTypeMatch[1]), parameters, line };
+}
+
+function parseFunctionFieldSignature(source, functionName) {
+  const escaped = functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = source.match(new RegExp(`\\b(?:std::)?function\\s*<\\s*([^()<>]+?)\\s*\\(([^<>]*)\\)\\s*>\\s+${escaped}\\s*;`));
+  if (!match) return null;
+  const [, returnType, parameterText] = match;
+  const initializerLambda = source.match(new RegExp(`${escaped}\\s*\\(\\s*\\[[^\\]]*\\]\\s*\\(([^)]*)\\)`));
+  const parameters = initializerLambda
+    ? parseCppParameters(initializerLambda[1])
+    : splitTopLevelCommaList(parameterText)
+      .filter(Boolean)
+      .map((type, index) => ({ type: type.trim(), name: `arg${index}` }));
+  const line = source.slice(0, match.index).split(/\r?\n/).length;
+  return { returnType: cleanCppReturnType(returnType), parameters, line };
+}
+
+function resolveCppObjectMethodMacro(source, operation) {
+  const escaped = operation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return stripComments(source).match(new RegExp(`^\\s*#\\s*define\\s+${escaped}\\s+([A-Za-z_]\\w*)\\s*$`, 'm'))?.[1] || operation;
+}
+
+function cleanCppReturnType(returnType) {
+  return String(returnType || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*#?\s*include\s*<[^>]+>\s*/, '').trim())
+    .filter(Boolean)
+    .at(-1) || '';
+}
+
+function parseConstructorSignature(source, className, aliases = new Map(), options = {}) {
+  const cleaned = stripComments(source);
+  const constructorNames = [...new Set([className, normalizeCppType(className, aliases), resolveCppType(className, aliases)])]
+    .filter(Boolean);
+  const candidates = [];
+  for (const constructorName of constructorNames) {
+    const escaped = constructorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const namePattern = new RegExp(`\\b${escaped}\\s*\\(`, 'g');
+    let match = null;
+
+    while ((match = namePattern.exec(cleaned))) {
+      const prefix = cleaned.slice(Math.max(0, match.index - 96), match.index);
+      if (/~\s*$/.test(prefix)) continue;
+      const previousToken = prefix.match(/([A-Za-z_]\w*)\s*$/)?.[1];
+      if (
+        previousToken &&
+        previousToken !== 'public' &&
+        previousToken !== 'private' &&
+        previousToken !== 'protected' &&
+        !/^(?:explicit|inline|constexpr|consteval)$/.test(previousToken)
+      ) {
+        continue;
+      }
+      const openParenIndex = cleaned.indexOf('(', match.index);
+      const closeParenIndex = findMatchingParen(cleaned, openParenIndex);
+      if (closeParenIndex < 0) continue;
+      const parameterText = cleaned.slice(openParenIndex + 1, closeParenIndex);
+      let parameters;
+      try {
+        parameters = parseCppParameters(parameterText);
+      } catch (_error) {
+        continue;
+      }
+      candidates.push({
+        returnType: className,
+        parameters,
+        line: cleaned.slice(0, match.index).split(/\r?\n/).length,
+      });
+    }
+  }
+  if (Number.isFinite(options.parameterCount)) {
+    const arityMatch = candidates.find((signature) => signature.parameters.length === options.parameterCount);
+    if (arityMatch) return arityMatch;
+  }
+  if (candidates.length > 0) return candidates[0];
+
+  return { returnType: className, parameters: [], line: 1 };
 }
 
 function parseCppParameters(parameterText) {
@@ -1000,6 +1267,56 @@ function parseCppParameters(parameterText) {
       const name = paramMatch[2].trim();
       return { type, name };
     });
+}
+
+function sourceDeclaresCppType(source, name) {
+  const cleaned = stripComments(source);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b(?:class|struct)\\s+${escaped}\\b`).test(cleaned) ||
+    new RegExp(`\\busing\\s+${escaped}\\b`).test(cleaned) ||
+    new RegExp(`\\btypedef\\b[^;]*\\b${escaped}\\s*;`).test(cleaned);
+}
+
+function buildTracecodeFallbackAliases(source) {
+  const aliases = [];
+  if (!sourceDeclaresCppType(source, 'TreeNode')) aliases.push('using tracecode::TreeNode;');
+  if (!sourceDeclaresCppType(source, 'ListNode')) aliases.push('using tracecode::ListNode;');
+  return aliases.join('\n');
+}
+
+function sourceDeclaresSolutionClass(source) {
+  return /\b(?:class|struct)\s+Solution\b/.test(stripComments(source));
+}
+
+function sourceDeclaresCustomToJson(source, type) {
+  const normalized = normalizeCppType(type);
+  if (!/^[A-Za-z_]\w*$/.test(normalized)) return false;
+  return new RegExp(`\\btoJson\\s*\\(\\s*(?:const\\s+)?${escapeRegExp(normalized)}\\s*(?:&|\\b)`).test(stripComments(source));
+}
+
+function cppJsonExpressionForValue(expression, type, source) {
+  return sourceDeclaresCustomToJson(source, type) ? `toJson(${expression})` : `tracecode::to_json(${expression})`;
+}
+
+function collectTraceContainerMemberNames(source, aliases = new Map(), className = 'Solution') {
+  const names = new Set();
+  const cleaned = stripComments(source);
+  const classMatch = cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escapeRegExp(className)}\\b[\\s\\S]*?\\{([\\s\\S]*?)\\n\\s*public\\s*:`)) ||
+    cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escapeRegExp(className)}\\b[\\s\\S]*?\\{([\\s\\S]*?)\\n\\s*\\};`));
+  if (!classMatch) return names;
+  for (const line of classMatch[1].split(/\r?\n/)) {
+    const variables = extractDeclaredSnapshotVariables(`${line.trim().replace(/^(?:public|private|protected)\s*:\s*/, '')}`, aliases);
+    for (const variable of variables) {
+      const normalizedType = normalizeCppType(variable.type, aliases);
+      const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
+      if (isVectorCppType(variable.type, aliases) && !innerType.startsWith('vector<') && innerType !== 'string') names.add(variable.name);
+    }
+  }
+  return names;
+}
+
+function isScriptExecutionRequest(functionName, options = {}) {
+  return !String(functionName || '').trim() && options.executionStyle === 'function';
 }
 
 function parseCppFunctionSignatures(source) {
@@ -1038,19 +1355,34 @@ function parseCppFunctionSignatures(source) {
       while (/\s/.test(cleaned[cursor] || '')) cursor += 1;
     }
     if (cleaned[cursor] !== '{') continue;
+    const closeBraceIndex = findMatchingBrace(cleaned, cursor);
+    if (
+      closeBraceIndex > cursor &&
+      cleaned.slice(0, closeBraceIndex).split(/\r?\n/).length === cleaned.slice(0, cursor).split(/\r?\n/).length
+    ) {
+      namePattern.lastIndex = closeParenIndex + 1;
+      continue;
+    }
 
     const signaturePrefix = cleaned.slice(0, match.index);
     const returnTypeMatch = signaturePrefix.match(/([A-Za-z_][\w:\s<>,*&]*?)\s*$/);
     if (!returnTypeMatch) continue;
-    const returnType = returnTypeMatch[1].trim();
+    const returnType = cleanCppReturnType(returnTypeMatch[1]);
     if (/^(?:class|struct|public:|private:|protected:)$/.test(returnType)) continue;
 
     const parameterText = cleaned.slice(openParenIndex + 1, closeParenIndex);
+    let parameters;
+    try {
+      parameters = parseCppParameters(parameterText);
+    } catch (_error) {
+      namePattern.lastIndex = closeParenIndex + 1;
+      continue;
+    }
     const line = cleaned.slice(0, match.index).split(/\r?\n/).length;
     signatures.push({
       name,
       returnType,
-      parameters: parseCppParameters(parameterText),
+      parameters,
       line,
       bodyLine: cleaned.slice(0, cursor).split(/\r?\n/).length,
     });
@@ -1064,19 +1396,40 @@ function parseCppLambdaSignatures(source) {
   const signatures = [];
   const lines = source.split(/\r?\n/);
   const lambdaPattern = /\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+([A-Za-z_]\w*)\s*=\s*\[[^\]]*\]\s*\(([^)]*)\)\s*(?:->\s*([^{]+))?\s*\{/;
+  const inlineLambdaPattern = /\[[^\]]*\]\s*\(([^)]*)\)\s*(?:->\s*([^{]+))?\s*\{/g;
 
   lines.forEach((line, index) => {
     const match = line.match(lambdaPattern);
-    if (!match) return;
-    const [, name, parameterText, returnType] = match;
-    signatures.push({
-      name,
-      returnType: (returnType || 'auto').trim(),
-      parameters: parseCppParameters(parameterText),
-      line: index + 1,
-      bodyLine: index + 1,
-      lambda: true,
-    });
+    if (match) {
+      const [, name, parameterText, returnType] = match;
+      signatures.push({
+        name,
+        returnType: (returnType || 'auto').trim(),
+        parameters: parseCppParameters(parameterText),
+        line: index + 1,
+        bodyLine: index + 1,
+        lambda: true,
+        skipInstrumentation: /\bvector\s*<\s*bool\s*>/.test(parameterText),
+      });
+    }
+
+    inlineLambdaPattern.lastIndex = 0;
+    let inlineMatch;
+    while ((inlineMatch = inlineLambdaPattern.exec(line))) {
+      const assignmentPrefix = line.slice(0, inlineMatch.index);
+      const assignedName = assignmentPrefix.match(/\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+([A-Za-z_]\w*)\s*=\s*$/)?.[1];
+      if (assignedName && match?.[1] === assignedName) continue;
+      const [, parameterText, returnType] = inlineMatch;
+      signatures.push({
+        name: assignedName || `<lambda:${index + 1}>`,
+        returnType: (returnType || 'auto').trim(),
+        parameters: parseCppParameters(parameterText),
+        line: index + 1,
+        bodyLine: index + 1,
+        lambda: true,
+        skipInstrumentation: /\bvector\s*<\s*bool\s*>/.test(parameterText),
+      });
+    }
   });
 
   return signatures;
@@ -1123,10 +1476,20 @@ function normalizeCppType(type, aliases = new Map()) {
 function localCppType(type) {
   return type
     .replace(/\b(?:public|private|protected)\s*:\s*/g, '')
+    .replace(/\b(?:static|inline|constexpr|consteval|constinit|virtual|friend|explicit|extern|mutable)\b/g, '')
     .replace(/\bconst\b/g, '')
     .replace(/[&]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function isNullCppReturnType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  return normalized === 'nullptr_t' || normalized === 'std::nullptr_t';
+}
+
+function materializedCppType(type, aliases = new Map()) {
+  return localCppType(resolveCppType(type, aliases));
 }
 
 function cppTraceType(type, aliases = new Map()) {
@@ -1178,16 +1541,26 @@ function cppTraceType(type, aliases = new Map()) {
 
 function isVectorCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
-  return normalized.startsWith('vector<') && normalized.endsWith('>');
+  if (!normalized.startsWith('vector<') || !normalized.endsWith('>')) return false;
+  if (normalized === 'vector<bool>') return false;
+  if (normalized.includes('any') || normalized.includes('variant<')) return false;
+  if (normalized.startsWith('vector<vector<vector<')) return false;
+  if (normalized.includes('*')) return false;
+  if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
+  const inner = normalized.slice('vector<'.length, -1).trim().replace(/^std::/, '');
+  if (/^[A-Z]/.test(inner)) return false;
+  return true;
 }
 
 function isDequeCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
+  if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
   return normalized.startsWith('deque<') && normalized.endsWith('>');
 }
 
 function isAdapterCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
+  if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
   return (
     (normalized.startsWith('queue<') && normalized.endsWith('>')) ||
     (normalized.startsWith('priority_queue<') && normalized.endsWith('>')) ||
@@ -1203,6 +1576,30 @@ function isUnorderedMapCppType(type, aliases = new Map()) {
 function isMapCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   return normalized.startsWith('map<') && normalized.endsWith('>');
+}
+
+function hasContainerMappedValueCppType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  const prefix = normalized.startsWith('unordered_map<')
+    ? 'unordered_map<'
+    : normalized.startsWith('map<')
+      ? 'map<'
+      : null;
+  if (!prefix || !normalized.endsWith('>')) return false;
+  const innerTypes = splitTopLevelCommaList(normalized.slice(prefix.length, -1));
+  if (innerTypes.length < 2) return false;
+  const valueType = innerTypes[1].trim().replace(/^std::/, '');
+  return /^(?:vector|deque|queue|priority_queue|stack|map|unordered_map|set|unordered_set)</.test(valueType);
+}
+
+function hasAutoReferenceBindingForMapProxy(source, name) {
+  const pattern = new RegExp(`\\bauto\\s*&\\s+[A-Za-z_]\\w*\\s*=\\s*${escapeRegExp(name)}\\s*\\[`);
+  return pattern.test(stripComments(source || ''));
+}
+
+function parameterAddressEscapes(source, name) {
+  const pattern = new RegExp(`(?<![\\w>&])&(?!&)\\s*${escapeRegExp(name)}\\b`);
+  return pattern.test(stripComments(source || ''));
 }
 
 function isSetCppType(type, aliases = new Map()) {
@@ -1238,12 +1635,45 @@ function jsonStringLiteral(value) {
 
 function traceBudgetForOptions(options = {}) {
   const traceOptions = options.traceOptions || {};
-  const rawBudget = Number.isFinite(traceOptions.maxTraceSteps)
-    ? Number(traceOptions.maxTraceSteps)
-    : Number.isFinite(traceOptions.maxLineEvents)
-      ? Number(traceOptions.maxLineEvents)
-      : 10000;
+  const rawBudget = Number.isFinite(traceOptions.maxStoredEvents)
+    ? Number(traceOptions.maxStoredEvents)
+    : Number.isFinite(traceOptions.maxTraceSteps)
+      ? Number(traceOptions.maxTraceSteps)
+      : Number.isFinite(traceOptions.maxLineEvents)
+        ? Number(traceOptions.maxLineEvents)
+        : DEFAULT_MAX_STORED_EVENTS;
   return Math.max(1, Math.floor(rawBudget));
+}
+
+function traceLineBudgetForOptions(options = {}) {
+  const traceOptions = options.traceOptions || {};
+  return Number.isFinite(traceOptions.maxLineEvents)
+    ? Math.max(1, Math.floor(Number(traceOptions.maxLineEvents)))
+    : 0;
+}
+
+function traceSingleLineHitBudgetForOptions(options = {}) {
+  const traceOptions = options.traceOptions || {};
+  return Number.isFinite(traceOptions.maxSingleLineHits)
+    ? Math.max(1, Math.floor(Number(traceOptions.maxSingleLineHits)))
+    : 0;
+}
+
+function minimalTraceForOptions(options = {}) {
+  return options?.traceOptions?.minimalTrace === true;
+}
+
+function traceBudgetHardStopForOptions(options = {}) {
+  const traceOptions = options.traceOptions || {};
+  return (
+    (Number.isFinite(traceOptions.maxTraceSteps) && !Number.isFinite(traceOptions.maxStoredEvents)) ||
+    Number.isFinite(traceOptions.maxLineEvents) ||
+    Number.isFinite(traceOptions.maxSingleLineHits)
+  );
+}
+
+function configureTraceBudgetCall(options = {}) {
+  return `tracecode::configure_trace_budget(${traceBudgetForOptions(options)}, ${traceBudgetHardStopForOptions(options) ? 'true' : 'false'}, ${traceLineBudgetForOptions(options)}, ${traceSingleLineHitBudgetForOptions(options)}, ${minimalTraceForOptions(options) ? 'true' : 'false'});`;
 }
 
 function isRecord(value) {
@@ -1363,13 +1793,153 @@ function buildSerializedListNodeLiteral(value, aliases = new Map()) {
   return lines.join('\n');
 }
 
+function buildSerializedQuadNodeLiteral(value, aliases = new Map()) {
+  const root = value;
+  if (root === null || root === undefined) return 'nullptr';
+  if (!isRecord(root)) {
+    throw new Error(`Expected Node object input.`);
+  }
+  const { records, names, ids } = collectSerializedNodes(root, ['topLeft', 'topRight', 'bottomLeft', 'bottomRight']);
+  if (records.length === 0) return 'nullptr';
+  const lines = ['[&]() -> Node* {'];
+  for (const record of records) {
+    lines.push(`    Node* ${names.get(record)} = new Node(${toCppLiteral(serializedNodeValue(record), 'int', aliases)}, ${toCppLiteral(Boolean(record.isLeaf), 'bool', aliases)}, nullptr, nullptr, nullptr, nullptr);`);
+  }
+  for (const record of records) {
+    const name = names.get(record);
+    lines.push(`    ${name}->topLeft = ${childNodeExpression(record.topLeft, names, ids)};`);
+    lines.push(`    ${name}->topRight = ${childNodeExpression(record.topRight, names, ids)};`);
+    lines.push(`    ${name}->bottomLeft = ${childNodeExpression(record.bottomLeft, names, ids)};`);
+    lines.push(`    ${name}->bottomRight = ${childNodeExpression(record.bottomRight, names, ids)};`);
+  }
+  lines.push(`    return ${names.get(root)};`);
+  lines.push('  }()');
+  return lines.join('\n');
+}
+
+function buildSerializedBinaryNodeLiteral(value, aliases = new Map()) {
+  const root = Array.isArray(value) ? buildTreeObjectFromLevelOrder(value) : value;
+  if (root === null || root === undefined) return 'nullptr';
+  if (!isRecord(root)) {
+    throw new Error(`Expected Node object or level-order array input.`);
+  }
+  const { records, names, ids } = collectSerializedNodes(root, ['left', 'right']);
+  if (records.length === 0) return 'nullptr';
+  const lines = ['[&]() -> Node* {'];
+  for (const record of records) {
+    const nodeValue = serializedNodeValue(record);
+    const valueType = typeof nodeValue === 'string' ? 'std::string' : 'int';
+    lines.push(`    Node* ${names.get(record)} = new Node(${toCppLiteral(nodeValue, valueType, aliases)}, nullptr, nullptr);`);
+  }
+  for (const record of records) {
+    const name = names.get(record);
+    lines.push(`    ${name}->left = ${childNodeExpression(record.left, names, ids)};`);
+    lines.push(`    ${name}->right = ${childNodeExpression(record.right, names, ids)};`);
+  }
+  lines.push(`    return ${names.get(root)};`);
+  lines.push('  }()');
+  return lines.join('\n');
+}
+
+function buildSerializedNaryNodeLiteral(value, aliases = new Map()) {
+  const root = value;
+  if (root === null || root === undefined) return 'nullptr';
+  if (!isRecord(root)) {
+    throw new Error(`Expected N-ary Node object input.`);
+  }
+  const { records, names, ids } = collectSerializedNodes(root, ['children']);
+  function visitChildren(node) {
+    if (!isRecord(node) || !Array.isArray(node.children)) return;
+    for (const child of node.children) {
+      if (isRecord(child) && !names.has(child) && typeof child.__ref__ !== 'string') {
+        const name = `__tc_node_${records.length}`;
+        names.set(child, name);
+        records.push(child);
+        if (typeof child.__id__ === 'string' && child.__id__.length > 0) ids.set(child.__id__, name);
+        visitChildren(child);
+      }
+    }
+  }
+  visitChildren(root);
+  if (records.length === 0) return 'nullptr';
+  const lines = ['[&]() -> Node* {'];
+  for (const record of records) {
+    lines.push(`    Node* ${names.get(record)} = new Node(${toCppLiteral(serializedNodeValue(record), 'int', aliases)});`);
+  }
+  for (const record of records) {
+    const childExpressions = Array.isArray(record.children)
+      ? record.children.map((child) => childNodeExpression(child, names, ids)).filter((child) => child !== 'nullptr')
+      : [];
+    lines.push(`    ${names.get(record)}->children = std::vector<Node*>{${childExpressions.join(', ')}};`);
+  }
+  lines.push(`    return ${names.get(root)};`);
+  lines.push('  }()');
+  return lines.join('\n');
+}
+
+function isPrimitiveCppType(type) {
+  return /^(?:bool|char|string|size_t|std::size_t|(?:unsigned)?(?:short|int|long|longlong|longlongint)|float|double|longdouble)$/.test(type);
+}
+
+function cppTypeConstructorName(type, aliases = new Map()) {
+  return localCppType(resolveCppType(type, aliases));
+}
+
+function nestedListElementType(type) {
+  const normalized = String(type || '').replace(/\s+/g, '');
+  const match = normalized.match(/^([A-Za-z_]\w*)::List$/);
+  return match ? match[1] : null;
+}
+
+function buildCustomCppObjectLiteral(value, type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  const pointer = normalized.endsWith('*');
+  const objectType = pointer ? normalized.slice(0, -1) : normalized;
+  if (!objectType || isPrimitiveCppType(objectType) || objectType.includes('<')) return null;
+  if (!/^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?$/.test(objectType)) return null;
+  const constructorName = cppTypeConstructorName(type, aliases);
+  const valueConstructorName = pointer ? constructorName.replace(/\*$/, '').trim() : constructorName;
+  const wrap = (args) => pointer ? `new ${valueConstructorName}(${args})` : `${constructorName}{ ${args} }`;
+
+  if (Array.isArray(value)) {
+    const nestedElementType = nestedListElementType(objectType);
+    const elementType = nestedElementType || objectType;
+    return wrap(value.map((entry) => toCppLiteral(entry, elementType, aliases)).join(', '));
+  }
+
+  if (isRecord(value)) {
+    const recordType = typeof value.__type__ === 'string' ? normalizeCppType(String(value.__type__), aliases) : null;
+    if (recordType && recordType !== objectType) return null;
+    const entries = Object.entries(value).filter(([key]) => key !== '__type__' && key !== '__id__' && key !== '__ref__');
+    return wrap(entries.map(([, child]) => toCppLiteral(child, 'auto', aliases)).join(', '));
+  }
+
+  if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean' || typeof value === 'string') {
+    return wrap(toCppLiteral(value, typeof value === 'string' ? 'string' : typeof value === 'boolean' ? 'bool' : 'long long', aliases));
+  }
+
+  return null;
+}
+
 function toCppLiteral(value, type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   if (normalized === 'TreeNode*') {
     return buildSerializedTreeNodeLiteral(value, aliases);
   }
+  if (normalized === 'TreeNode') {
+    return `*(${buildSerializedTreeNodeLiteral(value, aliases)})`;
+  }
   if (normalized === 'ListNode*') {
     return buildSerializedListNodeLiteral(value, aliases);
+  }
+  if (normalized === 'Node*' && isRecord(value) && ('topLeft' in value || 'isLeaf' in value)) {
+    return buildSerializedQuadNodeLiteral(value, aliases);
+  }
+  if (normalized === 'Node*' && isRecord(value) && Array.isArray(value.children)) {
+    return buildSerializedNaryNodeLiteral(value, aliases);
+  }
+  if (normalized === 'Node*' && (Array.isArray(value) || (isRecord(value) && ('left' in value || 'right' in value)))) {
+    return buildSerializedBinaryNodeLiteral(value, aliases);
   }
   if (
     (
@@ -1401,6 +1971,13 @@ function toCppLiteral(value, type, aliases = new Map()) {
       .map(([key, child]) => `{ ${toCppLiteral(key, keyType, aliases)}, ${toCppLiteral(child, valueType, aliases)} }`)
       .join(', ')} }`;
   }
+  if (normalized.startsWith('tuple<') && normalized.endsWith('>')) {
+    if (!Array.isArray(value)) {
+      throw new Error(`Expected array input for ${type}.`);
+    }
+    const tupleTypes = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
+    return `{ ${value.map((entry, index) => toCppLiteral(entry, tupleTypes[index] || 'int', aliases)).join(', ')} }`;
+  }
   if ((normalized.startsWith('unordered_set<') || normalized.startsWith('set<')) && normalized.endsWith('>')) {
     if (!Array.isArray(value)) {
       throw new Error(`Expected array input for ${type}.`);
@@ -1412,11 +1989,25 @@ function toCppLiteral(value, type, aliases = new Map()) {
   if (normalized === 'char') return quoteCppString(String(value)[0] || '\0').replace(/^"/, "'").replace(/"$/, "'");
   if (normalized === 'bool') return value ? 'true' : 'false';
   if (value === null || value === undefined) return 'nullptr';
+  if (normalized === 'auto') {
+    if (Array.isArray(value)) return `{ ${value.map((entry) => toCppLiteral(entry, 'auto', aliases)).join(', ')} }`;
+    if (isRecord(value)) {
+      if (typeof value.__type__ !== 'string') {
+        return `{ ${Object.entries(value)
+          .map(([key, child]) => `{ ${quoteCppString(key)}, ${toCppLiteral(child, 'auto', aliases)} }`)
+          .join(', ')} }`;
+      }
+      const entries = Object.entries(value).filter(([key]) => key !== '__type__' && key !== '__id__' && key !== '__ref__');
+      return `{ ${entries.map(([, child]) => toCppLiteral(child, 'auto', aliases)).join(', ')} }`;
+    }
+  }
   if (/^(?:unsigned)?(?:short|int|long|longlong|longlongint|size_t|std::size_t|float|double|longdouble)$/.test(normalized)) {
     return String(value);
   }
   if (typeof value === 'number' || typeof value === 'bigint') return String(value);
   if (typeof value === 'string') return quoteCppString(value);
+  const customLiteral = buildCustomCppObjectLiteral(value, type, aliases);
+  if (customLiteral) return customLiteral;
   throw new Error(`Unsupported C++ literal for type ${type}: ${JSON.stringify(value)}`);
 }
 
@@ -1458,11 +2049,17 @@ function buildGeneratedIncludes(source, signature) {
   return [...includes].join('\n');
 }
 
-function buildTraceArgsJsonExpression(signature, variableNameForParameter = (_parameter, index) => `__tc_arg_${index}`) {
+function buildTraceArgsJsonExpression(signature, variableNameForParameter = (_parameter, index) => `__tc_arg_${index}`, aliases = new Map()) {
   const pieces = [];
   signature.parameters.forEach((parameter, index) => {
     const normalizedType = normalizeCppType(parameter.type);
-    if (normalizedType === 'auto' || normalizedType.includes('&&auto')) return;
+    if (
+      normalizedType === 'auto' ||
+      normalizedType === 'vector<bool>' ||
+      /\bauto\b/.test(parameter.type) ||
+      /\bauto\b/.test(normalizedType) ||
+      !isSnapshotSerializableCppType(parameter.type, aliases)
+    ) return;
     const localName = variableNameForParameter(parameter, index);
     const prefix = `${pieces.length > 0 ? ',' : ''}${jsonStringLiteral(parameter.name)}:`;
     pieces.push(`${cppStringLiteral(prefix)} + tracecode::to_json(${localName})`);
@@ -1487,13 +2084,25 @@ function braceDeltaForLine(line) {
   return delta;
 }
 
+function parenDeltaForLine(line) {
+  const stripped = stripCppStringsAndComments(line);
+  let delta = 0;
+  for (const ch of stripped) {
+    if (ch === '(') delta += 1;
+    if (ch === ')') delta -= 1;
+  }
+  return delta;
+}
+
 function shouldInstrumentCppLine(line) {
-  const trimmed = line.trim();
+  const trimmed = stripCppStringsAndComments(line).trim();
   if (!trimmed) return false;
   if (trimmed.startsWith('#') || trimmed.startsWith('//')) return false;
   if (/^(public|private|protected)\s*:/.test(trimmed)) return false;
   if (/^(else|catch)\b/.test(trimmed)) return false;
   if (/^(case\b|default\s*:)/.test(trimmed)) return false;
+  if (/^delete\b/.test(trimmed)) return false;
+  if (/\b(?:destroy|cleanup|deleteTree|deleteList)\s*\(/i.test(trimmed)) return false;
   if (/^[{};]+$/.test(trimmed)) return false;
   if (/^};?$/.test(trimmed)) return false;
   return (
@@ -1502,6 +2111,14 @@ function shouldInstrumentCppLine(line) {
     /^do\b/.test(trimmed) ||
     /^return\b/.test(trimmed)
   );
+}
+
+function isUnbracedControlHeader(line, nextLine = '') {
+  const trimmed = stripCppStringsAndComments(line).trim();
+  if (!/^(?:if|else\s+if|for|while)\s*\(.*\)\s*$/.test(trimmed)) return false;
+  if (trimmed.includes('{') || trimmed.endsWith(';')) return false;
+  const nextTrimmed = stripCppStringsAndComments(nextLine).trim();
+  return Boolean(nextTrimmed) && !nextTrimmed.startsWith('{');
 }
 
 function buildLineInstrumentation(lineNumber, functionName) {
@@ -1515,6 +2132,7 @@ function buildCurrentLineInstrumentation(lineNumber) {
 function isSnapshotSerializableCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   if (!normalized || normalized === 'void') return false;
+  if (normalized === 'vector<bool>') return false;
   if (normalized === 'auto' || normalized.includes('auto&&') || normalized.includes('function<')) return false;
   if (normalized === 'TreeNode*' || normalized === 'ListNode*') return true;
   if (/^(?:bool|char|string|size_t|std::size_t|(?:unsigned)?(?:short|int|long|longlong|longlongint)|float|double|longdouble)$/.test(normalized)) {
@@ -1538,7 +2156,10 @@ function isSnapshotSerializableCppType(type, aliases = new Map()) {
 
 function buildSnapshotInstrumentation(lineNumber, variables, currentDepth) {
   return [...variables.entries()]
-    .filter(([, variable]) => variable.scopeDepth <= currentDepth)
+    .filter(([, variable]) => {
+      if (variable.declarationLine === lineNumber && !variable.sameLineVisible) return false;
+      return variable.scopeDepth <= currentDepth || variable.declarationLine === lineNumber;
+    })
     .map(([name]) => `tracecode::emit_snapshot_value(${cppStringLiteral(name)}, ${name}, ${lineNumber});`)
     .join('\n');
 }
@@ -1556,7 +2177,7 @@ function buildFieldTargetJsonExpression(objectName, fieldName, keyExpression) {
 
 function parseFieldAccessExpression(expression) {
   const trimmed = expression.trim();
-  const match = trimmed.match(/^([A-Za-z_]\w*)\.([A-Za-z_]\w*)(?:\s*\[\s*(.+?)\s*\])?$/);
+  const match = trimmed.match(/^([A-Za-z_]\w*)(?:\.|->)([A-Za-z_]\w*)(?:(?:\.|->)[A-Za-z_]\w*)*(?:\s*\[\s*([^\[\]]+?)\s*\])?$/);
   if (!match) return null;
   return {
     objectName: match[1],
@@ -1576,13 +2197,13 @@ function buildFieldReadInstrumentation(expression, valueExpression, lineNumber, 
 }
 
 function rewriteFieldWriteInstrumentation(line, lineNumber) {
-  const match = line.match(/^(\s*)([A-Za-z_]\w*)\.([A-Za-z_]\w*)(?:\s*\[\s*(.+?)\s*\])?\s*=\s*(.+?)\s*;\s*$/);
+  const match = line.match(/^(\s*)([A-Za-z_]\w*)((?:\.|->))([A-Za-z_]\w*)(?:\s*\[\s*([^\[\]]+?)\s*\])?\s*=\s*(.+?)\s*;\s*$/);
   if (!match) return line;
-  const [, indent, objectName, fieldName, keyExpression] = match;
+  const [, indent, objectName, operator, fieldName, keyExpression] = match;
   const targetExpression = buildFieldTargetJsonExpression(objectName, fieldName, keyExpression?.trim());
   const valueExpression = keyExpression
-    ? `${objectName}.${fieldName}[${keyExpression.trim()}]`
-    : `${objectName}.${fieldName}`;
+    ? `${objectName}${operator}${fieldName}[${keyExpression.trim()}]`
+    : `${objectName}${operator}${fieldName}`;
   return [
     line,
     `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"write","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${valueExpression}) + "}", ${lineNumber});`,
@@ -1604,11 +2225,40 @@ function buildReturnInstrumentation(lineNumber, signature) {
   return `tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}}`)}), ${lineNumber});`;
 }
 
-function buildPostLineInstrumentation(lineNumber, functionName, variables, currentDepth, indent = '') {
+function splitTopLevelTernaryExpression(expression) {
+  let depth = 0;
+  let questionIndex = -1;
+  for (let index = 0; index < expression.length; index += 1) {
+    const ch = expression[index];
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    else if (ch === '?' && depth === 0) {
+      questionIndex = index;
+      break;
+    }
+  }
+  if (questionIndex < 0) return null;
+  depth = 0;
+  for (let index = questionIndex + 1; index < expression.length; index += 1) {
+    const ch = expression[index];
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    else if (ch === ':' && depth === 0) {
+      return {
+        condition: expression.slice(0, questionIndex).trim(),
+        whenTrue: expression.slice(questionIndex + 1, index).trim(),
+        whenFalse: expression.slice(index + 1).trim(),
+      };
+    }
+  }
+  return null;
+}
+
+function buildPostLineInstrumentation(lineNumber, functionName, variables, currentDepth, indent = '', includeSnapshots = true) {
   const pieces = [
     `${indent}${buildLineInstrumentation(lineNumber, functionName)}`,
   ];
-  const snapshots = buildSnapshotInstrumentation(lineNumber, variables, currentDepth);
+  const snapshots = includeSnapshots ? buildSnapshotInstrumentation(lineNumber, variables, currentDepth) : '';
   if (snapshots) {
     pieces.push(snapshots
       .split('\n')
@@ -1625,15 +2275,21 @@ function buildValueReturnInstrumentation(expression, lineNumber, signature, inde
     ? localCppType(signature.returnType)
     : 'auto';
   const trimmedExpression = expression.trim();
+  const ternary = returnStorageType !== 'auto' ? splitTopLevelTernaryExpression(trimmedExpression) : null;
+  const returnStorageIsPointer = /\*$/.test(returnStorageType.trim());
   const returnDeclaration =
-    returnStorageType !== 'auto' && trimmedExpression.startsWith('{') && trimmedExpression.endsWith('}')
+    ternary
+      ? returnStorageIsPointer
+        ? `${returnStorageType} __tc_return_${lineNumber} = (${ternary.condition}) ? (${ternary.whenTrue}) : (${ternary.whenFalse});`
+        : `${returnStorageType} __tc_return_${lineNumber} = (${ternary.condition}) ? ${returnStorageType}(${ternary.whenTrue}) : ${returnStorageType}(${ternary.whenFalse});`
+      : returnStorageType !== 'auto' && trimmedExpression.startsWith('{') && trimmedExpression.endsWith('}')
       ? `${returnStorageType} __tc_return_${lineNumber} ${trimmedExpression};`
       : `${returnStorageType} __tc_return_${lineNumber} = (${expression});`;
   return [
     `${indent}${returnDeclaration}`,
     buildFieldReadInstrumentation(trimmedExpression, `__tc_return_${lineNumber}`, lineNumber, indent),
     postLineInstrumentation,
-    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + tracecode::to_json(__tc_return_${lineNumber}) + "}", ${lineNumber});`,
+    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${signature.customJsonReturn ? `toJson(__tc_return_${lineNumber})` : `tracecode::to_json(__tc_return_${lineNumber})`} + "}", ${lineNumber});`,
     `${indent}return __tc_return_${lineNumber};`,
   ].filter(Boolean).join('\n');
 }
@@ -1653,10 +2309,11 @@ function rewriteReturnInstrumentation(line, lineNumber, signature, postLineInstr
 }
 
 function rewriteSingleLineControlReturn(line, lineNumber, signature, postLineInstrumentation = '') {
-  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*\)|else)\s+return(?:\s+(.+?))?\s*;\s*$/);
+  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s+return(?:\s+(.+?))?\s*;\s*$/);
   if (!match) return line;
   const [, indent, control, expression] = match;
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
+  if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
   const innerIndent = `${indent}  `;
   if (!expression) {
     return [
@@ -1677,9 +2334,10 @@ function rewriteSingleLineControlReturn(line, lineNumber, signature, postLineIns
 }
 
 function rewriteBracedSingleLineControlReturn(line, lineNumber, signature, postLineInstrumentation = '') {
-  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*\)|else)\s*\{\s*return(?:\s+(.+?))?\s*;\s*\}\s*$/);
+  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s*\{\s*return(?:\s+(.+?))?\s*;\s*\}\s*$/);
   if (!match) return line;
   const [, indent, control, expression] = match;
+  if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
   const innerIndent = `${indent}  `;
   if (!expression) {
     return [
@@ -1716,20 +2374,38 @@ function escapeRegExp(value) {
 
 function rewriteTraceContainerParameters(line, signature, aliases = new Map()) {
   let rewritten = line;
+  const skipNames = signature.skipTraceParameterNames || new Set();
   for (const parameter of signature.parameters) {
+    if (skipNames.has(parameter.name)) continue;
     if (!isTraceWrappedCppType(parameter.type, aliases)) continue;
-    const typePattern = escapeRegExp(parameter.type).replace(/\\\s+/g, '\\s+');
-    const pattern = new RegExp(`${typePattern}\\s+${escapeRegExp(parameter.name)}\\b`);
-    rewritten = rewritten.replace(pattern, `${cppTraceType(parameter.type, aliases)}& ${parameter.name}`);
+    if (/\bconst\b/.test(parameter.type)) continue;
+    const baseParameterType = parameter.type.replace(/[&]/g, '').trim();
+    const typePattern = escapeRegExp(baseParameterType).replace(/\\\s+/g, '\\s+');
+    const pattern = new RegExp(`${typePattern}\\s*&?\\s+${escapeRegExp(parameter.name)}\\b`);
+    const beforePrimaryRewrite = rewritten;
+    rewritten = rewritten.replace(pattern, (match) => {
+      const rewrittenType = /&/.test(match)
+        ? `${cppTraceType(parameter.type, aliases)}&`
+        : cppTraceType(parameter.type, aliases);
+      return `${rewrittenType} ${parameter.name}`;
+    });
+    if (rewritten === beforePrimaryRewrite) {
+      const fallbackPattern = new RegExp(`((?:std::)?(?:vector|deque|queue|priority_queue|stack|unordered_map|map|unordered_set|set)\\s*<.+>)\\s*(&?)\\s*${escapeRegExp(parameter.name)}\\b`);
+      rewritten = rewritten.replace(fallbackPattern, (_match, _type, ref) => {
+        const rewrittenType = ref ? `${cppTraceType(parameter.type, aliases)}&` : cppTraceType(parameter.type, aliases);
+        return `${rewrittenType} ${parameter.name}`;
+      });
+    }
   }
   return rewritten;
 }
 
 function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineInstrumentation = '', emitInsideBody = false) {
-  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*\)|else)\s+([^{}].*;\s*)$/);
+  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s+([^{}].*;\s*)$/);
   if (!match) return line;
   const [, indent, control, statement] = match;
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
+  if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
   const controlTransfer = statement.trim().match(/^(break|continue)\s*;$/);
   if (controlTransfer) {
     const transfer = controlTransfer[1];
@@ -1742,11 +2418,29 @@ function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineIn
 }
 
 function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrumentation = '') {
-  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*\)|else)\s*\{\s*([^{}].*;\s*)\}\s*$/);
+  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s*\{\s*([^{}].*;\s*)\}\s*$/);
   if (!match) return line;
   const [, indent, control, statement] = match;
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
+  if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
   return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statement.trim()} ${postLineInstrumentation} }`;
+}
+
+function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), extraTraceContainerNames = new Set()) {
+  let rewritten = line;
+  const candidateNames = new Set(extraTraceContainerNames);
+  for (const [name, variable] of variables || []) {
+    const normalizedType = normalizeCppType(variable.type, aliases);
+    const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
+    if (isVectorCppType(variable.type, aliases) && !/\bconst\b/.test(variable.type) && !innerType.startsWith('vector<') && innerType !== 'string') {
+      candidateNames.add(name);
+    }
+  }
+  for (const name of candidateNames) {
+    const pattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\[[^\\]]+\\]\\s*\\.`, 'g');
+    rewritten = rewritten.replace(pattern, (match) => match.replace(/\.\s*$/, '->'));
+  }
+  return rewritten;
 }
 
 function findContainerDeclarationSemicolon(lines, startIndex) {
@@ -1764,12 +2458,16 @@ function findContainerDeclarationSemicolon(lines, startIndex) {
   return null;
 }
 
-function rewriteTraceMultipleContainerLocals(line, lineNumber, aliases = new Map()) {
+function rewriteTraceMultipleContainerLocals(line, lineNumber, aliases = new Map(), source = '') {
   const collapsed = line.replace(/\s*\n\s*/g, ' ');
   const match = collapsed.match(/^(\s*)((?:(?:std::)?(?:vector|deque|queue|priority_queue|stack|unordered_map|map|unordered_set|set)\s*<.+>|[A-Za-z_]\w*))\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)+)\s*;\s*$/);
   if (!match) return line;
   const [, indent, declaredType, namesSource] = match;
   if (!isTraceWrappedCppType(declaredType, aliases)) return line;
+  if (
+    hasContainerMappedValueCppType(declaredType, aliases) &&
+    namesSource.split(',').some((name) => hasAutoReferenceBindingForMapProxy(source, name.trim()))
+  ) return line;
   const type = cppTraceType(declaredType, aliases);
   return namesSource
     .split(',')
@@ -1779,14 +2477,53 @@ function rewriteTraceMultipleContainerLocals(line, lineNumber, aliases = new Map
     .join('\n');
 }
 
-function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map()) {
+function localVectorStringFeedsTraceWrappedParameter(source, name, aliases = new Map()) {
+  const signatures = parseCppFunctionSignatures(source);
+  for (const signature of signatures) {
+    for (const [index, parameter] of signature.parameters.entries()) {
+      if (/\bconst\b/.test(parameter.type)) continue;
+      if (parameterAddressEscapes(source, parameter.name)) continue;
+      if (normalizeCppType(parameter.type, aliases) !== 'vector<string>') continue;
+      const callPattern = new RegExp(`\\b${escapeRegExp(signature.name)}\\s*\\(`, 'g');
+      let match;
+      while ((match = callPattern.exec(source))) {
+        const openParenIndex = source.indexOf('(', match.index);
+        const closeParenIndex = findMatchingParen(source, openParenIndex);
+        if (closeParenIndex < 0) continue;
+        const args = splitTopLevelCommaList(source.slice(openParenIndex + 1, closeParenIndex));
+        if (args[index]?.trim() === name) return true;
+        callPattern.lastIndex = closeParenIndex + 1;
+      }
+    }
+  }
+  return false;
+}
+
+function localNestedVectorUsedInMinMaxInitializerList(source, name) {
+  const escapedName = escapeRegExp(name);
+  const pattern = new RegExp(`\\b(?:std::)?(?:min|max)\\s*\\(\\s*\\{[^}]*\\b${escapedName}\\s*\\[`, 's');
+  return pattern.test(stripComments(source || ''));
+}
+
+function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map(), source = '') {
   const collapsed = line.replace(/\s*\n\s*/g, ' ');
-  const multiple = rewriteTraceMultipleContainerLocals(collapsed, lineNumber, aliases);
+  const multiple = rewriteTraceMultipleContainerLocals(collapsed, lineNumber, aliases, source);
   if (multiple !== collapsed) return multiple;
+  const declarationParts = collapsed.match(/^(\s*)((?:(?:std::)?(?:vector|deque|queue|priority_queue|stack|unordered_map|map|unordered_set|set)\s*<.+>|[A-Za-z_]\w*))\s+(.+);\s*$/);
+  if (declarationParts && splitTopLevelCommaList(declarationParts[3]).length > 1) return line;
   let match = collapsed.match(/^(\s*)((?:(?:std::)?(?:vector|deque|queue|priority_queue|stack|unordered_map|map|unordered_set|set)\s*<.+>|[A-Za-z_]\w*))\s+([A-Za-z_]\w*)\s*(?:\((.*)\)|=\s*(.+)|(\{.*\}))?\s*;\s*$/);
   if (!match) return line;
   const [, indent, declaredType, name, constructorArgs, assignedValue, bracedValue] = match;
   if (!isTraceWrappedCppType(declaredType, aliases)) return line;
+  if (
+    normalizeCppType(declaredType, aliases) === 'vector<string>' &&
+    !localVectorStringFeedsTraceWrappedParameter(source, name, aliases)
+  ) return line;
+  if (
+    normalizeCppType(declaredType, aliases).startsWith('vector<vector<') &&
+    localNestedVectorUsedInMinMaxInitializerList(source, name)
+  ) return line;
+  if (hasContainerMappedValueCppType(declaredType, aliases) && hasAutoReferenceBindingForMapProxy(source, name)) return line;
   const normalized = normalizeCppType(declaredType, aliases);
   const kind = normalized.slice(0, normalized.indexOf('<'));
   const initializerType = resolveCppType(declaredType, aliases)
@@ -1864,32 +2601,60 @@ function normalizeOpsArguments(value) {
 }
 
 function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
+  userCode = normalizeCppUserSource(userCode);
   const aliases = collectCppTypeAliases(userCode);
   const { operations, argumentsList } = getOpsClassInputs(inputs || {});
-  if (operations.length === 0 || operations[0] !== className) {
+  let firstOperationIndex = 1;
+  let constructorArgumentIndex = 0;
+  if (operations[0] === '__init__') {
+    firstOperationIndex = 1;
+    constructorArgumentIndex = 0;
+  } else if (operations[0] === className) {
+    firstOperationIndex = 1;
+    constructorArgumentIndex = 0;
+  } else if (operations.length > 0) {
+    firstOperationIndex = 0;
+    constructorArgumentIndex = -1;
+  } else {
     throw new Error(`C++ ops-class inputs must start with constructor operation "${className}".`);
   }
 
-  const firstMethod = operations.slice(1).find((operation) => typeof operation === 'string' && operation.trim());
+  const firstMethod = operations.slice(firstOperationIndex).find((operation) => typeof operation === 'string' && operation.trim());
+  const firstMethodForTracing = firstMethod ? resolveCppObjectMethodMacro(userCode, firstMethod) : firstMethod;
   const sourceForDriver = options.tracing === true && firstMethod
-    ? instrumentCppSourceForTracing(userCode, firstMethod, { traceMemberClassName: className })
+    ? instrumentCppSourceForTracing(userCode, firstMethodForTracing, { traceMemberClassName: className })
     : userCode;
   const lines = [];
-  const constructorArgs = normalizeOpsArguments(argumentsList[0]);
-  lines.push(`  tracecode::configure_trace_budget(${traceBudgetForOptions(options)});`);
-  const constructorArgsSource = constructorArgs.map((value) => toCppLiteral(value, 'auto', aliases)).join(', ');
+  const constructorArgs = constructorArgumentIndex >= 0 ? normalizeOpsArguments(argumentsList[constructorArgumentIndex]) : [];
+  const constructorSignature = parseConstructorSignature(userCode, className, aliases, {
+    parameterCount: constructorArgs.length,
+  });
+  if (constructorArgs.length !== constructorSignature.parameters.length) {
+    throw new Error(`C++ ops-class constructor "${className}" expected ${constructorSignature.parameters.length} args, received ${constructorArgs.length}.`);
+  }
+  lines.push(`  ${configureTraceBudgetCall(options)}`);
+  const constructorArgNames = constructorArgs.map((value, index) => {
+    const localName = `__tc_ctor_arg_${index}`;
+    const type = localCppType(constructorSignature.parameters[index].type);
+    lines.push(`  ${type} ${localName} = ${toCppLiteral(value, constructorSignature.parameters[index].type, aliases)};`);
+    return localName;
+  });
+  const constructorArgsSource = constructorArgNames.join(', ');
   lines.push(constructorArgs.length === 0
     ? `  ${className} __tc_instance;`
     : `  ${className} __tc_instance(${constructorArgsSource});`);
   lines.push('  std::vector<std::string> __tc_outputs;');
-  lines.push('  __tc_outputs.push_back("null");');
+  if (constructorArgumentIndex >= 0) {
+    lines.push('  __tc_outputs.push_back("null");');
+  }
 
-  for (let index = 1; index < operations.length; index += 1) {
+  for (let index = firstOperationIndex; index < operations.length; index += 1) {
     const operation = operations[index];
     if (typeof operation !== 'string' || !operation.trim()) {
       throw new Error(`C++ ops-class operation at index ${index} must be a method name.`);
     }
-    const signature = parseMethodSignature(userCode, operation);
+    const signatureOperation = resolveCppObjectMethodMacro(userCode, operation);
+    const signature = parseMethodSignature(userCode, signatureOperation);
     const args = normalizeOpsArguments(argumentsList[index]);
     if (args.length !== signature.parameters.length) {
       throw new Error(`C++ ops-class method "${operation}" expected ${signature.parameters.length} args, received ${args.length}.`);
@@ -1902,7 +2667,7 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
         : localCppType(parameter.type);
       const value = args[argIndex];
       if (options.tracing === true && isTraceWrappedCppType(parameter.type, aliases)) {
-        lines.push(`  ${declarationType} ${localName}(${toCppLiteral(value, parameter.type, aliases)}, ${cppStringLiteral(parameter.name)}, ${signature.line});`);
+        lines.push(`  ${declarationType} ${localName}(${materializedCppType(parameter.type, aliases)}(${toCppLiteral(value, parameter.type, aliases)}), ${cppStringLiteral(parameter.name)}, ${signature.line});`);
       } else {
         lines.push(`  ${declarationType} ${localName} = ${toCppLiteral(value, parameter.type, aliases)};`);
       }
@@ -1910,10 +2675,10 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
     });
     if (options.tracing === true) {
       const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(operation)},"args":`;
-      lines.push(`  std::string __tc_args_json_${index} = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => `__tc_op_${index}_arg_${argIndex}`)} + "}";`);
+      lines.push(`  std::string __tc_args_json_${index} = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => `__tc_op_${index}_arg_${argIndex}`, aliases)} + "}";`);
       lines.push(`  tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${index} + "}", ${signature.line});`);
     }
-    if (normalizeCppType(signature.returnType, aliases) === 'void') {
+    if (normalizeCppType(signature.returnType, aliases) === 'void' || isNullCppReturnType(signature.returnType, aliases)) {
       lines.push(`  __tc_instance.${operation}(${argNames.join(', ')});`);
       lines.push('  __tc_outputs.push_back("null");');
     } else {
@@ -1931,7 +2696,7 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
 
 return `${buildGeneratedIncludes(userCode, { parameters: [] })}
 using namespace std;
-using namespace tracecode;
+${buildTracecodeFallbackAliases(userCode)}
 
 #line 1 "UserCode.cpp"
 ${sourceForDriver}
@@ -1953,13 +2718,17 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map()) {
   if (rangeMatch) {
     if (!collapsed.includes('{')) return variables;
     const [, type, name] = rangeMatch;
-    if (isSnapshotSerializableCppType(type, aliases)) variables.push({ name, type });
+    if (isSnapshotSerializableCppType(type, aliases)) variables.push({ name, type, sameLineVisible: true });
     return variables;
   }
 
   const forInitMatch = collapsed.match(/^for\s*\(\s*([^;]+);/);
   if (forInitMatch) {
-    variables.push(...extractDeclaredSnapshotVariables(`${forInitMatch[1]};`, aliases));
+    if (!collapsed.includes('{')) return variables;
+    variables.push(...extractDeclaredSnapshotVariables(`${forInitMatch[1]};`, aliases).map((variable) => ({
+      ...variable,
+      sameLineVisible: true,
+    })));
     return variables;
   }
 
@@ -1968,16 +2737,42 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map()) {
   const [, rawType, declaratorsSource] = declarationMatch;
   if (!isSnapshotSerializableCppType(rawType, aliases)) return variables;
   for (const declarator of splitTopLevelCommaList(declaratorsSource)) {
-    const nameMatch = declarator.trim().match(/^([A-Za-z_]\w*)\b/);
-    if (nameMatch) variables.push({ name: nameMatch[1], type: rawType });
+    const trimmedDeclarator = declarator.trim();
+    const nameMatch = trimmedDeclarator.match(/^([A-Za-z_]\w*)\b/);
+    if (nameMatch) {
+      variables.push({
+        name: nameMatch[1],
+        type: rawType,
+        sameLineVisible: true,
+      });
+    }
   }
   return variables;
 }
 
 function instrumentCppSourceForTracing(source, functionName, options = {}) {
   const aliases = collectCppTypeAliases(source);
+  const traceMemberNames = collectTraceContainerMemberNames(source, aliases, options.traceMemberClassName || 'Solution');
   const targetSignature = parseMethodSignature(source, functionName);
+  const skipTraceParameterNames = new Set(
+    targetSignature.parameters
+      .filter((parameter) => parameterAddressEscapes(source, parameter.name))
+      .map((parameter) => parameter.name)
+  );
+  targetSignature.skipTraceParameterNames = skipTraceParameterNames;
   const signatures = parseCppFunctionSignatures(source);
+  for (const signature of signatures) {
+    signature.customJsonReturn = sourceDeclaresCustomToJson(source, signature.returnType);
+    if (/^(?:destroy|free|cleanup|deleteTree|deleteList)$/i.test(signature.name)) {
+      signature.skipInstrumentation = true;
+    }
+    signature.skipTraceParameterNames = new Set(
+      signature.parameters
+        .filter((parameter) => parameterAddressEscapes(source, parameter.name))
+        .map((parameter) => parameter.name)
+    );
+  }
+  targetSignature.customJsonReturn = sourceDeclaresCustomToJson(source, targetSignature.returnType);
   if (!signatures.some((signature) => signature.line === targetSignature.line && signature.name === functionName)) {
     signatures.push({
       ...targetSignature,
@@ -1992,23 +2787,79 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   let pendingSignature = null;
   const frameStack = [];
   const classStack = [];
+  let multilineControlConditionDepth = 0;
+  let multilineStatementDepth = 0;
+  let multilineStatementContinuation = false;
+  let localLambdaDepth = 0;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     const lineNumber = index + 1;
     const activeFrame = frameStack.at(-1) || null;
     const activeSignature = activeFrame?.signature || null;
+    const skipActiveInstrumentation = Boolean(activeSignature?.skipInstrumentation);
     const activeClassName = classStack.at(-1)?.name || null;
+    const localClassDeclarationLine = Boolean(activeFrame) && /\b(?:class|struct)\s+[A-Za-z_]\w*\b/.test(stripCppStringsAndComments(line));
+    const insideLocalClassDeclaration = Boolean(activeFrame) && (classStack.some((entry) => entry.local) || localClassDeclarationLine);
     if (!pendingSignature && nextSignatureIndex < signatures.length && lineNumber >= signatures[nextSignatureIndex].line) {
       pendingSignature = signatures[nextSignatureIndex];
       nextSignatureIndex += 1;
     }
 
-    const inFunctionBodyBeforeLine = Boolean(activeFrame) && activeFrame.depth > 0;
+    const inFunctionBodyBeforeLine = Boolean(activeFrame) && activeFrame.depth > 0 && !insideLocalClassDeclaration;
     const trimmedLine = line.trim();
+    const strippedLine = stripCppStringsAndComments(line);
+    const strippedTrimmedLine = strippedLine.trim();
     const nextSourceLine = lines[index + 1]?.trim() || '';
+    const nextStrippedLine = stripCppStringsAndComments(lines[index + 1] || '').trim();
+    if (activeFrame && /^}\s*else\b/.test(trimmedLine)) {
+      for (const [name, variable] of activeFrame.variables) {
+        if (variable.scopeDepth >= activeFrame.depth) activeFrame.variables.delete(name);
+      }
+    }
     const lineStartsElse = /^else\b/.test(trimmedLine);
-    const shouldInstrumentLine = inFunctionBodyBeforeLine && !lineStartsElse && shouldInstrumentCppLine(line);
+    const insideLocalLambdaBody = localLambdaDepth > 0;
+    const startsLocalLambdaBody =
+      inFunctionBodyBeforeLine &&
+      /\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+[A-Za-z_]\w*\s*=\s*\[[^\]]*\]\s*\([^)]*\)\s*(?:->\s*[^{]+)?\{/.test(strippedLine);
+    const unbracedControlHeaderLine = isUnbracedControlHeader(line, lines[index + 1] || '');
+    const unbracedControlBodyLine = index > 0 && isUnbracedControlHeader(lines[index - 1] || '', line);
+    const lineParenDelta = parenDeltaForLine(line);
+    const startsMultilineControlCondition =
+      inFunctionBodyBeforeLine &&
+      multilineControlConditionDepth === 0 &&
+      /^\s*(?:if|else\s+if|while|for|switch)\s*\(/.test(stripCppStringsAndComments(line)) &&
+      lineParenDelta > 0;
+    const startsContinuationStatement =
+      inFunctionBodyBeforeLine &&
+      multilineStatementDepth === 0 &&
+      !multilineStatementContinuation &&
+      !startsMultilineControlCondition &&
+      !/[;{}]\s*$/.test(strippedTrimmedLine) &&
+      (
+        /(?:,|\+|-|\*|\/|%|&&|\|\||\?|:)\s*$/.test(strippedTrimmedLine) ||
+        /^(?:return\b|[\w:<>,\s*&*]+\s+[A-Za-z_]\w*\s*[=({]|(?:std::)?priority_queue\s*<)/.test(strippedTrimmedLine) ||
+        /^(?:,|\+|-|\*|\/|%|&&|\|\||\?|:)/.test(nextStrippedLine)
+      );
+    const inMultilineControlCondition =
+      inFunctionBodyBeforeLine && (multilineControlConditionDepth > 0 || startsMultilineControlCondition);
+    const startsMultilineStatement =
+      inFunctionBodyBeforeLine &&
+      multilineStatementDepth === 0 &&
+      !multilineStatementContinuation &&
+      !startsMultilineControlCondition &&
+      (lineParenDelta > 0 || startsContinuationStatement) &&
+      !/;\s*$/.test(stripCppStringsAndComments(line).trim());
+    const inMultilineStatement =
+      inFunctionBodyBeforeLine && (multilineStatementDepth > 0 || multilineStatementContinuation || startsMultilineStatement);
+    const shouldInstrumentLine = inFunctionBodyBeforeLine &&
+      !skipActiveInstrumentation &&
+      !unbracedControlHeaderLine &&
+      !unbracedControlBodyLine &&
+      !inMultilineControlCondition &&
+      !inMultilineStatement &&
+      !lineStartsElse &&
+      shouldInstrumentCppLine(line);
     if (shouldInstrumentLine) {
       output.push(`#line ${lineNumber} "UserCode.cpp"`);
       output.push(buildCurrentLineInstrumentation(lineNumber));
@@ -2017,46 +2868,87 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     let lineForDriver = pendingSignature
       ? rewriteTraceContainerParameters(line, pendingSignature, aliases)
       : line;
-    if (inFunctionBodyBeforeLine) {
+    if (pendingSignature && options.traceMemberClassName && pendingSignature.name !== functionName) {
+      lineForDriver = line;
+    }
+    if (inFunctionBodyBeforeLine && !skipActiveInstrumentation && !unbracedControlHeaderLine && !unbracedControlBodyLine && !inMultilineControlCondition && !inMultilineStatement) {
       const declaration = findContainerDeclarationSemicolon(lines, index);
       if (declaration) {
-        const rewrittenDeclaration = rewriteTraceContainerLocal(declaration.text, lineNumber, aliases);
+        const rewrittenDeclaration = rewriteTraceContainerLocal(declaration.text, lineNumber, aliases, source);
         if (rewrittenDeclaration !== declaration.text) {
           output.push(`#line ${lineNumber} "UserCode.cpp"`);
           output.push(buildCurrentLineInstrumentation(lineNumber));
           output.push(rewrittenDeclaration);
           for (const variable of extractDeclaredSnapshotVariables(declaration.text, aliases)) {
-            activeFrame.variables.set(variable.name, { type: variable.type, scopeDepth: activeFrame.depth });
+            activeFrame.variables.set(variable.name, {
+              type: variable.type,
+              scopeDepth: activeFrame.depth,
+              declarationLine: lineNumber,
+              sameLineVisible: Boolean(variable.sameLineVisible),
+            });
           }
           if (shouldInstrumentCppLine(declaration.text)) {
-            output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, activeFrame.depth));
+            output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, activeFrame.depth, '', !activeSignature.lambda));
           }
           index = declaration.endIndex;
           continue;
         }
       }
-      lineForDriver = rewriteTraceContainerLocal(line, lineNumber, aliases);
+      lineForDriver = rewriteTraceContainerLocal(line, lineNumber, aliases, source);
       const lineDelta = braceDeltaForLine(line);
-      const declaredScopeDepth = activeFrame.depth + Math.max(0, lineDelta);
-      for (const variable of extractDeclaredSnapshotVariables(line, aliases)) {
-        activeFrame.variables.set(variable.name, { type: variable.type, scopeDepth: declaredScopeDepth });
+      const declaredScopeDepth = activeFrame.depth + Math.max(0, lineDelta, /^\s*for\s*\(/.test(trimmedLine) ? 1 : 0);
+      const postLineDepth = activeFrame.depth + Math.min(0, lineDelta);
+      if (!insideLocalLambdaBody) {
+        for (const variable of extractDeclaredSnapshotVariables(line, aliases)) {
+          activeFrame.variables.set(variable.name, {
+            type: variable.type,
+            scopeDepth: declaredScopeDepth,
+            declarationLine: lineNumber,
+            sameLineVisible: Boolean(variable.sameLineVisible),
+          });
+        }
+      }
+      if (/\b(?:destroy|cleanup|deleteTree|deleteList)\s*\(/i.test(trimmedLine)) {
+        for (const [name, variable] of activeFrame.variables) {
+          if (normalizeCppType(variable.type, aliases).includes('*')) activeFrame.variables.delete(name);
+        }
       }
       const postLineInstrumentation = (shouldInstrumentLine || lineStartsElse)
-        ? buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, activeFrame.depth)
+        ? buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, postLineDepth, '', !activeSignature.lambda)
         : '';
-      lineForDriver = rewriteBracedSingleLineControlReturn(lineForDriver, lineNumber, activeSignature, postLineInstrumentation);
-      lineForDriver = rewriteSingleLineControlReturn(lineForDriver, lineNumber, activeSignature, postLineInstrumentation);
-      lineForDriver = rewriteBracedSingleLineControlBody(lineForDriver, lineNumber, postLineInstrumentation);
-      lineForDriver = rewriteSingleLineControlBody(
+      let postLineHandledInline = false;
+      const allowReturnInstrumentation = !(insideLocalLambdaBody && !activeSignature.lambda);
+      if (allowReturnInstrumentation) {
+        let rewrittenControlLine = rewriteBracedSingleLineControlReturn(lineForDriver, lineNumber, activeSignature, postLineInstrumentation);
+        postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
+        lineForDriver = rewrittenControlLine;
+        rewrittenControlLine = rewriteSingleLineControlReturn(lineForDriver, lineNumber, activeSignature, postLineInstrumentation);
+        postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
+        lineForDriver = rewrittenControlLine;
+      }
+      let rewrittenControlLine;
+      rewrittenControlLine = rewriteBracedSingleLineControlBody(lineForDriver, lineNumber, postLineInstrumentation);
+      postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
+      lineForDriver = rewrittenControlLine;
+      rewrittenControlLine = rewriteSingleLineControlBody(
         lineForDriver,
         lineNumber,
         activeSignature.name,
         postLineInstrumentation,
         lineStartsElse || nextSourceLine.startsWith('else') || /^(?:for|while)\s*\(/.test(trimmedLine)
       );
+      postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
+      lineForDriver = rewrittenControlLine;
       lineForDriver = rewriteControlTransferInstrumentation(lineForDriver, lineNumber, postLineInstrumentation);
       lineForDriver = rewriteFieldWriteInstrumentation(lineForDriver, lineNumber);
-      lineForDriver = rewriteReturnInstrumentation(lineForDriver, lineNumber, activeSignature, postLineInstrumentation);
+      if (allowReturnInstrumentation) {
+        lineForDriver = rewriteReturnInstrumentation(lineForDriver, lineNumber, activeSignature, postLineInstrumentation);
+      }
+      lineForDriver = rewriteVectorElementMemberAccess(lineForDriver, activeFrame.variables, aliases, traceMemberNames);
+      const externalPostLineIsScopeSafe = /^\s*for\s*\([^;:]+:/.test(trimmedLine) && !trimmedLine.includes('{');
+      if (postLineHandledInline && !externalPostLineIsScopeSafe) {
+        lineForDriver = `${lineForDriver}\n#define __TC_POST_LINE_HANDLED_${lineNumber} 1`;
+      }
     } else {
       lineForDriver = rewriteTraceContainerMember(
         lineForDriver,
@@ -2081,10 +2973,33 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     output.push(lineForDriver);
     if (
       shouldInstrumentLine &&
+      !lineForDriver.includes(`__TC_POST_LINE_HANDLED_${lineNumber}`) &&
       !nextSourceLine.startsWith('else') &&
       !/^\s*(?:return|break|continue)\b/.test(trimmedLine)
     ) {
-      output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, activeFrame.depth));
+      const externalPostLineDepth = activeFrame.depth + Math.min(0, braceDeltaForLine(line));
+      output.push(buildPostLineInstrumentation(lineNumber, activeSignature.name, activeFrame.variables, externalPostLineDepth, '', !activeSignature.lambda));
+    }
+    if (lineForDriver.includes(`__TC_POST_LINE_HANDLED_${lineNumber}`)) {
+      output[output.length - 1] = output[output.length - 1].replace(`\n#define __TC_POST_LINE_HANDLED_${lineNumber} 1`, '');
+    }
+
+    if (startsMultilineControlCondition) {
+      multilineControlConditionDepth = lineParenDelta;
+    } else if (multilineControlConditionDepth > 0) {
+      multilineControlConditionDepth = Math.max(0, multilineControlConditionDepth + lineParenDelta);
+    }
+    if (startsMultilineStatement) {
+      multilineStatementDepth = Math.max(0, lineParenDelta);
+      multilineStatementContinuation = multilineStatementDepth === 0 && !/;\s*$/.test(strippedTrimmedLine);
+    } else if (multilineStatementDepth > 0) {
+      multilineStatementDepth = Math.max(0, multilineStatementDepth + lineParenDelta);
+    } else if (multilineStatementContinuation) {
+      multilineStatementContinuation = !/;\s*$/.test(strippedTrimmedLine);
+    }
+    if (startsLocalLambdaBody || localLambdaDepth > 0) {
+      localLambdaDepth += braceDeltaForLine(line);
+      if (localLambdaDepth < 0) localLambdaDepth = 0;
     }
 
     if (pendingSignature || frameStack.length > 0) {
@@ -2101,11 +3016,14 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         frameStack.push({ signature: nextSignature, depth: delta, variables });
         if (
           delta > 0 &&
-          (nextSignature.name !== functionName || nextSignature.line !== targetSignature.line)
+          (nextSignature.name !== functionName || nextSignature.line !== targetSignature.line) &&
+          !nextSignature.skipInstrumentation
         ) {
           output.push(`#line ${lineNumber} "UserCode.cpp"`);
           output.push(buildCallInstrumentation(lineNumber, nextSignature));
         }
+      } else if (pendingSignature?.lambda && lineNumber >= pendingSignature.line && delta <= 0) {
+        pendingSignature = null;
       } else if (frameStack.length > 0) {
         const frame = frameStack[frameStack.length - 1];
         frame.depth += delta;
@@ -2121,7 +3039,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     const classDecl = stripCppStringsAndComments(line).match(/\b(?:class|struct)\s+([A-Za-z_]\w*)\b/);
     const classDelta = braceDeltaForLine(line);
     if (classDecl && classDelta > 0) {
-      classStack.push({ name: classDecl[1], depth: classDelta });
+      classStack.push({ name: classDecl[1], depth: classDelta, local: Boolean(activeFrame) });
     } else if (classStack.length > 0) {
       classStack[classStack.length - 1].depth += classDelta;
       while (classStack.length > 0 && classStack[classStack.length - 1].depth <= 0) {
@@ -2134,19 +3052,31 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
 }
 
 function buildDriverSource(userCode, functionName, inputs, options = {}) {
+  userCode = normalizeCppUserSource(userCode);
   const aliases = collectCppTypeAliases(userCode);
-  const signature = parseMethodSignature(userCode, functionName);
+  const signature = parseMethodSignature(userCode, functionName, {
+    parameterCount: Object.keys(inputs || {}).length,
+    inputNames: Object.keys(inputs || {}),
+  });
+  const skipTraceParameterNames = new Set(
+    signature.parameters
+      .filter((parameter) => parameterAddressEscapes(userCode, parameter.name))
+      .map((parameter) => parameter.name)
+  );
+  signature.skipTraceParameterNames = skipTraceParameterNames;
   const traced = options.tracing === true;
+  const usesSolutionClass = options.executionStyle !== 'function' || sourceDeclaresSolutionClass(userCode);
   const sourceForDriver = options.tracing === true ? instrumentCppSourceForTracing(userCode, functionName) : userCode;
   const declarations = [];
   const argumentNames = [];
 
   signature.parameters.forEach((parameter, index) => {
     const localName = `__tc_arg_${index}`;
-    const declarationType = traced && isTraceWrappedCppType(parameter.type, aliases) ? cppTraceType(parameter.type, aliases) : localCppType(parameter.type);
+    const shouldTraceParameter = traced && !skipTraceParameterNames.has(parameter.name) && isTraceWrappedCppType(parameter.type, aliases);
+    const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : localCppType(parameter.type);
     const value = inputValueForParameter(inputs, parameter, index);
-    if (traced && isTraceWrappedCppType(parameter.type, aliases)) {
-      declarations.push(`  ${declarationType} ${localName}(${toCppLiteral(value, parameter.type, aliases)}, ${cppStringLiteral(parameter.name)}, ${signature.line});`);
+    if (shouldTraceParameter) {
+      declarations.push(`  ${declarationType} ${localName}(${materializedCppType(parameter.type, aliases)}(${toCppLiteral(value, parameter.type, aliases)}), ${cppStringLiteral(parameter.name)}, ${signature.line});`);
     } else {
       declarations.push(`  ${declarationType} ${localName} = ${toCppLiteral(value, parameter.type, aliases)};`);
     }
@@ -2155,31 +3085,103 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
 
   const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(functionName)},"args":`;
   const returnEventPrefix = `{"kind":"return","line":${signature.line},"function":${jsonStringLiteral(functionName)},"value":`;
+  const returnsNull = isNullCppReturnType(signature.returnType, aliases);
+  const returnsVoid = normalizeCppType(signature.returnType, aliases) === 'void';
+  const noStoredResult = returnsVoid || returnsNull;
+  const voidOutputParameter = returnsVoid && signature.parameters.length > 0 && isSnapshotSerializableCppType(signature.parameters[0].type, aliases)
+    ? signature.parameters[0]
+    : null;
+  const traceSetup = traced ? `  ${configureTraceBudgetCall(options)}` : '';
   const traceCall = traced
     ? [
-        `  tracecode::configure_trace_budget(${traceBudgetForOptions(options)});`,
-        `  std::string __tc_args_json = std::string("{") + ${buildTraceArgsJsonExpression(signature)} + "}";`,
+        `  std::string __tc_args_json = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, index) => `__tc_arg_${index}`, aliases)} + "}";`,
         `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json + "}", ${signature.line});`,
         `  tracecode::emit_line(${signature.line}, ${cppStringLiteral(functionName)});`,
       ].join('\n')
     : '';
   const traceReturn = traced
-    ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + tracecode::to_json(__tc_result) + "}", ${signature.line});`
+    ? noStoredResult
+      ? returnsNull
+        ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}null}`)}), ${signature.line});`
+        : voidOutputParameter
+        ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${cppJsonExpressionForValue('__tc_arg_0', voidOutputParameter.type, userCode)} + "}", ${signature.line});`
+        : `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}null}`)}), ${signature.line});`
+      : `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${cppJsonExpressionForValue('__tc_result', signature.returnType, userCode)} + "}", ${signature.line});`
     : '';
+  const resultJsonExpression = noStoredResult
+    ? returnsNull
+      ? '"null"'
+      : voidOutputParameter
+      ? cppJsonExpressionForValue('__tc_arg_0', voidOutputParameter.type, userCode)
+      : '"null"'
+    : cppJsonExpressionForValue('__tc_result', signature.returnType, userCode);
+  const callExpression = `${usesSolutionClass ? `solution.${functionName}` : functionName}(${argumentNames.join(', ')})`;
+  const invokeAndStore = noStoredResult ? `  ${callExpression};` : `  auto __tc_result = ${callExpression};`;
 
 return `${buildGeneratedIncludes(userCode, signature)}
 using namespace std;
-using namespace tracecode;
+${buildTracecodeFallbackAliases(userCode)}
 
 #line 1 "UserCode.cpp"
 ${sourceForDriver}
 
 #line 1 "TraceCodeDriver.cpp"
 int main() {
-  Solution solution;
+${usesSolutionClass ? '  Solution solution;' : ''}
+${traceSetup}
 ${declarations.join('\n')}
 ${traceCall}
-  auto __tc_result = solution.${functionName}(${argumentNames.join(', ')});
+${invokeAndStore}
+${traceReturn}
+  tracecode::write_result_json_raw(${resultJsonExpression});
+  return 0;
+}
+`;
+}
+
+function scriptLineCount(source) {
+  return String(source || '').split(/\r?\n/).length;
+}
+
+function buildScriptWrapperSource(userCode) {
+  userCode = normalizeCppUserSource(userCode);
+  const userLineCount = scriptLineCount(userCode);
+  return `auto ${CPP_SCRIPT_FUNCTION_NAME}() {
+#line 1 "UserCode.cpp"
+${userCode}
+#line ${userLineCount + 1} "UserCode.cpp"
+  return result;
+}`;
+}
+
+function buildScriptDriverSource(userCode, options = {}) {
+  userCode = normalizeCppUserSource(userCode);
+  const userLineCount = scriptLineCount(userCode);
+  const wrappedSource = buildScriptWrapperSource(userCode);
+  const sourceForDriver = options.tracing === true
+    ? instrumentCppSourceForTracing(wrappedSource, CPP_SCRIPT_FUNCTION_NAME)
+    : wrappedSource;
+  const traceCall = options.tracing === true
+    ? [
+        `  ${configureTraceBudgetCall(options)}`,
+        `  tracecode::write_trace_event_json(std::string(${cppStringLiteral('{"kind":"call","line":1,"function":"<script>","args":{}}')}), 1);`,
+      ].join('\n')
+    : '';
+  const traceReturn = options.tracing === true
+    ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral('{"kind":"return","line":1,"function":"<script>","value":')}) + tracecode::to_json(__tc_result) + "}", 1);`
+    : '';
+
+return `${buildGeneratedIncludes(userCode, { parameters: [] })}
+using namespace std;
+${buildTracecodeFallbackAliases(userCode)}
+
+#line 1 "UserCode.cpp"
+${sourceForDriver}
+
+#line 1 "TraceCodeDriver.cpp"
+int main() {
+${traceCall}
+  auto __tc_result = ${CPP_SCRIPT_FUNCTION_NAME}();
 ${traceReturn}
   tracecode::write_result_json(__tc_result);
   return 0;
@@ -2220,17 +3222,16 @@ function parseProgramStdout(stdout, options = {}) {
   const traceEvents = options.tracing ? [] : null;
   let output = null;
   let foundResult = false;
+  let traceStatus = null;
   let cursor = 0;
 
   while (cursor < stdout.length) {
     const resultIndex = stdout.indexOf(RESULT_MARKER, cursor);
-    const traceIndex = stdout.indexOf(TRACE_EVENT_MARKER, cursor);
-    const markerIndex =
-      resultIndex < 0
-        ? traceIndex
-        : traceIndex < 0
-          ? resultIndex
-          : Math.min(resultIndex, traceIndex);
+    const traceIndex = options.tracing ? stdout.indexOf(TRACE_EVENT_MARKER, cursor) : -1;
+    const statusIndex = stdout.indexOf(TRACE_STATUS_MARKER, cursor);
+    const markerIndex = [resultIndex, traceIndex, statusIndex]
+      .filter((index) => index >= 0)
+      .sort((left, right) => left - right)[0] ?? -1;
 
     if (markerIndex < 0) {
       appendConsoleChunk(stdout.slice(cursor), consoleOutput, traceEvents, options.defaultLine ?? 1);
@@ -2244,10 +3245,18 @@ function parseProgramStdout(stdout, options = {}) {
       output = marker.payload ? JSON.parse(marker.payload) : null;
       foundResult = true;
       cursor = marker.nextIndex;
+    } else if (markerIndex === statusIndex) {
+      const marker = splitMarkerLine(stdout, markerIndex, TRACE_STATUS_MARKER);
+      traceStatus = marker.payload ? JSON.parse(marker.payload) : null;
+      cursor = marker.nextIndex;
     } else {
       const marker = splitMarkerLine(stdout, markerIndex, TRACE_EVENT_MARKER);
       if (traceEvents && marker.payload) {
-        traceEvents.push(JSON.parse(marker.payload));
+        try {
+          traceEvents.push(JSON.parse(marker.payload));
+        } catch (error) {
+          throw new Error(`C++ trace event JSON parse failed: ${error instanceof Error ? error.message : String(error)}; payload=${marker.payload}`);
+        }
       }
       cursor = marker.nextIndex;
     }
@@ -2256,7 +3265,60 @@ function parseProgramStdout(stdout, options = {}) {
   if (!foundResult && !options.allowMissingResult) {
     throw new Error('C++ program did not emit a TraceCode result.');
   }
-  return { output, consoleOutput, events: traceEvents ?? [] };
+  return { output, consoleOutput, events: traceEvents ?? [], traceStatus };
+}
+
+function normalizeScriptTraceEvents(events, userLineCount) {
+  return events.flatMap((event) => {
+    const normalized = { ...event };
+    if (normalized.function === CPP_SCRIPT_FUNCTION_NAME) {
+      normalized.function = '<script>';
+    }
+    if (typeof normalized.line === 'number') {
+      if (normalized.line > 1) normalized.line -= 1;
+      if (normalized.line > userLineCount) return [];
+    }
+    return [normalized];
+  });
+}
+
+function cloneCppCallStack(stack) {
+  return stack.map((frame) => ({ ...frame }));
+}
+
+function popCppCallStackFrame(stack, functionName) {
+  if (stack.length === 0) return;
+  if (!functionName || stack[stack.length - 1]?.function === functionName) {
+    stack.pop();
+    return;
+  }
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    if (stack[index]?.function === functionName) {
+      stack.splice(index);
+      return;
+    }
+  }
+}
+
+function enrichCppRuntimeTraceCallStacks(events) {
+  const stack = [];
+  return events.map((event) => {
+    if (event?.kind === 'call') {
+      const frame = {
+        function: event.function || '<module>',
+        ...(event.args !== undefined ? { args: event.args } : {}),
+        ...(typeof event.line === 'number' ? { line: event.line } : {}),
+      };
+      stack.push(frame);
+      return { ...event, callStack: cloneCppCallStack(stack) };
+    }
+    if (event?.kind === 'return') {
+      const withStack = stack.length > 0 ? { ...event, callStack: cloneCppCallStack(stack) } : { ...event };
+      popCppCallStackFrame(stack, event.function);
+      return withStack;
+    }
+    return stack.length > 0 ? { ...event, callStack: cloneCppCallStack(stack) } : { ...event };
+  });
 }
 
 function finalizeRuntimeTrace(events, options = {}) {
@@ -2266,8 +3328,8 @@ function finalizeRuntimeTrace(events, options = {}) {
     ? Number(options.maxStoredEvents)
     : Number.isFinite(options.maxTraceSteps)
       ? Number(options.maxTraceSteps)
-      : undefined;
-  const normalizedEvents = events.map((event) => ({
+      : DEFAULT_MAX_STORED_EVENTS;
+  const normalizedEvents = enrichCppRuntimeTraceCallStacks(events).map((event) => ({
     ...event,
     runId,
     file,
@@ -2297,7 +3359,30 @@ function finalizeRuntimeTrace(events, options = {}) {
       traceStepCount: storedEvents.length,
     },
     traceLimitExceeded,
+    droppedEventCount: traceLimitExceeded ? Math.max(0, normalizedEvents.length - storedEvents.length) : 0,
   };
+}
+
+function timeoutReasonForParsedTrace(parsed) {
+  const statusReason = parsed?.traceStatus?.timeoutReason;
+  if (typeof statusReason === 'string' && statusReason.length > 0) {
+    return statusReason;
+  }
+  const timeoutEvent = Array.isArray(parsed?.events)
+    ? parsed.events.find((event) => event?.kind === 'timeout' && typeof event.reason === 'string')
+    : null;
+  return timeoutEvent?.reason || 'trace-limit';
+}
+
+function isTraceTimeoutReason(value) {
+  return (
+    value === 'trace-limit' ||
+    value === 'line-limit' ||
+    value === 'single-line-limit' ||
+    value === 'recursion-limit' ||
+    value === 'memory-limit' ||
+    value === 'client-timeout'
+  );
 }
 
 function extractUserErrorLine(diagnostics) {
@@ -2363,10 +3448,18 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
   }
   const fs = toolchain.baseFs.clone();
   const resourceDir = findClangResourceDir(fs);
-  const signature = options.executionStyle === 'ops-class'
+  const scriptRequest = isScriptExecutionRequest(functionName, options);
+  const signature = scriptRequest
     ? { line: 1 }
-    : parseMethodSignature(source, functionName);
-  const driverSource = options.executionStyle === 'ops-class'
+    : options.executionStyle === 'ops-class'
+    ? { line: 1 }
+    : parseMethodSignature(source, functionName, {
+        parameterCount: Object.keys(inputs || {}).length,
+        inputNames: Object.keys(inputs || {}),
+      });
+  const driverSource = scriptRequest
+    ? buildScriptDriverSource(source, options)
+    : options.executionStyle === 'ops-class'
     ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
     : buildDriverSource(source, functionName, inputs || {}, options);
 
@@ -2418,7 +3511,7 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
     '--no-threads',
     '--export-dynamic',
     '-z',
-    'stack-size=1048576',
+    `stack-size=${CPP_PROGRAM_STACK_SIZE}`,
     `-L${libDir}`,
     crt1,
     '/tmp/program.o',
@@ -2448,17 +3541,25 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
       defaultLine: signature.line,
       allowMissingResult: options.tracing,
     });
+    if (scriptRequest && options.tracing) {
+      parsed.events = normalizeScriptTraceEvents(parsed.events, scriptLineCount(source));
+    }
     const programTimedOut = options.tracing && program.exitCode === 124;
+    const runtimeTimedOut = !options.tracing && program.exitCode === 124;
     const baseResult = {
       success: program.exitCode === 0 && !programTimedOut,
       output: parsed.output,
       error: program.exitCode === 0 ? undefined : program.stderr || `C++ program exited with code ${program.exitCode}`,
       consoleOutput: [...parsed.consoleOutput, ...program.stderr.split(/\r?\n/).filter(Boolean)],
       executionTimeMs: Math.max(0, Math.round(now() - start)),
+      ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
-    const { trace, traceLimitExceeded } = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
-    const runtimeTraceLimitExceeded = traceLimitExceeded || programTimedOut;
+    const finalizedTrace = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
+    const { trace } = finalizedTrace;
+    const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
+    const droppedEventCount = (finalizedTrace.droppedEventCount || 0) + (Number(parsed.traceStatus?.droppedEventCount) || 0);
+    const timeoutReason = timeoutReasonForParsedTrace(parsed);
     return {
       ...baseResult,
       ...(programTimedOut ? { error: 'C++ trace budget exceeded.' } : {}),
@@ -2466,7 +3567,8 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
       lineEventCount: trace.lineEventCount,
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded: runtimeTraceLimitExceeded,
-      ...(runtimeTraceLimitExceeded ? { timeoutReason: 'trace-limit' } : {}),
+      ...(runtimeTraceLimitExceeded ? { timeoutReason } : {}),
+      ...(runtimeTraceLimitExceeded ? { droppedEventCount } : {}),
     };
   } catch (error) {
     if (options.tracing) {
@@ -2496,10 +3598,18 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
 }
 
 async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, start, options = {}) {
-  const signature = options.executionStyle === 'ops-class'
+  const scriptRequest = isScriptExecutionRequest(functionName, options);
+  const signature = scriptRequest
     ? { line: 1 }
-    : parseMethodSignature(source, functionName);
-  const rawDriverSource = options.executionStyle === 'ops-class'
+    : options.executionStyle === 'ops-class'
+    ? { line: 1 }
+    : parseMethodSignature(source, functionName, {
+        parameterCount: Object.keys(inputs || {}).length,
+        inputNames: Object.keys(inputs || {}),
+      });
+  const rawDriverSource = scriptRequest
+    ? buildScriptDriverSource(source, options)
+    : options.executionStyle === 'ops-class'
     ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
     : buildDriverSource(source, functionName, inputs || {}, options);
   const driverSource = rawDriverSource.replace(
@@ -2515,7 +3625,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
   let files;
   try {
     files = await toolchain.runClang(
-      ['clang++', 'TraceCodeDriver.cpp', `-std=${CPP_STANDARD}`, '-O0', '-fno-exceptions', '-o', 'program.wasm'],
+      ['clang++', 'TraceCodeDriver.cpp', `-std=${CPP_STANDARD}`, '-O0', '-fno-exceptions', `-Wl,-z,stack-size=${CPP_PROGRAM_STACK_SIZE}`, '-o', 'program.wasm'],
       {
         'TraceCodeDriver.cpp': driverSource,
         'tracecode_runtime.hpp': toolchain.runtimeHeader,
@@ -2557,17 +3667,25 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
       defaultLine: signature.line,
       allowMissingResult: options.tracing,
     });
+    if (scriptRequest && options.tracing) {
+      parsed.events = normalizeScriptTraceEvents(parsed.events, scriptLineCount(source));
+    }
     const programTimedOut = options.tracing && program.exitCode === 124;
+    const runtimeTimedOut = !options.tracing && program.exitCode === 124;
     const baseResult = {
       success: program.exitCode === 0 && !programTimedOut,
       output: parsed.output,
       error: program.exitCode === 0 ? undefined : program.stderr || `C++ program exited with code ${program.exitCode}`,
       consoleOutput: [...parsed.consoleOutput, ...program.stderr.split(/\r?\n/).filter(Boolean)],
       executionTimeMs: Math.max(0, Math.round(now() - start)),
+      ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
-    const { trace, traceLimitExceeded } = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
-    const runtimeTraceLimitExceeded = traceLimitExceeded || programTimedOut;
+    const finalizedTrace = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
+    const { trace } = finalizedTrace;
+    const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
+    const droppedEventCount = (finalizedTrace.droppedEventCount || 0) + (Number(parsed.traceStatus?.droppedEventCount) || 0);
+    const timeoutReason = timeoutReasonForParsedTrace(parsed);
     return {
       ...baseResult,
       ...(programTimedOut ? { error: 'C++ trace budget exceeded.' } : {}),
@@ -2575,7 +3693,8 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
       lineEventCount: trace.lineEventCount,
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded: runtimeTraceLimitExceeded,
-      ...(runtimeTraceLimitExceeded ? { timeoutReason: 'trace-limit' } : {}),
+      ...(runtimeTraceLimitExceeded ? { timeoutReason } : {}),
+      ...(runtimeTraceLimitExceeded ? { droppedEventCount } : {}),
     };
   } catch (error) {
     if (options.tracing) {
@@ -2627,11 +3746,11 @@ async function handleCompileRun(payload) {
     };
   }
 
-  if (!functionName.trim()) {
+  if (!functionName.trim() && payload?.executionStyle !== 'function') {
     return {
       success: false,
       output: null,
-      error: 'C++ solution-method execution requires a function name.',
+      error: 'C++ named execution requires a function name.',
       consoleOutput: [],
     };
   }
@@ -2668,14 +3787,14 @@ async function handleExecuteWithTracing(payload) {
     };
   }
 
-  if (!functionName.trim()) {
+  if (!functionName.trim() && payload?.executionStyle !== 'function') {
     const trace = finalizeRuntimeTrace([
-      { kind: 'exception', line: 1, message: 'C++ solution-method tracing requires a function name.' },
+      { kind: 'exception', line: 1, message: 'C++ named tracing requires a function name.' },
     ]).trace;
     return {
       success: false,
       output: null,
-      error: 'C++ solution-method tracing requires a function name.',
+      error: 'C++ named tracing requires a function name.',
       trace,
       executionTimeMs: 0,
       consoleOutput: [],
@@ -2717,6 +3836,93 @@ async function handleExecuteWithTracing(payload) {
   }
 }
 
+function isInterviewTimeoutResult(result) {
+  const normalized = String(result?.error ?? '').toLowerCase();
+  const timeoutReason = result?.timeoutReason ?? '';
+  return (
+    timeoutReason === 'trace-limit' ||
+    timeoutReason === 'line-limit' ||
+    timeoutReason === 'single-line-limit' ||
+    timeoutReason === 'client-timeout' ||
+    normalized.includes('timed out') ||
+    normalized.includes('trace budget') ||
+    normalized.includes('trace-limit') ||
+    normalized.includes('line-limit') ||
+    normalized.includes('infinite loop')
+  );
+}
+
+async function handleExecuteCodeInterview(payload) {
+  const source = payload && typeof payload.code === 'string' ? payload.code : '';
+  const functionName = payload && typeof payload.functionName === 'string' ? payload.functionName : '';
+
+  if (!source.trim()) {
+    return {
+      success: false,
+      output: null,
+      error: 'C++ source is empty.',
+      consoleOutput: [],
+    };
+  }
+
+  if (!functionName.trim() && payload?.executionStyle !== 'function') {
+    return {
+      success: false,
+      output: null,
+      error: 'C++ named interview execution requires a function name.',
+      consoleOutput: [],
+    };
+  }
+
+  try {
+    const result = await compileAndRun(source, functionName, payload?.inputs || {}, {
+      tracing: true,
+      traceOptions: {
+        maxTraceSteps: DEFAULT_INTERVIEW_MAX_TRACE_STEPS,
+        maxLineEvents: DEFAULT_INTERVIEW_MAX_LINE_EVENTS,
+        maxSingleLineHits: DEFAULT_INTERVIEW_MAX_SINGLE_LINE_HITS,
+        ...(payload?.options && typeof payload.options === 'object' ? payload.options : {}),
+      },
+      executionStyle: payload?.executionStyle || 'solution-method',
+    });
+
+    if (!result.success) {
+      if (isInterviewTimeoutResult(result)) {
+        return {
+          success: false,
+          output: null,
+          error: 'Time Limit Exceeded',
+          ...(isTraceTimeoutReason(result.timeoutReason) ? { timeoutReason: result.timeoutReason } : {}),
+          diagnosticStage: 'interview',
+          consoleOutput: result.consoleOutput || [],
+        };
+      }
+      return {
+        success: false,
+        output: null,
+        error: result.error || 'C++ interview execution failed.',
+        ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
+        consoleOutput: result.consoleOutput || [],
+      };
+    }
+
+    return {
+      success: true,
+      output: result.output,
+      consoleOutput: result.consoleOutput || [],
+    };
+  } catch {
+    return {
+      success: false,
+      output: null,
+      error: 'Time Limit Exceeded',
+      timeoutReason: 'client-timeout',
+      diagnosticStage: 'interview',
+      consoleOutput: [],
+    };
+  }
+}
+
 self.onmessage = (event) => {
   const { id, type, payload } = event.data || {};
   if (!id) return;
@@ -2728,6 +3934,8 @@ self.onmessage = (event) => {
         ? handleCompileRun(payload)
         : type === 'execute-with-tracing'
           ? handleExecuteWithTracing(payload)
+          : type === 'execute-code-interview'
+            ? handleExecuteCodeInterview(payload)
           : Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
 
   task.then((result) => postSuccess(id, type, result)).catch((error) => postFailure(id, error));

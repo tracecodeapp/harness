@@ -12,7 +12,8 @@
       "python": "freq[left] -= 1",
       "javascript": "freq.set(left, freq.get(left) - 1);",
       "typescript": "freq.set(left, freq.get(left)! - 1);",
-      "java": "freq.put(left, freq.get(left) - 1);"
+      "java": "freq.put(left, freq.get(left) - 1);",
+      "cpp": "freq[left] = freq[left] - 1;"
     }
   },
   "expect": {

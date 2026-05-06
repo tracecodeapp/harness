@@ -106,15 +106,43 @@ async function main(): Promise<void> {
         inputs: { a: 2, b: 3 },
         options: {},
       });
+      const script = await send('execute-with-tracing', {
+        code: [
+          'vector<int> nums = {2, 7, 11, 15};',
+          'int target = 9;',
+          'vector<int> result;',
+          'unordered_map<int, int> seen;',
+          'for (int i = 0; i < nums.size(); ++i) {',
+          '  int complement = target - nums[i];',
+          '  if (seen.count(complement)) {',
+          '    result = {seen[complement], i};',
+          '    break;',
+          '  }',
+          '  seen[nums[i]] = i;',
+          '}',
+        ].join('\\n'),
+        functionName: '',
+        inputs: {},
+        executionStyle: 'function',
+        options: {},
+      });
+      const interview = await send('execute-code-interview', {
+        code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
+        functionName: 'add',
+        inputs: { a: 2, b: 3 },
+        executionStyle: 'solution-method',
+      });
 
       worker.terminate();
-      return { add, twoSum, syntaxError, traced };
+      return { add, twoSum, syntaxError, traced, script, interview };
     })()`);
 
     const add = results.add as { success?: boolean; output?: unknown; error?: string };
     const twoSum = results.twoSum as { success?: boolean; output?: unknown; error?: string };
     const syntaxError = results.syntaxError as { success?: boolean; error?: string; errorLine?: number };
     const traced = results.traced as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; value?: unknown }> } };
+    const script = results.script as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; function?: string }> } };
+    const interview = results.interview as { success?: boolean; output?: unknown; trace?: unknown };
     assertCondition(add.success === true && add.output === 5, `C++ browser add failed: ${JSON.stringify(add)}`);
     assertCondition(
       twoSum.success === true && JSON.stringify(twoSum.output) === JSON.stringify([0, 1]),
@@ -129,6 +157,18 @@ async function main(): Promise<void> {
       traced.trace?.events?.some((event) => event.kind === 'call') &&
         traced.trace?.events?.some((event) => event.kind === 'return' && event.value === 5),
       `C++ browser tracing should include call and return events: ${JSON.stringify(traced)}`
+    );
+    assertCondition(
+      script.success === true && JSON.stringify(script.output) === JSON.stringify([0, 1]),
+      `C++ browser script tracing failed: ${JSON.stringify(script)}`
+    );
+    assertCondition(
+      script.trace?.events?.some((event) => event.kind === 'call' && event.function === '<script>'),
+      `C++ browser script tracing should include a script call event: ${JSON.stringify(script)}`
+    );
+    assertCondition(
+      interview.success === true && interview.output === 5 && !('trace' in interview),
+      `C++ browser interview execution should return non-trace output: ${JSON.stringify(interview)}`
     );
   } finally {
     await browser.close();

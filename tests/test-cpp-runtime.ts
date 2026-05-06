@@ -51,7 +51,7 @@ sandbox.self = sandbox;
 
 const context = vm.createContext(sandbox);
 const script = new vm.Script(
-  workerSource + '\nglobalThis.__tracecodeCppTest = { handleInit, handleCompileRun, handleExecuteWithTracing };',
+  workerSource + '\nglobalThis.__tracecodeCppTest = { handleInit, handleCompileRun, handleExecuteWithTracing, handleExecuteCodeInterview };',
   {
     importModuleDynamically(specifier) {
       return import(specifier);
@@ -175,6 +175,29 @@ const cases = [
     functionName: 'modern',
     inputs: { nums: [1, 2, 3, 4] },
     expected: 7,
+  },
+  {
+    name: 'no-exception helper catch lowering',
+    code: [
+      '#include <stdexcept>',
+      'class Solution {',
+      '  int risky(int value) {',
+      '    if (value < 0) throw std::runtime_error("negative");',
+      '    return value + 1;',
+      '  }',
+      'public:',
+      '  int recover(int value) {',
+      '    try {',
+      '      return risky(value);',
+      '    } catch (const std::exception&) {',
+      '      return 42;',
+      '    }',
+      '  }',
+      '};',
+    ].join('\n'),
+    functionName: 'recover',
+    inputs: { value: -1 },
+    expected: 42,
   },
 ];
 
@@ -511,6 +534,153 @@ if (traced.trace.events[0].runId !== 'cpp:run' || traced.trace.events[0].file !=
 if (!traced.trace.events.some((event) => event.kind === 'return' && event.value === 5)) {
   throw new Error('C++ tracing should include serialized return value');
 }
+if (!traced.trace.events.some((event) => event.kind === 'line' && event.callStack?.some((frame) => frame.function === 'add'))) {
+  throw new Error('C++ tracing should attach callStack frames to runtime events, received ' + JSON.stringify(traced.trace.events));
+}
+
+const scriptResult = await sandbox.__tracecodeCppTest.handleCompileRun({
+  code: [
+    'vector<int> nums = {2, 7, 11, 15};',
+    'int target = 9;',
+    'vector<int> result;',
+    'unordered_map<int, int> seen;',
+    'for (int i = 0; i < nums.size(); ++i) {',
+    '  int complement = target - nums[i];',
+    '  if (seen.count(complement)) {',
+    '    result = {seen[complement], i};',
+    '    break;',
+    '  }',
+    '  seen[nums[i]] = i;',
+    '}',
+  ].join('\n'),
+  functionName: '',
+  inputs: {},
+  executionStyle: 'function',
+});
+if (!scriptResult.success || JSON.stringify(scriptResult.output) !== JSON.stringify([0, 1])) {
+  throw new Error('C++ script execution should return the top-level result variable, received ' + JSON.stringify(scriptResult));
+}
+
+const scriptTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'vector<int> nums = {2, 7, 11, 15};',
+    'int target = 9;',
+    'vector<int> result;',
+    'unordered_map<int, int> seen;',
+    'for (int i = 0; i < nums.size(); ++i) {',
+    '  int complement = target - nums[i];',
+    '  if (seen.count(complement)) {',
+    '    result = {seen[complement], i};',
+    '    break;',
+    '  }',
+    '  seen[nums[i]] = i;',
+    '}',
+  ].join('\n'),
+  functionName: '',
+  inputs: {},
+  executionStyle: 'function',
+  options: {},
+});
+if (!scriptTrace.success || JSON.stringify(scriptTrace.output) !== JSON.stringify([0, 1])) {
+  throw new Error('C++ script tracing should execute successfully, received ' + JSON.stringify(scriptTrace));
+}
+if (!scriptTrace.trace.events.some((event) => event.kind === 'call' && event.function === '<script>')) {
+  throw new Error('C++ script tracing should emit a script call event, received ' + JSON.stringify(scriptTrace.trace.events));
+}
+if (!scriptTrace.trace.events.some((event) => event.kind === 'snapshot' && event.target?.variable === 'result')) {
+  throw new Error('C++ script tracing should snapshot top-level result, received ' + JSON.stringify(scriptTrace.trace.events));
+}
+if (scriptTrace.trace.events.some((event) => typeof event.line === 'number' && event.line > 12)) {
+  throw new Error('C++ script tracing should map wrapper lines back to user code, received ' + JSON.stringify(scriptTrace.trace.events));
+}
+
+const interviewResult = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
+  code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
+  functionName: 'add',
+  inputs: { a: 2, b: 3 },
+  executionStyle: 'solution-method',
+});
+if (!interviewResult.success || interviewResult.output !== 5 || 'trace' in interviewResult) {
+  throw new Error('C++ interview execution should return a non-trace execution result, received ' + JSON.stringify(interviewResult));
+}
+
+const scriptInterviewResult = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
+  code: 'int result = 7;',
+  functionName: '',
+  inputs: {},
+  executionStyle: 'function',
+});
+if (!scriptInterviewResult.success || scriptInterviewResult.output !== 7) {
+  throw new Error('C++ script interview execution should return result, received ' + JSON.stringify(scriptInterviewResult));
+}
+
+const interviewSyntaxError = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int add(int a, int b) {',
+    '    return a + ;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'add',
+  inputs: { a: 2, b: 3 },
+  executionStyle: 'solution-method',
+});
+if (interviewSyntaxError.success || interviewSyntaxError.errorLine !== 4) {
+  throw new Error('C++ interview compile errors should map to user lines, received ' + JSON.stringify(interviewSyntaxError));
+}
+
+const interviewTimeout = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spin() {',
+    '    int total = 0;',
+    '    for (int i = 0; i < 100; ++i) {',
+    '      total++;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spin',
+  inputs: {},
+  executionStyle: 'solution-method',
+  options: { maxTraceSteps: 8 },
+});
+if (interviewTimeout.success || interviewTimeout.error !== 'Time Limit Exceeded') {
+  throw new Error('C++ interview trace-budget timeout should normalize to Time Limit Exceeded, received ' + JSON.stringify(interviewTimeout));
+}
+if (interviewTimeout.timeoutReason !== 'trace-limit' || interviewTimeout.diagnosticStage !== 'interview') {
+  throw new Error('C++ interview trace-budget timeout should preserve timeout metadata, received ' + JSON.stringify(interviewTimeout));
+}
+
+const interviewLineTimeout = await sandbox.__tracecodeCppTest.handleExecuteCodeInterview({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spin() {',
+    '    int total = 0;',
+    '    for (int i = 0; i < 100; ++i) {',
+    '      total += i;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spin',
+  inputs: {},
+  executionStyle: 'solution-method',
+  options: { maxLineEvents: 4, maxTraceSteps: 1000, maxStoredEvents: 1000 },
+});
+if (
+  interviewLineTimeout.success ||
+  interviewLineTimeout.error !== 'Time Limit Exceeded' ||
+  interviewLineTimeout.timeoutReason !== 'line-limit'
+) {
+  throw new Error('C++ interview maxLineEvents should normalize with line-limit metadata, received ' + JSON.stringify(interviewLineTimeout));
+}
 
 const cappedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
@@ -521,8 +691,124 @@ const cappedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
 if (!cappedTrace.traceLimitExceeded || cappedTrace.timeoutReason !== 'trace-limit') {
   throw new Error('C++ tracing should report trace-limit when maxStoredEvents truncates events');
 }
+if (!cappedTrace.success || cappedTrace.output !== 5) {
+  throw new Error('C++ maxStoredEvents should cap trace storage without failing execution, received ' + JSON.stringify(cappedTrace));
+}
 if (cappedTrace.trace.events.length !== 2) {
   throw new Error('C++ tracing should cap stored events to maxStoredEvents');
+}
+if (!Number.isFinite(cappedTrace.droppedEventCount) || cappedTrace.droppedEventCount <= 0) {
+  throw new Error('C++ tracing should report dropped events when maxStoredEvents is exceeded');
+}
+
+const hugeStdoutResult = await sandbox.__tracecodeCppTest.handleCompileRun({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spam() {',
+    '    for (int i = 0; i < 200; ++i) {',
+    '      std::printf("line %d\\n", i);',
+    '    }',
+    '    return 200;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spam',
+  inputs: {},
+});
+if (!hugeStdoutResult.success || hugeStdoutResult.output !== 200 || hugeStdoutResult.consoleOutput?.length !== 200) {
+  throw new Error('C++ execution should capture large stdout separately from result, received ' + JSON.stringify(hugeStdoutResult));
+}
+
+const compileDiagnosticStage = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int broken() {',
+    '    return missingSymbol;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'broken',
+  inputs: {},
+  options: {},
+});
+if (compileDiagnosticStage.success || compileDiagnosticStage.diagnosticStage !== 'trace-driver-compile') {
+  throw new Error('C++ trace compile failures should be labeled separately from runtime failures, received ' + JSON.stringify(compileDiagnosticStage));
+}
+
+const lineLimitedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spin() {',
+    '    int total = 0;',
+    '    for (int i = 0; i < 20; ++i) {',
+    '      total += i;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spin',
+  inputs: {},
+  options: { maxLineEvents: 4, maxTraceSteps: 1000, maxStoredEvents: 1000 },
+});
+if (lineLimitedTrace.success || !lineLimitedTrace.traceLimitExceeded || lineLimitedTrace.timeoutReason !== 'line-limit') {
+  throw new Error('C++ maxLineEvents should hard-stop tracing with line-limit, received ' + JSON.stringify(lineLimitedTrace));
+}
+if (!lineLimitedTrace.trace.events.some((event) => event.kind === 'timeout' && event.reason === 'line-limit')) {
+  throw new Error('C++ maxLineEvents should emit a line-limit timeout event, received ' + JSON.stringify(lineLimitedTrace.trace.events));
+}
+
+const singleLineLimitedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spin() {',
+    '    int total = 0;',
+    '    for (int i = 0; i < 20; ++i) {',
+    '      total += i;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spin',
+  inputs: {},
+  options: { maxSingleLineHits: 2, maxTraceSteps: 1000, maxStoredEvents: 1000 },
+});
+if (singleLineLimitedTrace.success || !singleLineLimitedTrace.traceLimitExceeded || singleLineLimitedTrace.timeoutReason !== 'single-line-limit') {
+  throw new Error('C++ maxSingleLineHits should hard-stop tracing with single-line-limit, received ' + JSON.stringify(singleLineLimitedTrace));
+}
+if (!singleLineLimitedTrace.trace.events.some((event) => event.kind === 'timeout' && event.reason === 'single-line-limit')) {
+  throw new Error('C++ maxSingleLineHits should emit a single-line-limit timeout event, received ' + JSON.stringify(singleLineLimitedTrace.trace.events));
+}
+
+const minimalTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int search(vector<int>& nums, int target) {',
+    '    for (int i = 0; i < nums.size(); ++i) {',
+    '      if (nums[i] == target) return i;',
+    '    }',
+    '    return -1;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'search',
+  inputs: { nums: [1, 2, 3], target: 2 },
+  options: { minimalTrace: true },
+});
+if (!minimalTrace.success || minimalTrace.output !== 1) {
+  throw new Error('C++ minimalTrace should preserve execution, received ' + JSON.stringify(minimalTrace));
+}
+if (!minimalTrace.trace.events.some((event) => event.kind === 'line') || !minimalTrace.trace.events.some((event) => event.kind === 'return')) {
+  throw new Error('C++ minimalTrace should keep control-flow events, received ' + JSON.stringify(minimalTrace.trace.events));
+}
+if (minimalTrace.trace.events.some((event) => ['snapshot', 'read', 'write', 'mutate', 'control'].includes(event.kind))) {
+  throw new Error('C++ minimalTrace should suppress detail events, received ' + JSON.stringify(minimalTrace.trace.events));
 }
 
 const userLineTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

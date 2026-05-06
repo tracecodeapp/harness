@@ -10,7 +10,8 @@
       "python": "graph[0].append(1)",
       "javascript": "graph[0].push(1);",
       "typescript": "graph[0].push(1);",
-      "java": "graph.get(0).add(1);"
+      "java": "graph.get(0).add(1);",
+      "cpp": "graph[0].push_back(1);"
     }
   },
   "expect": {

@@ -19,7 +19,8 @@
       "python": "total = values[0][1] + values[1][0]",
       "javascript": "const total = values[0][1] + values[1][0];",
       "typescript": "const total = values[0][1] + values[1][0];",
-      "java": "int total = values.get(0)[1] + values.get(1)[0];"
+      "java": "int total = values.get(0)[1] + values.get(1)[0];",
+      "cpp": "int total = values[0][1] + values[1][0];"
     }
   },
   "expect": {
@@ -103,6 +104,47 @@
       }
     },
     "typescript": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ],
+        "variableSnapshots": [
+          "rows",
+          "total",
+          "values"
+        ]
+      }
+    },
+    "java": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 2
+          }
+        ],
+        "variableSnapshots": [
+          "rows",
+          "values"
+        ]
+      }
+    },
+    "cpp": {
       "read": {
         "eventKinds": [
           "line",

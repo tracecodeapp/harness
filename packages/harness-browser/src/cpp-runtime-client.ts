@@ -56,9 +56,9 @@ class CppRuntimeClient implements RuntimeClient {
   }
 
   async executeCodeInterviewMode(
-    _code: string,
+    code: string,
     functionName: string,
-    _inputs: Record<string, unknown>,
+    inputs: Record<string, unknown>,
     executionStyle: RuntimeExecutionStyle = 'solution-method'
   ): Promise<CodeExecutionResult> {
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
@@ -66,7 +66,12 @@ class CppRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    throw new Error('C++ interview execution is not implemented yet.');
+    return this.workerClient.executeCodeInterviewMode(
+      code,
+      functionName,
+      inputs,
+      executionStyle as CppExecutionStyle
+    );
   }
 }
 

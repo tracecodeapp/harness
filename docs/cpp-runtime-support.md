@@ -1,13 +1,14 @@
 # C++ Runtime Support
 
-The browser C++ lane is experimental and intentionally v4-native. It emits `RuntimeTrace` events directly and must not emit legacy trace-step or visualizer-shaped payloads.
+The browser C++ lane is intentionally v4-native. It emits `RuntimeTrace` events directly and must not emit legacy trace-step or visualizer-shaped payloads. The runtime profile still marks C++ as experimental because the browser-local compiler path is new, but its public API surface now matches the other shipped language clients.
 
 ## Compiler
 
 - Standard: C++23 (`-std=c++23`).
 - Primary toolchain: YoWASP Clang bundle loaded in the browser worker.
 - Fallback shape: raw Clang/LLD/WASI assets with TraceCode-owned filesystem glue.
-- Execution styles: `solution-method`, plus experimental `ops-class` for constructor + method operation sequences.
+- Execution styles: `solution-method`, `function`/script-style snippets, `ops-class` constructor + method operation sequences, and interview mode.
+- Native C++ exception runtime support is not linked in the current WASI toolchain. User `try`/`catch`/`throw` syntax is lowered so common no-exception paths and simple caught-helper flows compile and run under `-fno-exceptions`.
 
 ## Supported Today
 
@@ -18,7 +19,7 @@ The browser C++ lane is experimental and intentionally v4-native. It emits `Runt
 - Native access events for simple local object fields such as `box.value` and one-level keyed fields such as `node.children[key]`. Traced `vector`, `deque`, `queue`, `stack`, `priority_queue`, `unordered_map`, `map`, `set`, and `unordered_set` class fields can also emit `this.field` and indexed/keyed/slot path events.
 - Experimental `ops-class` driver support for TraceCode class fixtures, including traced map/set fields and nested vector mutation through keyed map fields.
 - Arbitrary C++ objects are snapshotted as opaque values unless they are one of the supported TraceCode data shapes.
-- Native runtime trace facts for calls, returns, lines, reads, writes, mutations, snapshots, stdout capture, control transfer, exceptions, timeouts, and trace budget termination.
+- Native runtime trace facts for calls, returns, lines, reads, writes, mutations, snapshots, stdout capture, control transfer, explicit emitted exception facts, timeouts, and trace budget termination.
 
 ## Fixture Coverage
 
@@ -48,16 +49,36 @@ The current C++ parity set covers representative atomic operations from the exis
 
 The C++ lane currently has fewer line-local local-variable snapshots than the mature runtimes. C++ fixture expectations should call that out with `expectByLanguage.cpp` instead of weakening the shared fixture expectation.
 
+## Corpus Gate
+
+The full isolated C++ corpus gate has passed against the generated C++ Algoflow corpus:
+
+```txt
+scanned=2256 passed=2256 failures=0 mismatches=0 missingTrace=0
+javascript=2093/2256 matched=2093
+typescript=2093/2256 matched=2093
+python=2093/2256 matched=2093
+java=2256/2256 matched=2256
+```
+
+Use the conservative local gate when rechecking the full corpus:
+
+```sh
+pnpm local:mine:cpp-algoflow-corpus:isolated
+```
+
+That command intentionally uses `--no-trace`, `--jobs=4`, `--batch-size=16`, and `--worker-timeout-ms=600000`; the full corpus gate checks C++ compile/run output parity against the generated corpus and the other available language solutions, while trace semantics stay covered by the runtime parity fixtures.
+
 ## Boundaries
 
 These are not supported as stable contracts yet:
 
-- `function`, `script`, and interview-mode execution styles.
 - Arbitrary multi-file projects or user-provided filesystem layouts.
 - Raw STL memory inspection. Container events come from TraceCode wrappers.
 - Deep arbitrary class/object serialization. Field access can be traced, but unsupported custom object snapshots remain opaque.
 - General traced class fields beyond the container field patterns covered by the tests and parity fixtures.
 - General `ops-class` overloads, inheritance-heavy classes, and constructor argument materialization beyond the covered fixture shapes.
+- Native C++ exception objects and catch-variable semantics. Common `try`/`catch`/`throw` syntax is lowered for the no-exception compiler path, but it is not a replacement for a linked C++ exception runtime.
 - Full source-to-source parsing for every macro-heavy or template-metaprogramming pattern.
 - Visualizer classifications such as graph, linked-list, tree, hash-map, primary/companion ownership, or algorithm family.
 

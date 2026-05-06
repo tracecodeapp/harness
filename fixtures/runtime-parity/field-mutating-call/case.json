@@ -19,7 +19,8 @@
       "python": "self.items.append(value)",
       "javascript": "this.items.push(value);",
       "typescript": "this.items.push(value);",
-      "java": "items.add(value);"
+      "java": "items.add(value);",
+      "cpp": "this->items.push_back(value);"
     }
   },
   "expect": {

@@ -14,7 +14,8 @@
       "python": "value = nums.pop()",
       "javascript": "const value = nums.splice(nums.length - 1, 1)[0];",
       "typescript": "const value = nums.splice(nums.length - 1, 1)[0]!;",
-      "java": "int value = nums.remove(nums.size() - 1);"
+      "java": "int value = nums.remove(nums.size() - 1);",
+      "cpp": "nums.pop_back();"
     }
   },
   "expect": {

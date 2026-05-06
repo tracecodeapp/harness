@@ -19,7 +19,8 @@
       "python": "total += grid[i][j]",
       "javascript": "total += grid[i][j];",
       "typescript": "total += grid[i][j];",
-      "java": "total += grid[i][j];"
+      "java": "total += grid[i][j];",
+      "cpp": "total += grid[i][j];"
     }
   },
   "expect": {
@@ -42,6 +43,35 @@
           "pathDepth": 2
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "cpp": {
+      "body": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "i",
+          "j",
+          "total"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "grid",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "grid",
+            "pathDepth": 2
+          }
+        ]
+      }
     }
   }
 }

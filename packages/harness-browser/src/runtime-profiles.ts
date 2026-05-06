@@ -239,11 +239,11 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   capabilities: {
     execution: {
       styles: {
-        function: false,
+        function: true,
         solutionMethod: true,
         opsClass: true,
-        script: false,
-        interviewMode: false,
+        script: true,
+        interviewMode: true,
       },
       timeouts: {
         clientTimeouts: true,
@@ -262,15 +262,15 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       },
       controls: {
         maxTraceSteps: true,
-        maxLineEvents: false,
-        maxSingleLineHits: false,
+        maxLineEvents: true,
+        maxSingleLineHits: true,
         maxStoredEvents: true,
-        minimalTrace: false,
+        minimalTrace: true,
       },
       fidelity: {
         preciseLineMapping: true,
         stableFunctionNames: true,
-        callStack: false,
+        callStack: true,
       },
     },
     diagnostics: {
@@ -291,7 +291,8 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   notes: [
     'C++ uses a focused browser-local Clang/LLD/WASI compiler lane with TraceCode-owned execution glue.',
     'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
-    'Tracing currently emits generated-driver v4 call, line, return, stdout, and timeout events only.',
+    'Script-style C++ uses an empty function name with executionStyle="function"; the snippet must assign a serializable result variable.',
+    'Interview-mode C++ reuses the tracing compiler path with a trace budget and returns a non-trace execution result.',
   ],
 };
 

@@ -18,13 +18,15 @@
       "python": "alias = head",
       "javascript": "const alias = head;",
       "typescript": "const alias = head;",
-      "java": "ListNode alias = head;"
+      "java": "ListNode alias = head;",
+      "cpp": "ListNode* alias = head;"
     },
     "readThroughAlias": {
       "python": "return alias.next.val",
       "javascript": "return alias.next.val;",
       "typescript": "return alias.next.val;",
-      "java": "return alias.next.val;"
+      "java": "return alias.next.val;",
+      "cpp": "return alias->next->val;"
     }
   },
   "expect": {

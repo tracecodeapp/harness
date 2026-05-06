@@ -14,7 +14,8 @@
       "python": "last = window[2]",
       "javascript": "const last = window[2];",
       "typescript": "const last = window[2];",
-      "java": "int last = window[2];"
+      "java": "int last = window[2];",
+      "cpp": "int last = window[2];"
     }
   },
   "expect": {

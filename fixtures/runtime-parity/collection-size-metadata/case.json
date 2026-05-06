@@ -14,13 +14,15 @@
       "python": "n = len(nums)",
       "javascript": "const n = nums.length;",
       "typescript": "const n = nums.length;",
-      "java": "int n = nums.length;"
+      "java": "int n = nums.length;",
+      "cpp": "int n = nums.size();"
     },
     "mapSize": {
       "python": "m = len(seen)",
       "javascript": "const m = seen.size;",
       "typescript": "const m = seen.size;",
-      "java": "int m = seen.size();"
+      "java": "int m = seen.size();",
+      "cpp": "int m = seen.size();"
     }
   },
   "expect": {

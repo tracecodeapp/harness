@@ -10,7 +10,8 @@
       "python": "out.append(value)",
       "javascript": "out.push(value);",
       "typescript": "out.push(value);",
-      "java": "out.add(value);"
+      "java": "out.add(value);",
+      "cpp": "out.push_back(value);"
     }
   },
   "expect": {

@@ -4,7 +4,7 @@ import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types
 
 type MessageId = string;
 
-export type CppExecutionStyle = 'solution-method' | 'ops-class';
+export type CppExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 export interface CppWorkerAssets {
   clangWasmUrl: string;
@@ -19,12 +19,26 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   debug?: boolean;
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
+  interviewTimeoutMs?: number;
 }
 
 interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeoutId?: ReturnType<typeof setTimeout>;
+}
+
+type CppClientTimeoutStage = 'compile-run' | 'trace' | 'interview';
+
+class CppClientTimeoutError extends Error {
+  constructor(
+    message: string,
+    readonly stage: CppClientTimeoutStage,
+    readonly timeoutMs: number
+  ) {
+    super(message);
+    this.name = 'CppClientTimeoutError';
+  }
 }
 
 interface WorkerMessage {
@@ -42,6 +56,7 @@ interface InitResult {
 const INIT_TIMEOUT_MS = 10_000;
 const EXECUTION_TIMEOUT_MS = 25_000;
 const TRACING_TIMEOUT_MS = 30_000;
+const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 
@@ -56,11 +71,13 @@ export class CppWorkerClient {
   private readonly debug: boolean;
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
+  private readonly interviewTimeoutMs: number;
 
   constructor(private readonly options: CppWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
     this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
+    this.interviewTimeoutMs = options.interviewTimeoutMs ?? INTERVIEW_MODE_TIMEOUT_MS;
   }
 
   isSupported(): boolean {
@@ -181,13 +198,21 @@ export class CppWorkerClient {
     });
   }
 
-  private async executeWithTimeout<T>(executor: () => Promise<T>, timeoutMs: number): Promise<T> {
+  private async executeWithTimeout<T>(
+    executor: () => Promise<T>,
+    timeoutMs: number,
+    stage: CppClientTimeoutStage
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
-        const timeoutError = new Error(`C++ execution timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+        const timeoutError = new CppClientTimeoutError(
+          `C++ ${stage === 'trace' ? 'tracing' : stage === 'interview' ? 'interview execution' : 'execution'} timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
+          stage,
+          timeoutMs
+        );
         this.terminateAndReset(timeoutError);
         reject(timeoutError);
       }, timeoutMs);
@@ -209,19 +234,26 @@ export class CppWorkerClient {
   }
 
   private isClientTimeout(error: unknown): boolean {
-    return error instanceof Error && error.message.includes('C++ execution timed out');
+    return (
+      error instanceof CppClientTimeoutError ||
+      (error instanceof Error && error.message.includes('C++') && error.message.includes('timed out'))
+    );
   }
 
   private timeoutCodeResult(error: unknown): CodeExecutionResult {
+    const timeoutError = error instanceof CppClientTimeoutError ? error : null;
     return {
       success: false,
       output: null,
       error: error instanceof Error ? error.message : String(error),
       consoleOutput: [],
+      timeoutReason: 'client-timeout',
+      diagnosticStage: timeoutError?.stage === 'interview' ? 'interview' : 'runtime',
     };
   }
 
   private timeoutTraceResult(error: unknown): ExecutionResult {
+    const timeoutError = error instanceof CppClientTimeoutError ? error : null;
     const trace = createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: 'UserCode.cpp' });
     trace.events = [
       {
@@ -237,7 +269,7 @@ export class CppWorkerClient {
       output: null,
       error: error instanceof Error ? error.message : String(error),
       trace,
-      executionTimeMs: this.tracingTimeoutMs,
+      executionTimeMs: timeoutError?.timeoutMs ?? this.tracingTimeoutMs,
       consoleOutput: [],
       traceLimitExceeded: true,
       timeoutReason: 'client-timeout',
@@ -302,7 +334,8 @@ export class CppWorkerClient {
             { code, functionName, inputs, executionStyle },
             this.executionTimeoutMs + 5_000
           ),
-        this.executionTimeoutMs
+        this.executionTimeoutMs,
+        'compile-run'
       );
     } catch (error) {
       if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
@@ -326,11 +359,42 @@ export class CppWorkerClient {
             { code, functionName, inputs, options, executionStyle },
             this.tracingTimeoutMs + 5_000
           ),
-        this.tracingTimeoutMs
+        this.tracingTimeoutMs,
+        'trace'
       );
     } catch (error) {
       if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
       throw error;
+    }
+  }
+
+  async executeCodeInterviewMode(
+    code: string,
+    functionName: string,
+    inputs: Record<string, unknown>,
+    executionStyle: CppExecutionStyle
+  ): Promise<CodeExecutionResult> {
+    await this.init();
+    try {
+      return await this.executeWithTimeout(
+        () =>
+          this.sendMessage<CodeExecutionResult>(
+            'execute-code-interview',
+            { code, functionName, inputs, executionStyle },
+            this.interviewTimeoutMs + 5_000
+          ),
+        this.interviewTimeoutMs,
+        'interview'
+      );
+    } catch {
+      return {
+        success: false,
+        output: null,
+        error: 'Time Limit Exceeded',
+        timeoutReason: 'client-timeout',
+        diagnosticStage: 'interview',
+        consoleOutput: [],
+      };
     }
   }
 

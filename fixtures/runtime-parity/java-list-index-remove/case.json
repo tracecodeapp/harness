@@ -14,7 +14,8 @@
       "python": "return values.pop(1)",
       "javascript": "return values.splice(1, 1)[0];",
       "typescript": "return values.splice(1, 1)[0]!;",
-      "java": "return values.remove(1);"
+      "java": "return values.remove(1);",
+      "cpp": "return values.erase(values.begin() + 1), removedAt(nums);"
     }
   },
   "expect": {

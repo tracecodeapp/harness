@@ -140,6 +140,12 @@ async function main(): Promise<void> {
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });
     assertCondition(harnessA.isLanguageSupported('java'), 'Browser harness should expose Java support');
     assertCondition(harnessA.isLanguageSupported('cpp'), 'Browser harness should expose C++ support');
+    const cppProfile = harnessA.getProfile('cpp');
+    assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ profile should support function execution');
+    assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ profile should support solution-method execution');
+    assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ profile should support ops-class execution');
+    assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ profile should support script execution');
+    assertCondition(cppProfile.capabilities.execution.styles.interviewMode, 'C++ profile should support interview-mode execution');
 
     await harnessA.getClient('javascript').init();
     await harnessA.getClient('java').init();
@@ -198,12 +204,23 @@ async function main(): Promise<void> {
       .getClient('cpp')
       .executeWithTracing('class Solution { public: int add(int a, int b) { return a + b; } };', 'add', {}, {}, 'solution-method');
     assertCondition(cppTraceResult.success, 'C++ runtime should route solution-method executeWithTracing through the browser harness client');
+    const cppScriptResult = await harnessA
+      .getClient('cpp')
+      .executeCode('int result = 3;', '', {}, 'function');
+    assertCondition(cppScriptResult.success, 'C++ runtime should route script-style executeCode through the browser harness client');
+    const cppInterviewResult = await harnessA
+      .getClient('cpp')
+      .executeCodeInterviewMode('int result = 3;', '', {}, 'function');
+    assertCondition(cppInterviewResult.success, 'C++ runtime should route interview-mode requests');
     console.log('PASS: browser harness routes C++ runtime requests');
 
     class HangingCppWorker extends MockWorker {
       postMessage(message: WorkerMessage): void {
         const payload = message.payload as { code?: string } | undefined;
-        if (message.type === 'compile-run' && payload?.code?.includes('while(true)')) {
+        if (
+          (message.type === 'compile-run' || message.type === 'execute-with-tracing' || message.type === 'execute-code-interview') &&
+          payload?.code?.includes('while(true)')
+        ) {
           return;
         }
         super.postMessage(message);
@@ -233,6 +250,8 @@ async function main(): Promise<void> {
       String(timeoutResult.error).includes('timed out'),
       `C++ client timeout should explain the timeout, received ${String(timeoutResult.error)}`
     );
+    assertCondition(timeoutResult.timeoutReason === 'client-timeout', 'C++ client timeout should carry client-timeout reason');
+    assertCondition(timeoutResult.diagnosticStage === 'runtime', 'C++ execute timeout should be labeled as runtime stage');
     assertCondition(workerInstances[beforeTimeoutWorkerCount]?.terminated === true, 'C++ client timeout should terminate the stuck worker');
     const recoveryResult = await timeoutClient.executeCode(
       'class Solution { public: int add(int a, int b) { return a + b; } };',
@@ -241,6 +260,54 @@ async function main(): Promise<void> {
       'solution-method'
     );
     assertCondition(recoveryResult.success, 'C++ client should recover by creating a fresh worker after timeout');
+
+    const traceTimeoutClient = new CppWorkerClient({
+      workerUrl: '/workers/cpp-worker.js',
+      clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
+      lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
+      sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+      runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
+      compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+      tracingTimeoutMs: 5,
+    });
+    const traceTimeoutResult = await traceTimeoutClient.executeWithTracing(
+      'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };',
+      'add',
+      { a: 1, b: 2 },
+      {},
+      'solution-method'
+    );
+    assertCondition(traceTimeoutResult.success === false, 'C++ tracing timeout should return a failed execution result');
+    assertCondition(traceTimeoutResult.timeoutReason === 'client-timeout', 'C++ tracing timeout should carry client-timeout reason');
+    assertCondition(
+      traceTimeoutResult.trace.events.some((event) => event.kind === 'timeout'),
+      'C++ tracing timeout should include a timeout runtime event'
+    );
+    traceTimeoutClient.terminate();
+
+    const interviewTimeoutClient = new CppWorkerClient({
+      workerUrl: '/workers/cpp-worker.js',
+      clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
+      lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
+      sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
+      runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
+      compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+      interviewTimeoutMs: 5,
+    });
+    const interviewClientTimeout = await interviewTimeoutClient.executeCodeInterviewMode(
+      'class Solution { public: int add(int a, int b) { while(true){} return a + b; } };',
+      'add',
+      { a: 1, b: 2 },
+      'solution-method'
+    );
+    assertCondition(interviewClientTimeout.error === 'Time Limit Exceeded', 'C++ interview client timeout should be sanitized');
+    assertCondition(
+      interviewClientTimeout.timeoutReason === 'client-timeout',
+      'C++ interview client timeout should preserve client-timeout reason'
+    );
+    assertCondition(interviewClientTimeout.diagnosticStage === 'interview', 'C++ interview timeout should be labeled as interview stage');
+    interviewTimeoutClient.terminate();
+
     timeoutClient.terminate();
     // @ts-expect-error test stub
     globalThis.Worker = MockWorker;

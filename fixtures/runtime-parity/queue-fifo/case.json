@@ -13,13 +13,15 @@
       "python": "queue.append(num)",
       "javascript": "queue.push(num);",
       "typescript": "queue.push(num);",
-      "java": "queue.offer(num);"
+      "java": "queue.offer(num);",
+      "cpp": "queue.push(num);"
     },
     "popleft": {
       "python": "first = queue.popleft()",
       "javascript": "const first = queue.shift();",
       "typescript": "const first = queue.shift()!;",
-      "java": "int first = queue.poll();"
+      "java": "int first = queue.poll();",
+      "cpp": "queue.pop();"
     }
   },
   "expect": {

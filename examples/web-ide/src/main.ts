@@ -124,30 +124,22 @@ result = new int[] {};
 }`,
   },
   cpp: {
-    functionName: 'twoSum',
-    executionStyle: 'solution-method',
-    inputs: {
-      nums: [2, 7, 11, 15],
-      target: 9,
-    },
-    code: `#include <unordered_map>
-#include <vector>
-using namespace std;
+    functionName: '',
+    executionStyle: 'function',
+    inputs: {},
+    code: `vector<int> nums = {2, 7, 11, 15};
+int target = 9;
+vector<int> result;
+unordered_map<int, int> seen;
 
-class Solution {
-public:
-  vector<int> twoSum(vector<int>& nums, int target) {
-    unordered_map<int, int> seen;
-    for (int index = 0; index < nums.size(); ++index) {
-      int complement = target - nums[index];
-      if (seen.count(complement)) {
-        return {seen[complement], index};
-      }
-      seen[nums[index]] = index;
-    }
-    return {};
+for (int index = 0; index < nums.size(); ++index) {
+  int complement = target - nums[index];
+  if (seen.count(complement)) {
+    result = {seen[complement], index};
+    break;
   }
-};`,
+  seen[nums[index]] = index;
+}`,
   },
 };
 

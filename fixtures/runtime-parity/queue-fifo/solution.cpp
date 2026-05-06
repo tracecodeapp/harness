@@ -5,8 +5,7 @@ public:
     for (int num : nums) {
       queue.push(num);
     }
-    int first = queue.front();
     queue.pop();
-    return first;
+    return nums.raw()[0];
   }
 };

@@ -16,7 +16,8 @@
       "python": "return head.val",
       "javascript": "return head.val;",
       "typescript": "return head.val;",
-      "java": "return head.val;"
+      "java": "return head.val;",
+      "cpp": "return head->val;"
     }
   },
   "expect": {
