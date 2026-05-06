@@ -1,6 +1,6 @@
 # TraceCode Harness
 
-Browser-first execution and tracing harness for Python, JavaScript, TypeScript, experimental Java, and experimental C# lanes.
+Browser-first execution and tracing harness for Python, JavaScript, TypeScript, experimental Java, experimental C#, and experimental C++ lanes.
 
 `@tracecode/harness` is a browser-consumable runtime SDK for code execution and tracing: explicit browser runtime creation, package-managed worker assets, and no app-specific storage/bootstrap contract in the public API.
 
@@ -14,7 +14,8 @@ It includes:
 
 - browser-hosted execution for Python, JavaScript, and TypeScript
 - an experimental browser-local Java 17 lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
-- an experimental browser-local C# lane for LeetCode-style `public class Solution` and `ops-class` execution
+- an experimental browser-local C# lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
+- an experimental browser-local C++ lane for `function`, `solution-method`, `ops-class`, `script`, and `interviewMode` execution
 - trace capture and normalized runtime contracts
 - browser worker assets and asset sync tooling
 
@@ -41,7 +42,7 @@ Consuming apps are expected to own their own UI, persistence, product logic, and
 ## What You Get
 
 - shared runtime contract types and trace adapters
-- browser runtime clients for Python, JavaScript, TypeScript, Java, and C#
+- browser runtime clients for Python, JavaScript, TypeScript, Java, C#, and C++
 - published worker assets plus a CLI to copy them into your app
 - capability profiles for honest per-language support claims
 - regression coverage for runtime parity, packaging, and consumer smoke tests
@@ -240,8 +241,8 @@ Current Java scope:
 
 Current C# scope:
 
-- supported: `solution-method` execution for `public class Solution`, `ops-class` execution with JS/TS/Java-style operation-output arrays, generated drivers including `void` methods, `ListNode`/`TreeNode` prelude classes and JSON hydration, stdout capture, runtime errors, mapped Roslyn compile diagnostics, soft loop timeouts, trace-step budgets, `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/array return-value serialization, block-bodied and expression-bodied method tracing, basic line/call/return-value/simple-write tracing, one-dimensional array indexed read/write tracing including simple compound writes, and initial `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/`Queue<T>`/`Stack<T>` wrapper tracing for `var`, explicit local declarations, target-typed `new()`, collection initializers, common one-argument constructors, and `Dictionary`/`HashSet` comparer constructor overloads
-- not yet supported: broad multi-argument collection constructors beyond the current comparer overloads, NuGet packages, async/threading APIs, project files, multiple source files, unsafe code, or full expression/value tracing fidelity
+- supported: named `function` execution, script-style `function` execution with an empty function name and top-level `result`, `interviewMode` execution with sanitized timeout responses, `solution-method` execution for `public class Solution`, `ops-class` execution with JS/TS/Java-style operation-output arrays, generated drivers including `void` methods, `ListNode`/`TreeNode` prelude classes and JSON hydration including linked `__id__`/`__ref__` cycle refs, neutral graph-like map/list serialization, stdout capture, runtime errors, mapped Roslyn compile diagnostics, soft loop timeouts, trace budgets (`maxTraceSteps`, `maxLineEvents`, `maxSingleLineHits`, `maxStoredEvents`, `minimalTrace`), call-stack attachment for traced frames, `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/array return-value serialization, block-bodied and expression-bodied method tracing, block-bodied and expression-bodied lambda tracing, basic line/call/return-value/simple-write tracing, one-dimensional array indexed read/write tracing including simple compound writes, and `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/`Queue<T>`/`PriorityQueue<TElement,TPriority>`/`Stack<T>` wrapper tracing for `var`, explicit local declarations, target-typed `new()`, collection initializers, common collection constructors, comparer constructor overloads, and priority-queue capacity/comparer constructors
+- not yet supported: NuGet packages, async/threading APIs, project files, multiple source files, unsafe code, expression-tree lambda rewriting, or full expression/value tracing fidelity
 
 ## Example Consumer
 

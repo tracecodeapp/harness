@@ -27,6 +27,18 @@ public sealed class CSharpExecuteRequest
 
     [JsonPropertyName("maxTraceSteps")]
     public int? MaxTraceSteps { get; set; }
+
+    [JsonPropertyName("maxLineEvents")]
+    public int? MaxLineEvents { get; set; }
+
+    [JsonPropertyName("maxSingleLineHits")]
+    public int? MaxSingleLineHits { get; set; }
+
+    [JsonPropertyName("maxStoredEvents")]
+    public int? MaxStoredEvents { get; set; }
+
+    [JsonPropertyName("minimalTrace")]
+    public bool MinimalTrace { get; set; }
 }
 
 public sealed class CSharpExecuteResponse
@@ -90,6 +102,14 @@ public sealed class RuntimeTraceEvent
 
     [JsonPropertyName("message")]
     public string? Message { get; set; }
+
+    [JsonPropertyName("reason")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reason { get; set; }
+
+    [JsonPropertyName("callStack")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<RuntimeTraceCallFrame>? CallStack { get; set; }
 }
 
 public sealed class RuntimeTraceTarget
@@ -99,6 +119,19 @@ public sealed class RuntimeTraceTarget
 
     [JsonPropertyName("path")]
     public List<object?>? Path { get; set; }
+}
+
+public sealed class RuntimeTraceCallFrame
+{
+    [JsonPropertyName("function")]
+    public string Function { get; set; } = string.Empty;
+
+    [JsonPropertyName("line")]
+    public int? Line { get; set; }
+
+    [JsonPropertyName("args")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<object?>? Args { get; set; }
 }
 
 public sealed class CSharpDiagnostic

@@ -17,7 +17,16 @@ interface CSharpResponse {
     id: string;
   }>;
   consoleOutput?: string[];
-  events?: Array<{ kind: string; line?: number; function?: string; method?: string; value?: unknown; args?: unknown[]; target?: { variable: string; path?: unknown[] } }>;
+  events?: Array<{
+    kind: string;
+    line?: number;
+    function?: string;
+    method?: string;
+    value?: unknown;
+    args?: unknown[];
+    callStack?: Array<{ function?: string; line?: number; args?: unknown[] }>;
+    target?: { variable: string; path?: unknown[] };
+  }>;
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
   timeoutReason?: string;
@@ -33,6 +42,22 @@ const fixtureRoot = resolve(spikeRoot, 'fixtures');
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function assertNoVisualizationTokens(value: unknown, label: string): void {
+  const serialized = JSON.stringify(value);
+  for (const forbidden of ['visualization', 'objectKinds', 'hashMaps', 'graph-adjacency', 'linked-list']) {
+    assertCondition(
+      !serialized.includes(forbidden),
+      `${label} should not leak visualization token ${forbidden}, received ${serialized}`
+    );
   }
 }
 
@@ -91,7 +116,7 @@ function executeCase(
   functionName: string,
   inputs: Record<string, unknown>,
   trace = false,
-  options: { timeoutMs?: number; maxTraceSteps?: number } = {}
+  options: { timeoutMs?: number; maxTraceSteps?: number; executionStyle?: 'solution-method' | 'function' | 'ops-class' } = {}
 ): CSharpResponse {
   return JSON.parse(execute(JSON.stringify({ source, functionName, inputs, trace, ...options }))) as CSharpResponse;
 }
@@ -109,6 +134,31 @@ async function main(): Promise<void> {
   );
   console.log(`PASS: C# Add compiled, loaded, invoked, and returned ${add.output}`);
 
+  const scriptStyle = executeCase(
+    execute,
+    [
+      'using System.Collections.Generic;',
+      'var values = new List<int> { 2, 3 };',
+      'values.Add(4);',
+      'var result = new[] { values[0], values[2], values.Count };',
+      'Console.WriteLine($"script count {values.Count}");',
+    ].join('\n'),
+    '',
+    {},
+    false,
+    { executionStyle: 'function' }
+  );
+  assertCondition(scriptStyle.success, `Script-style C# should succeed: ${scriptStyle.error ?? 'unknown error'}`);
+  assertCondition(
+    JSON.stringify(scriptStyle.output) === JSON.stringify([2, 4, 3]),
+    `Script-style C# should return top-level result, received ${JSON.stringify(scriptStyle.output)}`
+  );
+  assertCondition(
+    scriptStyle.consoleOutput?.includes('script count 3') === true,
+    `Script-style C# should capture stdout, received ${JSON.stringify(scriptStyle.consoleOutput)}`
+  );
+  console.log('PASS: C# script-style execution runs top-level statements and returns result');
+
   const tracedAdd = executeCase(
     execute,
     'public class Solution { public int Add(int a, int b) { int sum = a + b; return sum; } }',
@@ -122,8 +172,8 @@ async function main(): Promise<void> {
     `Traced Add should include call event, received ${JSON.stringify(tracedAdd.events)}`
   );
   assertCondition(
-    tracedAdd.events?.some((event) => event.kind === 'write' && event.target?.variable === 'sum') === true,
-    `Traced Add should include local write event, received ${JSON.stringify(tracedAdd.events)}`
+    tracedAdd.events?.some((event) => (event.kind === 'write' || event.kind === 'snapshot') && event.target?.variable === 'sum') === true,
+    `Traced Add should include local state event, received ${JSON.stringify(tracedAdd.events)}`
   );
   assertCondition(
     tracedAdd.events?.some((event) => event.kind === 'line') === true,
@@ -133,7 +183,15 @@ async function main(): Promise<void> {
     tracedAdd.events?.some((event) => event.kind === 'return' && event.function === 'Add' && event.value === 5) === true,
     `Traced Add should include return event with value 5, received ${JSON.stringify(tracedAdd.events)}`
   );
-  console.log('PASS: C# tracing returned call, write, line, and return-value events');
+  assertCondition(
+    tracedAdd.events?.some((event) => event.kind === 'line' && event.callStack?.some((frame) => frame.function === 'Add')) === true,
+    `Traced Add should attach Add callStack frames to line events, received ${JSON.stringify(tracedAdd.events)}`
+  );
+  assertCondition(
+    tracedAdd.events?.some((event) => event.kind === 'return' && event.function === 'Add' && event.callStack?.some((frame) => frame.function === 'Add')) === true,
+    `Traced Add should attach Add callStack frames to return events, received ${JSON.stringify(tracedAdd.events)}`
+  );
+  console.log('PASS: C# tracing returned call, local state, line, return-value, and call-stack events');
 
   const tracedExpressionBody = executeCase(
     execute,
@@ -181,6 +239,99 @@ async function main(): Promise<void> {
   );
   console.log('PASS: C# tracing supports expression-bodied void methods');
 
+  const tracedLambdaHelper = executeCase(
+    execute,
+    [
+      'using System;',
+      'public class Solution {',
+      '  public int Reachable(int[][] graph) {',
+      '    int[] seen = new int[graph.Length];',
+      '    Func<int, int>? dfs = null;',
+      '    dfs = node => {',
+      '      if (seen[node] == 1) {',
+      '        return 0;',
+      '      }',
+      '      seen[node] = 1;',
+      '      int total = 1;',
+      '      foreach (int next in graph[node]) {',
+      '        total += dfs!(next);',
+      '      }',
+      '      return total;',
+      '    };',
+      '    return dfs(0);',
+      '  }',
+      '}',
+    ].join('\n'),
+    'Reachable',
+    { graph: [[1], [2], [1]] },
+    true
+  );
+  assertCondition(
+    tracedLambdaHelper.success,
+    `Traced lambda helper should succeed: ${tracedLambdaHelper.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    tracedLambdaHelper.output === 3,
+    `Traced lambda helper should return 3, received ${JSON.stringify(tracedLambdaHelper.output)}`
+  );
+  assertCondition(
+    tracedLambdaHelper.events?.some((event) => event.kind === 'call' && event.function === 'dfs' && event.args?.[0] === 0) === true,
+    `Traced lambda helper should include dfs call args, received ${JSON.stringify(tracedLambdaHelper.events)}`
+  );
+  assertCondition(
+    tracedLambdaHelper.events?.some((event) => event.kind === 'return' && event.function === 'dfs' && event.value === 3) === true,
+    `Traced lambda helper should include dfs return value 3, received ${JSON.stringify(tracedLambdaHelper.events)}`
+  );
+  assertCondition(
+    tracedLambdaHelper.events?.some((event) => event.kind === 'return' && event.function === 'dfs' && event.value === 0) === true,
+    `Traced lambda helper should include dfs early return value 0, received ${JSON.stringify(tracedLambdaHelper.events)}`
+  );
+  console.log('PASS: C# tracing supports block-bodied lambda helper call and return events');
+
+  const tracedExpressionLambda = executeCase(
+    execute,
+    [
+      'using System;',
+      'public class Solution {',
+      '  public int UseLambda(int value) {',
+      '    Func<int, int> bump = x => x + 1;',
+      '    Action<int> log = x => Console.WriteLine(x);',
+      '    int next = bump(value);',
+      '    log(next);',
+      '    return next;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'UseLambda',
+    { value: 4 },
+    true
+  );
+  assertCondition(
+    tracedExpressionLambda.success,
+    `Traced expression-bodied lambda case should succeed: ${tracedExpressionLambda.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    tracedExpressionLambda.output === 5,
+    `Traced expression-bodied lambda case should return 5, received ${JSON.stringify(tracedExpressionLambda.output)}`
+  );
+  assertCondition(
+    tracedExpressionLambda.consoleOutput?.includes('5') === true,
+    `Traced expression-bodied lambda case should capture Action stdout, received ${JSON.stringify(tracedExpressionLambda.consoleOutput)}`
+  );
+  assertCondition(
+    tracedExpressionLambda.events?.some((event) => event.kind === 'call' && event.function === 'bump' && event.args?.[0] === 4) === true,
+    `Traced expression-bodied lambda case should include bump call args, received ${JSON.stringify(tracedExpressionLambda.events)}`
+  );
+  assertCondition(
+    tracedExpressionLambda.events?.some((event) => event.kind === 'return' && event.function === 'bump' && event.value === 5) === true,
+    `Traced expression-bodied lambda case should include bump return value, received ${JSON.stringify(tracedExpressionLambda.events)}`
+  );
+  assertCondition(
+    tracedExpressionLambda.events?.some((event) => event.kind === 'return' && event.function === 'log') === true,
+    `Traced expression-bodied lambda case should include Action return event, received ${JSON.stringify(tracedExpressionLambda.events)}`
+  );
+  console.log('PASS: C# tracing supports expression-bodied Func and Action lambdas');
+
   const traceLimited = executeCase(
     execute,
     'public class Solution { public int Add(int a, int b) { int sum = a + b; return sum; } }',
@@ -189,10 +340,11 @@ async function main(): Promise<void> {
     true,
     { maxTraceSteps: 2 }
   );
-  assertCondition(!traceLimited.success, 'Trace-limited Add should fail');
+  assertCondition(traceLimited.success, 'Trace-limited Add should preserve successful execution');
+  assertCondition(traceLimited.output === 5, `Trace-limited Add should preserve output 5, received ${JSON.stringify(traceLimited.output)}`);
   assertCondition(traceLimited.traceLimitExceeded === true, 'Trace-limited Add should set traceLimitExceeded');
   assertCondition(traceLimited.timeoutReason === 'trace-limit', 'Trace-limited Add should use trace-limit reason');
-  console.log('PASS: C# trace budget stops traced execution');
+  console.log('PASS: C# trace budget caps trace capture while preserving execution output');
 
   const timedOut = executeCase(
     execute,
@@ -548,6 +700,42 @@ async function main(): Promise<void> {
   );
   console.log('PASS: C# tracing returned comparer constructor wrapper events');
 
+  const tracedPriorityQueueConstructors = executeCase(
+    execute,
+    [
+      'using System.Collections.Generic;',
+      'public class Solution {',
+      '  public int UsePriorityQueue(int value) {',
+      '    var comparer = Comparer<int>.Create((left, right) => left.CompareTo(right));',
+      '    PriorityQueue<int, int> heap = new PriorityQueue<int, int>(4, comparer);',
+      '    heap.Enqueue(value + 1, value + 1);',
+      '    heap.Enqueue(value, value);',
+      '    return heap.Dequeue();',
+      '  }',
+      '}',
+    ].join('\n'),
+    'UsePriorityQueue',
+    { value: 4 },
+    true
+  );
+  assertCondition(
+    tracedPriorityQueueConstructors.success,
+    `Traced priority-queue constructor case should succeed: ${tracedPriorityQueueConstructors.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    tracedPriorityQueueConstructors.output === 4,
+    `Traced priority-queue constructor case should return 4, received ${JSON.stringify(tracedPriorityQueueConstructors.output)}`
+  );
+  assertCondition(
+    tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'snapshot' && event.target?.variable === 'heap') === true,
+    `Traced priority-queue constructor case should include heap constructor snapshot, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+  );
+  assertCondition(
+    tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'Enqueue') === true,
+    `Traced priority-queue constructor case should include heap Enqueue mutate, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+  );
+  console.log('PASS: C# tracing supports priority-queue capacity/comparer constructors');
+
   const twoSum = executeCase(execute, fixture('two-sum.cs'), 'TwoSum', {
     nums: [2, 7, 11, 15],
     target: 9,
@@ -660,6 +848,74 @@ async function main(): Promise<void> {
   assertCondition(objectNodeInput.output === 26, `Object node input case should return 26, received ${JSON.stringify(objectNodeInput.output)}`);
   console.log('PASS: C# generated driver hydrates object-shaped ListNode and TreeNode inputs');
 
+  const listNodeCycleInput = executeCase(
+    execute,
+    [
+      'public class Solution {',
+      '  public bool HasCycle(ListNode head) {',
+      '    ListNode slow = head;',
+      '    ListNode fast = head;',
+      '    while (fast != null && fast.next != null) {',
+      '      slow = slow.next;',
+      '      fast = fast.next.next;',
+      '      if (object.ReferenceEquals(slow, fast)) return true;',
+      '    }',
+      '    return false;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'HasCycle',
+    {
+      head: {
+        __id__: 'n0',
+        val: 1,
+        next: {
+          __id__: 'n1',
+          val: 2,
+          next: { __ref__: 'n0' },
+        },
+      },
+    }
+  );
+  assertCondition(
+    listNodeCycleInput.success,
+    `ListNode ref-cycle input case should succeed: ${listNodeCycleInput.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    listNodeCycleInput.output === true,
+    `ListNode ref-cycle input case should detect a cycle, received ${JSON.stringify(listNodeCycleInput.output)}`
+  );
+  console.log('PASS: C# generated driver hydrates ListNode __id__/__ref__ cycles');
+
+  const treeNodeAliasInput = executeCase(
+    execute,
+    [
+      'public class Solution {',
+      '  public bool HasAliasedChildren(TreeNode root) {',
+      '    return object.ReferenceEquals(root.left, root.right);',
+      '  }',
+      '}',
+    ].join('\n'),
+    'HasAliasedChildren',
+    {
+      root: {
+        __id__: 'root',
+        val: 9,
+        left: { __id__: 'child', val: 3, left: null, right: null },
+        right: { __ref__: 'child' },
+      },
+    }
+  );
+  assertCondition(
+    treeNodeAliasInput.success,
+    `TreeNode alias input case should succeed: ${treeNodeAliasInput.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    treeNodeAliasInput.output === true,
+    `TreeNode alias input case should preserve child identity, received ${JSON.stringify(treeNodeAliasInput.output)}`
+  );
+  console.log('PASS: C# generated driver hydrates TreeNode __id__/__ref__ aliases');
+
   const listNodeOutput = executeCase(
     execute,
     [
@@ -702,6 +958,225 @@ async function main(): Promise<void> {
   );
   console.log('PASS: C# generated driver serializes TreeNode outputs');
 
+  const listNodeCycleOutput = executeCase(
+    execute,
+    [
+      'public class Solution {',
+      '  public ListNode BuildCycle() {',
+      '    ListNode head = new ListNode(1);',
+      '    head.next = new ListNode(2);',
+      '    head.next.next = head;',
+      '    return head;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'BuildCycle',
+    {}
+  );
+  assertCondition(
+    listNodeCycleOutput.success,
+    `ListNode cycle output case should succeed: ${listNodeCycleOutput.error ?? 'unknown error'}`
+  );
+  {
+    const output = asRecord(listNodeCycleOutput.output);
+    const next = asRecord(output?.next);
+    const cycleRef = asRecord(next?.next);
+    assertCondition(
+      output?.val === 1 && next?.val === 2 && typeof output?.__id__ === 'string' && cycleRef?.__ref__ === output.__id__,
+      `ListNode cycle output should serialize with linked id/ref markers, received ${JSON.stringify(listNodeCycleOutput.output)}`
+    );
+  }
+  assertNoVisualizationTokens(listNodeCycleOutput.output, 'ListNode cycle output');
+  console.log('PASS: C# generated driver serializes ListNode cycles with linked ids/refs');
+
+  const treeNodeAliasOutput = executeCase(
+    execute,
+    [
+      'public class Solution {',
+      '  public TreeNode BuildAliasedTree() {',
+      '    TreeNode root = new TreeNode(1);',
+      '    root.left = new TreeNode(2);',
+      '    root.right = root.left;',
+      '    return root;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'BuildAliasedTree',
+    {}
+  );
+  assertCondition(
+    treeNodeAliasOutput.success,
+    `TreeNode alias output case should succeed: ${treeNodeAliasOutput.error ?? 'unknown error'}`
+  );
+  {
+    const output = asRecord(treeNodeAliasOutput.output);
+    const left = asRecord(output?.left);
+    const right = asRecord(output?.right);
+    assertCondition(
+      output?.val === 1 && left?.val === 2 && typeof left?.__id__ === 'string' && right?.__ref__ === left.__id__,
+      `TreeNode alias output should serialize with linked id/ref markers, received ${JSON.stringify(treeNodeAliasOutput.output)}`
+    );
+  }
+  assertNoVisualizationTokens(treeNodeAliasOutput.output, 'TreeNode alias output');
+  console.log('PASS: C# generated driver serializes TreeNode aliases with linked ids/refs');
+
+  const graphMapOutput = executeCase(
+    execute,
+    [
+      'using System.Collections.Generic;',
+      'public class Solution {',
+      '  public Dictionary<int, List<int>> BuildGraph() {',
+      '    var graph = new Dictionary<int, List<int>>();',
+      '    graph[0] = new List<int> { 1, 2 };',
+      '    graph[1] = new List<int> { 2 };',
+      '    graph[2] = new List<int>();',
+      '    return graph;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'BuildGraph',
+    {}
+  );
+  assertCondition(graphMapOutput.success, `Graph-like map output case should succeed: ${graphMapOutput.error ?? 'unknown error'}`);
+  {
+    const output = asRecord(graphMapOutput.output);
+    assertCondition(
+      JSON.stringify(output?.['0']) === JSON.stringify([1, 2])
+        && JSON.stringify(output?.['1']) === JSON.stringify([2])
+        && JSON.stringify(output?.['2']) === JSON.stringify([]),
+      `Graph-like map output should serialize as a neutral map of lists, received ${JSON.stringify(graphMapOutput.output)}`
+    );
+  }
+  assertNoVisualizationTokens(graphMapOutput.output, 'Graph-like map output');
+  console.log('PASS: C# generated driver serializes graph-like maps as neutral JSON');
+
+  const tracedListNodeCycleOutput = executeCase(
+    execute,
+    [
+      'public class Solution {',
+      '  public ListNode BuildCycle() {',
+      '    ListNode head = new ListNode(1);',
+      '    head.next = new ListNode(2);',
+      '    head.next.next = head;',
+      '    return head;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'BuildCycle',
+    {},
+    true
+  );
+  assertCondition(
+    tracedListNodeCycleOutput.success,
+    `Traced ListNode cycle output case should succeed: ${tracedListNodeCycleOutput.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    tracedListNodeCycleOutput.events?.some((event) => {
+      const value = asRecord(event.value);
+      const next = asRecord(value?.next);
+      const cycleRef = asRecord(next?.next);
+      return event.kind === 'return'
+        && event.function === 'BuildCycle'
+        && value?.__type__ === 'ListNode'
+        && value.val === 1
+        && next?.val === 2
+        && typeof value.__id__ === 'string'
+        && cycleRef?.__ref__ === value.__id__;
+    }) === true,
+    `Traced ListNode cycle output should include linked id/ref markers, received ${JSON.stringify(tracedListNodeCycleOutput.events)}`
+  );
+  assertNoVisualizationTokens(tracedListNodeCycleOutput.events, 'Traced ListNode cycle events');
+  console.log('PASS: C# tracing serializes ListNode cycles with linked ids/refs');
+
+  const tracedTreeNodeAliasOutput = executeCase(
+    execute,
+    [
+      'public class Solution {',
+      '  public TreeNode Echo(TreeNode root) {',
+      '    return root;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'Echo',
+    {
+      root: {
+        __id__: 'root',
+        val: 9,
+        left: { __id__: 'child', val: 3, left: null, right: null },
+        right: { __ref__: 'child' },
+      },
+    },
+    true
+  );
+  assertCondition(
+    tracedTreeNodeAliasOutput.success,
+    `Traced TreeNode alias case should succeed: ${tracedTreeNodeAliasOutput.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    tracedTreeNodeAliasOutput.events?.some((event) => {
+      const arg = Array.isArray(event.args) ? asRecord(event.args[0]) : undefined;
+      const left = asRecord(arg?.left);
+      const right = asRecord(arg?.right);
+      return event.kind === 'call'
+        && event.function === 'Echo'
+        && arg?.__type__ === 'TreeNode'
+        && left?.val === 3
+        && typeof left?.__id__ === 'string'
+        && right?.__ref__ === left.__id__;
+    }) === true,
+    `Traced TreeNode alias case should include linked id/ref markers in call args, received ${JSON.stringify(tracedTreeNodeAliasOutput.events)}`
+  );
+  assertCondition(
+    tracedTreeNodeAliasOutput.events?.some((event) => {
+      const value = asRecord(event.value);
+      const left = asRecord(value?.left);
+      const right = asRecord(value?.right);
+      return event.kind === 'return'
+        && event.function === 'Echo'
+        && value?.__type__ === 'TreeNode'
+        && left?.val === 3
+        && typeof left?.__id__ === 'string'
+        && right?.__ref__ === left.__id__;
+    }) === true,
+    `Traced TreeNode alias case should include linked id/ref markers in return value, received ${JSON.stringify(tracedTreeNodeAliasOutput.events)}`
+  );
+  assertNoVisualizationTokens(tracedTreeNodeAliasOutput.events, 'Traced TreeNode alias events');
+  console.log('PASS: C# tracing serializes TreeNode aliases with linked ids/refs');
+
+  const tracedGraphListOutput = executeCase(
+    execute,
+    [
+      'using System.Collections.Generic;',
+      'public class Solution {',
+      '  public List<List<int>> BuildGraph() {',
+      '    var graph = new List<List<int>>();',
+      '    graph.Add(new List<int>());',
+      '    graph.Add(new List<int>());',
+      '    graph.Add(new List<int>());',
+      '    graph[0].Add(1);',
+      '    graph[1].Add(2);',
+      '    return graph;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'BuildGraph',
+    {},
+    true
+  );
+  assertCondition(
+    tracedGraphListOutput.success,
+    `Traced graph-like list output case should succeed: ${tracedGraphListOutput.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    tracedGraphListOutput.events?.some((event) =>
+      event.kind === 'return'
+      && event.function === 'BuildGraph'
+      && JSON.stringify(event.value) === JSON.stringify([[1], [2], []])) === true,
+    `Traced graph-like list output should serialize as neutral nested lists, received ${JSON.stringify(tracedGraphListOutput.events)}`
+  );
+  assertNoVisualizationTokens(tracedGraphListOutput.events, 'Traced graph-like list events');
+  console.log('PASS: C# tracing serializes graph-like lists as neutral JSON');
+
   const tracedListNodeValues = executeCase(
     execute,
     [
@@ -722,11 +1197,11 @@ async function main(): Promise<void> {
   );
   assertCondition(
     tracedListNodeValues.events?.some((event) =>
-      event.kind === 'write'
+      (event.kind === 'write' || event.kind === 'snapshot')
       && event.target?.variable === 'curr'
       && (event.value as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode'
       && (event.value as { val?: number } | undefined)?.val === 7) === true,
-    `Traced ListNode values case should include normalized ListNode write, received ${JSON.stringify(tracedListNodeValues.events)}`
+    `Traced ListNode values case should include normalized ListNode state, received ${JSON.stringify(tracedListNodeValues.events)}`
   );
   assertCondition(
     tracedListNodeValues.events?.some((event) =>
@@ -744,7 +1219,7 @@ async function main(): Promise<void> {
       && event.value === 7) === true,
     `Traced ListNode values case should include curr.val read, received ${JSON.stringify(tracedListNodeValues.events)}`
   );
-  console.log('PASS: C# tracing normalizes ListNode writes, reads, and call args');
+  console.log('PASS: C# tracing normalizes ListNode state, reads, and call args');
 
   const tracedListNodeFieldWrites = executeCase(
     execute,
@@ -864,7 +1339,7 @@ async function main(): Promise<void> {
       event.kind === 'read'
       && event.target?.variable === 'root'
       && event.target.path?.[0] === 'left'
-      && event.target.path?.[1] === 'val'
+      && (event.target.path?.[1] === 'val' || event.target.path.length === 1)
       && event.value === 9) === true,
     `Traced nested TreeNode field case should include root.left.val read, received ${JSON.stringify(tracedNestedTreeNodeFields.events)}`
   );

@@ -10,11 +10,15 @@ using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 
 namespace TraceCode.CSharpHost;
 
 public static partial class CompilerHost
 {
+    private const string UserCodePath = "UserCode.cs";
+    private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
+    private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp12);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -63,7 +67,14 @@ public static partial class CompilerHost
             }
 
             Assembly userAssembly = Assembly.Load(peStream.ToArray());
-            RuntimeTraceSink.Configure(request.TimeoutMs, request.Trace ? request.MaxTraceSteps : null);
+            RuntimeTraceSink.Configure(
+                request.TimeoutMs,
+                request.Trace ? request.MaxTraceSteps : null,
+                request.Trace ? request.MaxLineEvents : null,
+                request.Trace ? request.MaxSingleLineHits : null,
+                request.Trace ? request.MaxStoredEvents : null,
+                request.Trace && request.MinimalTrace
+            );
             object? output = InvokeDriver(userAssembly);
             return Serialize(new CSharpExecuteResponse
             {
@@ -72,7 +83,7 @@ public static partial class CompilerHost
                 ConsoleOutput = SplitConsoleOutput(capturedOut),
                 Events = RuntimeTraceSink.Snapshot(),
                 TraceLimitExceeded = RuntimeTraceSink.TraceLimitExceeded,
-                TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? "trace-limit" : null,
+                TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? RuntimeTraceSink.TimeoutReason : null,
                 ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
             });
         }
@@ -93,7 +104,7 @@ public static partial class CompilerHost
                 stopwatch,
                 capturedOut,
                 traceLimitExceeded: true,
-                timeoutReason: "trace-limit"
+                timeoutReason: traceLimit.TimeoutReason
             );
         }
         catch (Exception error)
@@ -110,23 +121,26 @@ public static partial class CompilerHost
     {
         SyntaxTree originalUserTree = CSharpSyntaxTree.ParseText(
             request.Source,
-            new CSharpParseOptions(LanguageVersion.CSharp12),
-            path: "UserCode.cs"
+            ParseOptions,
+            path: UserCodePath
         );
-        SyntaxTree userTree = TraceRewriter.Instrument(originalUserTree, request.Trace);
+        SyntaxTree executableUserTree = IsScriptExecutionRequest(request)
+            ? CreateScriptUserTree(originalUserTree)
+            : originalUserTree;
+        SyntaxTree userTree = TraceRewriter.Instrument(executableUserTree, request.Trace);
         SyntaxTree globalUsingsTree = CSharpSyntaxTree.ParseText(
             GenerateGlobalUsingsSource(),
-            new CSharpParseOptions(LanguageVersion.CSharp12),
+            ParseOptions,
             path: "TraceCodeGlobalUsings.cs"
         );
         SyntaxTree runtimeTree = CSharpSyntaxTree.ParseText(
             GenerateRuntimeSource(request.Inputs, originalUserTree),
-            new CSharpParseOptions(LanguageVersion.CSharp12),
+            ParseOptions,
             path: "TraceCodeRuntime.cs"
         );
         SyntaxTree driverTree = CSharpSyntaxTree.ParseText(
             GenerateDriverSource(originalUserTree, request),
-            new CSharpParseOptions(LanguageVersion.CSharp12),
+            ParseOptions,
             path: "TraceCodeDriver.cs"
         );
 
@@ -143,8 +157,125 @@ public static partial class CompilerHost
         );
     }
 
+    private static bool IsScriptExecutionRequest(CSharpExecuteRequest request)
+    {
+        return string.Equals(request.ExecutionStyle, "function", StringComparison.Ordinal)
+            && string.IsNullOrWhiteSpace(request.FunctionName);
+    }
+
+    private static SyntaxTree CreateScriptUserTree(SyntaxTree originalUserTree)
+    {
+        return CSharpSyntaxTree.ParseText(
+            GenerateScriptUserSource(originalUserTree),
+            ParseOptions,
+            path: UserCodePath
+        );
+    }
+
+    private static string GenerateScriptUserSource(SyntaxTree originalUserTree)
+    {
+        CompilationUnitSyntax root = originalUserTree.GetCompilationUnitRoot();
+        List<GlobalStatementSyntax> globalStatements = root.Members.OfType<GlobalStatementSyntax>().ToList();
+        if (globalStatements.Count == 0)
+        {
+            throw new InvalidOperationException("C# script style requires top-level statements and a result variable.");
+        }
+
+        SourceText sourceText = originalUserTree.GetText();
+        var builder = new StringBuilder();
+        AppendSourcePrelude(builder, sourceText, root);
+
+        foreach (MemberDeclarationSyntax member in root.Members.Where(member => member is not GlobalStatementSyntax))
+        {
+            AppendMappedSource(builder, sourceText, member.FullSpan);
+        }
+
+        AppendLineIfNeeded(builder);
+        builder.AppendLine($"internal static class {ScriptRunnerClassName}");
+        builder.AppendLine("{");
+        builder.AppendLine("    public static object? Run()");
+        builder.AppendLine("    {");
+
+        foreach (GlobalStatementSyntax statement in globalStatements)
+        {
+            AppendMappedSource(builder, sourceText, statement.FullSpan);
+        }
+
+        int resultLine = sourceText.Lines.GetLineFromPosition(globalStatements[^1].Span.End).LineNumber + 1;
+        builder.AppendLine($"#line {resultLine} \"{UserCodePath}\"");
+        builder.AppendLine("        return result;");
+        builder.AppendLine("    }");
+        builder.AppendLine("}");
+
+        return builder.ToString();
+    }
+
+    private static void AppendSourcePrelude(StringBuilder builder, SourceText sourceText, CompilationUnitSyntax root)
+    {
+        if (root.Members.Count == 0)
+        {
+            builder.Append(sourceText.ToString());
+            return;
+        }
+
+        int preludeEnd = root.Members.Min(member => member.FullSpan.Start);
+        if (preludeEnd > 0)
+        {
+            builder.Append(sourceText.ToString(TextSpan.FromBounds(0, preludeEnd)));
+        }
+    }
+
+    private static void AppendMappedSource(StringBuilder builder, SourceText sourceText, TextSpan span)
+    {
+        if (span.Length == 0)
+        {
+            return;
+        }
+
+        AppendLineIfNeeded(builder);
+        int line = sourceText.Lines.GetLineFromPosition(span.Start).LineNumber + 1;
+        builder.AppendLine($"#line {line} \"{UserCodePath}\"");
+        string text = sourceText.ToString(span);
+        builder.Append(text);
+        if (!EndsWithLineBreak(text))
+        {
+            builder.AppendLine();
+        }
+    }
+
+    private static void AppendLineIfNeeded(StringBuilder builder)
+    {
+        if (builder.Length == 0 || builder[^1] is '\n' or '\r')
+        {
+            return;
+        }
+
+        builder.AppendLine();
+    }
+
+    private static bool EndsWithLineBreak(string text)
+    {
+        return text.EndsWith("\n", StringComparison.Ordinal)
+            || text.EndsWith("\r", StringComparison.Ordinal);
+    }
+
     private static string GenerateDriverSource(SyntaxTree userTree, CSharpExecuteRequest request)
     {
+        if (IsScriptExecutionRequest(request))
+        {
+            return $$"""
+using System;
+
+public static class TraceCodeDriver
+{
+    public static object? Run()
+    {
+        return {{ScriptRunnerClassName}}.Run();
+    }
+}
+""";
+        }
+
         if (string.Equals(request.ExecutionStyle, "ops-class", StringComparison.Ordinal))
         {
             ClassDeclarationSyntax targetClass = FindClass(userTree, request.FunctionName);
@@ -1155,6 +1286,11 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Return(function, line, value);
         }
 
+        public static void Leave(string function)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Leave(function);
+        }
+
         public static void Exception(int line, string? message)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.Exception(line, message);
@@ -1738,6 +1874,24 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
+        public TraceCodeDictionary(string variable, int line, IEnumerable<KeyValuePair<TKey, TValue>> collection)
+            : base(collection)
+        {
+            this.variable = variable;
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
+        public TraceCodeDictionary(
+            string variable,
+            int line,
+            IEnumerable<KeyValuePair<TKey, TValue>> collection,
+            IEqualityComparer<TKey>? comparer)
+            : base(collection, comparer)
+        {
+            this.variable = variable;
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
         public new TValue this[TKey key]
         {
             get
@@ -1912,6 +2066,20 @@ public class TreeNode
 
         public TraceCodePriorityQueue(string variable, int line, IComparer<TPriority>? comparer)
             : base(comparer)
+        {
+            this.variable = variable;
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
+        public TraceCodePriorityQueue(string variable, int line, int initialCapacity)
+            : base(initialCapacity)
+        {
+            this.variable = variable;
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
+        public TraceCodePriorityQueue(string variable, int line, int initialCapacity, IComparer<TPriority>? comparer)
+            : base(initialCapacity, comparer)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2128,13 +2296,13 @@ public class TreeNode
         object? normalized = NormalizeOutputValue(
             output,
             0,
-            new HashSet<object>(ReferenceEqualityComparer.Instance)
+            new OutputReferenceTracker()
         );
         string json = JsonSerializer.Serialize(normalized, normalized?.GetType() ?? typeof(object), JsonOptions);
         return JsonSerializer.Deserialize<JsonElement>(json, JsonOptions);
     }
 
-    private static object? NormalizeOutputValue(object? value, int depth, ISet<object> seen)
+    private static object? NormalizeOutputValue(object? value, int depth, OutputReferenceTracker references)
     {
         if (value is null
             || value is string
@@ -2176,15 +2344,16 @@ public class TreeNode
 
         if (value is System.Collections.IDictionary dictionary)
         {
-            if (!seen.Add(value))
+            if (references.TryCreateReference(value, type.Name, out Dictionary<string, object?> reference))
             {
-                return new Dictionary<string, object?> { ["__ref__"] = type.Name };
+                return reference;
             }
+            references.Track(value, type.Name);
 
             var result = new Dictionary<string, object?>();
             foreach (System.Collections.DictionaryEntry entry in dictionary)
             {
-                result[NormalizeOutputKey(entry.Key)] = NormalizeOutputValue(entry.Value, depth + 1, seen);
+                result[NormalizeOutputKey(entry.Key)] = NormalizeOutputValue(entry.Value, depth + 1, references);
             }
 
             return result;
@@ -2192,31 +2361,33 @@ public class TreeNode
 
         if (value is Array array)
         {
-            if (!seen.Add(value))
+            if (references.TryCreateReference(value, type.Name, out Dictionary<string, object?> reference))
             {
-                return new List<object?>();
+                return reference;
             }
+            references.Track(value, type.Name);
 
-            return NormalizeOutputArray(array, 0, new int[array.Rank], depth, seen);
+            return NormalizeOutputArray(array, 0, new int[array.Rank], depth, references);
         }
 
         if (value is System.Collections.IEnumerable enumerable)
         {
-            if (!seen.Add(value))
+            if (references.TryCreateReference(value, type.Name, out Dictionary<string, object?> reference))
             {
-                return new List<object?>();
+                return reference;
             }
+            references.Track(value, type.Name);
 
             var result = new List<object?>();
             foreach (object? item in enumerable)
             {
-                result.Add(NormalizeOutputValue(item, depth + 1, seen));
+                result.Add(NormalizeOutputValue(item, depth + 1, references));
             }
 
             return result;
         }
 
-        return NormalizeOutputObject(value, type, depth, seen);
+        return NormalizeOutputObject(value, type, depth, references);
     }
 
     private static string NormalizeOutputKey(object? key)
@@ -2231,7 +2402,7 @@ public class TreeNode
         };
     }
 
-    private static object? NormalizeOutputArray(Array array, int dimension, int[] indices, int depth, ISet<object> seen)
+    private static object? NormalizeOutputArray(Array array, int dimension, int[] indices, int depth, OutputReferenceTracker references)
     {
         var values = new List<object?>();
         int lower = array.GetLowerBound(dimension);
@@ -2240,27 +2411,28 @@ public class TreeNode
         {
             indices[dimension] = index;
             values.Add(dimension == array.Rank - 1
-                ? NormalizeOutputValue(array.GetValue(indices), depth + 1, seen)
-                : NormalizeOutputArray(array, dimension + 1, indices, depth + 1, seen));
+                ? NormalizeOutputValue(array.GetValue(indices), depth + 1, references)
+                : NormalizeOutputArray(array, dimension + 1, indices, depth + 1, references));
         }
 
         return values;
     }
 
-    private static object? NormalizeOutputObject(object value, Type type, int depth, ISet<object> seen)
+    private static object? NormalizeOutputObject(object value, Type type, int depth, OutputReferenceTracker references)
     {
-        if (!seen.Add(value))
+        if (references.TryCreateReference(value, type.Name, out Dictionary<string, object?> reference))
         {
-            return new Dictionary<string, object?> { ["__ref__"] = type.Name };
+            return reference;
         }
 
         var result = new Dictionary<string, object?>();
+        references.Track(value, type.Name, result);
         if (type.Name is not ("ListNode" or "TreeNode"))
         {
             result["__type__"] = type.Name;
         }
-        AddOutputFieldMembers(result, value, type, depth, seen);
-        AddOutputPropertyMembers(result, value, type, depth, seen);
+        AddOutputFieldMembers(result, value, type, depth, references);
+        AddOutputPropertyMembers(result, value, type, depth, references);
         return result.Count > 0 ? result : value;
     }
 
@@ -2269,12 +2441,12 @@ public class TreeNode
         object value,
         Type type,
         int depth,
-        ISet<object> seen
+        OutputReferenceTracker references
     )
     {
         foreach (FieldInfo field in OrderOutputMembers(type.GetFields(BindingFlags.Public | BindingFlags.Instance)))
         {
-            result[field.Name] = NormalizeOutputValue(field.GetValue(value), depth + 1, seen);
+            result[field.Name] = NormalizeOutputValue(field.GetValue(value), depth + 1, references);
         }
     }
 
@@ -2283,7 +2455,7 @@ public class TreeNode
         object value,
         Type type,
         int depth,
-        ISet<object> seen
+        OutputReferenceTracker references
     )
     {
         foreach (PropertyInfo property in OrderOutputMembers(type.GetProperties(BindingFlags.Public | BindingFlags.Instance)))
@@ -2299,12 +2471,57 @@ public class TreeNode
 
             try
             {
-                result[property.Name] = NormalizeOutputValue(property.GetValue(value), depth + 1, seen);
+                result[property.Name] = NormalizeOutputValue(property.GetValue(value), depth + 1, references);
             }
             catch
             {
                 // Keep output serialization best-effort for user-defined objects with throwing accessors.
             }
+        }
+    }
+
+    private sealed class OutputReferenceTracker
+    {
+        private sealed class Entry
+        {
+            public Entry(string typeName, IDictionary<string, object?>? anchor)
+            {
+                TypeName = typeName;
+                Anchor = anchor;
+            }
+
+            public string TypeName { get; }
+            public IDictionary<string, object?>? Anchor { get; }
+            public string? Id { get; set; }
+        }
+
+        private readonly Dictionary<object, Entry> entries = new(ReferenceEqualityComparer.Instance);
+        private int nextId;
+
+        public void Track(object value, string typeName, IDictionary<string, object?>? anchor = null)
+        {
+            if (!entries.ContainsKey(value))
+            {
+                entries[value] = new Entry(typeName, anchor);
+            }
+        }
+
+        public bool TryCreateReference(object value, string typeName, out Dictionary<string, object?> reference)
+        {
+            if (!entries.TryGetValue(value, out Entry? entry))
+            {
+                reference = new Dictionary<string, object?>();
+                return false;
+            }
+
+            string id = entry.Id ??= $"{entry.TypeName}:{++nextId}";
+            if (entry.Anchor is not null)
+            {
+                entry.Anchor["__id__"] = id;
+            }
+
+            reference = new Dictionary<string, object?> { ["__ref__"] = id };
+            return true;
         }
     }
 

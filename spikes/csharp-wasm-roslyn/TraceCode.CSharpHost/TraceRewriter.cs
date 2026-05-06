@@ -189,7 +189,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements.Insert(0, callStatement);
         if (IsVoidReturnType(rewritten.ReturnType))
         {
-            statements = statements.Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line));
+            statements = statements
+                .Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line))
+                .Add(CreateLeaveStatement(node.Identifier.ValueText));
         }
 
         return rewritten.WithBody(rewritten.Body.WithStatements(statements));
@@ -247,7 +249,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements
             .Insert(0, callStatement)
-            .Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line));
+            .Add(CreateImplicitReturnStatement(node.Identifier.ValueText, line))
+            .Add(CreateLeaveStatement(node.Identifier.ValueText));
         return rewritten.WithBody(rewritten.Body.WithStatements(statements));
     }
 
@@ -312,7 +315,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements.Insert(0, callStatement);
         if (IsVoidReturnType(rewritten.ReturnType))
         {
-            statements = statements.Add(CreateImplicitReturnStatement(localFunctionNode.Identifier.ValueText, line));
+            statements = statements
+                .Add(CreateImplicitReturnStatement(localFunctionNode.Identifier.ValueText, line))
+                .Add(CreateLeaveStatement(localFunctionNode.Identifier.ValueText));
         }
 
         return rewritten.WithBody(rewritten.Body.WithStatements(statements));
@@ -320,17 +325,293 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode? VisitParenthesizedLambdaExpression(ParenthesizedLambdaExpressionSyntax node)
     {
-        return node;
+        if (!emitTraceEvents || IsExpressionTreeLambda(node))
+        {
+            return node;
+        }
+
+        string functionName = GetAnonymousFunctionName(node);
+        List<ParameterSyntax> parameters = node.ParameterList.Parameters.ToList();
+        List<string> collectionParameters = PushAnonymousFunctionContext(functionName, parameters);
+
+        CSharpSyntaxNode rewrittenBody;
+        try
+        {
+            rewrittenBody = (CSharpSyntaxNode)Visit(node.Body)!;
+        }
+        finally
+        {
+            PopAnonymousFunctionContext(collectionParameters);
+        }
+
+        if (rewrittenBody is BlockSyntax block)
+        {
+            return node.WithBody(AddAnonymousFunctionTraceStatements(block, functionName, parameters, GetLine(node)));
+        }
+
+        return rewrittenBody is ExpressionSyntax expression
+            ? node.WithBody(AddExpressionBodiedAnonymousFunctionTraceBlock(
+                expression,
+                functionName,
+                parameters,
+                GetLine(node),
+                IsVoidReturningLambda(node)))
+            : node;
     }
 
     public override SyntaxNode? VisitSimpleLambdaExpression(SimpleLambdaExpressionSyntax node)
     {
-        return node;
+        if (!emitTraceEvents || IsExpressionTreeLambda(node))
+        {
+            return node;
+        }
+
+        string functionName = GetAnonymousFunctionName(node);
+        var parameters = new List<ParameterSyntax> { node.Parameter };
+        List<string> collectionParameters = PushAnonymousFunctionContext(functionName, parameters);
+
+        CSharpSyntaxNode rewrittenBody;
+        try
+        {
+            rewrittenBody = (CSharpSyntaxNode)Visit(node.Body)!;
+        }
+        finally
+        {
+            PopAnonymousFunctionContext(collectionParameters);
+        }
+
+        if (rewrittenBody is BlockSyntax block)
+        {
+            return node.WithBody(AddAnonymousFunctionTraceStatements(block, functionName, parameters, GetLine(node)));
+        }
+
+        return rewrittenBody is ExpressionSyntax expression
+            ? node.WithBody(AddExpressionBodiedAnonymousFunctionTraceBlock(
+                expression,
+                functionName,
+                parameters,
+                GetLine(node),
+                IsVoidReturningLambda(node)))
+            : node;
     }
 
     public override SyntaxNode? VisitAnonymousMethodExpression(AnonymousMethodExpressionSyntax node)
     {
-        return node;
+        if (!emitTraceEvents)
+        {
+            return node;
+        }
+
+        string functionName = GetAnonymousFunctionName(node);
+        List<ParameterSyntax> parameters = node.ParameterList?.Parameters.ToList() ?? new List<ParameterSyntax>();
+        List<string> collectionParameters = PushAnonymousFunctionContext(functionName, parameters);
+
+        AnonymousMethodExpressionSyntax rewritten;
+        try
+        {
+            rewritten = (AnonymousMethodExpressionSyntax)base.VisitAnonymousMethodExpression(node)!;
+        }
+        finally
+        {
+            PopAnonymousFunctionContext(collectionParameters);
+        }
+
+        return rewritten.WithBlock(AddAnonymousFunctionTraceStatements(rewritten.Block, functionName, parameters, GetLine(node)));
+    }
+
+    private List<string> PushAnonymousFunctionContext(string functionName, IReadOnlyList<ParameterSyntax> parameters)
+    {
+        List<string> parameterNames = GetTraceableParameterNames(parameters).ToList();
+        methodNames.Push(functionName);
+        methodReturnTypes.Push("var");
+        variableScopes.Push(new HashSet<string>(parameterNames, StringComparer.Ordinal));
+        declaredLocalVariables.Push(new HashSet<string>(parameterNames, StringComparer.Ordinal));
+        stringBuilderScopes.Push(GetStringBuilderParameterNames(parameters).ToHashSet(StringComparer.Ordinal));
+
+        List<string> collectionParameters = GetCollectionParameterNames(parameters).ToList();
+        foreach (string collectionParameter in collectionParameters)
+        {
+            collectionParameterVariables.Add(collectionParameter);
+        }
+
+        return collectionParameters;
+    }
+
+    private void PopAnonymousFunctionContext(IEnumerable<string> collectionParameters)
+    {
+        foreach (string collectionParameter in collectionParameters)
+        {
+            collectionParameterVariables.Remove(collectionParameter);
+        }
+
+        declaredLocalVariables.Pop();
+        variableScopes.Pop();
+        stringBuilderScopes.Pop();
+        methodReturnTypes.Pop();
+        methodNames.Pop();
+    }
+
+    private static BlockSyntax AddAnonymousFunctionTraceStatements(
+        BlockSyntax block,
+        string functionName,
+        IReadOnlyList<ParameterSyntax> parameters,
+        int line)
+    {
+        string arguments = string.Join(", ", GetTraceableCallParameterNames(parameters));
+        StatementSyntax callStatement = TraceStatement(
+            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(functionName)}, {line}, new object?[] {{ {arguments} }});"
+        );
+
+        SyntaxList<StatementSyntax> statements = block.Statements
+            .Insert(0, callStatement)
+            .Add(CreateImplicitReturnStatement(functionName, line))
+            .Add(CreateLeaveStatement(functionName));
+        return block.WithStatements(statements);
+    }
+
+    private BlockSyntax AddExpressionBodiedAnonymousFunctionTraceBlock(
+        ExpressionSyntax expression,
+        string functionName,
+        IReadOnlyList<ParameterSyntax> parameters,
+        int line,
+        bool returnsVoid)
+    {
+        string arguments = string.Join(", ", GetTraceableCallParameterNames(parameters));
+        var statements = new List<StatementSyntax>
+        {
+            TraceStatement(
+                $"TraceCode.Internal.TraceCodeTrace.Call({Literal(functionName)}, {line}, new object?[] {{ {arguments} }});"
+            ),
+        };
+
+        if (returnsVoid)
+        {
+            statements.Add(SyntaxFactory.ExpressionStatement(expression));
+            statements.Add(CreateImplicitReturnStatement(functionName, line));
+            statements.Add(CreateLeaveStatement(functionName));
+            return SyntaxFactory.Block(statements);
+        }
+
+        string tempName = $"__tracecode_lambda_return_{returnValueCounter++}";
+        statements.Add(TraceStatement($"var {tempName} = {expression};"));
+        statements.Add(TraceStatement(
+            $"TraceCode.Internal.TraceCodeTrace.Return({Literal(functionName)}, {line}, {tempName});"
+        ));
+        statements.Add(CreateLeaveStatement(functionName));
+        statements.Add(TraceStatement($"return {tempName};"));
+        return SyntaxFactory.Block(statements);
+    }
+
+    private static string GetAnonymousFunctionName(AnonymousFunctionExpressionSyntax node)
+    {
+        if (node.Parent is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax variable })
+        {
+            return variable.Identifier.ValueText;
+        }
+
+        if (node.Parent is AssignmentExpressionSyntax assignment
+            && assignment.Right == node)
+        {
+            if (assignment.Left is IdentifierNameSyntax identifier)
+            {
+                return identifier.Identifier.ValueText;
+            }
+
+            if (assignment.Left is MemberAccessExpressionSyntax memberAccess)
+            {
+                return memberAccess.Name.Identifier.ValueText;
+            }
+        }
+
+        string kind = node is AnonymousMethodExpressionSyntax ? "anonymous" : "lambda";
+        return $"<{kind}:{GetLine(node)}>";
+    }
+
+    private static bool IsExpressionTreeLambda(AnonymousFunctionExpressionSyntax node)
+    {
+        TypeSyntax? targetType = GetLambdaTargetType(node);
+        if (targetType is null)
+        {
+            return false;
+        }
+
+        string normalized = targetType.ToString().Replace(" ", string.Empty, StringComparison.Ordinal);
+        return normalized.StartsWith("Expression<", StringComparison.Ordinal)
+            || normalized.StartsWith("System.Linq.Expressions.Expression<", StringComparison.Ordinal);
+    }
+
+    private static bool IsVoidReturningLambda(AnonymousFunctionExpressionSyntax node)
+    {
+        TypeSyntax? targetType = GetLambdaTargetType(node);
+        return targetType is not null && IsActionType(targetType);
+    }
+
+    private static TypeSyntax? GetLambdaTargetType(AnonymousFunctionExpressionSyntax node)
+    {
+        if (node.Parent is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax { Parent: VariableDeclarationSyntax declaration } })
+        {
+            return declaration.Type;
+        }
+
+        if (node.Parent is AssignmentExpressionSyntax assignment
+            && assignment.Left is DeclarationExpressionSyntax declarationExpression)
+        {
+            return declarationExpression.Type;
+        }
+
+        if (node.Parent is CastExpressionSyntax cast)
+        {
+            return cast.Type;
+        }
+
+        if (node.Parent is ParenthesizedExpressionSyntax { Parent: CastExpressionSyntax parenthesizedCast })
+        {
+            return parenthesizedCast.Type;
+        }
+
+        return null;
+    }
+
+    private static bool IsActionType(TypeSyntax type)
+    {
+        if (type is IdentifierNameSyntax identifier)
+        {
+            return identifier.Identifier.ValueText == "Action";
+        }
+
+        if (type is GenericNameSyntax generic)
+        {
+            return generic.Identifier.ValueText == "Action";
+        }
+
+        if (type is QualifiedNameSyntax qualified)
+        {
+            return IsActionType(qualified.Right);
+        }
+
+        if (type is AliasQualifiedNameSyntax aliasQualified)
+        {
+            return IsActionType(aliasQualified.Name);
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<string> GetTraceableParameterNames(IEnumerable<ParameterSyntax> parameters)
+    {
+        return parameters
+            .Select(parameter => parameter.Identifier.ValueText)
+            .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, "_", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal);
+    }
+
+    private static IEnumerable<string> GetTraceableCallParameterNames(IEnumerable<ParameterSyntax> parameters)
+    {
+        return parameters
+            .Where(parameter => !parameter.Modifiers.Any(SyntaxKind.OutKeyword))
+            .Select(parameter => parameter.Identifier.ValueText)
+            .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, "_", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal);
     }
 
     private static bool IsVoidReturnType(TypeSyntax returnType)
@@ -343,6 +624,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Return({Literal(methodName)}, {line});"
+        );
+    }
+
+    private static StatementSyntax CreateLeaveStatement(string methodName)
+    {
+        return TraceStatement(
+            $"TraceCode.Internal.TraceCodeTrace.Leave({Literal(methodName)});"
         );
     }
 
@@ -605,6 +893,19 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
     }
 
+    private static IEnumerable<string> GetCollectionParameterNames(IEnumerable<ParameterSyntax> parameters)
+    {
+        foreach (ParameterSyntax parameter in parameters)
+        {
+            if (parameter.Type is not null
+                && TryGetGenericType(parameter.Type, out string typeName, out _)
+                && IsSupportedCollectionType(typeName))
+            {
+                yield return parameter.Identifier.ValueText;
+            }
+        }
+    }
+
     private static IEnumerable<string> GetStringBuilderParameterNames(BaseMethodDeclarationSyntax node)
     {
         foreach (ParameterSyntax parameter in node.ParameterList.Parameters)
@@ -619,6 +920,17 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private static IEnumerable<string> GetStringBuilderParameterNames(LocalFunctionStatementSyntax node)
     {
         foreach (ParameterSyntax parameter in node.ParameterList.Parameters)
+        {
+            if (parameter.Type is not null && IsStringBuilderType(parameter.Type))
+            {
+                yield return parameter.Identifier.ValueText;
+            }
+        }
+    }
+
+    private static IEnumerable<string> GetStringBuilderParameterNames(IEnumerable<ParameterSyntax> parameters)
+    {
+        foreach (ParameterSyntax parameter in parameters)
         {
             if (parameter.Type is not null && IsStringBuilderType(parameter.Type))
             {
@@ -781,6 +1093,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             {
                 yield return snapshotStatement;
             }
+            yield return CreateLeaveStatement(methodName);
             yield return returnStatement;
             yield break;
         }
@@ -794,6 +1107,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             {
                 yield return snapshotStatement;
             }
+            yield return CreateLeaveStatement(methodName);
             yield return returnStatement;
             yield break;
         }
@@ -807,6 +1121,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             yield return snapshotStatement;
         }
+        yield return CreateLeaveStatement(methodName);
         yield return TraceStatement($"return {tempName};");
     }
 

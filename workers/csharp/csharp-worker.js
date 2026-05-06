@@ -34,7 +34,11 @@ async function handleMessage(message) {
     return initRuntime(message.payload?.assetBaseUrl);
   }
 
-  if (message.type === 'execute-code' || message.type === 'execute-with-tracing') {
+  if (
+    message.type === 'execute-code' ||
+    message.type === 'execute-code-interview' ||
+    message.type === 'execute-with-tracing'
+  ) {
     await initRuntime(message.payload?.assetBaseUrl);
     const request = {
       source: message.payload?.code ?? '',
@@ -44,6 +48,10 @@ async function handleMessage(message) {
       trace: message.type === 'execute-with-tracing',
       timeoutMs: message.payload?.timeoutMs,
       maxTraceSteps: message.payload?.maxTraceSteps,
+      maxLineEvents: message.payload?.maxLineEvents,
+      maxSingleLineHits: message.payload?.maxSingleLineHits,
+      maxStoredEvents: message.payload?.maxStoredEvents,
+      minimalTrace: message.payload?.minimalTrace,
     };
     return JSON.parse(executeExport(JSON.stringify(request)));
   }

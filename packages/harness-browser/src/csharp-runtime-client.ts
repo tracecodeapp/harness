@@ -67,7 +67,12 @@ class CSharpRuntimeClient implements RuntimeClient {
       executionStyle,
       functionName,
     });
-    return this.executeCode(code, functionName, inputs, executionStyle);
+    return this.workerClient.executeCodeInterviewMode(
+      code,
+      functionName,
+      inputs,
+      executionStyle as CSharpExecutionStyle
+    );
   }
 }
 

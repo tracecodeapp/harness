@@ -146,6 +146,8 @@ async function main(): Promise<void> {
     assertCondition(harnessA.isLanguageSupported('csharp'), 'Browser harness should expose C# support');
     assertCondition(harnessA.isLanguageSupported('cpp'), 'Browser harness should expose C++ support');
     const cppProfile = harnessA.getProfile('cpp');
+    const csharpProfile = harnessA.getProfile('csharp');
+    assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# profile should support interview-mode execution');
     assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ profile should support function execution');
     assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ profile should support solution-method execution');
     assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ profile should support ops-class execution');
@@ -235,6 +237,17 @@ async function main(): Promise<void> {
       );
     assertCondition(csharpOpsClassResult.success, 'C# runtime should route ops-class executeCode through the browser harness client');
     console.log('PASS: browser harness routes C# ops-class requests');
+
+    const csharpInterviewResult = await harnessA
+      .getClient('csharp')
+      .executeCodeInterviewMode(
+        'public class Solution { public int Add(int a, int b) { return a + b; } }',
+        'Add',
+        { a: 2, b: 3 },
+        'solution-method'
+      );
+    assertCondition(csharpInterviewResult.success, 'C# runtime should route interview-mode requests');
+    console.log('PASS: browser harness routes C# interview-mode requests');
 
     const activeCSharpWorker = [...workerInstances]
       .reverse()

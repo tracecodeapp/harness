@@ -140,8 +140,11 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.cycleReferences',
   ],
   csharp: [
+    'execution.styles.function',
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
+    'execution.styles.script',
+    'execution.styles.interviewMode',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
     'tracing.supported',
@@ -152,8 +155,13 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'tracing.events.stdout',
     'tracing.events.timeout',
     'tracing.controls.maxTraceSteps',
+    'tracing.controls.maxLineEvents',
+    'tracing.controls.maxSingleLineHits',
+    'tracing.controls.maxStoredEvents',
+    'tracing.controls.minimalTrace',
     'tracing.fidelity.preciseLineMapping',
     'tracing.fidelity.stableFunctionNames',
+    'tracing.fidelity.callStack',
     'diagnostics.compileErrors',
     'diagnostics.runtimeErrors',
     'diagnostics.mappedErrorLines',
@@ -161,6 +169,8 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.listNodeRefs',
     'structures.mapSerialization',
     'structures.setSerialization',
+    'structures.graphSerialization',
+    'structures.cycleReferences',
   ],
   cpp: [
     'execution.styles.function',
@@ -461,12 +471,15 @@ async function main(): Promise<void> {
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
   assertCondition(csharpProfile.capabilities.execution.styles.solutionMethod, 'C# should support solution-method execution');
   assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
+  assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# should support interview mode');
   assertCondition(csharpProfile.capabilities.tracing.supported, 'C# should support basic tracing');
+  assertCondition(csharpProfile.capabilities.tracing.fidelity.callStack, 'C# should attach call-stack frames');
   assertCondition(csharpProfile.capabilities.diagnostics.compileErrors, 'C# should support compile diagnostics');
   assertCondition(csharpProfile.capabilities.structures.listNodeRefs, 'C# should advertise ListNode hydration');
   assertCondition(csharpProfile.capabilities.structures.treeNodeRefs, 'C# should advertise TreeNode hydration');
   assertCondition(csharpProfile.capabilities.structures.mapSerialization, 'C# should advertise map serialization');
   assertCondition(csharpProfile.capabilities.structures.setSerialization, 'C# should advertise set serialization');
+  assertCondition(csharpProfile.capabilities.structures.cycleReferences, 'C# should preserve cycle references');
   assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ should support function execution');
   assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ should support solution-method execution');
   assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ should support ops-class execution');

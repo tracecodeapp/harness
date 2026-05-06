@@ -12,7 +12,17 @@ interface CSharpWorkerResponse {
   error?: string;
   diagnostics?: Array<{ file: string; line: number; column: number; message: string }>;
   consoleOutput?: string[];
-  events?: Array<{ kind: string; line?: number; function?: string; method?: string; value?: unknown; args?: unknown[]; target?: { variable: string; path?: unknown[] } }>;
+  events?: Array<{
+    kind: string;
+    line?: number;
+    function?: string;
+    method?: string;
+    value?: unknown;
+    args?: unknown[];
+    reason?: string;
+    callStack?: Array<{ function?: string; line?: number; args?: unknown[] }>;
+    target?: { variable: string; path?: unknown[] };
+  }>;
   traceLimitExceeded?: boolean;
   timeoutReason?: string;
 }
@@ -94,7 +104,12 @@ async function runWorkerCase(
   inputs: Record<string, unknown>,
   assetBaseUrl: string,
   trace = false,
-  options: { timeoutMs?: number; maxTraceSteps?: number; executionStyle?: 'solution-method' | 'ops-class' } = {}
+  options: {
+    timeoutMs?: number;
+    maxTraceSteps?: number;
+    executionStyle?: 'function' | 'solution-method' | 'ops-class';
+    messageType?: 'execute-code' | 'execute-code-interview' | 'execute-with-tracing';
+  } = {}
 ): Promise<CSharpWorkerResponse> {
   return page.evaluate(
     async ({ code, functionName, inputs, assetBaseUrl, trace, options, workerRequestTimeoutMs }) => {
@@ -153,13 +168,14 @@ async function runWorkerCase(
         globalThis[harnessKey] = harness;
       }
 
-      const result = await harness.send(trace ? 'execute-with-tracing' : 'execute-code', {
+      const { messageType, ...requestOptions } = options;
+      const result = await harness.send(messageType ?? (trace ? 'execute-with-tracing' : 'execute-code'), {
         code,
         functionName,
         inputs,
-        executionStyle: options.executionStyle ?? 'solution-method',
+        executionStyle: requestOptions.executionStyle ?? 'solution-method',
         assetBaseUrl,
-        ...options,
+        ...requestOptions,
       });
       return result;
     },
@@ -190,6 +206,47 @@ async function main(): Promise<void> {
     assertCondition(add.output === 5, `C# worker Add should return 5, received ${JSON.stringify(add.output)}`);
     assertCondition(add.consoleOutput?.includes('adding 2 and 3') === true, 'C# worker should capture stdout');
 
+    const scriptStyle = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'var values = new List<int> { 2, 3 };',
+        'values.Add(4);',
+        'var result = new[] { values[0], values[2], values.Count };',
+        'Console.WriteLine($"script count {values.Count}");',
+      ].join('\n'),
+      '',
+      {},
+      assetBaseUrl,
+      false,
+      { executionStyle: 'function' }
+    );
+    assertCondition(scriptStyle.success, `C# worker script-style case should succeed: ${scriptStyle.error ?? 'unknown error'}`);
+    assertCondition(
+      JSON.stringify(scriptStyle.output) === JSON.stringify([2, 4, 3]),
+      `C# worker script-style case should return top-level result, received ${JSON.stringify(scriptStyle.output)}`
+    );
+    assertCondition(
+      scriptStyle.consoleOutput?.includes('script count 3') === true,
+      `C# worker script-style case should capture stdout, received ${JSON.stringify(scriptStyle.consoleOutput)}`
+    );
+
+    const interviewAdd = await runWorkerCase(
+      page,
+      fixture('add.cs'),
+      'Add',
+      { a: 2, b: 3 },
+      assetBaseUrl,
+      false,
+      { messageType: 'execute-code-interview' }
+    );
+    assertCondition(interviewAdd.success, `C# worker interview Add should succeed: ${interviewAdd.error ?? 'unknown error'}`);
+    assertCondition(interviewAdd.output === 5, `C# worker interview Add should return 5, received ${JSON.stringify(interviewAdd.output)}`);
+    assertCondition(
+      !interviewAdd.events?.some((event) => event.kind !== 'stdout'),
+      `C# worker interview Add should return a non-trace execution result, received ${JSON.stringify(interviewAdd.events)}`
+    );
+
     const tracedAdd = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) { int sum = a + b; return sum; } }',
@@ -210,6 +267,14 @@ async function main(): Promise<void> {
     assertCondition(
       tracedAdd.events?.some((event) => event.kind === 'return' && event.function === 'Add' && event.value === 5) === true,
       `C# worker traced Add should include return event with value 5, received ${JSON.stringify(tracedAdd.events)}`
+    );
+    assertCondition(
+      tracedAdd.events?.some((event) => event.kind === 'line' && event.callStack?.some((frame) => frame.function === 'Add')) === true,
+      `C# worker traced Add should attach Add callStack frames to line events, received ${JSON.stringify(tracedAdd.events)}`
+    );
+    assertCondition(
+      tracedAdd.events?.some((event) => event.kind === 'return' && event.function === 'Add' && event.callStack?.some((frame) => frame.function === 'Add')) === true,
+      `C# worker traced Add should attach Add callStack frames to return events, received ${JSON.stringify(tracedAdd.events)}`
     );
 
     const tracedConditionalAssignment = await runWorkerCase(
@@ -662,6 +727,46 @@ async function main(): Promise<void> {
       `C# worker traced expression-bodied void method should include return event, received ${JSON.stringify(tracedVoidExpressionBody.events)}`
     );
 
+    const tracedExpressionLambda = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class Solution {',
+        '  public int UseLambda(int value) {',
+        '    Func<int, int> bump = x => x + 1;',
+        '    Action<int> log = x => Console.WriteLine(x);',
+        '    int next = bump(value);',
+        '    log(next);',
+        '    return next;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseLambda',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedExpressionLambda.success,
+      `C# worker traced expression-bodied lambda case should succeed: ${tracedExpressionLambda.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedExpressionLambda.output === 5,
+      `C# worker traced expression-bodied lambda case should return 5, received ${JSON.stringify(tracedExpressionLambda.output)}`
+    );
+    assertCondition(
+      tracedExpressionLambda.events?.some((event) => event.kind === 'call' && event.function === 'bump' && event.args?.[0] === 4) === true,
+      `C# worker traced expression-bodied lambda case should include bump call args, received ${JSON.stringify(tracedExpressionLambda.events)}`
+    );
+    assertCondition(
+      tracedExpressionLambda.events?.some((event) => event.kind === 'return' && event.function === 'bump' && event.value === 5) === true,
+      `C# worker traced expression-bodied lambda case should include bump return value, received ${JSON.stringify(tracedExpressionLambda.events)}`
+    );
+    assertCondition(
+      tracedExpressionLambda.events?.some((event) => event.kind === 'return' && event.function === 'log') === true,
+      `C# worker traced expression-bodied lambda case should include Action return event, received ${JSON.stringify(tracedExpressionLambda.events)}`
+    );
+
     const traceLimited = await runWorkerCase(
       page,
       'public class Solution { public int Add(int a, int b) { int sum = a + b; return sum; } }',
@@ -676,6 +781,71 @@ async function main(): Promise<void> {
     assertCondition(traceLimited.traceLimitExceeded === true, 'C# worker trace-limited Add should set traceLimitExceeded');
     assertCondition(traceLimited.timeoutReason === 'trace-limit', 'C# worker trace-limited Add should use trace-limit');
     assertCondition((traceLimited.events?.length ?? 0) <= 2, `C# worker trace-limited Add should bound returned events, received ${traceLimited.events?.length ?? 0}`);
+
+    const storedEventLimited = await runWorkerCase(
+      page,
+      'public class Solution { public int Add(int a, int b) { int sum = a + b; return sum; } }',
+      'Add',
+      { a: 2, b: 3 },
+      assetBaseUrl,
+      true,
+      { maxStoredEvents: 2 }
+    );
+    assertCondition(storedEventLimited.success, `C# worker maxStoredEvents should preserve execution success: ${storedEventLimited.error ?? 'unknown error'}`);
+    assertCondition(storedEventLimited.output === 5, `C# worker maxStoredEvents should preserve output, received ${JSON.stringify(storedEventLimited.output)}`);
+    assertCondition(storedEventLimited.traceLimitExceeded === true, 'C# worker maxStoredEvents should set traceLimitExceeded');
+    assertCondition(storedEventLimited.timeoutReason === 'trace-limit', 'C# worker maxStoredEvents should use trace-limit');
+    assertCondition((storedEventLimited.events?.length ?? 0) <= 2, `C# worker maxStoredEvents should bound returned events, received ${storedEventLimited.events?.length ?? 0}`);
+
+    const lineLimited = await runWorkerCase(
+      page,
+      'public class Solution { public int Spin() { int total = 0; for (int i = 0; i < 100; i++) { total += i; } return total; } }',
+      'Spin',
+      {},
+      assetBaseUrl,
+      true,
+      { maxLineEvents: 4, maxTraceSteps: 1000 }
+    );
+    assertCondition(!lineLimited.success, 'C# worker maxLineEvents should hard-stop traced execution');
+    assertCondition(lineLimited.traceLimitExceeded === true, 'C# worker maxLineEvents should set traceLimitExceeded');
+    assertCondition(lineLimited.timeoutReason === 'line-limit', 'C# worker maxLineEvents should use line-limit');
+    assertCondition(
+      lineLimited.events?.some((event) => event.kind === 'timeout' && event.reason === 'line-limit') === true,
+      `C# worker maxLineEvents should emit line-limit timeout event, received ${JSON.stringify(lineLimited.events)}`
+    );
+
+    const singleLineLimited = await runWorkerCase(
+      page,
+      'public class Solution { public int Spin() { int total = 0; for (int i = 0; i < 100; i++) { total += i; } return total; } }',
+      'Spin',
+      {},
+      assetBaseUrl,
+      true,
+      { maxSingleLineHits: 2, maxTraceSteps: 1000 }
+    );
+    assertCondition(!singleLineLimited.success, 'C# worker maxSingleLineHits should hard-stop traced execution');
+    assertCondition(singleLineLimited.traceLimitExceeded === true, 'C# worker maxSingleLineHits should set traceLimitExceeded');
+    assertCondition(singleLineLimited.timeoutReason === 'single-line-limit', 'C# worker maxSingleLineHits should use single-line-limit');
+    assertCondition(
+      singleLineLimited.events?.some((event) => event.kind === 'timeout' && event.reason === 'single-line-limit') === true,
+      `C# worker maxSingleLineHits should emit single-line-limit timeout event, received ${JSON.stringify(singleLineLimited.events)}`
+    );
+
+    const minimalTrace = await runWorkerCase(
+      page,
+      'public class Solution { public int Add(int a, int b) { int sum = a + b; return sum; } }',
+      'Add',
+      { a: 2, b: 3 },
+      assetBaseUrl,
+      true,
+      { minimalTrace: true }
+    );
+    assertCondition(minimalTrace.success, `C# worker minimalTrace should succeed: ${minimalTrace.error ?? 'unknown error'}`);
+    assertCondition(minimalTrace.output === 5, `C# worker minimalTrace should preserve output, received ${JSON.stringify(minimalTrace.output)}`);
+    assertCondition(
+      minimalTrace.events?.every((event) => !['snapshot', 'read', 'write', 'mutate', 'control'].includes(event.kind)) === true,
+      `C# worker minimalTrace should suppress detail events, received ${JSON.stringify(minimalTrace.events)}`
+    );
 
     const timedOut = await runWorkerCase(
       page,
@@ -1585,6 +1755,42 @@ async function main(): Promise<void> {
       `C# worker traced comparer constructors case should include HashSet Add, received ${JSON.stringify(tracedComparerConstructors.events)}`
     );
 
+    const tracedPriorityQueueConstructors = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int UsePriorityQueue(int value) {',
+        '    var comparer = Comparer<int>.Create((left, right) => left.CompareTo(right));',
+        '    PriorityQueue<int, int> heap = new PriorityQueue<int, int>(4, comparer);',
+        '    heap.Enqueue(value + 1, value + 1);',
+        '    heap.Enqueue(value, value);',
+        '    return heap.Dequeue();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UsePriorityQueue',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.success,
+      `C# worker traced priority-queue constructor case should succeed: ${tracedPriorityQueueConstructors.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.output === 4,
+      `C# worker traced priority-queue constructor case should return 4, received ${JSON.stringify(tracedPriorityQueueConstructors.output)}`
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'snapshot' && event.target?.variable === 'heap') === true,
+      `C# worker traced priority-queue constructor case should include heap constructor snapshot, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'Enqueue') === true,
+      `C# worker traced priority-queue constructor case should include heap Enqueue mutate, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+
     const twoSum = await runWorkerCase(page, fixture('two-sum.cs'), 'TwoSum', { nums: [2, 7, 11, 15], target: 9 }, assetBaseUrl);
     assertCondition(twoSum.success, `C# worker TwoSum should succeed: ${twoSum.error ?? 'unknown error'}`);
     assertCondition(JSON.stringify(twoSum.output) === JSON.stringify([0, 1]), 'C# worker TwoSum should return [0,1]');
@@ -1829,6 +2035,66 @@ async function main(): Promise<void> {
       }),
       `C# worker TreeNode output case should serialize node fields, received ${JSON.stringify(treeNodeOutput.output)}`
     );
+
+    const listNodeCycleOutput = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public ListNode BuildCycle() {',
+        '    ListNode head = new ListNode(1);',
+        '    head.next = new ListNode(2);',
+        '    head.next.next = head;',
+        '    return head;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildCycle',
+      {},
+      assetBaseUrl
+    );
+    assertCondition(listNodeCycleOutput.success, `C# worker ListNode cycle output case should succeed: ${listNodeCycleOutput.error ?? 'unknown error'}`);
+    {
+      const output = listNodeCycleOutput.output as { val?: number; next?: { val?: number; next?: { __ref__?: string } }; __id__?: string } | undefined;
+      assertCondition(
+        output?.val === 1
+          && output.next?.val === 2
+          && typeof output.__id__ === 'string'
+          && output.next.next?.__ref__ === output.__id__,
+        `C# worker ListNode cycle output case should serialize linked id/ref markers, received ${JSON.stringify(listNodeCycleOutput.output)}`
+      );
+    }
+
+    const treeNodeAliasOutput = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public TreeNode BuildAliasedTree() {',
+        '    TreeNode root = new TreeNode(1);',
+        '    root.left = new TreeNode(2);',
+        '    root.right = root.left;',
+        '    return root;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildAliasedTree',
+      {},
+      assetBaseUrl
+    );
+    assertCondition(treeNodeAliasOutput.success, `C# worker TreeNode alias output case should succeed: ${treeNodeAliasOutput.error ?? 'unknown error'}`);
+    {
+      const output = treeNodeAliasOutput.output as {
+        val?: number;
+        left?: { val?: number; __id__?: string };
+        right?: { __ref__?: string };
+      } | undefined;
+      assertCondition(
+        output?.val === 1
+          && output.left?.val === 2
+          && typeof output.left.__id__ === 'string'
+          && output.right?.__ref__ === output.left.__id__,
+        `C# worker TreeNode alias output case should serialize linked id/ref markers, received ${JSON.stringify(treeNodeAliasOutput.output)}`
+      );
+    }
 
     const tracedListNodeValues = await runWorkerCase(
       page,

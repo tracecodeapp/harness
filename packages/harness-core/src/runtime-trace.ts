@@ -20,24 +20,36 @@ export type RuntimeTraceTarget =
   | { variable: string; path: Array<string | number>; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
   | { objectId: string; path?: Array<string | number> };
 
+export interface RuntimeTraceCallFrame {
+  function: string;
+  line?: number;
+  args?: Record<string, unknown> | unknown[];
+}
+
 interface RuntimeTraceBaseEvent {
   kind: RuntimeTraceEventKind;
   runId: string;
   file?: string;
   line?: number;
   frameId?: string;
+  callStack?: RuntimeTraceCallFrame[];
 }
 
 export type RuntimeTraceEvent =
   | (RuntimeTraceBaseEvent & { kind: 'line'; line: number; function?: string })
-  | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> })
+  | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> | unknown[] })
   | (RuntimeTraceBaseEvent & { kind: 'return'; line: number; function?: string; value?: unknown })
   | (RuntimeTraceBaseEvent & { kind: 'read' | 'write'; line: number; target: RuntimeTraceTarget; value?: unknown })
   | (RuntimeTraceBaseEvent & { kind: 'mutate'; line: number; target: RuntimeTraceTarget; method?: string; args?: unknown[] })
   | (RuntimeTraceBaseEvent & { kind: 'snapshot'; line: number; target: RuntimeTraceTarget; value: unknown })
   | (RuntimeTraceBaseEvent & { kind: 'stdout'; text: string })
   | (RuntimeTraceBaseEvent & { kind: 'control'; line: number; control: 'break' | 'continue' })
-  | (RuntimeTraceBaseEvent & { kind: 'exception' | 'timeout'; message: string });
+  | (RuntimeTraceBaseEvent & { kind: 'exception'; message: string })
+  | (RuntimeTraceBaseEvent & {
+      kind: 'timeout';
+      message: string;
+      reason?: 'trace-limit' | 'line-limit' | 'single-line-limit' | 'client-timeout';
+    });
 
 export interface RuntimeTrace {
   schemaVersion: typeof RUNTIME_TRACE_SCHEMA_VERSION;

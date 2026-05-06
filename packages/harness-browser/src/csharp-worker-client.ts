@@ -7,7 +7,7 @@ import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 
 type MessageId = string;
-export type CSharpExecutionStyle = 'solution-method' | 'ops-class';
+export type CSharpExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
 export interface CSharpWorkerClientOptions {
   workerUrl: string;
@@ -33,6 +33,7 @@ interface InitResult {
 }
 
 const EXECUTION_TIMEOUT_MS = 20_000;
+const INTERVIEW_MODE_TIMEOUT_MS = 5_000;
 const INIT_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
@@ -306,6 +307,71 @@ export class CSharpWorkerClient {
     };
   }
 
+  async executeCodeInterviewMode(
+    code: string,
+    functionName: string,
+    inputs: Record<string, unknown>,
+    executionStyle: CSharpExecutionStyle
+  ): Promise<CodeExecutionResult> {
+    await this.init();
+    let result: CSharpWorkerExecuteResult;
+    try {
+      result = await this.executeWithTimeout(
+        () =>
+          this.sendMessage<CSharpWorkerExecuteResult>(
+            'execute-code-interview',
+            {
+              code,
+              functionName,
+              inputs,
+              executionStyle,
+              assetBaseUrl: this.options.assetBaseUrl,
+              timeoutMs: INTERVIEW_MODE_TIMEOUT_MS - 1_000,
+            },
+            INTERVIEW_MODE_TIMEOUT_MS + 5_000
+          ),
+        INTERVIEW_MODE_TIMEOUT_MS
+      );
+    } catch {
+      return {
+        success: false,
+        output: null,
+        error: 'Time Limit Exceeded',
+        timeoutReason: 'client-timeout',
+        diagnosticStage: 'interview',
+        consoleOutput: [],
+      };
+    }
+
+    if (!result.success) {
+      const firstUserDiagnostic = result.diagnostics?.find((diagnostic) => diagnostic.file.endsWith('UserCode.cs'));
+      if (this.isInterviewTimeoutLike(result)) {
+        return {
+          success: false,
+          output: null,
+          error: 'Time Limit Exceeded',
+          timeoutReason: result.timeoutReason ?? 'client-timeout',
+          diagnosticStage: 'interview',
+          consoleOutput: result.consoleOutput ?? [],
+        };
+      }
+
+      return {
+        success: false,
+        output: null,
+        error: result.error ?? 'C# execution failed',
+        ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
+        consoleOutput: result.consoleOutput ?? [],
+      };
+    }
+
+    return {
+      success: true,
+      output: result.output,
+      consoleOutput: result.consoleOutput ?? [],
+    };
+  }
+
   async executeWithTracing(
     code: string,
     functionName: string,
@@ -328,6 +394,10 @@ export class CSharpWorkerClient {
               assetBaseUrl: this.options.assetBaseUrl,
               timeoutMs: EXECUTION_TIMEOUT_MS - 1_000,
               maxTraceSteps: options?.maxTraceSteps,
+              maxLineEvents: options?.maxLineEvents,
+              maxSingleLineHits: options?.maxSingleLineHits,
+              maxStoredEvents: options?.maxStoredEvents,
+              minimalTrace: options?.minimalTrace,
             },
             EXECUTION_TIMEOUT_MS + 5_000
           ),
@@ -412,6 +482,19 @@ export class CSharpWorkerClient {
       lineEventCount: events.filter((event) => event.kind === 'line').length,
       traceStepCount: events.length,
     };
+  }
+
+  private isInterviewTimeoutLike(result: CSharpWorkerExecuteResult): boolean {
+    if (result.timeoutReason) return true;
+    const normalized = String(result.error ?? '').toLowerCase();
+    return (
+      normalized.includes('timed out') ||
+      normalized.includes('trace-limit') ||
+      normalized.includes('line-limit') ||
+      normalized.includes('single-line-limit') ||
+      normalized.includes('recursion-limit') ||
+      normalized.includes('memory-limit')
+    );
   }
 
   terminate(): void {

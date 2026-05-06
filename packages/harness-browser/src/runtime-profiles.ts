@@ -239,11 +239,11 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   capabilities: {
     execution: {
       styles: {
-        function: false,
+        function: true,
         solutionMethod: true,
         opsClass: true,
-        script: false,
-        interviewMode: false,
+        script: true,
+        interviewMode: true,
       },
       timeouts: {
         clientTimeouts: true,
@@ -262,15 +262,15 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       },
       controls: {
         maxTraceSteps: true,
-        maxLineEvents: false,
-        maxSingleLineHits: false,
-        maxStoredEvents: false,
-        minimalTrace: false,
+        maxLineEvents: true,
+        maxSingleLineHits: true,
+        maxStoredEvents: true,
+        minimalTrace: true,
       },
       fidelity: {
         preciseLineMapping: true,
         stableFunctionNames: true,
-        callStack: false,
+        callStack: true,
       },
     },
     diagnostics: {
@@ -284,12 +284,15 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
       listNodeRefs: true,
       mapSerialization: true,
       setSerialization: true,
-      graphSerialization: false,
-      cycleReferences: false,
+      graphSerialization: true,
+      cycleReferences: true,
     },
   },
   notes: [
     'C# support is browser-local and experimental.',
+    'C# supports named function-style requests where the browser-local host can bind the named method.',
+    'Script-style C# uses an empty function name with executionStyle="function" and reads the top-level result variable.',
+    'Interview-mode C# uses the same browser-local worker execution path with interview timeout normalization.',
     'The first C# slice supports LeetCode-style public class Solution methods.',
     'ListNode and TreeNode inputs are hydrated from LeetCode-style arrays or object-shaped JSON.',
     'Dictionary, HashSet, List, and array return values serialize through the browser-local worker.',

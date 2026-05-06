@@ -1,6 +1,6 @@
 # Runtime Trace Parity Status
 
-Last updated: 2026-05-04
+Last updated: 2026-05-06
 
 ## Purpose
 
@@ -88,6 +88,7 @@ Current known gap count: 0
 By language:
 
 - Java: 0
+- C#: 0
 - C++: 0
 - JavaScript: 0
 - Python: 0
@@ -96,7 +97,7 @@ By language:
 Main clusters:
 
 - No open fixture gaps in the current 59-fixture corpus.
-- The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, Java, and C++.
+- The corpus now covers indexed access, indexed writes, aggregate access counts, list append/pop, matrix writes, map/dict put/get/contains, set add/remove/contains, loops, break/continue, early return, function calls, recursion, stdout, caught exceptions, and object field read/write across Python, JavaScript, TypeScript, Java, C#, and C++.
 - This is a baseline, not proof of completeness. New operations should be added to the corpus as soon as they become product-relevant or are discovered through corpus mining.
 
 ## Recently Tightened
@@ -121,6 +122,12 @@ C++ trace controls now match the public profile for `maxLineEvents`, `maxSingleL
 C++ execution hardening now has a two-layer timeout contract. Instrumented runs first use runtime trace guards for trace budgets, line-event budgets, and single-line hit budgets. If compile or runtime execution still blocks the worker, `CppWorkerClient` terminates and recreates the worker, returns `client-timeout` metadata, and keeps interview-mode errors sanitized as `Time Limit Exceeded`.
 
 C++ also passes the full isolated generated C++ Algoflow corpus compile/run gate with no output mismatches: 2,256 scanned, 2,256 passed, 0 failures. The same run compared expected outputs against the other available language corpus entries: Java matched 2,256/2,256, while JavaScript, TypeScript, and Python each matched 2,093/2,256 where corresponding corpus entries exist. The local full gate is `pnpm local:mine:cpp-algoflow-corpus:isolated`, which intentionally runs with `--no-trace` because the full corpus gate is for output parity while trace semantics are covered by the runtime fixture corpus.
+
+C# now exposes the same public execution-style set as C++: `function`, `solution-method`, `ops-class`, `script`, and `interviewMode`. C# interview mode uses the non-trace browser-local worker route, preserves normal compile/runtime diagnostics, and sanitizes timeout-like failures as `Time Limit Exceeded` with `diagnosticStage: "interview"` metadata.
+
+C# traced events now carry call-stack frames. The Roslyn rewriter emits a precise leave hook after return-line snapshots, so call, line, snapshot, access, and return events inside a method retain the active frame while later caller events are not attributed to the callee.
+
+C# object serialization now uses linked `__id__`/`__ref__` markers for repeated `ListNode`, `TreeNode`, and user-object references instead of opaque type-only refs, so the C# profile can advertise cycle-reference support. The C# rewriter also traces expression-bodied `Func`/`Action` lambdas and handles additional collection constructor shapes such as priority-queue capacity/comparer constructors.
 
 JS/TS indexed access now passes for:
 
