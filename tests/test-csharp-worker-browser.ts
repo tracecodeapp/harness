@@ -2313,12 +2313,12 @@ async function main(): Promise<void> {
       `C# worker compile-error fixture should preserve Roslyn diagnostic text, received ${compileError.error}`
     );
     assertCondition(
-      compileError.diagnostics?.some((diagnostic) => diagnostic.file.endsWith('UserCode.cs') && diagnostic.line === 5) === true,
-      `C# worker diagnostics should map to UserCode.cs line 5, received ${JSON.stringify(compileError.diagnostics)}`
+      compileError.diagnostics?.some((diagnostic) => diagnostic.file.endsWith('solution.cs') && diagnostic.line === 5) === true,
+      `C# worker diagnostics should map to solution.cs line 5, received ${JSON.stringify(compileError.diagnostics)}`
     );
     assertCondition(
       compileError.diagnostics?.some((diagnostic) =>
-        diagnostic.file.endsWith('UserCode.cs')
+        diagnostic.file.endsWith('solution.cs')
         && diagnostic.line === 5
         && diagnostic.column > 0
         && diagnostic.message.includes("Cannot implicitly convert type 'string' to 'int'")) === true,

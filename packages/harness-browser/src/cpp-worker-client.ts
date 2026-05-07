@@ -59,6 +59,7 @@ const TRACING_TIMEOUT_MS = 30_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
+const CPP_DEFAULT_FILE = 'solution.cpp';
 
 export class CppWorkerClient {
   private worker: Worker | null = null;
@@ -254,12 +255,12 @@ export class CppWorkerClient {
 
   private timeoutTraceResult(error: unknown): ExecutionResult {
     const timeoutError = error instanceof CppClientTimeoutError ? error : null;
-    const trace = createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: 'UserCode.cpp' });
+    const trace = createEmptyRuntimeTrace('cpp', { runId: 'cpp:run', file: CPP_DEFAULT_FILE });
     trace.events = [
       {
         kind: 'timeout',
         runId: 'cpp:run',
-        file: 'UserCode.cpp',
+        file: CPP_DEFAULT_FILE,
         message: error instanceof Error ? error.message : String(error),
       },
     ];

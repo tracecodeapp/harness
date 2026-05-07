@@ -16,7 +16,7 @@ namespace TraceCode.CSharpHost;
 
 public static partial class CompilerHost
 {
-    private const string UserCodePath = "UserCode.cs";
+    private const string UserCodePath = "solution.cs";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp12);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)

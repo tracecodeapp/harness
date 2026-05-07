@@ -75,7 +75,7 @@ TraceCode driver source
 
 The source pass is intentionally line-based and conservative. It targets the
 requested `Solution` method body, preserves `#line` mapping back to
-`UserCode.cpp`, and avoids broader C++ parsing. It does not inspect STL memory.
+`solution.cpp`, and avoids broader C++ parsing. It does not inspect STL memory.
 The first container slice uses TraceCode-owned `tracecode::Vector<T>` wrappers
 for traced vector parameters and simple local vector declarations. The wrapper
 emits generic runtime `snapshot`, indexed `read`, indexed `write`, and `mutate`

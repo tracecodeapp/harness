@@ -1843,13 +1843,19 @@ function createEmptyRuntimeTrace(language, runId = `${language}:run`) {
   };
 }
 
+function defaultRuntimeTraceFile(language) {
+  return language === 'typescript' ? 'solution.ts' : 'solution.js';
+}
+
 function createSyntheticRuntimeTrace(payload, codeResult, language) {
   const syntheticTrace = createSyntheticTrace(payload, codeResult);
   const runId = `${language}:run`;
+  const file = defaultRuntimeTraceFile(language);
   const events = [];
   for (const step of syntheticTrace) {
     const base = {
       runId,
+      file,
       line: step.line,
       frameId: runtimeTraceFrameIdForSyntheticStep(step),
     };
@@ -4048,7 +4054,7 @@ async function executeWithTracing(payload) {
     }
 
     const executionTimeMs = performanceNow() - startedAt;
-    const trace = traceRecorder.getRuntimeTrace(language);
+    const trace = traceRecorder.getRuntimeTrace(language, `${language}:run`, defaultRuntimeTraceFile(language));
     return {
       success: true,
       output: serializedOutput,
@@ -4081,7 +4087,7 @@ async function executeWithTracing(payload) {
       traceRecorder.recordException(traceErrorLine, message, traceFunctionName);
     }
 
-    const trace = traceRecorder.getRuntimeTrace(language);
+    const trace = traceRecorder.getRuntimeTrace(language, `${language}:run`, defaultRuntimeTraceFile(language));
     return {
       success: false,
       output: null,

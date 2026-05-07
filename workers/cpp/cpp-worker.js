@@ -2,6 +2,7 @@ const RESULT_MARKER = '__TRACECODE_RESULT__';
 const TRACE_EVENT_MARKER = '__TRACECODE_EVENT__';
 const TRACE_STATUS_MARKER = '__TRACECODE_TRACE_STATUS__';
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
+const CPP_USER_SOURCE_FILE = 'solution.cpp';
 const CPP_STANDARD = 'c++23';
 const CPP_SCRIPT_FUNCTION_NAME = '__tracecode_script_main';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
@@ -2730,7 +2731,7 @@ return `${buildGeneratedIncludes(userCode, { parameters: [] })}
 using namespace std;
 ${buildTracecodeFallbackAliases(userCode)}
 
-#line 1 "UserCode.cpp"
+#line 1 "${CPP_USER_SOURCE_FILE}"
 ${sourceForDriver}
 
 #line 1 "TraceCodeDriver.cpp"
@@ -2893,7 +2894,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       !lineStartsElse &&
       shouldInstrumentCppLine(line);
     if (shouldInstrumentLine) {
-      output.push(`#line ${lineNumber} "UserCode.cpp"`);
+      output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
       output.push(buildCurrentLineInstrumentation(lineNumber));
     }
 
@@ -2908,7 +2909,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       if (declaration) {
         const rewrittenDeclaration = rewriteTraceContainerLocal(declaration.text, lineNumber, aliases, source);
         if (rewrittenDeclaration !== declaration.text) {
-          output.push(`#line ${lineNumber} "UserCode.cpp"`);
+          output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
           output.push(buildCurrentLineInstrumentation(lineNumber));
           output.push(rewrittenDeclaration);
           for (const variable of extractDeclaredSnapshotVariables(declaration.text, aliases)) {
@@ -2996,12 +2997,12 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       normalizeCppType(activeSignature.returnType, aliases) === 'void' &&
       activeFrame.depth + braceDeltaForLine(line) <= 0;
     if (closesActiveVoidHelper) {
-      output.push(`#line ${lineNumber} "UserCode.cpp"`);
+      output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
       output.push(buildLineInstrumentation(lineNumber, activeSignature.name));
       output.push(buildReturnInstrumentation(lineNumber, activeSignature));
     }
 
-    output.push(`#line ${lineNumber} "UserCode.cpp"`);
+    output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
     output.push(lineForDriver);
     if (
       shouldInstrumentLine &&
@@ -3051,7 +3052,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           (nextSignature.name !== functionName || nextSignature.line !== targetSignature.line) &&
           !nextSignature.skipInstrumentation
         ) {
-          output.push(`#line ${lineNumber} "UserCode.cpp"`);
+          output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
           output.push(buildCallInstrumentation(lineNumber, nextSignature));
         }
       } else if (pendingSignature?.lambda && lineNumber >= pendingSignature.line && delta <= 0) {
@@ -3154,7 +3155,7 @@ return `${buildGeneratedIncludes(userCode, signature)}
 using namespace std;
 ${buildTracecodeFallbackAliases(userCode)}
 
-#line 1 "UserCode.cpp"
+#line 1 "${CPP_USER_SOURCE_FILE}"
 ${sourceForDriver}
 
 #line 1 "TraceCodeDriver.cpp"
@@ -3179,9 +3180,9 @@ function buildScriptWrapperSource(userCode, options = {}) {
   userCode = normalizeCppUserSource(userCode, options);
   const userLineCount = scriptLineCount(userCode);
   return `auto ${CPP_SCRIPT_FUNCTION_NAME}() {
-#line 1 "UserCode.cpp"
+#line 1 "${CPP_USER_SOURCE_FILE}"
 ${userCode}
-#line ${userLineCount + 1} "UserCode.cpp"
+#line ${userLineCount + 1} "${CPP_USER_SOURCE_FILE}"
   return result;
 }`;
 }
@@ -3207,7 +3208,7 @@ return `${buildGeneratedIncludes(userCode, { parameters: [] })}
 using namespace std;
 ${buildTracecodeFallbackAliases(userCode)}
 
-#line 1 "UserCode.cpp"
+#line 1 "${CPP_USER_SOURCE_FILE}"
 ${sourceForDriver}
 
 #line 1 "TraceCodeDriver.cpp"
@@ -3355,7 +3356,7 @@ function enrichCppRuntimeTraceCallStacks(events) {
 
 function finalizeRuntimeTrace(events, options = {}) {
   const runId = options.runId || 'cpp:run';
-  const file = options.file || 'UserCode.cpp';
+  const file = options.file || CPP_USER_SOURCE_FILE;
   const maxEvents = Number.isFinite(options.maxStoredEvents)
     ? Number(options.maxStoredEvents)
     : Number.isFinite(options.maxTraceSteps)
@@ -3418,12 +3419,12 @@ function isTraceTimeoutReason(value) {
 }
 
 function extractUserErrorLine(diagnostics) {
-  const match = diagnostics.match(/UserCode\.cpp:(\d+):\d+:/);
+  const match = diagnostics.match(new RegExp(`${escapeRegExp(CPP_USER_SOURCE_FILE)}:(\\d+):\\d+:`));
   return match ? Number(match[1]) : undefined;
 }
 
 function extractDiagnosticLocation(diagnostics) {
-  const match = diagnostics.match(/(?:^|\n)(UserCode\.cpp|TraceCodeDriver\.cpp):(\d+):(\d+):\s*(fatal error|error|warning|note):\s*([^\n]+)/);
+  const match = diagnostics.match(new RegExp(`(?:^|\\n)(${escapeRegExp(CPP_USER_SOURCE_FILE)}|TraceCodeDriver\\.cpp):(\\d+):(\\d+):\\s*(fatal error|error|warning|note):\\s*([^\\n]+)`));
   if (!match) return null;
   return {
     file: match[1],
@@ -3437,11 +3438,11 @@ function extractDiagnosticLocation(diagnostics) {
 function compileFailureResult(diagnostics, fallbackMessage, start, details = {}) {
   const cleanDiagnostics = (diagnostics || '').trim();
   const location = extractDiagnosticLocation(cleanDiagnostics);
-  const userLine = location?.file === 'UserCode.cpp' ? location.line : extractUserErrorLine(cleanDiagnostics);
+  const userLine = location?.file === CPP_USER_SOURCE_FILE ? location.line : extractUserErrorLine(cleanDiagnostics);
   const prefix =
     location?.file === 'TraceCodeDriver.cpp'
       ? 'C++ generated driver failed'
-      : location?.file === 'UserCode.cpp'
+      : location?.file === CPP_USER_SOURCE_FILE
         ? 'C++ compilation failed'
         : fallbackMessage;
 

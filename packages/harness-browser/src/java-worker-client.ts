@@ -58,6 +58,7 @@ const TRACING_TIMEOUT_MS = 25_000;
 const INIT_TIMEOUT_MS = 120_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
+const JAVA_DEFAULT_FILE = 'solution.java';
 
 export class JavaWorkerClient {
   private worker: Worker | null = null;
@@ -309,9 +310,9 @@ export class JavaWorkerClient {
       trace: result.success
         ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
             runId: 'java:run',
-            file: 'Solution.java',
+            file: JAVA_DEFAULT_FILE,
           })
-        : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'Solution.java' }),
+        : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
     };
   }
 

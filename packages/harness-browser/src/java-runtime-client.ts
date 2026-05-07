@@ -9,6 +9,8 @@ import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 import type { JavaExecutionStyle, JavaWorkerClient } from './java-worker-client';
 
+const JAVA_DEFAULT_FILE = 'solution.java';
+
 class JavaRuntimeClient implements RuntimeClient {
   constructor(private readonly workerClient: JavaWorkerClient) {}
 
@@ -42,7 +44,7 @@ class JavaRuntimeClient implements RuntimeClient {
         success: false,
         error: rawResult.error ?? 'Java tracing failed',
         ...(rawResult.errorLine !== undefined ? { errorLine: rawResult.errorLine } : {}),
-        trace: createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'Solution.java' }),
+        trace: createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
         executionTimeMs: rawResult.executionTimeMs,
         consoleOutput: rawResult.consoleOutput,
         ...(rawResult.traceLimitExceeded !== undefined

@@ -965,9 +965,9 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
           trace: response.success
             ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
                 runId: 'java:run',
-                file: 'Solution.java',
+                file: 'solution.java',
               })
-            : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'Solution.java' }),
+            : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'solution.java' }),
         };
       } finally {
         closeWorker();

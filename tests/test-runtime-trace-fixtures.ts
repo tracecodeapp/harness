@@ -252,7 +252,7 @@ function fixtureLanguageFile(language: Language): string {
   if (language === 'typescript') return 'solution.ts';
   if (language === 'csharp') return 'solution.cs';
   if (language === 'cpp') return 'solution.cpp';
-  return 'Solution.java';
+  return 'solution.java';
 }
 
 async function runProcess(command: string, args: string[]): Promise<string> {
@@ -537,7 +537,7 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
     ...consoleOutput.map((text) => ({
       kind: 'stdout' as const,
       runId: 'csharp:run',
-      file: 'UserCode.cs',
+      file: 'solution.cs',
       text,
     })),
   ];
@@ -749,9 +749,9 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
           trace: response.success
             ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
                 runId: 'java:run',
-                file: 'Solution.java',
+                file: 'solution.java',
               })
-            : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'Solution.java' }),
+            : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'solution.java' }),
         };
       } finally {
         closeWorker();

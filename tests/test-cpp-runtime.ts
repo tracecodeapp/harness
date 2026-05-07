@@ -504,10 +504,10 @@ if (syntaxError.success) {
   throw new Error('C++ syntax error unexpectedly succeeded');
 }
 if (syntaxError.errorLine !== 4) {
-  throw new Error('C++ syntax error should map to UserCode.cpp line 4, received ' + syntaxError.errorLine);
+  throw new Error('C++ syntax error should map to solution.cpp line 4, received ' + syntaxError.errorLine);
 }
-if (!String(syntaxError.error || '').includes('UserCode.cpp:4')) {
-  throw new Error('C++ syntax error should include UserCode.cpp diagnostics, received ' + syntaxError.error);
+if (!String(syntaxError.error || '').includes('solution.cpp:4')) {
+  throw new Error('C++ syntax error should include solution.cpp diagnostics, received ' + syntaxError.error);
 }
 
 const traced = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -528,7 +528,7 @@ for (const kind of ['call', 'line', 'stdout', 'return']) {
     throw new Error('C++ tracing should include ' + kind + ' event, received ' + JSON.stringify(traced.trace.events));
   }
 }
-if (traced.trace.events[0].runId !== 'cpp:run' || traced.trace.events[0].file !== 'UserCode.cpp') {
+if (traced.trace.events[0].runId !== 'cpp:run' || traced.trace.events[0].file !== 'solution.cpp') {
   throw new Error('C++ tracing should annotate events with runId and file');
 }
 if (!traced.trace.events.some((event) => event.kind === 'return' && event.value === 5)) {
@@ -1715,7 +1715,7 @@ const opsClassDiagnostic = await sandbox.__tracecodeCppTest.handleExecuteWithTra
 if (opsClassDiagnostic.success) {
   throw new Error('C++ ops-class user compile diagnostic should fail');
 }
-if (opsClassDiagnostic.errorLine !== 5 || !String(opsClassDiagnostic.error).includes('UserCode.cpp:5')) {
+if (opsClassDiagnostic.errorLine !== 5 || !String(opsClassDiagnostic.error).includes('solution.cpp:5')) {
   throw new Error('C++ ops-class diagnostics should map to user line 5, received ' + JSON.stringify(opsClassDiagnostic));
 }
 

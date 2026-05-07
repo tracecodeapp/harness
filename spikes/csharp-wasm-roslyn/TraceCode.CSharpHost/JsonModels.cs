@@ -80,7 +80,7 @@ public sealed class RuntimeTraceEvent
     public string RunId { get; set; } = "csharp:run";
 
     [JsonPropertyName("file")]
-    public string File { get; set; } = "UserCode.cs";
+    public string File { get; set; } = "solution.cs";
 
     [JsonPropertyName("line")]
     public int? Line { get; set; }
@@ -137,7 +137,7 @@ public sealed class RuntimeTraceCallFrame
 public sealed class CSharpDiagnostic
 {
     [JsonPropertyName("file")]
-    public string File { get; set; } = "UserCode.cs";
+    public string File { get; set; } = "solution.cs";
 
     [JsonPropertyName("line")]
     public int Line { get; set; }
@@ -160,7 +160,7 @@ public sealed class CSharpDiagnostic
         LinePosition start = span.StartLinePosition;
         return new CSharpDiagnostic
         {
-            File = string.IsNullOrWhiteSpace(span.Path) ? "UserCode.cs" : span.Path,
+            File = string.IsNullOrWhiteSpace(span.Path) ? "solution.cs" : span.Path,
             Line = start.Line + 1,
             Column = start.Character + 1,
             Message = diagnostic.GetMessage(),

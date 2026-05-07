@@ -976,8 +976,8 @@ async function main(): Promise<void> {
     const compileError = await runWorkerCase(page, fixture('compile-error.cs'), 'Add', { a: 2, b: 3 }, assetBaseUrl);
     assertCondition(!compileError.success, 'Browser worker compile-error fixture should fail');
     assertCondition(
-      compileError.diagnostics?.some((diagnostic) => diagnostic.file.endsWith('UserCode.cs') && diagnostic.line === 5) === true,
-      `Browser worker diagnostics should map to UserCode.cs line 5, received ${JSON.stringify(compileError.diagnostics)}`
+      compileError.diagnostics?.some((diagnostic) => diagnostic.file.endsWith('solution.cs') && diagnostic.line === 5) === true,
+      `Browser worker diagnostics should map to solution.cs line 5, received ${JSON.stringify(compileError.diagnostics)}`
     );
     console.log(`PASS: browser worker returned mapped compile diagnostic "${compileError.error}"`);
 

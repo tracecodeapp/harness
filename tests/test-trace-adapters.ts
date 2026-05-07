@@ -21,7 +21,7 @@ function testJavaTraceHooksBoundaryReturnsTrace(): void {
     `trace:${JSON.stringify({ kind: 'snapshot', line: 5, target: { variable: 'nums' }, value: [1, 2] })}`,
     `trace:${JSON.stringify({ kind: 'read', line: 5, target: { variable: 'nums', path: [1] }, value: 2 })}`,
     `trace:${JSON.stringify({ kind: 'return', line: 6, function: 'solve', value: 2 })}`,
-  ], undefined, { runId: 'java:test', file: 'Solution.java' });
+  ], undefined, { runId: 'java:test', file: 'solution.java' });
   const result = { trace };
 
   assertRuntimeTrace('java TraceHooks boundary', result);

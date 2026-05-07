@@ -1312,7 +1312,7 @@ class Solution {
 
     const graphTrace = javaTraceHooksEventsToRuntimeTrace(graphExecute.events ?? [], undefined, {
       runId: 'java:test',
-      file: 'Solution.java',
+      file: 'solution.java',
     });
     assertCondition(
       graphTrace.events.some((event) =>
@@ -1367,7 +1367,7 @@ class Solution {
     assertCondition(fieldListExecute.success === true, 'Java field list mutation execution should succeed');
     const fieldListTrace = javaTraceHooksEventsToRuntimeTrace(fieldListExecute.events ?? [], undefined, {
       runId: 'java:test',
-      file: 'Solution.java',
+      file: 'solution.java',
     });
     assertCondition(
       fieldListTrace.events.some((event) =>

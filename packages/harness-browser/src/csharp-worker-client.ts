@@ -37,6 +37,8 @@ const INTERVIEW_MODE_TIMEOUT_MS = 5_000;
 const INIT_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
+const CSHARP_DEFAULT_FILE = 'solution.cs';
+const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
 
 export interface CSharpDiagnostic {
   file: string;
@@ -57,6 +59,18 @@ interface CSharpWorkerExecuteResult {
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionResult['timeoutReason'];
+}
+
+function isCSharpUserFile(file: string | undefined): boolean {
+  return Boolean(file?.endsWith(CSHARP_DEFAULT_FILE) || file?.endsWith(CSHARP_LEGACY_USER_FILE));
+}
+
+function isCSharpUserDiagnostic(diagnostic: CSharpDiagnostic): boolean {
+  return isCSharpUserFile(diagnostic.file);
+}
+
+function normalizeCSharpTraceEventFile(event: RuntimeTraceEvent): RuntimeTraceEvent {
+  return isCSharpUserFile(event.file) ? { ...event, file: CSHARP_DEFAULT_FILE } : event;
 }
 
 export class CSharpWorkerClient {
@@ -290,7 +304,7 @@ export class CSharpWorkerClient {
     );
 
     if (!result.success) {
-      const firstUserDiagnostic = result.diagnostics?.find((diagnostic) => diagnostic.file.endsWith('UserCode.cs'));
+      const firstUserDiagnostic = result.diagnostics?.find(isCSharpUserDiagnostic);
       return {
         success: false,
         output: null,
@@ -344,7 +358,7 @@ export class CSharpWorkerClient {
     }
 
     if (!result.success) {
-      const firstUserDiagnostic = result.diagnostics?.find((diagnostic) => diagnostic.file.endsWith('UserCode.cs'));
+      const firstUserDiagnostic = result.diagnostics?.find(isCSharpUserDiagnostic);
       if (this.isInterviewTimeoutLike(result)) {
         return {
           success: false,
@@ -409,7 +423,7 @@ export class CSharpWorkerClient {
         {
           kind: 'timeout',
           runId: 'csharp:run',
-          file: 'UserCode.cs',
+          file: CSHARP_DEFAULT_FILE,
           message,
         },
       ]);
@@ -433,14 +447,14 @@ export class CSharpWorkerClient {
       ...consoleOutput.map((text): RuntimeTraceEvent => ({
         kind: 'stdout',
         runId: 'csharp:run',
-        file: 'UserCode.cs',
+        file: CSHARP_DEFAULT_FILE,
         text,
       })),
     ];
     const trace = this.createTrace(events);
 
     if (!result.success) {
-      const firstUserDiagnostic = result.diagnostics?.find((diagnostic) => diagnostic.file.endsWith('UserCode.cs'));
+      const firstUserDiagnostic = result.diagnostics?.find(isCSharpUserDiagnostic);
       return {
         success: false,
         output: null,
@@ -478,7 +492,7 @@ export class CSharpWorkerClient {
       schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
       language: 'csharp',
       runId: 'csharp:run',
-      events,
+      events: events.map(normalizeCSharpTraceEventFile),
       lineEventCount: events.filter((event) => event.kind === 'line').length,
       traceStepCount: events.length,
     };

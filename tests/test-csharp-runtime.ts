@@ -119,14 +119,14 @@ async function testRuntimeAdapterContract(): Promise<void> {
     {
       kind: 'line',
       runId: 'csharp:run',
-      file: 'UserCode.cs',
+      file: 'solution.cs',
       line: 3,
       callStack: [{ function: 'Add', line: 2, args: [2, 3] }],
     },
     {
       kind: 'return',
       runId: 'csharp:run',
-      file: 'UserCode.cs',
+      file: 'solution.cs',
       function: 'Add',
       line: 4,
       value: 5,
@@ -341,7 +341,7 @@ async function testWorkerResultMapping(): Promise<void> {
           id: 'CS0000',
         },
         {
-          file: 'UserCode.cs',
+          file: 'solution.cs',
           line: 4,
           column: 16,
           message: "Cannot implicitly convert type 'string' to 'int'",
@@ -360,7 +360,7 @@ async function testWorkerResultMapping(): Promise<void> {
       'solution-method'
     );
     assertCondition(!compileFailure.success, 'C# executeCode compile failure should return a failed result');
-    assertCondition(compileFailure.errorLine === 4, 'C# executeCode should map UserCode.cs diagnostics to errorLine');
+    assertCondition(compileFailure.errorLine === 4, 'C# executeCode should map solution.cs diagnostics to errorLine');
     assertCondition(
       compileFailure.consoleOutput?.[0] === 'before compile failure',
       'C# executeCode should preserve stdout on compile failure'
@@ -371,7 +371,7 @@ async function testWorkerResultMapping(): Promise<void> {
       error: 'Object reference not set to an instance of an object.',
       diagnostics: [
         {
-          file: 'UserCode.cs',
+          file: 'solution.cs',
           line: 6,
           column: 10,
           message: 'runtime mapped diagnostic',
@@ -381,11 +381,11 @@ async function testWorkerResultMapping(): Promise<void> {
       ],
       consoleOutput: ['before runtime failure'],
       events: [
-        { kind: 'line', runId: 'csharp:run', file: 'UserCode.cs', line: 6 },
+        { kind: 'line', runId: 'csharp:run', file: 'solution.cs', line: 6 },
         {
           kind: 'exception',
           runId: 'csharp:run',
-          file: 'UserCode.cs',
+          file: 'solution.cs',
           line: 6,
           message: 'Object reference not set to an instance of an object.',
         },
@@ -401,7 +401,7 @@ async function testWorkerResultMapping(): Promise<void> {
       'solution-method'
     );
     assertCondition(!tracedFailure.success, 'C# traced runtime failure should return a failed result');
-    assertCondition(tracedFailure.errorLine === 6, 'C# traced failures should map UserCode.cs diagnostics to errorLine');
+    assertCondition(tracedFailure.errorLine === 6, 'C# traced failures should map solution.cs diagnostics to errorLine');
     assertCondition(tracedFailure.trace.language === 'csharp', 'C# traced failures should return a C# runtime trace');
     assertCondition(tracedFailure.lineEventCount === 1, 'C# traced failures should preserve line event count');
     assertCondition(
@@ -416,7 +416,7 @@ async function testWorkerResultMapping(): Promise<void> {
       events: [{
         kind: 'line',
         runId: 'csharp:run',
-        file: 'UserCode.cs',
+        file: 'solution.cs',
         line: 3,
         callStack: [{ function: 'Add', line: 2, args: [2, 3] }],
       }],
@@ -591,7 +591,7 @@ async function testClientTimeoutReset(): Promise<void> {
       success: true,
       output: 5,
       consoleOutput: [],
-      events: [{ kind: 'return', runId: 'csharp:run', file: 'UserCode.cs', line: 1, function: 'Add', value: 5 }],
+      events: [{ kind: 'return', runId: 'csharp:run', file: 'solution.cs', line: 1, function: 'Add', value: 5 }],
       executionTimeMs: 3,
     });
 

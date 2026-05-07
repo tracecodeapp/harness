@@ -1237,11 +1237,11 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         return ast.copy_location(call, node)
 
 def __tracecode_compile_user_code(source):
-    tree = ast.parse(source, filename='<user_code>', mode='exec')
+    tree = ast.parse(source, filename='solution.py', mode='exec')
     __tracecode_attach_parents(tree)
     tree = __TracecodeAccessTransformer().visit(tree)
     ast.fix_missing_locations(tree)
-    return compile(tree, '<user_code>', 'exec')
+    return compile(tree, 'solution.py', 'exec')
 
 def _tracecode_is_pure_literal_scaffold(node):
     if isinstance(node, (ast.Constant, ast.Name)):
@@ -1261,7 +1261,7 @@ def _tracecode_is_pure_literal_scaffold(node):
 
 def _tracecode_collect_collapsed_literal_lines(source):
     try:
-        tree = ast.parse(source, filename='<user_code>', mode='exec')
+        tree = ast.parse(source, filename='solution.py', mode='exec')
     except Exception:
         return set()
 
@@ -1349,7 +1349,7 @@ def _tracer(frame, event, arg):
     
     # Fast counter for any loops
     if event == 'line':
-        if frame.f_code.co_filename == '<user_code>' and frame.f_lineno in _tracecode_collapsed_literal_lines:
+        if frame.f_code.co_filename == 'solution.py' and frame.f_lineno in _tracecode_collapsed_literal_lines:
             return _tracer
         TraceHooks.flush_completed_line(frame)
         _total_line_events += 1
@@ -1750,7 +1750,7 @@ function parsePythonError(rawError, userCodeStartLine, userCodeLineCount) {
 
   // Prefer frame lines from user-compiled code, then fall back to generic "line N" matches.
   const frameLineMatches = [
-    ...rawError.matchAll(/File "(?:<exec>|<string>|<user_code>)", line (\d+)/g),
+    ...rawError.matchAll(/File "(?:<exec>|<string>|<user_code>|solution\.py)", line (\d+)/g),
   ];
   const frameRawLines = frameLineMatches.map((match) => parseInt(match[1], 10));
   const genericLineMatches = [...rawError.matchAll(/line (\d+)/g)];
@@ -1956,7 +1956,9 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
       trace: remapPythonRuntimeTrace(
         result.runtimeTrace,
         userCodeStartLine,
-        userCodeLineCount
+        userCodeLineCount,
+        'python:run',
+        'solution.py'
       ),
       executionTimeMs,
       consoleOutput: result.console,
@@ -1978,7 +1980,7 @@ async function executeWithTracing(deps, code, functionName, inputs, executionSty
         ? 'Execution timed out. This may indicate an infinite loop or very expensive execution.'
         : message,
       errorLine: line,
-      trace: remapPythonRuntimeTrace({ events: [] }, userCodeStartLine, userCodeLineCount),
+      trace: remapPythonRuntimeTrace({ events: [] }, userCodeStartLine, userCodeLineCount, 'python:run', 'solution.py'),
       executionTimeMs,
       consoleOutput: [],
       timeoutReason: isClientTimeout ? 'client-timeout' : undefined,

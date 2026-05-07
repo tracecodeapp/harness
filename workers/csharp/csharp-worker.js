@@ -1,5 +1,7 @@
 let runtimePromise = null;
 let executeExport = null;
+const CSHARP_DEFAULT_FILE = 'solution.cs';
+const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
 
 function resolveAssetUrl(assetBaseUrl, pathname) {
   const normalizedBase = String(assetBaseUrl || '').replace(/\/+$/, '');
@@ -29,6 +31,36 @@ async function initRuntime(assetBaseUrl) {
   return runtimePromise;
 }
 
+function normalizeCSharpFile(file) {
+  if (typeof file !== 'string') return file;
+  return file.endsWith(CSHARP_LEGACY_USER_FILE)
+    ? file.slice(0, -CSHARP_LEGACY_USER_FILE.length) + CSHARP_DEFAULT_FILE
+    : file;
+}
+
+function normalizeCSharpResult(result) {
+  if (!result || typeof result !== 'object') return result;
+  return {
+    ...result,
+    ...(Array.isArray(result.diagnostics)
+      ? {
+          diagnostics: result.diagnostics.map((diagnostic) => ({
+            ...diagnostic,
+            file: normalizeCSharpFile(diagnostic.file),
+          })),
+        }
+      : {}),
+    ...(Array.isArray(result.events)
+      ? {
+          events: result.events.map((event) => {
+            const normalizedFile = normalizeCSharpFile(event.file);
+            return normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile };
+          }),
+        }
+      : {}),
+  };
+}
+
 async function handleMessage(message) {
   if (message.type === 'init') {
     return initRuntime(message.payload?.assetBaseUrl);
@@ -53,7 +85,7 @@ async function handleMessage(message) {
       maxStoredEvents: message.payload?.maxStoredEvents,
       minimalTrace: message.payload?.minimalTrace,
     };
-    return JSON.parse(executeExport(JSON.stringify(request)));
+    return normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))));
   }
 
   throw new Error(`Unsupported C# worker message type "${message.type}"`);

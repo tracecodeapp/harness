@@ -37,7 +37,7 @@ function nativeJavaEvent(event: Omit<RuntimeTraceEvent, 'runId'>): string {
 }
 
 function javaTrace(events: Array<Omit<RuntimeTraceEvent, 'runId'>>, sourceText?: string): RuntimeTrace {
-  return javaTraceHooksEventsToRuntimeTrace(events.map(nativeJavaEvent), sourceText, { runId: 'java:test', file: 'Solution.java' });
+  return javaTraceHooksEventsToRuntimeTrace(events.map(nativeJavaEvent), sourceText, { runId: 'java:test', file: 'solution.java' });
 }
 
 function assertParity(name: string, traces: Record<string, RuntimeTrace>, expected: RuntimeTraceParitySignature): void {
