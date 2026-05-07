@@ -1,11 +1,12 @@
-# `@tracecode/harness/javascript`
+# `@tracecode/harness-javascript`
 
-JavaScript and TypeScript execution helpers for `@tracecode/harness`.
+JavaScript and TypeScript execution helpers plus browser worker assets for
+TraceCode harness.
 
 Import path:
 
 ```ts
-import { executeJavaScriptCode } from '@tracecode/harness/javascript';
+import { JavaScriptWorkerClient, createJavaScriptRuntimeClient, executeJavaScriptCode } from '@tracecode/harness-javascript';
 ```
 
 Public surface:
@@ -13,7 +14,11 @@ Public surface:
 - JavaScript execution helpers
 - TypeScript execution/transpilation helpers
 - runtime declaration helpers used by the JS/TS worker layer
+- browser worker client and runtime client
 
-Use this entrypoint when you need the JS/TS execution utilities without the higher-level browser harness factory.
+The umbrella package also exposes the same public surface at
+`@tracecode/harness/javascript` for backwards-compatible all-in-one installs.
 
-See the root README for package installation and browser usage.
+Runtime assets are published under `workers/`. Review
+`THIRD_PARTY_NOTICES.md` before redistributing this package, especially the
+TypeScript section.

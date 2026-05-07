@@ -51,9 +51,25 @@ This is not a general workflow engine. It is an opinionated execution harness de
 
 ## Installation
 
+The umbrella package keeps the backwards-compatible all-in-one install:
+
 ```bash
 pnpm add @tracecode/harness
 ```
+
+For smaller installs, use the language packages you actually ship:
+
+```bash
+pnpm add @tracecode/harness-core @tracecode/harness-browser @tracecode/harness-python
+pnpm add @tracecode/harness-javascript
+pnpm add @tracecode/harness-java
+pnpm add @tracecode/harness-csharp
+pnpm add @tracecode/harness-cpp
+```
+
+Each language package publishes only its own worker assets under `workers/`.
+That keeps license/runtime exposure scoped to the languages a consuming app
+chooses to distribute.
 
 If your app bundles dependencies, transpiling the package is usually the safest option. For Next.js:
 
@@ -125,9 +141,25 @@ The package publishes built ESM and CommonJS entrypoints plus `.d.ts` files.
 - `@tracecode/harness/core`
   Shared runtime contracts, result types, and trace helpers.
 - `@tracecode/harness/python`
-  Python harness generation helpers and snippet artifacts.
+  Python runtime helpers, worker client, and snippet artifacts.
 - `@tracecode/harness/javascript`
-  JavaScript and TypeScript execution helpers.
+  JavaScript and TypeScript execution helpers and worker client.
+- `@tracecode/harness/java`
+  Java runtime client and worker client.
+- `@tracecode/harness/csharp`
+  C# runtime client and worker client.
+- `@tracecode/harness/cpp`
+  C++ runtime client and worker client.
+
+The same surfaces are available as standalone language packages:
+
+- `@tracecode/harness-core`
+- `@tracecode/harness-browser`
+- `@tracecode/harness-python`
+- `@tracecode/harness-javascript`
+- `@tracecode/harness-java`
+- `@tracecode/harness-csharp`
+- `@tracecode/harness-cpp`
 
 The browser entrypoint is intentionally narrow. Low-level worker constructors, language gates, and isolation helpers are internal implementation details, not public SDK surface.
 
@@ -156,7 +188,7 @@ The returned harness exposes:
 Configuration:
 
 - `assetBaseUrl?: string`
-- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl }>`
+- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl; cppWorker; cppCompilerBundle; cppRuntimeHeader }>`
 - `debug?: boolean`
 
 Example:
@@ -177,6 +209,7 @@ if (profile.capabilities.tracing.supported) {
 
 `tracecode-harness sync-assets <target-dir>` copies the canonical browser asset set:
 
+- `THIRD_PARTY_NOTICES.md`
 - `pyodide-worker.js`
 - `generated-python-harness-snippets.js`
 - `pyodide/runtime-core.js`
@@ -189,9 +222,22 @@ if (profile.capabilities.tracing.supported) {
 - `vendor/jdk.compiler-17.jar`
 - `csharp-worker.js`
 - `vendor/csharp/**`
+- `cpp-worker.js`
+- `cpp/tracecode_runtime.hpp`
+- `vendor/cpp/yowasp/**`
+
+You can copy a smaller set from the umbrella CLI:
+
+```bash
+pnpm exec tracecode-harness sync-assets public/workers --languages python,javascript
+```
+
+Standalone language packages publish their own `workers/` directories with the
+same target layout, so consumers can copy only the package assets they install.
 
 By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those assets as:
 
+- `/workers/THIRD_PARTY_NOTICES.md`
 - `/workers/pyodide-worker.js`
 - `/workers/generated-python-harness-snippets.js`
 - `/workers/pyodide/runtime-core.js`
@@ -204,6 +250,9 @@ By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those 
 - `/workers/vendor/jdk.compiler-17.jar`
 - `/workers/csharp-worker.js`
 - `/workers/vendor/csharp`
+- `/workers/cpp-worker.js`
+- `/workers/cpp/tracecode_runtime.hpp`
+- `/workers/vendor/cpp/yowasp`
 
 Advanced consumers can override individual asset URLs through the `assets` option.
 
@@ -297,6 +346,12 @@ This repo uses explicit versioned release boundaries.
 - `0.4.0` makes the harness a clean browser SDK with explicit runtime creation and asset sync tooling
 
 Detailed release notes live in [CHANGELOG.md](./CHANGELOG.md).
+
+## Third-Party Runtime Notices
+
+Runtime dependencies and license notes are tracked in
+[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md). Keep that file with any
+redistribution of worker assets.
 
 ## License
 

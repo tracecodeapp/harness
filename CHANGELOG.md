@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.7.0-beta1] - 2026-05-07
+
+### Added
+
+- Added third-party runtime notices covering CheerpJ, Pyodide/CPython, TypeScript, JavaParser, OpenJDK/JBR, .NET/Roslyn, YoWASP/LLVM, and WASI libc.
+- Added publishable language-split packages for core, browser, Python, JavaScript/TypeScript, Java, C#, and C++.
+- Added Java, C#, and C++ public root subpath exports.
+- Added language-filtered asset sync through `tracecode-harness sync-assets --languages ...`.
+
+### Changed
+
+- The umbrella package remains backwards compatible, while standalone language packages now publish their own generated `workers/` assets.
+- Package builds now generate per-package assets without committing duplicate runtime blobs.
+
 ## [0.6.6] - 2026-04-27
 
 ### Fixed

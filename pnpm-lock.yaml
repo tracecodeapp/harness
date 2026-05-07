@@ -55,7 +55,17 @@ importers:
 
   packages/harness-core: {}
 
-  packages/harness-javascript: {}
+  packages/harness-cpp: {}
+
+  packages/harness-csharp: {}
+
+  packages/harness-java: {}
+
+  packages/harness-javascript:
+    dependencies:
+      typescript:
+        specifier: '>=5.0.0'
+        version: 5.9.3
 
   packages/harness-python: {}
 

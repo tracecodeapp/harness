@@ -1,11 +1,11 @@
-# `@tracecode/harness/python`
+# `@tracecode/harness-python`
 
-Python harness generation helpers and generated snippet artifacts for `@tracecode/harness`.
+Python runtime helpers and browser worker assets for TraceCode harness.
 
 Import path:
 
 ```ts
-import { generateSolutionScript } from '@tracecode/harness/python';
+import { PyodideWorkerClient, createPythonRuntimeClient, generateSolutionScript } from '@tracecode/harness-python';
 ```
 
 Public surface:
@@ -13,7 +13,11 @@ Public surface:
 - Python harness template helpers
 - generated snippet exports
 - Python-side serialization helpers used by the runtime/tests
+- browser worker client and runtime client
 
-This package is primarily useful for tooling, generation, and contract tests around the Python runtime.
+The umbrella package also exposes the same public surface at
+`@tracecode/harness/python` for backwards-compatible all-in-one installs.
 
-See the root README for the broader browser SDK story.
+Runtime assets are published under `workers/`. Review
+`THIRD_PARTY_NOTICES.md` before redistributing this package, especially the
+Pyodide and CPython sections.

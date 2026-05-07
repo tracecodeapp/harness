@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.6.6",
+  "version": "0.7.0-beta1",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -17,7 +17,8 @@
     "workers",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "bin": {
     "tracecode-harness": "./dist/cli.cjs"
@@ -59,17 +60,37 @@
       "require": "./dist/javascript.cjs",
       "default": "./dist/javascript.js"
     },
+    "./java": {
+      "types": "./dist/java.d.ts",
+      "import": "./dist/java.js",
+      "require": "./dist/java.cjs",
+      "default": "./dist/java.js"
+    },
+    "./csharp": {
+      "types": "./dist/csharp.d.ts",
+      "import": "./dist/csharp.js",
+      "require": "./dist/csharp.cjs",
+      "default": "./dist/csharp.js"
+    },
+    "./cpp": {
+      "types": "./dist/cpp.d.ts",
+      "import": "./dist/cpp.js",
+      "require": "./dist/cpp.cjs",
+      "default": "./dist/cpp.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "pnpm generate:python-harness && pnpm exec tsup",
+    "build": "pnpm generate:python-harness && pnpm sync:package-assets && pnpm exec tsup",
     "generate:python-harness": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts",
+    "sync:package-assets": "pnpm exec tsx scripts/sync-language-package-assets.ts",
     "typecheck": "pnpm typecheck:packages",
-    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit",
     "test:smoke": "pnpm exec tsx tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx tests/test-packaged-surface.ts",
     "test:browser-harness": "pnpm exec tsx tests/test-browser-harness.ts",
     "test:asset-sync": "pnpm exec tsx tests/test-asset-sync.ts",
+    "test:language-packages": "pnpm exec tsx tests/test-language-package-surface.ts",
     "test:example-app": "pnpm exec tsx tests/test-example-app.ts",
     "test:java-example-app": "pnpm exec tsx tests/test-java-example-app.ts",
     "test:example-app-packaged": "pnpm exec tsx tests/test-example-app-packaged.ts",
@@ -100,8 +121,8 @@
     "local:test:cpp-algoflow-smoke": "pnpm exec tsx tests/mine-cpp-algoflow-corpus.ts --sample=two-sum,map-sum-pairs,range-frequency-queries,binary-tree-tilt --loose-any-valid-output --fail-on-failure --report=reports/cpp-algoflow-smoke.json",
     "local:mine:cpp-algoflow-corpus": "pnpm exec tsx tests/mine-cpp-algoflow-corpus.ts --limit=50 --max-stored-events=10000 --loose-any-valid-output --report=reports/cpp-algoflow-corpus.json",
     "local:mine:cpp-algoflow-corpus:isolated": "pnpm exec tsx tests/mine-cpp-algoflow-corpus.ts --limit=0 --no-trace --jobs=4 --batch-size=16 --worker-timeout-ms=600000 --max-stored-events=10000 --loose-any-valid-output --compare-languages=javascript,typescript,python,java --report=reports/cpp-algoflow-corpus-isolated.json",
-    "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync",
-    "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
+    "test:ci": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:asset-sync",
+    "test": "pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
     "mine:runtime-trace-final300": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts",
     "mine:runtime-trace-final300:parallel": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts --jobs=8",
     "test:runtime-raw-emission-contract": "pnpm exec tsx tests/test-runtime-raw-emission-contract.ts",

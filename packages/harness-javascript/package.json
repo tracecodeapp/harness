@@ -1,10 +1,42 @@
 {
   "name": "@tracecode/harness-javascript",
-  "private": true,
-  "version": "0.0.0-stage",
+  "version": "0.7.0-beta1",
+  "description": "JavaScript and TypeScript runtime helpers and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
+  "homepage": "https://tracecode.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tracecodeapp/harness.git",
+    "directory": "packages/harness-javascript"
+  },
   "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "workers",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "exports": {
-    ".": "./src/index.ts"
-  }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.js"
+    },
+    "./workers/*": "./workers/*",
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  },
+  "sideEffects": false
 }

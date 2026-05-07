@@ -1,11 +1,11 @@
-# `@tracecode/harness/core`
+# `@tracecode/harness-core`
 
-Shared runtime contracts and trace helpers for `@tracecode/harness`.
+Shared runtime contracts and trace helpers for TraceCode harness.
 
 Import path:
 
 ```ts
-import type { ExecutionResult } from '@tracecode/harness/core';
+import type { ExecutionResult } from '@tracecode/harness-core';
 ```
 
 Public surface:
@@ -13,6 +13,10 @@ Public surface:
 - runtime/result types
 - runtime trace types and helpers
 
-Use this package when you need stable types and trace-shape utilities without pulling in the browser runtime entrypoint.
+The umbrella package also exposes the same public surface at
+`@tracecode/harness/core` for backwards-compatible all-in-one installs.
+
+Use this package when you need stable types and trace-shape utilities without
+pulling in browser runtime assets.
 
 See the root README for the full package overview.

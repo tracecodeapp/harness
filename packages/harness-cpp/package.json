@@ -1,13 +1,13 @@
 {
-  "name": "@tracecode/harness-core",
+  "name": "@tracecode/harness-cpp",
   "version": "0.7.0-beta1",
-  "description": "Shared TraceCode harness runtime contracts and trace helpers.",
+  "description": "C++ runtime client and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
     "type": "git",
     "url": "https://github.com/tracecodeapp/harness.git",
-    "directory": "packages/harness-core"
+    "directory": "packages/harness-cpp"
   },
   "type": "module",
   "main": "./dist/index.cjs",
@@ -15,6 +15,7 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
+    "workers",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
@@ -26,6 +27,7 @@
       "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     },
+    "./workers/*": "./workers/*",
     "./package.json": "./package.json"
   },
   "sideEffects": false

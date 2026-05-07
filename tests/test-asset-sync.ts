@@ -25,6 +25,7 @@ async function main(): Promise<void> {
   }
 
   const requiredFiles = [
+    'THIRD_PARTY_NOTICES.md',
     'pyodide-worker.js',
     'generated-python-harness-snippets.js',
     'pyodide/runtime-core.js',
@@ -67,7 +68,32 @@ async function main(): Promise<void> {
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'
   );
-  console.log('PASS: asset sync CLI copies the canonical worker asset set');
+
+  const filteredTargetDir = join(tempRoot, 'public', 'python-workers');
+  const filteredRun = spawnSync('node', ['dist/cli.js', 'sync-assets', filteredTargetDir, '--languages', 'python'], {
+    cwd: resolve(process.cwd()),
+    encoding: 'utf8',
+  });
+
+  if (filteredRun.status !== 0) {
+    throw new Error(filteredRun.stderr || filteredRun.stdout || 'Filtered asset sync CLI failed');
+  }
+
+  for (const relativePath of [
+    'THIRD_PARTY_NOTICES.md',
+    'pyodide-worker.js',
+    'generated-python-harness-snippets.js',
+    'pyodide/runtime-core.js',
+  ]) {
+    const fileStat = await stat(join(filteredTargetDir, relativePath));
+    assertCondition(fileStat.isFile(), `Expected filtered synced asset at ${relativePath}`);
+  }
+
+  const filteredEntries = await readdir(filteredTargetDir);
+  assertCondition(!filteredEntries.includes('java-worker.js'), 'Filtered Python sync should not copy Java assets');
+  assertCondition(!filteredEntries.includes('javascript-worker.js'), 'Filtered Python sync should not copy JavaScript assets');
+
+  console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');
 }
 
 main().catch((error) => {

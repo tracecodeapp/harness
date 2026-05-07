@@ -51,6 +51,13 @@ async function main(): Promise<void> {
     'dist/python.cjs',
     'dist/javascript.js',
     'dist/javascript.cjs',
+    'dist/java.js',
+    'dist/java.cjs',
+    'dist/csharp.js',
+    'dist/csharp.cjs',
+    'dist/cpp.js',
+    'dist/cpp.cjs',
+    'THIRD_PARTY_NOTICES.md',
     'workers/python/pyodide-worker.js',
     'workers/javascript/javascript-worker.js',
     'workers/java/java-worker.js',
@@ -86,12 +93,18 @@ async function main(): Promise<void> {
       const core = await import('@tracecode/harness/core');
       const python = await import('@tracecode/harness/python');
       const javascript = await import('@tracecode/harness/javascript');
+      const java = await import('@tracecode/harness/java');
+      const csharp = await import('@tracecode/harness/csharp');
+      const cpp = await import('@tracecode/harness/cpp');
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
       if ('getPyodideWorkerClient' in browser) throw new Error('Low-level worker clients should not be publicly exported');
       if ('enforceRuntimeWorkerIsolation' in browser) throw new Error('Worker isolation helpers should not be publicly exported');
       if (typeof python.generateSolutionScript !== 'function') throw new Error('Missing python export');
       if (typeof javascript.executeJavaScriptCode !== 'function') throw new Error('Missing javascript export');
+      if (typeof java.createJavaRuntimeClient !== 'function') throw new Error('Missing java export');
+      if (typeof csharp.createCSharpRuntimeClient !== 'function') throw new Error('Missing csharp export');
+      if (typeof cpp.createCppRuntimeClient !== 'function') throw new Error('Missing cpp export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
       console.log('ok');
     })().catch((error) => {
