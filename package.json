@@ -130,6 +130,7 @@
     "test:runtime-trace": "pnpm test:runtime-trace-fixtures && pnpm test:runtime-trace-fixtures:raw-strict && pnpm test:runtime-raw-emission-contract && pnpm report:runtime-trace-known-gaps",
     "mine:runtime-trace-corpus": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts",
     "mine:runtime-trace-corpus:parallel": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts --jobs=8",
+    "bench:browser-runtimes": "pnpm exec tsx scripts/benchmark-browser-runtimes.ts",
     "spike:csharp:publish": "dotnet publish spikes/csharp-wasm-roslyn/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj -c Release",
     "spike:csharp:smoke": "pnpm exec tsx spikes/csharp-wasm-roslyn/node-smoke/run-csharp-host.ts",
     "spike:csharp:browser": "pnpm exec tsx spikes/csharp-wasm-roslyn/browser-worker/browser-worker-smoke.ts",

@@ -13,6 +13,7 @@ const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const IDLE_TIMEOUT_MS = 90_000;
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
+const DYNAMIC_INPUT_PREFIX = '/str/tracecode-java-input';
 
 if (typeof self.importScripts === 'function') {
   self.importScripts('java-source-augmentations.js');
@@ -164,13 +165,14 @@ function isTreeNodeShape(value) {
   return typeof value.__id__ === 'string' && value.__id__.startsWith('tree-');
 }
 
-function detectFeatures(source, input) {
+function detectFeatures(source, input, options = {}) {
   const values = Object.values(input ?? {});
   return {
     hasList: /\bListNode\b/.test(source) || values.some((value) => isListNodeShape(value)),
     hasTree: /\bTreeNode\b/.test(source) || values.some((value) => isTreeNodeShape(value)),
     hasCustomObject: values.some((value) => containsCustomObjectLiteral(value)),
     hasMap: values.some((value) => containsPlainObjectLiteral(value)),
+    hasDynamicInputs: options.hasDynamicInputs === true,
   };
 }
 
@@ -282,6 +284,60 @@ function splitTopLevelCommaList(source) {
   }
   if (current) parts.push(current);
   return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+function normalizedJavaInputType(typeSource) {
+  return String(typeSource || 'Object')
+    .replace(/\bfinal\b/g, '')
+    .replace(/\s+/g, '')
+    .replace(/\.\.\.$/, '[]');
+}
+
+function isDynamicJavaScalarType(typeSource, value) {
+  const normalized = normalizedJavaInputType(typeSource);
+  if (
+    ['byte', 'Byte', 'short', 'Short', 'int', 'Integer', 'long', 'Long', 'float', 'Float', 'double', 'Double'].includes(normalized)
+  ) {
+    return typeof value === 'number';
+  }
+  if (normalized === 'boolean' || normalized === 'Boolean') {
+    return typeof value === 'boolean';
+  }
+  if (normalized === 'String') {
+    return typeof value === 'string';
+  }
+  if (normalized === 'char' || normalized === 'Character') {
+    return typeof value === 'string' && value.length === 1;
+  }
+  return false;
+}
+
+function isDynamicJavaInputType(typeSource, value) {
+  const normalized = normalizedJavaInputType(typeSource);
+  if (normalized.endsWith('[]')) {
+    if (!Array.isArray(value)) return false;
+    const elementType = normalized.slice(0, -2);
+    return value.every((entry) => isDynamicJavaInputType(elementType, entry));
+  }
+  return isDynamicJavaScalarType(normalized, value);
+}
+
+function dynamicJavaInputExpression(typeSource, inputPath) {
+  const normalized = normalizedJavaInputType(typeSource);
+  const quotedPath = JSON.stringify(inputPath);
+  if (normalized.endsWith('[]')) {
+    return `((${normalized}) readJsonInput(${quotedPath}, ${normalized}.class))`;
+  }
+  if (normalized === 'byte' || normalized === 'Byte') return `((Number) readJsonInput(${quotedPath}, Byte.class)).byteValue()`;
+  if (normalized === 'short' || normalized === 'Short') return `((Number) readJsonInput(${quotedPath}, Short.class)).shortValue()`;
+  if (normalized === 'int' || normalized === 'Integer') return `((Number) readJsonInput(${quotedPath}, Integer.class)).intValue()`;
+  if (normalized === 'long' || normalized === 'Long') return `((Number) readJsonInput(${quotedPath}, Long.class)).longValue()`;
+  if (normalized === 'float' || normalized === 'Float') return `((Number) readJsonInput(${quotedPath}, Float.class)).floatValue()`;
+  if (normalized === 'double' || normalized === 'Double') return `((Number) readJsonInput(${quotedPath}, Double.class)).doubleValue()`;
+  if (normalized === 'boolean' || normalized === 'Boolean') return `((Boolean) readJsonInput(${quotedPath}, Boolean.class)).booleanValue()`;
+  if (normalized === 'char' || normalized === 'Character') return `((Character) readJsonInput(${quotedPath}, Character.class)).charValue()`;
+  if (normalized === 'String') return `((String) readJsonInput(${quotedPath}, String.class))`;
+  return null;
 }
 
 function toJavaTypedArrayLiteral(value, expectedType) {
@@ -515,8 +571,195 @@ function buildJavaExpression(value, expectedType) {
   return toJavaScalarLiteral(value);
 }
 
+function buildDynamicInputHelperMethods() {
+  return `
+  private static Object readJsonInput(String path, Class<?> targetType) {
+    try {
+      String source = java.nio.file.Files.readString(java.nio.file.Paths.get(path), java.nio.charset.StandardCharsets.UTF_8);
+      return coerceJsonInput(new __TracecodeJsonParser(source).parse(), targetType);
+    } catch (java.io.IOException error) {
+      throw new RuntimeException("Unable to read TraceCode input " + path, error);
+    }
+  }
+
+  private static Object coerceJsonInput(Object value, Class<?> targetType) {
+    if (value == null) return null;
+    if (targetType.isArray()) {
+      java.util.List<?> list = (java.util.List<?>) value;
+      Class<?> componentType = targetType.getComponentType();
+      Object array = java.lang.reflect.Array.newInstance(componentType, list.size());
+      for (int i = 0; i < list.size(); i++) {
+        java.lang.reflect.Array.set(array, i, coerceJsonInput(list.get(i), componentType));
+      }
+      return array;
+    }
+    if ((targetType == byte.class || targetType == Byte.class) && value instanceof Number) return ((Number) value).byteValue();
+    if ((targetType == short.class || targetType == Short.class) && value instanceof Number) return ((Number) value).shortValue();
+    if ((targetType == int.class || targetType == Integer.class) && value instanceof Number) return ((Number) value).intValue();
+    if ((targetType == long.class || targetType == Long.class) && value instanceof Number) return ((Number) value).longValue();
+    if ((targetType == float.class || targetType == Float.class) && value instanceof Number) return ((Number) value).floatValue();
+    if ((targetType == double.class || targetType == Double.class) && value instanceof Number) return ((Number) value).doubleValue();
+    if ((targetType == boolean.class || targetType == Boolean.class) && value instanceof Boolean) return value;
+    if ((targetType == char.class || targetType == Character.class) && value instanceof String && ((String) value).length() == 1) {
+      return ((String) value).charAt(0);
+    }
+    if (targetType == String.class && value instanceof String) return value;
+    return value;
+  }
+
+  private static final class __TracecodeJsonParser {
+    private final String source;
+    private int index = 0;
+
+    __TracecodeJsonParser(String source) {
+      this.source = source == null || source.isEmpty() ? "null" : source;
+    }
+
+    Object parse() {
+      skipWhitespace();
+      Object value = parseValue();
+      skipWhitespace();
+      if (index != source.length()) {
+        throw new IllegalArgumentException("Unexpected trailing JSON input");
+      }
+      return value;
+    }
+
+    private Object parseValue() {
+      skipWhitespace();
+      char ch = peek();
+      if (ch == '"') return parseString();
+      if (ch == '[') return parseArray();
+      if (ch == '{') return parseObject();
+      if (ch == '-' || (ch >= '0' && ch <= '9')) return parseNumber();
+      if (consume("true")) return Boolean.TRUE;
+      if (consume("false")) return Boolean.FALSE;
+      if (consume("null")) return null;
+      throw new IllegalArgumentException("Invalid JSON input");
+    }
+
+    private java.util.List<Object> parseArray() {
+      expect('[');
+      java.util.ArrayList<Object> values = new java.util.ArrayList<>();
+      skipWhitespace();
+      if (peek() == ']') {
+        index++;
+        return values;
+      }
+      while (true) {
+        values.add(parseValue());
+        skipWhitespace();
+        char separator = take();
+        if (separator == ']') return values;
+        if (separator != ',') throw new IllegalArgumentException("Invalid JSON array");
+      }
+    }
+
+    private java.util.LinkedHashMap<String, Object> parseObject() {
+      expect('{');
+      java.util.LinkedHashMap<String, Object> values = new java.util.LinkedHashMap<>();
+      skipWhitespace();
+      if (peek() == '}') {
+        index++;
+        return values;
+      }
+      while (true) {
+        skipWhitespace();
+        String key = parseString();
+        skipWhitespace();
+        expect(':');
+        values.put(key, parseValue());
+        skipWhitespace();
+        char separator = take();
+        if (separator == '}') return values;
+        if (separator != ',') throw new IllegalArgumentException("Invalid JSON object");
+      }
+    }
+
+    private String parseString() {
+      expect('"');
+      StringBuilder out = new StringBuilder();
+      while (true) {
+        char ch = take();
+        if (ch == '"') return out.toString();
+        if (ch != '\\\\') {
+          out.append(ch);
+          continue;
+        }
+        char escaped = take();
+        switch (escaped) {
+          case '"': out.append('"'); break;
+          case '\\\\': out.append('\\\\'); break;
+          case '/': out.append('/'); break;
+          case 'b': out.append('\\b'); break;
+          case 'f': out.append('\\f'); break;
+          case 'n': out.append('\\n'); break;
+          case 'r': out.append('\\r'); break;
+          case 't': out.append('\\t'); break;
+          case 'u':
+            int codePoint = 0;
+            for (int i = 0; i < 4; i++) {
+              codePoint = (codePoint << 4) + Character.digit(take(), 16);
+            }
+            out.append((char) codePoint);
+            break;
+          default:
+            throw new IllegalArgumentException("Invalid JSON string escape");
+        }
+      }
+    }
+
+    private Number parseNumber() {
+      int start = index;
+      if (peek() == '-') index++;
+      while (peek() >= '0' && peek() <= '9') index++;
+      boolean floating = false;
+      if (peek() == '.') {
+        floating = true;
+        index++;
+        while (peek() >= '0' && peek() <= '9') index++;
+      }
+      if (peek() == 'e' || peek() == 'E') {
+        floating = true;
+        index++;
+        if (peek() == '+' || peek() == '-') index++;
+        while (peek() >= '0' && peek() <= '9') index++;
+      }
+      String raw = source.substring(start, index);
+      return floating ? Double.valueOf(raw) : Long.valueOf(raw);
+    }
+
+    private boolean consume(String literal) {
+      if (!source.startsWith(literal, index)) return false;
+      index += literal.length();
+      return true;
+    }
+
+    private void skipWhitespace() {
+      while (index < source.length() && Character.isWhitespace(source.charAt(index))) index++;
+    }
+
+    private char peek() {
+      return index < source.length() ? source.charAt(index) : '\\0';
+    }
+
+    private char take() {
+      if (index >= source.length()) throw new IllegalArgumentException("Unexpected end of JSON input");
+      return source.charAt(index++);
+    }
+
+    private void expect(char expected) {
+      char actual = take();
+      if (actual != expected) throw new IllegalArgumentException("Unexpected JSON character");
+    }
+  }`;
+}
+
 function buildHelperMethods(features) {
   const members = [];
+  if (features.hasDynamicInputs) {
+    members.push(buildDynamicInputHelperMethods());
+  }
   if (features.hasList || features.hasCustomObject) {
     members.push(`
   private static Object coerceMaterializedValue(Object value, Class<?> targetType) {
@@ -1855,9 +2098,102 @@ function normalizeJavaRequest(payload) {
   };
 }
 
-function buildExportsSource(source, functionName, executionStyle, input) {
-  const features = detectFeatures(source, input);
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function stableHash(value) {
+  const source = typeof value === 'string' ? value : stableJson(value);
+  let hashA = 0x811c9dc5;
+  let hashB = 0x9e3779b9;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    hashA ^= code;
+    hashA = Math.imul(hashA, 0x01000193) >>> 0;
+    hashB ^= code + index;
+    hashB = Math.imul(hashB, 0x85ebca6b) >>> 0;
+  }
+  return `${hashA.toString(36)}${hashB.toString(36)}`;
+}
+
+function dynamicInputEntriesForPayload(payload, compileId) {
+  if (payload.executionStyle === 'ops-class') return [];
+  const parameters = extractMethodParameters(payload.code, payload.functionName);
+  const invocationKeys = parameters.length > 0 ? parameters.map((parameter) => parameter.name) : Object.keys(payload.inputs ?? {});
+  const entries = [];
+  for (let index = 0; index < invocationKeys.length; index += 1) {
+    const key = invocationKeys[index];
+    const parameter = parameters[index];
+    if (!parameter) continue;
+    const value = inputValueForParameter(payload.inputs ?? {}, key, index);
+    if (!isDynamicJavaInputType(parameter.type, value)) continue;
+    const safeName = String(key).replace(/[^A-Za-z0-9_$-]/g, '_');
+    entries.push({
+      key,
+      index,
+      type: parameter.type,
+      value,
+      path: `${DYNAMIC_INPUT_PREFIX}-${compileId}-${index}-${safeName}.json`,
+    });
+  }
+  return entries;
+}
+
+function buildJavaCompileSeed(payload) {
+  if (payload.executionStyle === 'ops-class') {
+    return {
+      code: payload.code,
+      functionName: payload.functionName,
+      executionStyle: payload.executionStyle,
+      inputs: payload.inputs ?? {},
+    };
+  }
+
+  const parameters = extractMethodParameters(payload.code, payload.functionName);
+  const invocationKeys = parameters.length > 0 ? parameters.map((parameter) => parameter.name) : Object.keys(payload.inputs ?? {});
+  const inputs = {};
+  for (let index = 0; index < invocationKeys.length; index += 1) {
+    const key = invocationKeys[index];
+    const parameter = parameters[index];
+    const value = inputValueForParameter(payload.inputs ?? {}, key, index);
+    inputs[key] = parameter && isDynamicJavaInputType(parameter.type, value)
+      ? { mode: 'dynamic-json-file', type: normalizedJavaInputType(parameter.type) }
+      : { mode: 'literal', value };
+  }
+
+  return {
+    code: payload.code,
+    functionName: payload.functionName,
+    executionStyle: payload.executionStyle,
+    scriptMode: payload.scriptMode === true,
+    inputs,
+  };
+}
+
+function buildJavaCompileId(payload) {
+  return stableHash(buildJavaCompileSeed(payload));
+}
+
+async function writeDynamicInputFiles(dynamicInputs) {
+  for (const input of dynamicInputs) {
+    await self.cheerpOSAddStringFile(input.path, JSON.stringify(input.value));
+  }
+}
+
+function dynamicInputByKey(dynamicInputs) {
+  const out = new Map();
+  for (const input of dynamicInputs) out.set(input.key, input);
+  return out;
+}
+
+function buildExportsSource(source, functionName, executionStyle, input, options = {}) {
+  const features = detectFeatures(source, input, options);
   const helperMethods = buildHelperMethods(features);
+  const dynamicInputsByKey = dynamicInputByKey(options.dynamicInputs ?? []);
 
   if (executionStyle === 'ops-class') {
     const operations = Array.isArray(input.operations) ? input.operations : [];
@@ -1920,7 +2256,13 @@ ${lines.join('\n')}
     const parameter = parameters[index];
     const type = parameter ? parameter.type : 'Object';
     const value = inputValueForParameter(input, key, index);
-    const expression = buildJavaExpression(value, type);
+    const dynamicInput = dynamicInputsByKey.get(key);
+    const expression = dynamicInput
+      ? dynamicJavaInputExpression(type, dynamicInput.path)
+      : buildJavaExpression(value, type);
+    if (dynamicInput && !expression) {
+      throw new Error(`Unsupported dynamic Java input type: ${type}`);
+    }
     materializedArgs.push(`    ${type} ${key} = ${expression};`);
   }
   const invocationArgs = invocationKeys.join(', ');
@@ -2039,15 +2381,19 @@ public class ExportsTracecodeWarmup {
   await hostWarmupPromise;
 }
 
-async function rewriteSource(payload, requestId) {
+async function rewriteSource(payload, compileId, dynamicInputs) {
   const rewriteLibraryClass = await getRewriteLibraryClass();
-  const exportsClassName = buildExportsClassName(requestId);
-  const packageName = buildPackageName(requestId);
+  const exportsClassName = buildExportsClassName(compileId);
+  const packageName = buildPackageName(compileId);
   const exportsSource = buildExportsSource(
     payload.code,
     payload.functionName,
     payload.executionStyle,
-    payload.inputs ?? {}
+    payload.inputs ?? {},
+    {
+      dynamicInputs,
+      hasDynamicInputs: dynamicInputs.length > 0,
+    }
   );
   return rewriteLibraryClass.rewriteSource(
     payload.code,
@@ -2372,9 +2718,12 @@ async function runJavaRequest(payload, requestId) {
     throw makeWorkerStageError('request normalization', error);
   }
 
+  const compileId = buildJavaCompileId(normalizedPayload);
+  const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, compileId);
+
   let rewrittenSource;
   try {
-    rewrittenSource = await rewriteSource(normalizedPayload, requestId);
+    rewrittenSource = await rewriteSource(normalizedPayload, compileId, dynamicInputs);
     rewrittenSource = augmentTraceCallArgumentSnapshots(rewrittenSource);
     rewrittenSource = augmentArrayLengthReads(rewrittenSource);
     rewrittenSource = self.TraceCodeJavaSourceAugmentations.augmentJavaCollectionOperations(
@@ -2418,10 +2767,16 @@ async function runJavaRequest(payload, requestId) {
   }
   const rewriteEnd = performance.now();
 
-  const exportsClassName = buildExportsClassName(requestId);
-  const packageName = buildPackageName(requestId);
+  const exportsClassName = buildExportsClassName(compileId);
+  const packageName = buildPackageName(compileId);
   const sourcePath = `/str/${exportsClassName}.java`;
-  const classesDir = `/files/java-worker/${requestId}/classes`;
+  const classesDir = `/files/java-worker/${compileId}/classes`;
+
+  try {
+    await writeDynamicInputFiles(dynamicInputs);
+  } catch (error) {
+    throw makeWorkerStageError('dynamic input write', error);
+  }
 
   try {
     await self.cheerpOSAddStringFile(sourcePath, rewrittenSource);
@@ -2552,14 +2907,22 @@ self.onmessage = (event) => {
   if (message.type === 'init') {
     queue = queue.then(async () => {
       try {
+        const startedAt = performance.now();
         await ensureReady();
+        const warmupStartedAt = performance.now();
         await warmHost();
+        const totalMs = performance.now() - startedAt;
         postMessageResponse({
           id: message.id,
           type: 'init',
           payload: {
             success: true,
-            loadTimeMs: Math.round(initLoadTimeMs ?? 0),
+            loadTimeMs: Math.round(totalMs),
+            timings: {
+              totalMs,
+              initMs: initLoadTimeMs ?? 0,
+              warmupMs: performance.now() - warmupStartedAt,
+            },
           },
         });
       } catch (error) {

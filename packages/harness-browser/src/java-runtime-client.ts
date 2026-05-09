@@ -53,6 +53,7 @@ class JavaRuntimeClient implements RuntimeClient {
         ...(rawResult.timeoutReason ? { timeoutReason: rawResult.timeoutReason } : {}),
         lineEventCount: 0,
         traceStepCount: 0,
+        timings: rawResult.timings,
       };
     }
 
@@ -68,6 +69,7 @@ class JavaRuntimeClient implements RuntimeClient {
       ...(rawResult.timeoutReason ? { timeoutReason: rawResult.timeoutReason } : {}),
       lineEventCount: rawResult.trace.lineEventCount,
       traceStepCount: rawResult.trace.traceStepCount,
+      timings: rawResult.timings,
     };
   }
 

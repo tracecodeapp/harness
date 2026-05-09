@@ -992,7 +992,7 @@ class Solution {
     });
     const resultParameterRewrite = harness.rewriteCalls.at(-1);
     assertCondition(
-        resultParameterRewrite?.exportsSource.includes('String result = "XR";') &&
+        resultParameterRewrite?.exportsSource.includes('String result = ((String) readJsonInput(') &&
         resultParameterRewrite.exportsSource.includes('boolean __tracecode_result = solution.canTransform(start, result);') &&
         resultParameterRewrite.exportsSource.includes('return TraceHooks.serializeOutputResult(__tracecode_result);'),
       'Java worker should avoid colliding with user parameter names when storing return values'

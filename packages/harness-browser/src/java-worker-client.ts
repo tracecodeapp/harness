@@ -1,4 +1,4 @@
-import type { CodeExecutionResult } from '../../harness-core/src/types';
+import type { CodeExecutionResult, RuntimeExecutionTimings } from '../../harness-core/src/types';
 import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
 import { createEmptyRuntimeTrace, type RuntimeTrace } from '../../harness-core/src/runtime-trace';
 
@@ -25,6 +25,7 @@ interface WorkerMessage {
 interface InitResult {
   success: boolean;
   loadTimeMs: number;
+  timings?: RuntimeExecutionTimings;
 }
 
 export interface JavaWorkerRawTraceResult {
@@ -39,6 +40,7 @@ export interface JavaWorkerRawTraceResult {
   traceLimitExceeded?: boolean;
   timeoutReason?: 'trace-limit';
   droppedEventCount?: number;
+  timings?: RuntimeExecutionTimings;
 }
 
 export interface JavaWorkerTraceResult extends JavaWorkerRawTraceResult {
@@ -331,12 +333,14 @@ export class JavaWorkerClient {
         error: result.error ?? 'Java execution failed',
         ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
         consoleOutput: result.consoleOutput,
+        timings: result.timings,
       };
     }
     return {
       success: true,
       output: result.output,
       consoleOutput: result.consoleOutput,
+      timings: result.timings,
     };
   }
 
