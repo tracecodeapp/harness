@@ -47,6 +47,16 @@ export interface JavaWorkerTraceResult extends JavaWorkerRawTraceResult {
   trace: RuntimeTrace;
 }
 
+interface JavaWorkerCodeResult {
+  success: boolean;
+  output?: unknown;
+  executionTimeMs?: number;
+  error?: string;
+  errorLine?: number;
+  consoleOutput?: string[];
+  timings?: RuntimeExecutionTimings;
+}
+
 export interface JavaTraceExecutionOptions {
   maxTraceSteps?: number;
   maxLineEvents?: number;
@@ -325,21 +335,41 @@ export class JavaWorkerClient {
     options: JavaTraceExecutionOptions | undefined,
     executionStyle: JavaExecutionStyle
   ): Promise<CodeExecutionResult> {
-    const result = await this.executeWithTracing(code, functionName, inputs, options, executionStyle);
+    return this.executeCodeMessage('execute-code', code, functionName, inputs, options, executionStyle);
+  }
+
+  private async executeCodeMessage(
+    type: 'execute-code' | 'execute-code-interview',
+    code: string,
+    functionName: string,
+    inputs: Record<string, unknown>,
+    options: JavaTraceExecutionOptions | undefined,
+    executionStyle: JavaExecutionStyle
+  ): Promise<CodeExecutionResult> {
+    await this.init();
+    const result = await this.executeWithTimeout(
+      () =>
+        this.sendMessage<JavaWorkerCodeResult>(
+          type,
+          { code, functionName, inputs, options, executionStyle },
+          EXECUTION_TIMEOUT_MS + 5_000
+        ),
+      EXECUTION_TIMEOUT_MS
+    );
     if (!result.success) {
       return {
         success: false,
         output: null,
         error: result.error ?? 'Java execution failed',
         ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
-        consoleOutput: result.consoleOutput,
+        consoleOutput: result.consoleOutput ?? [],
         timings: result.timings,
       };
     }
     return {
       success: true,
       output: result.output,
-      consoleOutput: result.consoleOutput,
+      consoleOutput: result.consoleOutput ?? [],
       timings: result.timings,
     };
   }
@@ -351,7 +381,7 @@ export class JavaWorkerClient {
     options: JavaTraceExecutionOptions | undefined,
     executionStyle: JavaExecutionStyle
   ): Promise<CodeExecutionResult> {
-    return this.executeCode(code, functionName, inputs, options, executionStyle);
+    return this.executeCodeMessage('execute-code-interview', code, functionName, inputs, options, executionStyle);
   }
 
   terminate(): void {

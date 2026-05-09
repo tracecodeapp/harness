@@ -2143,9 +2143,10 @@ function dynamicInputEntriesForPayload(payload, compileId) {
   return entries;
 }
 
-function buildJavaCompileSeed(payload) {
+function buildJavaCompileSeed(payload, compileMode = 'trace') {
   if (payload.executionStyle === 'ops-class') {
     return {
+      compileMode,
       code: payload.code,
       functionName: payload.functionName,
       executionStyle: payload.executionStyle,
@@ -2166,6 +2167,7 @@ function buildJavaCompileSeed(payload) {
   }
 
   return {
+    compileMode,
     code: payload.code,
     functionName: payload.functionName,
     executionStyle: payload.executionStyle,
@@ -2174,8 +2176,8 @@ function buildJavaCompileSeed(payload) {
   };
 }
 
-function buildJavaCompileId(payload) {
-  return stableHash(buildJavaCompileSeed(payload));
+function buildJavaCompileId(payload, compileMode = 'trace') {
+  return stableHash(buildJavaCompileSeed(payload, compileMode));
 }
 
 async function writeDynamicInputFiles(dynamicInputs) {
@@ -2406,7 +2408,33 @@ async function rewriteSource(payload, compileId, dynamicInputs) {
 }
 
 function normalizePublicClassDeclarations(source) {
-  return String(source).replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
+  return String(source).replace(/^([ \t]*)public\s+class\s+/gm, '$1class ');
+}
+
+function buildPlainRunnableSource(payload, compileId, dynamicInputs) {
+  const exportsClassName = buildExportsClassName(compileId);
+  const packageName = buildPackageName(compileId);
+  const exportsSource = buildExportsSource(
+    payload.code,
+    payload.functionName,
+    payload.executionStyle,
+    payload.inputs ?? {},
+    {
+      dynamicInputs,
+      hasDynamicInputs: dynamicInputs.length > 0,
+    }
+  ).replaceAll(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
+
+  return [
+    `package ${packageName};`,
+    '',
+    'import tracecode.user.TraceHooks;',
+    '',
+    normalizePublicClassDeclarations(payload.code).trim(),
+    '',
+    exportsSource.trim(),
+    '',
+  ].join('\n');
 }
 
 function buildCompileProbeSource(payload, requestId, probeClassName, probePackageName) {
@@ -2699,7 +2727,7 @@ function expandLoopHeaderTraceEvents(events, sourceText) {
   return expanded;
 }
 
-async function runJavaRequest(payload, requestId) {
+function normalizeJavaExecutionPayload(payload) {
   assertSupportedExecutionStyle(payload.executionStyle);
   if (typeof payload.code !== 'string') {
     throw new Error('`code` must be a string');
@@ -2709,16 +2737,25 @@ async function runJavaRequest(payload, requestId) {
     throw new Error('Java execution requires a non-empty functionName or class entry name.');
   }
 
-  const totalStart = performance.now();
-  const rewriteStart = performance.now();
-  let normalizedPayload;
   try {
-    normalizedPayload = normalizeJavaRequest(payload);
+    return normalizeJavaRequest(payload);
   } catch (error) {
     throw makeWorkerStageError('request normalization', error);
   }
+}
 
-  const compileId = buildJavaCompileId(normalizedPayload);
+function javaReportConsoleOutput(report) {
+  return [report.compilerStdout, report.compilerStderr].filter(
+    (entry) => typeof entry === 'string' && entry.trim().length > 0
+  );
+}
+
+async function runJavaTraceRequest(payload, requestId) {
+  const totalStart = performance.now();
+  const rewriteStart = performance.now();
+  const normalizedPayload = normalizeJavaExecutionPayload(payload);
+
+  const compileId = buildJavaCompileId(normalizedPayload, 'trace');
   const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, compileId);
 
   let rewrittenSource;
@@ -2814,9 +2851,7 @@ async function runJavaRequest(payload, requestId) {
     throw makeWorkerStageError('trace report parse', error);
   }
   const totalEnd = performance.now();
-  const consoleOutput = [report.compilerStdout, report.compilerStderr].filter(
-    (entry) => typeof entry === 'string' && entry.trim().length > 0
-  );
+  const consoleOutput = javaReportConsoleOutput(report);
 
   if (report.success !== true) {
     return {
@@ -2887,6 +2922,100 @@ async function runJavaRequest(payload, requestId) {
   };
 }
 
+async function runJavaCodeRequest(payload) {
+  const totalStart = performance.now();
+  const normalizedPayload = normalizeJavaExecutionPayload(payload);
+  const compileId = buildJavaCompileId(normalizedPayload, 'execute');
+  const dynamicInputs = dynamicInputEntriesForPayload(normalizedPayload, compileId);
+  const exportsClassName = buildExportsClassName(compileId);
+  const packageName = buildPackageName(compileId);
+  const sourcePath = `/str/${exportsClassName}.java`;
+  const classesDir = `/files/java-worker/${compileId}/classes`;
+
+  let runnableSource;
+  try {
+    runnableSource = buildPlainRunnableSource(normalizedPayload, compileId, dynamicInputs);
+  } catch (error) {
+    throw makeWorkerStageError('source generation', error);
+  }
+
+  try {
+    await writeDynamicInputFiles(dynamicInputs);
+  } catch (error) {
+    throw makeWorkerStageError('dynamic input write', error);
+  }
+
+  try {
+    await self.cheerpOSAddStringFile(sourcePath, runnableSource);
+  } catch (error) {
+    throw makeWorkerStageError('source file write', error);
+  }
+
+  let compileLibraryClass;
+  try {
+    compileLibraryClass = await getCompileLibraryClass();
+  } catch (error) {
+    throw makeWorkerStageError('compiler bridge load', error);
+  }
+
+  const libraryCallStart = performance.now();
+  let reportText;
+  try {
+    reportText = await compileLibraryClass.compileAndTrace(
+      sourcePath,
+      classesDir,
+      `${packageName}.${exportsClassName}`,
+      HELPER_JAR_PATH,
+      DEFAULT_COMPILER_DEBUG_PROFILE,
+      String(resolveMaxStoredEvents(payload.options))
+    );
+  } catch (error) {
+    throw makeWorkerStageError('compile and run', error);
+  }
+  const libraryCallEnd = performance.now();
+
+  let report;
+  try {
+    report = JSON.parse(reportText);
+  } catch (error) {
+    throw makeWorkerStageError('execution report parse', error);
+  }
+
+  const totalEnd = performance.now();
+  const consoleOutput = javaReportConsoleOutput(report);
+  const timings = {
+    hostCallMs: libraryCallEnd - libraryCallStart,
+    totalMs: totalEnd - totalStart,
+    compileMs: report.compileTimeMs ?? 0,
+    classLoadMs: report.classLoadTimeMs ?? 0,
+    runMs: report.runTimeMs ?? 0,
+    compileCacheHit: report.compileCacheHit ?? false,
+  };
+
+  if (report.success !== true) {
+    return {
+      success: false,
+      output: null,
+      executionTimeMs: totalEnd - totalStart,
+      consoleOutput,
+      error:
+        report.runtimeError ||
+        report.compilerStderr ||
+        report.compilerStdout ||
+        'Java execution failed',
+      timings,
+    };
+  }
+
+  return {
+    success: true,
+    output: report.output ? normalizeJavaSerializedOutput(JSON.parse(report.output)) : undefined,
+    executionTimeMs: totalEnd - totalStart,
+    consoleOutput,
+    timings,
+  };
+}
+
 self.onmessage = (event) => {
   const message = event.data;
   if (!message || typeof message !== 'object') {
@@ -2944,7 +3073,9 @@ self.onmessage = (event) => {
     queue = queue.then(async () => {
       try {
         await ensureReady();
-        const result = await runJavaRequest(message.payload, message.id);
+        const result = message.type === 'execute-with-tracing'
+          ? await runJavaTraceRequest(message.payload, message.id)
+          : await runJavaCodeRequest(message.payload);
         postMessageResponse({
           id: message.id,
           type: message.type,

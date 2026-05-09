@@ -22,6 +22,7 @@ class MockWorker {
   public onerror: ((event: ErrorEvent) => void) | null = null;
   public readonly url: string | URL;
   public terminated = false;
+  public messages: WorkerMessage[] = [];
 
   constructor(url: string | URL) {
     this.url = url;
@@ -32,6 +33,7 @@ class MockWorker {
   }
 
   postMessage(message: WorkerMessage): void {
+    this.messages.push(message);
     queueMicrotask(() => {
       const { id, type, payload } = message;
       if (type === 'init') {
@@ -197,6 +199,11 @@ async function main(): Promise<void> {
       .getClient('java')
       .executeCode('int search(int[] nums, int target) { return 0; }', 'search', {}, 'function');
     assertCondition(javaExecuteResult.success, 'Java runtime should route function-style executeCode through the browser harness client');
+    const javaWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
+    assertCondition(
+      javaWorker?.messages.at(-1)?.type === 'execute-code',
+      'Java executeCode should send execute-code instead of execute-with-tracing'
+    );
     console.log('PASS: browser harness routes Java runtime requests');
 
     const javaInterviewResult = await harnessA
@@ -205,6 +212,10 @@ async function main(): Promise<void> {
     assertCondition(
       javaInterviewResult.success,
       'Java runtime should route interview-mode executeCode through the browser harness client'
+    );
+    assertCondition(
+      javaWorker?.messages.at(-1)?.type === 'execute-code-interview',
+      'Java interview-mode executeCode should send execute-code-interview instead of execute-with-tracing'
     );
     console.log('PASS: browser harness routes Java interview-mode requests');
 

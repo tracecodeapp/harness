@@ -733,10 +733,42 @@ async function main(): Promise<void> {
     assertCondition(init.success === true, 'Init should succeed');
     console.log('PASS: java worker init with mocked CheerpJ bridge');
 
+    const rewriteCallCountBeforePlainExecute = harness.rewriteCalls.length;
+    const plainExecute = await harness.sendMessage<{
+      success: boolean;
+      events?: string[];
+      sourceText?: string;
+    }>('execute-code', {
+      code: `class Solution {
+  int add(int a, int b) {
+    return a + b;
+  }
+}`,
+      functionName: 'add',
+      inputs: { a: 1, b: 2 },
+      executionStyle: 'function',
+    });
+
+    assertCondition(plainExecute.success === true, 'Java execute-code should succeed on the non-trace path');
+    assertCondition(plainExecute.events === undefined, 'Java execute-code should not return trace events');
+    assertCondition(plainExecute.sourceText === undefined, 'Java execute-code should not return trace source text');
+    assertCondition(
+      harness.rewriteCalls.length === rewriteCallCountBeforePlainExecute,
+      'Java execute-code should not call the trace rewriter'
+    );
+    const plainExecuteSource = latestSourceContaining(harness.stringFiles, 'solution.add(a, b)');
+    assertCondition(
+      plainExecuteSource.includes('class Solution') &&
+        !plainExecuteSource.includes('TraceHooks.emitCallAtLine') &&
+        !plainExecuteSource.includes('TraceHooks.emitLineAtLine'),
+      'Java execute-code should compile an uninstrumented runnable source'
+    );
+    console.log('PASS: java execute-code uses dedicated non-trace worker path');
+
     const rewriteProbeFailure = await harness.sendMessage<{
       success: boolean;
       error?: string | null;
-    }>('execute-code', {
+    }>('execute-with-tracing', {
       code: `class Solution {
   int rewriteProbeClassNotFoundRegression() {
     return 1;
@@ -775,7 +807,7 @@ result = new int[] { 0, 1 };`;
       output: unknown;
       events?: string[];
       sourceText?: string;
-    }>('execute-code', {
+    }>('execute-with-tracing', {
       code: scriptCode,
       functionName: '',
       inputs: {},
@@ -822,7 +854,7 @@ result = new int[] { 0, 1 };`;
 
     const loopExecute = await harness.sendMessage<{
       success: boolean;
-    }>('execute-code', {
+    }>('execute-with-tracing', {
       code: loopCode,
       functionName: 'uniquePaths',
       inputs: { rows: 3, cols: 4 },
@@ -854,7 +886,7 @@ class Solution {
   }
 }`;
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: treeInputCode,
       functionName: 'solve',
       inputs: { root: [1, null, 2, 3] },
@@ -878,7 +910,7 @@ class Solution {
   }
 }`;
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: listInputCode,
       functionName: 'solve',
       inputs: { head: [1, 2, 3] },
@@ -898,7 +930,7 @@ class Solution {
   }
 }`;
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: objectArrayInputCode,
       functionName: 'solve',
       inputs: { values: [1, null, [2, 3]] },
@@ -919,7 +951,7 @@ class Solution {
   int getHits(int timestamp) { return timestamp; }
 }`;
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: opsNoArgConstructorCode,
       functionName: 'HitCounter',
       inputs: {
@@ -939,7 +971,7 @@ class Solution {
       'Java ops-class worker should still pass method arguments according to method signatures'
     );
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: opsNoArgConstructorCode,
       functionName: 'HitCounter',
       inputs: {
@@ -961,7 +993,7 @@ class Solution {
   Cashier(int n, int discount, int[] products, int[] prices) {}
   double getBill(int[] product, int[] amount) { return 0.0; }
 }`;
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: opsInitConstructorCode,
       functionName: 'Cashier',
       inputs: {
@@ -984,7 +1016,7 @@ class Solution {
     return start.length() == result.length();
   }
 }`;
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: resultParameterCode,
       functionName: 'canTransform',
       inputs: { start: 'RX', result: 'XR' },
@@ -1020,7 +1052,7 @@ Object result = uniquePaths(3, 4);`;
       output: unknown;
       events?: string[];
       sourceText?: string;
-    }>('execute-code', {
+    }>('execute-with-tracing', {
       code: scriptWithHelperCode,
       functionName: '',
       inputs: {},
@@ -1113,7 +1145,7 @@ static int lowerBound(int[] nums, int target) {
 
 Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
 
-    const lowerBoundExecute = await harness.sendMessage<{ success: boolean; error?: string }>('execute-code', {
+    const lowerBoundExecute = await harness.sendMessage<{ success: boolean; error?: string }>('execute-with-tracing', {
       code: lowerBoundCode,
       functionName: '',
       inputs: {},
@@ -1164,7 +1196,7 @@ class Solution {
   }
 }`;
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: twoSumCode,
       functionName: 'twoSum',
       inputs: { nums: [2, 7, 11, 15], target: 9 },
@@ -1284,7 +1316,7 @@ class Solution {
       success: boolean;
       output: unknown;
       events?: string[];
-    }>('execute-code', {
+    }>('execute-with-tracing', {
       code: graphCode,
       functionName: 'buildGraph',
       inputs: { n: 3 },
@@ -1382,7 +1414,7 @@ class Solution {
     );
     console.log('PASS: java worker rewrites field collection mutations as this-field runtime trace events');
 
-    await harness.sendMessage<{ success: boolean }>('execute-code', {
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: `class Solution {
   public int legacySnapshot() {
     return 1;
