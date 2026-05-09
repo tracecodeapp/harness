@@ -1,8 +1,8 @@
 /**
- * Pyodide Web Worker
+ * Python Web Worker
  * 
  * Runs Python code execution in a separate thread to avoid blocking the UI.
- * This worker handles loading Pyodide, executing code, and returning traces.
+ * This worker handles loading the Python runtime, executing code, and returning traces.
  * 
  * This is the canonical worker implementation for the browser Python runtime.
  * The legacy lib/execution/pyodide.ts path is deprecated and should not be used.
@@ -62,13 +62,13 @@ if (typeof importScripts === 'function') {
     try {
       importScripts(scriptPath);
       if (WORKER_DEBUG) {
-        console.log('[PyodideWorker] Loaded generated harness snippets from', scriptPath);
+        console.log('[PythonWorker] Loaded generated harness snippets from', scriptPath);
       }
       break;
     } catch (error) {
       if (WORKER_DEBUG) {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn('[PyodideWorker] Failed to load generated harness snippets from', scriptPath, message);
+        console.warn('[PythonWorker] Failed to load generated harness snippets from', scriptPath, message);
       }
     }
   }
@@ -529,7 +529,7 @@ async function loadPyodideInstance() {
             importScripts(`${indexURL}pyodide.js`);
             loadedBootstrap = true;
             if (WORKER_DEBUG) {
-              console.log('[PyodideWorker] Loaded bootstrap script from', indexURL);
+              console.log('[PythonWorker] Loaded bootstrap script from', indexURL);
             }
             break;
           } catch (error) {
@@ -550,7 +550,7 @@ async function loadPyodideInstance() {
         try {
           pyodide = await self.loadPyodide({ indexURL });
           if (WORKER_DEBUG) {
-            console.log('[PyodideWorker] Initialized runtime from', indexURL);
+            console.log('[PythonWorker] Initialized runtime from', indexURL);
           }
           return pyodide;
         } catch (error) {
@@ -590,13 +590,13 @@ function loadPyodideRuntimeCore() {
         try {
           importScripts(scriptPath);
           if (WORKER_DEBUG) {
-            console.log('[PyodideWorker] Loaded runtime core from', scriptPath);
+            console.log('[PythonWorker] Loaded runtime core from', scriptPath);
           }
           break;
         } catch (error) {
           if (WORKER_DEBUG) {
             const message = error instanceof Error ? error.message : String(error);
-            console.warn('[PyodideWorker] Failed to load runtime core from', scriptPath, message);
+            console.warn('[PythonWorker] Failed to load runtime core from', scriptPath, message);
           }
         }
       }
@@ -691,9 +691,16 @@ async function processMessage(data) {
     switch (type) {
       case 'init': {
         const startTime = performance.now();
-        await loadPyodideInstance();
         const loadTimeMs = performance.now() - startTime;
         self.postMessage({ id, type: 'init-result', payload: { success: true, loadTimeMs } });
+        break;
+      }
+
+      case 'warmup': {
+        const startTime = performance.now();
+        await loadPyodideInstance();
+        const loadTimeMs = performance.now() - startTime;
+        self.postMessage({ id, type: 'warmup-result', payload: { success: true, loadTimeMs } });
         break;
       }
 
@@ -1698,7 +1705,7 @@ async function analyzeCodeAST(code) {
       }
 
       if (WORKER_DEBUG) {
-        console.warn('[Pyodide Worker] analyze() missing; reinitializing AST analyzer');
+        console.warn('[PythonWorker] analyze() missing; reinitializing AST analyzer');
       }
       analyzerInitialized = false;
     }

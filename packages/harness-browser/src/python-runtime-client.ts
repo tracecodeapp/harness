@@ -1,4 +1,4 @@
-import type { ExecutionStyle, PyodideWorkerClient } from './pyodide-worker-client';
+import type { ExecutionStyle, PythonWorkerClient } from './pyodide-worker-client';
 import type {
   RuntimeClient,
   RuntimeExecutionStyle,
@@ -9,7 +9,7 @@ import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
 
 class PythonRuntimeClient implements RuntimeClient {
-  constructor(private readonly workerClient: PyodideWorkerClient) {}
+  constructor(private readonly workerClient: PythonWorkerClient) {}
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     return this.workerClient.init();
@@ -75,6 +75,6 @@ class PythonRuntimeClient implements RuntimeClient {
   }
 }
 
-export function createPythonRuntimeClient(workerClient: PyodideWorkerClient): RuntimeClient {
+export function createPythonRuntimeClient(workerClient: PythonWorkerClient): RuntimeClient {
   return new PythonRuntimeClient(workerClient);
 }

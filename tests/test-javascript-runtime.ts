@@ -12,6 +12,18 @@ interface WorkerMessage {
   payload?: unknown;
 }
 
+interface WorkerSelfObject {
+  location: { search: string };
+  postMessage: (message: WorkerMessage) => void;
+  onmessage: ((event: { data: WorkerMessage }) => void) | null;
+  ts?: unknown;
+}
+
+interface CreateWorkerHarnessOptions {
+  typeScriptCompiler?: unknown;
+  importScripts?: (workerSelf: WorkerSelfObject, ...urls: string[]) => void;
+}
+
 type RuntimeAccessEvent = {
   variable?: string;
   kind?: string;
@@ -99,17 +111,12 @@ async function loadWorkerSource(): Promise<string> {
   return readFile(workerPath, 'utf8');
 }
 
-function createWorkerHarness(workerSource: string) {
+function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessOptions = { typeScriptCompiler: ts }) {
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   let ready = false;
   let nextId = 0;
 
-  const selfObject: {
-    location: { search: string };
-    postMessage: (message: WorkerMessage) => void;
-    onmessage: ((event: { data: WorkerMessage }) => void) | null;
-    ts?: unknown;
-  } = {
+  const selfObject: WorkerSelfObject = {
     location: { search: '' },
     postMessage: (message: WorkerMessage) => {
       if (message.type === 'worker-ready') {
@@ -129,16 +136,22 @@ function createWorkerHarness(workerSource: string) {
       entry.resolve(message.payload);
     },
     onmessage: null,
-    ts,
+    ts: options.typeScriptCompiler,
   };
 
-  const context = vm.createContext({
+  const contextGlobals: Record<string, unknown> = {
     console,
     self: selfObject,
     performance: { now: () => Date.now() },
     setTimeout,
     clearTimeout,
-  });
+  };
+
+  if (options.importScripts) {
+    contextGlobals.importScripts = (...urls: string[]) => options.importScripts?.(selfObject, ...urls);
+  }
+
+  const context = vm.createContext(contextGlobals);
 
   vm.runInContext(workerSource, context, {
     filename: 'javascript-worker.js',
@@ -175,6 +188,54 @@ async function main(): Promise<void> {
   assertCondition(init.success === true, 'Init should succeed');
   assertCondition(typeof init.loadTimeMs === 'number', 'Init should return loadTimeMs');
   console.log('PASS: worker init');
+
+  let plainJavaScriptCompilerImportCount = 0;
+  const plainJavaScriptHarness = createWorkerHarness(workerSource, {
+    typeScriptCompiler: undefined,
+    importScripts: () => {
+      plainJavaScriptCompilerImportCount += 1;
+      throw new Error('Plain JavaScript execution should not import the TypeScript compiler');
+    },
+  });
+  const plainJavaScriptResult = await plainJavaScriptHarness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `function subtract(a, b) { return a - b; }`,
+    functionName: 'subtract',
+    inputs: { b: 3, a: 10 },
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    plainJavaScriptResult.success === true,
+    `Plain JavaScript execute-code should succeed without TypeScript: ${plainJavaScriptResult.error ?? 'unknown error'}`
+  );
+  assertCondition(plainJavaScriptResult.output === 7, 'Plain JavaScript execute-code should preserve function argument order');
+  assertCondition(plainJavaScriptCompilerImportCount === 0, 'Plain JavaScript execute-code should not load the TypeScript compiler');
+  console.log('PASS: plain JavaScript execute-code does not preload TypeScript');
+
+  let typeScriptWarmupImportCount = 0;
+  const warmupHarness = createWorkerHarness(workerSource, {
+    typeScriptCompiler: undefined,
+    importScripts: (workerSelf) => {
+      typeScriptWarmupImportCount += 1;
+      workerSelf.ts = ts;
+    },
+  });
+  const typeScriptWarmup = await warmupHarness.sendMessage<{
+    success: boolean;
+    loadTimeMs: number;
+    timings?: { warmupMs?: number };
+  }>('warmup', { language: 'typescript' });
+  assertCondition(typeScriptWarmup.success === true, 'TypeScript warmup should succeed');
+  assertCondition(typeScriptWarmupImportCount === 1, 'TypeScript warmup should load the TypeScript compiler once');
+  assertCondition(typeof typeScriptWarmup.timings?.warmupMs === 'number', 'TypeScript warmup should report warmup timing');
+  const typeScriptWarmupAgain = await warmupHarness.sendMessage<{ success: boolean }>('warmup', { language: 'typescript' });
+  assertCondition(typeScriptWarmupAgain.success === true, 'Repeated TypeScript warmup should succeed');
+  assertCondition(typeScriptWarmupImportCount === 1, 'Repeated TypeScript warmup should reuse the compiler');
+  console.log('PASS: TypeScript warmup preloads compiler once');
 
   const setForOfTracing = await harness.sendMessage<{
     success: boolean;

@@ -78,6 +78,70 @@ function createWorkerContext(source: string): vm.Context {
   return context;
 }
 
+async function assertWorkerInitWarmupContract(workerSource: string): Promise<void> {
+  const pending = new Map<string, (message: Record<string, unknown>) => void>();
+  let loadPyodideCount = 0;
+  let nextId = 0;
+
+  const selfObject: Record<string, unknown> = {
+    location: { search: '' },
+    loadPyodide: async () => {
+      loadPyodideCount += 1;
+      return {};
+    },
+    postMessage: (message: Record<string, unknown>) => {
+      const id = typeof message.id === 'string' ? message.id : null;
+      if (!id) return;
+      pending.get(id)?.(message);
+      pending.delete(id);
+    },
+    onmessage: null,
+  };
+
+  const context = vm.createContext({
+    console,
+    performance: { now: () => Date.now() },
+    self: selfObject,
+    setTimeout,
+    clearTimeout,
+  });
+
+  vm.runInContext(workerSource, context, {
+    filename: 'pyodide-worker.js',
+  });
+
+  const onmessage = selfObject.onmessage as ((event: { data: Record<string, unknown> }) => void) | null;
+  assertCondition(typeof onmessage === 'function', 'Worker should register an onmessage handler');
+
+  async function send(type: string): Promise<Record<string, unknown>> {
+    const id = String(++nextId);
+    const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+      pending.set(id, resolve);
+      setTimeout(() => {
+        if (!pending.has(id)) return;
+        pending.delete(id);
+        reject(new Error(`Timed out waiting for worker response: ${type}`));
+      }, 1000);
+    });
+    onmessage?.({ data: { id, type, payload: {} } });
+    return response;
+  }
+
+  const initMessage = await send('init');
+  assertCondition(initMessage.type === 'init-result', 'Python worker init should return init-result');
+  assertCondition(loadPyodideCount === 0, 'Python worker init should not load Pyodide');
+
+  const warmupMessage = await send('warmup');
+  assertCondition(warmupMessage.type === 'warmup-result', 'Python worker warmup should return warmup-result');
+  assertCondition(loadPyodideCount === 1, 'Python worker warmup should load Pyodide exactly once');
+
+  const repeatedWarmupMessage = await send('warmup');
+  assertCondition(repeatedWarmupMessage.type === 'warmup-result', 'Repeated Python worker warmup should return warmup-result');
+  assertCondition(loadPyodideCount === 1, 'Repeated Python worker warmup should reuse the loaded runtime');
+
+  console.log('PASS: Python worker init stays light and warmup loads runtime');
+}
+
 async function assertToPythonLiteralParity(workerSource: string): Promise<void> {
   const context = createWorkerContext(workerSource) as vm.Context & {
     toPythonLiteral?: (value: unknown) => string;
@@ -318,6 +382,7 @@ async function main(): Promise<void> {
   assertLineSubsequenceInSource(workerSource, compatSerializeContractBlock, 'PYTHON_SERIALIZE_FUNCTION compatibility contract');
   console.log('PASS: serialize contracts synced');
 
+  await assertWorkerInitWarmupContract(workerSource);
   await assertToPythonLiteralParity(workerSource);
   await assertDeprecatedRuntimeNotImported();
 

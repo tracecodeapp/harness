@@ -11,7 +11,7 @@ import { CSharpWorkerClient } from './csharp-worker-client';
 import { createCSharpRuntimeClient } from './csharp-runtime-client';
 import { CppWorkerClient } from './cpp-worker-client';
 import { createCppRuntimeClient } from './cpp-runtime-client';
-import { PyodideWorkerClient } from './pyodide-worker-client';
+import { PythonWorkerClient } from './pyodide-worker-client';
 import { createPythonRuntimeClient } from './python-runtime-client';
 import {
   DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS,
@@ -57,7 +57,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
   readonly assets: BrowserHarnessAssets;
   readonly supportedLanguages = SUPPORTED_LANGUAGES;
 
-  private readonly pythonWorkerClient: PyodideWorkerClient;
+  private readonly pythonWorkerClient: PythonWorkerClient;
   private readonly javaScriptWorkerClient: JavaScriptWorkerClient;
   private readonly javaWorkerClient: JavaWorkerClient;
   private readonly csharpWorkerClient: CSharpWorkerClient;
@@ -66,7 +66,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
 
   constructor(options: CreateBrowserHarnessOptions = {}) {
     this.assets = resolveBrowserHarnessAssets(options);
-    this.pythonWorkerClient = new PyodideWorkerClient({
+    this.pythonWorkerClient = new PythonWorkerClient({
       workerUrl: this.assets.pythonWorker,
       debug: options.debug,
     });
@@ -128,6 +128,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
   }
 
   warmLanguage(language: Language): Promise<{ success: boolean; loadTimeMs: number }> {
+    if (language === 'python') {
+      return this.pythonWorkerClient.warmup();
+    }
     if (language === 'java') {
       return this.javaWorkerClient.warmup();
     }
@@ -136,6 +139,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
     }
     if (language === 'csharp') {
       return this.csharpWorkerClient.warmup();
+    }
+    if (language === 'typescript') {
+      return this.javaScriptWorkerClient.warmup('typescript');
     }
     return this.getClient(language).init();
   }

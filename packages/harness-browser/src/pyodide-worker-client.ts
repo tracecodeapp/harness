@@ -1,7 +1,7 @@
 /**
- * Pyodide Worker Client
+ * Python Worker Client
  * 
- * TypeScript client for communicating with the Pyodide Web Worker.
+ * TypeScript client for communicating with the Python Web Worker.
  * Provides a promise-based API for executing Python code off the main thread.
  */
 
@@ -11,7 +11,7 @@ import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 type MessageId = string;
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 
-export interface PyodideWorkerClientOptions {
+export interface PythonWorkerClientOptions {
   workerUrl: string;
   debug?: boolean;
 }
@@ -33,6 +33,11 @@ interface InitResult {
   loadTimeMs: number;
 }
 
+interface WarmupResult {
+  success: boolean;
+  loadTimeMs: number;
+}
+
 interface StatusResult {
   isReady: boolean;
   isLoading: boolean;
@@ -48,7 +53,7 @@ const INTERVIEW_MODE_TIMEOUT_MS = 5000;
 // This is just a safety net for truly stuck executions
 const TRACING_TIMEOUT_MS = 30000;
 
-// Initial Pyodide load timeout can be significantly higher on first boot/network-constrained setups
+// Python runtime warmup/load timeout can be significantly higher on first boot/network-constrained setups
 const INIT_TIMEOUT_MS = 120000;
 
 // Message timeout for non-execution operations (20 seconds)
@@ -56,18 +61,19 @@ const MESSAGE_TIMEOUT_MS = 20000;
 // Worker bootstrap timeout - prevents deadlock when worker never emits "worker-ready"
 const WORKER_READY_TIMEOUT_MS = 10000;
 
-export class PyodideWorkerClient {
+export class PythonWorkerClient {
   private worker: Worker | null = null;
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
   private isInitializing = false;
   private initPromise: Promise<InitResult> | null = null;
+  private warmupPromise: Promise<WarmupResult> | null = null;
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
   private readonly debug: boolean;
 
-  constructor(private readonly options: PyodideWorkerClientOptions) {
+  constructor(private readonly options: PythonWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
   }
 
@@ -108,12 +114,12 @@ export class PyodideWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
-        if (this.debug) console.log('[PyodideWorkerClient] worker-ready');
+        if (this.debug) console.log('[PythonWorkerClient] worker-ready');
         return;
       }
 
       if (this.debug && !id) {
-        console.log('[PyodideWorkerClient] event', { type, payload });
+        console.log('[PythonWorkerClient] event', { type, payload });
       }
 
       // Handle responses to our messages
@@ -126,7 +132,7 @@ export class PyodideWorkerClient {
           if (type === 'error') {
             pending.reject(new Error((payload as { error: string }).error));
           } else {
-            if (this.debug) console.log('[PyodideWorkerClient] recv', { id, type });
+            if (this.debug) console.log('[PythonWorkerClient] recv', { id, type });
             pending.resolve(payload);
           }
         }
@@ -134,7 +140,7 @@ export class PyodideWorkerClient {
     };
 
     this.worker.onerror = (error) => {
-      console.error('[PyodideWorkerClient] Worker error:', error);
+      console.error('[PythonWorkerClient] Worker error:', error);
       const workerError = new Error('Worker error');
       this.workerReadyReject?.(workerError);
       this.workerReadyResolve = null;
@@ -170,7 +176,7 @@ export class PyodideWorkerClient {
           `Python worker failed to initialize in time (${Math.round(WORKER_READY_TIMEOUT_MS / 1000)}s)`
         );
         if (this.debug) {
-          console.warn('[PyodideWorkerClient] worker-ready timeout', { timeoutMs: WORKER_READY_TIMEOUT_MS });
+          console.warn('[PythonWorkerClient] worker-ready timeout', { timeoutMs: WORKER_READY_TIMEOUT_MS });
         }
         this.terminateAndReset(timeoutError);
         reject(timeoutError);
@@ -209,13 +215,13 @@ export class PyodideWorkerClient {
         reject,
       });
 
-      if (this.debug) console.log('[PyodideWorkerClient] send', { id, type });
+      if (this.debug) console.log('[PythonWorkerClient] send', { id, type });
 
       const timeoutId = globalThis.setTimeout(() => {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
-        if (this.debug) console.warn('[PyodideWorkerClient] timeout', { id, type });
+        if (this.debug) console.warn('[PythonWorkerClient] timeout', { id, type });
         pending.reject(new Error(`Worker request timed out: ${type}`));
       }, timeoutMs);
 
@@ -242,7 +248,7 @@ export class PyodideWorkerClient {
         
         // Terminate the stuck worker and clear state
         if (this.debug) {
-          console.warn('[PyodideWorkerClient] Execution timeout - terminating worker');
+          console.warn('[PythonWorkerClient] Execution timeout - terminating worker');
         }
         this.terminateAndReset();
         
@@ -276,6 +282,7 @@ export class PyodideWorkerClient {
       this.worker = null;
     }
     this.initPromise = null;
+    this.warmupPromise = null;
     this.isInitializing = false;
     this.workerReadyPromise = null;
     this.workerReadyResolve = null;
@@ -289,7 +296,7 @@ export class PyodideWorkerClient {
   }
 
   /**
-   * Initialize Pyodide in the worker
+   * Initialize the Python worker. Runtime loading is lazy unless warmup() is called.
    */
   async init(): Promise<InitResult> {
     // Return existing promise if already initializing
@@ -322,7 +329,7 @@ export class PyodideWorkerClient {
         }
 
         if (this.debug) {
-          console.warn('[PyodideWorkerClient] init failed, resetting worker and retrying once', { message });
+          console.warn('[PythonWorkerClient] init failed, resetting worker and retrying once', { message });
         }
 
         this.terminateAndReset();
@@ -339,6 +346,22 @@ export class PyodideWorkerClient {
     } finally {
       this.isInitializing = false;
     }
+  }
+
+  async warmup(): Promise<WarmupResult> {
+    if (this.warmupPromise) return this.warmupPromise;
+
+    this.warmupPromise = (async () => {
+      try {
+        await this.init();
+        return await this.sendMessage<WarmupResult>('warmup', undefined, INIT_TIMEOUT_MS);
+      } catch (error) {
+        this.warmupPromise = null;
+        throw error;
+      }
+    })();
+
+    return this.warmupPromise;
   }
 
   /**
@@ -358,7 +381,7 @@ export class PyodideWorkerClient {
     },
     executionStyle: ExecutionStyle = 'function'
   ): Promise<ExecutionResult> {
-    // Ensure Pyodide is initialized
+    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
     await this.init();
     
     // Use longer timeout for tracing - Python heuristic detection handles infinite loops
@@ -406,7 +429,7 @@ export class PyodideWorkerClient {
     inputs: Record<string, unknown>,
     executionStyle: ExecutionStyle = 'function'
   ): Promise<CodeExecutionResult> {
-    // Ensure Pyodide is initialized
+    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
     await this.init();
     
     return this.executeWithTimeout(
@@ -430,7 +453,7 @@ export class PyodideWorkerClient {
     inputs: Record<string, unknown>,
     executionStyle: ExecutionStyle = 'function'
   ): Promise<CodeExecutionResult> {
-    // Ensure Pyodide is initialized
+    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
     await this.init();
     
     try {
@@ -501,7 +524,7 @@ export class PyodideWorkerClient {
    * Returns CodeFacts with semantic information about the code
    */
   async analyzeCode(code: string): Promise<unknown> {
-    // Ensure Pyodide is initialized
+    // Ensure the Python worker is initialized. Runtime loading is handled inside the worker.
     await this.init();
     
     // Use a shorter timeout for analysis (5 seconds should be plenty)
@@ -515,6 +538,9 @@ export class PyodideWorkerClient {
     this.terminateAndReset();
   }
 }
+
+export type PyodideWorkerClientOptions = PythonWorkerClientOptions;
+export { PythonWorkerClient as PyodideWorkerClient };
 
 /**
  * Check if the worker client is supported

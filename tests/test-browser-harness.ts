@@ -207,6 +207,17 @@ async function main(): Promise<void> {
     );
     console.log('PASS: browser harness uses per-instance worker URLs');
 
+    const pythonWarmupResult = await harnessB.warmLanguage('python');
+    const pythonWarmupWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/instance-b/pyodide-worker.js')
+    );
+    assertCondition(pythonWarmupResult.success, 'Python warmLanguage should resolve successfully');
+    assertCondition(
+      pythonWarmupWorker?.messages.at(-1)?.type === 'warmup',
+      'Python warmLanguage should send the Python warmup worker request'
+    );
+    console.log('PASS: browser harness warms Python runtime on demand');
+
     const javaWarmupResult = await harnessA.warmLanguage('java');
     const javaWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
     assertCondition(javaWarmupResult.success, 'Java warmLanguage should resolve successfully');
@@ -233,6 +244,20 @@ async function main(): Promise<void> {
       'C# warmLanguage should send the C# warmup worker request'
     );
     console.log('PASS: browser harness warms C# runtime on demand');
+
+    const typescriptWarmupResult = await harnessA.warmLanguage('typescript');
+    const typescriptWarmupWorker = workerInstances.findLast((worker) =>
+      String(worker.url).startsWith('/instance-a/javascript-worker.js')
+    );
+    const typescriptWarmupPayload = typescriptWarmupWorker?.messages.at(-1)?.payload as
+      | { language?: string }
+      | undefined;
+    assertCondition(typescriptWarmupResult.success, 'TypeScript warmLanguage should resolve successfully');
+    assertCondition(
+      typescriptWarmupWorker?.messages.at(-1)?.type === 'warmup' && typescriptWarmupPayload?.language === 'typescript',
+      'TypeScript warmLanguage should send the JavaScript worker warmup request'
+    );
+    console.log('PASS: browser harness warms TypeScript compiler on demand');
 
     const survivingWorker = workerInstances.find((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js'));
     harnessA.dispose();

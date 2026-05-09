@@ -781,10 +781,166 @@ function findFunctionLikeNode(ts, sourceFile, functionName, executionStyle) {
   return found;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripJavaScriptTriviaForSignatureScan(code) {
+  let output = '';
+  let i = 0;
+
+  while (i < code.length) {
+    const current = code[i];
+    const next = code[i + 1];
+
+    if (current === '/' && next === '/') {
+      output += '  ';
+      i += 2;
+      while (i < code.length && code[i] !== '\n') {
+        output += ' ';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (current === '/' && next === '*') {
+      output += '  ';
+      i += 2;
+      while (i < code.length) {
+        if (code[i] === '*' && code[i + 1] === '/') {
+          output += '  ';
+          i += 2;
+          break;
+        }
+        output += code[i] === '\n' ? '\n' : ' ';
+        i += 1;
+      }
+      continue;
+    }
+
+    if (current === '"' || current === "'" || current === '`') {
+      const quote = current;
+      output += quote;
+      i += 1;
+      while (i < code.length) {
+        const char = code[i];
+        if (char === '\\') {
+          output += ' ';
+          if (i + 1 < code.length) output += code[i + 1] === '\n' ? '\n' : ' ';
+          i += 2;
+          continue;
+        }
+        output += char === '\n' ? '\n' : ' ';
+        i += 1;
+        if (char === quote) break;
+      }
+      continue;
+    }
+
+    output += current;
+    i += 1;
+  }
+
+  return output;
+}
+
+function findMatchingBraceIndex(code, openBraceIndex) {
+  let depth = 0;
+  for (let i = openBraceIndex; i < code.length; i += 1) {
+    const char = code[i];
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function extractClassBodyForSignatureScan(code, className) {
+  const classMatch = new RegExp(`\\bclass\\s+${escapeRegExp(className)}\\b[^{}]*\\{`, 'm').exec(code);
+  if (!classMatch) return null;
+  const openBraceIndex = classMatch.index + classMatch[0].lastIndexOf('{');
+  const closeBraceIndex = findMatchingBraceIndex(code, openBraceIndex);
+  if (closeBraceIndex < 0) return null;
+  return code.slice(openBraceIndex + 1, closeBraceIndex);
+}
+
+function parseSimpleJavaScriptParameterNames(parameterText) {
+  const names = [];
+  const rawParameters = String(parameterText ?? '').split(',');
+
+  for (const rawParameter of rawParameters) {
+    const trimmed = rawParameter.trim();
+    if (!trimmed) continue;
+    const withoutDefault = trimmed.split('=')[0].trim();
+    const name = withoutDefault.startsWith('...') ? withoutDefault.slice(3).trim() : withoutDefault;
+    if (name === 'this') continue;
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
+      return null;
+    }
+    names.push(name);
+  }
+
+  return names;
+}
+
+function extractSimpleJavaScriptParameterNames(code, functionName, executionStyle) {
+  const strippedCode = stripJavaScriptTriviaForSignatureScan(code);
+  const escapedName = escapeRegExp(functionName);
+  const exportPrefix = String.raw`(?:export\s+default\s+|export\s+)?`;
+  const functionPatterns = [
+    new RegExp(String.raw`(?:^|[^\w$])${exportPrefix}(?:async\s+)?function\s+${escapedName}\s*\(([^)]*)\)`, 'm'),
+    new RegExp(String.raw`(?:^|[^\w$])${exportPrefix}(?:const|let|var)\s+${escapedName}\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][\w$]*)?\s*\(([^)]*)\)`, 'm'),
+    new RegExp(String.raw`(?:^|[^\w$])${exportPrefix}(?:const|let|var)\s+${escapedName}\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>`, 'm'),
+    new RegExp(String.raw`(?:^|[^\w$])${exportPrefix}(?:const|let|var)\s+${escapedName}\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>`, 'm'),
+  ];
+  const methodBody =
+    executionStyle === 'solution-method'
+      ? extractClassBodyForSignatureScan(strippedCode, 'Solution') ?? strippedCode
+      : strippedCode;
+  const methodPatterns = [
+    new RegExp(String.raw`(?:^|[;{}\s])(?:async\s+)?${escapedName}\s*\(([^)]*)\)\s*\{`, 'm'),
+    new RegExp(String.raw`(?:^|[;{}\s])${escapedName}\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>`, 'm'),
+    new RegExp(String.raw`(?:^|[;{}\s])${escapedName}\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>`, 'm'),
+    new RegExp(String.raw`(?:^|[;{}\s])${escapedName}\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][\w$]*)?\s*\(([^)]*)\)`, 'm'),
+  ];
+  const patterns = executionStyle === 'solution-method' ? methodPatterns : functionPatterns;
+  const scanCode = executionStyle === 'solution-method' ? methodBody : strippedCode;
+
+  for (const pattern of patterns) {
+    const match = pattern.exec(scanCode);
+    if (!match) continue;
+    return parseSimpleJavaScriptParameterNames(match[1] ?? '');
+  }
+
+  return null;
+}
+
+function orderInputKeysByParameterNames(parameterNames, inputs, fallbackKeys) {
+  if (!parameterNames || parameterNames.length === 0) {
+    return fallbackKeys;
+  }
+
+  const matchedKeys = parameterNames.filter((name) => Object.prototype.hasOwnProperty.call(inputs, name));
+  if (matchedKeys.length === 0) {
+    return fallbackKeys;
+  }
+
+  const extras = fallbackKeys.filter((key) => !matchedKeys.includes(key));
+  return [...matchedKeys, ...extras];
+}
+
 async function resolveOrderedInputKeys(code, functionName, inputs, executionStyle, language = 'javascript') {
   const fallbackKeys = Object.keys(inputs ?? {});
   if (!functionName || executionStyle === 'ops-class' || fallbackKeys.length <= 1) {
     return fallbackKeys;
+  }
+
+  if (language !== 'typescript') {
+    const parameterNames = extractSimpleJavaScriptParameterNames(code, functionName, executionStyle);
+    return orderInputKeysByParameterNames(parameterNames, inputs, fallbackKeys);
   }
 
   try {
@@ -807,17 +963,7 @@ async function resolveOrderedInputKeys(code, functionName, inputs, executionStyl
     }
 
     const parameterNames = collectSimpleParameterNames(ts, target);
-    if (!parameterNames || parameterNames.length === 0) {
-      return fallbackKeys;
-    }
-
-    const matchedKeys = parameterNames.filter((name) => Object.prototype.hasOwnProperty.call(inputs, name));
-    if (matchedKeys.length === 0) {
-      return fallbackKeys;
-    }
-
-    const extras = fallbackKeys.filter((key) => !matchedKeys.includes(key));
-    return [...matchedKeys, ...extras];
+    return orderInputKeysByParameterNames(parameterNames, inputs, fallbackKeys);
   } catch (_error) {
     return fallbackKeys;
   }
@@ -4185,6 +4331,31 @@ async function initRuntime() {
   return { success: true, loadTimeMs: performanceNow() - startedAt };
 }
 
+async function warmRuntime(payload = {}) {
+  const startedAt = performanceNow();
+  const initStartedAt = performanceNow();
+  await initRuntime();
+  const initMs = performanceNow() - initStartedAt;
+  let compilerWarmupMs = 0;
+
+  if (payload?.language === 'typescript' || payload?.preloadTypeScriptCompiler === true) {
+    const compilerStartedAt = performanceNow();
+    await ensureTypeScriptCompiler();
+    compilerWarmupMs = performanceNow() - compilerStartedAt;
+  }
+
+  const totalMs = performanceNow() - startedAt;
+  return {
+    success: true,
+    loadTimeMs: totalMs,
+    timings: {
+      totalMs,
+      initMs,
+      warmupMs: compilerWarmupMs,
+    },
+  };
+}
+
 async function processMessage(data) {
   const { id, type, payload } = data;
 
@@ -4193,6 +4364,12 @@ async function processMessage(data) {
       case 'init': {
         const result = await initRuntime();
         self.postMessage({ id, type: 'init-result', payload: result });
+        break;
+      }
+
+      case 'warmup': {
+        const result = await warmRuntime(payload);
+        self.postMessage({ id, type: 'warmup-result', payload: result });
         break;
       }
 

@@ -26,10 +26,16 @@ interface InitResult {
   loadTimeMs: number;
 }
 
+interface WarmupResult {
+  success: boolean;
+  loadTimeMs: number;
+}
+
 const EXECUTION_TIMEOUT_MS = 7000;
 const INTERVIEW_MODE_TIMEOUT_MS = 5000;
 const TRACING_TIMEOUT_MS = 7000;
 const INIT_TIMEOUT_MS = 10000;
+const TYPESCRIPT_WARMUP_TIMEOUT_MS = 30000;
 const MESSAGE_TIMEOUT_MS = 12000;
 const WORKER_READY_TIMEOUT_MS = 10000;
 
@@ -39,6 +45,7 @@ export class JavaScriptWorkerClient {
   private messageId = 0;
   private isInitializing = false;
   private initPromise: Promise<InitResult> | null = null;
+  private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
@@ -214,6 +221,7 @@ export class JavaScriptWorkerClient {
       this.worker = null;
     }
     this.initPromise = null;
+    this.warmupPromises.clear();
     this.isInitializing = false;
     this.workerReadyPromise = null;
     this.workerReadyResolve = null;
@@ -244,6 +252,29 @@ export class JavaScriptWorkerClient {
       throw error;
     } finally {
       this.isInitializing = false;
+    }
+  }
+
+  async warmup(language: JavaScriptWorkerLanguage = 'javascript'): Promise<WarmupResult> {
+    const existing = this.warmupPromises.get(language);
+    if (existing) return existing;
+
+    const warmupPromise = (async () => {
+      await this.init();
+      return this.sendMessage<WarmupResult>(
+        'warmup',
+        { language },
+        language === 'typescript' ? TYPESCRIPT_WARMUP_TIMEOUT_MS : INIT_TIMEOUT_MS
+      );
+    })();
+
+    this.warmupPromises.set(language, warmupPromise);
+
+    try {
+      return await warmupPromise;
+    } catch (error) {
+      this.warmupPromises.delete(language);
+      throw error;
     }
   }
 

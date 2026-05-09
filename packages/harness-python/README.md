@@ -5,7 +5,7 @@ Python runtime helpers and browser worker assets for TraceCode harness.
 Import path:
 
 ```ts
-import { PyodideWorkerClient, createPythonRuntimeClient, generateSolutionScript } from '@tracecode/harness-python';
+import { PythonWorkerClient, createPythonRuntimeClient, generateSolutionScript } from '@tracecode/harness-python';
 ```
 
 Public surface:
