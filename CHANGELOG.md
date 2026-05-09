@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.7.0-beta2] - 2026-05-09
+
+### Changed
+
+- Added explicit browser warmup paths for Java, Python, TypeScript, C#, and C++ so heavy runtimes can stay lazy until the app intentionally warms them.
+- Split C# and Python worker `init()` from runtime loading, preserving lazy first execution while allowing guided/code-assist flows to warm runtimes on demand.
+- Isolated C++ compiler warmup and Java background warmup behavior behind `warmLanguage(...)`.
+- Renamed Python worker-facing client/log labels from Pyodide-specific names to `PythonWorkerClient` and `[PythonWorker]`, while keeping backwards-compatible `PyodideWorkerClient` exports.
+
+### Fixed
+
+- Added a dedicated Java non-trace execution path, including run-only batch execution support.
+- Stopped plain JavaScript non-trace execution from loading the TypeScript compiler just to recover function argument order.
+
 ## [0.7.0-beta1] - 2026-05-07
 
 ### Added
