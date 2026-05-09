@@ -10,6 +10,7 @@ const FULL_CLASSPATH = [
   JAVAPARSER_JAR_PATH,
 ].join(':');
 const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
+const DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE = 'none';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const IDLE_TIMEOUT_MS = 90_000;
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
@@ -2180,6 +2181,13 @@ function buildJavaCompileId(payload, compileMode = 'trace') {
   return stableHash(buildJavaCompileSeed(payload, compileMode));
 }
 
+function buildJavaBatchCompileId(payload, inputBatch) {
+  return stableHash({
+    compileMode: 'execute-batch',
+    cases: inputBatch.map((inputs) => buildJavaCompileSeed({ ...payload, inputs }, 'execute-batch-case')),
+  });
+}
+
 async function writeDynamicInputFiles(dynamicInputs) {
   for (const input of dynamicInputs) {
     await self.cheerpOSAddStringFile(input.path, JSON.stringify(input.value));
@@ -2359,9 +2367,9 @@ async function warmHost() {
   if (!hostWarmupPromise) {
     hostWarmupPromise = (async () => {
       const libraryClass = await getCompileLibraryClass();
-      const sourcePath = '/str/ExportsTracecodeWarmup.java';
-      const classesDir = '/files/java-worker/__warm__/classes';
-      const warmupSource = `
+      const traceSourcePath = '/str/ExportsTracecodeWarmup.java';
+      const traceClassesDir = '/files/java-worker/__warm_trace__/classes';
+      const traceWarmupSource = `
 package harness.user.warmup;
 
 public class ExportsTracecodeWarmup {
@@ -2370,13 +2378,44 @@ public class ExportsTracecodeWarmup {
   }
 }
 `;
-      await self.cheerpOSAddStringFile(sourcePath, warmupSource);
+      await self.cheerpOSAddStringFile(traceSourcePath, traceWarmupSource);
       await libraryClass.compileAndTrace(
-        sourcePath,
-        classesDir,
+        traceSourcePath,
+        traceClassesDir,
         'harness.user.warmup.ExportsTracecodeWarmup',
         HELPER_JAR_PATH,
         DEFAULT_COMPILER_DEBUG_PROFILE
+      );
+      const runSourcePath = '/str/ExportsTracecodeRunWarmup.java';
+      const runClassesDir = '/files/java-worker/__warm_run__/classes';
+      const runWarmupSource = `
+package harness.user.warmup;
+
+import tracecode.user.TraceHooks;
+
+class Solution {
+  int add(int a, int b) {
+    return a + b;
+  }
+}
+
+public class ExportsTracecodeRunWarmup {
+  public static String run() {
+    Solution solution = new Solution();
+    int a = 1;
+    int b = 2;
+    int result = solution.add(a, b);
+    return TraceHooks.serializeOutputResult(result);
+  }
+}
+`;
+      await self.cheerpOSAddStringFile(runSourcePath, runWarmupSource);
+      await libraryClass.compileAndRun(
+        runSourcePath,
+        runClassesDir,
+        'harness.user.warmup.ExportsTracecodeRunWarmup',
+        HELPER_JAR_PATH,
+        DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
       );
     })();
   }
@@ -2435,6 +2474,45 @@ function buildPlainRunnableSource(payload, compileId, dynamicInputs) {
     exportsSource.trim(),
     '',
   ].join('\n');
+}
+
+function buildBatchRunnableSource(payload, compileId, inputBatch, dynamicInputBatch) {
+  const exportsClassName = buildExportsClassName(compileId);
+  const packageName = buildPackageName(compileId);
+  const entryClasses = [];
+  const sourceParts = [
+    `package ${packageName};`,
+    '',
+    'import tracecode.user.TraceHooks;',
+    '',
+    normalizePublicClassDeclarations(payload.code).trim(),
+    '',
+  ];
+
+  for (let index = 0; index < inputBatch.length; index += 1) {
+    const className = index === 0 ? exportsClassName : `${exportsClassName}Case${index}`;
+    const dynamicInputs = dynamicInputBatch[index] ?? [];
+    const exportsSource = buildExportsSource(
+      payload.code,
+      payload.functionName,
+      payload.executionStyle,
+      inputBatch[index] ?? {},
+      {
+        dynamicInputs,
+        hasDynamicInputs: dynamicInputs.length > 0,
+      }
+    ).replaceAll(
+      /\bpublic class Exports\b/g,
+      `${index === 0 ? 'public class' : 'class'} ${className}`
+    );
+    entryClasses.push(`${packageName}.${className}`);
+    sourceParts.push(exportsSource.trim(), '');
+  }
+
+  return {
+    source: sourceParts.join('\n'),
+    entryClasses,
+  };
 }
 
 function buildCompileProbeSource(payload, requestId, probeClassName, probePackageName) {
@@ -2750,6 +2828,10 @@ function javaReportConsoleOutput(report) {
   );
 }
 
+function parseJavaReportOutput(output) {
+  return output ? normalizeJavaSerializedOutput(JSON.parse(output)) : undefined;
+}
+
 async function runJavaTraceRequest(payload, requestId) {
   const totalStart = performance.now();
   const rewriteStart = performance.now();
@@ -2890,7 +2972,7 @@ async function runJavaTraceRequest(payload, requestId) {
 
   return {
     success: true,
-    output: report.output ? normalizeJavaSerializedOutput(JSON.parse(report.output)) : undefined,
+    output: parseJavaReportOutput(report.output),
     events: expandLoopHeaderTraceEvents(
       normalizeScriptTraceEvents(
         Array.isArray(report.events) ? report.events : [],
@@ -2961,13 +3043,12 @@ async function runJavaCodeRequest(payload) {
   const libraryCallStart = performance.now();
   let reportText;
   try {
-    reportText = await compileLibraryClass.compileAndTrace(
+    reportText = await compileLibraryClass.compileAndRun(
       sourcePath,
       classesDir,
       `${packageName}.${exportsClassName}`,
       HELPER_JAR_PATH,
-      DEFAULT_COMPILER_DEBUG_PROFILE,
-      String(resolveMaxStoredEvents(payload.options))
+      DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
     );
   } catch (error) {
     throw makeWorkerStageError('compile and run', error);
@@ -3009,10 +3090,137 @@ async function runJavaCodeRequest(payload) {
 
   return {
     success: true,
-    output: report.output ? normalizeJavaSerializedOutput(JSON.parse(report.output)) : undefined,
+    output: parseJavaReportOutput(report.output),
     executionTimeMs: totalEnd - totalStart,
     consoleOutput,
     timings,
+  };
+}
+
+async function runJavaCodeBatchRequest(payload) {
+  const totalStart = performance.now();
+  const inputBatch = Array.isArray(payload.inputBatch)
+    ? payload.inputBatch.map((inputs) => inputs && typeof inputs === 'object' ? inputs : {})
+    : [];
+  if (inputBatch.length === 0) {
+    throw new Error('Java batch execution requires a non-empty inputBatch array.');
+  }
+
+  const normalizedPayload = normalizeJavaExecutionPayload({
+    ...payload,
+    inputs: inputBatch[0] ?? {},
+  });
+  const compileId = buildJavaBatchCompileId(normalizedPayload, inputBatch);
+  const dynamicInputBatch = inputBatch.map((inputs, index) =>
+    dynamicInputEntriesForPayload(
+      { ...normalizedPayload, inputs },
+      `${compileId}-${index}`
+    )
+  );
+  const dynamicInputs = dynamicInputBatch.flat();
+  const exportsClassName = buildExportsClassName(compileId);
+  const sourcePath = `/str/${exportsClassName}.java`;
+  const classesDir = `/files/java-worker/${compileId}/classes`;
+
+  let runnableSource;
+  let entryClasses;
+  try {
+    const batchSource = buildBatchRunnableSource(normalizedPayload, compileId, inputBatch, dynamicInputBatch);
+    runnableSource = batchSource.source;
+    entryClasses = batchSource.entryClasses;
+  } catch (error) {
+    throw makeWorkerStageError('batch source generation', error);
+  }
+
+  try {
+    await writeDynamicInputFiles(dynamicInputs);
+  } catch (error) {
+    throw makeWorkerStageError('dynamic input write', error);
+  }
+
+  try {
+    await self.cheerpOSAddStringFile(sourcePath, runnableSource);
+  } catch (error) {
+    throw makeWorkerStageError('source file write', error);
+  }
+
+  let compileLibraryClass;
+  try {
+    compileLibraryClass = await getCompileLibraryClass();
+  } catch (error) {
+    throw makeWorkerStageError('compiler bridge load', error);
+  }
+
+  const libraryCallStart = performance.now();
+  let reportText;
+  try {
+    reportText = await compileLibraryClass.compileAndRunBatch(
+      sourcePath,
+      classesDir,
+      entryClasses.join('\n'),
+      HELPER_JAR_PATH,
+      DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+    );
+  } catch (error) {
+    throw makeWorkerStageError('compile and run batch', error);
+  }
+  const libraryCallEnd = performance.now();
+
+  let report;
+  try {
+    report = JSON.parse(reportText);
+  } catch (error) {
+    throw makeWorkerStageError('batch execution report parse', error);
+  }
+
+  const totalEnd = performance.now();
+  const consoleOutput = javaReportConsoleOutput(report);
+  const compileMs = report.compileTimeMs ?? 0;
+  const compileCacheHit = report.compileCacheHit ?? false;
+  const rawResults = Array.isArray(report.results) ? report.results : [];
+  const results = rawResults.map((entry) => {
+    const success = entry?.success === true;
+    const classLoadMs = entry?.classLoadTimeMs ?? 0;
+    const runMs = entry?.runTimeMs ?? 0;
+    return {
+      success,
+      output: success ? parseJavaReportOutput(entry.output) : null,
+      consoleOutput,
+      ...(success ? {} : { error: entry?.runtimeError || report.runtimeError || 'Java execution failed' }),
+      timings: {
+        compileMs: 0,
+        classLoadMs,
+        runMs,
+        hostCallMs: 0,
+        totalMs: classLoadMs + runMs,
+        compileCacheHit,
+      },
+    };
+  });
+
+  if (results.length > 0) {
+    results[0].timings = {
+      ...results[0].timings,
+      compileMs,
+      hostCallMs: libraryCallEnd - libraryCallStart,
+      totalMs: totalEnd - totalStart,
+    };
+  }
+
+  return {
+    success: report.success === true,
+    results,
+    executionTimeMs: totalEnd - totalStart,
+    consoleOutput,
+    ...(report.success === true ? {} : { error: report.runtimeError || 'Java batch execution failed' }),
+    timings: {
+      hostCallMs: libraryCallEnd - libraryCallStart,
+      totalMs: totalEnd - totalStart,
+      compileMs,
+      classLoadMs: rawResults.reduce((sum, entry) => sum + (entry?.classLoadTimeMs ?? 0), 0),
+      runMs: rawResults.reduce((sum, entry) => sum + (entry?.runTimeMs ?? 0), 0),
+      compileCacheHit,
+    },
   };
 }
 
@@ -3068,6 +3276,7 @@ self.onmessage = (event) => {
   if (
     message.type === 'execute-with-tracing' ||
     message.type === 'execute-code' ||
+    message.type === 'execute-code-batch' ||
     message.type === 'execute-code-interview'
   ) {
     queue = queue.then(async () => {
@@ -3075,7 +3284,9 @@ self.onmessage = (event) => {
         await ensureReady();
         const result = message.type === 'execute-with-tracing'
           ? await runJavaTraceRequest(message.payload, message.id)
-          : await runJavaCodeRequest(message.payload);
+          : message.type === 'execute-code-batch'
+            ? await runJavaCodeBatchRequest(message.payload)
+            : await runJavaCodeRequest(message.payload);
         postMessageResponse({
           id: message.id,
           type: message.type,

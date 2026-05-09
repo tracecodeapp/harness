@@ -9,7 +9,7 @@ import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 
 type Language = 'csharp' | 'cpp' | 'java';
-type Mode = 'execute' | 'trace' | 'interview';
+type Mode = 'execute' | 'trace' | 'interview' | 'execute-batch';
 
 interface BenchmarkArgs {
   languages: Language[];
@@ -79,7 +79,8 @@ interface SummaryRecord {
 }
 
 const ALL_LANGUAGES: Language[] = ['csharp', 'cpp', 'java'];
-const ALL_MODES: Mode[] = ['execute', 'trace', 'interview'];
+const ALL_MODES: Mode[] = ['execute', 'trace', 'interview', 'execute-batch'];
+const DEFAULT_MODES: Mode[] = ['execute', 'trace', 'interview'];
 
 const addCases: TestCase[] = [
   { name: 'positive', inputs: { a: 2, b: 3 }, expected: 5 },
@@ -119,7 +120,7 @@ const WORKLOADS: Workload[] = [
   {
     id: 'add',
     label: 'Add',
-    modes: ['execute', 'trace', 'interview'],
+    modes: ['execute', 'execute-batch', 'trace', 'interview'],
     functionNames: { csharp: 'Sum', cpp: 'sum', java: 'sum' },
     executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
     sources: {
@@ -145,7 +146,7 @@ const WORKLOADS: Workload[] = [
   {
     id: 'two-sum',
     label: 'Two Sum',
-    modes: ['execute', 'trace'],
+    modes: ['execute', 'execute-batch', 'trace'],
     functionNames: { csharp: 'TwoSum', cpp: 'twoSum', java: 'twoSum' },
     executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
     sources: {
@@ -197,7 +198,7 @@ const WORKLOADS: Workload[] = [
   {
     id: 'loop-walk',
     label: 'Loop Walk',
-    modes: ['execute', 'trace'],
+    modes: ['execute', 'execute-batch', 'trace'],
     functionNames: { csharp: 'Walk', cpp: 'walk', java: 'walk' },
     executionStyles: { csharp: 'solution-method', cpp: 'solution-method', java: 'solution-method' },
     sources: {
@@ -250,7 +251,8 @@ function usage(): string {
     'Options:',
     '  --languages=csharp,cpp,java     Languages to benchmark. Default: all.',
     '  --workloads=add,two-sum         Workloads to run. Default: all.',
-    '  --modes=execute,trace,interview Modes to run where supported by each workload. Default: all.',
+    '  --modes=execute,trace,interview Modes to run where supported by each workload. Default: execute,trace,interview.',
+    '                                  Also supports java-only execute-batch.',
     '  --iterations=2                  Repeat every workload case. Default: 1.',
     '  --case-limit=2                  Run only the first N cases per workload for quick checks.',
     '  --request-timeout-ms=180000     Per worker request timeout. Default: 180000.',
@@ -277,7 +279,7 @@ function parseArgs(argv: string[]): BenchmarkArgs {
   const args: BenchmarkArgs = {
     languages: ALL_LANGUAGES,
     workloads: WORKLOADS.map((workload) => workload.id),
-    modes: ALL_MODES,
+    modes: DEFAULT_MODES,
     iterations: 1,
     caseLimit: null,
     requestTimeoutMs: 180_000,
@@ -701,6 +703,56 @@ async function main(): Promise<void> {
                 consoleOutputCount: Array.isArray(result?.consoleOutput) ? result.consoleOutput.length : undefined,
               };
             },
+            async runBatchExecute(workload, iteration) {
+              const payload = {
+                code: workload.sources[language],
+                functionName: workload.functionNames[language],
+                inputBatch: workload.cases.map((testCase) => testCase.inputs),
+                executionStyle: workload.executionStyles[language],
+              };
+              const startedAt = performance.now();
+              const result = await send('execute-code-batch', payload);
+              const wallMs = performance.now() - startedAt;
+              const results = Array.isArray(result?.results) ? result.results : [];
+              const perCaseWallMs = workload.cases.length > 0 ? wallMs / workload.cases.length : wallMs;
+              const batchTimings = result?.timings || {};
+              return workload.cases.map((testCase, caseIndex) => {
+                const caseResult = results[caseIndex] || {};
+                const caseTimings = caseResult.timings || {};
+                return {
+                  language,
+                  workloadId: workload.id,
+                  workloadLabel: workload.label,
+                  mode: 'execute-batch',
+                  iteration,
+                  caseName: testCase.name,
+                  caseIndex,
+                  wallMs: perCaseWallMs,
+                  success: Boolean(result?.success && caseResult.success),
+                  output: caseResult.output,
+                  expected: testCase.expected,
+                  error: caseResult.error || result?.error,
+                  timings: {
+                    ...caseTimings,
+                    compileMs: typeof batchTimings.compileMs === 'number'
+                      ? batchTimings.compileMs / workload.cases.length
+                      : caseTimings.compileMs,
+                    hostCallMs: typeof batchTimings.hostCallMs === 'number'
+                      ? batchTimings.hostCallMs / workload.cases.length
+                      : caseTimings.hostCallMs,
+                    totalMs: typeof batchTimings.totalMs === 'number'
+                      ? batchTimings.totalMs / workload.cases.length
+                      : caseTimings.totalMs,
+                    compileCacheHit: batchTimings.compileCacheHit ?? caseTimings.compileCacheHit,
+                  },
+                  executionTimeMs: result?.executionTimeMs,
+                  traceEventCount: 0,
+                  consoleOutputCount: Array.isArray(result?.consoleOutput) ? result.consoleOutput.length : undefined,
+                  batchWallMs: wallMs,
+                  batchSize: workload.cases.length,
+                };
+              });
+            },
             terminate() {
               worker.terminate();
             },
@@ -717,6 +769,12 @@ async function main(): Promise<void> {
             for (let iteration = 0; iteration < iterations; iteration += 1) {
               for (const workload of workloads) {
                 for (const mode of workload.modes) {
+                  if (mode === 'execute-batch') {
+                    if (language === 'java') {
+                      records.push(...await runner.runBatchExecute(workload, iteration));
+                    }
+                    continue;
+                  }
                   for (let caseIndex = 0; caseIndex < workload.cases.length; caseIndex += 1) {
                     records.push(await runner.run(mode, workload, workload.cases[caseIndex], iteration, caseIndex));
                   }

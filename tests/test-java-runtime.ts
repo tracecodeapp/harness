@@ -515,6 +515,61 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 ],
               });
             },
+            compileAndRun: async (
+              _sourcePath: string,
+              _classesDir: string,
+              mainClassName: string,
+              _compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              if (mainClassName.includes('warmup')) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(3),
+                  compilerStdout: '',
+                  compilerStderr: '',
+                  compileTimeMs: 0,
+                  classLoadTimeMs: 0,
+                  runTimeMs: 0,
+                  compileCacheHit: true,
+                  compilerDebugProfile: compilerProfile,
+                });
+              }
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify([0, 1]),
+                compilerStdout: '',
+                compilerStderr: '',
+                compileTimeMs: 1,
+                classLoadTimeMs: 1,
+                runTimeMs: 1,
+                compileCacheHit: true,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            compileAndRunBatch: async (
+              _sourcePath: string,
+              _classesDir: string,
+              entryClasses: string,
+              _compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              const entries = entryClasses.split('\n').filter(Boolean);
+              return JSON.stringify({
+                success: true,
+                results: entries.map((_entry, index) => ({
+                  success: true,
+                  output: JSON.stringify(index + 1),
+                  classLoadTimeMs: 1,
+                  runTimeMs: 1,
+                })),
+                compilerStdout: '',
+                compilerStderr: '',
+                compileTimeMs: 1,
+                compileCacheHit: true,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
           },
         },
       },
@@ -764,6 +819,36 @@ async function main(): Promise<void> {
       'Java execute-code should compile an uninstrumented runnable source'
     );
     console.log('PASS: java execute-code uses dedicated non-trace worker path');
+
+    const batchExecute = await harness.sendMessage<{
+      success: boolean;
+      results?: Array<{ success: boolean; output: unknown }>;
+    }>('execute-code-batch', {
+      code: `class Solution {
+  int add(int a, int b) {
+    return a + b;
+  }
+}`,
+      functionName: 'add',
+      inputBatch: [
+        { a: 1, b: 2 },
+        { a: 3, b: 4 },
+      ],
+      executionStyle: 'function',
+    });
+    assertCondition(batchExecute.success === true, 'Java execute-code-batch should succeed');
+    assertCondition(
+      JSON.stringify(batchExecute.results?.map((result) => result.output)) === JSON.stringify([1, 2]),
+      'Java execute-code-batch should return one output per input case'
+    );
+    const batchExecuteSource = latestSourceContaining(harness.stringFiles, 'class Exports');
+    assertCondition(
+      batchExecuteSource.includes('public class Exports') &&
+        batchExecuteSource.includes('class Exports') &&
+        batchExecuteSource.includes('solution.add(a, b)'),
+      'Java execute-code-batch should compile one runnable source with per-case export entries'
+    );
+    console.log('PASS: java execute-code-batch runs multiple non-trace cases in one worker request');
 
     const rewriteProbeFailure = await harness.sendMessage<{
       success: boolean;
