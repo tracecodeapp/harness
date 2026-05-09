@@ -10,6 +10,8 @@ export interface BrowserHarnessAssets {
   csharpAssetBaseUrl: string;
   typescriptCompiler: string;
   cppWorker: string;
+  cppCompilerFrame: string;
+  cppCompilerWorker: string;
   cppClangWasm: string;
   cppLldWasm: string;
   cppSysroot: string;
@@ -29,6 +31,8 @@ export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarne
   csharpAssetBaseUrl: 'vendor/csharp',
   typescriptCompiler: 'vendor/typescript.js',
   cppWorker: 'cpp-worker.js',
+  cppCompilerFrame: 'cpp-compiler-frame.html',
+  cppCompilerWorker: 'cpp-compiler-worker.js',
   cppClangWasm: '',
   cppLldWasm: '',
   cppSysroot: '',
@@ -96,6 +100,14 @@ export function resolveBrowserHarnessAssets(options: {
       assets.typescriptCompiler ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.typescriptCompiler
     ),
     cppWorker: resolveAssetPath(assetBaseUrl, assets.cppWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppWorker),
+    cppCompilerFrame: resolveAssetPath(
+      assetBaseUrl,
+      assets.cppCompilerFrame ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerFrame
+    ),
+    cppCompilerWorker: resolveAssetPath(
+      assetBaseUrl,
+      assets.cppCompilerWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppCompilerWorker
+    ),
     cppClangWasm: resolveAssetPath(assetBaseUrl, assets.cppClangWasm ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppClangWasm),
     cppLldWasm: resolveAssetPath(assetBaseUrl, assets.cppLldWasm ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppLldWasm),
     cppSysroot: resolveAssetPath(assetBaseUrl, assets.cppSysroot ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.cppSysroot),

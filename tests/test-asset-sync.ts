@@ -32,6 +32,8 @@ async function main(): Promise<void> {
     'javascript-worker.js',
     'java-worker.js',
     'cpp-worker.js',
+    'cpp-compiler-frame.html',
+    'cpp-compiler-worker.js',
     'cpp/tracecode_runtime.hpp',
     'java-source-augmentations.js',
     'csharp-worker.js',
@@ -64,6 +66,8 @@ async function main(): Promise<void> {
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
   assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
   assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
+  assertCondition(rootEntries.includes('cpp-compiler-frame.html'), 'Asset sync should flatten the C++ compiler frame into the target root');
+  assertCondition(rootEntries.includes('cpp-compiler-worker.js'), 'Asset sync should flatten the C++ compiler worker into the target root');
   assertCondition(
     rootEntries.includes('java-source-augmentations.js'),
     'Asset sync should flatten the Java augmentation helper into the target root'

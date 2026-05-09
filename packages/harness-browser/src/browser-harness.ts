@@ -33,6 +33,9 @@ export interface CreateBrowserHarnessOptions {
   java?: {
     workerIdleTimeoutMs?: number;
   };
+  cpp?: {
+    workerIdleTimeoutMs?: number;
+  };
 }
 
 export interface BrowserHarness {
@@ -80,12 +83,15 @@ class BrowserHarnessRuntime implements BrowserHarness {
     });
     this.cppWorkerClient = new CppWorkerClient({
       workerUrl: this.assets.cppWorker,
+      compilerFrameUrl: this.assets.cppCompilerFrame,
+      compilerWorkerUrl: this.assets.cppCompilerWorker,
       clangWasmUrl: this.assets.cppClangWasm,
       lldWasmUrl: this.assets.cppLldWasm,
       sysrootUrl: this.assets.cppSysroot,
       runtimeHeaderUrl: this.assets.cppRuntimeHeader,
       compilerBundleUrl: this.assets.cppCompilerBundle,
       debug: options.debug,
+      workerIdleTimeoutMs: options.cpp?.workerIdleTimeoutMs,
     });
     this.clients = {
       python: createPythonRuntimeClient(this.pythonWorkerClient),
@@ -120,6 +126,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
   warmLanguage(language: Language): Promise<{ success: boolean; loadTimeMs: number }> {
     if (language === 'java') {
       return this.javaWorkerClient.warmup();
+    }
+    if (language === 'cpp') {
+      return this.cppWorkerClient.warmup();
     }
     return this.getClient(language).init();
   }

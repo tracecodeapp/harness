@@ -41,9 +41,52 @@ async function main(): Promise<void> {
       let nextId = 0;
       const pending = new Map();
 
+      const compileInFrame = (payload) =>
+        new Promise((resolve, reject) => {
+          const iframe = document.createElement('iframe');
+          iframe.src = '/workers/cpp-compiler-frame.html';
+          iframe.style.display = 'none';
+          document.body.appendChild(iframe);
+          const requestId = 'frame-' + (++nextId);
+          let timeoutId;
+          const cleanup = () => {
+            clearTimeout(timeoutId);
+            window.removeEventListener('message', onFrameMessage);
+            iframe.remove();
+          };
+          const onFrameMessage = (event) => {
+            if (event.source !== iframe.contentWindow) return;
+            if (event.data?.type === 'frame-ready') {
+              iframe.contentWindow.postMessage({ id: requestId, type: 'compile', payload }, location.origin);
+              return;
+            }
+            if (event.data?.id !== requestId) return;
+            cleanup();
+            resolve(event.data.payload);
+          };
+          window.addEventListener('message', onFrameMessage);
+          timeoutId = setTimeout(() => {
+            cleanup();
+            reject(new Error('C++ compiler frame timed out'));
+          }, 120_000);
+        });
+
       worker.onmessage = (event) => {
-        const { id, type, payload } = event.data;
+        const { id, type, payload, requestId } = event.data;
         if (type === 'worker-ready') return;
+        if (type === 'compile-request') {
+          compileInFrame(payload).then((result) => {
+            const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
+            worker.postMessage({ type: 'compile-response', requestId, payload: result }, transfer);
+          }).catch((error) => {
+            worker.postMessage({
+              type: 'compile-response',
+              requestId,
+              payload: { success: false, error: error instanceof Error ? error.message : String(error) },
+            });
+          });
+          return;
+        }
         if (!id) return;
         const request = pending.get(id);
         if (!request) return;
@@ -71,12 +114,14 @@ async function main(): Promise<void> {
       await send('init', {
         assets: {
           compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+          compilerFrameEnabled: true,
           clangWasmUrl: '/workers/vendor/cpp/clang.wasm',
           lldWasmUrl: '/workers/vendor/cpp/lld.wasm',
           sysrootUrl: '/workers/vendor/cpp/sysroot.tar',
           runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
         },
       });
+      const warmup = await send('warmup', {});
 
       const add = await send('compile-run', {
         code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
@@ -139,16 +184,22 @@ async function main(): Promise<void> {
       });
 
       worker.terminate();
-      return { add, cachedAdd, twoSum, syntaxError, traced, script, interview };
+      return { warmup, add, cachedAdd, twoSum, syntaxError, traced, script, interview };
     })()`);
 
-    const add = results.add as { success?: boolean; output?: unknown; error?: string };
+    const warmup = results.warmup as { success?: boolean; timings?: { toolchainLoadMs?: number; compilerWorkerMs?: number; externalCompileMs?: number } };
+    const add = results.add as { success?: boolean; output?: unknown; error?: string; timings?: { compilerWorkerMs?: number } };
     const cachedAdd = results.cachedAdd as { success?: boolean; output?: unknown; timings?: { compileCacheHit?: boolean } };
     const twoSum = results.twoSum as { success?: boolean; output?: unknown; error?: string };
     const syntaxError = results.syntaxError as { success?: boolean; error?: string; errorLine?: number };
     const traced = results.traced as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; value?: unknown }> } };
     const script = results.script as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; function?: string }> } };
     const interview = results.interview as { success?: boolean; output?: unknown; trace?: unknown };
+    assertCondition(warmup.success === true, `C++ browser warmup failed: ${JSON.stringify(warmup)}`);
+    assertCondition(
+      warmup.timings?.toolchainLoadMs === 0 && typeof warmup.timings?.compilerWorkerMs === 'number' && warmup.timings.compilerWorkerMs > 0,
+      `C++ browser warmup should compile outside the main worker without loading the main toolchain: ${JSON.stringify(warmup)}`
+    );
     assertCondition(add.success === true && add.output === 5, `C++ browser add failed: ${JSON.stringify(add)}`);
     assertCondition(
       cachedAdd.success === true && cachedAdd.output === 11 && cachedAdd.timings?.compileCacheHit === true,

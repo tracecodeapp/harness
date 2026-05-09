@@ -126,6 +126,14 @@ async function main(): Promise<void> {
     assertCondition(defaultAssets.csharpWorker === '/workers/csharp-worker.js', 'Default C# worker path should resolve');
     assertCondition(defaultAssets.csharpAssetBaseUrl === '/workers/vendor/csharp', 'Default C# asset base URL should resolve');
     assertCondition(defaultAssets.cppWorker === '/workers/cpp-worker.js', 'Default C++ worker path should resolve');
+    assertCondition(
+      defaultAssets.cppCompilerFrame === '/workers/cpp-compiler-frame.html',
+      'Default C++ compiler frame path should resolve'
+    );
+    assertCondition(
+      defaultAssets.cppCompilerWorker === '/workers/cpp-compiler-worker.js',
+      'Default C++ compiler worker path should resolve'
+    );
     assertCondition(defaultAssets.cppClangWasm === '', 'Default C++ raw clang path should be disabled');
     assertCondition(
       defaultAssets.cppCompilerBundle === '/workers/vendor/cpp/yowasp/bundle.js',
@@ -143,11 +151,15 @@ async function main(): Promise<void> {
         pythonWorker: 'https://cdn.example.com/python-worker.js',
         csharpAssetBaseUrl: 'runtimes/csharp',
         cppClangWasm: 'https://cdn.example.com/cpp/clang.wasm',
+        cppCompilerFrame: 'workers/cpp-compiler-frame.html',
+        cppCompilerWorker: 'workers/cpp-compiler-worker.js',
         cppCompilerBundle: 'https://cdn.example.com/cpp/bundle.js',
       },
     });
     assertCondition(customAssets.pythonWorker === 'https://cdn.example.com/python-worker.js', 'Explicit asset URLs should be preserved');
     assertCondition(customAssets.cppClangWasm === 'https://cdn.example.com/cpp/clang.wasm', 'Explicit C++ asset URLs should be preserved');
+    assertCondition(customAssets.cppCompilerFrame === '/sdk-assets/workers/cpp-compiler-frame.html', 'Relative custom C++ compiler frame should join assetBaseUrl');
+    assertCondition(customAssets.cppCompilerWorker === '/sdk-assets/workers/cpp-compiler-worker.js', 'Relative custom C++ compiler worker should join assetBaseUrl');
     assertCondition(customAssets.cppCompilerBundle === 'https://cdn.example.com/cpp/bundle.js', 'Explicit C++ compiler bundle URLs should be preserved');
     assertCondition(customAssets.javascriptWorker === '/sdk-assets/workers/js-runtime.js', 'Relative custom assets should join assetBaseUrl');
     assertCondition(customAssets.csharpAssetBaseUrl === '/sdk-assets/runtimes/csharp', 'Relative C# asset base should join assetBaseUrl');
@@ -203,6 +215,15 @@ async function main(): Promise<void> {
       'Java warmLanguage should send the Java warmup worker request'
     );
     console.log('PASS: browser harness warms Java runtime on demand');
+
+    const cppWarmupResult = await harnessA.warmLanguage('cpp');
+    const cppWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js'));
+    assertCondition(cppWarmupResult.success, 'C++ warmLanguage should resolve successfully');
+    assertCondition(
+      cppWarmupWorker?.messages.at(-1)?.type === 'warmup',
+      'C++ warmLanguage should send the C++ warmup worker request'
+    );
+    console.log('PASS: browser harness warms C++ runtime on demand');
 
     const survivingWorker = workerInstances.find((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js'));
     harnessA.dispose();

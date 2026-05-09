@@ -1,0 +1,59 @@
+<!doctype html>
+<script type="module">
+let nextId = 0;
+
+function encodeError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function compile(payload) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker('cpp-compiler-worker.js', { type: 'module' });
+    const id = String(++nextId);
+    const cleanup = () => {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.onmessageerror = null;
+      worker.terminate();
+    };
+
+    worker.onmessage = (event) => {
+      const data = event.data || {};
+      if (data.type === 'worker-ready') return;
+      if (data.id !== id) return;
+      cleanup();
+      resolve(data.payload);
+    };
+    worker.onerror = (event) => {
+      cleanup();
+      reject(new Error(event.message || 'C++ compiler worker error'));
+    };
+    worker.onmessageerror = () => {
+      cleanup();
+      reject(new Error('C++ compiler worker response failed to deserialize'));
+    };
+    worker.postMessage({ id, type: 'compile', payload });
+  });
+}
+
+addEventListener('message', async (event) => {
+  if (event.data?.type !== 'compile') return;
+
+  try {
+    const payload = await compile(event.data.payload);
+    const transfer = payload?.programBuffer instanceof ArrayBuffer ? [payload.programBuffer] : [];
+    event.source?.postMessage({ id: event.data.id, type: 'compile-result', payload }, event.origin, transfer);
+  } catch (error) {
+    event.source?.postMessage(
+      {
+        id: event.data.id,
+        type: 'compile-result',
+        payload: { success: false, error: encodeError(error) },
+      },
+      event.origin
+    );
+  }
+});
+
+parent.postMessage({ type: 'frame-ready' }, '*');
+</script>

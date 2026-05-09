@@ -51,7 +51,7 @@ sandbox.self = sandbox;
 
 const context = vm.createContext(sandbox);
 const script = new vm.Script(
-  workerSource + '\nglobalThis.__tracecodeCppTest = { handleInit, handleCompileRun, handleExecuteWithTracing, handleExecuteCodeInterview };',
+  workerSource + '\nglobalThis.__tracecodeCppTest = { handleInit, handleWarmup, handleCompileRun, handleExecuteWithTracing, handleExecuteCodeInterview, state: () => ({ hasToolchainPromise: Boolean(toolchainPromise), hasWarmupPromise: Boolean(warmupPromise), programCacheSize: programCache.size }) };',
   {
     importModuleDynamically(specifier) {
       return import(specifier);
@@ -60,7 +60,7 @@ const script = new vm.Script(
 );
 await script.runInContext(context);
 
-await sandbox.__tracecodeCppTest.handleInit({
+const initResult = await sandbox.__tracecodeCppTest.handleInit({
   assets: {
     compilerBundleUrl: pathToFileURL(process.cwd() + '/node_modules/@yowasp/clang/gen/bundle.js').href,
     clangWasmUrl: 'file:///missing/clang.wasm',
@@ -69,6 +69,17 @@ await sandbox.__tracecodeCppTest.handleInit({
     runtimeHeaderUrl: 'file://' + process.cwd() + '/workers/cpp/tracecode_runtime.hpp',
   },
 });
+if (initResult.timings?.warmupMs !== 0 || sandbox.__tracecodeCppTest.state().hasToolchainPromise) {
+  throw new Error('C++ init should not load or warm the compiler toolchain: ' + JSON.stringify(initResult));
+}
+
+const warmupResult = await sandbox.__tracecodeCppTest.handleWarmup({});
+if (!warmupResult.success || warmupResult.timings?.warmupMs === 0) {
+  throw new Error('C++ warmup should load and warm the compiler toolchain: ' + JSON.stringify(warmupResult));
+}
+if (!sandbox.__tracecodeCppTest.state().hasToolchainPromise || !sandbox.__tracecodeCppTest.state().hasWarmupPromise) {
+  throw new Error('C++ warmup should retain the initialized compiler promises');
+}
 
 const cases = [
   {

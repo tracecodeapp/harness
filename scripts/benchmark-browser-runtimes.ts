@@ -599,9 +599,55 @@ async function main(): Promise<void> {
           let nextId = 0;
           const pending = new Map();
 
+          function compileInFrame(payload) {
+            return new Promise((resolve, reject) => {
+              const iframe = document.createElement('iframe');
+              iframe.src = '/workers/cpp-compiler-frame.html';
+              iframe.style.display = 'none';
+              document.body.appendChild(iframe);
+              const requestId = `frame-${++nextId}`;
+              const timeoutId = setTimeout(() => {
+                cleanup();
+                reject(new Error('C++ compiler frame timed out'));
+              }, requestTimeoutMs);
+
+              function cleanup() {
+                clearTimeout(timeoutId);
+                window.removeEventListener('message', onFrameMessage);
+                iframe.remove();
+              }
+
+              function onFrameMessage(event) {
+                if (event.source !== iframe.contentWindow) return;
+                if (event.data?.type === 'frame-ready') {
+                  iframe.contentWindow.postMessage({ id: requestId, type: 'compile', payload }, location.origin);
+                  return;
+                }
+                if (event.data?.id !== requestId) return;
+                cleanup();
+                resolve(event.data.payload);
+              }
+
+              window.addEventListener('message', onFrameMessage);
+            });
+          }
+
           worker.onmessage = (event) => {
-            const { id, type, payload } = event.data || {};
+            const { id, type, payload, requestId } = event.data || {};
             if (type === 'worker-ready' || type === 'idle-timeout') return;
+            if (type === 'compile-request') {
+              compileInFrame(payload).then((result) => {
+                const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
+                worker.postMessage({ type: 'compile-response', requestId, payload: result }, transfer);
+              }).catch((error) => {
+                worker.postMessage({
+                  type: 'compile-response',
+                  requestId,
+                  payload: { success: false, error: error instanceof Error ? error.message : String(error) },
+                });
+              });
+              return;
+            }
             if (!id || !pending.has(id)) return;
             const request = pending.get(id);
             pending.delete(id);
@@ -642,6 +688,8 @@ async function main(): Promise<void> {
                   ? {
                       assets: {
                         compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
+                        compilerFrameEnabled: true,
+                        compilerWorkerUrl: '/workers/cpp-compiler-worker.js',
                         clangWasmUrl: '',
                         lldWasmUrl: '',
                         sysrootUrl: '',

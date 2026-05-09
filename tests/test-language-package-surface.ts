@@ -112,6 +112,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.cjs',
       'dist/index.d.ts',
       'workers/cpp-worker.js',
+      'workers/cpp-compiler-frame.html',
+      'workers/cpp-compiler-worker.js',
       'workers/cpp/tracecode_runtime.hpp',
       'workers/vendor/cpp/yowasp/bundle.js',
       'workers/vendor/cpp/yowasp/llvm-resources.tar',

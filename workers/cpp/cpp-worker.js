@@ -32,15 +32,18 @@ const FDFLAGS_APPEND = 1;
 const WHENCE_SET = 0;
 const WHENCE_CUR = 1;
 const WHENCE_END = 2;
-const IDLE_TIMEOUT_MS = 90_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
 
 let configuredAssets = null;
 let toolchainPromise = null;
 let warmupPromise = null;
 let queue = Promise.resolve();
 let idleTimer = null;
+let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let queuedTasks = 0;
 let programCache = new Map();
+let externalCompileRequestId = 0;
+const pendingExternalCompiles = new Map();
 
 class ProcExit extends Error {
   constructor(code) {
@@ -69,7 +72,14 @@ function resetIdleTimer() {
   idleTimer = setTimeout(() => {
     postMessage({ type: 'idle-timeout' });
     self.close();
-  }, IDLE_TIMEOUT_MS);
+  }, idleTimeoutMs);
+}
+
+function applyWorkerOptions(payload) {
+  const requestedIdleTimeoutMs = Number(payload?.idleTimeoutMs);
+  if (Number.isFinite(requestedIdleTimeoutMs) && requestedIdleTimeoutMs >= 1_000) {
+    idleTimeoutMs = Math.round(requestedIdleTimeoutMs);
+  }
 }
 
 function getProgramCacheKey(compiler, driverSource) {
@@ -184,6 +194,32 @@ async function fetchAsset(name, url, responseType) {
   }
 
   return responseType === 'text' ? response.text() : response.arrayBuffer();
+}
+
+function defaultCompilerWorkerUrl() {
+  try {
+    return self.location?.href ? new URL('cpp-compiler-worker.js', self.location.href).href : '';
+  } catch {
+    return '';
+  }
+}
+
+function getCompilerWorkerUrl() {
+  return configuredAssets?.compilerWorkerUrl || defaultCompilerWorkerUrl();
+}
+
+function canUseEphemeralCompilerWorker() {
+  return Boolean(
+    canUseExternalCompilerHost() ||
+      (configuredAssets?.compilerBundleUrl &&
+        getCompilerWorkerUrl() &&
+        typeof Worker !== 'undefined' &&
+        typeof WebAssembly !== 'undefined')
+  );
+}
+
+function canUseExternalCompilerHost() {
+  return Boolean(configuredAssets?.compilerFrameEnabled);
 }
 
 function readTarString(bytes, offset, length) {
@@ -3600,8 +3636,103 @@ async function runTool(module, fs, args) {
   return result;
 }
 
+function runCompilerWorker(driverSource) {
+  const workerUrl = getCompilerWorkerUrl();
+  if (!workerUrl) {
+    return Promise.reject(new Error('Missing C++ compiler worker URL.'));
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const worker = new Worker(workerUrl, { type: 'module' });
+    const id = `compile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const cleanup = () => {
+      worker.onmessage = null;
+      worker.onerror = null;
+      worker.onmessageerror = null;
+      worker.terminate();
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    worker.onmessage = (event) => {
+      const message = event.data || {};
+      if (message.type === 'worker-ready') return;
+      if (message.id !== id) return;
+      settled = true;
+      cleanup();
+      if (message.type !== 'compile-result') {
+        reject(new Error(`Unexpected C++ compiler worker response: ${message.type}`));
+        return;
+      }
+      resolve(message.payload || {});
+    };
+    worker.onerror = (event) => fail(new Error(event.message || 'C++ compiler worker error'));
+    worker.onmessageerror = () => fail(new Error('C++ compiler worker message failed to deserialize'));
+    worker.postMessage({
+      id,
+      type: 'compile',
+      payload: {
+        assets: configuredAssets,
+        driverSource,
+        standard: CPP_STANDARD,
+        stackSize: CPP_PROGRAM_STACK_SIZE,
+      },
+    });
+  });
+}
+
+function requestExternalCompile(driverSource) {
+  const requestId = String(++externalCompileRequestId);
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      pendingExternalCompiles.delete(requestId);
+      reject(new Error('C++ external compiler request timed out.'));
+    }, 120_000);
+
+    pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId });
+    postMessage({
+      type: 'compile-request',
+      requestId,
+      payload: {
+        assets: configuredAssets,
+        driverSource,
+        standard: CPP_STANDARD,
+        stackSize: CPP_PROGRAM_STACK_SIZE,
+      },
+    });
+  });
+}
+
+function compileDriverOutsideMainWorker(driverSource) {
+  if (canUseExternalCompilerHost()) {
+    return requestExternalCompile(driverSource);
+  }
+  return runCompilerWorker(driverSource);
+}
+
 async function compileAndRun(source, functionName, inputs, options = {}) {
   const start = now();
+  if (canUseEphemeralCompilerWorker()) {
+    try {
+      return await compileAndRunWithExternalCompiler(source, functionName, inputs, start, {
+        ...options,
+        timings: {
+          ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
+          toolchainLoadMs: 0,
+        },
+      });
+    } catch {
+      // Fall through to the in-worker compiler path when nested workers are not
+      // available or an older deployment is missing the compiler worker asset.
+    }
+  }
+
   const toolchainStartedAt = now();
   const toolchain = await loadToolchain();
   const timings = {
@@ -3727,6 +3858,147 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
   try {
     const runStartedAt = now();
     const program = await runWasi(programModule, ['program.wasm'], fs, {
+      stdin: JSON.stringify(inputs || {}),
+    });
+    timings.runMs = elapsedMs(runStartedAt);
+    const parsed = parseProgramStdout(program.stdout, {
+      tracing: options.tracing,
+      defaultLine: signature.line,
+      allowMissingResult: options.tracing,
+    });
+    if (scriptRequest && options.tracing) {
+      parsed.events = normalizeScriptTraceEvents(parsed.events, scriptLineCount(source));
+    }
+    const programTimedOut = options.tracing && program.exitCode === 124;
+    const runtimeTimedOut = !options.tracing && program.exitCode === 124;
+    const baseResult = {
+      success: program.exitCode === 0 && !programTimedOut,
+      output: parsed.output,
+      error: program.exitCode === 0 ? undefined : program.stderr || `C++ program exited with code ${program.exitCode}`,
+      consoleOutput: [...parsed.consoleOutput, ...program.stderr.split(/\r?\n/).filter(Boolean)],
+      executionTimeMs: elapsedMs(start),
+      timings: { ...timings, totalMs: elapsedMs(start) },
+      ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
+    };
+    if (!options.tracing) return baseResult;
+    const finalizedTrace = finalizeRuntimeTrace(parsed.events, options.traceOptions || {});
+    const { trace } = finalizedTrace;
+    const runtimeTraceLimitExceeded = finalizedTrace.traceLimitExceeded || Boolean(parsed.traceStatus?.traceLimitExceeded) || programTimedOut;
+    const droppedEventCount = (finalizedTrace.droppedEventCount || 0) + (Number(parsed.traceStatus?.droppedEventCount) || 0);
+    const timeoutReason = timeoutReasonForParsedTrace(parsed);
+    return {
+      ...baseResult,
+      ...(programTimedOut ? { error: 'C++ trace budget exceeded.' } : {}),
+      trace,
+      lineEventCount: trace.lineEventCount,
+      traceStepCount: trace.traceStepCount,
+      traceLimitExceeded: runtimeTraceLimitExceeded,
+      ...(runtimeTraceLimitExceeded ? { timeoutReason } : {}),
+      ...(runtimeTraceLimitExceeded ? { droppedEventCount } : {}),
+    };
+  } catch (error) {
+    if (options.tracing) {
+      const trace = finalizeRuntimeTrace(
+        [{ kind: 'exception', line: signature.line, message: error instanceof Error ? error.message : String(error) }],
+        options.traceOptions || {}
+      ).trace;
+      return {
+        success: false,
+        output: null,
+        error: error instanceof Error ? error.message : String(error),
+        trace,
+        consoleOutput: [],
+        executionTimeMs: elapsedMs(start),
+        lineEventCount: trace.lineEventCount,
+        traceStepCount: trace.traceStepCount,
+        timings: { ...timings, totalMs: elapsedMs(start) },
+      };
+    }
+    return {
+      success: false,
+      output: null,
+      error: error instanceof Error ? error.message : String(error),
+      consoleOutput: [],
+      executionTimeMs: elapsedMs(start),
+      timings: { ...timings, totalMs: elapsedMs(start) },
+    };
+  }
+}
+
+async function compileAndRunWithExternalCompiler(source, functionName, inputs, start, options = {}) {
+  const timings = {
+    ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
+  };
+  const scriptRequest = isScriptExecutionRequest(functionName, options);
+  const signature = scriptRequest
+    ? { line: 1 }
+    : options.executionStyle === 'ops-class'
+    ? { line: 1 }
+    : parseMethodSignature(source, functionName, {
+        parameterCount: Object.keys(inputs || {}).length,
+        inputNames: Object.keys(inputs || {}),
+      });
+  const driverStartedAt = now();
+  const rawDriverSource = scriptRequest
+    ? buildScriptDriverSource(source, options)
+    : options.executionStyle === 'ops-class'
+    ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
+    : buildDriverSource(source, functionName, inputs || {}, options);
+  const driverSource = rawDriverSource.replace(
+    '#include "/tracecode_runtime.hpp"',
+    '#include "tracecode_runtime.hpp"'
+  );
+  timings.driverBuildMs = elapsedMs(driverStartedAt);
+
+  const cacheKey = getProgramCacheKey('yowasp-worker', driverSource);
+  let programModule = getCachedProgramModule(cacheKey);
+  if (programModule) {
+    timings.compileCacheHit = true;
+    timings.compileMs = 0;
+    timings.compilerWorkerMs = 0;
+    timings.wasmCompileMs = 0;
+  } else {
+    timings.compileCacheHit = false;
+    const compilerStartedAt = now();
+    const compileResult = await compileDriverOutsideMainWorker(driverSource);
+    timings.externalCompileMs = elapsedMs(compilerStartedAt);
+    timings.compilerWorkerMs = timings.externalCompileMs;
+    timings.compileMs = Number.isFinite(Number(compileResult.compileMs))
+      ? Number(compileResult.compileMs)
+      : timings.compilerWorkerMs;
+
+    if (!compileResult.success) {
+      const diagnostics = [compileResult.stderr, compileResult.stdout, compileResult.error]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
+        generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
+        diagnosticStage: options.tracing ? 'trace-driver-compile' : 'driver-compile',
+        timings,
+      });
+    }
+
+    if (!(compileResult.programBuffer instanceof ArrayBuffer)) {
+      return {
+        success: false,
+        output: null,
+        error: 'C++ compiler worker did not return program.wasm.',
+        consoleOutput: [],
+        executionTimeMs: elapsedMs(start),
+        timings: { ...timings, totalMs: elapsedMs(start) },
+      };
+    }
+
+    const wasmCompileStartedAt = now();
+    programModule = await WebAssembly.compile(new Uint8Array(compileResult.programBuffer));
+    timings.wasmCompileMs = elapsedMs(wasmCompileStartedAt);
+    storeProgramModule(cacheKey, programModule);
+  }
+
+  try {
+    const runStartedAt = now();
+    const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
       stdin: JSON.stringify(inputs || {}),
     });
     timings.runMs = elapsedMs(runStartedAt);
@@ -3961,6 +4233,9 @@ async function warmToolchain() {
       }
       return result.timings || {};
     })();
+    warmupPromise.catch(() => {
+      warmupPromise = null;
+    });
   }
 
   return warmupPromise;
@@ -3972,21 +4247,46 @@ async function handleInit(payload) {
   toolchainPromise = null;
   warmupPromise = null;
   programCache = new Map();
-  const toolchainStartedAt = now();
-  await loadToolchain();
-  const toolchainLoadMs = elapsedMs(toolchainStartedAt);
-  const warmupStartedAt = now();
-  const warmupTimings = await warmToolchain();
-  const warmupMs = elapsedMs(warmupStartedAt);
   const totalMs = elapsedMs(start);
   return {
     success: true,
     loadTimeMs: totalMs,
     timings: {
       totalMs,
-      toolchainLoadMs,
+      toolchainLoadMs: 0,
+      warmupMs: 0,
+    },
+  };
+}
+
+async function handleWarmup(payload) {
+  if (payload && payload.assets) {
+    configuredAssets = payload.assets;
+  }
+  const start = now();
+  let toolchainLoadMs = 0;
+  if (!canUseEphemeralCompilerWorker()) {
+    const toolchainStartedAt = now();
+    await loadToolchain();
+    toolchainLoadMs = elapsedMs(toolchainStartedAt);
+  }
+  const warmupStartedAt = now();
+  const warmupTimings = await warmToolchain();
+  const warmupMs = elapsedMs(warmupStartedAt);
+  const reportedToolchainLoadMs =
+    toolchainLoadMs ||
+    (typeof warmupTimings.toolchainLoadMs === 'number' ? warmupTimings.toolchainLoadMs : 0);
+  const totalMs = elapsedMs(start);
+  return {
+    success: true,
+    loadTimeMs: totalMs,
+    timings: {
+      totalMs,
+      toolchainLoadMs: reportedToolchainLoadMs,
       warmupMs,
       ...(typeof warmupTimings.compileMs === 'number' ? { compileMs: warmupTimings.compileMs } : {}),
+      ...(typeof warmupTimings.externalCompileMs === 'number' ? { externalCompileMs: warmupTimings.externalCompileMs } : {}),
+      ...(typeof warmupTimings.compilerWorkerMs === 'number' ? { compilerWorkerMs: warmupTimings.compilerWorkerMs } : {}),
       ...(typeof warmupTimings.wasmCompileMs === 'number' ? { wasmCompileMs: warmupTimings.wasmCompileMs } : {}),
       ...(typeof warmupTimings.runMs === 'number' ? { runMs: warmupTimings.runMs } : {}),
     },
@@ -4187,9 +4487,23 @@ async function handleExecuteCodeInterview(payload) {
 }
 
 self.onmessage = (event) => {
-  const { id, type, payload } = event.data || {};
+  const { id, type, payload, requestId } = event.data || {};
+  if (type === 'compile-response') {
+    const pending = pendingExternalCompiles.get(String(requestId || ''));
+    if (!pending) return;
+    pendingExternalCompiles.delete(String(requestId));
+    clearTimeout(pending.timeoutId);
+    if (payload?.success === false && payload?.error) {
+      pending.resolve(payload);
+      return;
+    }
+    pending.resolve(payload || {});
+    return;
+  }
+
   if (!id) return;
   clearIdleTimer();
+  applyWorkerOptions(payload);
   queuedTasks += 1;
 
   queue = queue
@@ -4198,6 +4512,8 @@ self.onmessage = (event) => {
       const result =
         type === 'init'
           ? await handleInit(payload)
+          : type === 'warmup'
+            ? await handleWarmup(payload)
           : type === 'compile-run'
             ? await handleCompileRun(payload)
             : type === 'execute-with-tracing'

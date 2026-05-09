@@ -16,6 +16,8 @@ export interface CppWorkerAssets {
   sysrootUrl: string;
   runtimeHeaderUrl: string;
   compilerBundleUrl: string;
+  compilerFrameUrl?: string;
+  compilerWorkerUrl?: string;
 }
 
 export interface CppWorkerClientOptions extends CppWorkerAssets {
@@ -25,6 +27,7 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
   interviewTimeoutMs?: number;
+  workerIdleTimeoutMs?: number;
 }
 
 interface PendingMessage {
@@ -49,10 +52,18 @@ class CppClientTimeoutError extends Error {
 interface WorkerMessage {
   id?: MessageId;
   type: string;
+  requestId?: string;
   payload?: unknown;
 }
 
 interface InitResult {
+  success: boolean;
+  loadTimeMs: number;
+  error?: string;
+  timings?: RuntimeExecutionTimings;
+}
+
+interface WarmupResult {
   success: boolean;
   loadTimeMs: number;
   error?: string;
@@ -72,6 +83,7 @@ export class CppWorkerClient {
   private pendingMessages = new Map<MessageId, PendingMessage>();
   private messageId = 0;
   private initPromise: Promise<InitResult> | null = null;
+  private warmupPromise: Promise<WarmupResult> | null = null;
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
@@ -80,6 +92,8 @@ export class CppWorkerClient {
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
   private readonly interviewTimeoutMs: number;
+  private readonly compilerFrameUrl?: string;
+  private readonly activeCompilerFrames = new Set<HTMLIFrameElement>();
 
   constructor(private readonly options: CppWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
@@ -87,6 +101,7 @@ export class CppWorkerClient {
     this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
     this.interviewTimeoutMs = options.interviewTimeoutMs ?? INTERVIEW_MODE_TIMEOUT_MS;
+    this.compilerFrameUrl = options.compilerFrameUrl;
   }
 
   isSupported(): boolean {
@@ -123,6 +138,18 @@ export class CppWorkerClient {
 
       if (type === 'idle-timeout') {
         this.terminateAndReset(new Error('C++ worker closed after idle timeout'));
+        return;
+      }
+
+      if (type === 'compile-request') {
+        this.handleCompileRequest(event.data).catch((error) => {
+          if (!event.data.requestId) return;
+          this.worker?.postMessage({
+            type: 'compile-response',
+            requestId: event.data.requestId,
+            payload: { success: false, error: error instanceof Error ? error.message : String(error) },
+          });
+        });
         return;
       }
 
@@ -301,6 +328,7 @@ export class CppWorkerClient {
       this.worker = null;
     }
     this.initPromise = null;
+    this.warmupPromise = null;
     this.workerReadyPromise = null;
     this.workerReadyResolve = null;
     this.workerReadyReject = null;
@@ -310,6 +338,7 @@ export class CppWorkerClient {
       pending.reject(reason);
     }
     this.pendingMessages.clear();
+    this.clearCompilerFrames();
   }
 
   private shouldRetryInit(error: unknown): boolean {
@@ -334,7 +363,11 @@ export class CppWorkerClient {
           sysrootUrl: this.options.sysrootUrl,
           runtimeHeaderUrl: this.options.runtimeHeaderUrl,
           compilerBundleUrl: this.options.compilerBundleUrl,
+          compilerFrameEnabled: Boolean(this.compilerFrameUrl && typeof document !== 'undefined'),
+          compilerFrameUrl: this.compilerFrameUrl,
+          compilerWorkerUrl: this.options.compilerWorkerUrl,
         },
+        ...this.workerOptionsPayload(),
       },
       this.initTimeoutMs
     );
@@ -357,6 +390,114 @@ export class CppWorkerClient {
       this.initPromise = null;
       throw error;
     }
+  }
+
+  private workerOptionsPayload(): { idleTimeoutMs?: number } {
+    return this.options.workerIdleTimeoutMs === undefined
+      ? {}
+      : { idleTimeoutMs: this.options.workerIdleTimeoutMs };
+  }
+
+  async warmup(): Promise<WarmupResult> {
+    if (this.warmupPromise) return this.warmupPromise;
+    this.warmupPromise = (async () => {
+      try {
+        await this.init();
+        return await this.sendMessage<WarmupResult>('warmup', this.workerOptionsPayload(), this.initTimeoutMs);
+      } catch (error) {
+        this.warmupPromise = null;
+        throw error;
+      }
+    })();
+    return this.warmupPromise;
+  }
+
+  private clearCompilerFrames(): void {
+    for (const frame of this.activeCompilerFrames) {
+      frame.remove();
+    }
+    this.activeCompilerFrames.clear();
+  }
+
+  private async handleCompileRequest(message: WorkerMessage): Promise<void> {
+    if (!message.requestId) return;
+    const worker = this.worker;
+    if (!worker) return;
+
+    const result = await this.compileInFrame(message.payload);
+    const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
+    worker.postMessage(
+      {
+        type: 'compile-response',
+        requestId: message.requestId,
+        payload: result,
+      },
+      transfer
+    );
+  }
+
+  private compileInFrame(payload: unknown): Promise<Record<string, unknown>> {
+    if (!this.compilerFrameUrl || typeof document === 'undefined') {
+      return Promise.resolve({ success: false, error: 'C++ compiler frame is not available.' });
+    }
+
+    const frameUrl = new URL(this.compilerFrameUrl, globalThis.location?.href);
+    const targetOrigin = frameUrl.origin;
+    const iframe = document.createElement('iframe');
+    iframe.src = frameUrl.href;
+    iframe.style.display = 'none';
+    iframe.setAttribute('aria-hidden', 'true');
+    this.activeCompilerFrames.add(iframe);
+
+    return new Promise((resolve) => {
+      const requestId = `compile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      let settled = false;
+      let ready = false;
+      let timeoutId: ReturnType<typeof setTimeout>;
+
+      const cleanup = () => {
+        globalThis.removeEventListener('message', onMessage);
+        globalThis.clearTimeout(timeoutId);
+        this.activeCompilerFrames.delete(iframe);
+        iframe.remove();
+      };
+      const finish = (result: Record<string, unknown>) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+      const postCompileRequest = () => {
+        iframe.contentWindow?.postMessage(
+          {
+            id: requestId,
+            type: 'compile',
+            payload,
+          },
+          targetOrigin
+        );
+      };
+      const onMessage = (event: MessageEvent) => {
+        if (event.source !== iframe.contentWindow) return;
+        if (event.origin !== targetOrigin) return;
+        if ((event.data as { type?: string })?.type === 'frame-ready') {
+          if (ready) return;
+          ready = true;
+          postCompileRequest();
+          return;
+        }
+        if ((event.data as { id?: string })?.id !== requestId) return;
+        const response = event.data as { payload?: Record<string, unknown> };
+        finish(response.payload ?? { success: false, error: 'C++ compiler frame returned an empty response.' });
+      };
+
+      timeoutId = globalThis.setTimeout(() => {
+        finish({ success: false, error: 'C++ compiler frame request timed out.' });
+      }, this.initTimeoutMs);
+
+      globalThis.addEventListener('message', onMessage);
+      document.body.appendChild(iframe);
+    });
   }
 
   async executeCode(

@@ -189,9 +189,10 @@ The returned harness exposes:
 Configuration:
 
 - `assetBaseUrl?: string`
-- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl; cppWorker; cppCompilerBundle; cppRuntimeHeader }>`
+- `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl; cppWorker; cppCompilerFrame; cppCompilerWorker; cppCompilerBundle; cppRuntimeHeader }>`
 - `debug?: boolean`
 - `java?: { workerIdleTimeoutMs?: number }`
+- `cpp?: { workerIdleTimeoutMs?: number }`
 
 Example:
 
@@ -213,6 +214,17 @@ path in the background. The hot Java worker idles for 5 minutes by default; call
 `disposeLanguage('java')` when the editor closes or the user switches away to release it
 immediately.
 
+For C++, `init()` only records the worker asset URLs. Call `warmLanguage('cpp')` after the
+user selects C++ to load and warm the browser-local Clang/WASI toolchain in the background.
+The default browser client compiles through a disposable compiler frame/worker so the hot
+compiler context can be released after compilation; warmup uses that external compiler path
+when the frame or nested compiler worker is available, so the main C++ worker keeps only the
+compiled program cache. Hosting `cppCompilerFrame` on a separate process-isolated origin
+gives Chrome the strongest cleanup boundary. If the compiler frame is on another origin,
+serve `cppCompilerWorker`, `cppCompilerBundle`, `cppRuntimeHeader`, and the YoWASP assets
+from that origin too, or serve them with CORS headers. The hot C++ worker keeps its shorter
+default idle timeout; call `disposeLanguage('cpp')` when C++ is no longer active.
+
 ## Worker Assets
 
 `tracecode-harness sync-assets <target-dir>` copies the canonical browser asset set:
@@ -231,6 +243,8 @@ immediately.
 - `csharp-worker.js`
 - `vendor/csharp/**`
 - `cpp-worker.js`
+- `cpp-compiler-frame.html`
+- `cpp-compiler-worker.js`
 - `cpp/tracecode_runtime.hpp`
 - `vendor/cpp/yowasp/**`
 

@@ -55,6 +55,16 @@ const ASSET_COPY_PLAN = [
     languages: ['cpp'],
   },
   {
+    source: ['workers', 'cpp', 'cpp-compiler-frame.html'],
+    target: ['cpp-compiler-frame.html'],
+    languages: ['cpp'],
+  },
+  {
+    source: ['workers', 'cpp', 'cpp-compiler-worker.js'],
+    target: ['cpp-compiler-worker.js'],
+    languages: ['cpp'],
+  },
+  {
     source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
     target: ['cpp', 'tracecode_runtime.hpp'],
     languages: ['cpp'],

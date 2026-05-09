@@ -110,6 +110,14 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'cpp-worker.js'],
       },
       {
+        source: ['workers', 'cpp', 'cpp-compiler-frame.html'],
+        target: ['workers', 'cpp-compiler-frame.html'],
+      },
+      {
+        source: ['workers', 'cpp', 'cpp-compiler-worker.js'],
+        target: ['workers', 'cpp-compiler-worker.js'],
+      },
+      {
         source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
         target: ['workers', 'cpp', 'tracecode_runtime.hpp'],
       },
