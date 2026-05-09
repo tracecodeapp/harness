@@ -29,9 +29,9 @@ export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarne
   csharpAssetBaseUrl: 'vendor/csharp',
   typescriptCompiler: 'vendor/typescript.js',
   cppWorker: 'cpp-worker.js',
-  cppClangWasm: 'vendor/cpp/clang.wasm',
-  cppLldWasm: 'vendor/cpp/lld.wasm',
-  cppSysroot: 'vendor/cpp/sysroot.tar',
+  cppClangWasm: '',
+  cppLldWasm: '',
+  cppSysroot: '',
   cppRuntimeHeader: 'cpp/tracecode_runtime.hpp',
   cppCompilerBundle: 'vendor/cpp/yowasp/bundle.js',
 });
@@ -57,6 +57,9 @@ function trimLeadingSlash(value: string): string {
 }
 
 function resolveAssetPath(baseUrl: string, pathname: string): string {
+  if (pathname === '') {
+    return '';
+  }
   if (isExplicitAssetPath(pathname)) {
     return pathname;
   }

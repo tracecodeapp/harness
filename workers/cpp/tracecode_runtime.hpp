@@ -2,6 +2,7 @@
 
 #include <any>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -102,6 +103,456 @@ struct ListNode {
   ListNode(int x) : val(x), value(x), next(nullptr) {}
   ListNode(int x, ListNode* nextNode) : val(x), value(x), next(nextNode) {}
 };
+
+struct JsonValue {
+  enum class Kind { Null, Bool, Number, String, Array, Object };
+
+  Kind kind = Kind::Null;
+  bool bool_value = false;
+  double number_value = 0;
+  std::string string_value;
+  std::vector<JsonValue> array_values;
+  std::vector<std::pair<std::string, JsonValue>> object_values;
+
+  bool is_null() const { return kind == Kind::Null; }
+};
+
+[[noreturn]] inline void json_error(const std::string& message) {
+  std::fputs(message.c_str(), stderr);
+  std::fputc('\n', stderr);
+  std::abort();
+}
+
+class JsonParser {
+ public:
+  explicit JsonParser(std::string source) : source_(std::move(source)) {}
+
+  JsonValue parse() {
+    skip_whitespace();
+    JsonValue value = parse_value();
+    skip_whitespace();
+    if (position_ != source_.size()) {
+      json_error("Unexpected trailing JSON input.");
+    }
+    return value;
+  }
+
+ private:
+  std::string source_;
+  std::size_t position_ = 0;
+
+  char peek() const {
+    return position_ < source_.size() ? source_[position_] : '\0';
+  }
+
+  char take() {
+    if (position_ >= source_.size()) {
+      json_error("Unexpected end of JSON input.");
+    }
+    return source_[position_++];
+  }
+
+  void skip_whitespace() {
+    while (position_ < source_.size() && std::isspace(static_cast<unsigned char>(source_[position_]))) {
+      position_ += 1;
+    }
+  }
+
+  void expect(char expected) {
+    char actual = take();
+    if (actual != expected) {
+      json_error("Unexpected JSON character.");
+    }
+  }
+
+  bool consume_literal(const char* literal) {
+    std::size_t cursor = position_;
+    for (const char* item = literal; *item; ++item) {
+      if (cursor >= source_.size() || source_[cursor] != *item) return false;
+      cursor += 1;
+    }
+    position_ = cursor;
+    return true;
+  }
+
+  JsonValue parse_value() {
+    skip_whitespace();
+    const char ch = peek();
+    if (ch == '"') return parse_string_value();
+    if (ch == '[') return parse_array();
+    if (ch == '{') return parse_object();
+    if (ch == '-' || (ch >= '0' && ch <= '9')) return parse_number();
+    if (consume_literal("true")) {
+      JsonValue value;
+      value.kind = JsonValue::Kind::Bool;
+      value.bool_value = true;
+      return value;
+    }
+    if (consume_literal("false")) {
+      JsonValue value;
+      value.kind = JsonValue::Kind::Bool;
+      value.bool_value = false;
+      return value;
+    }
+    if (consume_literal("null")) {
+      return JsonValue{};
+    }
+    json_error("Invalid JSON value.");
+  }
+
+  JsonValue parse_string_value() {
+    JsonValue value;
+    value.kind = JsonValue::Kind::String;
+    value.string_value = parse_string();
+    return value;
+  }
+
+  std::string parse_string() {
+    expect('"');
+    std::string out;
+    while (true) {
+      char ch = take();
+      if (ch == '"') return out;
+      if (ch != '\\') {
+        out += ch;
+        continue;
+      }
+
+      char escaped = take();
+      switch (escaped) {
+        case '"': out += '"'; break;
+        case '\\': out += '\\'; break;
+        case '/': out += '/'; break;
+        case 'b': out += '\b'; break;
+        case 'f': out += '\f'; break;
+        case 'n': out += '\n'; break;
+        case 'r': out += '\r'; break;
+        case 't': out += '\t'; break;
+        case 'u':
+          for (int index = 0; index < 4; ++index) {
+            take();
+          }
+          out += '?';
+          break;
+        default:
+          json_error("Invalid JSON string escape.");
+      }
+    }
+  }
+
+  JsonValue parse_number() {
+    const char* start = source_.c_str() + position_;
+    char* end = nullptr;
+    double number = std::strtod(start, &end);
+    if (end == start) {
+      json_error("Invalid JSON number.");
+    }
+    position_ += static_cast<std::size_t>(end - start);
+    JsonValue value;
+    value.kind = JsonValue::Kind::Number;
+    value.number_value = number;
+    return value;
+  }
+
+  JsonValue parse_array() {
+    JsonValue value;
+    value.kind = JsonValue::Kind::Array;
+    expect('[');
+    skip_whitespace();
+    if (peek() == ']') {
+      take();
+      return value;
+    }
+    while (true) {
+      value.array_values.push_back(parse_value());
+      skip_whitespace();
+      char separator = take();
+      if (separator == ']') return value;
+      if (separator != ',') json_error("Invalid JSON array.");
+    }
+  }
+
+  JsonValue parse_object() {
+    JsonValue value;
+    value.kind = JsonValue::Kind::Object;
+    expect('{');
+    skip_whitespace();
+    if (peek() == '}') {
+      take();
+      return value;
+    }
+    while (true) {
+      skip_whitespace();
+      std::string key = parse_string();
+      skip_whitespace();
+      expect(':');
+      value.object_values.push_back({key, parse_value()});
+      skip_whitespace();
+      char separator = take();
+      if (separator == '}') return value;
+      if (separator != ',') json_error("Invalid JSON object.");
+    }
+  }
+};
+
+inline std::string read_stdin_all() {
+  std::string input;
+  int ch = 0;
+  while ((ch = std::getchar()) != EOF) {
+    input += static_cast<char>(ch);
+  }
+  return input;
+}
+
+inline JsonValue parse_json(const std::string& source) {
+  return JsonParser(source.empty() ? "{}" : source).parse();
+}
+
+inline const JsonValue* object_get(const JsonValue& value, const std::string& key) {
+  if (value.kind != JsonValue::Kind::Object) return nullptr;
+  for (const auto& entry : value.object_values) {
+    if (entry.first == key) return &entry.second;
+  }
+  return nullptr;
+}
+
+inline const std::string* object_get_string(const JsonValue& value, const std::string& key) {
+  const JsonValue* item = object_get(value, key);
+  if (item && item->kind == JsonValue::Kind::String) return &item->string_value;
+  return nullptr;
+}
+
+inline const JsonValue& json_input_value(const JsonValue& root, const std::string& name, std::size_t index) {
+  if (const JsonValue* named = object_get(root, name)) return *named;
+  if (root.kind == JsonValue::Kind::Object && index < root.object_values.size()) {
+    return root.object_values[index].second;
+  }
+  json_error("Missing C++ input value: " + name);
+}
+
+template <typename T>
+struct json_is_std_vector : std::false_type {};
+template <typename T, typename Allocator>
+struct json_is_std_vector<std::vector<T, Allocator>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_deque : std::false_type {};
+template <typename T, typename Allocator>
+struct json_is_std_deque<std::deque<T, Allocator>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_array : std::false_type {};
+template <typename T, std::size_t Size>
+struct json_is_std_array<std::array<T, Size>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_queue : std::false_type {};
+template <typename T, typename Container>
+struct json_is_std_queue<std::queue<T, Container>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_stack : std::false_type {};
+template <typename T, typename Container>
+struct json_is_std_stack<std::stack<T, Container>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_priority_queue : std::false_type {};
+template <typename T, typename Container, typename Compare>
+struct json_is_std_priority_queue<std::priority_queue<T, Container, Compare>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_map : std::false_type {};
+template <typename K, typename V, typename Compare, typename Allocator>
+struct json_is_std_map<std::map<K, V, Compare, Allocator>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_unordered_map : std::false_type {};
+template <typename K, typename V, typename Hash, typename Equal, typename Allocator>
+struct json_is_std_unordered_map<std::unordered_map<K, V, Hash, Equal, Allocator>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_set : std::false_type {};
+template <typename K, typename Compare, typename Allocator>
+struct json_is_std_set<std::set<K, Compare, Allocator>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_unordered_set : std::false_type {};
+template <typename K, typename Hash, typename Equal, typename Allocator>
+struct json_is_std_unordered_set<std::unordered_set<K, Hash, Equal, Allocator>> : std::true_type {};
+
+template <typename T>
+struct json_is_std_pair : std::false_type {};
+template <typename A, typename B>
+struct json_is_std_pair<std::pair<A, B>> : std::true_type {};
+
+template <typename T>
+T json_to(const JsonValue& value);
+
+template <typename K>
+K json_key_to(const std::string& key) {
+  if constexpr (std::is_same_v<K, std::string>) {
+    return key;
+  } else if constexpr (std::is_integral_v<K> && !std::is_same_v<K, bool>) {
+    return static_cast<K>(std::strtoll(key.c_str(), nullptr, 10));
+  } else if constexpr (std::is_floating_point_v<K>) {
+    return static_cast<K>(std::strtod(key.c_str(), nullptr));
+  } else {
+    return K(key);
+  }
+}
+
+template <typename Tuple, std::size_t... Indices>
+Tuple json_to_tuple(const JsonValue& value, std::index_sequence<Indices...>) {
+  if (value.kind != JsonValue::Kind::Array) {
+    json_error("Expected JSON array for tuple input.");
+  }
+  return Tuple{json_to<std::tuple_element_t<Indices, Tuple>>(value.array_values.at(Indices))...};
+}
+
+template <typename T>
+T json_to(const JsonValue& value) {
+  using D = std::decay_t<T>;
+  if constexpr (std::is_same_v<D, bool>) {
+    if (value.kind == JsonValue::Kind::Bool) return value.bool_value;
+    if (value.kind == JsonValue::Kind::Number) return value.number_value != 0;
+    return false;
+  } else if constexpr (std::is_integral_v<D> && !std::is_same_v<D, bool> && !std::is_same_v<D, char>) {
+    return static_cast<D>(value.kind == JsonValue::Kind::Number ? value.number_value : 0);
+  } else if constexpr (std::is_same_v<D, char>) {
+    return value.kind == JsonValue::Kind::String && !value.string_value.empty() ? value.string_value[0] : '\0';
+  } else if constexpr (std::is_floating_point_v<D>) {
+    return static_cast<D>(value.kind == JsonValue::Kind::Number ? value.number_value : 0);
+  } else if constexpr (std::is_same_v<D, std::string>) {
+    if (value.kind == JsonValue::Kind::String) return value.string_value;
+    if (value.kind == JsonValue::Kind::Number) return std::to_string(value.number_value);
+    if (value.kind == JsonValue::Kind::Bool) return value.bool_value ? "true" : "false";
+    return "";
+  } else if constexpr (json_is_std_vector<D>::value) {
+    D out;
+    if (value.kind != JsonValue::Kind::Array) return out;
+    for (const auto& item : value.array_values) out.push_back(json_to<typename D::value_type>(item));
+    return out;
+  } else if constexpr (json_is_std_deque<D>::value) {
+    D out;
+    if (value.kind != JsonValue::Kind::Array) return out;
+    for (const auto& item : value.array_values) out.push_back(json_to<typename D::value_type>(item));
+    return out;
+  } else if constexpr (json_is_std_array<D>::value) {
+    D out{};
+    if (value.kind != JsonValue::Kind::Array) return out;
+    for (std::size_t index = 0; index < out.size() && index < value.array_values.size(); ++index) {
+      out[index] = json_to<typename D::value_type>(value.array_values[index]);
+    }
+    return out;
+  } else if constexpr (json_is_std_queue<D>::value) {
+    D out;
+    if (value.kind != JsonValue::Kind::Array) return out;
+    for (const auto& item : value.array_values) out.push(json_to<typename D::value_type>(item));
+    return out;
+  } else if constexpr (json_is_std_stack<D>::value) {
+    D out;
+    if (value.kind != JsonValue::Kind::Array) return out;
+    for (const auto& item : value.array_values) out.push(json_to<typename D::value_type>(item));
+    return out;
+  } else if constexpr (json_is_std_priority_queue<D>::value) {
+    D out;
+    if (value.kind != JsonValue::Kind::Array) return out;
+    for (const auto& item : value.array_values) out.push(json_to<typename D::value_type>(item));
+    return out;
+  } else if constexpr (json_is_std_map<D>::value || json_is_std_unordered_map<D>::value) {
+    D out;
+    if (value.kind != JsonValue::Kind::Object) return out;
+    for (const auto& entry : value.object_values) {
+      out[json_key_to<typename D::key_type>(entry.first)] = json_to<typename D::mapped_type>(entry.second);
+    }
+    return out;
+  } else if constexpr (json_is_std_set<D>::value || json_is_std_unordered_set<D>::value) {
+    D out;
+    if (value.kind != JsonValue::Kind::Array) return out;
+    for (const auto& item : value.array_values) out.insert(json_to<typename D::value_type>(item));
+    return out;
+  } else if constexpr (json_is_std_pair<D>::value) {
+    if (value.kind != JsonValue::Kind::Array || value.array_values.size() < 2) return D{};
+    return D{json_to<typename D::first_type>(value.array_values[0]), json_to<typename D::second_type>(value.array_values[1])};
+  } else {
+    return D{};
+  }
+}
+
+template <typename T>
+T read_json_input(const JsonValue& root, const std::string& name, std::size_t index) {
+  return json_to<T>(json_input_value(root, name, index));
+}
+
+template <typename Node>
+Node* json_to_tree_node_impl(const JsonValue& value, std::map<std::string, Node*>& refs) {
+  if (value.is_null()) return nullptr;
+  if (value.kind == JsonValue::Kind::Array) {
+    if (value.array_values.empty() || value.array_values[0].is_null()) return nullptr;
+    std::vector<Node*> nodes;
+    nodes.reserve(value.array_values.size());
+    for (const auto& item : value.array_values) {
+      nodes.push_back(item.is_null() ? nullptr : new Node(json_to<int>(item)));
+    }
+    for (std::size_t index = 0, child = 1; child < nodes.size(); ++index) {
+      if (!nodes[index]) continue;
+      if (child < nodes.size()) nodes[index]->left = nodes[child++];
+      if (child < nodes.size()) nodes[index]->right = nodes[child++];
+    }
+    return nodes[0];
+  }
+  if (value.kind != JsonValue::Kind::Object) return nullptr;
+  if (const std::string* ref = object_get_string(value, "__ref__")) {
+    const auto found = refs.find(*ref);
+    return found == refs.end() ? nullptr : found->second;
+  }
+  const JsonValue* val = object_get(value, "val");
+  if (!val) val = object_get(value, "value");
+  Node* node = new Node(val ? json_to<int>(*val) : 0);
+  if (const std::string* id = object_get_string(value, "__id__")) refs[*id] = node;
+  if (const JsonValue* left = object_get(value, "left")) node->left = json_to_tree_node_impl<Node>(*left, refs);
+  if (const JsonValue* right = object_get(value, "right")) node->right = json_to_tree_node_impl<Node>(*right, refs);
+  return node;
+}
+
+template <typename Node>
+Node* json_to_tree_node(const JsonValue& value) {
+  std::map<std::string, Node*> refs;
+  return json_to_tree_node_impl<Node>(value, refs);
+}
+
+template <typename Node>
+Node* json_to_list_node_impl(const JsonValue& value, std::map<std::string, Node*>& refs) {
+  if (value.is_null()) return nullptr;
+  if (value.kind == JsonValue::Kind::Array) {
+    Node* head = nullptr;
+    Node* tail = nullptr;
+    for (const auto& item : value.array_values) {
+      Node* node = new Node(json_to<int>(item));
+      if (!head) head = node;
+      else tail->next = node;
+      tail = node;
+    }
+    return head;
+  }
+  if (value.kind != JsonValue::Kind::Object) return nullptr;
+  if (const std::string* ref = object_get_string(value, "__ref__")) {
+    const auto found = refs.find(*ref);
+    return found == refs.end() ? nullptr : found->second;
+  }
+  const JsonValue* val = object_get(value, "val");
+  if (!val) val = object_get(value, "value");
+  Node* node = new Node(val ? json_to<int>(*val) : 0);
+  if (const std::string* id = object_get_string(value, "__id__")) refs[*id] = node;
+  if (const JsonValue* next = object_get(value, "next")) node->next = json_to_list_node_impl<Node>(*next, refs);
+  return node;
+}
+
+template <typename Node>
+Node* json_to_list_node(const JsonValue& value) {
+  std::map<std::string, Node*> refs;
+  return json_to_list_node_impl<Node>(value, refs);
+}
 
 inline std::string escape_json_string(const std::string& value) {
   std::string escaped;

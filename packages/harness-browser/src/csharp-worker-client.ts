@@ -4,7 +4,11 @@ import {
   type RuntimeTraceEvent,
 } from '../../harness-core/src/runtime-trace';
 import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types';
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import type {
+  CodeExecutionResult,
+  ExecutionResult,
+  RuntimeExecutionTimings,
+} from '../../harness-core/src/types';
 
 type MessageId = string;
 export type CSharpExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -13,6 +17,10 @@ export interface CSharpWorkerClientOptions {
   workerUrl: string;
   assetBaseUrl: string;
   debug?: boolean;
+  initTimeoutMs?: number;
+  executionTimeoutMs?: number;
+  tracingTimeoutMs?: number;
+  interviewTimeoutMs?: number;
 }
 
 interface PendingMessage {
@@ -30,11 +38,13 @@ interface WorkerMessage {
 interface InitResult {
   success: boolean;
   loadTimeMs: number;
+  timings?: RuntimeExecutionTimings;
 }
 
 const EXECUTION_TIMEOUT_MS = 20_000;
+const TRACING_TIMEOUT_MS = 20_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 5_000;
-const INIT_TIMEOUT_MS = 30_000;
+const INIT_TIMEOUT_MS = 45_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
 const CSHARP_DEFAULT_FILE = 'solution.cs';
@@ -59,6 +69,7 @@ interface CSharpWorkerExecuteResult {
   executionTimeMs?: number;
   traceLimitExceeded?: boolean;
   timeoutReason?: ExecutionResult['timeoutReason'];
+  timings?: RuntimeExecutionTimings;
 }
 
 function isCSharpUserFile(file: string | undefined): boolean {
@@ -83,9 +94,17 @@ export class CSharpWorkerClient {
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
   private readonly debug: boolean;
+  private readonly initTimeoutMs: number;
+  private readonly executionTimeoutMs: number;
+  private readonly tracingTimeoutMs: number;
+  private readonly interviewTimeoutMs: number;
 
   constructor(private readonly options: CSharpWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+    this.initTimeoutMs = options.initTimeoutMs ?? INIT_TIMEOUT_MS;
+    this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
+    this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
+    this.interviewTimeoutMs = options.interviewTimeoutMs ?? INTERVIEW_MODE_TIMEOUT_MS;
   }
 
   isSupported(): boolean {
@@ -117,6 +136,11 @@ export class CSharpWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
+        return;
+      }
+
+      if (type === 'idle-timeout') {
+        this.terminateAndReset(new Error('C# worker closed after idle timeout'));
         return;
       }
 
@@ -256,6 +280,26 @@ export class CSharpWorkerClient {
     this.pendingMessages.clear();
   }
 
+  private shouldRetryInit(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      message.includes('timed out') ||
+      message.includes('Worker request timed out') ||
+      message.includes('worker error') ||
+      message.includes('Failed to fetch') ||
+      message.includes('was terminated') ||
+      message.includes('closed after idle timeout')
+    );
+  }
+
+  private sendInitMessage(): Promise<InitResult> {
+    return this.sendMessage<InitResult>(
+      'init',
+      { assetBaseUrl: this.options.assetBaseUrl },
+      this.initTimeoutMs
+    );
+  }
+
   async init(): Promise<InitResult> {
     if (this.initPromise) return this.initPromise;
     if (this.isInitializing) {
@@ -264,11 +308,15 @@ export class CSharpWorkerClient {
     }
 
     this.isInitializing = true;
-    this.initPromise = this.sendMessage<InitResult>(
-      'init',
-      { assetBaseUrl: this.options.assetBaseUrl },
-      INIT_TIMEOUT_MS
-    );
+    this.initPromise = (async () => {
+      try {
+        return await this.sendInitMessage();
+      } catch (error) {
+        if (!this.shouldRetryInit(error)) throw error;
+        this.terminateAndReset(error instanceof Error ? error : new Error(String(error)));
+        return this.sendInitMessage();
+      }
+    })();
     try {
       return await this.initPromise;
     } catch (error) {
@@ -296,11 +344,11 @@ export class CSharpWorkerClient {
             inputs,
             executionStyle,
             assetBaseUrl: this.options.assetBaseUrl,
-            timeoutMs: EXECUTION_TIMEOUT_MS - 1_000,
+            timeoutMs: Math.max(100, this.executionTimeoutMs - 1_000),
           },
-          EXECUTION_TIMEOUT_MS + 5_000
+          this.executionTimeoutMs + 5_000
         ),
-      EXECUTION_TIMEOUT_MS
+      this.executionTimeoutMs
     );
 
     if (!result.success) {
@@ -311,6 +359,7 @@ export class CSharpWorkerClient {
         error: result.error ?? 'C# execution failed',
         ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
         consoleOutput: result.consoleOutput ?? [],
+        timings: result.timings,
       };
     }
 
@@ -318,6 +367,7 @@ export class CSharpWorkerClient {
       success: true,
       output: result.output,
       consoleOutput: result.consoleOutput ?? [],
+      timings: result.timings,
     };
   }
 
@@ -340,11 +390,11 @@ export class CSharpWorkerClient {
               inputs,
               executionStyle,
               assetBaseUrl: this.options.assetBaseUrl,
-              timeoutMs: INTERVIEW_MODE_TIMEOUT_MS - 1_000,
+              timeoutMs: Math.max(100, this.interviewTimeoutMs - 1_000),
             },
-            INTERVIEW_MODE_TIMEOUT_MS + 5_000
+            this.interviewTimeoutMs + 5_000
           ),
-        INTERVIEW_MODE_TIMEOUT_MS
+        this.interviewTimeoutMs
       );
     } catch {
       return {
@@ -354,6 +404,7 @@ export class CSharpWorkerClient {
         timeoutReason: 'client-timeout',
         diagnosticStage: 'interview',
         consoleOutput: [],
+        timings: { totalMs: this.interviewTimeoutMs },
       };
     }
 
@@ -367,6 +418,7 @@ export class CSharpWorkerClient {
           timeoutReason: result.timeoutReason ?? 'client-timeout',
           diagnosticStage: 'interview',
           consoleOutput: result.consoleOutput ?? [],
+          timings: result.timings,
         };
       }
 
@@ -376,6 +428,7 @@ export class CSharpWorkerClient {
         error: result.error ?? 'C# execution failed',
         ...(firstUserDiagnostic ? { errorLine: firstUserDiagnostic.line } : {}),
         consoleOutput: result.consoleOutput ?? [],
+        timings: result.timings,
       };
     }
 
@@ -383,6 +436,7 @@ export class CSharpWorkerClient {
       success: true,
       output: result.output,
       consoleOutput: result.consoleOutput ?? [],
+      timings: result.timings,
     };
   }
 
@@ -406,16 +460,16 @@ export class CSharpWorkerClient {
               inputs,
               executionStyle,
               assetBaseUrl: this.options.assetBaseUrl,
-              timeoutMs: EXECUTION_TIMEOUT_MS - 1_000,
+              timeoutMs: Math.max(100, this.tracingTimeoutMs - 1_000),
               maxTraceSteps: options?.maxTraceSteps,
               maxLineEvents: options?.maxLineEvents,
               maxSingleLineHits: options?.maxSingleLineHits,
               maxStoredEvents: options?.maxStoredEvents,
               minimalTrace: options?.minimalTrace,
             },
-            EXECUTION_TIMEOUT_MS + 5_000
+            this.tracingTimeoutMs + 5_000
           ),
-        EXECUTION_TIMEOUT_MS
+        this.tracingTimeoutMs
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -432,12 +486,13 @@ export class CSharpWorkerClient {
         output: null,
         error: message,
         trace,
-        executionTimeMs: EXECUTION_TIMEOUT_MS,
+        executionTimeMs: this.tracingTimeoutMs,
         consoleOutput: [],
         traceLimitExceeded: true,
         timeoutReason: 'client-timeout',
         lineEventCount: trace.lineEventCount,
         traceStepCount: trace.traceStepCount,
+        timings: { totalMs: this.tracingTimeoutMs },
       };
     }
 
@@ -469,6 +524,7 @@ export class CSharpWorkerClient {
         ...(result.timeoutReason ? { timeoutReason: result.timeoutReason } : {}),
         lineEventCount: trace.lineEventCount,
         traceStepCount: trace.traceStepCount,
+        timings: result.timings,
       };
     }
 
@@ -484,6 +540,7 @@ export class CSharpWorkerClient {
       ...(result.timeoutReason ? { timeoutReason: result.timeoutReason } : {}),
       lineEventCount: trace.lineEventCount,
       traceStepCount: trace.traceStepCount,
+      timings: result.timings,
     };
   }
 

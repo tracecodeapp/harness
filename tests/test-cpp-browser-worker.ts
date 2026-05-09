@@ -83,6 +83,11 @@ async function main(): Promise<void> {
         functionName: 'add',
         inputs: { a: 2, b: 3 },
       });
+      const cachedAdd = await send('compile-run', {
+        code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
+        functionName: 'add',
+        inputs: { a: 5, b: 6 },
+      });
       const twoSum = await send('compile-run', {
         code: 'class Solution { public: vector<int> twoSum(vector<int>& nums, int target) { unordered_map<int,int> seen; for (int i=0;i<nums.size();++i){ int c=target-nums[i]; if(seen.count(c)) return {seen[c],i}; seen[nums[i]]=i;} return {}; } };',
         functionName: 'twoSum',
@@ -134,16 +139,21 @@ async function main(): Promise<void> {
       });
 
       worker.terminate();
-      return { add, twoSum, syntaxError, traced, script, interview };
+      return { add, cachedAdd, twoSum, syntaxError, traced, script, interview };
     })()`);
 
     const add = results.add as { success?: boolean; output?: unknown; error?: string };
+    const cachedAdd = results.cachedAdd as { success?: boolean; output?: unknown; timings?: { compileCacheHit?: boolean } };
     const twoSum = results.twoSum as { success?: boolean; output?: unknown; error?: string };
     const syntaxError = results.syntaxError as { success?: boolean; error?: string; errorLine?: number };
     const traced = results.traced as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; value?: unknown }> } };
     const script = results.script as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; function?: string }> } };
     const interview = results.interview as { success?: boolean; output?: unknown; trace?: unknown };
     assertCondition(add.success === true && add.output === 5, `C++ browser add failed: ${JSON.stringify(add)}`);
+    assertCondition(
+      cachedAdd.success === true && cachedAdd.output === 11 && cachedAdd.timings?.compileCacheHit === true,
+      `C++ browser repeated add should hit compile cache: ${JSON.stringify(cachedAdd)}`
+    );
     assertCondition(
       twoSum.success === true && JSON.stringify(twoSum.output) === JSON.stringify([0, 1]),
       `C++ browser twoSum failed: ${JSON.stringify(twoSum)}`

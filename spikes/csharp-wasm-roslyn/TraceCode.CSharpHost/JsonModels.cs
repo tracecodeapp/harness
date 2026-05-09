@@ -69,6 +69,9 @@ public sealed class CSharpExecuteResponse
 
     [JsonPropertyName("timeoutReason")]
     public string? TimeoutReason { get; set; }
+
+    [JsonPropertyName("timings")]
+    public Dictionary<string, object> Timings { get; set; } = new();
 }
 
 public sealed class RuntimeTraceEvent

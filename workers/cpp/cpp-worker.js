@@ -10,6 +10,8 @@ const DEFAULT_INTERVIEW_MAX_TRACE_STEPS = 10_000;
 const DEFAULT_INTERVIEW_MAX_LINE_EVENTS = 12_000;
 const DEFAULT_INTERVIEW_MAX_SINGLE_LINE_HITS = 1_000;
 const CPP_PROGRAM_STACK_SIZE = 8 * 1024 * 1024;
+const CPP_PROGRAM_CACHE_LIMIT = 32;
+const CPP_WARMUP_SOURCE = 'class Solution { public: int add(int a, int b) { return a + b; } };';
 const ESUCCESS = 0;
 const EBADF = 8;
 const EEXIST = 20;
@@ -30,9 +32,15 @@ const FDFLAGS_APPEND = 1;
 const WHENCE_SET = 0;
 const WHENCE_CUR = 1;
 const WHENCE_END = 2;
+const IDLE_TIMEOUT_MS = 90_000;
 
 let configuredAssets = null;
 let toolchainPromise = null;
+let warmupPromise = null;
+let queue = Promise.resolve();
+let idleTimer = null;
+let queuedTasks = 0;
+let programCache = new Map();
 
 class ProcExit extends Error {
   constructor(code) {
@@ -43,6 +51,48 @@ class ProcExit extends Error {
 
 function now() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function elapsedMs(startedAt) {
+  return Math.max(0, Math.round(now() - startedAt));
+}
+
+function clearIdleTimer() {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
+
+function resetIdleTimer() {
+  clearIdleTimer();
+  idleTimer = setTimeout(() => {
+    postMessage({ type: 'idle-timeout' });
+    self.close();
+  }, IDLE_TIMEOUT_MS);
+}
+
+function getProgramCacheKey(compiler, driverSource) {
+  return [compiler, CPP_STANDARD, String(CPP_PROGRAM_STACK_SIZE), driverSource].join('\0');
+}
+
+function getCachedProgramModule(cacheKey) {
+  if (!programCache.has(cacheKey)) return null;
+  const module = programCache.get(cacheKey);
+  programCache.delete(cacheKey);
+  programCache.set(cacheKey, module);
+  return module;
+}
+
+function storeProgramModule(cacheKey, module) {
+  if (programCache.has(cacheKey)) {
+    programCache.delete(cacheKey);
+  }
+  programCache.set(cacheKey, module);
+  while (programCache.size > CPP_PROGRAM_CACHE_LIMIT) {
+    const oldestKey = programCache.keys().next().value;
+    programCache.delete(oldestKey);
+  }
 }
 
 function encodeUtf8(value) {
@@ -2050,6 +2100,75 @@ function inputValueForParameter(inputs, parameter, index) {
   return values[index];
 }
 
+function isDynamicJsonMapKeyType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases).replace(/^std::/, '');
+  return isPrimitiveCppType(normalized) || normalized === 'string';
+}
+
+function isDynamicJsonInputType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  if (normalized === 'TreeNode' || normalized === 'TreeNode*' || normalized === 'ListNode' || normalized === 'ListNode*') {
+    return true;
+  }
+  if (isPrimitiveCppType(normalized)) return true;
+  if (
+    (
+      normalized.startsWith('vector<') ||
+      normalized.startsWith('deque<') ||
+      normalized.startsWith('queue<') ||
+      normalized.startsWith('priority_queue<') ||
+      normalized.startsWith('stack<') ||
+      normalized.startsWith('set<') ||
+      normalized.startsWith('unordered_set<')
+    ) &&
+    normalized.endsWith('>')
+  ) {
+    return isDynamicJsonInputType(normalized.slice(normalized.indexOf('<') + 1, -1), aliases);
+  }
+  if (normalized.startsWith('array<') && normalized.endsWith('>')) {
+    const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
+    return args.length >= 1 && isDynamicJsonInputType(args[0], aliases);
+  }
+  if (
+    (
+      normalized.startsWith('map<') ||
+      normalized.startsWith('unordered_map<')
+    ) &&
+    normalized.endsWith('>')
+  ) {
+    const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
+    return args.length >= 2 && isDynamicJsonMapKeyType(args[0], aliases) && isDynamicJsonInputType(args[1], aliases);
+  }
+  if (normalized.startsWith('pair<') && normalized.endsWith('>')) {
+    const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
+    return args.length >= 2 && isDynamicJsonInputType(args[0], aliases) && isDynamicJsonInputType(args[1], aliases);
+  }
+  if (normalized.startsWith('tuple<') && normalized.endsWith('>')) {
+    const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
+    return args.length > 0 && args.every((arg) => isDynamicJsonInputType(arg, aliases));
+  }
+  return false;
+}
+
+function cppDynamicInputExpression(parameter, index, aliases = new Map()) {
+  if (!isDynamicJsonInputType(parameter.type, aliases)) return null;
+  const normalized = normalizeCppType(parameter.type, aliases);
+  const inputValue = `tracecode::json_input_value(__tc_inputs, ${cppStringLiteral(parameter.name)}, ${index})`;
+  if (normalized === 'TreeNode*') {
+    return `tracecode::json_to_tree_node<${materializedCppType(parameter.type, aliases).replace(/\*$/, '').trim()}>(${inputValue})`;
+  }
+  if (normalized === 'TreeNode') {
+    return `*tracecode::json_to_tree_node<${materializedCppType(parameter.type, aliases)}>(${inputValue})`;
+  }
+  if (normalized === 'ListNode*') {
+    return `tracecode::json_to_list_node<${materializedCppType(parameter.type, aliases).replace(/\*$/, '').trim()}>(${inputValue})`;
+  }
+  if (normalized === 'ListNode') {
+    return `*tracecode::json_to_list_node<${materializedCppType(parameter.type, aliases)}>(${inputValue})`;
+  }
+  return `tracecode::read_json_input<${materializedCppType(parameter.type, aliases)}>(__tc_inputs, ${cppStringLiteral(parameter.name)}, ${index})`;
+}
+
 function buildGeneratedIncludes(source, signature) {
   const probe = `${source}\n${signature.parameters.map((parameter) => parameter.type).join('\n')}`;
   const includes = new Set([
@@ -3102,16 +3221,19 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
   const sourceForDriver = options.tracing === true ? instrumentCppSourceForTracing(userCode, functionName) : userCode;
   const declarations = [];
   const argumentNames = [];
+  let usesDynamicInputs = false;
 
   signature.parameters.forEach((parameter, index) => {
     const localName = `__tc_arg_${index}`;
     const shouldTraceParameter = traced && !skipTraceParameterNames.has(parameter.name) && isTraceWrappedCppType(parameter.type, aliases);
     const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : localCppType(parameter.type);
-    const value = inputValueForParameter(inputs, parameter, index);
+    const dynamicInput = cppDynamicInputExpression(parameter, index, aliases);
+    const value = dynamicInput ?? toCppLiteral(inputValueForParameter(inputs, parameter, index), parameter.type, aliases);
+    usesDynamicInputs ||= dynamicInput !== null;
     if (shouldTraceParameter) {
-      declarations.push(`  ${declarationType} ${localName}(${materializedCppType(parameter.type, aliases)}(${toCppLiteral(value, parameter.type, aliases)}), ${cppStringLiteral(parameter.name)}, ${signature.line});`);
+      declarations.push(`  ${declarationType} ${localName}(${materializedCppType(parameter.type, aliases)}(${value}), ${cppStringLiteral(parameter.name)}, ${signature.line});`);
     } else {
-      declarations.push(`  ${declarationType} ${localName} = ${toCppLiteral(value, parameter.type, aliases)};`);
+      declarations.push(`  ${declarationType} ${localName} = ${value};`);
     }
     argumentNames.push(localName);
   });
@@ -3162,6 +3284,7 @@ ${sourceForDriver}
 int main() {
 ${usesSolutionClass ? '  Solution solution;' : ''}
 ${traceSetup}
+${usesDynamicInputs ? '  tracecode::JsonValue __tc_inputs = tracecode::parse_json(tracecode::read_stdin_all());' : ''}
 ${declarations.join('\n')}
 ${traceCall}
 ${invokeAndStore}
@@ -3454,7 +3577,11 @@ function compileFailureResult(diagnostics, fallbackMessage, start, details = {})
     ...(details.generatedSource ? { generatedSource: details.generatedSource } : {}),
     ...(details.diagnosticStage ? { diagnosticStage: details.diagnosticStage } : {}),
     consoleOutput: [],
-    executionTimeMs: Math.max(0, Math.round(now() - start)),
+    executionTimeMs: elapsedMs(start),
+    timings: {
+      ...(details.timings && typeof details.timings === 'object' ? details.timings : {}),
+      totalMs: elapsedMs(start),
+    },
   };
 }
 
@@ -3475,9 +3602,17 @@ async function runTool(module, fs, args) {
 
 async function compileAndRun(source, functionName, inputs, options = {}) {
   const start = now();
+  const toolchainStartedAt = now();
   const toolchain = await loadToolchain();
+  const timings = {
+    ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
+    toolchainLoadMs: elapsedMs(toolchainStartedAt),
+  };
   if (toolchain.compiler === 'yowasp') {
-    return compileAndRunWithYowasp(toolchain, source, functionName, inputs, start, options);
+    return compileAndRunWithYowasp(toolchain, source, functionName, inputs, start, {
+      ...options,
+      timings,
+    });
   }
   const fs = toolchain.baseFs.clone();
   const resourceDir = findClangResourceDir(fs);
@@ -3490,85 +3625,111 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
         parameterCount: Object.keys(inputs || {}).length,
         inputNames: Object.keys(inputs || {}),
       });
+  const driverStartedAt = now();
   const driverSource = scriptRequest
     ? buildScriptDriverSource(source, options)
     : options.executionStyle === 'ops-class'
     ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
     : buildDriverSource(source, functionName, inputs || {}, options);
+  timings.driverBuildMs = elapsedMs(driverStartedAt);
 
   fs.addDirectory('/tmp');
   fs.addFile('/tmp/TraceCodeDriver.cpp', driverSource);
 
-  const clangArgs = [
-    'clang',
-    '-cc1',
-    '-triple',
-    'wasm32-unknown-wasi',
-    '-emit-obj',
-    '-disable-free',
-    '-isysroot',
-    '/',
-    '-internal-isystem',
-    '/include/c++/v1',
-    '-internal-isystem',
-    '/include',
-    '-internal-isystem',
-    `${resourceDir}/include`,
-    '-ferror-limit',
-    '19',
-    '-fmessage-length',
-    '120',
-    `-std=${CPP_STANDARD}`,
-    '-O0',
-    '-o',
-    '/tmp/program.o',
-    '-x',
-    'c++',
-    '/tmp/TraceCodeDriver.cpp',
-  ];
+  const cacheKey = getProgramCacheKey(toolchain.compiler, driverSource);
+  let programModule = getCachedProgramModule(cacheKey);
+  if (programModule) {
+    timings.compileCacheHit = true;
+    timings.compileMs = 0;
+    timings.linkMs = 0;
+    timings.wasmCompileMs = 0;
+  } else {
+    timings.compileCacheHit = false;
+    const clangArgs = [
+      'clang',
+      '-cc1',
+      '-triple',
+      'wasm32-unknown-wasi',
+      '-emit-obj',
+      '-disable-free',
+      '-isysroot',
+      '/',
+      '-internal-isystem',
+      '/include/c++/v1',
+      '-internal-isystem',
+      '/include',
+      '-internal-isystem',
+      `${resourceDir}/include`,
+      '-ferror-limit',
+      '19',
+      '-fmessage-length',
+      '120',
+      `-std=${CPP_STANDARD}`,
+      '-O0',
+      '-o',
+      '/tmp/program.o',
+      '-x',
+      'c++',
+      '/tmp/TraceCodeDriver.cpp',
+    ];
 
-  try {
-    await runTool(toolchain.clangModule, fs, clangArgs);
-  } catch (error) {
-    const diagnostics = [error.stderr, error.stdout, error.message].filter(Boolean).join('\n').trim();
-    return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
-      generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
-      diagnosticStage: options.tracing ? 'trace-driver-compile' : 'driver-compile',
-    });
+    try {
+      const compileStartedAt = now();
+      await runTool(toolchain.clangModule, fs, clangArgs);
+      timings.compileMs = elapsedMs(compileStartedAt);
+    } catch (error) {
+      const diagnostics = [error.stderr, error.stdout, error.message].filter(Boolean).join('\n').trim();
+      return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
+        generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
+        diagnosticStage: options.tracing ? 'trace-driver-compile' : 'driver-compile',
+        timings,
+      });
+    }
+
+    const libDir = fs.isDirectory('/lib/wasm32-wasi') ? '/lib/wasm32-wasi' : '/lib';
+    const crt1 = fs.isFile(`${libDir}/crt1.o`) ? `${libDir}/crt1.o` : '/lib/wasm32-wasi/crt1.o';
+    const lldArgs = [
+      'wasm-ld',
+      '--no-threads',
+      '--export-dynamic',
+      '-z',
+      `stack-size=${CPP_PROGRAM_STACK_SIZE}`,
+      `-L${libDir}`,
+      crt1,
+      '/tmp/program.o',
+      '-lc',
+      '-lc++',
+      '-lc++abi',
+      ...(fs.isFile(`${libDir}/libcanvas.a`) ? ['-lcanvas'] : []),
+      '-o',
+      '/tmp/program.wasm',
+    ];
+
+    try {
+      const linkStartedAt = now();
+      await runTool(toolchain.lldModule, fs, lldArgs);
+      timings.linkMs = elapsedMs(linkStartedAt);
+    } catch (error) {
+      const diagnostics = [error.stderr, error.stdout, error.message].filter(Boolean).join('\n').trim();
+      return compileFailureResult(diagnostics, 'C++ linking failed.', start, {
+        generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
+        diagnosticStage: 'driver-link',
+        timings,
+      });
+    }
+
+    const wasmCompileStartedAt = now();
+    programModule = await WebAssembly.compile(fs.readFile('/tmp/program.wasm'));
+    timings.wasmCompileMs = elapsedMs(wasmCompileStartedAt);
+    storeProgramModule(cacheKey, programModule);
   }
 
-  const libDir = fs.isDirectory('/lib/wasm32-wasi') ? '/lib/wasm32-wasi' : '/lib';
-  const crt1 = fs.isFile(`${libDir}/crt1.o`) ? `${libDir}/crt1.o` : '/lib/wasm32-wasi/crt1.o';
-  const lldArgs = [
-    'wasm-ld',
-    '--no-threads',
-    '--export-dynamic',
-    '-z',
-    `stack-size=${CPP_PROGRAM_STACK_SIZE}`,
-    `-L${libDir}`,
-    crt1,
-    '/tmp/program.o',
-    '-lc',
-    '-lc++',
-    '-lc++abi',
-    ...(fs.isFile(`${libDir}/libcanvas.a`) ? ['-lcanvas'] : []),
-    '-o',
-    '/tmp/program.wasm',
-  ];
-
   try {
-    await runTool(toolchain.lldModule, fs, lldArgs);
-  } catch (error) {
-    const diagnostics = [error.stderr, error.stdout, error.message].filter(Boolean).join('\n').trim();
-    return compileFailureResult(diagnostics, 'C++ linking failed.', start, {
-      generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
-      diagnosticStage: 'driver-link',
+    const runStartedAt = now();
+    const program = await runWasi(programModule, ['program.wasm'], fs, {
+      stdin: JSON.stringify(inputs || {}),
     });
-  }
-
-  try {
-    const programModule = await WebAssembly.compile(fs.readFile('/tmp/program.wasm'));
-    const program = await runWasi(programModule, ['program.wasm'], fs);
+    timings.runMs = elapsedMs(runStartedAt);
     const parsed = parseProgramStdout(program.stdout, {
       tracing: options.tracing,
       defaultLine: signature.line,
@@ -3584,7 +3745,8 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
       output: parsed.output,
       error: program.exitCode === 0 ? undefined : program.stderr || `C++ program exited with code ${program.exitCode}`,
       consoleOutput: [...parsed.consoleOutput, ...program.stderr.split(/\r?\n/).filter(Boolean)],
-      executionTimeMs: Math.max(0, Math.round(now() - start)),
+      executionTimeMs: elapsedMs(start),
+      timings: { ...timings, totalMs: elapsedMs(start) },
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
@@ -3615,9 +3777,10 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
         error: error instanceof Error ? error.message : String(error),
         trace,
         consoleOutput: [],
-        executionTimeMs: Math.max(0, Math.round(now() - start)),
+        executionTimeMs: elapsedMs(start),
         lineEventCount: trace.lineEventCount,
         traceStepCount: trace.traceStepCount,
+        timings: { ...timings, totalMs: elapsedMs(start) },
       };
     }
     return {
@@ -3625,12 +3788,16 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
       output: null,
       error: error instanceof Error ? error.message : String(error),
       consoleOutput: [],
-      executionTimeMs: Math.max(0, Math.round(now() - start)),
+      executionTimeMs: elapsedMs(start),
+      timings: { ...timings, totalMs: elapsedMs(start) },
     };
   }
 }
 
 async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, start, options = {}) {
+  const timings = {
+    ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
+  };
   const scriptRequest = isScriptExecutionRequest(functionName, options);
   const signature = scriptRequest
     ? { line: 1 }
@@ -3640,6 +3807,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
         parameterCount: Object.keys(inputs || {}).length,
         inputNames: Object.keys(inputs || {}),
       });
+  const driverStartedAt = now();
   const rawDriverSource = scriptRequest
     ? buildScriptDriverSource(source, options)
     : options.executionStyle === 'ops-class'
@@ -3649,52 +3817,75 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
     '#include "/tracecode_runtime.hpp"',
     '#include "tracecode_runtime.hpp"'
   );
+  timings.driverBuildMs = elapsedMs(driverStartedAt);
   const stdoutChunks = [];
   const stderrChunks = [];
   const collect = (chunks) => (bytes) => {
     if (bytes) chunks.push(bytes);
   };
 
-  let files;
+  const cacheKey = getProgramCacheKey(toolchain.compiler, driverSource);
+  let programModule = getCachedProgramModule(cacheKey);
+  if (programModule) {
+    timings.compileCacheHit = true;
+    timings.compileMs = 0;
+    timings.wasmCompileMs = 0;
+  } else {
+    timings.compileCacheHit = false;
+    let files;
+    try {
+      const compileStartedAt = now();
+      files = await toolchain.runClang(
+        ['clang++', 'TraceCodeDriver.cpp', `-std=${CPP_STANDARD}`, '-O0', '-fno-exceptions', `-Wl,-z,stack-size=${CPP_PROGRAM_STACK_SIZE}`, '-o', 'program.wasm'],
+        {
+          'TraceCodeDriver.cpp': driverSource,
+          'tracecode_runtime.hpp': toolchain.runtimeHeader,
+        },
+        {
+          stdout: collect(stdoutChunks),
+          stderr: collect(stderrChunks),
+          fetchProgress: () => {},
+        }
+      );
+      timings.compileMs = elapsedMs(compileStartedAt);
+    } catch (error) {
+      const stdout = decodeUtf8(concatBytes(stdoutChunks));
+      const stderr = decodeUtf8(concatBytes(stderrChunks));
+      const diagnostics = [stderr, stdout, error instanceof Error ? error.message : String(error)]
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
+        generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
+        diagnosticStage: options.tracing ? 'trace-driver-compile' : 'driver-compile',
+        timings,
+      });
+    }
+
+    const programBytes = files?.['program.wasm'];
+    if (!(programBytes instanceof Uint8Array)) {
+      return {
+        success: false,
+        output: null,
+        error: 'C++ compilation did not produce program.wasm.',
+        consoleOutput: [],
+        executionTimeMs: elapsedMs(start),
+        timings: { ...timings, totalMs: elapsedMs(start) },
+      };
+    }
+
+    const wasmCompileStartedAt = now();
+    programModule = await WebAssembly.compile(programBytes);
+    timings.wasmCompileMs = elapsedMs(wasmCompileStartedAt);
+    storeProgramModule(cacheKey, programModule);
+  }
+
   try {
-    files = await toolchain.runClang(
-      ['clang++', 'TraceCodeDriver.cpp', `-std=${CPP_STANDARD}`, '-O0', '-fno-exceptions', `-Wl,-z,stack-size=${CPP_PROGRAM_STACK_SIZE}`, '-o', 'program.wasm'],
-      {
-        'TraceCodeDriver.cpp': driverSource,
-        'tracecode_runtime.hpp': toolchain.runtimeHeader,
-      },
-      {
-        stdout: collect(stdoutChunks),
-        stderr: collect(stderrChunks),
-        fetchProgress: () => {},
-      }
-    );
-  } catch (error) {
-    const stdout = decodeUtf8(concatBytes(stdoutChunks));
-    const stderr = decodeUtf8(concatBytes(stderrChunks));
-    const diagnostics = [stderr, stdout, error instanceof Error ? error.message : String(error)]
-      .filter(Boolean)
-      .join('\n')
-      .trim();
-    return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
-      generatedSource: options?.traceOptions?.includeGeneratedSource ? driverSource : undefined,
-      diagnosticStage: options.tracing ? 'trace-driver-compile' : 'driver-compile',
+    const runStartedAt = now();
+    const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
+      stdin: JSON.stringify(inputs || {}),
     });
-  }
-
-  const programBytes = files?.['program.wasm'];
-  if (!(programBytes instanceof Uint8Array)) {
-    return {
-      success: false,
-      output: null,
-      error: 'C++ compilation did not produce program.wasm.',
-      consoleOutput: [],
-      executionTimeMs: Math.max(0, Math.round(now() - start)),
-    };
-  }
-
-  try {
-    const program = await runWasi(await WebAssembly.compile(programBytes), ['program.wasm'], new InMemoryFileSystem());
+    timings.runMs = elapsedMs(runStartedAt);
     const parsed = parseProgramStdout(program.stdout, {
       tracing: options.tracing,
       defaultLine: signature.line,
@@ -3710,7 +3901,8 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
       output: parsed.output,
       error: program.exitCode === 0 ? undefined : program.stderr || `C++ program exited with code ${program.exitCode}`,
       consoleOutput: [...parsed.consoleOutput, ...program.stderr.split(/\r?\n/).filter(Boolean)],
-      executionTimeMs: Math.max(0, Math.round(now() - start)),
+      executionTimeMs: elapsedMs(start),
+      timings: { ...timings, totalMs: elapsedMs(start) },
       ...(runtimeTimedOut ? { timeoutReason: 'client-timeout', diagnosticStage: 'runtime' } : {}),
     };
     if (!options.tracing) return baseResult;
@@ -3741,9 +3933,10 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
         error: error instanceof Error ? error.message : String(error),
         trace,
         consoleOutput: [],
-        executionTimeMs: Math.max(0, Math.round(now() - start)),
+        executionTimeMs: elapsedMs(start),
         lineEventCount: trace.lineEventCount,
         traceStepCount: trace.traceStepCount,
+        timings: { ...timings, totalMs: elapsedMs(start) },
       };
     }
     return {
@@ -3751,18 +3944,52 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
       output: null,
       error: error instanceof Error ? error.message : String(error),
       consoleOutput: [],
-      executionTimeMs: Math.max(0, Math.round(now() - start)),
+      executionTimeMs: elapsedMs(start),
+      timings: { ...timings, totalMs: elapsedMs(start) },
     };
   }
+}
+
+async function warmToolchain() {
+  if (!warmupPromise) {
+    warmupPromise = (async () => {
+      const result = await compileAndRun(CPP_WARMUP_SOURCE, 'add', { a: 1, b: 2 }, {
+        executionStyle: 'solution-method',
+      });
+      if (!result?.success || result.output !== 3) {
+        throw new Error(result?.error || 'C++ toolchain warmup failed.');
+      }
+      return result.timings || {};
+    })();
+  }
+
+  return warmupPromise;
 }
 
 async function handleInit(payload) {
   const start = now();
   configuredAssets = payload && payload.assets ? payload.assets : null;
   toolchainPromise = null;
+  warmupPromise = null;
+  programCache = new Map();
+  const toolchainStartedAt = now();
+  await loadToolchain();
+  const toolchainLoadMs = elapsedMs(toolchainStartedAt);
+  const warmupStartedAt = now();
+  const warmupTimings = await warmToolchain();
+  const warmupMs = elapsedMs(warmupStartedAt);
+  const totalMs = elapsedMs(start);
   return {
     success: true,
-    loadTimeMs: Math.max(0, Math.round(now() - start)),
+    loadTimeMs: totalMs,
+    timings: {
+      totalMs,
+      toolchainLoadMs,
+      warmupMs,
+      ...(typeof warmupTimings.compileMs === 'number' ? { compileMs: warmupTimings.compileMs } : {}),
+      ...(typeof warmupTimings.wasmCompileMs === 'number' ? { wasmCompileMs: warmupTimings.wasmCompileMs } : {}),
+      ...(typeof warmupTimings.runMs === 'number' ? { runMs: warmupTimings.runMs } : {}),
+    },
   };
 }
 
@@ -3928,6 +4155,7 @@ async function handleExecuteCodeInterview(payload) {
           ...(isTraceTimeoutReason(result.timeoutReason) ? { timeoutReason: result.timeoutReason } : {}),
           diagnosticStage: 'interview',
           consoleOutput: result.consoleOutput || [],
+          timings: result.timings,
         };
       }
       return {
@@ -3936,6 +4164,7 @@ async function handleExecuteCodeInterview(payload) {
         error: result.error || 'C++ interview execution failed.',
         ...(result.errorLine !== undefined ? { errorLine: result.errorLine } : {}),
         consoleOutput: result.consoleOutput || [],
+        timings: result.timings,
       };
     }
 
@@ -3943,6 +4172,7 @@ async function handleExecuteCodeInterview(payload) {
       success: true,
       output: result.output,
       consoleOutput: result.consoleOutput || [],
+      timings: result.timings,
     };
   } catch {
     return {
@@ -3959,19 +4189,30 @@ async function handleExecuteCodeInterview(payload) {
 self.onmessage = (event) => {
   const { id, type, payload } = event.data || {};
   if (!id) return;
+  clearIdleTimer();
+  queuedTasks += 1;
 
-  const task =
-    type === 'init'
-      ? handleInit(payload)
-      : type === 'compile-run'
-        ? handleCompileRun(payload)
-        : type === 'execute-with-tracing'
-          ? handleExecuteWithTracing(payload)
-          : type === 'execute-code-interview'
-            ? handleExecuteCodeInterview(payload)
-          : Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
+  queue = queue
+    .catch(() => {})
+    .then(async () => {
+      const result =
+        type === 'init'
+          ? await handleInit(payload)
+          : type === 'compile-run'
+            ? await handleCompileRun(payload)
+            : type === 'execute-with-tracing'
+              ? await handleExecuteWithTracing(payload)
+              : type === 'execute-code-interview'
+                ? await handleExecuteCodeInterview(payload)
+                : await Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
 
-  task.then((result) => postSuccess(id, type, result)).catch((error) => postFailure(id, error));
+      postSuccess(id, type, result);
+    })
+    .catch((error) => postFailure(id, error))
+    .finally(() => {
+      queuedTasks = Math.max(0, queuedTasks - 1);
+      if (queuedTasks === 0) resetIdleTimer();
+    });
 };
 
 postMessage({ type: 'worker-ready' });

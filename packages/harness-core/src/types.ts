@@ -24,6 +24,22 @@ export interface TestResult {
   executionTimeMs?: number;
 }
 
+export interface RuntimeExecutionTimings {
+  totalMs?: number;
+  initMs?: number;
+  warmupMs?: number;
+  toolchainLoadMs?: number;
+  rewriteMs?: number;
+  driverBuildMs?: number;
+  compileMs?: number;
+  linkMs?: number;
+  wasmCompileMs?: number;
+  classLoadMs?: number;
+  runMs?: number;
+  hostCallMs?: number;
+  compileCacheHit?: boolean;
+}
+
 // Non-tracing code execution result
 export interface CodeExecutionResult {
   success: boolean;
@@ -46,6 +62,7 @@ export interface CodeExecutionResult {
     | 'driver-compile'
     | 'trace-driver-compile'
     | 'driver-link';
+  timings?: RuntimeExecutionTimings;
 }
 
 // Complete execution result
@@ -68,6 +85,7 @@ export interface ExecutionResult {
     | 'client-timeout';
   lineEventCount?: number;
   traceStepCount?: number;
+  timings?: RuntimeExecutionTimings;
 }
 
 // Pyodide loading state

@@ -16,9 +16,14 @@ namespace TraceCode.CSharpHost;
 
 public static partial class CompilerHost
 {
+    private const int CompilationCacheLimit = 32;
     private const string UserCodePath = "solution.cs";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp12);
+    private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
+    private static readonly Dictionary<string, byte[]> CompilationCache = new(StringComparer.Ordinal);
+    private static readonly Queue<string> CompilationCacheOrder = new();
+    private static string currentInputsJson = "{}";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -36,6 +41,7 @@ public static partial class CompilerHost
         using StringWriter capturedOut = new();
         Console.SetOut(capturedOut);
         RuntimeTraceSink.Reset();
+        Dictionary<string, object> timings = new();
 
         try
         {
@@ -45,28 +51,45 @@ public static partial class CompilerHost
                 return SerializeError("Invalid C# execution request.", stopwatch, capturedOut);
             }
 
-            CSharpCompilation compilation = CreateCompilation(request);
-            using MemoryStream peStream = new();
-            var emitResult = compilation.Emit(peStream);
-
-            if (!emitResult.Success)
+            string compileCacheKey = BuildCompilationCacheKey(request);
+            if (!CompilationCache.TryGetValue(compileCacheKey, out byte[]? peBytes))
             {
-                var diagnostics = emitResult.Diagnostics
-                    .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
-                    .Select(CSharpDiagnostic.FromRoslyn)
-                    .ToList();
-                return Serialize(new CSharpExecuteResponse
+                timings["compileCacheHit"] = false;
+                double compileStartedAt = stopwatch.Elapsed.TotalMilliseconds;
+                CSharpCompilation compilation = CreateCompilation(request);
+                using MemoryStream peStream = new();
+                var emitResult = compilation.Emit(peStream);
+                timings["compileMs"] = stopwatch.Elapsed.TotalMilliseconds - compileStartedAt;
+
+                if (!emitResult.Success)
                 {
-                    Success = false,
-                    Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
-                    Diagnostics = diagnostics,
-                    ConsoleOutput = SplitConsoleOutput(capturedOut),
-                    Events = RuntimeTraceSink.Snapshot(),
-                    ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
-                });
+                    var diagnostics = emitResult.Diagnostics
+                        .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                        .Select(CSharpDiagnostic.FromRoslyn)
+                        .ToList();
+                    return Serialize(new CSharpExecuteResponse
+                    {
+                        Success = false,
+                        Error = diagnostics.FirstOrDefault()?.Message ?? "C# compilation failed.",
+                        Diagnostics = diagnostics,
+                        ConsoleOutput = SplitConsoleOutput(capturedOut),
+                        Events = RuntimeTraceSink.Snapshot(),
+                        ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                        Timings = WithTotalTiming(timings, stopwatch),
+                    });
+                }
+
+                peBytes = peStream.ToArray();
+                StoreCompilationCacheEntry(compileCacheKey, peBytes);
+            }
+            else
+            {
+                timings["compileCacheHit"] = true;
+                timings["compileMs"] = 0d;
             }
 
-            Assembly userAssembly = Assembly.Load(peStream.ToArray());
+            Assembly userAssembly = Assembly.Load(peBytes);
+            currentInputsJson = JsonSerializer.Serialize(request.Inputs, JsonOptions);
             RuntimeTraceSink.Configure(
                 request.TimeoutMs,
                 request.Trace ? request.MaxTraceSteps : null,
@@ -75,7 +98,9 @@ public static partial class CompilerHost
                 request.Trace ? request.MaxStoredEvents : null,
                 request.Trace && request.MinimalTrace
             );
+            double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
             object? output = InvokeDriver(userAssembly);
+            timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
             return Serialize(new CSharpExecuteResponse
             {
                 Success = true,
@@ -85,6 +110,7 @@ public static partial class CompilerHost
                 TraceLimitExceeded = RuntimeTraceSink.TraceLimitExceeded,
                 TimeoutReason = RuntimeTraceSink.TraceLimitExceeded ? RuntimeTraceSink.TimeoutReason : null,
                 ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+                Timings = WithTotalTiming(timings, stopwatch),
             });
         }
         catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException timeout)
@@ -94,7 +120,8 @@ public static partial class CompilerHost
                 stopwatch,
                 capturedOut,
                 traceLimitExceeded: RuntimeTraceSink.TraceLimitExceeded,
-                timeoutReason: "client-timeout"
+                timeoutReason: "client-timeout",
+                timings: timings
             );
         }
         catch (Exception error) when (error.GetBaseException() is TraceLimitExceededException traceLimit)
@@ -104,12 +131,13 @@ public static partial class CompilerHost
                 stopwatch,
                 capturedOut,
                 traceLimitExceeded: true,
-                timeoutReason: traceLimit.TimeoutReason
+                timeoutReason: traceLimit.TimeoutReason,
+                timings: timings
             );
         }
         catch (Exception error)
         {
-            return SerializeError(error.GetBaseException().Message, stopwatch, capturedOut);
+            return SerializeError(error.GetBaseException().Message, stopwatch, capturedOut, timings: timings);
         }
         finally
         {
@@ -147,7 +175,7 @@ public static partial class CompilerHost
         return CSharpCompilation.Create(
             assemblyName: "TraceCode.UserCode." + Guid.NewGuid().ToString("N"),
             syntaxTrees: new[] { globalUsingsTree, userTree, runtimeTree, driverTree },
-            references: ResolveReferences(),
+            references: CachedReferences.Value,
             options: new CSharpCompilationOptions(
                 OutputKind.DynamicallyLinkedLibrary,
                 optimizationLevel: OptimizationLevel.Release,
@@ -161,6 +189,64 @@ public static partial class CompilerHost
     {
         return string.Equals(request.ExecutionStyle, "function", StringComparison.Ordinal)
             && string.IsNullOrWhiteSpace(request.FunctionName);
+    }
+
+    private static string BuildCompilationCacheKey(CSharpExecuteRequest request)
+    {
+        return JsonSerializer.Serialize(new
+        {
+            request.Source,
+            request.FunctionName,
+            request.ExecutionStyle,
+            request.Trace,
+            InputShape = BuildInputShape(request.Inputs),
+        }, JsonOptions);
+    }
+
+    public static string GetCurrentInputsJson()
+    {
+        return currentInputsJson;
+    }
+
+    private static object BuildInputShape(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Object => value
+                .EnumerateObject()
+                .OrderBy(property => property.Name, StringComparer.Ordinal)
+                .ToDictionary(property => property.Name, property => BuildInputShape(property.Value), StringComparer.Ordinal),
+            JsonValueKind.Array => new
+            {
+                kind = "array",
+                elements = value.EnumerateArray().Select(BuildInputShape).Distinct().OrderBy(item => JsonSerializer.Serialize(item, JsonOptions)).ToArray(),
+            },
+            _ => value.ValueKind.ToString(),
+        };
+    }
+
+    private static object BuildInputShape(IReadOnlyDictionary<string, JsonElement> inputs)
+    {
+        return inputs
+            .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToDictionary(entry => entry.Key, entry => BuildInputShape(entry.Value), StringComparer.Ordinal);
+    }
+
+    private static void StoreCompilationCacheEntry(string cacheKey, byte[] peBytes)
+    {
+        if (CompilationCache.ContainsKey(cacheKey))
+        {
+            return;
+        }
+
+        CompilationCache[cacheKey] = peBytes;
+        CompilationCacheOrder.Enqueue(cacheKey);
+
+        while (CompilationCacheOrder.Count > CompilationCacheLimit)
+        {
+            string expiredKey = CompilationCacheOrder.Dequeue();
+            CompilationCache.Remove(expiredKey);
+        }
     }
 
     private static SyntaxTree CreateScriptUserTree(SyntaxTree originalUserTree)
@@ -604,8 +690,6 @@ global using System.Linq;
 
     private static string GenerateRuntimeSource(IReadOnlyDictionary<string, JsonElement> inputs, SyntaxTree userTree)
     {
-        string inputsJson = JsonSerializer.Serialize(inputs, JsonOptions);
-        string inputsBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(inputsJson));
         string preludeSource = GenerateNodePreludeSource(userTree);
 
         return $$"""
@@ -629,7 +713,7 @@ namespace TraceCode.Internal
             IncludeFields = true,
             NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
         };
-""" + GenerateRuntimeSourceTail(inputsBase64);
+""" + GenerateRuntimeSourceTail();
     }
 
     private static string GenerateNodePreludeSource(SyntaxTree userTree)
@@ -679,15 +763,15 @@ public class TreeNode
         return builder.ToString();
     }
 
-    private static string GenerateRuntimeSourceTail(string inputsBase64)
+    private static string GenerateRuntimeSourceTail()
     {
-        return $$"""
-        private static readonly JsonElement Root = JsonSerializer.Deserialize<JsonElement>(
-            Encoding.UTF8.GetString(System.Convert.FromBase64String("{{inputsBase64}}")),
+        return """
+        private static JsonElement Root => JsonSerializer.Deserialize<JsonElement>(
+            TraceCode.CSharpHost.CompilerHost.GetCurrentInputsJson(),
             JsonOptions
         );
 
-        private static readonly string[] Keys = Root.ValueKind == JsonValueKind.Object
+        private static string[] Keys => Root.ValueKind == JsonValueKind.Object
             ? Root.EnumerateObject().Select(property => property.Name).ToArray()
             : Array.Empty<string>();
 
@@ -2536,7 +2620,8 @@ public class TreeNode
         Stopwatch stopwatch,
         StringWriter capturedOut,
         bool traceLimitExceeded = false,
-        string? timeoutReason = null
+        string? timeoutReason = null,
+        IDictionary<string, object>? timings = null
     )
     {
         return Serialize(new CSharpExecuteResponse
@@ -2548,7 +2633,20 @@ public class TreeNode
             TraceLimitExceeded = traceLimitExceeded,
             TimeoutReason = timeoutReason,
             ExecutionTimeMs = stopwatch.Elapsed.TotalMilliseconds,
+            Timings = WithTotalTiming(timings, stopwatch),
         });
+    }
+
+    private static Dictionary<string, object> WithTotalTiming(
+        IDictionary<string, object>? timings,
+        Stopwatch stopwatch
+    )
+    {
+        Dictionary<string, object> result = timings is null
+            ? new Dictionary<string, object>(StringComparer.Ordinal)
+            : new Dictionary<string, object>(timings, StringComparer.Ordinal);
+        result["totalMs"] = stopwatch.Elapsed.TotalMilliseconds;
+        return result;
     }
 
     private static string Serialize(CSharpExecuteResponse response)

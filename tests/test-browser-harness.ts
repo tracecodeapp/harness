@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     assertCondition(defaultAssets.csharpWorker === '/workers/csharp-worker.js', 'Default C# worker path should resolve');
     assertCondition(defaultAssets.csharpAssetBaseUrl === '/workers/vendor/csharp', 'Default C# asset base URL should resolve');
     assertCondition(defaultAssets.cppWorker === '/workers/cpp-worker.js', 'Default C++ worker path should resolve');
-    assertCondition(defaultAssets.cppClangWasm === '/workers/vendor/cpp/clang.wasm', 'Default C++ clang path should resolve');
+    assertCondition(defaultAssets.cppClangWasm === '', 'Default C++ raw clang path should be disabled');
     assertCondition(
       defaultAssets.cppCompilerBundle === '/workers/vendor/cpp/yowasp/bundle.js',
       'Default C++ compiler bundle path should resolve'

@@ -1,4 +1,8 @@
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import type {
+  CodeExecutionResult,
+  ExecutionResult,
+  RuntimeExecutionTimings,
+} from '../../harness-core/src/types';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types';
 
@@ -17,6 +21,7 @@ export interface CppWorkerAssets {
 export interface CppWorkerClientOptions extends CppWorkerAssets {
   workerUrl: string;
   debug?: boolean;
+  initTimeoutMs?: number;
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
   interviewTimeoutMs?: number;
@@ -51,9 +56,10 @@ interface InitResult {
   success: boolean;
   loadTimeMs: number;
   error?: string;
+  timings?: RuntimeExecutionTimings;
 }
 
-const INIT_TIMEOUT_MS = 10_000;
+const INIT_TIMEOUT_MS = 120_000;
 const EXECUTION_TIMEOUT_MS = 25_000;
 const TRACING_TIMEOUT_MS = 30_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
@@ -70,12 +76,14 @@ export class CppWorkerClient {
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
   private readonly debug: boolean;
+  private readonly initTimeoutMs: number;
   private readonly executionTimeoutMs: number;
   private readonly tracingTimeoutMs: number;
   private readonly interviewTimeoutMs: number;
 
   constructor(private readonly options: CppWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
+    this.initTimeoutMs = options.initTimeoutMs ?? INIT_TIMEOUT_MS;
     this.executionTimeoutMs = options.executionTimeoutMs ?? EXECUTION_TIMEOUT_MS;
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
     this.interviewTimeoutMs = options.interviewTimeoutMs ?? INTERVIEW_MODE_TIMEOUT_MS;
@@ -110,6 +118,11 @@ export class CppWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
+        return;
+      }
+
+      if (type === 'idle-timeout') {
+        this.terminateAndReset(new Error('C++ worker closed after idle timeout'));
         return;
       }
 
@@ -250,6 +263,7 @@ export class CppWorkerClient {
       consoleOutput: [],
       timeoutReason: 'client-timeout',
       diagnosticStage: timeoutError?.stage === 'interview' ? 'interview' : 'runtime',
+      timings: { totalMs: timeoutError?.timeoutMs ?? this.executionTimeoutMs },
     };
   }
 
@@ -276,6 +290,7 @@ export class CppWorkerClient {
       timeoutReason: 'client-timeout',
       lineEventCount: 0,
       traceStepCount: 1,
+      timings: { totalMs: timeoutError?.timeoutMs ?? this.tracingTimeoutMs },
     };
   }
 
@@ -297,9 +312,20 @@ export class CppWorkerClient {
     this.pendingMessages.clear();
   }
 
-  async init(): Promise<InitResult> {
-    if (this.initPromise) return this.initPromise;
-    this.initPromise = this.sendMessage<InitResult>(
+  private shouldRetryInit(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      message.includes('timed out') ||
+      message.includes('Worker request timed out') ||
+      message.includes('worker error') ||
+      message.includes('Failed to fetch') ||
+      message.includes('was terminated') ||
+      message.includes('closed after idle timeout')
+    );
+  }
+
+  private sendInitMessage(): Promise<InitResult> {
+    return this.sendMessage<InitResult>(
       'init',
       {
         assets: {
@@ -310,8 +336,21 @@ export class CppWorkerClient {
           compilerBundleUrl: this.options.compilerBundleUrl,
         },
       },
-      INIT_TIMEOUT_MS
+      this.initTimeoutMs
     );
+  }
+
+  async init(): Promise<InitResult> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = (async () => {
+      try {
+        return await this.sendInitMessage();
+      } catch (error) {
+        if (!this.shouldRetryInit(error)) throw error;
+        this.terminateAndReset(error instanceof Error ? error : new Error(String(error)));
+        return this.sendInitMessage();
+      }
+    })();
     try {
       return await this.initPromise;
     } catch (error) {
@@ -395,6 +434,7 @@ export class CppWorkerClient {
         timeoutReason: 'client-timeout',
         diagnosticStage: 'interview',
         consoleOutput: [],
+        timings: { totalMs: this.interviewTimeoutMs },
       };
     }
   }

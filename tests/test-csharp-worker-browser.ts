@@ -25,6 +25,12 @@ interface CSharpWorkerResponse {
   }>;
   traceLimitExceeded?: boolean;
   timeoutReason?: string;
+  timings?: {
+    compileCacheHit?: boolean;
+    compileMs?: number;
+    runMs?: number;
+    totalMs?: number;
+  };
 }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -205,6 +211,16 @@ async function main(): Promise<void> {
     assertCondition(add.success, `C# worker Add should succeed: ${add.error ?? 'unknown error'}`);
     assertCondition(add.output === 5, `C# worker Add should return 5, received ${JSON.stringify(add.output)}`);
     assertCondition(add.consoleOutput?.includes('adding 2 and 3') === true, 'C# worker should capture stdout');
+    assertCondition(add.timings?.compileCacheHit === false, 'C# first Add execution should miss the compile cache');
+
+    const cachedAdd = await runWorkerCase(page, fixture('add.cs'), 'Add', { a: 5, b: 6 }, assetBaseUrl);
+    assertCondition(cachedAdd.success, `C# worker cached Add should succeed: ${cachedAdd.error ?? 'unknown error'}`);
+    assertCondition(cachedAdd.output === 11, `C# worker cached Add should return 11, received ${JSON.stringify(cachedAdd.output)}`);
+    assertCondition(
+      cachedAdd.consoleOutput?.includes('adding 5 and 6') === true,
+      'C# cached Add execution should read the new runtime inputs'
+    );
+    assertCondition(cachedAdd.timings?.compileCacheHit === true, 'C# repeated Add execution with new inputs should hit the compile cache');
 
     const scriptStyle = await runWorkerCase(
       page,
