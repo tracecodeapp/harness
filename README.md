@@ -192,6 +192,7 @@ Configuration:
 - `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl; cppWorker; cppCompilerFrame; cppCompilerWorker; cppCompilerBundle; cppRuntimeHeader }>`
 - `debug?: boolean`
 - `java?: { workerIdleTimeoutMs?: number }`
+- `csharp?: { workerIdleTimeoutMs?: number }`
 - `cpp?: { workerIdleTimeoutMs?: number }`
 
 Example:
@@ -213,6 +214,11 @@ after the user selects Java, or after editor-driven assist work, to warm the hea
 path in the background. The hot Java worker idles for 5 minutes by default; call
 `disposeLanguage('java')` when the editor closes or the user switches away to release it
 immediately.
+
+For C#, `init()` records the worker asset URL without loading the .NET runtime. Call
+`warmLanguage('csharp')` after the user selects C# to load the runtime and warm Roslyn in
+the background. Execution still works without an explicit warmup; the first request pays the
+runtime load cost.
 
 For C++, `init()` only records the worker asset URLs. Call `warmLanguage('cpp')` after the
 user selects C++ to load and warm the browser-local Clang/WASI toolchain in the background.

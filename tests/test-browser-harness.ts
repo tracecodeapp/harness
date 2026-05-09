@@ -225,6 +225,15 @@ async function main(): Promise<void> {
     );
     console.log('PASS: browser harness warms C++ runtime on demand');
 
+    const csharpWarmupResult = await harnessA.warmLanguage('csharp');
+    const csharpWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js'));
+    assertCondition(csharpWarmupResult.success, 'C# warmLanguage should resolve successfully');
+    assertCondition(
+      csharpWarmupWorker?.messages.at(-1)?.type === 'warmup',
+      'C# warmLanguage should send the C# warmup worker request'
+    );
+    console.log('PASS: browser harness warms C# runtime on demand');
+
     const survivingWorker = workerInstances.find((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js'));
     harnessA.dispose();
     assertCondition(

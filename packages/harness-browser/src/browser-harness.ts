@@ -33,6 +33,9 @@ export interface CreateBrowserHarnessOptions {
   java?: {
     workerIdleTimeoutMs?: number;
   };
+  csharp?: {
+    workerIdleTimeoutMs?: number;
+  };
   cpp?: {
     workerIdleTimeoutMs?: number;
   };
@@ -80,6 +83,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
       workerUrl: this.assets.csharpWorker,
       assetBaseUrl: this.assets.csharpAssetBaseUrl,
       debug: options.debug,
+      workerIdleTimeoutMs: options.csharp?.workerIdleTimeoutMs,
     });
     this.cppWorkerClient = new CppWorkerClient({
       workerUrl: this.assets.cppWorker,
@@ -129,6 +133,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
     }
     if (language === 'cpp') {
       return this.cppWorkerClient.warmup();
+    }
+    if (language === 'csharp') {
+      return this.csharpWorkerClient.warmup();
     }
     return this.getClient(language).init();
   }

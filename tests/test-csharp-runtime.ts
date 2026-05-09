@@ -85,6 +85,13 @@ class MockCSharpWorker {
         return;
       }
 
+      if (type === 'warmup') {
+        this.onmessage?.({
+          data: { id, type, payload: { success: true, loadTimeMs: 2, timings: { totalMs: 2, initMs: 0, warmupMs: 2 } } },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
       if (MockCSharpWorker.hangingMessageTypes.has(type)) {
         return;
       }
@@ -327,6 +334,15 @@ async function testWorkerResultMapping(): Promise<void> {
       workerUrl: '/workers/csharp-worker.js',
       assetBaseUrl: '/workers/vendor/csharp',
     });
+
+    const initResult = await workerClient.init();
+    assertCondition(initResult.success && initResult.loadTimeMs === 1, 'C# worker client init should stay light');
+    const warmupResult = await workerClient.warmup();
+    assertCondition(warmupResult.success && warmupResult.loadTimeMs === 2, 'C# worker client warmup should use warmup route');
+    assertCondition(
+      MockCSharpWorker.received.some((message) => message.type === 'warmup'),
+      'C# worker client warmup should send a warmup worker request'
+    );
 
     MockCSharpWorker.responses.push({
       success: false,

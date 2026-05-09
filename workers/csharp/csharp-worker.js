@@ -1,8 +1,10 @@
 let runtimePromise = null;
+let warmupPromise = null;
 let executeExport = null;
+let configuredAssetBaseUrl = null;
 const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
-const IDLE_TIMEOUT_MS = 90_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
   functionName: 'Add',
@@ -14,6 +16,7 @@ const CSHARP_WARMUP_REQUEST = Object.freeze({
 
 let queue = Promise.resolve();
 let idleTimer = null;
+let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let queuedTasks = 0;
 
 function now() {
@@ -36,13 +39,29 @@ function resetIdleTimer() {
   idleTimer = setTimeout(() => {
     self.postMessage({ type: 'idle-timeout' });
     self.close();
-  }, IDLE_TIMEOUT_MS);
+  }, idleTimeoutMs);
+}
+
+function applyWorkerOptions(payload) {
+  const requestedIdleTimeoutMs = Number(payload?.idleTimeoutMs);
+  if (Number.isFinite(requestedIdleTimeoutMs) && requestedIdleTimeoutMs >= 1_000) {
+    idleTimeoutMs = Math.round(requestedIdleTimeoutMs);
+  }
 }
 
 function resolveAssetUrl(assetBaseUrl, pathname) {
   const normalizedBase = String(assetBaseUrl || '').replace(/\/+$/, '');
   const normalizedPath = String(pathname || '').replace(/^\/+/, '');
   return `${normalizedBase}/${normalizedPath}`;
+}
+
+function configureAssetBaseUrl(assetBaseUrl) {
+  if (typeof assetBaseUrl === 'string' && assetBaseUrl.trim()) {
+    if (!configuredAssetBaseUrl || (!executeExport && !runtimePromise)) {
+      configuredAssetBaseUrl = assetBaseUrl;
+    }
+  }
+  return configuredAssetBaseUrl || assetBaseUrl;
 }
 
 function runWarmup() {
@@ -54,7 +73,8 @@ function runWarmup() {
   return elapsedMs(startedAt);
 }
 
-async function initRuntime(assetBaseUrl) {
+async function loadRuntime(assetBaseUrl) {
+  const resolvedAssetBaseUrl = configureAssetBaseUrl(assetBaseUrl);
   if (executeExport) {
     return {
       success: true,
@@ -66,7 +86,7 @@ async function initRuntime(assetBaseUrl) {
   if (!runtimePromise) {
     runtimePromise = (async () => {
       const startedAt = now();
-      const { dotnet } = await import(resolveAssetUrl(assetBaseUrl, '_framework/dotnet.js'));
+      const { dotnet } = await import(resolveAssetUrl(resolvedAssetBaseUrl, '_framework/dotnet.js'));
       const runtime = await dotnet.withApplicationArguments('tracecode-csharp-worker').create();
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
@@ -74,17 +94,58 @@ async function initRuntime(assetBaseUrl) {
         throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.Execute JS export');
       }
       const initMs = elapsedMs(startedAt);
+      const totalMs = elapsedMs(startedAt);
+      return {
+        success: true,
+        loadTimeMs: totalMs,
+        timings: { totalMs, initMs, warmupMs: 0 },
+      };
+    })();
+    runtimePromise.catch(() => {
+      runtimePromise = null;
+      executeExport = null;
+    });
+  }
+
+  return runtimePromise;
+}
+
+function handleInit(assetBaseUrl) {
+  const startedAt = now();
+  configureAssetBaseUrl(assetBaseUrl);
+  const totalMs = elapsedMs(startedAt);
+  return {
+    success: true,
+    loadTimeMs: totalMs,
+    timings: { totalMs, initMs: 0, warmupMs: 0 },
+  };
+}
+
+async function warmRuntime(assetBaseUrl) {
+  if (!warmupPromise) {
+    warmupPromise = (async () => {
+      const startedAt = now();
+      const runtimeStartedAt = now();
+      const runtimeResult = await loadRuntime(assetBaseUrl);
+      const initMs = elapsedMs(runtimeStartedAt);
       const warmupMs = runWarmup();
       const totalMs = elapsedMs(startedAt);
       return {
         success: true,
         loadTimeMs: totalMs,
-        timings: { totalMs, initMs, warmupMs },
+        timings: {
+          totalMs,
+          initMs: initMs || runtimeResult.timings?.initMs || 0,
+          warmupMs,
+        },
       };
     })();
+    warmupPromise.catch(() => {
+      warmupPromise = null;
+    });
   }
 
-  return runtimePromise;
+  return warmupPromise;
 }
 
 function normalizeCSharpFile(file) {
@@ -119,7 +180,11 @@ function normalizeCSharpResult(result) {
 
 async function handleMessage(message) {
   if (message.type === 'init') {
-    return initRuntime(message.payload?.assetBaseUrl);
+    return handleInit(message.payload?.assetBaseUrl);
+  }
+
+  if (message.type === 'warmup') {
+    return warmRuntime(message.payload?.assetBaseUrl);
   }
 
   if (
@@ -128,7 +193,9 @@ async function handleMessage(message) {
     message.type === 'execute-with-tracing'
   ) {
     const startedAt = now();
-    await initRuntime(message.payload?.assetBaseUrl);
+    const runtimeStartedAt = now();
+    const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
+    const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
     const request = {
       source: message.payload?.code ?? '',
       functionName: message.payload?.functionName ?? '',
@@ -149,6 +216,7 @@ async function handleMessage(message) {
       ...result,
       timings: {
         ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
+        initMs,
         hostCallMs,
         totalMs: elapsedMs(startedAt),
       },
@@ -162,6 +230,7 @@ self.onmessage = (event) => {
   const { id, type, payload } = event.data || {};
   if (!id) return;
   clearIdleTimer();
+  applyWorkerOptions(payload);
   queuedTasks += 1;
 
   queue = queue

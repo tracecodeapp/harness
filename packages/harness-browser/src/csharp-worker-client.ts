@@ -21,6 +21,7 @@ export interface CSharpWorkerClientOptions {
   executionTimeoutMs?: number;
   tracingTimeoutMs?: number;
   interviewTimeoutMs?: number;
+  workerIdleTimeoutMs?: number;
 }
 
 interface PendingMessage {
@@ -38,6 +39,13 @@ interface WorkerMessage {
 interface InitResult {
   success: boolean;
   loadTimeMs: number;
+  timings?: RuntimeExecutionTimings;
+}
+
+interface WarmupResult {
+  success: boolean;
+  loadTimeMs: number;
+  error?: string;
   timings?: RuntimeExecutionTimings;
 }
 
@@ -90,6 +98,7 @@ export class CSharpWorkerClient {
   private messageId = 0;
   private isInitializing = false;
   private initPromise: Promise<InitResult> | null = null;
+  private warmupPromise: Promise<WarmupResult> | null = null;
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
@@ -268,6 +277,7 @@ export class CSharpWorkerClient {
       this.worker = null;
     }
     this.initPromise = null;
+    this.warmupPromise = null;
     this.isInitializing = false;
     this.workerReadyPromise = null;
     this.workerReadyResolve = null;
@@ -295,9 +305,15 @@ export class CSharpWorkerClient {
   private sendInitMessage(): Promise<InitResult> {
     return this.sendMessage<InitResult>(
       'init',
-      { assetBaseUrl: this.options.assetBaseUrl },
+      { assetBaseUrl: this.options.assetBaseUrl, ...this.workerOptionsPayload() },
       this.initTimeoutMs
     );
+  }
+
+  private workerOptionsPayload(): { idleTimeoutMs?: number } {
+    return this.options.workerIdleTimeoutMs === undefined
+      ? {}
+      : { idleTimeoutMs: this.options.workerIdleTimeoutMs };
   }
 
   async init(): Promise<InitResult> {
@@ -327,6 +343,24 @@ export class CSharpWorkerClient {
     }
   }
 
+  async warmup(): Promise<WarmupResult> {
+    if (this.warmupPromise) return this.warmupPromise;
+    this.warmupPromise = (async () => {
+      try {
+        await this.init();
+        return await this.sendMessage<WarmupResult>(
+          'warmup',
+          { assetBaseUrl: this.options.assetBaseUrl, ...this.workerOptionsPayload() },
+          this.initTimeoutMs
+        );
+      } catch (error) {
+        this.warmupPromise = null;
+        throw error;
+      }
+    })();
+    return this.warmupPromise;
+  }
+
   async executeCode(
     code: string,
     functionName: string,
@@ -345,6 +379,7 @@ export class CSharpWorkerClient {
             executionStyle,
             assetBaseUrl: this.options.assetBaseUrl,
             timeoutMs: Math.max(100, this.executionTimeoutMs - 1_000),
+            ...this.workerOptionsPayload(),
           },
           this.executionTimeoutMs + 5_000
         ),
@@ -391,6 +426,7 @@ export class CSharpWorkerClient {
               executionStyle,
               assetBaseUrl: this.options.assetBaseUrl,
               timeoutMs: Math.max(100, this.interviewTimeoutMs - 1_000),
+              ...this.workerOptionsPayload(),
             },
             this.interviewTimeoutMs + 5_000
           ),
@@ -466,6 +502,7 @@ export class CSharpWorkerClient {
               maxSingleLineHits: options?.maxSingleLineHits,
               maxStoredEvents: options?.maxStoredEvents,
               minimalTrace: options?.minimalTrace,
+              ...this.workerOptionsPayload(),
             },
             this.tracingTimeoutMs + 5_000
           ),
