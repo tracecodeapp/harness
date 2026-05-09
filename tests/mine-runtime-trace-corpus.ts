@@ -794,7 +794,7 @@ async function executeCSharpTrace(
 
 
 function normalizeTopLevelPublicClasses(source: string): string {
-  return source.replace(/(^|\n)\s*public\s+class\s+/g, '$1class ');
+  return source.replace(/^([ \t]*)public\s+class\s+/gm, '$1class ');
 }
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {

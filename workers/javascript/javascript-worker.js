@@ -2070,7 +2070,23 @@ function isPostLineStateStatement(ts, statement) {
   ) {
     return true;
   }
+  if (isTraceStateMutationHelperCall(ts, expression)) {
+    return true;
+  }
   return false;
+}
+
+function isTraceStateMutationHelperCall(ts, expression) {
+  let current = unwrapParenthesizedExpression(ts, expression);
+  if (!current || !ts.isCallExpression(current) || !ts.isIdentifier(current.expression)) {
+    return false;
+  }
+  return [
+    '__traceMutatingCall',
+    '__traceWriteIndex',
+    '__traceAugAssignIndex',
+    '__traceUpdateIndex',
+  ].includes(current.expression.text);
 }
 
 function getNodeNameText(ts, nameNode) {

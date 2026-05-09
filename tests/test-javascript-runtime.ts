@@ -54,6 +54,29 @@ function traceAccessEvents(result: { trace?: { events?: RuntimeTraceEvent[] } })
   );
 }
 
+function traceSnapshotFrames(result: { trace?: { events?: RuntimeTraceEvent[] } }): Array<{
+  line: number;
+  snapshots: Record<string, unknown>;
+}> {
+  const frames: Array<{ line: number; snapshots: Record<string, unknown> }> = [];
+  let currentFrame: { line: number; snapshots: Record<string, unknown> } | null = null;
+  for (const event of traceEvents(result)) {
+    if (event.kind === 'line') {
+      currentFrame = { line: event.line ?? 0, snapshots: {} };
+      frames.push(currentFrame);
+      continue;
+    }
+    if (event.kind === 'call' || event.kind === 'return') {
+      currentFrame = null;
+      continue;
+    }
+    if (event.kind === 'snapshot' && currentFrame && event.target?.variable) {
+      currentFrame.snapshots[event.target.variable] = event.value;
+    }
+  }
+  return frames;
+}
+
 function assertNoRuntimeTraceVisualizerPayloadLeak(
   result: { trace?: { events?: RuntimeTraceEvent[] } },
   label: string
@@ -717,6 +740,44 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     'TypeScript BFS tracing should not attach graph neighbor reads to blank separator lines'
   );
   console.log('PASS: execute-with-tracing typescript BFS line alignment contract');
+
+  const executeTypeScriptGraphConstructionState = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  canFinish(numCourses: number, prerequisites: number[][]): boolean {
+    const graph: number[][] = Array.from({ length: numCourses }, () => []);
+
+    for (const [course, prereq] of prerequisites) {
+      graph[prereq].push(course);
+    }
+
+    return true;
+  }
+}`,
+    functionName: 'canFinish',
+    className: 'Solution',
+    inputs: { numCourses: 3, prerequisites: [[0, 1], [0, 2], [1, 2]] },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    executeTypeScriptGraphConstructionState.success === true,
+    'TypeScript graph construction tracing should succeed'
+  );
+  const graphMutationSnapshots = traceSnapshotFrames(executeTypeScriptGraphConstructionState)
+    .filter((frame) => frame.line === 6)
+    .map((frame) => frame.snapshots.graph);
+  assertCondition(
+    JSON.stringify(graphMutationSnapshots) === JSON.stringify([
+      [[], [0], []],
+      [[], [0], [0]],
+      [[], [0], [0, 1]],
+    ]),
+    `TypeScript mutating-call line snapshots should reflect post-line graph state, received ${JSON.stringify(graphMutationSnapshots)}`
+  );
+  console.log('PASS: execute-with-tracing typescript mutating-call post-line state contract');
 
   const executeTypeScriptTopoLineMapping = await harness.sendMessage<{
     success: boolean;
