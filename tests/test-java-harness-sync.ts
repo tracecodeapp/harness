@@ -45,6 +45,7 @@ async function main(): Promise<void> {
     'tracecode.browser.BrowserCompileAndTraceLibrary',
     'harness.browser.JavaRewriteLibrary',
     "message.type === 'init'",
+    "message.type === 'warmup'",
     "message.type === 'execute-with-tracing'",
     "message.type === 'execute-code'",
     "message.type === 'execute-code-interview'",

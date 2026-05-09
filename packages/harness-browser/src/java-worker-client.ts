@@ -8,6 +8,7 @@ export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export interface JavaWorkerClientOptions {
   workerUrl: string;
   debug?: boolean;
+  workerIdleTimeoutMs?: number;
 }
 
 interface PendingMessage {
@@ -23,6 +24,12 @@ interface WorkerMessage {
 }
 
 interface InitResult {
+  success: boolean;
+  loadTimeMs: number;
+  timings?: RuntimeExecutionTimings;
+}
+
+interface WarmupResult {
   success: boolean;
   loadTimeMs: number;
   timings?: RuntimeExecutionTimings;
@@ -78,6 +85,7 @@ export class JavaWorkerClient {
   private messageId = 0;
   private isInitializing = false;
   private initPromise: Promise<InitResult> | null = null;
+  private warmupPromise: Promise<WarmupResult> | null = null;
   private workerReadyPromise: Promise<void> | null = null;
   private workerReadyResolve: (() => void) | null = null;
   private workerReadyReject: ((error: Error) => void) | null = null;
@@ -116,6 +124,11 @@ export class JavaWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
+        return;
+      }
+
+      if (type === 'idle-timeout') {
+        this.terminateAndReset(new Error('Java worker closed after idle timeout'));
         return;
       }
 
@@ -247,6 +260,7 @@ export class JavaWorkerClient {
       this.worker = null;
     }
     this.initPromise = null;
+    this.warmupPromise = null;
     this.isInitializing = false;
     this.workerReadyPromise = null;
     this.workerReadyResolve = null;
@@ -269,7 +283,7 @@ export class JavaWorkerClient {
     this.isInitializing = true;
     this.initPromise = (async () => {
       try {
-        return await this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
+        return await this.sendMessage<InitResult>('init', this.workerOptionsPayload(), INIT_TIMEOUT_MS);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const shouldRetry =
@@ -287,7 +301,7 @@ export class JavaWorkerClient {
         }
 
         this.terminateAndReset(error instanceof Error ? error : new Error(message));
-        return this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);
+        return this.sendMessage<InitResult>('init', this.workerOptionsPayload(), INIT_TIMEOUT_MS);
       }
     })();
     try {
@@ -298,6 +312,30 @@ export class JavaWorkerClient {
     } finally {
       this.isInitializing = false;
     }
+  }
+
+  private workerOptionsPayload(): { idleTimeoutMs?: number } {
+    return this.options.workerIdleTimeoutMs === undefined
+      ? {}
+      : { idleTimeoutMs: this.options.workerIdleTimeoutMs };
+  }
+
+  async warmup(): Promise<WarmupResult> {
+    if (this.warmupPromise) return this.warmupPromise;
+    this.warmupPromise = (async () => {
+      try {
+        await this.init();
+        return await this.sendMessage<WarmupResult>(
+          'warmup',
+          this.workerOptionsPayload(),
+          INIT_TIMEOUT_MS
+        );
+      } catch (error) {
+        this.warmupPromise = null;
+        throw error;
+      }
+    })();
+    return this.warmupPromise;
   }
 
   async executeWithTracing(

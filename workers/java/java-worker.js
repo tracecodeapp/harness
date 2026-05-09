@@ -12,7 +12,7 @@ const FULL_CLASSPATH = [
 const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';
 const DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE = 'none';
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
-const IDLE_TIMEOUT_MS = 90_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
 const DYNAMIC_INPUT_PREFIX = '/str/tracecode-java-input';
 
@@ -27,8 +27,9 @@ let helperLibraryPromise = null;
 let compileLibraryClassPromise = null;
 let rewriteLibraryClassPromise = null;
 let idleGeneration = 0;
-let hostWarmupPromise = null;
 let initLoadTimeMs = null;
+let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
+let runWarmupPromise = null;
 
 function postMessageResponse(message) {
   self.postMessage(message);
@@ -119,7 +120,14 @@ function resetIdleTimer() {
     if (generation !== idleGeneration) return;
     postMessageResponse({ type: 'idle-timeout' });
     self.close();
-  }, IDLE_TIMEOUT_MS);
+  }, idleTimeoutMs);
+}
+
+function applyWorkerOptions(payload) {
+  const nextIdleTimeoutMs = Number(payload?.idleTimeoutMs);
+  if (Number.isFinite(nextIdleTimeoutMs) && nextIdleTimeoutMs > 0) {
+    idleTimeoutMs = Math.max(1_000, Math.floor(nextIdleTimeoutMs));
+  }
 }
 
 function assertSupportedExecutionStyle(executionStyle) {
@@ -2333,7 +2341,6 @@ async function ensureReady() {
     })();
   }
   await workerReadyPromise;
-  resetIdleTimer();
 }
 
 async function getHelperLibrary() {
@@ -2363,29 +2370,11 @@ async function getRewriteLibraryClass() {
   return rewriteLibraryClassPromise;
 }
 
-async function warmHost() {
-  if (!hostWarmupPromise) {
-    hostWarmupPromise = (async () => {
+async function warmRunHost() {
+  if (!runWarmupPromise) {
+    runWarmupPromise = (async () => {
+      const totalStart = performance.now();
       const libraryClass = await getCompileLibraryClass();
-      const traceSourcePath = '/str/ExportsTracecodeWarmup.java';
-      const traceClassesDir = '/files/java-worker/__warm_trace__/classes';
-      const traceWarmupSource = `
-package harness.user.warmup;
-
-public class ExportsTracecodeWarmup {
-  public static String run() {
-    return "0";
-  }
-}
-`;
-      await self.cheerpOSAddStringFile(traceSourcePath, traceWarmupSource);
-      await libraryClass.compileAndTrace(
-        traceSourcePath,
-        traceClassesDir,
-        'harness.user.warmup.ExportsTracecodeWarmup',
-        HELPER_JAR_PATH,
-        DEFAULT_COMPILER_DEBUG_PROFILE
-      );
       const runSourcePath = '/str/ExportsTracecodeRunWarmup.java';
       const runClassesDir = '/files/java-worker/__warm_run__/classes';
       const runWarmupSource = `
@@ -2410,16 +2399,40 @@ public class ExportsTracecodeRunWarmup {
 }
 `;
       await self.cheerpOSAddStringFile(runSourcePath, runWarmupSource);
-      await libraryClass.compileAndRun(
+      const hostCallStart = performance.now();
+      const reportText = await libraryClass.compileAndRun(
         runSourcePath,
         runClassesDir,
         'harness.user.warmup.ExportsTracecodeRunWarmup',
         HELPER_JAR_PATH,
         DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
       );
+      const hostCallEnd = performance.now();
+      const report = JSON.parse(reportText);
+      const totalEnd = performance.now();
+      if (report.success !== true) {
+        throw new Error(report.runtimeError || report.compilerStderr || report.compilerStdout || 'Java warmup failed');
+      }
+      return {
+        success: true,
+        loadTimeMs: Math.round(totalEnd - totalStart),
+        timings: {
+          totalMs: totalEnd - totalStart,
+          hostCallMs: hostCallEnd - hostCallStart,
+          compileMs: report.compileTimeMs ?? 0,
+          classLoadMs: report.classLoadTimeMs ?? 0,
+          runMs: report.runTimeMs ?? 0,
+          compileCacheHit: report.compileCacheHit ?? false,
+        },
+      };
     })();
   }
-  await hostWarmupPromise;
+  try {
+    return await runWarmupPromise;
+  } catch (error) {
+    runWarmupPromise = null;
+    throw error;
+  }
 }
 
 async function rewriteSource(payload, compileId, dynamicInputs) {
@@ -3244,10 +3257,9 @@ self.onmessage = (event) => {
   if (message.type === 'init') {
     queue = queue.then(async () => {
       try {
+        applyWorkerOptions(message.payload);
         const startedAt = performance.now();
         await ensureReady();
-        const warmupStartedAt = performance.now();
-        await warmHost();
         const totalMs = performance.now() - startedAt;
         postMessageResponse({
           id: message.id,
@@ -3258,7 +3270,7 @@ self.onmessage = (event) => {
             timings: {
               totalMs,
               initMs: initLoadTimeMs ?? 0,
-              warmupMs: performance.now() - warmupStartedAt,
+              warmupMs: 0,
             },
           },
         });
@@ -3268,6 +3280,32 @@ self.onmessage = (event) => {
           type: 'error',
           payload: { error: formatWorkerErrorMessage(error) },
         });
+      } finally {
+        resetIdleTimer();
+      }
+    });
+    return;
+  }
+
+  if (message.type === 'warmup') {
+    queue = queue.then(async () => {
+      try {
+        applyWorkerOptions(message.payload);
+        await ensureReady();
+        const result = await warmRunHost();
+        postMessageResponse({
+          id: message.id,
+          type: 'warmup',
+          payload: result,
+        });
+      } catch (error) {
+        postMessageResponse({
+          id: message.id,
+          type: 'error',
+          payload: { error: formatWorkerErrorMessage(error) },
+        });
+      } finally {
+        resetIdleTimer();
       }
     });
     return;
@@ -3281,6 +3319,7 @@ self.onmessage = (event) => {
   ) {
     queue = queue.then(async () => {
       try {
+        applyWorkerOptions(message.payload);
         await ensureReady();
         const result = message.type === 'execute-with-tracing'
           ? await runJavaTraceRequest(message.payload, message.id)
@@ -3298,6 +3337,8 @@ self.onmessage = (event) => {
           type: 'error',
           payload: { error: formatWorkerErrorMessage(error) },
         });
+      } finally {
+        resetIdleTimer();
       }
     });
     return;

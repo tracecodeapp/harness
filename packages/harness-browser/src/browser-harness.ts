@@ -30,6 +30,9 @@ export interface CreateBrowserHarnessOptions {
   assetBaseUrl?: string;
   assets?: BrowserHarnessAssetOverrides;
   debug?: boolean;
+  java?: {
+    workerIdleTimeoutMs?: number;
+  };
 }
 
 export interface BrowserHarness {
@@ -39,6 +42,7 @@ export interface BrowserHarness {
   getProfile(language: Language): LanguageRuntimeProfile;
   getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[];
   isLanguageSupported(language: Language): boolean;
+  warmLanguage(language: Language): Promise<{ success: boolean; loadTimeMs: number }>;
   disposeLanguage(language: Language): void;
   dispose(): void;
 }
@@ -67,6 +71,7 @@ class BrowserHarnessRuntime implements BrowserHarness {
     this.javaWorkerClient = new JavaWorkerClient({
       workerUrl: this.assets.javaWorker,
       debug: options.debug,
+      workerIdleTimeoutMs: options.java?.workerIdleTimeoutMs,
     });
     this.csharpWorkerClient = new CSharpWorkerClient({
       workerUrl: this.assets.csharpWorker,
@@ -110,6 +115,13 @@ class BrowserHarnessRuntime implements BrowserHarness {
 
   isLanguageSupported(language: Language): boolean {
     return isLanguageSupported(language);
+  }
+
+  warmLanguage(language: Language): Promise<{ success: boolean; loadTimeMs: number }> {
+    if (language === 'java') {
+      return this.javaWorkerClient.warmup();
+    }
+    return this.getClient(language).init();
   }
 
   disposeLanguage(language: Language): void {

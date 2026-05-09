@@ -393,6 +393,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
   >();
   const rewriteCalls: RewriteCall[] = [];
   const stringFiles: Array<{ path: string; source: string }> = [];
+  const runLibraryClasspaths: string[] = [];
   let nextId = 0;
 
   const selfObject: {
@@ -401,7 +402,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     importScripts: (...urls: string[]) => void;
     cheerpjInit: () => Promise<void>;
     cheerpOSAddStringFile: (path: string, source: string) => Promise<void>;
-    cheerpjRunLibrary: () => Promise<unknown>;
+    cheerpjRunLibrary: (classpath?: string) => Promise<unknown>;
     close: () => void;
   } = {
     postMessage: (message: WorkerMessage) => {
@@ -435,7 +436,9 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     cheerpOSAddStringFile: async (path: string, source: string) => {
       stringFiles.push({ path, source });
     },
-    cheerpjRunLibrary: async () => ({
+    cheerpjRunLibrary: async (classpath?: string) => {
+      runLibraryClasspaths.push(String(classpath ?? ''));
+      return {
       tracecode: {
         browser: {
           BrowserCompileAndTraceLibrary: {
@@ -731,7 +734,8 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
           },
         },
       },
-    }),
+      };
+    },
     close: () => {},
   };
 
@@ -771,7 +775,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
     onmessage?.({ data: { type: 'terminate' } });
   }
 
-  return { rewriteCalls, sendMessage, stringFiles, terminate };
+  return { rewriteCalls, runLibraryClasspaths, sendMessage, stringFiles, terminate };
 }
 
 async function main(): Promise<void> {
@@ -786,7 +790,31 @@ async function main(): Promise<void> {
   try {
     const init = await harness.sendMessage<{ success: boolean; loadTimeMs: number }>('init');
     assertCondition(init.success === true, 'Init should succeed');
+    assertCondition(
+      harness.runLibraryClasspaths.length === 0,
+      'Java worker init should not load the CheerpJ Java library bridge'
+    );
+    assertCondition(
+      !harness.stringFiles.some((file) => file.path.includes('__warm')),
+      'Java worker init should not compile warmup sources'
+    );
     console.log('PASS: java worker init with mocked CheerpJ bridge');
+
+    const warmup = await harness.sendMessage<{ success: boolean; loadTimeMs: number; timings?: Record<string, unknown> }>('warmup');
+    assertCondition(warmup.success === true, 'Java worker warmup should succeed');
+    assertCondition(
+      harness.runLibraryClasspaths.length === 1,
+      'Java worker warmup should load the CheerpJ Java library bridge once'
+    );
+    assertCondition(
+      harness.stringFiles.some((file) => file.path.includes('__warm_run__') || file.source.includes('ExportsTracecodeRunWarmup')),
+      'Java worker warmup should compile the run warmup source'
+    );
+    assertCondition(
+      harness.rewriteCalls.length === 0,
+      'Java worker warmup should not call the trace rewriter'
+    );
+    console.log('PASS: java worker warmup lazily loads the run path');
 
     const rewriteCallCountBeforePlainExecute = harness.rewriteCalls.length;
     const plainExecute = await harness.sendMessage<{

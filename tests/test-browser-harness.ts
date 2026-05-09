@@ -47,6 +47,17 @@ class MockWorker {
         return;
       }
 
+      if (type === 'warmup') {
+        this.onmessage?.({
+          data: {
+            id,
+            type: 'warmup',
+            payload: { success: true, loadTimeMs: 2 },
+          },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
       if (type === 'execute-code' || type === 'execute-code-interview') {
         this.onmessage?.({
           data: {
@@ -183,6 +194,15 @@ async function main(): Promise<void> {
       'Harness B should use its own Python worker URL when debug is enabled'
     );
     console.log('PASS: browser harness uses per-instance worker URLs');
+
+    const javaWarmupResult = await harnessA.warmLanguage('java');
+    const javaWarmupWorker = workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-a/java-worker.js'));
+    assertCondition(javaWarmupResult.success, 'Java warmLanguage should resolve successfully');
+    assertCondition(
+      javaWarmupWorker?.messages.at(-1)?.type === 'warmup',
+      'Java warmLanguage should send the Java warmup worker request'
+    );
+    console.log('PASS: browser harness warms Java runtime on demand');
 
     const survivingWorker = workerInstances.find((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js'));
     harnessA.dispose();

@@ -182,6 +182,7 @@ The returned harness exposes:
 - `getProfile(language)`
 - `getSupportedLanguageProfiles()`
 - `isLanguageSupported(language)`
+- `warmLanguage(language)`
 - `disposeLanguage(language)`
 - `dispose()`
 
@@ -190,6 +191,7 @@ Configuration:
 - `assetBaseUrl?: string`
 - `assets?: Partial<{ pythonWorker; pythonRuntimeCore; pythonSnippets; javascriptWorker; typescriptCompiler; javaWorker; csharpWorker; csharpAssetBaseUrl; cppWorker; cppCompilerBundle; cppRuntimeHeader }>`
 - `debug?: boolean`
+- `java?: { workerIdleTimeoutMs?: number }`
 
 Example:
 
@@ -204,6 +206,12 @@ if (profile.capabilities.tracing.supported) {
   // show trace controls
 }
 ```
+
+For Java, `init()` only performs a light CheerpJ initialization. Call `warmLanguage('java')`
+after the user selects Java, or after editor-driven assist work, to warm the heavier javac
+path in the background. The hot Java worker idles for 5 minutes by default; call
+`disposeLanguage('java')` when the editor closes or the user switches away to release it
+immediately.
 
 ## Worker Assets
 
