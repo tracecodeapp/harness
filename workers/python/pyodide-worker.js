@@ -46,6 +46,20 @@ const WORKER_DEBUG = (() => {
   }
 })();
 
+function emitRuntimeDiagnostic(level, phase, message, detail) {
+  if (!WORKER_DEBUG && level !== 'error') return;
+  const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'debug' ? 'debug' : 'info';
+  console[method]('[TraceRuntime]', {
+    schema: 'tracecode.runtime-diagnostic.v1',
+    source: 'harness',
+    component: 'PythonWorker',
+    runtime: 'python',
+    phase,
+    message,
+    ...(detail === undefined ? {} : { detail }),
+  });
+}
+
 // Interview mode runtime guard defaults. These are intentionally coarse
 // safeguards to stop runaway executions without exposing internals.
 const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
@@ -61,10 +75,8 @@ async function ensurePythonLibraryPackages(runtime) {
   if (!pythonPackageLoadPromise) {
     pythonPackageLoadPromise = runtime.loadPackage(['sortedcontainers']).catch((error) => {
       pythonPackageLoadPromise = null;
-      if (WORKER_DEBUG) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn('[PythonWorker] Failed to preload Python packages:', message);
-      }
+      const message = error instanceof Error ? error.message : String(error);
+      emitRuntimeDiagnostic('warn', 'package-preload-failed', 'Failed to preload Python packages.', { message });
     });
   }
   await pythonPackageLoadPromise;
@@ -76,15 +88,14 @@ if (typeof importScripts === 'function') {
   for (const scriptPath of GENERATED_HARNESS_SNIPPETS_PATHS) {
     try {
       importScripts(scriptPath);
-      if (WORKER_DEBUG) {
-        console.log('[PythonWorker] Loaded generated harness snippets from', scriptPath);
-      }
+      emitRuntimeDiagnostic('info', 'generated-snippets-loaded', 'Loaded generated harness snippets.', { scriptPath });
       break;
     } catch (error) {
-      if (WORKER_DEBUG) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn('[PythonWorker] Failed to load generated harness snippets from', scriptPath, message);
-      }
+      const message = error instanceof Error ? error.message : String(error);
+      emitRuntimeDiagnostic('warn', 'generated-snippets-load-failed', 'Failed to load generated harness snippets.', {
+        scriptPath,
+        message,
+      });
     }
   }
 }
@@ -543,9 +554,7 @@ async function loadPyodideInstance() {
           try {
             importScripts(`${indexURL}pyodide.js`);
             loadedBootstrap = true;
-            if (WORKER_DEBUG) {
-              console.log('[PythonWorker] Loaded bootstrap script from', indexURL);
-            }
+            emitRuntimeDiagnostic('info', 'bootstrap-loaded', 'Loaded Python runtime bootstrap script.', { indexURL });
             break;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -565,9 +574,7 @@ async function loadPyodideInstance() {
         try {
           pyodide = await self.loadPyodide({ indexURL });
           await ensurePythonLibraryPackages(pyodide);
-          if (WORKER_DEBUG) {
-            console.log('[PythonWorker] Initialized runtime from', indexURL);
-          }
+          emitRuntimeDiagnostic('info', 'runtime-initialized', 'Initialized Python runtime.', { indexURL });
           return pyodide;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -605,15 +612,14 @@ function loadPyodideRuntimeCore() {
       for (const scriptPath of PYODIDE_RUNTIME_CORE_PATHS) {
         try {
           importScripts(scriptPath);
-          if (WORKER_DEBUG) {
-            console.log('[PythonWorker] Loaded runtime core from', scriptPath);
-          }
+          emitRuntimeDiagnostic('info', 'runtime-core-loaded', 'Loaded Python runtime core.', { scriptPath });
           break;
         } catch (error) {
-          if (WORKER_DEBUG) {
-            const message = error instanceof Error ? error.message : String(error);
-            console.warn('[PythonWorker] Failed to load runtime core from', scriptPath, message);
-          }
+          const message = error instanceof Error ? error.message : String(error);
+          emitRuntimeDiagnostic('warn', 'runtime-core-load-failed', 'Failed to load Python runtime core.', {
+            scriptPath,
+            message,
+          });
         }
       }
     }
@@ -799,6 +805,7 @@ self.onmessage = function(event) {
 };
 
 // Notify that worker is ready
+emitRuntimeDiagnostic('info', 'worker-ready', 'Python worker is ready.');
 self.postMessage({ type: 'worker-ready' });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1720,9 +1727,7 @@ async function analyzeCodeAST(code) {
         throw error;
       }
 
-      if (WORKER_DEBUG) {
-        console.warn('[PythonWorker] analyze() missing; reinitializing AST analyzer');
-      }
+      emitRuntimeDiagnostic('warn', 'ast-analyzer-reinit', 'analyze() missing; reinitializing AST analyzer.');
       analyzerInitialized = false;
     }
   }

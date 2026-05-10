@@ -7,6 +7,7 @@
 
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
+import { logRuntimeDiagnostic } from './runtime-diagnostics';
 
 type MessageId = string;
 export type ExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -114,12 +115,23 @@ export class PythonWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
-        if (this.debug) console.log('[PythonWorkerClient] worker-ready');
+        logRuntimeDiagnostic('info', {
+          component: 'PythonWorkerClient',
+          runtime: 'python',
+          phase: 'worker-ready',
+          message: 'Python worker is ready.',
+        }, { enabled: this.debug });
         return;
       }
 
       if (this.debug && !id) {
-        console.log('[PythonWorkerClient] event', { type, payload });
+        logRuntimeDiagnostic('debug', {
+          component: 'PythonWorkerClient',
+          runtime: 'python',
+          phase: 'worker-event',
+          message: 'Python worker emitted an unsolicited event.',
+          detail: { type, payload },
+        }, { enabled: this.debug });
       }
 
       // Handle responses to our messages
@@ -132,7 +144,13 @@ export class PythonWorkerClient {
           if (type === 'error') {
             pending.reject(new Error((payload as { error: string }).error));
           } else {
-            if (this.debug) console.log('[PythonWorkerClient] recv', { id, type });
+            logRuntimeDiagnostic('debug', {
+              component: 'PythonWorkerClient',
+              runtime: 'python',
+              phase: 'worker-response',
+              message: 'Python worker response received.',
+              detail: { id, type },
+            }, { enabled: this.debug });
             pending.resolve(payload);
           }
         }
@@ -140,7 +158,18 @@ export class PythonWorkerClient {
     };
 
     this.worker.onerror = (error) => {
-      console.error('[PythonWorkerClient] Worker error:', error);
+      logRuntimeDiagnostic('error', {
+        component: 'PythonWorkerClient',
+        runtime: 'python',
+        phase: 'worker-error',
+        message: 'Python worker emitted an error event.',
+        detail: {
+          message: error.message,
+          filename: error.filename,
+          lineno: error.lineno,
+          colno: error.colno,
+        },
+      });
       const workerError = new Error('Worker error');
       this.workerReadyReject?.(workerError);
       this.workerReadyResolve = null;
@@ -175,9 +204,13 @@ export class PythonWorkerClient {
         const timeoutError = new Error(
           `Python worker failed to initialize in time (${Math.round(WORKER_READY_TIMEOUT_MS / 1000)}s)`
         );
-        if (this.debug) {
-          console.warn('[PythonWorkerClient] worker-ready timeout', { timeoutMs: WORKER_READY_TIMEOUT_MS });
-        }
+        logRuntimeDiagnostic('warn', {
+          component: 'PythonWorkerClient',
+          runtime: 'python',
+          phase: 'worker-ready-timeout',
+          message: 'Python worker did not send worker-ready before the timeout.',
+          detail: { timeoutMs: WORKER_READY_TIMEOUT_MS },
+        }, { enabled: this.debug });
         this.terminateAndReset(timeoutError);
         reject(timeoutError);
       }, WORKER_READY_TIMEOUT_MS);
@@ -215,13 +248,25 @@ export class PythonWorkerClient {
         reject,
       });
 
-      if (this.debug) console.log('[PythonWorkerClient] send', { id, type });
+      logRuntimeDiagnostic('debug', {
+        component: 'PythonWorkerClient',
+        runtime: 'python',
+        phase: 'worker-request',
+        message: 'Sending request to Python worker.',
+        detail: { id, type },
+      }, { enabled: this.debug });
 
       const timeoutId = globalThis.setTimeout(() => {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
-        if (this.debug) console.warn('[PythonWorkerClient] timeout', { id, type });
+        logRuntimeDiagnostic('warn', {
+          component: 'PythonWorkerClient',
+          runtime: 'python',
+          phase: 'worker-request-timeout',
+          message: 'Python worker request timed out.',
+          detail: { id, type, timeoutMs },
+        }, { enabled: this.debug });
         pending.reject(new Error(`Worker request timed out: ${type}`));
       }, timeoutMs);
 
@@ -247,9 +292,13 @@ export class PythonWorkerClient {
         settled = true;
         
         // Terminate the stuck worker and clear state
-        if (this.debug) {
-          console.warn('[PythonWorkerClient] Execution timeout - terminating worker');
-        }
+        logRuntimeDiagnostic('warn', {
+          component: 'PythonWorkerClient',
+          runtime: 'python',
+          phase: 'execution-timeout',
+          message: 'Python execution timed out; terminating worker.',
+          detail: { timeoutMs },
+        }, { enabled: this.debug });
         this.terminateAndReset();
         
         const seconds = Math.round(timeoutMs / 1000);
@@ -328,9 +377,13 @@ export class PythonWorkerClient {
           throw error;
         }
 
-        if (this.debug) {
-          console.warn('[PythonWorkerClient] init failed, resetting worker and retrying once', { message });
-        }
+        logRuntimeDiagnostic('warn', {
+          component: 'PythonWorkerClient',
+          runtime: 'python',
+          phase: 'init-retry',
+          message: 'Python worker init failed; resetting worker and retrying once.',
+          detail: { message },
+        }, { enabled: this.debug });
 
         this.terminateAndReset();
         return this.sendMessage<InitResult>('init', undefined, INIT_TIMEOUT_MS);

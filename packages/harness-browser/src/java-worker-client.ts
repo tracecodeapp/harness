@@ -1,6 +1,7 @@
 import type { CodeExecutionResult, RuntimeExecutionTimings } from '../../harness-core/src/types';
 import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
 import { createEmptyRuntimeTrace, type RuntimeTrace } from '../../harness-core/src/runtime-trace';
+import { logRuntimeDiagnostic } from './runtime-diagnostics';
 
 type MessageId = string;
 export type JavaExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -124,10 +125,22 @@ export class JavaWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
+        logRuntimeDiagnostic('info', {
+          component: 'JavaWorkerClient',
+          runtime: 'java',
+          phase: 'worker-ready',
+          message: 'Java worker is ready.',
+        }, { enabled: this.debug });
         return;
       }
 
       if (type === 'idle-timeout') {
+        logRuntimeDiagnostic('info', {
+          component: 'JavaWorkerClient',
+          runtime: 'java',
+          phase: 'idle-timeout',
+          message: 'Java worker closed after idle timeout.',
+        }, { enabled: this.debug });
         this.terminateAndReset(new Error('Java worker closed after idle timeout'));
         return;
       }
@@ -147,6 +160,18 @@ export class JavaWorkerClient {
     };
 
     this.worker.onerror = (error) => {
+      logRuntimeDiagnostic('error', {
+        component: 'JavaWorkerClient',
+        runtime: 'java',
+        phase: 'worker-error',
+        message: 'Java worker emitted an error event.',
+        detail: {
+          message: error.message,
+          filename: error.filename,
+          lineno: error.lineno,
+          colno: error.colno,
+        },
+      });
       const workerError = new Error(error.message || 'Java worker error');
       this.workerReadyReject?.(workerError);
       this.workerReadyResolve = null;
@@ -174,6 +199,13 @@ export class JavaWorkerClient {
         const timeoutError = new Error(
           `Java worker failed to initialize in time (${Math.round(WORKER_READY_TIMEOUT_MS / 1000)}s)`
         );
+        logRuntimeDiagnostic('warn', {
+          component: 'JavaWorkerClient',
+          runtime: 'java',
+          phase: 'worker-ready-timeout',
+          message: 'Java worker did not send worker-ready before the timeout.',
+          detail: { timeoutMs: WORKER_READY_TIMEOUT_MS },
+        }, { enabled: this.debug });
         this.terminateAndReset(timeoutError);
         reject(timeoutError);
       }, WORKER_READY_TIMEOUT_MS);
@@ -213,6 +245,13 @@ export class JavaWorkerClient {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
+        logRuntimeDiagnostic('warn', {
+          component: 'JavaWorkerClient',
+          runtime: 'java',
+          phase: 'worker-request-timeout',
+          message: 'Java worker request timed out.',
+          detail: { id, type, timeoutMs },
+        }, { enabled: this.debug });
         pending.reject(new Error(`Worker request timed out: ${type}`));
       }, timeoutMs);
 
@@ -229,6 +268,13 @@ export class JavaWorkerClient {
       const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
+        logRuntimeDiagnostic('warn', {
+          component: 'JavaWorkerClient',
+          runtime: 'java',
+          phase: 'execution-timeout',
+          message: 'Java execution timed out; terminating worker.',
+          detail: { timeoutMs },
+        }, { enabled: this.debug });
         this.terminateAndReset();
         reject(
           new Error(
@@ -296,9 +342,13 @@ export class JavaWorkerClient {
           throw error;
         }
 
-        if (this.debug) {
-          console.warn('[JavaWorkerClient] init failed, resetting worker and retrying once', { message });
-        }
+        logRuntimeDiagnostic('warn', {
+          component: 'JavaWorkerClient',
+          runtime: 'java',
+          phase: 'init-retry',
+          message: 'Java worker init failed; resetting worker and retrying once.',
+          detail: { message },
+        }, { enabled: this.debug });
 
         this.terminateAndReset(error instanceof Error ? error : new Error(message));
         return this.sendMessage<InitResult>('init', this.workerOptionsPayload(), INIT_TIMEOUT_MS);

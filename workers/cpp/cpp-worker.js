@@ -12,6 +12,13 @@ const DEFAULT_INTERVIEW_MAX_SINGLE_LINE_HITS = 1_000;
 const CPP_PROGRAM_STACK_SIZE = 8 * 1024 * 1024;
 const CPP_PROGRAM_CACHE_LIMIT = 32;
 const CPP_WARMUP_SOURCE = 'class Solution { public: int add(int a, int b) { return a + b; } };';
+const WORKER_DEBUG = (() => {
+  try {
+    return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
+  } catch {
+    return false;
+  }
+})();
 const ESUCCESS = 0;
 const EBADF = 8;
 const EEXIST = 20;
@@ -110,6 +117,20 @@ let queuedTasks = 0;
 let programCache = new Map();
 let externalCompileRequestId = 0;
 const pendingExternalCompiles = new Map();
+
+function emitRuntimeDiagnostic(level, phase, message, detail) {
+  if (!WORKER_DEBUG && level !== 'error') return;
+  const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'debug' ? 'debug' : 'info';
+  console[method]('[TraceRuntime]', {
+    schema: 'tracecode.runtime-diagnostic.v1',
+    source: 'harness',
+    component: 'CppWorker',
+    runtime: 'cpp',
+    phase,
+    message,
+    ...(detail === undefined ? {} : { detail }),
+  });
+}
 
 class ProcExit extends Error {
   constructor(code) {
@@ -4567,11 +4588,18 @@ self.onmessage = (event) => {
 
       postSuccess(id, type, result);
     })
-    .catch((error) => postFailure(id, error))
+    .catch((error) => {
+      emitRuntimeDiagnostic('error', 'worker-request-failed', 'C++ worker request failed.', {
+        type,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      postFailure(id, error);
+    })
     .finally(() => {
       queuedTasks = Math.max(0, queuedTasks - 1);
       if (queuedTasks === 0) resetIdleTimer();
     });
 };
 
+emitRuntimeDiagnostic('info', 'worker-ready', 'C++ worker is ready.');
 postMessage({ type: 'worker-ready' });

@@ -22,6 +22,27 @@ const JAVA_DEFAULT_IMPORTS = [
   'import java.util.stream.*;',
   'import javafx.util.Pair;',
 ];
+const WORKER_DEBUG = (() => {
+  try {
+    return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
+  } catch {
+    return false;
+  }
+})();
+
+function emitRuntimeDiagnostic(level, phase, message, detail) {
+  if (!WORKER_DEBUG && level !== 'error') return;
+  const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'debug' ? 'debug' : 'info';
+  console[method]('[TraceRuntime]', {
+    schema: 'tracecode.runtime-diagnostic.v1',
+    source: 'harness',
+    component: 'JavaWorker',
+    runtime: 'java',
+    phase,
+    message,
+    ...(detail === undefined ? {} : { detail }),
+  });
+}
 
 if (typeof self.importScripts === 'function') {
   self.importScripts('java-source-augmentations.js');
@@ -3298,6 +3319,10 @@ self.onmessage = (event) => {
           },
         });
       } catch (error) {
+        emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java worker init request failed.', {
+          type: message.type,
+          message: formatWorkerErrorMessage(error),
+        });
         postMessageResponse({
           id: message.id,
           type: 'error',
@@ -3322,6 +3347,10 @@ self.onmessage = (event) => {
           payload: result,
         });
       } catch (error) {
+        emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java worker warmup request failed.', {
+          type: message.type,
+          message: formatWorkerErrorMessage(error),
+        });
         postMessageResponse({
           id: message.id,
           type: 'error',
@@ -3355,6 +3384,10 @@ self.onmessage = (event) => {
           payload: result,
         });
       } catch (error) {
+        emitRuntimeDiagnostic('error', 'worker-request-failed', 'Java worker execution request failed.', {
+          type: message.type,
+          message: formatWorkerErrorMessage(error),
+        });
         postMessageResponse({
           id: message.id,
           type: 'error',
@@ -3369,5 +3402,6 @@ self.onmessage = (event) => {
 };
 
 queueMicrotask(() => {
+  emitRuntimeDiagnostic('info', 'worker-ready', 'Java worker is ready.');
   postMessageResponse({ type: 'worker-ready' });
 });

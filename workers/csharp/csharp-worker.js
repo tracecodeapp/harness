@@ -2,6 +2,13 @@ let runtimePromise = null;
 let warmupPromise = null;
 let executeExport = null;
 let configuredAssetBaseUrl = null;
+const WORKER_DEBUG = (() => {
+  try {
+    return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
+  } catch {
+    return false;
+  }
+})();
 const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
@@ -18,6 +25,20 @@ let queue = Promise.resolve();
 let idleTimer = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let queuedTasks = 0;
+
+function emitRuntimeDiagnostic(level, phase, message, detail) {
+  if (!WORKER_DEBUG && level !== 'error') return;
+  const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'debug' ? 'debug' : 'info';
+  console[method]('[TraceRuntime]', {
+    schema: 'tracecode.runtime-diagnostic.v1',
+    source: 'harness',
+    component: 'CSharpWorker',
+    runtime: 'csharp',
+    phase,
+    message,
+    ...(detail === undefined ? {} : { detail }),
+  });
+}
 
 function now() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -242,6 +263,10 @@ self.addEventListener('message', (event) => {
       self.postMessage({ id, type, payload: result });
     })
     .catch((error) => {
+      emitRuntimeDiagnostic('error', 'worker-request-failed', 'C# worker request failed.', {
+        type,
+        message: error instanceof Error ? error.message : String(error),
+      });
       self.postMessage({
         id,
         type: 'error',
@@ -254,4 +279,5 @@ self.addEventListener('message', (event) => {
     });
 });
 
+emitRuntimeDiagnostic('info', 'worker-ready', 'C# worker is ready.');
 self.postMessage({ type: 'worker-ready' });

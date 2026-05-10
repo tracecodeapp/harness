@@ -1,4 +1,5 @@
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import { logRuntimeDiagnostic } from './runtime-diagnostics';
 
 type MessageId = string;
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
@@ -84,7 +85,12 @@ export class JavaScriptWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
-        if (this.debug) console.log('[JavaScriptWorkerClient] worker-ready');
+        logRuntimeDiagnostic('info', {
+          component: 'JavaScriptWorkerClient',
+          runtime: 'javascript',
+          phase: 'worker-ready',
+          message: 'JavaScript worker is ready.',
+        }, { enabled: this.debug });
         return;
       }
 
@@ -105,7 +111,18 @@ export class JavaScriptWorkerClient {
     };
 
     this.worker.onerror = (error) => {
-      console.error('[JavaScriptWorkerClient] Worker error:', error);
+      logRuntimeDiagnostic('error', {
+        component: 'JavaScriptWorkerClient',
+        runtime: 'javascript',
+        phase: 'worker-error',
+        message: 'JavaScript worker emitted an error event.',
+        detail: {
+          message: error.message,
+          filename: error.filename,
+          lineno: error.lineno,
+          colno: error.colno,
+        },
+      });
       const workerError = new Error('Worker error');
       this.workerReadyReject?.(workerError);
       this.workerReadyResolve = null;

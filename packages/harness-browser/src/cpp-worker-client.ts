@@ -5,6 +5,7 @@ import type {
 } from '../../harness-core/src/types';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types';
+import { logRuntimeDiagnostic } from './runtime-diagnostics';
 
 type MessageId = string;
 
@@ -133,10 +134,22 @@ export class CppWorkerClient {
         this.workerReadyResolve?.();
         this.workerReadyResolve = null;
         this.workerReadyReject = null;
+        logRuntimeDiagnostic('info', {
+          component: 'CppWorkerClient',
+          runtime: 'cpp',
+          phase: 'worker-ready',
+          message: 'C++ worker is ready.',
+        }, { enabled: this.debug });
         return;
       }
 
       if (type === 'idle-timeout') {
+        logRuntimeDiagnostic('info', {
+          component: 'CppWorkerClient',
+          runtime: 'cpp',
+          phase: 'idle-timeout',
+          message: 'C++ worker closed after idle timeout.',
+        }, { enabled: this.debug });
         this.terminateAndReset(new Error('C++ worker closed after idle timeout'));
         return;
       }
@@ -168,6 +181,18 @@ export class CppWorkerClient {
     };
 
     this.worker.onerror = (error) => {
+      logRuntimeDiagnostic('error', {
+        component: 'CppWorkerClient',
+        runtime: 'cpp',
+        phase: 'worker-error',
+        message: 'C++ worker emitted an error event.',
+        detail: {
+          message: error.message,
+          filename: error.filename,
+          lineno: error.lineno,
+          colno: error.colno,
+        },
+      });
       const workerError = new Error(error.message || 'C++ worker error');
       this.workerReadyReject?.(workerError);
       this.workerReadyResolve = null;
@@ -190,6 +215,13 @@ export class CppWorkerClient {
         const timeoutError = new Error(
           `C++ worker failed to initialize in time (${Math.round(WORKER_READY_TIMEOUT_MS / 1000)}s)`
         );
+        logRuntimeDiagnostic('warn', {
+          component: 'CppWorkerClient',
+          runtime: 'cpp',
+          phase: 'worker-ready-timeout',
+          message: 'C++ worker did not send worker-ready before the timeout.',
+          detail: { timeoutMs: WORKER_READY_TIMEOUT_MS },
+        }, { enabled: this.debug });
         this.terminateAndReset(timeoutError);
         reject(timeoutError);
       }, WORKER_READY_TIMEOUT_MS);
@@ -229,6 +261,13 @@ export class CppWorkerClient {
         const pending = this.pendingMessages.get(id);
         if (!pending) return;
         this.pendingMessages.delete(id);
+        logRuntimeDiagnostic('warn', {
+          component: 'CppWorkerClient',
+          runtime: 'cpp',
+          phase: 'worker-request-timeout',
+          message: 'C++ worker request timed out.',
+          detail: { id, type, timeoutMs },
+        }, { enabled: this.debug });
         pending.reject(new Error(`Worker request timed out: ${type}`));
       }, timeoutMs);
 
@@ -254,6 +293,13 @@ export class CppWorkerClient {
           stage,
           timeoutMs
         );
+        logRuntimeDiagnostic('warn', {
+          component: 'CppWorkerClient',
+          runtime: 'cpp',
+          phase: 'execution-timeout',
+          message: 'C++ execution timed out; terminating worker.',
+          detail: { timeoutMs, stage },
+        }, { enabled: this.debug });
         this.terminateAndReset(timeoutError);
         reject(timeoutError);
       }, timeoutMs);

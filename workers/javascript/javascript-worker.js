@@ -14,6 +14,20 @@ const WORKER_DEBUG = (() => {
   }
 })();
 
+function emitRuntimeDiagnostic(level, phase, message, detail) {
+  if (!WORKER_DEBUG && level !== 'error') return;
+  const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'debug' ? 'debug' : 'info';
+  console[method]('[TraceRuntime]', {
+    schema: 'tracecode.runtime-diagnostic.v1',
+    source: 'harness',
+    component: 'JavaScriptWorker',
+    runtime: 'javascript',
+    phase,
+    message,
+    ...(detail === undefined ? {} : { detail }),
+  });
+}
+
 let isInitialized = false;
 let isLoading = false;
 let typeScriptLoadPromise = null;
@@ -89,8 +103,8 @@ function ensureJavaScriptLibraries() {
     }
   }
 
-  if (WORKER_DEBUG && errors.length > 0) {
-    console.warn('[JavaScriptWorker] JavaScript library preload skipped:', errors.join(' | '));
+  if (errors.length > 0) {
+    emitRuntimeDiagnostic('warn', 'library-preload-skipped', 'JavaScript library preload skipped.', { errors });
   }
 }
 
@@ -4178,11 +4192,11 @@ async function executeWithTracing(payload) {
         instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName);
       }
     } catch (instrumentationError) {
-      if (WORKER_DEBUG) {
-        const message =
-          instrumentationError instanceof Error ? instrumentationError.message : String(instrumentationError);
-        console.warn('[JavaScriptWorker] trace instrumentation failed, using synthetic fallback:', message);
-      }
+      const message =
+        instrumentationError instanceof Error ? instrumentationError.message : String(instrumentationError);
+      emitRuntimeDiagnostic('warn', 'trace-instrumentation-fallback', 'Trace instrumentation failed; using synthetic fallback.', {
+        message,
+      });
     }
 
     if (!instrumentedCode) {
@@ -4483,7 +4497,5 @@ self.onmessage = function(event) {
     });
 };
 
-if (WORKER_DEBUG) {
-  console.log('[JavaScriptWorker] ready');
-}
+emitRuntimeDiagnostic('info', 'worker-ready', 'JavaScript worker is ready.');
 self.postMessage({ type: 'worker-ready' });
