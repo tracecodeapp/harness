@@ -99,7 +99,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/vendor/csharp/_framework/dotnet.js',
       'workers/vendor/csharp/_framework/dotnet.native.wasm',
       'workers/vendor/csharp/_framework/dotnet.runtime.js',
-      'workers/vendor/csharp/_framework/blazor.boot.json',
+      'workers/vendor/csharp/_framework/dotnet.boot.js',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],

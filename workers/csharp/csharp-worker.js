@@ -226,7 +226,9 @@ async function handleMessage(message) {
   throw new Error(`Unsupported C# worker message type "${message.type}"`);
 }
 
-self.onmessage = (event) => {
+// Keep globalThis.onmessage unset before dotnet.js loads; newer .NET worker bootstraps
+// use that signal to enable sidecar mode.
+self.addEventListener('message', (event) => {
   const { id, type, payload } = event.data || {};
   if (!id) return;
   clearIdleTimer();
@@ -250,6 +252,6 @@ self.onmessage = (event) => {
       queuedTasks = Math.max(0, queuedTasks - 1);
       if (queuedTasks === 0) resetIdleTimer();
     });
-};
+});
 
 self.postMessage({ type: 'worker-ready' });

@@ -46,7 +46,7 @@ async function main(): Promise<void> {
     'vendor/csharp/_framework/dotnet.js',
     'vendor/csharp/_framework/dotnet.native.wasm',
     'vendor/csharp/_framework/dotnet.runtime.js',
-    'vendor/csharp/_framework/blazor.boot.json',
+    'vendor/csharp/_framework/dotnet.boot.js',
     'vendor/cpp/yowasp/bundle.js',
     'vendor/cpp/yowasp/llvm-resources.tar',
     'vendor/cpp/yowasp/llvm.core.wasm',

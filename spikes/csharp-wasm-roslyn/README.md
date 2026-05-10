@@ -25,11 +25,16 @@ Or run the full spike:
 pnpm run spike:csharp
 ```
 
-If the machine does not have the browser-WASM workload installed, install it before publishing:
+To refresh the vendored browser runtime used by the harness, run:
 
 ```sh
-dotnet workload install wasm-tools
+pnpm update:csharp-runtime
 ```
+
+That command installs the target .NET SDK channel locally under `.dotnet/`, installs
+`wasm-tools`, publishes the host, syncs `workers/vendor/csharp`, and regenerates
+runtime language info. Set `TRACECODE_DOTNET_VERSION` to pin an exact SDK version
+for a repeatable refresh.
 
 ## Scope
 
@@ -39,4 +44,4 @@ The initial host targets `public class Solution` methods and is wired into `crea
 
 - Roslyn must run with `concurrentBuild: false` under browser-WASM. The default concurrent path hits monitor waits that the runtime does not support.
 - The browser-WASM runtime does not expose framework assembly paths like desktop .NET. The spike packages build-output DLLs into `/tracecode-refs` in the WASM virtual file system and creates Roslyn metadata references from those files.
-- The Node smoke may print `MONO_WASM: Error loading symbol file dotnet.native.js.symbols: {}` before passing. That is a runtime symbol loading warning, not a compile/execute failure.
+- The worker must register inbound messages with `addEventListener('message', ...)` instead of assigning `self.onmessage` before loading `dotnet.js`. Newer .NET worker bootstraps use the unset `globalThis.onmessage` signal to enter sidecar mode.

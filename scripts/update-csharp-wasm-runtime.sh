@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_FILE="$ROOT_DIR/spikes/csharp-wasm-roslyn/TraceCode.CSharpHost/TraceCode.CSharpHost.csproj"
+VENDOR_DIR="$ROOT_DIR/workers/vendor/csharp"
+
+usage() {
+  cat <<'EOF'
+Usage: pnpm update:csharp-runtime
+
+Installs or updates the .NET SDK channel required by the C# browser-WASM host,
+publishes the host, replaces workers/vendor/csharp, and regenerates runtime
+language info plus package assets.
+
+Environment:
+  TRACECODE_DOTNET_VERSION             Install an exact SDK version instead of the target-framework channel.
+  TRACECODE_DOTNET_CHANNEL             Override the SDK channel. Defaults to the C# host TargetFramework major.
+  TRACECODE_DOTNET_QUALITY             dotnet-install quality. Defaults to GA.
+  TRACECODE_DOTNET_INSTALL_DIR         Local SDK install dir. Defaults to .dotnet/csharp-wasm.
+  TRACECODE_DOTNET_CLI_HOME            Local .NET CLI home. Defaults to .dotnet/home.
+  TRACECODE_DOTNET_SKIP_INSTALL=1      Reuse the existing SDK in TRACECODE_DOTNET_INSTALL_DIR.
+  TRACECODE_DOTNET_SKIP_WORKLOAD=1     Skip wasm-tools workload installation.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+target_framework="$(
+  sed -nE 's/.*<TargetFramework>([^<]+)<\/TargetFramework>.*/\1/p' "$PROJECT_FILE" | head -n 1
+)"
+if [[ -z "$target_framework" ]]; then
+  echo "Unable to read TargetFramework from $PROJECT_FILE" >&2
+  exit 1
+fi
+
+target_major="$(sed -nE 's/^net([0-9]+)\..*$/\1/p' <<<"$target_framework")"
+if [[ -z "$target_major" ]]; then
+  echo "Unable to derive SDK channel from target framework $target_framework" >&2
+  exit 1
+fi
+
+dotnet_install_dir="${TRACECODE_DOTNET_INSTALL_DIR:-$ROOT_DIR/.dotnet/csharp-wasm}"
+dotnet_cli_home="${TRACECODE_DOTNET_CLI_HOME:-$ROOT_DIR/.dotnet/home}"
+dotnet_channel="${TRACECODE_DOTNET_CHANNEL:-$target_major.0}"
+dotnet_quality="${TRACECODE_DOTNET_QUALITY:-GA}"
+dotnet_version="${TRACECODE_DOTNET_VERSION:-}"
+dotnet_install_url="${TRACECODE_DOTNET_INSTALL_SCRIPT_URL:-https://dot.net/v1/dotnet-install.sh}"
+
+mkdir -p "$dotnet_install_dir" "$dotnet_cli_home"
+
+if [[ "${TRACECODE_DOTNET_SKIP_INSTALL:-0}" != "1" ]]; then
+  installer_dir="$(mktemp -d)"
+  trap 'rm -rf "$installer_dir"' EXIT
+  installer="$installer_dir/dotnet-install.sh"
+  curl -fsSL "$dotnet_install_url" -o "$installer"
+  chmod +x "$installer"
+
+  install_args=(--install-dir "$dotnet_install_dir" --no-path)
+  if [[ -n "$dotnet_version" ]]; then
+    install_args+=(--version "$dotnet_version")
+  else
+    install_args+=(--channel "$dotnet_channel" --quality "$dotnet_quality")
+  fi
+
+  "$installer" "${install_args[@]}"
+fi
+
+export DOTNET_ROOT="$dotnet_install_dir"
+export DOTNET_CLI_HOME="$dotnet_cli_home"
+export DOTNET_NOLOGO=1
+export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+export PATH="$DOTNET_ROOT:$PATH"
+
+if [[ ! -x "$DOTNET_ROOT/dotnet" ]]; then
+  echo "Missing dotnet executable at $DOTNET_ROOT/dotnet" >&2
+  echo "Run without TRACECODE_DOTNET_SKIP_INSTALL=1 or set TRACECODE_DOTNET_INSTALL_DIR." >&2
+  exit 1
+fi
+
+"$DOTNET_ROOT/dotnet" --info
+
+if [[ "${TRACECODE_DOTNET_SKIP_WORKLOAD:-0}" != "1" ]]; then
+  "$DOTNET_ROOT/dotnet" workload install wasm-tools
+fi
+
+"$DOTNET_ROOT/dotnet" publish "$PROJECT_FILE" -c Release
+
+publish_dir="$ROOT_DIR/spikes/csharp-wasm-roslyn/TraceCode.CSharpHost/bin/Release/$target_framework/browser-wasm/AppBundle"
+if [[ ! -f "$publish_dir/_framework/dotnet.js" ]]; then
+  echo "Missing published AppBundle at $publish_dir" >&2
+  exit 1
+fi
+
+tmp_vendor="$VENDOR_DIR.tmp.$$"
+rm -rf "$tmp_vendor"
+cp -R "$publish_dir" "$tmp_vendor"
+
+if [[ -f "$tmp_vendor/_framework/dotnet.native.js" ]]; then
+  perl -pi -e 's/[ \t]+$//' "$tmp_vendor/_framework/dotnet.native.js"
+fi
+
+rm -rf "$VENDOR_DIR"
+mv "$tmp_vendor" "$VENDOR_DIR"
+
+(
+  cd "$ROOT_DIR"
+  pnpm run generate:runtime-info
+  pnpm run sync:package-assets
+  pnpm run test:runtime-info-sync
+)
+
+echo "Updated C# runtime assets in $VENDOR_DIR"

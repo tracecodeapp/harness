@@ -214,17 +214,17 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
   "csharp": {
     "language": "csharp",
     "displayName": "C#",
-    "versionLabel": "C# 12 (.NET 8.0.26)",
+    "versionLabel": "C# 14 (.NET 10.0.7)",
     "runtime": {
       "name": ".NET WebAssembly runtime",
-      "version": "8.0.26",
-      "detail": "Browser-local .NET runtime targeting net8.0."
+      "version": "10.0.7",
+      "detail": "Browser-local .NET runtime targeting net10.0."
     },
     "compiler": {
       "name": "Microsoft.CodeAnalysis.CSharp",
-      "version": "4.10.0"
+      "version": "5.3.0"
     },
-    "standard": "C# 12",
+    "standard": "C# 14",
     "defaultImports": [
       "System",
       "System.Collections",

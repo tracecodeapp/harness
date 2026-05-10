@@ -1,5 +1,6 @@
 node_modules
 .pnpm-store
+.dotnet
 tsconfig.tsbuildinfo
 dist
 bin

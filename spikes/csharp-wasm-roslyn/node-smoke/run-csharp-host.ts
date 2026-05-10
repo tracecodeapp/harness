@@ -38,6 +38,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const spikeRoot = resolve(__dirname, '..');
 const projectRoot = resolve(spikeRoot, 'TraceCode.CSharpHost');
 const fixtureRoot = resolve(spikeRoot, 'fixtures');
+const projectFile = join(projectRoot, 'TraceCode.CSharpHost.csproj');
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -63,11 +64,14 @@ function assertNoVisualizationTokens(value: unknown, label: string): void {
 
 function findPublishedAssetDir(): string {
   const explicitDir = process.env.CSHARP_WASM_PUBLISH_DIR;
+  const projectSource = readFileSync(projectFile, 'utf8');
+  const targetFramework = projectSource.match(/<TargetFramework>([^<]+)<\/TargetFramework>/)?.[1];
+  assertCondition(Boolean(targetFramework), 'Unable to resolve C# host target framework from project file');
   const candidates = [
     explicitDir,
-    join(projectRoot, 'bin', 'Release', 'net8.0', 'browser-wasm', 'AppBundle'),
-    join(projectRoot, 'bin', 'Release', 'net8.0', 'browser-wasm', 'publish'),
-    join(projectRoot, 'bin', 'Release', 'net8.0', 'browser-wasm', 'publish', 'wwwroot'),
+    join(projectRoot, 'bin', 'Release', targetFramework!, 'browser-wasm', 'AppBundle'),
+    join(projectRoot, 'bin', 'Release', targetFramework!, 'browser-wasm', 'publish'),
+    join(projectRoot, 'bin', 'Release', targetFramework!, 'browser-wasm', 'publish', 'wwwroot'),
   ].filter(Boolean) as string[];
 
   const match = candidates.find((candidate) => existsSync(join(candidate, '_framework', 'dotnet.js')));

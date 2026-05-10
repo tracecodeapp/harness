@@ -374,6 +374,17 @@ If you change Python harness templates or generated snippets, regenerate artifac
 pnpm generate:python-harness
 ```
 
+To update the vendored C# browser-WASM runtime, run:
+
+```bash
+pnpm update:csharp-runtime
+```
+
+The updater reads the C# host `TargetFramework`, installs or updates the matching
+.NET SDK channel under `.dotnet/`, installs `wasm-tools`, republishes the host,
+replaces `workers/vendor/csharp`, and regenerates runtime language info. Set
+`TRACECODE_DOTNET_VERSION` to pin an exact SDK version for a repeatable refresh.
+
 ## Releases
 
 This repo uses explicit versioned release boundaries.

@@ -283,7 +283,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       runtime: {
         name: '.NET WebAssembly runtime',
         version: dotnetVersion,
-        detail: `Browser-local .NET runtime targeting ${csharpTfm ?? 'net8.0'}.`,
+        detail: `Browser-local .NET runtime targeting ${csharpTfm ?? 'the configured target framework'}.`,
       },
       compiler: {
         name: 'Microsoft.CodeAnalysis.CSharp',

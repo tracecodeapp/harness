@@ -19,7 +19,7 @@ public static partial class CompilerHost
     private const int CompilationCacheLimit = 32;
     private const string UserCodePath = "solution.cs";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
-    private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp12);
+    private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
     private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
     private static readonly Dictionary<string, byte[]> CompilationCache = new(StringComparer.Ordinal);
     private static readonly Queue<string> CompilationCacheOrder = new();

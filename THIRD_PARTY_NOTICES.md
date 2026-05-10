@@ -109,7 +109,7 @@ license.
 
 - Use: browser WebAssembly runtime and base class libraries for the C# lane.
 - Vendored assets: `workers/vendor/csharp/**`.
-- Target: `net8.0`, `browser-wasm`.
+- Target: `net10.0`, `browser-wasm`.
 - License: MIT, plus .NET third-party notices for bundled components.
 - Source: https://github.com/dotnet/runtime
 - Upstream notices: https://github.com/dotnet/runtime/tree/main/src/installer/pkg/sfx/Microsoft.NETCore.App/THIRD-PARTY-NOTICES.TXT
@@ -117,9 +117,9 @@ license.
 ### Roslyn / Microsoft.CodeAnalysis.CSharp
 
 - Use: C# parsing, compilation, and diagnostics in the C# worker.
-- Version: `Microsoft.CodeAnalysis.CSharp` `4.10.0`.
+- Version: `Microsoft.CodeAnalysis.CSharp` `5.3.0`.
 - License: MIT.
-- NuGet package: https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/4.10.0
+- NuGet package: https://www.nuget.org/packages/Microsoft.CodeAnalysis.CSharp/5.3.0
 - Source: https://github.com/dotnet/roslyn
 
 ## C++ Runtime

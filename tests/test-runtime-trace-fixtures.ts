@@ -476,6 +476,11 @@ function normalizeTopLevelPublicClasses(source: string): string {
   return source.replace(/^([ \t]*)public\s+class\s+/gm, '$1class ');
 }
 
+function mapJavaVirtualInputPaths(root: string, source: string): string {
+  const hostInputPrefix = join(root, 'str', 'tracecode-java-input').replaceAll('\\', '\\\\');
+  return source.replaceAll('/str/tracecode-java-input', hostInputPrefix);
+}
+
 async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
   if (csharpExecutePromise) return csharpExecutePromise;
 
@@ -610,7 +615,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
     const reportPath = join(root, `${entryClass.replace(/\W/g, '_')}.json`);
     await mkdir(dirname(sourceFile), { recursive: true });
     await mkdir(outputClassesDir, { recursive: true });
-    await writeFile(sourceFile, source, 'utf8');
+    await writeFile(sourceFile, mapJavaVirtualInputPaths(root, source), 'utf8');
     await runProcess(JAVA_BIN, [
       '-cp',
       JAVA_HELPER_JAR,
@@ -694,6 +699,10 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         cheerpjInit: async () => {},
         cheerpOSAddStringFile: async (path: string, source: string) => {
           stringFiles.set(path, source);
+          const root = await rootPromise;
+          const hostPath = join(root, path.replace(/^\/+/, ''));
+          await mkdir(dirname(hostPath), { recursive: true });
+          await writeFile(hostPath, source, 'utf8');
         },
         cheerpjRunLibrary: async () => ({
           harness: {

@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.7.0-beta3",
+  "version": "0.7.0-beta4",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -85,6 +85,7 @@
     "generate:runtime-info": "pnpm exec tsx scripts/generate-runtime-language-info.ts",
     "generate:python-harness": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts",
     "sync:package-assets": "pnpm exec tsx scripts/sync-language-package-assets.ts",
+    "update:csharp-runtime": "bash scripts/update-csharp-wasm-runtime.sh",
     "typecheck": "pnpm typecheck:packages",
     "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit",
     "test:smoke": "pnpm exec tsx tests/test-harness-workspace-smoke.ts",

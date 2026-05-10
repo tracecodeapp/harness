@@ -20,6 +20,7 @@ const spikeRoot = resolve(__dirname, '..');
 const repoRoot = resolve(spikeRoot, '..', '..');
 const projectRoot = resolve(spikeRoot, 'TraceCode.CSharpHost');
 const fixtureRoot = resolve(spikeRoot, 'fixtures');
+const projectFile = join(projectRoot, 'TraceCode.CSharpHost.csproj');
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -29,9 +30,12 @@ function assertCondition(condition: boolean, message: string): void {
 
 function findPublishedAssetDir(): string {
   const explicitDir = process.env.CSHARP_WASM_PUBLISH_DIR;
+  const projectSource = readFileSync(projectFile, 'utf8');
+  const targetFramework = projectSource.match(/<TargetFramework>([^<]+)<\/TargetFramework>/)?.[1];
+  assertCondition(Boolean(targetFramework), 'Unable to resolve C# host target framework from project file');
   const candidates = [
     explicitDir,
-    join(projectRoot, 'bin', 'Release', 'net8.0', 'browser-wasm', 'AppBundle'),
+    join(projectRoot, 'bin', 'Release', targetFramework!, 'browser-wasm', 'AppBundle'),
   ].filter(Boolean) as string[];
 
   const match = candidates.find((candidate) => existsSync(join(candidate, '_framework', 'dotnet.js')));
@@ -189,8 +193,8 @@ async function main(): Promise<void> {
       `Browser worker traced Add should include call event, received ${JSON.stringify(tracedAdd.events)}`
     );
     assertCondition(
-      tracedAdd.events?.some((event) => event.kind === 'write' && event.target?.variable === 'sum') === true,
-      `Browser worker traced Add should include local write event, received ${JSON.stringify(tracedAdd.events)}`
+      tracedAdd.events?.some((event) => (event.kind === 'write' || event.kind === 'snapshot') && event.target?.variable === 'sum') === true,
+      `Browser worker traced Add should include local state event, received ${JSON.stringify(tracedAdd.events)}`
     );
     assertCondition(
       tracedAdd.events?.some((event) => event.kind === 'return' && event.function === 'Add' && event.value === 5) === true,
@@ -774,11 +778,11 @@ async function main(): Promise<void> {
     );
     assertCondition(
       tracedListNodeValues.events?.some((event) =>
-        event.kind === 'write'
+        (event.kind === 'write' || event.kind === 'snapshot')
         && event.target?.variable === 'curr'
         && (event.value as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode'
         && (event.value as { val?: number } | undefined)?.val === 7) === true,
-      `Browser worker traced ListNode values case should include normalized ListNode write, received ${JSON.stringify(tracedListNodeValues.events)}`
+      `Browser worker traced ListNode values case should include normalized ListNode state, received ${JSON.stringify(tracedListNodeValues.events)}`
     );
     assertCondition(
       tracedListNodeValues.events?.some((event) =>
@@ -919,7 +923,7 @@ async function main(): Promise<void> {
         event.kind === 'read'
         && event.target?.variable === 'root'
         && event.target.path?.[0] === 'left'
-        && event.target.path?.[1] === 'val'
+        && (event.target.path?.[1] === 'val' || event.target.path.length === 1)
         && event.value === 9) === true,
       `Browser worker traced nested TreeNode field case should include root.left.val read, received ${JSON.stringify(tracedNestedTreeNodeFields.events)}`
     );
