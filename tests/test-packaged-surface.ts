@@ -98,14 +98,20 @@ async function main(): Promise<void> {
       const cpp = await import('@tracecode/harness/cpp');
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
+      if (typeof browser.getLanguageRuntimeInfo !== 'function') throw new Error('Missing browser runtime info export');
       if ('getPyodideWorkerClient' in browser) throw new Error('Low-level worker clients should not be publicly exported');
       if ('enforceRuntimeWorkerIsolation' in browser) throw new Error('Worker isolation helpers should not be publicly exported');
+      if (typeof core.getLanguageRuntimeInfo !== 'function') throw new Error('Missing core runtime info export');
       if (typeof python.generateSolutionScript !== 'function') throw new Error('Missing python export');
       if (typeof javascript.executeJavaScriptCode !== 'function') throw new Error('Missing javascript export');
       if (typeof java.createJavaRuntimeClient !== 'function') throw new Error('Missing java export');
       if (typeof csharp.createCSharpRuntimeClient !== 'function') throw new Error('Missing csharp export');
       if (typeof cpp.createCppRuntimeClient !== 'function') throw new Error('Missing cpp export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
+      const javaInfo = root.getLanguageRuntimeInfo('java');
+      if (javaInfo.versionLabel !== 'Java ' + javaInfo.runtime.version) {
+        throw new Error('Root export should expose language runtime info');
+      }
       console.log('ok');
     })().catch((error) => {
       console.error(error);

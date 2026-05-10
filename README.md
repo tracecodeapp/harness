@@ -170,6 +170,7 @@ The browser package centers on `createBrowserHarness(options)`.
 ```ts
 import {
   createBrowserHarness,
+  getLanguageRuntimeInfo,
   getLanguageRuntimeProfile,
   isLanguageSupported,
   SUPPORTED_LANGUAGES,
@@ -181,6 +182,8 @@ The returned harness exposes:
 - `getClient(language)`
 - `getProfile(language)`
 - `getSupportedLanguageProfiles()`
+- `getLanguageInfo(language)`
+- `getSupportedLanguageInfos()`
 - `isLanguageSupported(language)`
 - `warmLanguage(language)`
 - `disposeLanguage(language)`
@@ -203,11 +206,20 @@ const harness = createBrowserHarness({
 });
 
 const profile = harness.getProfile('typescript');
+const info = harness.getLanguageInfo('typescript');
+const pythonInfo = getLanguageRuntimeInfo('python');
 
 if (profile.capabilities.tracing.supported) {
   // show trace controls
 }
+
+console.log(info.versionLabel);
+console.log(pythonInfo.versionLabel);
 ```
+
+Runtime info is generated from worker constants, package manifests, and vendored runtime
+metadata. Run `pnpm generate:runtime-info` after runtime dependency changes, or
+`pnpm test:runtime-info-sync` to check whether the generated SDK data is current.
 
 For Java, `init()` only performs a light CheerpJ initialization. Call `warmLanguage('java')`
 after the user selects Java, or after editor-driven assist work, to warm the heavier javac

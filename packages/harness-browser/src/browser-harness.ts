@@ -3,6 +3,11 @@ import type {
   LanguageRuntimeProfile,
   RuntimeClient,
 } from '../../harness-core/src/runtime-types';
+import type { LanguageRuntimeInfo } from '../../harness-core/src/runtime-language-info';
+import {
+  getLanguageRuntimeInfo,
+  getSupportedLanguageRuntimeInfos,
+} from '../../harness-core/src/runtime-language-info';
 import { JavaScriptWorkerClient } from './javascript-worker-client';
 import { createJavaScriptRuntimeClient } from './javascript-runtime-client';
 import { JavaWorkerClient } from './java-worker-client';
@@ -47,6 +52,8 @@ export interface BrowserHarness {
   getClient(language: Language): RuntimeClient;
   getProfile(language: Language): LanguageRuntimeProfile;
   getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[];
+  getLanguageInfo(language: Language): LanguageRuntimeInfo;
+  getSupportedLanguageInfos(): readonly LanguageRuntimeInfo[];
   isLanguageSupported(language: Language): boolean;
   warmLanguage(language: Language): Promise<{ success: boolean; loadTimeMs: number }>;
   disposeLanguage(language: Language): void;
@@ -121,6 +128,14 @@ class BrowserHarnessRuntime implements BrowserHarness {
 
   getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[] {
     return getSupportedLanguageProfiles();
+  }
+
+  getLanguageInfo(language: Language): LanguageRuntimeInfo {
+    return getLanguageRuntimeInfo(language);
+  }
+
+  getSupportedLanguageInfos(): readonly LanguageRuntimeInfo[] {
+    return getSupportedLanguageRuntimeInfos();
   }
 
   isLanguageSupported(language: Language): boolean {

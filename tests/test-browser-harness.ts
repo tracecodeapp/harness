@@ -172,12 +172,22 @@ async function main(): Promise<void> {
     assertCondition(harnessA.isLanguageSupported('cpp'), 'Browser harness should expose C++ support');
     const cppProfile = harnessA.getProfile('cpp');
     const csharpProfile = harnessA.getProfile('csharp');
+    const typescriptInfo = harnessA.getLanguageInfo('typescript');
+    const supportedInfos = harnessA.getSupportedLanguageInfos();
     assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# profile should support interview-mode execution');
     assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ profile should support function execution');
     assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ profile should support solution-method execution');
     assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ profile should support ops-class execution');
     assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ profile should support script execution');
     assertCondition(cppProfile.capabilities.execution.styles.interviewMode, 'C++ profile should support interview-mode execution');
+    assertCondition(
+      typescriptInfo.compiler?.name === 'TypeScript' && Boolean(typescriptInfo.compiler.version),
+      'Browser harness should expose TypeScript runtime info'
+    );
+    assertCondition(
+      supportedInfos.some((info) => info.language === 'csharp' && Boolean(info.runtime.version)),
+      'Browser harness should expose supported language runtime infos'
+    );
 
     await harnessA.getClient('javascript').init();
     await harnessA.getClient('java').init();

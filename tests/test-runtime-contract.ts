@@ -4,7 +4,9 @@ import { spawnSync } from 'node:child_process';
 import {
   createBrowserHarness,
   SUPPORTED_LANGUAGES,
+  getLanguageRuntimeInfo,
   getLanguageRuntimeProfile,
+  getSupportedLanguageRuntimeInfos,
   getSupportedLanguageProfiles,
   isLanguageSupported,
 } from '../packages/harness-browser/src';
@@ -394,14 +396,76 @@ async function main(): Promise<void> {
     stableStringify(SUPPORTED_LANGUAGES) === stableStringify(profiles.map((profile) => profile.language)),
     'SUPPORTED_LANGUAGES should stay aligned with the runtime profile registry'
   );
+  const runtimeInfos = getSupportedLanguageRuntimeInfos();
+  assertCondition(
+    stableStringify(SUPPORTED_LANGUAGES) === stableStringify(runtimeInfos.map((info) => info.language)),
+    'SUPPORTED_LANGUAGES should stay aligned with the runtime info registry'
+  );
   for (const language of SUPPORTED_LANGUAGES) {
     assertCondition(isLanguageSupported(language), `${language} should be reported as supported`);
     assertCondition(
       getLanguageRuntimeProfile(language).language === language,
       `${language} should resolve a matching runtime profile`
     );
+    assertCondition(
+      getLanguageRuntimeInfo(language).language === language,
+      `${language} should resolve matching runtime info`
+    );
   }
-  console.log('PASS: runtime language/profile registry');
+  const pythonInfo = getLanguageRuntimeInfo('python');
+  const javascriptInfo = getLanguageRuntimeInfo('javascript');
+  const typescriptInfo = getLanguageRuntimeInfo('typescript');
+  const javaInfo = getLanguageRuntimeInfo('java');
+  const csharpInfo = getLanguageRuntimeInfo('csharp');
+  const cppInfo = getLanguageRuntimeInfo('cpp');
+  assertCondition(
+    pythonInfo.displayName === 'Python' &&
+      /^Python \d+\.\d+\.\d+ \(Pyodide \d+\.\d+\.\d+\)$/.test(pythonInfo.versionLabel),
+    'Python runtime info should expose generated Python and Pyodide versions'
+  );
+  assertCondition(
+    pythonInfo.libraries?.some((library) => library.name === 'sortedcontainers' && Boolean(library.version)) === true,
+    'Python runtime info should expose sortedcontainers'
+  );
+  assertCondition(
+    javascriptInfo.libraries?.some((library) => library.name === 'lodash' && Boolean(library.version)) === true,
+    'JavaScript runtime info should expose lodash'
+  );
+  assertCondition(
+    typescriptInfo.compiler?.name === 'TypeScript' && Boolean(typescriptInfo.compiler.version),
+    'TypeScript runtime info should expose the generated compiler version'
+  );
+  assertCondition(
+    typescriptInfo.libraries?.some((library) => library.name === 'lodash' && Boolean(library.version)) === true,
+    'TypeScript runtime info should expose the JavaScript runtime libraries'
+  );
+  assertCondition(
+    javaInfo.versionLabel === `Java ${javaInfo.runtime.version}`,
+    'Java runtime info should expose the generated Java version'
+  );
+  assertCondition(
+    javaInfo.defaultImports?.includes('javafx.util.Pair') === true,
+    'Java runtime info should expose the Pair default import'
+  );
+  assertCondition(
+    Boolean(csharpInfo.runtime.version) &&
+      csharpInfo.compiler?.name === 'Microsoft.CodeAnalysis.CSharp' &&
+      Boolean(csharpInfo.compiler.version),
+    'C# runtime info should expose generated .NET and Roslyn versions'
+  );
+  assertCondition(
+    csharpInfo.standard?.startsWith('C# ') === true && csharpInfo.versionLabel.startsWith(csharpInfo.standard),
+    'C# runtime info should expose the generated C# language version'
+  );
+  assertCondition(
+    cppInfo.standard?.startsWith('C++') === true,
+    'C++ runtime info should expose the generated C++ standard'
+  );
+  assertCondition(
+    cppInfo.defaultImports?.includes('<regex>') === true,
+    'C++ runtime info should expose default header coverage'
+  );
+  console.log('PASS: runtime language/profile/info registry');
 
   const browserHarness = createBrowserHarness();
   const pythonClient = browserHarness.getClient('python');
