@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-python",
-  "version": "0.7.0-beta2",
+  "version": "0.7.0-beta3",
   "description": "Python runtime helpers and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",

@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
+## [0.7.0-beta3] - 2026-05-10
+
+### Added
+
+- Added generated runtime language info metadata and public browser/core APIs for language versions, compilers, standards, default imports, and bundled libraries.
+- Added JavaScript and TypeScript runtime library support for lodash and datastructures-js packages.
+- Expanded default import/header coverage for Python, Java, C#, and C++ runtime lanes.
+
 ## [0.7.0-beta2] - 2026-05-09
 
 ### Changed
