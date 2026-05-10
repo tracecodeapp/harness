@@ -38,6 +38,7 @@ async function main(): Promise<void> {
     'java-source-augmentations.js',
     'csharp-worker.js',
     'vendor/typescript.js',
+    'vendor/javascript-libraries.js',
     'vendor/java-browser-helper.jar',
     'vendor/java-rewriter.jar',
     'vendor/javaparser-core-3.25.10.jar',

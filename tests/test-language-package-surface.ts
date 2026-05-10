@@ -64,6 +64,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.d.ts',
       'workers/javascript-worker.js',
       'workers/vendor/typescript.js',
+      'workers/vendor/javascript-libraries.js',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],

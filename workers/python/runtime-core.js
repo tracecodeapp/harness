@@ -6,6 +6,29 @@
  */
 
 (function initPyodideRuntimeCore(globalScope) {
+const PYTHON_DEFAULT_IMPORT_PRELUDE = `
+import array
+from array import array
+import bisect
+from bisect import *
+import collections
+from collections import *
+import functools
+from functools import *
+import heapq
+from heapq import *
+import itertools
+from itertools import *
+import operator
+from operator import *
+import re
+import string
+try:
+    from sortedcontainers import SortedDict, SortedList, SortedSet
+except Exception:
+    pass
+`;
+
 function generateTracingCode(deps, userCode, functionName, inputs, executionStyle = 'function', options = {}) {
   const inputSetup = Object.entries(inputs)
     .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
@@ -1490,6 +1513,7 @@ del _preserve, _real_globals, _real_list
 # Ensure print remains routed through the tracer harness after global cleanup
 print = _custom_print
 
+${PYTHON_DEFAULT_IMPORT_PRELUDE}
 `;
 
   const userCodeStartLine = 1;
@@ -2099,6 +2123,7 @@ import math
 import sys
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
+${PYTHON_DEFAULT_IMPORT_PRELUDE}
 
 _console_output = []
 _original_print = _builtins.print

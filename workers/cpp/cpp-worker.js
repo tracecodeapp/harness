@@ -33,6 +33,72 @@ const WHENCE_SET = 0;
 const WHENCE_CUR = 1;
 const WHENCE_END = 2;
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
+const CPP_BASE_GENERATED_INCLUDES = Object.freeze([
+  '#include "/tracecode_runtime.hpp"',
+  '#include <algorithm>',
+  '#include <array>',
+  '#include <bitset>',
+  '#include <climits>',
+  '#include <cmath>',
+  '#include <cstdint>',
+  '#include <functional>',
+  '#include <limits>',
+  '#include <numeric>',
+  '#include <sstream>',
+  '#include <tuple>',
+]);
+const CPP_STANDARD_INCLUDE_RULES = Object.freeze([
+  [/\bvector\s*</, '#include <vector>'],
+  [/\bunordered_map\s*</, '#include <unordered_map>'],
+  [/\bunordered_set\s*</, '#include <unordered_set>'],
+  [/\bmap\s*</, '#include <map>'],
+  [/\bset\s*</, '#include <set>'],
+  [/\bdeque\s*</, '#include <deque>'],
+  [/\b(?:priority_queue|queue)\s*</, '#include <queue>'],
+  [/\bstack\s*</, '#include <stack>'],
+  [/\bpair\s*</, '#include <utility>'],
+  [/\bstring\b/, '#include <string>'],
+  [/\bspan\s*</, '#include <span>'],
+  [/\bviews::|\branges::|std::views|std::ranges/, '#include <ranges>'],
+  [/\bconcept\b|\brequires\b/, '#include <concepts>'],
+  [/\b(?:any|any_cast|make_any)\b/, '#include <any>'],
+  [/\b(?:bit_cast|bit_ceil|bit_floor|bit_width|byteswap|countl_one|countl_zero|countr_one|countr_zero|has_single_bit|popcount|rotl|rotr)\s*\(/, '#include <bit>'],
+  [/\b(?:isalpha|isalnum|isblank|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|tolower|toupper)\s*\(/, '#include <cctype>'],
+  [/\berrno\b/, '#include <cerrno>'],
+  [/\b(?:DBL_|FLT_|LDBL_)/, '#include <cfloat>'],
+  [/\b(?:from_chars|to_chars)\s*\(/, '#include <charconv>'],
+  [/\b(?:chrono::|std::chrono::|duration\s*<|time_point\s*<|system_clock|steady_clock|high_resolution_clock)\b/, '#include <chrono>'],
+  [/\b(?:intmax_t|uintmax_t|imaxabs|imaxdiv|strtoimax|strtoumax)\b/, '#include <cinttypes>'],
+  [/\b(?:strong_ordering|weak_ordering|partial_ordering|compare_three_way)\b|<=>/, '#include <compare>'],
+  [/\bcomplex\s*</, '#include <complex>'],
+  [/\b(?:byte|nullptr_t|ptrdiff_t|size_t)\b/, '#include <cstddef>'],
+  [/\b(?:FILE|clearerr|fclose|feof|ferror|fflush|fgetc|fgetpos|fgets|fopen|fprintf|fputc|fputs|fread|freopen|fscanf|fseek|fsetpos|ftell|fwrite|getc|getchar|perror|printf|putc|putchar|puts|remove|rename|rewind|scanf|setbuf|setvbuf|snprintf|sprintf|sscanf|tmpfile|tmpnam|ungetc|vfprintf|vfscanf|vprintf|vscanf|vsnprintf|vsprintf|vsscanf)\b/, '#include <cstdio>'],
+  [/\b(?:abort|abs|aligned_alloc|atexit|atof|atoi|atol|atoll|bsearch|calloc|div|exit|free|getenv|labs|ldiv|llabs|lldiv|malloc|mblen|mbstowcs|mbtowc|qsort|rand|realloc|srand|strtod|strtof|strtol|strtold|strtoll|strtoul|strtoull|system|wcstombs|wctomb)\b/, '#include <cstdlib>'],
+  [/\b(?:memchr|memcmp|memcpy|memmove|memset|strcat|strchr|strcmp|strcoll|strcpy|strcspn|strerror|strlen|strncat|strncmp|strncpy|strpbrk|strrchr|strspn|strstr|strtok|strxfrm)\s*\(/, '#include <cstring>'],
+  [/\b(?:exception|exception_ptr|current_exception|make_exception_ptr|rethrow_exception|terminate|uncaught_exceptions?)\b/, '#include <exception>'],
+  [/\b(?:expected|unexpected)\s*<|\bunexpect\b/, '#include <expected>'],
+  [/\bforward_list\s*</, '#include <forward_list>'],
+  [/\binitializer_list\s*</, '#include <initializer_list>'],
+  [/\b(?:boolalpha|defaultfloat|fixed|hexfloat|noboolalpha|put_money|put_time|quoted|scientific|setbase|setfill|setiosflags|setprecision|setw)\b/, '#include <iomanip>'],
+  [/\b(?:ios|ios_base|streampos|streamoff)\b/, '#include <ios>'],
+  [/\b(?:cerr|cin|clog|cout|wcin|wcout|wcerr|wclog)\b/, '#include <iostream>'],
+  [/\b(?:advance|back_inserter|begin|cbegin|cend|crbegin|crend|distance|end|front_inserter|inserter|istream_iterator|iterator_traits|make_move_iterator|next|ostream_iterator|prev|rbegin|rend)\b/, '#include <iterator>'],
+  [/\blist\s*</, '#include <list>'],
+  [/\b(?:allocator|make_shared|make_unique|shared_ptr|unique_ptr|weak_ptr)\b/, '#include <memory>'],
+  [/\b(?:numbers::|std::numbers::)/, '#include <numbers>'],
+  [/\boptional\s*<|\b(?:make_optional|nullopt)\b/, '#include <optional>'],
+  [/\b(?:bernoulli_distribution|binomial_distribution|default_random_engine|discrete_distribution|exponential_distribution|geometric_distribution|knuth_b|linear_congruential_engine|lognormal_distribution|mersenne_twister_engine|minstd_rand|mt19937|mt19937_64|normal_distribution|piecewise_constant_distribution|piecewise_linear_distribution|poisson_distribution|random_device|ranlux24|ranlux48|shuffle_order_engine|student_t_distribution|uniform_int_distribution|uniform_real_distribution|weibull_distribution)\b/, '#include <random>'],
+  [/\bratio\s*</, '#include <ratio>'],
+  [/\b(?:cmatch|cregex_iterator|cregex_token_iterator|regex|regex_error|regex_iterator|regex_match|regex_replace|regex_search|regex_token_iterator|smatch|sregex_iterator|sregex_token_iterator|wregex|wsmatch)\b/, '#include <regex>'],
+  [/\b(?:logic_error|domain_error|invalid_argument|length_error|out_of_range|runtime_error|range_error|overflow_error|underflow_error)\b/, '#include <stdexcept>'],
+  [/\bstring_view\b/, '#include <string_view>'],
+  [/\b(?:add_const|add_cv|add_lvalue_reference|add_pointer|add_rvalue_reference|add_volatile|aligned_storage|common_type|conditional|decay|enable_if|false_type|integral_constant|is_arithmetic|is_array|is_base_of|is_class|is_const|is_convertible|is_enum|is_floating_point|is_function|is_integral|is_lvalue_reference|is_pointer|is_reference|is_same|is_signed|is_trivially_copyable|is_void|remove_const|remove_cv|remove_pointer|remove_reference|true_type|underlying_type|void_t)\b/, '#include <type_traits>'],
+  [/\btype_index\b/, '#include <typeindex>'],
+  [/\b(?:type_info|typeid\s*\()/, '#include <typeinfo>'],
+  [/\bvalarray\s*</, '#include <valarray>'],
+  [/\bvariant\s*<|\b(?:holds_alternative|monostate|visit)\b/, '#include <variant>'],
+  [/\b__cpp_lib_/, '#include <version>'],
+]);
 
 let configuredAssets = null;
 let toolchainPromise = null;
@@ -2207,33 +2273,10 @@ function cppDynamicInputExpression(parameter, index, aliases = new Map()) {
 
 function buildGeneratedIncludes(source, signature) {
   const probe = `${source}\n${signature.parameters.map((parameter) => parameter.type).join('\n')}`;
-  const includes = new Set([
-    '#include "/tracecode_runtime.hpp"',
-    '#include <algorithm>',
-    '#include <array>',
-    '#include <bitset>',
-    '#include <climits>',
-    '#include <cmath>',
-    '#include <cstdint>',
-    '#include <functional>',
-    '#include <limits>',
-    '#include <numeric>',
-    '#include <sstream>',
-    '#include <tuple>',
-  ]);
-  if (/\bvector\s*</.test(probe)) includes.add('#include <vector>');
-  if (/\bunordered_map\s*</.test(probe)) includes.add('#include <unordered_map>');
-  if (/\bunordered_set\s*</.test(probe)) includes.add('#include <unordered_set>');
-  if (/\bmap\s*</.test(probe)) includes.add('#include <map>');
-  if (/\bset\s*</.test(probe)) includes.add('#include <set>');
-  if (/\bdeque\s*</.test(probe)) includes.add('#include <deque>');
-  if (/\bqueue\s*</.test(probe)) includes.add('#include <queue>');
-  if (/\bstack\s*</.test(probe)) includes.add('#include <stack>');
-  if (/\bpair\s*</.test(probe)) includes.add('#include <utility>');
-  if (/\bstring\b/.test(probe)) includes.add('#include <string>');
-  if (/\bspan\s*</.test(probe)) includes.add('#include <span>');
-  if (/\bviews::|\branges::|std::views|std::ranges/.test(probe)) includes.add('#include <ranges>');
-  if (/\bconcept\b|\brequires\b/.test(probe)) includes.add('#include <concepts>');
+  const includes = new Set(CPP_BASE_GENERATED_INCLUDES);
+  for (const [pattern, include] of CPP_STANDARD_INCLUDE_RULES) {
+    if (pattern.test(probe)) includes.add(include);
+  }
   return [...includes].join('\n');
 }
 

@@ -452,12 +452,62 @@ print(json.dumps({
   console.log('PASS: Python runtime value serialization cap');
 }
 
+async function assertDefaultPreludeImportsAreAvailable(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def solve(nums):
+    q = deque(nums)
+    index = bisect_left(sorted(nums), 2)
+    heappush(nums, 0)
+    pattern = re.compile("a+")
+    return [
+        q.popleft(),
+        index,
+        heappop(nums),
+        list(islice(count(5), 2)),
+        itemgetter(1)(("x", "y")),
+        string.ascii_lowercase[:3],
+        pattern.fullmatch("aaa") is not None,
+    ]
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    { nums: [3, 1, 2] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { result: unknown };
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify([3, 1, 0, [5, 6], 'y', 'abc', true]),
+    `Python default prelude imports should be available without user imports, got ${JSON.stringify(parsed.result)}`
+  );
+
+  console.log('PASS: Python runtime default convenience imports');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertTraceReferenceIdsAreNeutral();
   await assertTraceCaptureLimitPreservesOutput();
   await assertRuntimeValueSerializationCap();
+  await assertDefaultPreludeImportsAreAvailable();
   console.log('\nPython runtime checks passed.');
 }
 

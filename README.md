@@ -241,6 +241,7 @@ default idle timeout; call `disposeLanguage('cpp')` when C++ is no longer active
 - `pyodide/runtime-core.js`
 - `javascript-worker.js`
 - `vendor/typescript.js`
+- `vendor/javascript-libraries.js`
 - `java-worker.js`
 - `vendor/java-browser-helper.jar`
 - `vendor/java-rewriter.jar`
@@ -271,6 +272,7 @@ By default, `createBrowserHarness({ assetBaseUrl: '/workers' })` resolves those 
 - `/workers/pyodide/runtime-core.js`
 - `/workers/javascript-worker.js`
 - `/workers/vendor/typescript.js`
+- `/workers/vendor/javascript-libraries.js`
 - `/workers/java-worker.js`
 - `/workers/vendor/java-browser-helper.jar`
 - `/workers/vendor/java-rewriter.jar`

@@ -37,6 +37,7 @@ const GENERATED_HARNESS_SNIPPETS_PATHS = [
 let pyodide = null;
 let isLoading = false;
 let loadPromise = null;
+let pythonPackageLoadPromise = null;
 const WORKER_DEBUG = (() => {
   try {
     return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
@@ -54,6 +55,20 @@ const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
   maxMemoryBytes: 96 * 1024 * 1024, // 96 MB
   memoryCheckEvery: 200,
 });
+
+async function ensurePythonLibraryPackages(runtime) {
+  if (!runtime || typeof runtime.loadPackage !== 'function') return;
+  if (!pythonPackageLoadPromise) {
+    pythonPackageLoadPromise = runtime.loadPackage(['sortedcontainers']).catch((error) => {
+      pythonPackageLoadPromise = null;
+      if (WORKER_DEBUG) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn('[PythonWorker] Failed to preload Python packages:', message);
+      }
+    });
+  }
+  await pythonPackageLoadPromise;
+}
 
 // Load generated shared harness snippets when available. Keep worker startup
 // resilient by falling back to embedded implementations if this import fails.
@@ -549,6 +564,7 @@ async function loadPyodideInstance() {
       for (const indexURL of PYODIDE_INDEX_URLS) {
         try {
           pyodide = await self.loadPyodide({ indexURL });
+          await ensurePythonLibraryPackages(pyodide);
           if (WORKER_DEBUG) {
             console.log('[PythonWorker] Initialized runtime from', indexURL);
           }

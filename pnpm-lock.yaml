@@ -12,9 +12,42 @@ importers:
 
   .:
     dependencies:
+      '@datastructures-js/binary-search-tree':
+        specifier: 5.4.0
+        version: 5.4.0
+      '@datastructures-js/deque':
+        specifier: 1.0.8
+        version: 1.0.8
+      '@datastructures-js/graph':
+        specifier: 5.3.1
+        version: 5.3.1
+      '@datastructures-js/heap':
+        specifier: 4.3.7
+        version: 4.3.7
+      '@datastructures-js/linked-list':
+        specifier: 6.1.4
+        version: 6.1.4
+      '@datastructures-js/priority-queue':
+        specifier: 6.3.5
+        version: 6.3.5
+      '@datastructures-js/queue':
+        specifier: 4.3.0
+        version: 4.3.0
+      '@datastructures-js/set':
+        specifier: 4.2.2
+        version: 4.2.2
+      '@datastructures-js/stack':
+        specifier: 3.1.6
+        version: 3.1.6
+      '@datastructures-js/trie':
+        specifier: 4.2.3
+        version: 4.2.3
       '@yowasp/clang':
         specifier: 22.0.0-git20542-10
         version: 22.0.0-git20542-10
+      lodash:
+        specifier: 4.17.21
+        version: 4.17.21
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -63,6 +96,39 @@ importers:
 
   packages/harness-javascript:
     dependencies:
+      '@datastructures-js/binary-search-tree':
+        specifier: 5.4.0
+        version: 5.4.0
+      '@datastructures-js/deque':
+        specifier: 1.0.8
+        version: 1.0.8
+      '@datastructures-js/graph':
+        specifier: 5.3.1
+        version: 5.3.1
+      '@datastructures-js/heap':
+        specifier: 4.3.7
+        version: 4.3.7
+      '@datastructures-js/linked-list':
+        specifier: 6.1.4
+        version: 6.1.4
+      '@datastructures-js/priority-queue':
+        specifier: 6.3.5
+        version: 6.3.5
+      '@datastructures-js/queue':
+        specifier: 4.3.0
+        version: 4.3.0
+      '@datastructures-js/set':
+        specifier: 4.2.2
+        version: 4.2.2
+      '@datastructures-js/stack':
+        specifier: 3.1.6
+        version: 3.1.6
+      '@datastructures-js/trie':
+        specifier: 4.2.3
+        version: 4.2.3
+      lodash:
+        specifier: 4.17.21
+        version: 4.17.21
       typescript:
         specifier: '>=5.0.0'
         version: 5.9.3
@@ -70,6 +136,39 @@ importers:
   packages/harness-python: {}
 
 packages:
+
+  '@datastructures-js/binary-search-tree@5.4.0':
+    resolution: {integrity: sha512-dPmPRRgAEvfC1+xq9voBJcIanbXZbaOR1908R6RfhceXignnlCL1wX7LToPVHSKVCb+bGa+tAbK22cit0BLWDA==}
+
+  '@datastructures-js/deque@1.0.8':
+    resolution: {integrity: sha512-PSBhJ2/SmeRPRHuBv7i/fHWIdSC3JTyq56qb+Rq0wjOagi0/fdV5/B/3Md5zFZus/W6OkSPMaxMKKMNMrSmubg==}
+
+  '@datastructures-js/graph@5.3.1':
+    resolution: {integrity: sha512-tFuysPL+PKxaLitXcHeWZOwOwmSIaa5OzBh4CNSwYYnAVZRxItl50LiX432+AMo+WZLYpDEhTyXtLVlt3qtc9w==}
+
+  '@datastructures-js/heap@4.3.7':
+    resolution: {integrity: sha512-Dx4un7Uj0dVxkfoq4RkpzsY2OrvNJgQYZ3n3UlGdl88RxxdHd7oTi21/l3zoxUUe0sXFuNUrfmWqlHzqnoN6Ug==}
+
+  '@datastructures-js/linked-list@6.1.4':
+    resolution: {integrity: sha512-lwM6KDBPgV9xxJMzozCqZzdofzc0fx8FPjNfrWDf8+u8Fm7zcjksvXrv6Z9dA2Kg40HZIUKqLPaQriqLhhAisg==}
+
+  '@datastructures-js/priority-queue@6.3.5':
+    resolution: {integrity: sha512-NmdmvLnkUyG67W6Iy8tP+865ILq5VDyZh90c8lHMOkYYydUNzOV0QNPCRAuj4AoHSm/V2DeuYvDKnvALaCwLvA==}
+
+  '@datastructures-js/queue@3.1.4':
+    resolution: {integrity: sha512-8QqkdAJQDDd25OBX28lKj7HXD+Cxs6Ee0ogJkZUjD5R1fAvRAWsrCeKop0szqANYjMwdQQd75vyc3Cm8qNJH+Q==}
+
+  '@datastructures-js/queue@4.3.0':
+    resolution: {integrity: sha512-2RYt1+N4dtdcilwmB+A6j9HT/5MImHSK2UUjBA8WQAHoA2AEJC4YxJSSGhGTOBMyLMKpMiowwTrnB315YgtTrA==}
+
+  '@datastructures-js/set@4.2.2':
+    resolution: {integrity: sha512-6TilB1kZV3elcT3PiXnzBzjgf+HqcfcbyPjL3q7fubIpaKwFF1qSjJjzXdE7s8utA6ptyQrhQiU6knhVPcDZMA==}
+
+  '@datastructures-js/stack@3.1.6':
+    resolution: {integrity: sha512-HtArTBadxEK8j/whIuXanzoCj9VPz7BXJOn5n4ktr7K+DtGryrCLERZczbN35WujqEwIjIdVTTbxGoma1qGDuQ==}
+
+  '@datastructures-js/trie@4.2.3':
+    resolution: {integrity: sha512-4Iu2okR18BE3d/KQBKnpGZ+98cv/EwYl7wSwOU4yICxjSJfjUJixugBjh3kPhHe9Qf652qVDN/Ugp2dj4ak68w==}
 
   '@esbuild/aix-ppc64@0.27.3':
     resolution: {integrity: sha512-9fJMTNFTWZMh5qwrBItuziu834eOCUcEqymSH7pY+zoMVEZg3gcPuBNxH1EvfVYe9h0x/Ptw8KBzv7qxb7l8dg==}
@@ -470,6 +569,9 @@ packages:
     resolution: {integrity: sha512-IXO6OCs9yg8tMKzfPZ1YmheJbZCiEsnBdcB03l0OcfK9prKnJb96siuHCr5Fl37/yo9DnKU+TLpxzTUspw9shg==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
+  lodash@4.17.21:
+    resolution: {integrity: sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==}
+
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
 
@@ -690,6 +792,32 @@ packages:
         optional: true
 
 snapshots:
+
+  '@datastructures-js/binary-search-tree@5.4.0': {}
+
+  '@datastructures-js/deque@1.0.8': {}
+
+  '@datastructures-js/graph@5.3.1':
+    dependencies:
+      '@datastructures-js/queue': 3.1.4
+
+  '@datastructures-js/heap@4.3.7': {}
+
+  '@datastructures-js/linked-list@6.1.4': {}
+
+  '@datastructures-js/priority-queue@6.3.5':
+    dependencies:
+      '@datastructures-js/heap': 4.3.7
+
+  '@datastructures-js/queue@3.1.4': {}
+
+  '@datastructures-js/queue@4.3.0': {}
+
+  '@datastructures-js/set@4.2.2': {}
+
+  '@datastructures-js/stack@3.1.6': {}
+
+  '@datastructures-js/trie@4.2.3': {}
 
   '@esbuild/aix-ppc64@0.27.3':
     optional: true
@@ -956,6 +1084,8 @@ snapshots:
   lines-and-columns@1.2.4: {}
 
   load-tsconfig@0.2.5: {}
+
+  lodash@4.17.21: {}
 
   magic-string@0.30.21:
     dependencies:

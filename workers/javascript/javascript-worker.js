@@ -28,8 +28,18 @@ const TYPESCRIPT_COMPILER_URLS = [
   'https://cdn.jsdelivr.net/npm/typescript@5.9.2/lib/typescript.js',
   'https://unpkg.com/typescript@5.9.2/lib/typescript.js',
 ];
+const JAVASCRIPT_LIBRARY_URLS = [
+  './vendor/javascript-libraries.js',
+];
+let javascriptLibrariesLoadAttempted = false;
 
 const JAVASCRIPT_RUNTIME_PRELUDE = `
+if (typeof globalThis.module === 'undefined') {
+  globalThis.module = { exports: {} };
+}
+if (typeof globalThis.exports === 'undefined') {
+  globalThis.exports = globalThis.module.exports || {};
+}
 if (typeof globalThis.ListNode !== 'function') {
   globalThis.ListNode = class ListNode {
     constructor(val = 0, next = null) {
@@ -48,6 +58,41 @@ if (typeof globalThis.TreeNode !== 'function') {
   };
 }
 `;
+
+function ensureJavaScriptLibraries() {
+  if (
+    typeof globalThis !== 'undefined' &&
+    globalThis.__TRACECODE_JAVASCRIPT_LIBRARIES__ &&
+    typeof globalThis.require === 'function'
+  ) {
+    return;
+  }
+  if (javascriptLibrariesLoadAttempted) return;
+  javascriptLibrariesLoadAttempted = true;
+  if (typeof importScripts !== 'function') return;
+
+  const errors = [];
+  for (const libraryUrl of JAVASCRIPT_LIBRARY_URLS) {
+    try {
+      importScripts(libraryUrl);
+      if (
+        typeof globalThis !== 'undefined' &&
+        globalThis.__TRACECODE_JAVASCRIPT_LIBRARIES__ &&
+        typeof globalThis.require === 'function'
+      ) {
+        return;
+      }
+      errors.push(`${libraryUrl} (loaded but module registry was missing)`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push(`${libraryUrl} (${message})`);
+    }
+  }
+
+  if (WORKER_DEBUG && errors.length > 0) {
+    console.warn('[JavaScriptWorker] JavaScript library preload skipped:', errors.join(' | '));
+  }
+}
 
 const TYPESCRIPT_RUNTIME_DECLARATIONS = `
 declare class ListNode {
@@ -2130,6 +2175,7 @@ function transpileTypeScript(sourceCode) {
 }
 
 async function prepareExecutableCode(sourceCode, language) {
+  ensureJavaScriptLibraries();
   if (language === 'typescript') {
     await ensureTypeScriptCompiler();
     return transpileTypeScript(sourceCode);
@@ -4326,6 +4372,7 @@ async function initRuntime() {
 
   isLoading = true;
   const startedAt = performanceNow();
+  ensureJavaScriptLibraries();
   isInitialized = true;
   isLoading = false;
   return { success: true, loadTimeMs: performanceNow() - startedAt };

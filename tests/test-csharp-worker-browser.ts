@@ -247,6 +247,37 @@ async function main(): Promise<void> {
       `C# worker script-style case should capture stdout, received ${JSON.stringify(scriptStyle.consoleOutput)}`
     );
 
+    const defaultUsings = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public string DefaultImports(string value) {',
+        '    var builder = new StringBuilder();',
+        '    builder.Append(Regex.Replace(value, "[^a-z]", ""));',
+        '    var big = BigInteger.Parse("9007199254740993") + 7;',
+        '    var queue = new Queue<int>();',
+        '    queue.Enqueue(2);',
+        '    queue.Enqueue(3);',
+        '    var stack = new Stack<int>();',
+        '    stack.Push(5);',
+        '    stack.Push(7);',
+        '    var dict = new Dictionary<string, int> { ["a"] = queue.Dequeue(), ["b"] = stack.Pop() };',
+        '    var set = new HashSet<int>(dict.Values);',
+        '    var bag = new ArrayList { builder.Length, set.Count };',
+        '    return $"{builder}:{big}:{dict.Values.Sum()}:{bag.Count}:{bag[0]}:{bag[1]}";',
+        '  }',
+        '}',
+      ].join('\n'),
+      'DefaultImports',
+      { value: 'a1b2c' },
+      assetBaseUrl
+    );
+    assertCondition(defaultUsings.success, `C# worker default usings case should succeed: ${defaultUsings.error ?? 'unknown error'}`);
+    assertCondition(
+      defaultUsings.output === 'abc:9007199254741000:9:2:3:2',
+      `C# worker default usings case should return expected summary, received ${JSON.stringify(defaultUsings.output)}`
+    );
+
     const interviewAdd = await runWorkerCase(
       page,
       fixture('add.cs'),

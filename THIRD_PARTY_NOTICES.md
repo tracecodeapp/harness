@@ -41,6 +41,29 @@ sources.
 - Upstream notice: TypeScript distributes `ThirdPartyNoticeText.txt`; preserve
   that upstream notice when updating the vendored compiler asset.
 
+### Lodash
+
+- Use: JavaScript/TypeScript helper exposed as `_`, `lodash`, and through the
+  worker-local `require("lodash")` shim.
+- Vendored asset: `workers/vendor/javascript-libraries.js`.
+- Version: `lodash` `4.17.21`.
+- License: MIT.
+- Source: https://github.com/lodash/lodash
+
+### datastructures-js
+
+- Use: JavaScript/TypeScript helper packages exposed through the worker-local
+  `require("@datastructures-js/...")` shim.
+- Vendored asset: `workers/vendor/javascript-libraries.js`.
+- Versions: `@datastructures-js/binary-search-tree` `5.4.0`,
+  `@datastructures-js/deque` `1.0.8`, `@datastructures-js/graph` `5.3.1`,
+  `@datastructures-js/heap` `4.3.7`, `@datastructures-js/linked-list`
+  `6.1.4`, `@datastructures-js/priority-queue` `6.3.5`,
+  `@datastructures-js/queue` `4.3.0`, `@datastructures-js/set` `4.2.2`,
+  `@datastructures-js/stack` `3.1.6`, and `@datastructures-js/trie` `4.2.3`.
+- License: MIT.
+- Source: https://github.com/datastructures-js
+
 ## Java Runtime
 
 ### CheerpJ Core

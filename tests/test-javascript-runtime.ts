@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
@@ -21,7 +22,7 @@ interface WorkerSelfObject {
 
 interface CreateWorkerHarnessOptions {
   typeScriptCompiler?: unknown;
-  importScripts?: (workerSelf: WorkerSelfObject, ...urls: string[]) => void;
+  importScripts?: (workerSelf: WorkerSelfObject, context: vm.Context, ...urls: string[]) => void;
 }
 
 type RuntimeAccessEvent = {
@@ -111,6 +112,13 @@ async function loadWorkerSource(): Promise<string> {
   return readFile(workerPath, 'utf8');
 }
 
+function loadJavaScriptLibrariesIntoContext(context: vm.Context): void {
+  const vendorPath = join(process.cwd(), 'workers', 'vendor', 'javascript-libraries.js');
+  vm.runInContext(readFileSync(vendorPath, 'utf8'), context, {
+    filename: 'javascript-libraries.js',
+  });
+}
+
 function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessOptions = { typeScriptCompiler: ts }) {
   const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   let ready = false;
@@ -147,11 +155,24 @@ function createWorkerHarness(workerSource: string, options: CreateWorkerHarnessO
     clearTimeout,
   };
 
-  if (options.importScripts) {
-    contextGlobals.importScripts = (...urls: string[]) => options.importScripts?.(selfObject, ...urls);
-  }
-
   const context = vm.createContext(contextGlobals);
+  const defaultImportScripts = (...urls: string[]) => {
+    for (const url of urls) {
+      if (String(url).includes('javascript-libraries.js')) {
+        loadJavaScriptLibrariesIntoContext(context);
+      } else if (String(url).includes('typescript')) {
+        selfObject.ts = ts;
+      } else {
+        throw new Error(`Unexpected importScripts URL in JavaScript worker test: ${url}`);
+      }
+    }
+  };
+  (context as Record<string, unknown>).importScripts = (...urls: string[]) => {
+    if (options.importScripts) {
+      return options.importScripts(selfObject, context, ...urls);
+    }
+    return defaultImportScripts(...urls);
+  };
 
   vm.runInContext(workerSource, context, {
     filename: 'javascript-worker.js',
@@ -192,9 +213,16 @@ async function main(): Promise<void> {
   let plainJavaScriptCompilerImportCount = 0;
   const plainJavaScriptHarness = createWorkerHarness(workerSource, {
     typeScriptCompiler: undefined,
-    importScripts: () => {
-      plainJavaScriptCompilerImportCount += 1;
-      throw new Error('Plain JavaScript execution should not import the TypeScript compiler');
+    importScripts: (_workerSelf, context, ...urls) => {
+      for (const url of urls) {
+        if (String(url).includes('typescript')) {
+          plainJavaScriptCompilerImportCount += 1;
+          throw new Error('Plain JavaScript execution should not import the TypeScript compiler');
+        }
+        if (String(url).includes('javascript-libraries.js')) {
+          loadJavaScriptLibrariesIntoContext(context);
+        }
+      }
     },
   });
   const plainJavaScriptResult = await plainJavaScriptHarness.sendMessage<{
@@ -219,9 +247,17 @@ async function main(): Promise<void> {
   let typeScriptWarmupImportCount = 0;
   const warmupHarness = createWorkerHarness(workerSource, {
     typeScriptCompiler: undefined,
-    importScripts: (workerSelf) => {
-      typeScriptWarmupImportCount += 1;
-      workerSelf.ts = ts;
+    importScripts: (workerSelf, context, ...urls) => {
+      for (const url of urls) {
+        if (String(url).includes('javascript-libraries.js')) {
+          loadJavaScriptLibrariesIntoContext(context);
+        } else if (String(url).includes('typescript')) {
+          typeScriptWarmupImportCount += 1;
+          workerSelf.ts = ts;
+        } else {
+          throw new Error(`Unexpected importScripts URL in TypeScript warmup test: ${url}`);
+        }
+      }
     },
   });
   const typeScriptWarmup = await warmupHarness.sendMessage<{
@@ -236,6 +272,37 @@ async function main(): Promise<void> {
   assertCondition(typeScriptWarmupAgain.success === true, 'Repeated TypeScript warmup should succeed');
   assertCondition(typeScriptWarmupImportCount === 1, 'Repeated TypeScript warmup should reuse the compiler');
   console.log('PASS: TypeScript warmup preloads compiler once');
+
+  const executeJavaScriptLibraries = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `function solve(nums) {
+  const { MinPriorityQueue } = require('@datastructures-js/priority-queue');
+  const { Trie } = require('@datastructures-js/trie');
+  const pq = new MinPriorityQueue();
+  for (const num of nums) pq.enqueue(num);
+  const queue = new Queue();
+  queue.enqueue(_.sum(nums));
+  const trie = new Trie();
+  trie.insert('leet');
+  return [lodash.max(nums), pq.dequeue(), queue.dequeue(), trie.has('leet'), typeof BinarySearchTree];
+}`,
+    functionName: 'solve',
+    inputs: { nums: [5, 1, 4] },
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    executeJavaScriptLibraries.success === true,
+    `JavaScript library execution should succeed: ${executeJavaScriptLibraries.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(executeJavaScriptLibraries.output) === JSON.stringify([5, 1, 10, true, 'undefined']),
+    'JavaScript worker should expose lodash globals, non-conflicting datastructures-js globals, and require() modules'
+  );
+  console.log('PASS: execute-code javascript library preload');
 
   const setForOfTracing = await harness.sendMessage<{
     success: boolean;
@@ -492,7 +559,7 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   assertCondition(executeJavaScriptSparseTreeArrayInput.success === true, 'JavaScript sparse tree array input execution should succeed');
   assertCondition(
     JSON.stringify(executeJavaScriptSparseTreeArrayInput.output) === JSON.stringify([1, 2, 3, 4, 5]),
-    'JavaScript tree hydration should honor sparse LeetCode-style level-order arrays'
+    'JavaScript tree hydration should honor sparse level-order arrays'
   );
   console.log('PASS: execute-code javascript sparse tree array hydration');
 
@@ -580,6 +647,33 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   assertCondition(executeTypeScript.output === 10, 'TypeScript output should equal 10');
   console.log('PASS: execute-code typescript transpilation');
 
+  const executeTypeScriptLibraryImport = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `import { MinPriorityQueue } from '@datastructures-js/priority-queue';
+
+function smallest(nums: number[]): number {
+  const pq = new MinPriorityQueue<number>();
+  nums.forEach((num) => pq.enqueue(num));
+  return pq.dequeue();
+}`,
+    functionName: 'smallest',
+    inputs: { nums: [9, 4, 7] },
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(
+    executeTypeScriptLibraryImport.success === true,
+    `TypeScript datastructures-js import should succeed: ${executeTypeScriptLibraryImport.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    executeTypeScriptLibraryImport.output === 4,
+    'TypeScript worker should resolve datastructures-js imports through the JavaScript module registry'
+  );
+  console.log('PASS: execute-code typescript library import');
+
   const packageExecutorArgOrder = await executeTypeScriptCode(
     `class Solution {
   canSplitTeams(n: number, conflicts: number[][]): boolean {
@@ -599,6 +693,28 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     'Package executor should bind solution-method args by signature order, not object key order'
   );
   console.log('PASS: package executor solution-method arg order contract');
+
+  const packageExecutorLibraryImport = await executeTypeScriptCode(
+    `import { MinPriorityQueue } from '@datastructures-js/priority-queue';
+
+function smallest(nums: number[]): number {
+  const pq = new MinPriorityQueue<number>();
+  nums.forEach((num) => pq.enqueue(num));
+  return pq.dequeue();
+}`,
+    'smallest',
+    { nums: [8, 2, 6] },
+    'function'
+  );
+  assertCondition(
+    packageExecutorLibraryImport.success === true,
+    `Package executor datastructures-js import should succeed: ${packageExecutorLibraryImport.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    packageExecutorLibraryImport.output === 2,
+    'Package executor should resolve TypeScript datastructures-js imports through the JavaScript module registry'
+  );
+  console.log('PASS: package executor TypeScript library import');
 
   const executeTypeScriptLinkedListCycleRefs = await harness.sendMessage<{
     success: boolean;

@@ -6,8 +6,13 @@ import { withTypeScriptRuntimeDeclarations } from './typescript-runtime-declarat
 type TypeScriptModule = typeof import('typescript');
 
 let typeScriptModulePromise: Promise<TypeScriptModule> | null = null;
+let javascriptLibraryPromise: Promise<JavaScriptLibraryEnvironment> | null = null;
 
 type DynamicRunner = (...args: unknown[]) => unknown;
+type JavaScriptLibraryEnvironment = {
+  modules: Record<string, unknown>;
+  globals: Record<string, unknown>;
+};
 
 async function getTypeScriptModule(): Promise<TypeScriptModule> {
   if (!typeScriptModulePromise) {
@@ -15,6 +20,162 @@ async function getTypeScriptModule(): Promise<TypeScriptModule> {
     typeScriptModulePromise = import(/* webpackIgnore: true */ specifier);
   }
   return typeScriptModulePromise;
+}
+
+async function tryImportJavaScriptLibraryModule(specifier: string): Promise<unknown | undefined> {
+  try {
+    return await import(/* webpackIgnore: true */ specifier);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeCommonJsLikeModule(moduleValue: unknown): unknown {
+  if (!moduleValue || typeof moduleValue !== 'object') return moduleValue;
+  const record = moduleValue as Record<string, unknown>;
+  const namedKeys = Object.keys(record).filter((key) => key !== 'default');
+  if (namedKeys.length === 0 && 'default' in record) {
+    return record.default;
+  }
+  if (record.default && typeof record.default === 'object') {
+    return { ...(record.default as Record<string, unknown>), ...record };
+  }
+  return record;
+}
+
+function moduleMember(moduleValue: unknown, name: string): unknown {
+  if (!moduleValue || typeof moduleValue !== 'object') return undefined;
+  const record = moduleValue as Record<string, unknown>;
+  return record[name];
+}
+
+async function getJavaScriptLibraryEnvironment(): Promise<JavaScriptLibraryEnvironment> {
+  if (!javascriptLibraryPromise) {
+    javascriptLibraryPromise = (async () => {
+      const [
+        lodashModule,
+        binarySearchTreeModule,
+        dequeModule,
+        graphModule,
+        heapModule,
+        linkedListModule,
+        priorityQueueModule,
+        queueModule,
+        enhancedSetModule,
+        stackModule,
+        trieModule,
+      ] = await Promise.all([
+        tryImportJavaScriptLibraryModule('lodash'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/binary-search-tree'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/deque'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/graph'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/heap'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/linked-list'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/priority-queue'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/queue'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/set'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/stack'),
+        tryImportJavaScriptLibraryModule('@datastructures-js/trie'),
+      ]);
+      const lodash = normalizeCommonJsLikeModule(lodashModule);
+      const binarySearchTree = normalizeCommonJsLikeModule(binarySearchTreeModule);
+      const deque = normalizeCommonJsLikeModule(dequeModule);
+      const graph = normalizeCommonJsLikeModule(graphModule);
+      const heap = normalizeCommonJsLikeModule(heapModule);
+      const linkedList = normalizeCommonJsLikeModule(linkedListModule);
+      const priorityQueue = normalizeCommonJsLikeModule(priorityQueueModule);
+      const queue = normalizeCommonJsLikeModule(queueModule);
+      const enhancedSet = normalizeCommonJsLikeModule(enhancedSetModule);
+      const stack = normalizeCommonJsLikeModule(stackModule);
+      const trie = normalizeCommonJsLikeModule(trieModule);
+
+      const moduleEntries: Array<[string, unknown]> = [
+        ['lodash', lodash],
+        ['lodash.js', lodash],
+        ['@datastructures-js/binary-search-tree', binarySearchTree],
+        ['@datastructures-js/deque', deque],
+        ['@datastructures-js/graph', graph],
+        ['@datastructures-js/heap', heap],
+        ['@datastructures-js/linked-list', linkedList],
+        ['@datastructures-js/priority-queue', priorityQueue],
+        ['@datastructures-js/queue', queue],
+        ['@datastructures-js/set', enhancedSet],
+        ['@datastructures-js/stack', stack],
+        ['@datastructures-js/trie', trie],
+      ].filter((entry): entry is [string, unknown] => entry[1] !== undefined);
+
+      const globals: Record<string, unknown> = {
+        _: lodash,
+        lodash,
+        Deque: moduleMember(deque, 'Deque'),
+        DoublyLinkedList: moduleMember(linkedList, 'DoublyLinkedList'),
+        DoublyLinkedListNode: moduleMember(linkedList, 'DoublyLinkedListNode'),
+        EnhancedSet: moduleMember(enhancedSet, 'EnhancedSet'),
+        Heap: moduleMember(heap, 'Heap'),
+        LinkedList: moduleMember(linkedList, 'LinkedList'),
+        LinkedListNode: moduleMember(linkedList, 'LinkedListNode'),
+        MaxHeap: moduleMember(heap, 'MaxHeap'),
+        MaxPriorityQueue: moduleMember(priorityQueue, 'MaxPriorityQueue'),
+        MinHeap: moduleMember(heap, 'MinHeap'),
+        MinPriorityQueue: moduleMember(priorityQueue, 'MinPriorityQueue'),
+        PriorityQueue: moduleMember(priorityQueue, 'PriorityQueue'),
+        Queue: moduleMember(queue, 'Queue'),
+        Stack: moduleMember(stack, 'Stack'),
+      };
+
+      for (const [key, value] of Object.entries(globals)) {
+        if (value === undefined) delete globals[key];
+      }
+
+      return {
+        modules: Object.fromEntries(moduleEntries),
+        globals,
+      };
+    })();
+  }
+  return javascriptLibraryPromise;
+}
+
+function installJavaScriptLibraryGlobals(environment: JavaScriptLibraryEnvironment): () => void {
+  const scope = globalThis as Record<string, unknown>;
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  const previousRequire = typeof scope.require === 'function' ? scope.require as (specifier: string) => unknown : null;
+  const moduleObject = { exports: {} as Record<string, unknown> };
+  const requireFunction = (specifier: string): unknown => {
+    if (Object.prototype.hasOwnProperty.call(environment.modules, specifier)) {
+      return environment.modules[specifier];
+    }
+    if (previousRequire && previousRequire !== requireFunction) {
+      return previousRequire(specifier);
+    }
+    throw new Error(`Cannot find module '${specifier}'`);
+  };
+  const values: Record<string, unknown> = {
+    ...environment.globals,
+    __TRACECODE_JAVASCRIPT_LIBRARIES__: environment.modules,
+    require: requireFunction,
+    module: moduleObject,
+    exports: moduleObject.exports,
+  };
+
+  for (const [key, value] of Object.entries(values)) {
+    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(scope, key, {
+      value,
+      configurable: true,
+      writable: true,
+    });
+  }
+
+  return () => {
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) {
+        Object.defineProperty(scope, key, descriptor);
+      } else {
+        delete scope[key];
+      }
+    }
+  };
 }
 
 function performanceNow(): number {
@@ -867,6 +1028,8 @@ export async function executeJavaScriptCode(
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
+  const javascriptLibraryEnvironment = await getJavaScriptLibraryEnvironment();
+  const restoreJavaScriptLibraryGlobals = installJavaScriptLibraryGlobals(javascriptLibraryEnvironment);
 
   try {
     let output: unknown;
@@ -896,6 +1059,8 @@ export async function executeJavaScriptCode(
       errorLine: extractUserErrorLine(error),
       consoleOutput,
     };
+  } finally {
+    restoreJavaScriptLibraryGlobals();
   }
 }
 

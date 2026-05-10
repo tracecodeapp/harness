@@ -110,6 +110,27 @@ function assertNativeJavaRewriterCompiles(source: string, entryName = 'solve'): 
   }
 }
 
+function assertJavaSourceCompiles(source: string, label: string): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-source-compile-'));
+  try {
+    const publicClassName = source.match(/\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)/)?.[1] ?? 'Main';
+    const sourcePath = join(tmpRoot, `${publicClassName}.java`);
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(sourcePath, source, 'utf8');
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} should compile with the Java helper jar: ${detail}`);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testJavaRuntimeValueSerializationLimit(): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-serialization-'));
   try {
@@ -847,6 +868,30 @@ async function main(): Promise<void> {
       'Java execute-code should compile an uninstrumented runnable source'
     );
     console.log('PASS: java execute-code uses dedicated non-trace worker path');
+
+    const defaultImportExecute = await harness.sendMessage<{ success: boolean }>('execute-code', {
+      code: `class Solution {
+  int useDefaults() {
+    Pair<Integer, Integer> pair = new Pair<>(2, 3);
+    List<Integer> values = new ArrayList<>();
+    BigInteger total = BigInteger.valueOf(pair.getKey() + pair.getValue() + values.size());
+    return total.intValue();
+  }
+}`,
+      functionName: 'useDefaults',
+      inputs: {},
+      executionStyle: 'function',
+    });
+    assertCondition(defaultImportExecute.success === true, 'Java execute-code with default imports should succeed');
+    const defaultImportSource = latestSourceContaining(harness.stringFiles, 'new Pair<>(2, 3)');
+    assertCondition(
+      defaultImportSource.includes('import java.util.*;') &&
+        defaultImportSource.includes('import java.math.*;') &&
+        defaultImportSource.includes('import javafx.util.Pair;'),
+      'Java runnable source should inject default imports before user code'
+    );
+    assertJavaSourceCompiles(defaultImportSource, 'Java runnable source with default imports and javafx.util.Pair');
+    console.log('PASS: java worker injects default imports and Pair helper');
 
     const batchExecute = await harness.sendMessage<{
       success: boolean;

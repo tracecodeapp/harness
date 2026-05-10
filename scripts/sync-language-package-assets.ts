@@ -58,6 +58,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         source: ['workers', 'vendor', 'typescript.js'],
         target: ['workers', 'vendor', 'typescript.js'],
       },
+      {
+        source: ['workers', 'vendor', 'javascript-libraries.js'],
+        target: ['workers', 'vendor', 'javascript-libraries.js'],
+      },
     ],
   },
   {

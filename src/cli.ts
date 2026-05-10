@@ -111,6 +111,11 @@ const ASSET_COPY_PLAN = [
     languages: ['javascript'],
   },
   {
+    source: ['workers', 'vendor', 'javascript-libraries.js'],
+    target: ['vendor', 'javascript-libraries.js'],
+    languages: ['javascript'],
+  },
+  {
     source: ['workers', 'vendor', 'java-browser-helper.jar'],
     target: ['vendor', 'java-browser-helper.jar'],
     languages: ['java'],

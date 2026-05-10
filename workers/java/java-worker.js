@@ -15,6 +15,13 @@ const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
 const DYNAMIC_INPUT_PREFIX = '/str/tracecode-java-input';
+const JAVA_DEFAULT_IMPORTS = [
+  'import java.util.*;',
+  'import java.io.*;',
+  'import java.math.*;',
+  'import java.util.stream.*;',
+  'import javafx.util.Pair;',
+];
 
 if (typeof self.importScripts === 'function') {
   self.importScripts('java-source-augmentations.js');
@@ -33,6 +40,18 @@ let runWarmupPromise = null;
 
 function postMessageResponse(message) {
   self.postMessage(message);
+}
+
+function javaDefaultImportsBlock() {
+  return JAVA_DEFAULT_IMPORTS.join('\n');
+}
+
+function addJavaDefaultImportsToPackagedSource(source) {
+  const importBlock = javaDefaultImportsBlock();
+  return String(source).replace(
+    /^(package\s+[A-Za-z_][A-Za-z0-9_.]*\s*;\s*\n+)/,
+    `$1${importBlock}\n`
+  );
 }
 
 function formatWorkerErrorMessage(error) {
@@ -2449,7 +2468,7 @@ async function rewriteSource(payload, compileId, dynamicInputs) {
       hasDynamicInputs: dynamicInputs.length > 0,
     }
   );
-  return rewriteLibraryClass.rewriteSource(
+  const rewrittenSource = await rewriteLibraryClass.rewriteSource(
     payload.code,
     payload.executionStyle,
     payload.functionName,
@@ -2457,6 +2476,7 @@ async function rewriteSource(payload, compileId, dynamicInputs) {
     exportsClassName,
     packageName
   );
+  return addJavaDefaultImportsToPackagedSource(rewrittenSource);
 }
 
 function normalizePublicClassDeclarations(source) {
@@ -2481,6 +2501,7 @@ function buildPlainRunnableSource(payload, compileId, dynamicInputs) {
     `package ${packageName};`,
     '',
     'import tracecode.user.TraceHooks;',
+    javaDefaultImportsBlock(),
     '',
     normalizePublicClassDeclarations(payload.code).trim(),
     '',
@@ -2497,6 +2518,7 @@ function buildBatchRunnableSource(payload, compileId, inputBatch, dynamicInputBa
     `package ${packageName};`,
     '',
     'import tracecode.user.TraceHooks;',
+    javaDefaultImportsBlock(),
     '',
     normalizePublicClassDeclarations(payload.code).trim(),
     '',
@@ -2539,6 +2561,7 @@ function buildCompileProbeSource(payload, requestId, probeClassName, probePackag
     `package ${probePackageName};`,
     '',
     'import tracecode.user.TraceHooks;',
+    javaDefaultImportsBlock(),
     '',
     normalizePublicClassDeclarations(payload.code).trim(),
     '',
