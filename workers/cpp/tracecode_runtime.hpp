@@ -921,6 +921,20 @@ inline std::string target_json_key(const std::string& name, const K& key) {
   return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + to_json(key) + "]}";
 }
 
+template <typename Container, typename Index>
+inline auto trace_index_read(const Container& container, const std::string& name, Index index, int line) {
+  const auto& value = container[index];
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key(name, index) +
+      ",\"value\":" + to_json(value) + "}"
+    );
+  }
+  return value;
+}
+
 template <typename T>
 struct is_std_vector : std::false_type {};
 

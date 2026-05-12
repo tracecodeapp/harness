@@ -37,6 +37,11 @@ interface PendingMessage {
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
+interface PendingCompilerFrameRequest {
+  resolve: (value: Record<string, unknown>) => void;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
 type CppClientTimeoutStage = 'compile-run' | 'trace' | 'interview';
 
 class CppClientTimeoutError extends Error {
@@ -95,6 +100,14 @@ export class CppWorkerClient {
   private readonly interviewTimeoutMs: number;
   private readonly compilerFrameUrl?: string;
   private readonly activeCompilerFrames = new Set<HTMLIFrameElement>();
+  private compilerFrame: HTMLIFrameElement | null = null;
+  private compilerFrameReadyPromise: Promise<void> | null = null;
+  private compilerFrameReadyResolve: (() => void) | null = null;
+  private compilerFrameReadyReject: ((error: Error) => void) | null = null;
+  private compilerFrameTargetOrigin = '';
+  private compilerFrameRequestId = 0;
+  private compilerFrameMessageHandler: ((event: MessageEvent) => void) | null = null;
+  private pendingCompilerFrameRequests = new Map<string, PendingCompilerFrameRequest>();
 
   constructor(private readonly options: CppWorkerClientOptions) {
     this.debug = options.debug ?? process.env.NODE_ENV === 'development';
@@ -458,7 +471,22 @@ export class CppWorkerClient {
     return this.warmupPromise;
   }
 
-  private clearCompilerFrames(): void {
+  private clearCompilerFrames(reason: Error = new Error('C++ compiler frame was closed')): void {
+    this.compilerFrameReadyReject?.(reason);
+    this.compilerFrameReadyPromise = null;
+    this.compilerFrameReadyResolve = null;
+    this.compilerFrameReadyReject = null;
+    if (this.compilerFrameMessageHandler) {
+      globalThis.removeEventListener('message', this.compilerFrameMessageHandler);
+      this.compilerFrameMessageHandler = null;
+    }
+    for (const [, pending] of this.pendingCompilerFrameRequests) {
+      globalThis.clearTimeout(pending.timeoutId);
+      pending.resolve({ success: false, error: reason.message });
+    }
+    this.pendingCompilerFrameRequests.clear();
+    this.compilerFrame = null;
+    this.compilerFrameTargetOrigin = '';
     for (const frame of this.activeCompilerFrames) {
       frame.remove();
     }
@@ -482,67 +510,97 @@ export class CppWorkerClient {
     );
   }
 
-  private compileInFrame(payload: unknown): Promise<Record<string, unknown>> {
+  private ensureCompilerFrame(): Promise<void> {
     if (!this.compilerFrameUrl || typeof document === 'undefined') {
-      return Promise.resolve({ success: false, error: 'C++ compiler frame is not available.' });
+      return Promise.reject(new Error('C++ compiler frame is not available.'));
     }
+    if (this.compilerFrame && this.compilerFrameReadyPromise) return this.compilerFrameReadyPromise;
 
     const frameUrl = new URL(this.compilerFrameUrl, globalThis.location?.href);
-    const targetOrigin = frameUrl.origin;
+    this.compilerFrameTargetOrigin = frameUrl.origin;
     const iframe = document.createElement('iframe');
     iframe.src = frameUrl.href;
     iframe.style.display = 'none';
     iframe.setAttribute('aria-hidden', 'true');
+    this.compilerFrame = iframe;
     this.activeCompilerFrames.add(iframe);
 
-    return new Promise((resolve) => {
-      const requestId = `compile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    this.compilerFrameReadyPromise = new Promise<void>((resolve, reject) => {
       let settled = false;
-      let ready = false;
       let timeoutId: ReturnType<typeof setTimeout>;
 
-      const cleanup = () => {
-        globalThis.removeEventListener('message', onMessage);
-        globalThis.clearTimeout(timeoutId);
-        this.activeCompilerFrames.delete(iframe);
-        iframe.remove();
-      };
-      const finish = (result: Record<string, unknown>) => {
+      const finishReady = () => {
         if (settled) return;
         settled = true;
-        cleanup();
-        resolve(result);
-      };
-      const postCompileRequest = () => {
-        iframe.contentWindow?.postMessage(
-          {
-            id: requestId,
-            type: 'compile',
-            payload,
-          },
-          targetOrigin
-        );
+        globalThis.clearTimeout(timeoutId);
+        this.compilerFrameReadyResolve = null;
+        this.compilerFrameReadyReject = null;
+        resolve();
       };
       const onMessage = (event: MessageEvent) => {
         if (event.source !== iframe.contentWindow) return;
-        if (event.origin !== targetOrigin) return;
+        if (event.origin !== this.compilerFrameTargetOrigin) return;
         if ((event.data as { type?: string })?.type === 'frame-ready') {
-          if (ready) return;
-          ready = true;
-          postCompileRequest();
+          finishReady();
           return;
         }
-        if ((event.data as { id?: string })?.id !== requestId) return;
+        const requestId = (event.data as { id?: string })?.id;
+        if (!requestId) return;
+        const pending = this.pendingCompilerFrameRequests.get(requestId);
+        if (!pending) return;
+        this.pendingCompilerFrameRequests.delete(requestId);
+        globalThis.clearTimeout(pending.timeoutId);
         const response = event.data as { payload?: Record<string, unknown> };
-        finish(response.payload ?? { success: false, error: 'C++ compiler frame returned an empty response.' });
+        pending.resolve(response.payload ?? { success: false, error: 'C++ compiler frame returned an empty response.' });
       };
+      this.compilerFrameMessageHandler = onMessage;
 
       timeoutId = globalThis.setTimeout(() => {
-        finish({ success: false, error: 'C++ compiler frame request timed out.' });
+        const error = new Error('C++ compiler frame request timed out.');
+        this.clearCompilerFrames(error);
+        reject(error);
       }, this.initTimeoutMs);
 
+      this.compilerFrameReadyResolve = finishReady;
+      this.compilerFrameReadyReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(timeoutId);
+        reject(error);
+      };
       globalThis.addEventListener('message', onMessage);
       document.body.appendChild(iframe);
+    });
+    return this.compilerFrameReadyPromise;
+  }
+
+  private async compileInFrame(payload: unknown): Promise<Record<string, unknown>> {
+    try {
+      await this.ensureCompilerFrame();
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    const iframe = this.compilerFrame;
+    const frameWindow = iframe?.contentWindow;
+    if (!frameWindow) {
+      return { success: false, error: 'C++ compiler frame is not available.' };
+    }
+
+    return new Promise((resolve) => {
+      const requestId = `compile-${++this.compilerFrameRequestId}`;
+      const timeoutId = globalThis.setTimeout(() => {
+        this.pendingCompilerFrameRequests.delete(requestId);
+        resolve({ success: false, error: 'C++ compiler frame request timed out.' });
+      }, this.initTimeoutMs);
+      this.pendingCompilerFrameRequests.set(requestId, { resolve, timeoutId });
+      frameWindow.postMessage(
+        {
+          id: requestId,
+          type: 'compile',
+          payload,
+        },
+        this.compilerFrameTargetOrigin
+      );
     });
   }
 
