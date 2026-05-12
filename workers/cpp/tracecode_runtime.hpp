@@ -969,57 +969,69 @@ template <typename Map>
 class NestedMapElementRef;
 
 template <typename T>
-class Vector {
+class Vector : public std::vector<T> {
  public:
+  using Base = std::vector<T>;
   using value_type = T;
-  using iterator = typename std::vector<T>::iterator;
-  using const_iterator = typename std::vector<T>::const_iterator;
+  using iterator = typename Base::iterator;
+  using const_iterator = typename Base::const_iterator;
 
-  Vector() : values_(), name_("vector"), path_prefix_json_(""), trace_(false) {}
+  using Base::assign;
+  using Base::insert;
 
-  Vector(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) {
+  Vector() : Base(), values_(static_cast<Base&>(*this)), name_("vector"), path_prefix_json_(""), trace_(false) {}
+
+  Vector(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   Vector(const char* name, const char* field, int line)
-      : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
-  Vector(std::initializer_list<T> values) : values_(values), name_("vector"), path_prefix_json_(""), trace_(false) {}
+  Vector(std::initializer_list<T> values) : Base(values), values_(static_cast<Base&>(*this)), name_("vector"), path_prefix_json_(""), trace_(false) {}
 
-  Vector(const std::vector<T>& values) : values_(values), name_("vector"), path_prefix_json_(""), trace_(false) {}
+  Vector(const std::vector<T>& values) : Base(values), values_(static_cast<Base&>(*this)), name_("vector"), path_prefix_json_(""), trace_(false) {}
 
-  Vector(std::vector<T>&& values) : values_(std::move(values)), name_("vector"), path_prefix_json_(""), trace_(false) {}
+  Vector(std::vector<T>&& values) : Base(std::move(values)), values_(static_cast<Base&>(*this)), name_("vector"), path_prefix_json_(""), trace_(false) {}
 
   Vector(const Vector<T>& other)
-      : values_(other.values_), name_(other.name_), path_prefix_json_(other.path_prefix_json_), trace_(other.trace_) {}
+      : Base(static_cast<const Base&>(other)),
+        values_(static_cast<Base&>(*this)),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
 
   Vector(Vector<T>&& other)
-      : values_(std::move(other.values_)), name_(std::move(other.name_)), path_prefix_json_(std::move(other.path_prefix_json_)), trace_(other.trace_) {}
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(static_cast<Base&>(*this)),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
 
   Vector(std::initializer_list<T> values, const char* name, int line)
-      : values_(values), name_(name), path_prefix_json_(""), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   Vector(std::initializer_list<T> values, const char* name, const char* field, int line)
-      : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
   Vector(const std::vector<T>& values, const char* name, int line)
-      : values_(values), name_(name), path_prefix_json_(""), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   Vector(const std::vector<T>& values, const char* name, const char* field, int line)
-      : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
   Vector& operator=(const std::vector<T>& values) {
-    values_ = values;
+    Base::operator=(values);
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
@@ -1027,7 +1039,7 @@ class Vector {
 
   Vector& operator=(const Vector<T>& other) {
     if (this == &other) return *this;
-    values_ = other.values_;
+    Base::operator=(static_cast<const Base&>(other));
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
@@ -1035,14 +1047,14 @@ class Vector {
 
   Vector& operator=(Vector<T>&& other) {
     if (this == &other) return *this;
-    values_ = std::move(other.values_);
+    Base::operator=(std::move(static_cast<Base&>(other)));
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
   }
 
   Vector& operator=(std::initializer_list<T> values) {
-    values_ = values;
+    Base::operator=(values);
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
@@ -1106,6 +1118,13 @@ class Vector {
   void push_back(const T& value) {
     emit_receiver_read(current_trace_line());
     values_.push_back(value);
+    emit_mutate("push_back", current_trace_line());
+    emit_snapshot(current_trace_line());
+  }
+
+  void push_back(T&& value) {
+    emit_receiver_read(current_trace_line());
+    values_.push_back(std::move(value));
     emit_mutate("push_back", current_trace_line());
     emit_snapshot(current_trace_line());
   }
@@ -1352,7 +1371,7 @@ class Vector {
   }
 
  private:
-  std::vector<T> values_;
+  Base& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -2108,30 +2127,64 @@ template <typename T>
 class DequeElementRef;
 
 template <typename T>
-class Deque {
+class Deque : public std::deque<T> {
  public:
+  using Base = std::deque<T>;
   using value_type = T;
-  using iterator = typename std::deque<T>::iterator;
-  using const_iterator = typename std::deque<T>::const_iterator;
+  using iterator = typename Base::iterator;
+  using const_iterator = typename Base::const_iterator;
 
-  Deque() : values_(), name_("deque"), path_prefix_json_(""), trace_(false) {}
-  Deque(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Deque(const char* name, const char* field, int line) : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  Deque(std::initializer_list<T> values) : values_(values), name_("deque"), path_prefix_json_(""), trace_(false) {}
-  Deque(std::initializer_list<T> values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Deque(std::initializer_list<T> values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  Deque(const std::deque<T>& values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Deque(const std::deque<T>& values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  Deque() : Base(), values_(static_cast<Base&>(*this)), name_("deque"), path_prefix_json_(""), trace_(false) {}
+  Deque(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Deque(const char* name, const char* field, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  Deque(std::initializer_list<T> values) : Base(values), values_(static_cast<Base&>(*this)), name_("deque"), path_prefix_json_(""), trace_(false) {}
+  Deque(const std::deque<T>& values) : Base(values), values_(static_cast<Base&>(*this)), name_("deque"), path_prefix_json_(""), trace_(false) {}
+  Deque(std::deque<T>&& values) : Base(std::move(values)), values_(static_cast<Base&>(*this)), name_("deque"), path_prefix_json_(""), trace_(false) {}
+
+  Deque(const Deque<T>& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(static_cast<Base&>(*this)),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  Deque(Deque<T>&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(static_cast<Base&>(*this)),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
+
+  Deque(std::initializer_list<T> values, const char* name, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Deque(std::initializer_list<T> values, const char* name, const char* field, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  Deque(const std::deque<T>& values, const char* name, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Deque(const std::deque<T>& values, const char* name, const char* field, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
 
   Deque& operator=(const std::deque<T>& values) {
-    values_ = values;
+    Base::operator=(values);
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Deque& operator=(const Deque<T>& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Deque& operator=(Deque<T>&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
   }
 
   Deque& operator=(std::initializer_list<T> values) {
-    values_ = values;
+    Base::operator=(values);
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
@@ -2139,10 +2192,6 @@ class Deque {
 
   std::size_t size() const { return values_.size(); }
   bool empty() const { return values_.empty(); }
-  void reserve(std::size_t count) {
-    values_.reserve(count);
-    emit_mutate("reserve", current_trace_line());
-  }
 
   DequeElementRef<T> operator[](std::size_t index) { return DequeElementRef<T>(*this, index); }
 
@@ -2171,8 +2220,20 @@ class Deque {
     emit_snapshot(current_trace_line());
   }
 
+  void push_back(T&& value) {
+    values_.push_back(std::move(value));
+    emit_mutate("push_back", current_trace_line());
+    emit_snapshot(current_trace_line());
+  }
+
   void push_front(const T& value) {
     values_.push_front(value);
+    emit_mutate("push_front", current_trace_line());
+    emit_snapshot(current_trace_line());
+  }
+
+  void push_front(T&& value) {
+    values_.push_front(std::move(value));
     emit_mutate("push_front", current_trace_line());
     emit_snapshot(current_trace_line());
   }
@@ -2247,7 +2308,7 @@ class Deque {
   }
 
  private:
-  std::deque<T> values_;
+  Base& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -2302,13 +2363,46 @@ std::string to_json(const Deque<T>& values) {
 }
 
 template <typename T>
-class Queue {
+class Queue : public std::queue<T> {
  public:
-  Queue() : values_(), name_("queue"), path_prefix_json_(""), trace_(false) {}
-  Queue(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Queue(const char* name, const char* field, int line) : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  Queue(const std::deque<T>& values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Queue(const std::deque<T>& values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  using Base = std::queue<T>;
+  using Container = typename Base::container_type;
+
+  using Base::swap;
+
+  Queue() : Base(), values_(this->c), name_("queue"), path_prefix_json_(""), trace_(false) {}
+  Queue(const char* name, int line) : Base(), values_(this->c), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Queue(const char* name, const char* field, int line) : Base(), values_(this->c), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  Queue(const std::deque<T>& values, const char* name, int line) : Base(values), values_(this->c), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Queue(const std::deque<T>& values, const char* name, const char* field, int line) : Base(values), values_(this->c), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+
+  Queue(const Queue<T>& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(this->c),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  Queue(Queue<T>&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(this->c),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
+
+  Queue& operator=(const Queue<T>& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Queue& operator=(Queue<T>&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
 
   std::size_t size() const { return values_.size(); }
   bool empty() const { return values_.empty(); }
@@ -2339,10 +2433,32 @@ class Queue {
     emit_snapshot(current_trace_line());
   }
 
+  void push(T&& value) {
+    values_.push_back(std::move(value));
+    emit_mutate("push", current_trace_line());
+    emit_snapshot(current_trace_line());
+  }
+
+  template <typename... Args>
+  T& emplace(Args&&... args) {
+    T& result = values_.emplace_back(std::forward<Args>(args)...);
+    emit_mutate("emplace", current_trace_line());
+    emit_snapshot(current_trace_line());
+    return result;
+  }
+
   void pop() {
     values_.pop_front();
     emit_mutate("pop", current_trace_line());
     emit_snapshot(current_trace_line());
+  }
+
+  void swap(Queue<T>& other) {
+    Base::swap(other);
+    emit_mutate("swap", current_trace_line());
+    other.emit_mutate("swap", current_trace_line());
+    emit_snapshot(current_trace_line());
+    other.emit_snapshot(current_trace_line());
   }
 
   std::deque<T>& raw() { return values_; }
@@ -2379,7 +2495,7 @@ class Queue {
   }
 
  private:
-  std::deque<T> values_;
+  Container& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -2403,16 +2519,48 @@ std::string to_json(const Queue<T>& values) {
 }
 
 template <typename T, typename Container = std::vector<T>, typename Compare = std::less<T>>
-class PriorityQueue {
+class PriorityQueue : public std::priority_queue<T, Container, Compare> {
  public:
-  PriorityQueue() : values_(), name_("priority_queue"), path_prefix_json_(""), trace_(false) {}
-  PriorityQueue(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  PriorityQueue(const char* name, const char* field, int line) : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  PriorityQueue(const std::vector<T>& values, const char* name, int line) : values_(values.begin(), values.end()), name_(name), path_prefix_json_(""), trace_(true) {
+  using Base = std::priority_queue<T, Container, Compare>;
+
+  using Base::swap;
+
+  PriorityQueue() : Base(), values_(static_cast<Base&>(*this)), name_("priority_queue"), path_prefix_json_(""), trace_(false) {}
+  PriorityQueue(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const char* name, const char* field, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const std::vector<T>& values, const char* name, int line) : Base(values.begin(), values.end()), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
-  PriorityQueue(const std::vector<T>& values, const char* name, const char* field, int line) : values_(values.begin(), values.end()), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+  PriorityQueue(const std::vector<T>& values, const char* name, const char* field, int line) : Base(values.begin(), values.end()), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
+  }
+
+  PriorityQueue(const PriorityQueue<T, Container, Compare>& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(static_cast<Base&>(*this)),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  PriorityQueue(PriorityQueue<T, Container, Compare>&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(static_cast<Base&>(*this)),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
+
+  PriorityQueue& operator=(const PriorityQueue<T, Container, Compare>& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  PriorityQueue& operator=(PriorityQueue<T, Container, Compare>&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
+    emit_snapshot(current_trace_line());
+    return *this;
   }
 
   std::size_t size() const { return values_.size(); }
@@ -2429,6 +2577,12 @@ class PriorityQueue {
     emit_snapshot(current_trace_line());
   }
 
+  void push(T&& value) {
+    values_.push(std::move(value));
+    emit_mutate("push", current_trace_line());
+    emit_snapshot(current_trace_line());
+  }
+
   template <typename... Args>
   void emplace(Args&&... args) {
     values_.emplace(std::forward<Args>(args)...);
@@ -2440,6 +2594,14 @@ class PriorityQueue {
     values_.pop();
     emit_mutate("pop", current_trace_line());
     emit_snapshot(current_trace_line());
+  }
+
+  void swap(PriorityQueue<T, Container, Compare>& other) {
+    Base::swap(other);
+    emit_mutate("swap", current_trace_line());
+    other.emit_mutate("swap", current_trace_line());
+    emit_snapshot(current_trace_line());
+    other.emit_snapshot(current_trace_line());
   }
 
   std::vector<T> snapshot_values() const {
@@ -2483,7 +2645,7 @@ class PriorityQueue {
   }
 
  private:
-  std::priority_queue<T, Container, Compare> values_;
+  Base& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -2507,13 +2669,46 @@ std::string to_json(const PriorityQueue<T, Container, Compare>& values) {
 }
 
 template <typename T>
-class Stack {
+class Stack : public std::stack<T> {
  public:
-  Stack() : values_(), name_("stack"), path_prefix_json_(""), trace_(false) {}
-  Stack(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Stack(const char* name, const char* field, int line) : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  Stack(const std::deque<T>& values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Stack(const std::deque<T>& values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  using Base = std::stack<T>;
+  using Container = typename Base::container_type;
+
+  using Base::swap;
+
+  Stack() : Base(), values_(this->c), name_("stack"), path_prefix_json_(""), trace_(false) {}
+  Stack(const char* name, int line) : Base(), values_(this->c), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Stack(const char* name, const char* field, int line) : Base(), values_(this->c), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  Stack(const std::deque<T>& values, const char* name, int line) : Base(values), values_(this->c), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Stack(const std::deque<T>& values, const char* name, const char* field, int line) : Base(values), values_(this->c), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+
+  Stack(const Stack<T>& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(this->c),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  Stack(Stack<T>&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(this->c),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
+
+  Stack& operator=(const Stack<T>& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Stack& operator=(Stack<T>&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
 
   std::size_t size() const { return values_.size(); }
   bool empty() const { return values_.empty(); }
@@ -2534,10 +2729,32 @@ class Stack {
     emit_snapshot(current_trace_line());
   }
 
+  void push(T&& value) {
+    values_.push_back(std::move(value));
+    emit_mutate("push", current_trace_line());
+    emit_snapshot(current_trace_line());
+  }
+
+  template <typename... Args>
+  T& emplace(Args&&... args) {
+    T& result = values_.emplace_back(std::forward<Args>(args)...);
+    emit_mutate("emplace", current_trace_line());
+    emit_snapshot(current_trace_line());
+    return result;
+  }
+
   void pop() {
     values_.pop_back();
     emit_mutate("pop", current_trace_line());
     emit_snapshot(current_trace_line());
+  }
+
+  void swap(Stack<T>& other) {
+    Base::swap(other);
+    emit_mutate("swap", current_trace_line());
+    other.emit_mutate("swap", current_trace_line());
+    emit_snapshot(current_trace_line());
+    other.emit_snapshot(current_trace_line());
   }
 
   std::deque<T>& raw() { return values_; }
@@ -2574,7 +2791,7 @@ class Stack {
   }
 
  private:
-  std::deque<T> values_;
+  Container& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -2614,56 +2831,97 @@ template <typename K, typename V>
 class UnorderedMapValueRef;
 
 template <typename K, typename V>
-class UnorderedMap {
+class UnorderedMap : public std::unordered_map<K, V> {
  public:
+  using Base = std::unordered_map<K, V>;
   using key_type = K;
   using mapped_type = V;
-  using iterator = typename std::unordered_map<K, V>::iterator;
-  using const_iterator = typename std::unordered_map<K, V>::const_iterator;
+  using iterator = typename Base::iterator;
+  using const_iterator = typename Base::const_iterator;
 
-  UnorderedMap() : values_(), name_("map"), path_prefix_json_(""), trace_(false) {}
+  using Base::erase;
+  using Base::insert;
+  using Base::swap;
 
-  UnorderedMap(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) {
+  UnorderedMap() : Base(), values_(static_cast<Base&>(*this)), name_("map"), path_prefix_json_(""), trace_(false) {}
+
+  UnorderedMap(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   UnorderedMap(const char* name, const char* field, int line)
-      : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
   UnorderedMap(std::initializer_list<std::pair<const K, V>> values)
-      : values_(values), name_("map"), path_prefix_json_(""), trace_(false) {}
+      : Base(values), values_(static_cast<Base&>(*this)), name_("map"), path_prefix_json_(""), trace_(false) {}
+
+  UnorderedMap(const std::unordered_map<K, V>& values)
+      : Base(values), values_(static_cast<Base&>(*this)), name_("map"), path_prefix_json_(""), trace_(false) {}
+
+  UnorderedMap(std::unordered_map<K, V>&& values)
+      : Base(std::move(values)), values_(static_cast<Base&>(*this)), name_("map"), path_prefix_json_(""), trace_(false) {}
+
+  UnorderedMap(const UnorderedMap<K, V>& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(static_cast<Base&>(*this)),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  UnorderedMap(UnorderedMap<K, V>&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(static_cast<Base&>(*this)),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
 
   UnorderedMap(std::initializer_list<std::pair<const K, V>> values, const char* name, int line)
-      : values_(values), name_(name), path_prefix_json_(""), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   UnorderedMap(std::initializer_list<std::pair<const K, V>> values, const char* name, const char* field, int line)
-      : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
   UnorderedMap(const std::unordered_map<K, V>& values, const char* name, int line)
-      : values_(values), name_(name), path_prefix_json_(""), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   UnorderedMap(const std::unordered_map<K, V>& values, const char* name, const char* field, int line)
-      : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
   UnorderedMap& operator=(const std::unordered_map<K, V>& values) {
-    values_ = values;
+    Base::operator=(values);
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  UnorderedMap& operator=(const UnorderedMap<K, V>& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  UnorderedMap& operator=(UnorderedMap<K, V>&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
   }
 
   UnorderedMap& operator=(std::initializer_list<std::pair<const K, V>> values) {
-    values_ = values;
+    Base::operator=(values);
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
@@ -2713,10 +2971,19 @@ class UnorderedMap {
     return values_.at(key);
   }
 
-  std::pair<iterator, bool> insert(const std::pair<const K, V>& value) {
+  std::pair<iterator, bool> insert(const typename Base::value_type& value) {
     auto result = values_.insert(value);
     if (result.second) {
       emit_write(value.first, result.first->second, current_trace_line());
+    }
+    return result;
+  }
+
+  std::pair<iterator, bool> insert(typename Base::value_type&& value) {
+    auto key = value.first;
+    auto result = values_.insert(std::move(value));
+    if (result.second) {
+      emit_write(key, result.first->second, current_trace_line());
     }
     return result;
   }
@@ -2830,7 +3097,7 @@ class UnorderedMap {
   }
 
  private:
-  std::unordered_map<K, V> values_;
+  Base& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -3070,43 +3337,78 @@ template <typename K, typename V>
 class MapValueRef;
 
 template <typename K, typename V>
-class Map {
+class Map : public std::map<K, V> {
  public:
+  using Base = std::map<K, V>;
   using key_type = K;
   using mapped_type = V;
-  using iterator = typename std::map<K, V>::iterator;
-  using const_iterator = typename std::map<K, V>::const_iterator;
+  using iterator = typename Base::iterator;
+  using const_iterator = typename Base::const_iterator;
 
-  Map() : values_(), name_("map"), path_prefix_json_(""), trace_(false) {}
+  using Base::erase;
+  using Base::insert;
+  using Base::swap;
 
-  Map(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) {
+  Map() : Base(), values_(static_cast<Base&>(*this)), name_("map"), path_prefix_json_(""), trace_(false) {}
+
+  Map(const Map& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(static_cast<Base&>(*this)),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  Map(Map&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(static_cast<Base&>(*this)),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
+
+  Map& operator=(const Map& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Map& operator=(Map&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Map(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   Map(const char* name, const char* field, int line)
-      : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
-  Map(std::initializer_list<std::pair<const K, V>> values) : values_(values), name_("map"), path_prefix_json_(""), trace_(false) {}
+  Map(std::initializer_list<std::pair<const K, V>> values) : Base(values), values_(static_cast<Base&>(*this)), name_("map"), path_prefix_json_(""), trace_(false) {}
 
   Map(std::initializer_list<std::pair<const K, V>> values, const char* name, int line)
-      : values_(values), name_(name), path_prefix_json_(""), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   Map(std::initializer_list<std::pair<const K, V>> values, const char* name, const char* field, int line)
-      : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
   Map(const std::map<K, V>& values, const char* name, int line)
-      : values_(values), name_(name), path_prefix_json_(""), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }
 
   Map(const std::map<K, V>& values, const char* name, const char* field, int line)
-      : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
+      : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) {
     emit_snapshot(line);
   }
 
@@ -3179,10 +3481,19 @@ class Map {
     return values_.at(key);
   }
 
-  std::pair<iterator, bool> insert(const std::pair<const K, V>& value) {
+  std::pair<iterator, bool> insert(const typename Base::value_type& value) {
     auto result = values_.insert(value);
     if (result.second) {
       emit_write(value.first, result.first->second, current_trace_line());
+    }
+    return result;
+  }
+
+  std::pair<iterator, bool> insert(typename Base::value_type&& value) {
+    auto key = value.first;
+    auto result = values_.insert(std::move(value));
+    if (result.second) {
+      emit_write(key, result.first->second, current_trace_line());
     }
     return result;
   }
@@ -3296,7 +3607,7 @@ class Map {
   }
 
  private:
-  std::map<K, V> values_;
+  Base& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -3546,31 +3857,69 @@ std::string to_json(const std::map<K, V>& values) {
 }
 
 template <typename T>
-class Set {
+class Set : public std::set<T> {
  public:
-  using iterator = typename std::set<T>::iterator;
-  using const_iterator = typename std::set<T>::const_iterator;
-  using reverse_iterator = typename std::set<T>::reverse_iterator;
-  using const_reverse_iterator = typename std::set<T>::const_reverse_iterator;
+  using Base = std::set<T>;
+  using iterator = typename Base::iterator;
+  using const_iterator = typename Base::const_iterator;
+  using reverse_iterator = typename Base::reverse_iterator;
+  using const_reverse_iterator = typename Base::const_reverse_iterator;
 
-  Set() : values_(), name_("set"), path_prefix_json_(""), trace_(false) {}
-  Set(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Set(const char* name, const char* field, int line) : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  Set(std::initializer_list<T> values) : values_(values), name_("set"), path_prefix_json_(""), trace_(false) {}
-  Set(std::initializer_list<T> values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Set(std::initializer_list<T> values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  Set(const std::set<T>& values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  Set(const std::set<T>& values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  using Base::erase;
+  using Base::insert;
+  using Base::swap;
+
+  Set() : Base(), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+  Set(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Set(const char* name, const char* field, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  Set(std::initializer_list<T> values) : Base(values), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+  Set(const std::set<T>& values) : Base(values), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+  Set(std::set<T>&& values) : Base(std::move(values)), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+
+  Set(const Set<T>& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(static_cast<Base&>(*this)),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  Set(Set<T>&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(static_cast<Base&>(*this)),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
+
+  Set(std::initializer_list<T> values, const char* name, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Set(std::initializer_list<T> values, const char* name, const char* field, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  Set(const std::set<T>& values, const char* name, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  Set(const std::set<T>& values, const char* name, const char* field, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
 
   Set& operator=(const std::set<T>& values) {
-    values_ = values;
+    Base::operator=(values);
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Set& operator=(const Set<T>& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  Set& operator=(Set<T>&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
   }
 
   Set& operator=(std::initializer_list<T> values) {
-    values_ = values;
+    Base::operator=(values);
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
@@ -3604,6 +3953,12 @@ class Set {
   std::pair<iterator, bool> insert(const T& value) {
     auto result = values_.insert(value);
     if (result.second) emit_write(value, current_trace_line());
+    return result;
+  }
+
+  std::pair<iterator, bool> insert(T&& value) {
+    auto result = values_.insert(std::move(value));
+    if (result.second) emit_write(*result.first, current_trace_line());
     return result;
   }
 
@@ -3700,7 +4055,7 @@ class Set {
   }
 
  private:
-  std::set<T> values_;
+  Base& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;
@@ -3745,29 +4100,67 @@ std::string to_json(const Set<T>& values) {
 }
 
 template <typename T>
-class UnorderedSet {
+class UnorderedSet : public std::unordered_set<T> {
  public:
-  using iterator = typename std::unordered_set<T>::iterator;
-  using const_iterator = typename std::unordered_set<T>::const_iterator;
+  using Base = std::unordered_set<T>;
+  using iterator = typename Base::iterator;
+  using const_iterator = typename Base::const_iterator;
 
-  UnorderedSet() : values_(), name_("set"), path_prefix_json_(""), trace_(false) {}
-  UnorderedSet(const char* name, int line) : values_(), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  UnorderedSet(const char* name, const char* field, int line) : values_(), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  UnorderedSet(std::initializer_list<T> values) : values_(values), name_("set"), path_prefix_json_(""), trace_(false) {}
-  UnorderedSet(std::initializer_list<T> values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  UnorderedSet(std::initializer_list<T> values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
-  UnorderedSet(const std::unordered_set<T>& values, const char* name, int line) : values_(values), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
-  UnorderedSet(const std::unordered_set<T>& values, const char* name, const char* field, int line) : values_(values), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  using Base::erase;
+  using Base::insert;
+  using Base::swap;
+
+  UnorderedSet() : Base(), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+  UnorderedSet(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  UnorderedSet(const char* name, const char* field, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  UnorderedSet(std::initializer_list<T> values) : Base(values), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+  UnorderedSet(const std::unordered_set<T>& values) : Base(values), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+  UnorderedSet(std::unordered_set<T>&& values) : Base(std::move(values)), values_(static_cast<Base&>(*this)), name_("set"), path_prefix_json_(""), trace_(false) {}
+
+  UnorderedSet(const UnorderedSet<T>& other)
+      : Base(static_cast<const Base&>(other)),
+        values_(static_cast<Base&>(*this)),
+        name_(other.name_),
+        path_prefix_json_(other.path_prefix_json_),
+        trace_(other.trace_) {}
+
+  UnorderedSet(UnorderedSet<T>&& other)
+      : Base(std::move(static_cast<Base&>(other))),
+        values_(static_cast<Base&>(*this)),
+        name_(std::move(other.name_)),
+        path_prefix_json_(std::move(other.path_prefix_json_)),
+        trace_(other.trace_) {}
+
+  UnorderedSet(std::initializer_list<T> values, const char* name, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  UnorderedSet(std::initializer_list<T> values, const char* name, const char* field, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  UnorderedSet(const std::unordered_set<T>& values, const char* name, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  UnorderedSet(const std::unordered_set<T>& values, const char* name, const char* field, int line) : Base(values), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
 
   UnorderedSet& operator=(const std::unordered_set<T>& values) {
-    values_ = values;
+    Base::operator=(values);
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  UnorderedSet& operator=(const UnorderedSet<T>& other) {
+    if (this == &other) return *this;
+    Base::operator=(static_cast<const Base&>(other));
+    emit_write_field(current_trace_line());
+    emit_snapshot(current_trace_line());
+    return *this;
+  }
+
+  UnorderedSet& operator=(UnorderedSet<T>&& other) {
+    if (this == &other) return *this;
+    Base::operator=(std::move(static_cast<Base&>(other)));
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
   }
 
   UnorderedSet& operator=(std::initializer_list<T> values) {
-    values_ = values;
+    Base::operator=(values);
     emit_write_field(current_trace_line());
     emit_snapshot(current_trace_line());
     return *this;
@@ -3805,6 +4198,12 @@ class UnorderedSet {
   std::pair<iterator, bool> insert(const T& value) {
     auto result = values_.insert(value);
     if (result.second) emit_write(value, current_trace_line());
+    return result;
+  }
+
+  std::pair<iterator, bool> insert(T&& value) {
+    auto result = values_.insert(std::move(value));
+    if (result.second) emit_write(*result.first, current_trace_line());
     return result;
   }
 
@@ -3897,7 +4296,7 @@ class UnorderedSet {
   }
 
  private:
-  std::unordered_set<T> values_;
+  Base& values_;
   std::string name_;
   std::string path_prefix_json_;
   bool trace_;

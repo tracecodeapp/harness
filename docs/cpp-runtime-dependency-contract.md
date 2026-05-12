@@ -76,18 +76,20 @@ TraceCode driver source
 The source pass is intentionally line-based and conservative. It targets the
 requested `Solution` method body, preserves `#line` mapping back to
 `solution.cpp`, and avoids broader C++ parsing. It does not inspect STL memory.
-The first container slice uses TraceCode-owned `tracecode::Vector<T>` wrappers
-for traced vector parameters and simple local vector declarations. The wrapper
-emits generic runtime `snapshot`, indexed `read`, indexed `write`, and `mutate`
+The container slice uses TraceCode-owned wrappers for traced vector parameters
+and simple local STL container declarations. These wrappers inherit from the
+matching STL container or adaptor so uninstrumented STL APIs remain available by
+default, while TraceCode overrides high-value operations to emit generic runtime
+`snapshot`, indexed/keyed/slot `read`, indexed/keyed `write`, and `mutate`
 events without adding visualization-specific payloads.
 
-The second container slice adds `tracecode::UnorderedMap<K, V>` for simple local
-`unordered_map<K,V>` declarations and `tracecode::Map<K, V>` for simple local
-`map<K,V>` declarations. Rewritten containers must preserve common STL method
-parity used by canonical reference solutions; for ordered maps this includes
-positional lookup APIs such as `lower_bound`, `upper_bound`, and `equal_range`.
-The wrappers emit snapshots plus keyed reads/writes, covering common patterns
-such as two-sum (`count`, `operator[]`, assignment) and calendar booking.
+Rewritten containers must preserve common STL method parity used by canonical
+reference solutions. Coverage includes `vector`, `deque`, `queue`, `stack`,
+`priority_queue`, `unordered_map`, `map`, `set`, and `unordered_set`; ordered
+containers must preserve positional lookup APIs such as `lower_bound`,
+`upper_bound`, and `equal_range`. The map/set wrappers emit snapshots plus keyed
+reads/writes, covering common patterns such as two-sum (`count`, `operator[]`,
+assignment), set membership, and calendar booking.
 
 Nested `vector<vector<T>>` locals also emit two-dimensional indexed reads/writes
 for DP-style code such as `dp[row][col]`, including constructor-style local
