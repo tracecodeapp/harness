@@ -82,8 +82,12 @@ emits generic runtime `snapshot`, indexed `read`, indexed `write`, and `mutate`
 events without adding visualization-specific payloads.
 
 The second container slice adds `tracecode::UnorderedMap<K, V>` for simple local
-`unordered_map<K,V>` declarations. It emits snapshots plus keyed reads/writes,
-covering the common two-sum pattern (`count`, `operator[]`, assignment).
+`unordered_map<K,V>` declarations and `tracecode::Map<K, V>` for simple local
+`map<K,V>` declarations. Rewritten containers must preserve common STL method
+parity used by canonical reference solutions; for ordered maps this includes
+positional lookup APIs such as `lower_bound`, `upper_bound`, and `equal_range`.
+The wrappers emit snapshots plus keyed reads/writes, covering common patterns
+such as two-sum (`count`, `operator[]`, assignment) and calendar booking.
 
 Nested `vector<vector<T>>` locals also emit two-dimensional indexed reads/writes
 for DP-style code such as `dp[row][col]`, including constructor-style local

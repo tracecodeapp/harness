@@ -129,6 +129,13 @@ const cases = [
     expected: { a: 2, b: 1 },
   },
   {
+    name: 'ordered map lower_bound',
+    code: 'class Solution { public: int nextStart(vector<int>& starts, int target) { map<int, int> bookings; for (int start : starts) bookings[start] = start + 10; auto it = bookings.lower_bound(target); if (it == bookings.end()) return -1; return it->first; } };',
+    functionName: 'nextStart',
+    inputs: { starts: [10, 30, 50], target: 25 },
+    expected: 30,
+  },
+  {
     name: 'pair result',
     code: 'class Solution { public: pair<int, string> makePair() { return {7, "seven"}; } };',
     functionName: 'makePair',
@@ -1286,6 +1293,36 @@ if (!orderedMapEvents.some((event) => event.kind === 'read' && event.target?.var
 }
 if (!orderedMapEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'counts' && event.method === 'erase')) {
   throw new Error('C++ map erase should emit mutation, received ' + JSON.stringify(orderedMapEvents));
+}
+
+const orderedMapBoundsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  bool book(vector<vector<int>>& requests) {',
+    '    map<int, int> bookings;',
+    '    for (auto& request : requests) {',
+    '      int start = request[0];',
+    '      int end = request[1];',
+    '      auto next = bookings.lower_bound(start);',
+    '      if (next != bookings.end() && next->first < end) return false;',
+    '      if (next != bookings.begin()) {',
+    '        auto prevIt = next;',
+    '        --prevIt;',
+    '        if (prevIt->second > start) return false;',
+    '      }',
+    '      bookings[start] = end;',
+    '    }',
+    '    return true;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'book',
+  inputs: { requests: [[10, 20], [20, 30], [15, 25]] },
+  options: {},
+});
+if (!orderedMapBoundsTrace.success || orderedMapBoundsTrace.output !== false) {
+  throw new Error('C++ map lower_bound tracing failed: ' + JSON.stringify(orderedMapBoundsTrace));
 }
 
 const setTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

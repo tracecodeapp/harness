@@ -3132,6 +3132,30 @@ class Map {
     return values_.find(key);
   }
 
+  iterator lower_bound(const K& key) {
+    return values_.lower_bound(key);
+  }
+
+  const_iterator lower_bound(const K& key) const {
+    return values_.lower_bound(key);
+  }
+
+  iterator upper_bound(const K& key) {
+    return values_.upper_bound(key);
+  }
+
+  const_iterator upper_bound(const K& key) const {
+    return values_.upper_bound(key);
+  }
+
+  std::pair<iterator, iterator> equal_range(const K& key) {
+    return values_.equal_range(key);
+  }
+
+  std::pair<const_iterator, const_iterator> equal_range(const K& key) const {
+    return values_.equal_range(key);
+  }
+
   MapValueRef<K, V> operator[](const K& key) {
     return MapValueRef<K, V>(*this, key);
   }
