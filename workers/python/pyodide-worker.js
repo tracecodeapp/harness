@@ -342,6 +342,9 @@ def _serialize(obj, depth=0, node_refs=None):
         }
         result["next"] = _serialize(obj.next, depth + 1, node_refs)
         return result
+    elif callable(obj):
+        # Skip functions entirely - return sentinel
+        return _SKIP_SENTINEL
     elif hasattr(obj, '__dict__'):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
@@ -373,9 +376,6 @@ def _serialize(obj, depth=0, node_refs=None):
                 result["__truncated__"] = True
                 result["remaining"] = len(fields) - _MAX_OBJECT_FIELDS
         return result
-    elif callable(obj):
-        # Skip functions entirely - return sentinel
-        return _SKIP_SENTINEL
     else:
         repr_str = repr(obj)
         # Filter out function-like representations (e.g., <function foo at 0x...>)
@@ -437,6 +437,8 @@ def _serialize_output(obj, depth=0, node_refs=None):
         }
         result["next"] = _serialize_output(obj.next, depth + 1, node_refs)
         return result
+    elif callable(obj):
+        return _SKIP_SENTINEL
     elif hasattr(obj, '__dict__'):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
@@ -460,8 +462,6 @@ def _serialize_output(obj, depth=0, node_refs=None):
                     continue
                 result[key_str] = _serialize_output(value, depth + 1, node_refs)
         return result
-    elif callable(obj):
-        return _SKIP_SENTINEL
     else:
         repr_str = repr(obj)
         if repr_str.startswith('<') and repr_str.endswith('>'):
@@ -509,6 +509,8 @@ def _serialize(obj, depth=0):
         result = {"__type__": "ListNode", "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1)}
         result["next"] = _serialize(obj.next, depth + 1)
         return result
+    elif callable(obj):
+        return None
     elif hasattr(obj, '__dict__'):
         class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
         result = {"__type__": class_name, "__class__": class_name}
@@ -523,8 +525,6 @@ def _serialize(obj, depth=0):
                     continue
                 result[key_str] = _serialize(value, depth + 1)
         return result
-    elif callable(obj):
-        return None
     else:
         repr_str = repr(obj)
         if repr_str.startswith('<') and repr_str.endswith('>'):
