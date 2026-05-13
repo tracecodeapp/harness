@@ -1777,7 +1777,6 @@ function isVectorCppType(type, aliases = new Map()) {
   if (normalized.includes('*')) return false;
   if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
   const inner = normalized.slice('vector<'.length, -1).trim().replace(/^std::/, '');
-  if (/^(?:array|deque|queue|priority_queue|stack|map|unordered_map|set|unordered_set)</.test(inner)) return false;
   if (/^[A-Z]/.test(inner)) return false;
   return true;
 }
@@ -1827,6 +1826,10 @@ function hasAutoReferenceBindingForMapProxy(source, name) {
   return pattern.test(stripComments(source || ''));
 }
 
+function hasUnsafeMapProxyAutoReferenceBinding(type, source, name, aliases = new Map()) {
+  return hasContainerMappedValueCppType(type, aliases) && hasAutoReferenceBindingForMapProxy(source, name);
+}
+
 function parameterAddressEscapes(source, name) {
   const pattern = new RegExp(`(?<![\\w>&])&(?!&)\\s*${escapeRegExp(name)}\\b`);
   return pattern.test(stripComments(source || ''));
@@ -1844,7 +1847,6 @@ function isSetCppType(type, aliases = new Map()) {
 }
 
 function isTraceWrappedCppType(type, aliases = new Map()) {
-  if (hasContainerMappedValueCppType(type, aliases)) return false;
   return (
     isVectorCppType(type, aliases) ||
     isDequeCppType(type, aliases) ||
@@ -2660,13 +2662,14 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function rewriteTraceContainerParameters(line, signature, aliases = new Map()) {
+function rewriteTraceContainerParameters(line, signature, aliases = new Map(), source = '') {
   let rewritten = line;
   const skipNames = signature.skipTraceParameterNames || new Set();
   for (const parameter of signature.parameters) {
     if (skipNames.has(parameter.name)) continue;
     if (!isTraceWrappedCppType(parameter.type, aliases)) continue;
     if (/\bconst\b/.test(parameter.type)) continue;
+    if (hasUnsafeMapProxyAutoReferenceBinding(parameter.type, source, parameter.name, aliases)) continue;
     const baseParameterType = parameter.type.replace(/[&]/g, '').trim();
     const typePattern = escapeRegExp(baseParameterType).replace(/\\\s+/g, '\\s+');
     const pattern = new RegExp(`${typePattern}\\s*&?\\s+${escapeRegExp(parameter.name)}\\b`);
@@ -2720,7 +2723,13 @@ function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), 
   for (const [name, variable] of variables || []) {
     const normalizedType = normalizeCppType(variable.type, aliases);
     const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
-    if (isVectorCppType(variable.type, aliases) && !/\bconst\b/.test(variable.type) && !innerType.startsWith('vector<') && innerType !== 'string') {
+    if (
+      isVectorCppType(variable.type, aliases) &&
+      !/\bconst\b/.test(variable.type) &&
+      !innerType.startsWith('vector<') &&
+      innerType !== 'string' &&
+      !/^(?:array|deque|queue|priority_queue|stack|map|unordered_map|set|unordered_set)</.test(innerType.replace(/^std::/, ''))
+    ) {
       candidateNames.add(name);
     }
   }
@@ -2890,7 +2899,7 @@ function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map(), sourc
     normalizeCppType(declaredType, aliases).startsWith('vector<vector<') &&
     localNestedVectorUsedInMinMaxInitializerList(source, name)
   ) return line;
-  if (hasContainerMappedValueCppType(declaredType, aliases) && hasAutoReferenceBindingForMapProxy(source, name)) return line;
+  if (hasUnsafeMapProxyAutoReferenceBinding(declaredType, source, name, aliases)) return line;
   const normalized = normalizeCppType(declaredType, aliases);
   const kind = normalized.slice(0, normalized.indexOf('<'));
   const initializerType = resolveCppType(declaredType, aliases)
@@ -3029,11 +3038,14 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
     const argNames = [];
     signature.parameters.forEach((parameter, argIndex) => {
       const localName = `__tc_op_${index}_arg_${argIndex}`;
-      const declarationType = options.tracing === true && isTraceWrappedCppType(parameter.type, aliases)
+      const shouldTraceParameter = options.tracing === true &&
+        isTraceWrappedCppType(parameter.type, aliases) &&
+        !hasUnsafeMapProxyAutoReferenceBinding(parameter.type, userCode, parameter.name, aliases);
+      const declarationType = shouldTraceParameter
         ? cppTraceType(parameter.type, aliases)
         : localCppType(parameter.type);
       const value = args[argIndex];
-      if (options.tracing === true && isTraceWrappedCppType(parameter.type, aliases)) {
+      if (shouldTraceParameter) {
         lines.push(`  ${declarationType} ${localName}(${materializedCppType(parameter.type, aliases)}(${toCppLiteral(value, parameter.type, aliases)}), ${cppStringLiteral(parameter.name)}, ${signature.line});`);
       } else {
         lines.push(`  ${declarationType} ${localName} = ${toCppLiteral(value, parameter.type, aliases)};`);
@@ -3254,7 +3266,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     }
 
     let lineForDriver = pendingSignature
-      ? rewriteTraceContainerParameters(line, pendingSignature, aliases)
+      ? rewriteTraceContainerParameters(line, pendingSignature, aliases, source)
       : line;
     if (pendingSignature && options.traceMemberClassName && pendingSignature.name !== functionName) {
       lineForDriver = line;
@@ -3464,7 +3476,10 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
 
   signature.parameters.forEach((parameter, index) => {
     const localName = `__tc_arg_${index}`;
-    const shouldTraceParameter = traced && !skipTraceParameterNames.has(parameter.name) && isTraceWrappedCppType(parameter.type, aliases);
+    const shouldTraceParameter = traced &&
+      !skipTraceParameterNames.has(parameter.name) &&
+      isTraceWrappedCppType(parameter.type, aliases) &&
+      !hasUnsafeMapProxyAutoReferenceBinding(parameter.type, userCode, parameter.name, aliases);
     const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : localCppType(parameter.type);
     const dynamicInput = cppDynamicInputExpression(parameter, index, aliases);
     const value = dynamicInput ?? toCppLiteral(inputValueForParameter(inputs, parameter, index), parameter.type, aliases);
