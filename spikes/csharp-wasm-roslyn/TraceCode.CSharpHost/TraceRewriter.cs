@@ -123,15 +123,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         MethodDeclarationSyntax methodNode = ConvertExpressionBodiedMethod(node);
-        List<string> wrappedCollectionParameters = GetRewritableCollectionParameterNames(methodNode).ToList();
-        if (wrappedCollectionParameters.Count > 0)
-        {
-            methodNode = methodNode.WithParameterList(RewriteCollectionParameterTypes(methodNode.ParameterList, wrappedCollectionParameters.ToHashSet(StringComparer.Ordinal)));
-            foreach (string collectionParameter in wrappedCollectionParameters)
-            {
-                collectionVariables.Add(collectionParameter);
-            }
-        }
 
         methodNames.Push(methodNode.Identifier.ValueText);
         methodReturnTypes.Push(methodNode.ReturnType.ToString());
@@ -149,6 +140,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             collectionParameterVariables.Add(collectionParameter);
         }
+        HashSet<string> collectionVariablesBeforeMethod = collectionVariables.ToHashSet(StringComparer.Ordinal);
 
         MethodDeclarationSyntax rewritten;
         try
@@ -161,9 +153,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             {
                 collectionParameterVariables.Remove(collectionParameter);
             }
-            foreach (string collectionParameter in wrappedCollectionParameters)
+            collectionVariables.Clear();
+            foreach (string collectionVariable in collectionVariablesBeforeMethod)
             {
-                collectionVariables.Remove(collectionParameter);
+                collectionVariables.Add(collectionVariable);
             }
             declaredLocalVariables.Pop();
             variableScopes.Pop();

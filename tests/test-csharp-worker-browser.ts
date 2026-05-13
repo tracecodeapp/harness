@@ -701,6 +701,39 @@ async function main(): Promise<void> {
       `C# worker traced shadowed collection-helper case should return 13, received ${JSON.stringify(tracedShadowedCollectionHelper.output)}`
     );
 
+    const tracedLocalListHelper = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int LocalListHelper(int value) {',
+        '    List<int> path = new List<int>();',
+        '    Visit(value, path);',
+        '    return path[0];',
+        '  }',
+        '  private void Visit(int value, List<int> path) {',
+        '    path.Add(value);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'LocalListHelper',
+      { value: 21 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedLocalListHelper.success,
+      `C# worker traced local-list helper case should compile: ${tracedLocalListHelper.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedLocalListHelper.output === 21,
+      `C# worker traced local-list helper case should return 21, received ${JSON.stringify(tracedLocalListHelper.output)}`
+    );
+    assertCondition(
+      tracedLocalListHelper.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'path' && event.method === 'Add') === true,
+      `C# worker traced local-list helper case should include path Add mutate, received ${JSON.stringify(tracedLocalListHelper.events)}`
+    );
+
     const tracedOutVarCondition = await runWorkerCase(
       page,
       [
