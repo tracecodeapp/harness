@@ -214,10 +214,10 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
   "csharp": {
     "language": "csharp",
     "displayName": "C#",
-    "versionLabel": "C# 14 (.NET 10.0.7)",
+    "versionLabel": "C# 14 (.NET 10.0.8)",
     "runtime": {
       "name": ".NET WebAssembly runtime",
-      "version": "10.0.7",
+      "version": "10.0.8",
       "detail": "Browser-local .NET runtime targeting net10.0."
     },
     "compiler": {
