@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness-java",
-  "version": "0.7.0-beta5",
+  "version": "0.7.0-beta6",
   "description": "Java runtime client and browser worker assets for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
