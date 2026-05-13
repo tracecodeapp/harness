@@ -7,11 +7,14 @@
 #include <cstdlib>
 #include <cstdio>
 #include <deque>
+#include <iomanip>
+#include <limits>
 #include <map>
 #include <optional>
 #include <queue>
 #include <set>
 #include <stack>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <tuple>
@@ -308,6 +311,8 @@ inline JsonValue parse_json(const std::string& source) {
   return JsonParser(source.empty() ? "{}" : source).parse();
 }
 
+inline std::string to_json(const JsonValue& value);
+
 inline const JsonValue* object_get(const JsonValue& value, const std::string& key) {
   if (value.kind != JsonValue::Kind::Object) return nullptr;
   for (const auto& entry : value.object_values) {
@@ -386,7 +391,28 @@ template <typename A, typename B>
 struct json_is_std_pair<std::pair<A, B>> : std::true_type {};
 
 template <typename T>
+struct json_is_std_tuple : std::false_type {};
+template <typename... Values>
+struct json_is_std_tuple<std::tuple<Values...>> : std::true_type {};
+
+template <typename T>
 T json_to(const JsonValue& value);
+
+template <typename Node>
+Node* json_to_tree_node(const JsonValue& value);
+
+template <typename Node>
+Node* json_to_list_node(const JsonValue& value);
+
+template <typename Node, typename = void>
+struct json_has_tree_node_shape : std::false_type {};
+template <typename Node>
+struct json_has_tree_node_shape<Node, std::void_t<decltype(std::declval<Node>().val), decltype(std::declval<Node>().left), decltype(std::declval<Node>().right)>> : std::true_type {};
+
+template <typename Node, typename = void>
+struct json_has_list_node_shape : std::false_type {};
+template <typename Node>
+struct json_has_list_node_shape<Node, std::void_t<decltype(std::declval<Node>().val), decltype(std::declval<Node>().next)>> : std::true_type {};
 
 template <typename K>
 K json_key_to(const std::string& key) {
@@ -427,6 +453,32 @@ T json_to(const JsonValue& value) {
     if (value.kind == JsonValue::Kind::Number) return std::to_string(value.number_value);
     if (value.kind == JsonValue::Kind::Bool) return value.bool_value ? "true" : "false";
     return "";
+  } else if constexpr (std::is_same_v<D, std::any>) {
+    if (value.kind == JsonValue::Kind::Null) return std::any{};
+    if (value.kind == JsonValue::Kind::Bool) return std::any(value.bool_value);
+    if (value.kind == JsonValue::Kind::Number) {
+      double rounded = std::round(value.number_value);
+      if (std::fabs(value.number_value - rounded) < 1e-9) {
+        return std::any(static_cast<long long>(rounded));
+      }
+      return std::any(value.number_value);
+    }
+    if (value.kind == JsonValue::Kind::String) return std::any(value.string_value);
+    if (value.kind == JsonValue::Kind::Array) {
+      std::vector<std::any> out;
+      out.reserve(value.array_values.size());
+      for (const auto& item : value.array_values) out.push_back(json_to<std::any>(item));
+      return std::any(out);
+    }
+    std::map<std::string, std::any> out;
+    for (const auto& entry : value.object_values) out[entry.first] = json_to<std::any>(entry.second);
+    return std::any(out);
+  } else if constexpr (std::is_same_v<D, JsonValue>) {
+    return value;
+  } else if constexpr (std::is_pointer_v<D> && json_has_tree_node_shape<std::remove_pointer_t<D>>::value) {
+    return json_to_tree_node<std::remove_pointer_t<D>>(value);
+  } else if constexpr (std::is_pointer_v<D> && json_has_list_node_shape<std::remove_pointer_t<D>>::value) {
+    return json_to_list_node<std::remove_pointer_t<D>>(value);
   } else if constexpr (json_is_std_vector<D>::value) {
     D out;
     if (value.kind != JsonValue::Kind::Array) return out;
@@ -474,6 +526,8 @@ T json_to(const JsonValue& value) {
   } else if constexpr (json_is_std_pair<D>::value) {
     if (value.kind != JsonValue::Kind::Array || value.array_values.size() < 2) return D{};
     return D{json_to<typename D::first_type>(value.array_values[0]), json_to<typename D::second_type>(value.array_values[1])};
+  } else if constexpr (json_is_std_tuple<D>::value) {
+    return json_to_tuple<D>(value, std::make_index_sequence<std::tuple_size_v<D>>{});
   } else {
     return D{};
   }
@@ -602,11 +656,56 @@ inline std::string to_json(std::nullptr_t) {
 }
 
 template <typename T>
+std::string finite_number_to_json(T value) {
+  std::ostringstream out;
+  out << std::setprecision(std::numeric_limits<T>::max_digits10) << value;
+  return out.str();
+}
+
+inline std::string to_json(const JsonValue& value) {
+  switch (value.kind) {
+    case JsonValue::Kind::Null:
+      return "null";
+    case JsonValue::Kind::Bool:
+      return value.bool_value ? "true" : "false";
+    case JsonValue::Kind::Number: {
+      double rounded = std::round(value.number_value);
+      if (std::fabs(value.number_value - rounded) < 1e-9) return std::to_string(static_cast<long long>(rounded));
+      return finite_number_to_json(value.number_value);
+    }
+    case JsonValue::Kind::String:
+      return to_json(value.string_value);
+    case JsonValue::Kind::Array: {
+      std::string json = "[";
+      for (std::size_t index = 0; index < value.array_values.size(); ++index) {
+        if (index > 0) json += ",";
+        json += to_json(value.array_values[index]);
+      }
+      json += "]";
+      return json;
+    }
+    case JsonValue::Kind::Object: {
+      std::string json = "{";
+      for (std::size_t index = 0; index < value.object_values.size(); ++index) {
+        if (index > 0) json += ",";
+        json += to_json(value.object_values[index].first);
+        json += ":";
+        json += to_json(value.object_values[index].second);
+      }
+      json += "}";
+      return json;
+    }
+  }
+  return "null";
+}
+
+template <typename T>
 std::enable_if_t<std::is_arithmetic_v<T> && !std::is_same_v<T, bool>, std::string>
 to_json(T value) {
   if constexpr (std::is_floating_point_v<T>) {
     if (std::isnan(value)) return "null";
     if (!std::isfinite(value)) return value < 0 ? "-1.7976931348623157e308" : "1.7976931348623157e308";
+    return finite_number_to_json(value);
   }
   return std::to_string(value);
 }
@@ -772,13 +871,17 @@ std::string to_json_key(const T& value) {
   }
 }
 
+template <typename T>
+std::string to_json(const std::vector<T>& values);
+
+template <typename T>
+std::enable_if_t<!std::is_arithmetic_v<T> && !std::is_pointer_v<T> && !std::is_convertible_v<T, std::string>, std::string>
+to_json(const T&);
+
 template <typename A, typename B>
 std::string to_json(const std::pair<A, B>& value) {
   return "[" + to_json(value.first) + "," + to_json(value.second) + "]";
 }
-
-template <typename T>
-std::string to_json(const std::vector<T>& values);
 
 template <typename Tuple, std::size_t... Indices>
 std::string tuple_to_json(const Tuple& value, std::index_sequence<Indices...>) {
@@ -794,6 +897,11 @@ std::string to_json(const std::tuple<Values...>& value) {
   return tuple_to_json(value, std::index_sequence_for<Values...>{});
 }
 
+template <typename... Values>
+std::string to_json(const std::variant<Values...>& value) {
+  return std::visit([](const auto& item) { return to_json(item); }, value);
+}
+
 template <typename T>
 std::enable_if_t<!std::is_arithmetic_v<T> && !std::is_pointer_v<T> && !std::is_convertible_v<T, std::string>, std::string>
 to_json(const T&);
@@ -806,11 +914,15 @@ std::string to_json(const std::optional<T>& value) {
 inline std::string to_json(const std::any& value) {
   if (!value.has_value()) return "null";
   if (value.type() == typeid(int)) return to_json(std::any_cast<int>(value));
+  if (value.type() == typeid(long)) return to_json(std::any_cast<long>(value));
   if (value.type() == typeid(long long)) return to_json(std::any_cast<long long>(value));
+  if (value.type() == typeid(float)) return to_json(std::any_cast<float>(value));
   if (value.type() == typeid(double)) return to_json(std::any_cast<double>(value));
   if (value.type() == typeid(bool)) return to_json(std::any_cast<bool>(value));
   if (value.type() == typeid(std::string)) return to_json(std::any_cast<std::string>(value));
   if (value.type() == typeid(std::vector<std::any>)) return to_json(std::any_cast<std::vector<std::any>>(value));
+  if (value.type() == typeid(std::map<std::string, std::any>)) return to_json(std::any_cast<std::map<std::string, std::any>>(value));
+  if (value.type() == typeid(std::unordered_map<std::string, std::any>)) return to_json(std::any_cast<std::unordered_map<std::string, std::any>>(value));
   return "{}";
 }
 
@@ -831,14 +943,14 @@ to_json(const T&) {
   return "{}";
 }
 
-template <typename T>
-std::string to_json(const std::unordered_set<T>& values);
+template <typename T, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_set<T, Hash, Equal, Allocator>& values);
 
-template <typename K, typename V>
-std::string to_json(const std::unordered_map<K, V>& values);
+template <typename K, typename V, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_map<K, V, Hash, Equal, Allocator>& values);
 
-template <typename K, typename V>
-std::string to_json(const std::map<K, V>& values);
+template <typename K, typename V, typename Compare, typename Allocator>
+std::string to_json(const std::map<K, V, Compare, Allocator>& values);
 
 template <typename T, std::size_t Size>
 std::string to_json(const std::array<T, Size>& values);
@@ -879,14 +991,14 @@ std::string to_json(const std::deque<T>& values) {
   return json;
 }
 
-template <typename T>
-std::string to_json(const std::set<T>& values);
+template <typename T, typename Compare, typename Allocator>
+std::string to_json(const std::set<T, Compare, Allocator>& values);
 
-template <typename T>
-std::string to_json(const std::unordered_set<T>& values);
+template <typename T, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_set<T, Hash, Equal, Allocator>& values);
 
-template <typename K, typename V>
-std::string to_json(const std::unordered_map<K, V>& values);
+template <typename K, typename V, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_map<K, V, Hash, Equal, Allocator>& values);
 
 inline void write_trace_event_json(const std::string& event_json, int line = 1);
 inline void write_trace_event_json_raw(const std::string& event_json);
@@ -2014,6 +2126,13 @@ bool operator==(const NestedVectorElementRef<T>& left, const U& right) {
   return materialized == right;
 }
 
+template <typename T>
+bool operator==(const NestedVectorElementRef<T>& left, const NestedVectorElementRef<T>& right) {
+  T leftValue = left;
+  T rightValue = right;
+  return leftValue == rightValue;
+}
+
 inline bool operator==(const NestedVectorElementRef<std::string>& left, const char* right) {
   std::string materialized = left;
   return materialized == right;
@@ -2044,6 +2163,11 @@ bool operator!=(const VectorElementRef<T>& left, const U& right) {
 
 template <typename T, typename U>
 bool operator!=(const NestedVectorElementRef<T>& left, const U& right) {
+  return !(left == right);
+}
+
+template <typename T>
+bool operator!=(const NestedVectorElementRef<T>& left, const NestedVectorElementRef<T>& right) {
   return !(left == right);
 }
 
@@ -2814,8 +2938,8 @@ std::string to_json(const Stack<T>& values) {
   return to_json(values.raw());
 }
 
-template <typename K, typename V>
-std::string to_json(const std::unordered_map<K, V>& values) {
+template <typename K, typename V, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_map<K, V, Hash, Equal, Allocator>& values) {
   std::string json = "{";
   bool first = true;
   for (const auto& entry : values) {
@@ -3214,20 +3338,35 @@ class UnorderedMapValueRef {
     owner_.emit_snapshot(current_trace_line());
   }
 
-  template <typename Index, typename U = V>
-  std::enable_if_t<is_std_vector<U>::value, typename U::reference>
-  operator[](Index index) {
+  template <typename... Args>
+  decltype(auto) emplace_back(Args&&... args) {
+    using Result = decltype(std::declval<V&>().emplace_back(std::forward<Args>(args)...));
     const bool present = owner_.values_.count(key_) > 0;
     owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
-    return owner_.values_[key_][index];
+    if constexpr (std::is_void_v<Result>) {
+      owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
+      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
+      owner_.emit_snapshot(current_trace_line());
+    } else {
+      decltype(auto) result = owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
+      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
+      owner_.emit_snapshot(current_trace_line());
+      return result;
+    }
   }
 
   template <typename Index, typename U = V>
-  std::enable_if_t<is_std_vector<U>::value, typename U::const_reference>
-  operator[](Index index) const {
+  auto operator[](Index&& index) -> decltype(std::declval<U&>()[std::forward<Index>(index)]) {
     const bool present = owner_.values_.count(key_) > 0;
     owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
-    return owner_.values_.at(key_)[index];
+    return owner_.values_[key_][std::forward<Index>(index)];
+  }
+
+  template <typename Index, typename U = V>
+  auto operator[](Index&& index) const -> decltype(std::declval<const U&>()[std::forward<Index>(index)]) {
+    const bool present = owner_.values_.count(key_) > 0;
+    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    return owner_.values_.at(key_)[std::forward<Index>(index)];
   }
 
   template <typename Value, typename U = V>
@@ -3724,20 +3863,35 @@ class MapValueRef {
     owner_.emit_snapshot(current_trace_line());
   }
 
-  template <typename Index, typename U = V>
-  std::enable_if_t<is_std_vector<U>::value, typename U::reference>
-  operator[](Index index) {
+  template <typename... Args>
+  decltype(auto) emplace_back(Args&&... args) {
+    using Result = decltype(std::declval<V&>().emplace_back(std::forward<Args>(args)...));
     const bool present = owner_.values_.count(key_) > 0;
     owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
-    return owner_.values_[key_][index];
+    if constexpr (std::is_void_v<Result>) {
+      owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
+      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
+      owner_.emit_snapshot(current_trace_line());
+    } else {
+      decltype(auto) result = owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
+      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
+      owner_.emit_snapshot(current_trace_line());
+      return result;
+    }
   }
 
   template <typename Index, typename U = V>
-  std::enable_if_t<is_std_vector<U>::value, typename U::const_reference>
-  operator[](Index index) const {
+  auto operator[](Index&& index) -> decltype(std::declval<U&>()[std::forward<Index>(index)]) {
     const bool present = owner_.values_.count(key_) > 0;
     owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
-    return owner_.values_.at(key_)[index];
+    return owner_.values_[key_][std::forward<Index>(index)];
+  }
+
+  template <typename Index, typename U = V>
+  auto operator[](Index&& index) const -> decltype(std::declval<const U&>()[std::forward<Index>(index)]) {
+    const bool present = owner_.values_.count(key_) > 0;
+    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    return owner_.values_.at(key_)[std::forward<Index>(index)];
   }
 
   template <typename Value, typename U = V>
@@ -3843,8 +3997,8 @@ bool operator!=(const U& left, const MapValueRef<K, V>& right) {
   return !(left == right);
 }
 
-template <typename K, typename V>
-std::string to_json(const std::map<K, V>& values) {
+template <typename K, typename V, typename Compare, typename Allocator>
+std::string to_json(const std::map<K, V, Compare, Allocator>& values) {
   std::string json = "{";
   bool first = true;
   for (const auto& entry : values) {
@@ -4081,8 +4235,8 @@ class Set : public std::set<T> {
   }
 };
 
-template <typename T>
-std::string to_json(const std::set<T>& values) {
+template <typename T, typename Compare, typename Allocator>
+std::string to_json(const std::set<T, Compare, Allocator>& values) {
   std::string json = "[";
   bool first = true;
   for (const auto& value : values) {
@@ -4322,8 +4476,8 @@ class UnorderedSet : public std::unordered_set<T> {
   }
 };
 
-template <typename T>
-std::string to_json(const std::unordered_set<T>& values) {
+template <typename T, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_set<T, Hash, Equal, Allocator>& values) {
   std::string json = "[";
   bool first = true;
   for (const auto& value : values) {

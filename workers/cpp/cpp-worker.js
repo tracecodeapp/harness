@@ -1095,11 +1095,14 @@ async function loadToolchain() {
 }
 
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ''))
+    .replace(/\/\/.*$/gm, '');
 }
 
 function cppNoExceptionDefaultReturn(returnType) {
-  const normalized = stripCppTypeQualifiers(String(returnType || 'void'));
+  const valueType = localCppType(String(returnType || 'void'));
+  const normalized = stripCppTypeQualifiers(valueType);
   if (!normalized || normalized === 'void') return '';
   if (normalized.endsWith('*') || normalized === 'nullptr_t') return 'nullptr';
   if (normalized === 'bool') return 'false';
@@ -1121,7 +1124,7 @@ function cppNoExceptionDefaultReturn(returnType) {
   if (/^(?:unsigned)?(?:short|int|long|longlong|longlongint|size_t|std::size_t|float|double|longdouble)$/.test(normalized)) {
     return '0';
   }
-  return `${String(returnType || '').replace(/[&]/g, '').replace(/\bconst\b/g, '').trim()}()`;
+  return `${valueType}()`;
 }
 
 function cppExceptionMessageForThrowExpression(expression) {
@@ -1416,7 +1419,11 @@ function parseFunctionFieldSignature(source, functionName) {
 
 function resolveCppObjectMethodMacro(source, operation) {
   const escaped = operation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return stripComments(source).match(new RegExp(`^\\s*#\\s*define\\s+${escaped}\\s+([A-Za-z_]\\w*)\\s*$`, 'm'))?.[1] || operation;
+  const cleaned = stripComments(source);
+  const macroTarget = cleaned.match(new RegExp(`^\\s*#\\s*define\\s+${escaped}\\s+([A-Za-z_]\\w*)\\s*$`, 'm'))?.[1];
+  if (macroTarget) return macroTarget;
+  if (operation === 'delete' && /\bdeleteKey\s*\(/.test(cleaned)) return 'deleteKey';
+  return operation;
 }
 
 function cleanCppReturnType(returnType) {
@@ -1707,7 +1714,7 @@ function localCppType(type) {
 
 function isNullCppReturnType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
-  return normalized === 'nullptr_t' || normalized === 'std::nullptr_t';
+  return normalized === 'nullptr_t' || normalized === 'std::nullptr_t' || normalized === 'void*';
 }
 
 function materializedCppType(type, aliases = new Map()) {
@@ -1770,6 +1777,7 @@ function isVectorCppType(type, aliases = new Map()) {
   if (normalized.includes('*')) return false;
   if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
   const inner = normalized.slice('vector<'.length, -1).trim().replace(/^std::/, '');
+  if (/^(?:array|deque|queue|priority_queue|stack|map|unordered_map|set|unordered_set)</.test(inner)) return false;
   if (/^[A-Z]/.test(inner)) return false;
   return true;
 }
@@ -1826,13 +1834,17 @@ function parameterAddressEscapes(source, name) {
 
 function isSetCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
-  return (
-    (normalized.startsWith('set<') && normalized.endsWith('>')) ||
-    (normalized.startsWith('unordered_set<') && normalized.endsWith('>'))
-  );
+  const prefix = normalized.startsWith('unordered_set<')
+    ? 'unordered_set<'
+    : normalized.startsWith('set<')
+      ? 'set<'
+      : null;
+  if (!prefix || !normalized.endsWith('>')) return false;
+  return splitTopLevelCommaList(normalized.slice(prefix.length, -1)).length === 1;
 }
 
 function isTraceWrappedCppType(type, aliases = new Map()) {
+  if (hasContainerMappedValueCppType(type, aliases)) return false;
   return (
     isVectorCppType(type, aliases) ||
     isDequeCppType(type, aliases) ||
@@ -2145,6 +2157,9 @@ function buildCustomCppObjectLiteral(value, type, aliases = new Map()) {
 
 function toCppLiteral(value, type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
+  if (normalized === 'JsonValue' || normalized === 'tracecode::JsonValue') {
+    return `tracecode::parse_json(${cppStringLiteral(JSON.stringify(value))})`;
+  }
   if (normalized === 'TreeNode*') {
     return buildSerializedTreeNodeLiteral(value, aliases);
   }
@@ -2246,6 +2261,7 @@ function isDynamicJsonMapKeyType(type, aliases = new Map()) {
 
 function isDynamicJsonInputType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
+  if (normalized === 'any' || normalized === 'JsonValue' || normalized === 'tracecode::JsonValue') return true;
   if (normalized === 'TreeNode' || normalized === 'TreeNode*' || normalized === 'ListNode' || normalized === 'ListNode*') {
     return true;
   }
@@ -3030,10 +3046,10 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
       lines.push(`  tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${index} + "}", ${signature.line});`);
     }
     if (normalizeCppType(signature.returnType, aliases) === 'void' || isNullCppReturnType(signature.returnType, aliases)) {
-      lines.push(`  __tc_instance.${operation}(${argNames.join(', ')});`);
+      lines.push(`  __tc_instance.${signatureOperation}(${argNames.join(', ')});`);
       lines.push('  __tc_outputs.push_back("null");');
     } else {
-      lines.push(`  auto __tc_op_${index}_result = __tc_instance.${operation}(${argNames.join(', ')});`);
+      lines.push(`  auto __tc_op_${index}_result = __tc_instance.${signatureOperation}(${argNames.join(', ')});`);
       lines.push(`  __tc_outputs.push_back(tracecode::to_json(__tc_op_${index}_result));`);
     }
   }

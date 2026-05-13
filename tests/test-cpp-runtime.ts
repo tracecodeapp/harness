@@ -136,6 +136,27 @@ const cases = [
     expected: 30,
   },
   {
+    name: 'nested ordered map proxy lookup',
+    code: 'class Solution { public: int cap(map<string, map<string, int>>& campaigns, string id) { return campaigns[id].count("cap") ? campaigns[id]["cap"] : 0; } };',
+    functionName: 'cap',
+    inputs: { campaigns: { a: { cap: 7 } }, id: 'a' },
+    expected: 7,
+  },
+  {
+    name: 'nested vector proxy comparison',
+    code: 'class Solution { public: bool differs(vector<vector<int>>& intervals) { return intervals[0][0] != intervals[1][0]; } };',
+    functionName: 'differs',
+    inputs: { intervals: [[1, 4], [2, 5]] },
+    expected: true,
+  },
+  {
+    name: 'variant result serialization',
+    code: 'class Solution { public: vector<vector<variant<string, int>>> rows() { return { { string("A"), 1 }, { string("B"), 2 } }; } };',
+    functionName: 'rows',
+    inputs: {},
+    expected: [['A', 1], ['B', 2]],
+  },
+  {
     name: 'rewritten container STL parity',
     code: [
       'class Solution {',
@@ -298,6 +319,30 @@ const cases = [
     functionName: 'recover',
     inputs: { value: -1 },
     expected: 42,
+  },
+  {
+    name: 'no-exception static helper catch lowering',
+    code: [
+      '#include <any>',
+      '#include <stdexcept>',
+      'static long long anyToLL(const std::any& value) {',
+      '  if (value.type() == typeid(int)) return std::any_cast<int>(value);',
+      '  throw std::bad_any_cast{};',
+      '}',
+      'class Solution {',
+      'public:',
+      '  long long recover(int value) {',
+      '    try {',
+      '      return anyToLL(std::any(value));',
+      '    } catch (const std::exception&) {',
+      '      return 42;',
+      '    }',
+      '  }',
+      '};',
+    ].join('\n'),
+    functionName: 'recover',
+    inputs: { value: 7 },
+    expected: 7,
   },
 ];
 
@@ -1782,6 +1827,40 @@ if (!opsClassEvents.some((event) => event.kind === 'return' && event.function ==
 }
 if (!opsClassEvents.some((event) => event.kind === 'return' && event.function === 'value' && event.value === 6)) {
   throw new Error('C++ ops-class should preserve shared state across operations, received ' + JSON.stringify(opsClassEvents));
+}
+
+const opsClassLeadingBlockCommentTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    '/**',
+    ' * Leading scaffold comment should not shift function signature lines.',
+    ' */',
+    'class Parser {',
+    'public:',
+    '  Parser() {}',
+    '  int parse(int value) {',
+    '    current = value;',
+    '    return helper();',
+    '  }',
+    'private:',
+    '  int current = 0;',
+    '  int helper() {',
+    '    return current;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'Parser',
+  inputs: {
+    operations: ['Parser', 'parse'],
+    arguments: [[], [9]],
+  },
+  executionStyle: 'ops-class',
+  options: {},
+});
+if (
+  !opsClassLeadingBlockCommentTrace.success ||
+  JSON.stringify(opsClassLeadingBlockCommentTrace.output) !== JSON.stringify([null, 9])
+) {
+  throw new Error('C++ ops-class leading block comment tracing failed: ' + JSON.stringify(opsClassLeadingBlockCommentTrace));
 }
 
 const opsClassBadArgCount = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
