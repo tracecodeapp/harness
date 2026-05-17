@@ -1,7 +1,7 @@
 export const config = /*json-start*/{
   "mainAssemblyName": "TraceCode.CSharpHost.dll",
   "resources": {
-    "hash": "sha256-jK8vK/oColJnw3bjqXY/JxkREhSWgKN9CEKb0ivKvfQ=",
+    "hash": "sha256-6cNoF72iGgnBT1JvO/5yEKn7/c3FpxgWgJazIdWp7dI=",
     "jsModuleNative": [
       {
         "name": "dotnet.native.js"
@@ -889,7 +889,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "TraceCode.CSharpHost.wasm",
         "name": "TraceCode.CSharpHost.wasm",
-        "hash": "sha256-ErjO7jJnmgZabCXNIAOGxqC9itg4UnSxsG/r0Sxe0es="
+        "hash": "sha256-pqJmSLaSNXHZSK9CSZYvqURG82mcN6YVxp7F9P4MIdk="
       },
       {
         "virtualPath": "WindowsBase.wasm",
@@ -1924,7 +1924,7 @@ export const config = /*json-start*/{
       {
         "virtualPath": "/tracecode-refs/TraceCode.CSharpHost.dll",
         "name": "supportFiles/173_TraceCode.CSharpHost.dll",
-        "hash": "sha256-fc07SsjdeBuBxRaG0G4tyPEYnZSImh5ujTTbjR1uZ1A="
+        "hash": "sha256-AUR7mKOSGo3bABwyxStOqqra8htEKSzPhYG5fiqtZIg="
       },
       {
         "virtualPath": "/tracecode-refs/WindowsBase.dll",

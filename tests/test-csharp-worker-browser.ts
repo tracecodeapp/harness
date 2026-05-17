@@ -2639,6 +2639,9 @@ async function main(): Promise<void> {
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
                 'File.WriteAllBytes("bytes.bin", new byte[] { 0, 255 });',
+                'using (var writer = new StreamWriter("streamed.txt")) { writer.WriteLine("stream"); }',
+                'using (StreamWriter writer = File.AppendText("streamed.txt")) { writer.WriteLine("append"); }',
+                'using (var writer = File.CreateText("created-stream.txt")) { writer.Write("created"); }',
                 'File.Copy("generated.txt", "copied.txt");',
                 'File.Move("copied.txt", "moved.txt");',
                 'File.Delete("stale.txt");',
@@ -2703,6 +2706,35 @@ async function main(): Promise<void> {
           event.change.contents === 'AP8='
       ) === true,
       `C# project worker should stream generated binary file changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/streamed.txt' && file.contents === 'stream\nappend\n') === true &&
+        projectRun.files?.some((file) => file.path === 'src/created-stream.txt' && file.contents === 'created') === true,
+      `C# project worker should return stream writer file changes, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/streamed.txt' &&
+          event.change.contents === 'stream\n'
+      ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/streamed.txt' &&
+            event.change.contents === 'stream\nappend\n'
+        ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/created-stream.txt' &&
+            event.change.contents === 'created'
+        ) === true,
+      `C# project worker should stream stream-writer file changes, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some(

@@ -1101,6 +1101,27 @@ public static partial class CompilerHost
             return base.VisitInvocationExpression(node);
         }
 
+        public override SyntaxNode? VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
+        {
+            if (IsProjectStreamWriterType(node.Type))
+            {
+                return node.WithType(
+                    SyntaxFactory.ParseTypeName("TraceCode.Project.ProjectStreamWriter")
+                        .WithTriviaFrom(node.Type)
+                );
+            }
+
+            return base.VisitObjectCreationExpression(node);
+        }
+
+        private static bool IsProjectStreamWriterType(TypeSyntax type)
+        {
+            string text = type.ToString();
+            return string.Equals(text, "StreamWriter", StringComparison.Ordinal)
+                || string.Equals(text, "System.IO.StreamWriter", StringComparison.Ordinal)
+                || string.Equals(text, "global::System.IO.StreamWriter", StringComparison.Ordinal);
+        }
+
         private static bool IsProjectFileApi(ExpressionSyntax expression)
         {
             string text = expression.ToString();
@@ -1115,6 +1136,8 @@ public static partial class CompilerHost
                 "WriteAllText" or
                 "WriteAllBytes" or
                 "AppendAllText" or
+                "CreateText" or
+                "AppendText" or
                 "Delete" or
                 "Move" or
                 "Copy";
@@ -1175,6 +1198,16 @@ public static class ProjectFile
         TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 
+    public static System.IO.StreamWriter CreateText(string path)
+    {
+        return new ProjectStreamWriter(path, append: false);
+    }
+
+    public static System.IO.StreamWriter AppendText(string path)
+    {
+        return new ProjectStreamWriter(path, append: true);
+    }
+
     public static void Delete(string path)
     {
         System.IO.File.Delete(path);
@@ -1205,6 +1238,47 @@ public static class ProjectFile
     {
         System.IO.File.Copy(sourceFileName, destFileName, overwrite);
         TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(destFileName);
+    }
+}
+
+public sealed class ProjectStreamWriter : System.IO.StreamWriter
+{
+    private readonly string Path;
+
+    public ProjectStreamWriter(string path)
+        : base(path)
+    {
+        Path = path;
+    }
+
+    public ProjectStreamWriter(string path, bool append)
+        : base(path, append)
+    {
+        Path = path;
+    }
+
+    public ProjectStreamWriter(string path, bool append, System.Text.Encoding encoding)
+        : base(path, append, encoding)
+    {
+        Path = path;
+    }
+
+    public ProjectStreamWriter(string path, bool append, System.Text.Encoding encoding, int bufferSize)
+        : base(path, append, encoding, bufferSize)
+    {
+        Path = path;
+    }
+
+    public override void Flush()
+    {
+        base.Flush();
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(Path);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(Path);
     }
 }
 """;
