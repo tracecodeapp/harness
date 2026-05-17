@@ -4522,16 +4522,28 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
 
     const java = await workspace.runCommand('java Main', { cwd: '/workspace' });
     assertCondition(java.exitCode === 0, `browser Java project command should succeed with alias cwd: ${java.stderr}`);
+    assertCondition(
+      java.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
+      `browser Java request should use canonical cwd and expose alias metadata: ${java.stdout}`
+    );
     assertCondition(javaRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser Java request should include workspaceRoot');
     assertCondition(javaRequests[0]?.project.workspaceAlias === '/workspace', 'browser Java request should include workspaceAlias');
 
     const csharp = await workspace.runCommand('dotnet run', { cwd: '/workspace' });
     assertCondition(csharp.exitCode === 0, `browser C# project command should succeed with alias cwd: ${csharp.stderr}`);
+    assertCondition(
+      csharp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
+      `browser C# request should use canonical cwd and expose alias metadata: ${csharp.stdout}`
+    );
     assertCondition(csharpRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C# request should include workspaceRoot');
     assertCondition(csharpRequests[0]?.project.workspaceAlias === '/workspace', 'browser C# request should include workspaceAlias');
 
     const cpp = await workspace.runCommand('clang++ /home/ada/weather-api/main.cpp -o /workspace/out/app', { cwd: '/workspace' });
     assertCondition(cpp.exitCode === 0, `browser C++ project command should succeed with canonical and alias args: ${cpp.stderr}`);
+    assertCondition(
+      cpp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
+      `browser C++ request should use canonical cwd and expose alias metadata: ${cpp.stdout}`
+    );
     assertCondition(cppRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C++ request should include workspaceRoot');
     assertCondition(cppRequests[0]?.project.workspaceAlias === '/workspace', 'browser C++ request should include workspaceAlias');
 
