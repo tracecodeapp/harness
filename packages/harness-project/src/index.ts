@@ -306,11 +306,11 @@ function toWorkspaceEntryPath(cwd: string, path: string, workspaceAlias?: string
   return `/${parts.join('/')}`;
 }
 
-function resolveWorkspaceCommandPath(workspaceRoot: string, cwd: string, path: string): string {
+function resolveWorkspaceCommandPath(workspaceRoot: string, cwd: string, path: string, workspaceAlias?: string): string {
   assertNoNul(path, 'Project path');
   const normalized = path.replace(/\\/g, '/');
   if (normalized.startsWith('/')) {
-    const absolutePath = normalizeWorkspaceCwd(normalized);
+    const absolutePath = mapWorkspaceAlias(workspaceRoot, workspaceAlias, normalizeWorkspaceCwd(normalized));
     if (!isWithinWorkspace(workspaceRoot, absolutePath)) {
       throw new Error(`Project path must stay inside the workspace: ${path}`);
     }
@@ -2021,7 +2021,7 @@ export function createCppProjectCommands(
     });
     const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result, options.onFileChange);
     if (commandResult.exitCode === 0) {
-      options.recordExecutablePath?.(toProjectPath(workspaceRoot, resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, cppOutputPathFromArgs(parsed.args))));
+      options.recordExecutablePath?.(toProjectPath(workspaceRoot, resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, cppOutputPathFromArgs(parsed.args), options.workspaceAlias)));
     }
     return commandResult;
   };

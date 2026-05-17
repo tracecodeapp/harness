@@ -4715,6 +4715,75 @@ async function testConfiguredKernelNativePythonAndNodeRunners(): Promise<void> {
   workspace.dispose();
 }
 
+async function testConfiguredKernelNativeCompiledRunners(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    kernel: {
+      user: { id: 'auth-user-123', username: 'obi' },
+      host: { hostname: 'tracevm' },
+      workspace: {
+        id: 'weather-api-native-compiled',
+        name: 'weather-api',
+        startedAt: '2026-05-17T12:00:00.000Z',
+      },
+    },
+    files: [
+      {
+        path: 'src/java/Main.java',
+        contents: [
+          'package app;',
+          'public class Main {',
+          '  public static void main(String[] args) {',
+          '    System.out.println("java-configured");',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'src/cpp/main.cpp',
+        contents: '#include <iostream>\nint main() { std::cout << "cpp-configured\\n"; }\n',
+      },
+      {
+        path: 'src/csharp/App.csproj',
+        contents: [
+          '<Project Sdk="Microsoft.NET.Sdk">',
+          '  <PropertyGroup>',
+          '    <OutputType>Exe</OutputType>',
+          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <ImplicitUsings>enable</ImplicitUsings>',
+          '    <Nullable>disable</Nullable>',
+          '  </PropertyGroup>',
+          '</Project>',
+          '',
+        ].join('\n'),
+      },
+      { path: 'src/csharp/Program.cs', contents: 'Console.WriteLine("csharp-configured");\n' },
+    ],
+    javaRunner: createNativeJavaProjectRunner(),
+    cppRunner: createNativeCppProjectRunner(),
+    csharpRunner: createNativeCSharpProjectRunner(),
+  });
+
+  const javaCompile = await workspace.runCommand('javac -d /home/obi/weather-api/out/java /workspace/src/java/Main.java', { cwd: '/workspace' });
+  assertCondition(javaCompile.exitCode === 0, `configured native javac should map canonical and alias paths: ${javaCompile.stderr}`);
+  const javaRun = await workspace.runCommand('java --class-path /home/obi/weather-api/out/java app.Main', { cwd: '/workspace' });
+  assertCondition(javaRun.exitCode === 0, `configured native java should run canonical classpath: ${javaRun.stderr}`);
+  assertCondition(javaRun.stdout === 'java-configured\n', `configured native java should execute compiled output: ${javaRun.stdout}`);
+
+  const cppCompile = await workspace.runCommand('clang++ -std=c++17 /home/obi/weather-api/src/cpp/main.cpp -o /workspace/out/cpp/app', { cwd: '/workspace' });
+  assertCondition(cppCompile.exitCode === 0, `configured native clang++ should map canonical and alias paths: ${cppCompile.stderr}`);
+  const cppRun = await workspace.runCommand('/home/obi/weather-api/out/cpp/app', { cwd: '/workspace' });
+  assertCondition(cppRun.exitCode === 0, `configured native C++ should run canonical executable path: ${cppRun.stderr}`);
+  assertCondition(cppRun.stdout === 'cpp-configured\n', `configured native C++ should execute compiled output: ${cppRun.stdout}`);
+
+  const csharpBuild = await workspace.runCommand('dotnet build /home/obi/weather-api/src/csharp/App.csproj', { cwd: '/workspace' });
+  assertCondition(csharpBuild.exitCode === 0, `configured native dotnet build should map canonical project path: ${csharpBuild.stderr}`);
+  const csharpRun = await workspace.runCommand('dotnet run --project /workspace/src/csharp/App.csproj', { cwd: '/workspace' });
+  assertCondition(csharpRun.exitCode === 0, `configured native dotnet run should map alias project path: ${csharpRun.stderr}`);
+  assertCondition(csharpRun.stdout.endsWith('csharp-configured\n'), `configured native C# should execute project output: ${csharpRun.stdout}`);
+  workspace.dispose();
+}
+
 function testPathValidation(): void {
   assertCondition(normalizeRuntimeProjectPath('./src/solution.py') === 'src/solution.py', 'normalizes segments');
   assertRejects(
@@ -4803,6 +4872,7 @@ async function main(): Promise<void> {
   await testWorkspaceKernelEvents();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
+  await testConfiguredKernelNativeCompiledRunners();
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 

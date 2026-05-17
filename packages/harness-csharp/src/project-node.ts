@@ -149,17 +149,40 @@ async function changedProjectFiles(root: string, baselineFiles: Map<string, Buff
   return files;
 }
 
+function projectVirtualRoot(project: CSharpProjectSnapshot): string {
+  return project.workspaceRoot ?? project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
+}
+
+function projectVirtualAliases(project: CSharpProjectSnapshot): string[] {
+  return Array.from(new Set([project.workspaceAlias, VIRTUAL_WORKSPACE_ROOT].filter((alias): alias is string => Boolean(alias && alias !== projectVirtualRoot(project)))));
+}
+
+function stripProjectVirtualPrefix(value: string, project: CSharpProjectSnapshot): string | null {
+  const normalized = value.replace(/\\/g, '/');
+  if (normalized === VIRTUAL_WORKSPACE_ROOT) return '';
+  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) return normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1);
+  const roots = [projectVirtualRoot(project), ...projectVirtualAliases(project)];
+  for (const root of roots) {
+    if (normalized === root) return '';
+    if (normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1);
+  }
+  return null;
+}
+
 function cwdForRequest(request: CSharpProjectCommandRequest, root: string): string {
-  const projectCwd = request.project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
-  if (request.cwd === projectCwd) return root;
-  if (request.cwd.startsWith(`${projectCwd}/`)) {
-    return join(root, request.cwd.slice(projectCwd.length + 1));
+  const relativeCwd = stripProjectVirtualPrefix(request.cwd, request.project);
+  if (relativeCwd !== null) {
+    return relativeCwd ? join(root, relativeCwd) : root;
   }
   throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
 }
 
-function mapWorkspaceAbsolutePath(root: string, value: string): string {
+function mapWorkspaceAbsolutePath(root: string, value: string, project?: CSharpProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
+  const relativePath = project ? stripProjectVirtualPrefix(normalized, project) : null;
+  if (relativePath !== null) {
+    return relativePath ? join(root, relativePath) : root;
+  }
   if (normalized === VIRTUAL_WORKSPACE_ROOT) return root;
   if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
     return join(root, normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
@@ -171,8 +194,11 @@ function isDotnetSlashPropertySwitch(value: string): boolean {
   return /^\/(?:p|property)(?:[:=]|$)/i.test(value);
 }
 
-function mapWorkspaceBuildArg(root: string, value: string): string {
+function mapWorkspaceBuildArg(root: string, value: string, project?: CSharpProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
+  if (project && stripProjectVirtualPrefix(normalized, project) !== null) {
+    return mapWorkspaceAbsolutePath(root, normalized, project);
+  }
   if (
     (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) &&
     normalized !== VIRTUAL_WORKSPACE_ROOT &&
@@ -181,7 +207,7 @@ function mapWorkspaceBuildArg(root: string, value: string): string {
   ) {
     throw new Error(`Project path must stay inside the workspace: ${value}`);
   }
-  return mapWorkspaceAbsolutePath(root, value);
+  return mapWorkspaceAbsolutePath(root, value, project);
 }
 
 function projectDirectory(path: string): string {
@@ -189,8 +215,12 @@ function projectDirectory(path: string): string {
   return index < 0 ? '' : path.slice(0, index);
 }
 
-function relativeVirtualWorkspacePath(path: string): string {
+function relativeVirtualWorkspacePath(path: string, project?: CSharpProjectSnapshot): string {
   const normalized = path.replace(/\\/g, '/');
+  const relativePath = project ? stripProjectVirtualPrefix(normalized, project) : null;
+  if (relativePath !== null) {
+    return relativePath ? assertSafeProjectPath(relativePath) : '';
+  }
   if (normalized === VIRTUAL_WORKSPACE_ROOT) return '';
   if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
     return assertSafeProjectPath(normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
@@ -200,13 +230,17 @@ function relativeVirtualWorkspacePath(path: string): string {
 
 function resolveProjectOperandPath(request: CSharpProjectCommandRequest, value: string): string {
   const normalized = value.replace(/\\/g, '/');
+  const relativePath = stripProjectVirtualPrefix(normalized, request.project);
+  if (relativePath !== null) {
+    return relativePath ? assertSafeProjectPath(relativePath) : '';
+  }
   if (normalized === VIRTUAL_WORKSPACE_ROOT || normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
     return relativeVirtualWorkspacePath(normalized);
   }
   if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
     throw new Error(`Project path must stay inside the workspace: ${value}`);
   }
-  return normalizeProjectItemPath(relativeVirtualWorkspacePath(request.cwd), normalized);
+  return normalizeProjectItemPath(relativeVirtualWorkspacePath(request.cwd, request.project), normalized, request.project);
 }
 
 function decodeXmlText(value: string): string {
@@ -218,14 +252,17 @@ function decodeXmlText(value: string): string {
     .replace(/&amp;/g, '&');
 }
 
-function normalizeProjectItemPath(projectDirectoryPath: string, value: string): string {
+function normalizeProjectItemPath(projectDirectoryPath: string, value: string, project?: CSharpProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/').trim();
   if (!normalized || normalized.includes('$(') || normalized.includes('%(')) return '';
   if (/^[A-Za-z]:\//.test(normalized)) {
     throw new Error(`Project path must stay inside the workspace: ${value}`);
   }
 
-  const relativePath = normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)
+  const strippedPath = project ? stripProjectVirtualPrefix(normalized, project) : null;
+  const relativePath = strippedPath !== null
+    ? strippedPath
+    : normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)
     ? normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1)
     : normalized;
   if (relativePath.startsWith('/')) {
@@ -233,7 +270,7 @@ function normalizeProjectItemPath(projectDirectoryPath: string, value: string): 
   }
 
   const parts: string[] = [];
-  const combinedPath = projectDirectoryPath && !normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)
+  const combinedPath = projectDirectoryPath && strippedPath === null && !normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)
     ? `${projectDirectoryPath}/${relativePath}`
     : relativePath;
   for (const part of combinedPath.split('/')) {
@@ -253,9 +290,9 @@ function normalizeProjectItemPath(projectDirectoryPath: string, value: string): 
   return parts.join('/');
 }
 
-function validateProjectItemValue(projectDirectoryPath: string, value: string): void {
+function validateProjectItemValue(projectDirectoryPath: string, value: string, project: CSharpProjectSnapshot): void {
   for (const item of value.split(';').map((part) => part.trim()).filter(Boolean)) {
-    normalizeProjectItemPath(projectDirectoryPath, item);
+    normalizeProjectItemPath(projectDirectoryPath, item, project);
   }
 }
 
@@ -269,11 +306,11 @@ function validateNativeProjectFileItems(project: CSharpProjectSnapshot): void {
     for (const tagMatch of contents.matchAll(/<(?:Compile|EmbeddedResource|ProjectReference)\b[^>]*>/gi)) {
       const tag = tagMatch[0] ?? '';
       for (const attributeMatch of tag.matchAll(/\s(?:Include|Remove|Exclude)\s*=\s*["']([^"']+)["']/gi)) {
-        validateProjectItemValue(directoryPath, decodeXmlText(attributeMatch[1] ?? ''));
+        validateProjectItemValue(directoryPath, decodeXmlText(attributeMatch[1] ?? ''), project);
       }
     }
     for (const match of contents.matchAll(/<HintPath\b[^>]*>([\s\S]*?)<\/HintPath>/gi)) {
-      validateProjectItemValue(directoryPath, decodeXmlText(match[1] ?? ''));
+      validateProjectItemValue(directoryPath, decodeXmlText(match[1] ?? ''), project);
     }
   }
 }
@@ -284,7 +321,7 @@ function pathContainsCwd(projectPath: string, cwd: string): boolean {
 }
 
 function existingProjectPath(project: CSharpProjectSnapshot, requestCwd: string): string | null {
-  const cwd = relativeVirtualWorkspacePath(requestCwd);
+  const cwd = relativeVirtualWorkspacePath(requestCwd, project);
   const candidates = project.files
     .map((file) => file.path)
     .filter((path) => path.endsWith('.csproj'))
@@ -306,7 +343,7 @@ async function ensureProjectFile(root: string, request: CSharpProjectCommandRequ
   const existing = existingProjectPath(request.project, request.cwd);
   if (existing) return existing;
 
-  const cwd = relativeVirtualWorkspacePath(request.cwd);
+  const cwd = relativeVirtualWorkspacePath(request.cwd, request.project);
   const compileInclude = cwd ? `../${cwd}/**/*.cs` : '../**/*.cs';
   const excludePaths = cwd
     ? `../${cwd}/bin/**;../${cwd}/obj/**`
@@ -337,8 +374,8 @@ async function ensureProjectFile(root: string, request: CSharpProjectCommandRequ
   return GENERATED_PROJECT_PATH;
 }
 
-function mappedDotnetArgs(root: string, args: string[]): string[] {
-  return args.map((arg) => mapWorkspaceBuildArg(root, arg));
+function mappedDotnetArgs(root: string, args: string[], project: CSharpProjectSnapshot): string[] {
+  return args.map((arg) => mapWorkspaceBuildArg(root, arg, project));
 }
 
 function buildArgsForRequest(request: CSharpProjectCommandRequest): string[] {
@@ -473,7 +510,7 @@ export function createNativeCSharpProjectRunner(
 
       if (request.source === 'compile') {
         const baseline = await snapshotFileBytes(root);
-        const result = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, request.args)], {
+        const result = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, request.args, request.project)], {
           cwd,
           env: request.env,
           stdin: request.stdin,
@@ -487,7 +524,7 @@ export function createNativeCSharpProjectRunner(
       }
 
       if (!shouldSkipBuildForRequest(request)) {
-        const build = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, buildArgsForRequest(request))], {
+        const build = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, buildArgsForRequest(request), request.project)], {
           cwd,
           env: request.env,
           stdin: '',

@@ -123,17 +123,40 @@ async function changedProjectFiles(root: string, project: CppProjectSnapshot): P
   return files;
 }
 
+function projectVirtualRoot(project: CppProjectSnapshot): string {
+  return project.workspaceRoot ?? project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
+}
+
+function projectVirtualAliases(project: CppProjectSnapshot): string[] {
+  return Array.from(new Set([project.workspaceAlias, VIRTUAL_WORKSPACE_ROOT].filter((alias): alias is string => Boolean(alias && alias !== projectVirtualRoot(project)))));
+}
+
+function stripProjectVirtualPrefix(value: string, project: CppProjectSnapshot): string | null {
+  const normalized = value.replace(/\\/g, '/');
+  if (normalized === VIRTUAL_WORKSPACE_ROOT) return '';
+  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) return normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1);
+  const roots = [projectVirtualRoot(project), ...projectVirtualAliases(project)];
+  for (const root of roots) {
+    if (normalized === root) return '';
+    if (normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1);
+  }
+  return null;
+}
+
 function cwdForRequest(request: CppProjectCommandRequest, root: string): string {
-  const projectCwd = request.project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
-  if (request.cwd === projectCwd) return root;
-  if (request.cwd.startsWith(`${projectCwd}/`)) {
-    return join(root, request.cwd.slice(projectCwd.length + 1));
+  const relativeCwd = stripProjectVirtualPrefix(request.cwd, request.project);
+  if (relativeCwd !== null) {
+    return relativeCwd ? join(root, relativeCwd) : root;
   }
   throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
 }
 
-function mapWorkspaceAbsolutePath(root: string, value: string): string {
+function mapWorkspaceAbsolutePath(root: string, value: string, project?: CppProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
+  const relativePath = project ? stripProjectVirtualPrefix(normalized, project) : null;
+  if (relativePath !== null) {
+    return relativePath ? join(root, relativePath) : root;
+  }
   if (normalized === VIRTUAL_WORKSPACE_ROOT) return root;
   if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
     return join(root, normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
@@ -141,16 +164,22 @@ function mapWorkspaceAbsolutePath(root: string, value: string): string {
   return value;
 }
 
-function mapWorkspaceProjectPath(root: string, value: string): string {
+function mapWorkspaceProjectPath(root: string, value: string, project?: CppProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
+  if (project && stripProjectVirtualPrefix(normalized, project) !== null) {
+    return mapWorkspaceAbsolutePath(root, normalized, project);
+  }
   if (normalized.startsWith('/') && normalized !== VIRTUAL_WORKSPACE_ROOT && !normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
     throw new Error(`Project path must stay inside the workspace: ${value}`);
   }
   return mapWorkspaceAbsolutePath(root, value);
 }
 
-function assertCompilePathStaysInWorkspace(root: string, cwd: string, value: string): string {
+function assertCompilePathStaysInWorkspace(root: string, cwd: string, value: string, project?: CppProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
+  if (project && stripProjectVirtualPrefix(normalized, project) !== null) {
+    return mapWorkspaceAbsolutePath(root, normalized, project);
+  }
   if (normalized === VIRTUAL_WORKSPACE_ROOT || normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
     return mapWorkspaceAbsolutePath(root, normalized);
   }
@@ -166,35 +195,41 @@ function assertCompilePathStaysInWorkspace(root: string, cwd: string, value: str
   return value;
 }
 
-function mapCompilePathOption(root: string, cwd: string, value: string): string {
+function mapCompilePathOption(root: string, cwd: string, value: string, project?: CppProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
+  if (project && stripProjectVirtualPrefix(normalized, project) !== null) {
+    return mapWorkspaceProjectPath(root, value, project);
+  }
   if (normalized.startsWith('/') || normalized === VIRTUAL_WORKSPACE_ROOT) {
     return mapWorkspaceProjectPath(root, value);
   }
-  return assertCompilePathStaysInWorkspace(root, cwd, value);
+  return assertCompilePathStaysInWorkspace(root, cwd, value, project);
 }
 
-function mapCompileArg(root: string, cwd: string, arg: string): string {
-  if (arg.startsWith('-I/')) return `-I${mapWorkspaceProjectPath(root, arg.slice(2))}`;
-  if (arg.startsWith('-L/')) return `-L${mapWorkspaceProjectPath(root, arg.slice(2))}`;
-  if (arg.startsWith('-isystem/')) return `-isystem${mapWorkspaceProjectPath(root, arg.slice('-isystem'.length))}`;
-  if (arg.startsWith('-I') && arg.length > 2) return `-I${mapCompilePathOption(root, cwd, arg.slice(2))}`;
-  if (arg.startsWith('-L') && arg.length > 2) return `-L${mapCompilePathOption(root, cwd, arg.slice(2))}`;
+function mapCompileArg(root: string, cwd: string, arg: string, project: CppProjectSnapshot): string {
+  if (arg.startsWith('-I/')) return `-I${mapWorkspaceProjectPath(root, arg.slice(2), project)}`;
+  if (arg.startsWith('-L/')) return `-L${mapWorkspaceProjectPath(root, arg.slice(2), project)}`;
+  if (arg.startsWith('-isystem/')) return `-isystem${mapWorkspaceProjectPath(root, arg.slice('-isystem'.length), project)}`;
+  if (arg.startsWith('-I') && arg.length > 2) return `-I${mapCompilePathOption(root, cwd, arg.slice(2), project)}`;
+  if (arg.startsWith('-L') && arg.length > 2) return `-L${mapCompilePathOption(root, cwd, arg.slice(2), project)}`;
   if (arg.startsWith('-isystem') && arg.length > '-isystem'.length) {
-    return `-isystem${mapCompilePathOption(root, cwd, arg.slice('-isystem'.length))}`;
+    return `-isystem${mapCompilePathOption(root, cwd, arg.slice('-isystem'.length), project)}`;
   }
-  if (arg.startsWith('-o') && arg.length > 2) return `-o${mapCompilePathOption(root, cwd, arg.slice(2))}`;
-  if (arg === VIRTUAL_WORKSPACE_ROOT || arg.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
-    return mapWorkspaceAbsolutePath(root, arg);
+  if (arg.startsWith('-o') && arg.length > 2) return `-o${mapCompilePathOption(root, cwd, arg.slice(2), project)}`;
+  if (stripProjectVirtualPrefix(arg, project) !== null || arg === VIRTUAL_WORKSPACE_ROOT || arg.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    return mapWorkspaceAbsolutePath(root, arg, project);
   }
   if (/\.(?:cpp|cc|cxx|c|hpp|hh|h|o|obj|a|lib)$/i.test(arg)) {
-    return assertCompilePathStaysInWorkspace(root, cwd, arg);
+    return assertCompilePathStaysInWorkspace(root, cwd, arg, project);
   }
   return arg;
 }
 
 function defaultCompileScriptPath(request: CppProjectCommandRequest): string {
   const scriptPath = request.scriptPath || 'main.cpp';
+  if (stripProjectVirtualPrefix(scriptPath, request.project) !== null) {
+    return scriptPath;
+  }
   if (scriptPath === VIRTUAL_WORKSPACE_ROOT || scriptPath.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
     return scriptPath;
   }
@@ -210,12 +245,12 @@ function isPathLikeCompileArg(arg: string): boolean {
   );
 }
 
-function pathForOutputDirectory(root: string, cwd: string, value: string): string {
+function pathForOutputDirectory(root: string, cwd: string, value: string, project?: CppProjectSnapshot): string {
   if (value === root || value.startsWith(`${root}/`)) {
     return value;
   }
-  if (value === VIRTUAL_WORKSPACE_ROOT || value.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
-    return mapWorkspaceAbsolutePath(root, value);
+  if ((project && stripProjectVirtualPrefix(value, project) !== null) || value === VIRTUAL_WORKSPACE_ROOT || value.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    return mapWorkspaceAbsolutePath(root, value, project);
   }
   if (value.startsWith('/')) {
     throw new Error(`Project path must stay inside the workspace: ${value}`);
@@ -242,37 +277,37 @@ function compileArgsForRequest(request: CppProjectCommandRequest, root: string, 
       mapped.push(arg);
       const value = args[index + 1];
       if (typeof value === 'string') {
-        mapped.push(mapCompilePathOption(root, cwd, value));
+        mapped.push(mapCompilePathOption(root, cwd, value, request.project));
         index += 1;
       }
       continue;
     }
-    mapped.push(mapCompileArg(root, cwd, arg));
+    mapped.push(mapCompileArg(root, cwd, arg, request.project));
   }
   return mapped;
 }
 
-async function ensureCompileOutputDirectories(args: string[], root: string, cwd: string): Promise<void> {
+async function ensureCompileOutputDirectories(args: string[], root: string, cwd: string, project?: CppProjectSnapshot): Promise<void> {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '-o') {
       const outputPath = args[index + 1];
       if (typeof outputPath === 'string') {
-        await mkdir(dirname(pathForOutputDirectory(root, cwd, outputPath)), { recursive: true });
+        await mkdir(dirname(pathForOutputDirectory(root, cwd, outputPath, project)), { recursive: true });
       }
       index += 1;
       continue;
     }
     if (arg.startsWith('-o') && arg.length > 2) {
-      await mkdir(dirname(pathForOutputDirectory(root, cwd, arg.slice(2))), { recursive: true });
+      await mkdir(dirname(pathForOutputDirectory(root, cwd, arg.slice(2), project)), { recursive: true });
     }
   }
 }
 
 function executablePathForRequest(request: CppProjectCommandRequest, root: string, cwd: string): string {
   const raw = request.scriptPath || './a.out';
-  if (raw === VIRTUAL_WORKSPACE_ROOT || raw.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
-    return mapWorkspaceAbsolutePath(root, raw);
+  if (stripProjectVirtualPrefix(raw, request.project) !== null || raw === VIRTUAL_WORKSPACE_ROOT || raw.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    return mapWorkspaceAbsolutePath(root, raw, request.project);
   }
   if (raw.startsWith('/')) {
     throw new Error(`C++ executable path must stay inside the workspace: ${raw}`);
@@ -280,18 +315,18 @@ function executablePathForRequest(request: CppProjectCommandRequest, root: strin
   return resolve(cwd, raw);
 }
 
-function mapWorkspaceEnvPathList(root: string, cwd: string, value: string): string {
+function mapWorkspaceEnvPathList(root: string, cwd: string, value: string, project: CppProjectSnapshot): string {
   return value
     .split(/[:;]/)
-    .map((entry) => entry ? assertCompilePathStaysInWorkspace(root, cwd, entry) : entry)
+    .map((entry) => entry ? assertCompilePathStaysInWorkspace(root, cwd, entry, project) : entry)
     .join(':');
 }
 
-function mapCompileEnv(root: string, cwd: string, env: Record<string, string>): Record<string, string> {
+function mapCompileEnv(root: string, cwd: string, env: Record<string, string>, project: CppProjectSnapshot): Record<string, string> {
   const mapped = { ...env };
   for (const key of ['CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH', 'LIBRARY_PATH']) {
     if (typeof mapped[key] === 'string') {
-      mapped[key] = mapWorkspaceEnvPathList(root, cwd, mapped[key]);
+      mapped[key] = mapWorkspaceEnvPathList(root, cwd, mapped[key], project);
     }
   }
   return mapped;
@@ -399,10 +434,10 @@ export function createNativeCppProjectRunner(
       if (request.source === 'compile') {
         const compilerCommand = compilerCommandForRequest(request, fallbackCompilerCommand);
         const compileArgs = compileArgsForRequest(request, root, cwd);
-        await ensureCompileOutputDirectories(compileArgs, root, cwd);
+        await ensureCompileOutputDirectories(compileArgs, root, cwd, request.project);
         const result = await runProcess(compilerCommand, compileArgs, {
           cwd,
-          env: mapCompileEnv(root, cwd, request.env),
+          env: mapCompileEnv(root, cwd, request.env, request.project),
           stdin: request.stdin,
           timeoutMs,
           timeoutLabel: compilerCommand,
