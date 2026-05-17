@@ -2780,6 +2780,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {
     await withSuspendedFsNotifications(this.bash.fs, async () => {
+      if (normalizeProcPath(change.path) !== null) {
+        throw new Error(`Kernel proc path is read-only: ${change.path}`);
+      }
+      if (isDevNamespacePath(change.path)) {
+        throw new Error(`Kernel device namespace is not a file-change target: ${change.path}`);
+      }
       const absolutePath = this.toWorkspacePath(change.path);
       if ((change as RuntimeFileDeletion).deleted === true) {
         await this.bash.fs.rm(absolutePath, { force: true });

@@ -4899,6 +4899,34 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   );
   liveWorkspace.dispose();
 
+  const failedLiveEvents: RuntimeWorkspaceEvent[] = [];
+  const failedLiveWorkspace = await createRuntimeWorkspace({
+    files: [{ path: 'bad-live.js', contents: 'console.log("bad")\n' }],
+    nodeRunner: async (request) => {
+      request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: '/proc/kernel/info', contents: '{}\n' } });
+      request.onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'after-bad-live\n' });
+      return { stdout: 'bad-live-runner\n', stderr: '', exitCode: 0 };
+    },
+  });
+  let failedLiveError = '';
+  try {
+    await failedLiveWorkspace.runCommand('node bad-live.js', {
+      onEvent: (event) => failedLiveEvents.push(event),
+    });
+  } catch (error) {
+    failedLiveError = error instanceof Error ? error.message : String(error);
+  }
+  assertCondition(
+    failedLiveError.includes('Project path must stay inside the workspace') ||
+      failedLiveError.includes('Kernel proc path is read-only'),
+    `invalid live file-change should reject the command with a filesystem error: ${failedLiveError}`
+  );
+  assertCondition(
+    !failedLiveEvents.some((event) => event.type === 'output' && event.data === 'after-bad-live\n'),
+    `runtime event queue should stop later output after a failed live file-change: ${JSON.stringify(failedLiveEvents)}`
+  );
+  failedLiveWorkspace.dispose();
+
   const shellWorkspace = await createRuntimeWorkspace();
   const shellWatchEvents: RuntimeWorkspaceEvent[] = [];
   const shellCommandEvents: RuntimeCommandEvent[] = [];
