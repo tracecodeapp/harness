@@ -158,10 +158,13 @@ public static partial class CompilerHost
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
         TextWriter originalOut = Console.Out;
+        TextWriter originalError = Console.Error;
         string originalDirectory = Directory.GetCurrentDirectory();
         var originalEnvironment = Environment.GetEnvironmentVariables();
         using StreamingProjectTextWriter capturedOut = new("stdout");
+        using StreamingProjectTextWriter capturedError = new("stderr");
         Console.SetOut(capturedOut);
+        Console.SetError(capturedError);
 
         try
         {
@@ -193,7 +196,7 @@ public static partial class CompilerHost
                 return SerializeProject(new CSharpProjectCommandResponse
                 {
                     Stdout = capturedOut.ToString(),
-                    Stderr = FormatProjectDiagnostics(emitResult.Diagnostics),
+                    Stderr = capturedError.ToString() + FormatProjectDiagnostics(emitResult.Diagnostics),
                     ExitCode = 1,
                 });
             }
@@ -208,7 +211,7 @@ public static partial class CompilerHost
                 return SerializeProject(new CSharpProjectCommandResponse
                 {
                     Stdout = capturedOut.ToString() + buildOutput,
-                    Stderr = string.Empty,
+                    Stderr = capturedError.ToString(),
                     ExitCode = 0,
                     Files = files,
                 });
@@ -237,7 +240,7 @@ public static partial class CompilerHost
             return SerializeProject(new CSharpProjectCommandResponse
             {
                 Stdout = capturedOut.ToString(),
-                Stderr = string.Empty,
+                Stderr = capturedError.ToString(),
                 ExitCode = 0,
                 Files = runFiles,
             });
@@ -247,13 +250,14 @@ public static partial class CompilerHost
             return SerializeProject(new CSharpProjectCommandResponse
             {
                 Stdout = capturedOut.ToString(),
-                Stderr = error.GetBaseException().Message + "\n",
+                Stderr = capturedError.ToString() + error.GetBaseException().Message + "\n",
                 ExitCode = 1,
             });
         }
         finally
         {
             Console.SetOut(originalOut);
+            Console.SetError(originalError);
             Directory.SetCurrentDirectory(originalDirectory);
             RestoreEnvironment(originalEnvironment);
         }

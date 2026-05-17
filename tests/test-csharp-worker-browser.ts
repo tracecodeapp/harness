@@ -2636,6 +2636,7 @@ async function main(): Promise<void> {
                 'Console.WriteLine(Console.ReadLine());',
                 'Console.WriteLine(Environment.GetEnvironmentVariable("MODE"));',
                 'Console.WriteLine(string.Join(",", args));',
+                'Console.Error.WriteLine("stderr-line");',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
                 'File.WriteAllBytes("bytes.bin", new byte[] { 0, 255 });',
@@ -2665,6 +2666,10 @@ async function main(): Promise<void> {
       `C# project worker should preserve stdout/stdin/env/args: ${projectRun.stdout}`
     );
     assertCondition(
+      projectRun.stderr === 'stderr-line\n',
+      `C# project worker should preserve stderr: ${JSON.stringify(projectRun.stderr)}`
+    );
+    assertCondition(
       projectRun.events?.some(
         (event) =>
           event.type === 'output' &&
@@ -2673,6 +2678,13 @@ async function main(): Promise<void> {
           event.data.includes('browser-csharp-project')
       ) === true,
       `C# project worker should stream stdout events, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events
+        ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
+        .map((event) => event.data)
+        .join('') === 'stderr-line\n',
+      `C# project worker should stream stderr events, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\nappended\n') === true,
