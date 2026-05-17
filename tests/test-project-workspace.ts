@@ -4194,6 +4194,137 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   }
 }
 
+async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
+  const events: RuntimeWorkspaceEvent[] = [];
+  const pythonRequests: PythonProjectCommandRequest[] = [];
+  const javaRequests: JavaProjectCommandRequest[] = [];
+  const csharpRequests: CSharpProjectCommandRequest[] = [];
+  const cppRequests: CppProjectCommandRequest[] = [];
+  const workspace = await createBrowserProjectWorkspace({
+    kernel: {
+      user: { id: 'browser-user-123', username: 'ada' },
+      host: { hostname: 'tracevm-browser' },
+      workspace: {
+        id: 'weather-api-browser',
+        name: 'weather-api',
+        startedAt: '2026-05-17T12:00:00.000Z',
+      },
+    },
+    files: [
+      { path: 'main.py', contents: 'print("python")\n' },
+      { path: 'Main.java', contents: 'class Main {}\n' },
+      { path: 'Program.cs', contents: 'Console.WriteLine("csharp");\n' },
+      { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
+    ],
+    pythonWorkerClient: {
+      async executeProjectPython(request) {
+        pythonRequests.push(request);
+        return {
+          stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`,
+          stderr: '',
+          exitCode: 0,
+          files: [{ path: 'python-browser.txt', contents: 'python-browser\n' }],
+        };
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava(request) {
+        javaRequests.push(request);
+        return { stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`, stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+    csharpWorkerClient: {
+      async executeProjectCSharp(request) {
+        csharpRequests.push(request);
+        return { stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`, stderr: '', exitCode: 0 };
+      },
+      terminate() {},
+    },
+    cppWorkerClient: {
+      async executeProjectCpp(request) {
+        cppRequests.push(request);
+        return {
+          stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`,
+          stderr: '',
+          exitCode: 0,
+          ...(request.source === 'compile'
+            ? { files: [{ path: 'out/app', contents: Buffer.from('wasm').toString('base64'), encoding: 'base64' as const }] }
+            : {}),
+        };
+      },
+      terminate() {},
+    },
+  });
+  const unsubscribe = workspace.watch((event) => events.push(event));
+
+  try {
+    assertCondition(workspace.cwd === '/home/ada/weather-api', `browser workspace cwd should use canonical kernel root: ${workspace.cwd}`);
+    assertCondition(workspace.kernel.info.user.id === 'browser-user-123', 'browser workspace kernel should preserve user id');
+    assertCondition(workspace.kernel.info.host.hostname === 'tracevm-browser', 'browser workspace kernel should preserve host identity');
+    assertCondition(workspace.kernel.info.workspaceRoot === '/home/ada/weather-api', 'browser workspace kernel should expose canonical root');
+    assertCondition(workspace.kernel.info.workspaceAlias === '/workspace', 'browser workspace kernel should expose /workspace compatibility alias');
+
+    await workspace.writeFile('/workspace/src/alias.txt', 'alias\n');
+    assertCondition(await workspace.readFile('/home/ada/weather-api/src/alias.txt') === 'alias\n', 'browser workspace should map alias writes to canonical root');
+    assertCondition((await workspace.readDir('/workspace/src')).join(',') === 'alias.txt', 'browser workspace should list alias directories');
+
+    const procInfo = JSON.parse(await workspace.readFile('/proc/kernel/info')) as typeof workspace.kernel.info;
+    assertCondition(procInfo.workspace.root === '/home/ada/weather-api', 'browser workspace /proc should expose canonical workspace root');
+    assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self', 'browser workspace /proc should list virtual namespaces');
+
+    const outputEvents: RuntimeCommandEvent[] = [];
+    const stdout = await workspace.runCommand('printf "browser-out\\n" > /dev/stdout', {
+      onEvent: (event) => outputEvents.push(event),
+    });
+    assertCondition(stdout.stdout === 'browser-out\n', `browser workspace /dev/stdout should stream command output: ${JSON.stringify(stdout)}`);
+    assertCondition(
+      outputEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout' && event.data === 'browser-out\n'),
+      `browser workspace runCommand should surface stdout device events: ${JSON.stringify(outputEvents)}`
+    );
+
+    const python = await workspace.runCommand('python3 /workspace/main.py', { cwd: '/workspace' });
+    assertCondition(python.exitCode === 0, `browser Python project command should succeed with alias cwd: ${python.stderr}`);
+    assertCondition(
+      python.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
+      `browser Python request should use canonical cwd and expose alias metadata: ${python.stdout}`
+    );
+    assertCondition(await workspace.readFile('python-browser.txt') === 'python-browser\n', 'browser Python final diff should persist through kernel FS');
+
+    const java = await workspace.runCommand('java Main', { cwd: '/workspace' });
+    assertCondition(java.exitCode === 0, `browser Java project command should succeed with alias cwd: ${java.stderr}`);
+    assertCondition(javaRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser Java request should include workspaceRoot');
+    assertCondition(javaRequests[0]?.project.workspaceAlias === '/workspace', 'browser Java request should include workspaceAlias');
+
+    const csharp = await workspace.runCommand('dotnet run', { cwd: '/workspace' });
+    assertCondition(csharp.exitCode === 0, `browser C# project command should succeed with alias cwd: ${csharp.stderr}`);
+    assertCondition(csharpRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C# request should include workspaceRoot');
+    assertCondition(csharpRequests[0]?.project.workspaceAlias === '/workspace', 'browser C# request should include workspaceAlias');
+
+    const cpp = await workspace.runCommand('clang++ /home/ada/weather-api/main.cpp -o /workspace/out/app', { cwd: '/workspace' });
+    assertCondition(cpp.exitCode === 0, `browser C++ project command should succeed with canonical and alias args: ${cpp.stderr}`);
+    assertCondition(cppRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C++ request should include workspaceRoot');
+    assertCondition(cppRequests[0]?.project.workspaceAlias === '/workspace', 'browser C++ request should include workspaceAlias');
+
+    assertCondition(
+      pythonRequests[0]?.project.files.some((file) => file.path === 'src/alias.txt') === true,
+      'browser runner snapshots should include files written through alias paths'
+    );
+    assertCondition(
+      events.some((event) => event.type === 'file-change' && event.change.path === 'python-browser.txt' && event.actor?.kind === 'runtime'),
+      `browser workspace watch should surface runtime final-diff file changes: ${JSON.stringify(events)}`
+    );
+    assertCondition(
+      events.some((event) => event.type === 'output' && event.device === '/dev/stdout' && event.actor?.kind === 'runtime'),
+      `browser workspace watch should surface runtime output events: ${JSON.stringify(events)}`
+    );
+  } finally {
+    unsubscribe();
+    workspace.dispose();
+  }
+}
+
 async function testBrowserProjectWorkspaceAdvancedCommandTranslation(): Promise<void> {
   const pythonRequests: PythonProjectCommandRequest[] = [];
   const javaRequests: JavaProjectCommandRequest[] = [];
@@ -4866,6 +4997,7 @@ async function main(): Promise<void> {
   await testBrowserCSharpProjectRunnerAdapter();
   await testBrowserCppProjectRunnerAdapter();
   await testBrowserProjectWorkspaceFactory();
+  await testBrowserProjectWorkspaceTraceKernelConfig();
   await testBrowserProjectWorkspaceAdvancedCommandTranslation();
   await testNativeProjectWorkspaceFactory();
   await testProjectWorkspaceCommandEvents();
