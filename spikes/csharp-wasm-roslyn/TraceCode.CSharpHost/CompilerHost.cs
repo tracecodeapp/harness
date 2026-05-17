@@ -1110,6 +1110,13 @@ public static partial class CompilerHost
                         .WithTriviaFrom(node.Type)
                 );
             }
+            if (IsProjectFileStreamType(node.Type))
+            {
+                return node.WithType(
+                    SyntaxFactory.ParseTypeName("TraceCode.Project.ProjectFileStream")
+                        .WithTriviaFrom(node.Type)
+                );
+            }
 
             return base.VisitObjectCreationExpression(node);
         }
@@ -1120,6 +1127,14 @@ public static partial class CompilerHost
             return string.Equals(text, "StreamWriter", StringComparison.Ordinal)
                 || string.Equals(text, "System.IO.StreamWriter", StringComparison.Ordinal)
                 || string.Equals(text, "global::System.IO.StreamWriter", StringComparison.Ordinal);
+        }
+
+        private static bool IsProjectFileStreamType(TypeSyntax type)
+        {
+            string text = type.ToString();
+            return string.Equals(text, "FileStream", StringComparison.Ordinal)
+                || string.Equals(text, "System.IO.FileStream", StringComparison.Ordinal)
+                || string.Equals(text, "global::System.IO.FileStream", StringComparison.Ordinal);
         }
 
         private static bool IsProjectFileApi(ExpressionSyntax expression)
@@ -1138,6 +1153,9 @@ public static partial class CompilerHost
                 "AppendAllText" or
                 "CreateText" or
                 "AppendText" or
+                "OpenWrite" or
+                "Create" or
+                "Open" or
                 "Delete" or
                 "Move" or
                 "Copy";
@@ -1206,6 +1224,41 @@ public static class ProjectFile
     public static System.IO.StreamWriter AppendText(string path)
     {
         return new ProjectStreamWriter(path, append: true);
+    }
+
+    public static System.IO.FileStream OpenWrite(string path)
+    {
+        return new ProjectFileStream(path, System.IO.FileMode.OpenOrCreate, System.IO.FileAccess.Write, System.IO.FileShare.None);
+    }
+
+    public static System.IO.FileStream Create(string path)
+    {
+        return new ProjectFileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None);
+    }
+
+    public static System.IO.FileStream Create(string path, int bufferSize)
+    {
+        return new ProjectFileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None, bufferSize);
+    }
+
+    public static System.IO.FileStream Create(string path, int bufferSize, System.IO.FileOptions options)
+    {
+        return new ProjectFileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.ReadWrite, System.IO.FileShare.None, bufferSize, options);
+    }
+
+    public static System.IO.FileStream Open(string path, System.IO.FileMode mode)
+    {
+        return new ProjectFileStream(path, mode);
+    }
+
+    public static System.IO.FileStream Open(string path, System.IO.FileMode mode, System.IO.FileAccess access)
+    {
+        return new ProjectFileStream(path, mode, access);
+    }
+
+    public static System.IO.FileStream Open(string path, System.IO.FileMode mode, System.IO.FileAccess access, System.IO.FileShare share)
+    {
+        return new ProjectFileStream(path, mode, access, share);
     }
 
     public static void Delete(string path)
@@ -1279,6 +1332,77 @@ public sealed class ProjectStreamWriter : System.IO.StreamWriter
     {
         base.Dispose(disposing);
         TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(Path);
+    }
+}
+
+public sealed class ProjectFileStream : System.IO.FileStream
+{
+    private readonly string Path;
+
+    public ProjectFileStream(string path, System.IO.FileMode mode)
+        : base(path, mode)
+    {
+        Path = path;
+    }
+
+    public ProjectFileStream(string path, System.IO.FileMode mode, System.IO.FileAccess access)
+        : base(path, mode, access)
+    {
+        Path = path;
+    }
+
+    public ProjectFileStream(string path, System.IO.FileMode mode, System.IO.FileAccess access, System.IO.FileShare share)
+        : base(path, mode, access, share)
+    {
+        Path = path;
+    }
+
+    public ProjectFileStream(string path, System.IO.FileMode mode, System.IO.FileAccess access, System.IO.FileShare share, int bufferSize)
+        : base(path, mode, access, share, bufferSize)
+    {
+        Path = path;
+    }
+
+    public ProjectFileStream(string path, System.IO.FileMode mode, System.IO.FileAccess access, System.IO.FileShare share, int bufferSize, bool useAsync)
+        : base(path, mode, access, share, bufferSize, useAsync)
+    {
+        Path = path;
+    }
+
+    public ProjectFileStream(string path, System.IO.FileMode mode, System.IO.FileAccess access, System.IO.FileShare share, int bufferSize, System.IO.FileOptions options)
+        : base(path, mode, access, share, bufferSize, options)
+    {
+        Path = path;
+    }
+
+    public override void Flush()
+    {
+        base.Flush();
+        EmitSnapshotIfWritable();
+    }
+
+    public override void Flush(bool flushToDisk)
+    {
+        base.Flush(flushToDisk);
+        EmitSnapshotIfWritable();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        bool canWrite = CanWrite;
+        base.Dispose(disposing);
+        if (canWrite)
+        {
+            TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(Path);
+        }
+    }
+
+    private void EmitSnapshotIfWritable()
+    {
+        if (CanWrite)
+        {
+            TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(Path);
+        }
     }
 }
 """;
