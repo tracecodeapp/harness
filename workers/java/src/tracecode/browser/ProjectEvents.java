@@ -2,6 +2,8 @@ package tracecode.browser;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -136,6 +138,47 @@ public final class ProjectEvents {
     public ProjectFileWriter(File file, Charset charset, boolean append) throws IOException {
       super(file, charset, append);
       this.path = file.toPath();
+    }
+
+    @Override
+    public void flush() throws IOException {
+      super.flush();
+      emitFileSnapshot(path);
+    }
+
+    @Override
+    public void close() throws IOException {
+      super.close();
+      emitFileSnapshot(path);
+    }
+  }
+
+  public static final class ProjectFileOutputStream extends FileOutputStream {
+    private final Path path;
+
+    public ProjectFileOutputStream(String name) throws IOException {
+      super(name);
+      this.path = Path.of(name);
+    }
+
+    public ProjectFileOutputStream(String name, boolean append) throws IOException {
+      super(name, append);
+      this.path = Path.of(name);
+    }
+
+    public ProjectFileOutputStream(File file) throws IOException {
+      super(file);
+      this.path = file.toPath();
+    }
+
+    public ProjectFileOutputStream(File file, boolean append) throws IOException {
+      super(file, append);
+      this.path = file.toPath();
+    }
+
+    public ProjectFileOutputStream(FileDescriptor fdObj) {
+      super(fdObj);
+      this.path = null;
     }
 
     @Override

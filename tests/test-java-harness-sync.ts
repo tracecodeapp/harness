@@ -108,8 +108,10 @@ async function main(): Promise<void> {
     'Files.writeString',
     'Files.deleteIfExists',
     'ProjectFileWriter',
+    'ProjectFileOutputStream',
     'ProjectPrintWriter',
     'extends FileWriter',
+    'extends FileOutputStream',
     'extends PrintWriter',
   ];
   for (const marker of projectEventsMarkers) {
