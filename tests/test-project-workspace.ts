@@ -4915,6 +4915,116 @@ async function testConfiguredKernelNativeCompiledRunners(): Promise<void> {
   workspace.dispose();
 }
 
+async function testConfiguredKernelAliasGlobCommandTranslation(): Promise<void> {
+  const pythonRequests: PythonProjectCommandRequest[] = [];
+  const nodeRequests: JavaScriptProjectCommandRequest[] = [];
+  const javaRequests: JavaProjectCommandRequest[] = [];
+  const csharpRequests: CSharpProjectCommandRequest[] = [];
+  const cppRequests: CppProjectCommandRequest[] = [];
+  const workspace = await createRuntimeWorkspace({
+    kernel: {
+      user: { id: 'auth-user-123', username: 'obi' },
+      host: { hostname: 'tracevm' },
+      workspace: {
+        id: 'weather-api-globs',
+        name: 'weather-api',
+        startedAt: '2026-05-17T12:00:00.000Z',
+      },
+    },
+    files: [
+      { path: 'scripts/main.py', contents: 'print("python")\n' },
+      { path: 'scripts/main.js', contents: 'console.log("node")\n' },
+      { path: 'src/Main.java', contents: 'class Main {}\n' },
+      { path: 'src/main.cpp', contents: 'int main() { return 0; }\n' },
+      { path: 'lib/app.jar', contents: Buffer.from('jar').toString('base64'), encoding: 'base64' },
+      {
+        path: 'app/App.csproj',
+        contents: [
+          '<Project Sdk="Microsoft.NET.Sdk">',
+          '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>',
+          '</Project>',
+          '',
+        ].join('\n'),
+      },
+    ],
+    pythonRunner: async (request) => {
+      pythonRequests.push(request);
+      return { stdout: 'python\n', stderr: '', exitCode: 0 };
+    },
+    nodeRunner: async (request) => {
+      nodeRequests.push(request);
+      return { stdout: 'node\n', stderr: '', exitCode: 0 };
+    },
+    javaRunner: async (request) => {
+      javaRequests.push(request);
+      return { stdout: `${request.source}\n`, stderr: '', exitCode: 0 };
+    },
+    csharpRunner: async (request) => {
+      csharpRequests.push(request);
+      return { stdout: 'csharp\n', stderr: '', exitCode: 0 };
+    },
+    cppRunner: async (request) => {
+      cppRequests.push(request);
+      return {
+        stdout: `${request.source}\n`,
+        stderr: '',
+        exitCode: 0,
+        ...(request.source === 'compile'
+          ? { files: [{ path: 'out/app', contents: Buffer.from('wasm').toString('base64'), encoding: 'base64' as const }] }
+          : {}),
+      };
+    },
+  });
+
+  const python = await workspace.runCommand('python3 "/workspace/scripts/*.py" alpha', { cwd: '/workspace' });
+  assertCondition(python.exitCode === 0, `configured Python alias glob should run: ${python.stderr}`);
+  assertCondition(pythonRequests[0]?.scriptPath === 'scripts/main.py', `configured Python alias glob should map script path: ${JSON.stringify(pythonRequests[0])}`);
+
+  const node = await workspace.runCommand('node "/workspace/scripts/*.js" beta', { cwd: '/workspace' });
+  assertCondition(node.exitCode === 0, `configured Node alias glob should run: ${node.stderr}`);
+  assertCondition(nodeRequests[0]?.scriptPath === 'scripts/main.js', `configured Node alias glob should map script path: ${JSON.stringify(nodeRequests[0])}`);
+
+  const javac = await workspace.runCommand('javac "/workspace/src/*.java"', { cwd: '/workspace' });
+  assertCondition(javac.exitCode === 0, `configured javac alias glob should run: ${javac.stderr}`);
+  assertCondition(
+    javaRequests[0]?.args.join(',') === '/home/obi/weather-api/src/Main.java',
+    `configured javac alias glob should expand to canonical root args: ${JSON.stringify(javaRequests[0])}`
+  );
+
+  const javaJar = await workspace.runCommand('java -jar "/workspace/lib/*.jar" gamma', { cwd: '/workspace' });
+  assertCondition(javaJar.exitCode === 0, `configured java -jar alias glob should run: ${javaJar.stderr}`);
+  assertCondition(
+    javaRequests[1]?.scriptPath === '/home/obi/weather-api/lib/app.jar' &&
+      javaRequests[1]?.args.join(',') === 'gamma',
+    `configured java -jar alias glob should map jar path and args: ${JSON.stringify(javaRequests[1])}`
+  );
+
+  const dotnet = await workspace.runCommand('dotnet run --project "/workspace/app/*.csproj" delta', { cwd: '/workspace' });
+  assertCondition(dotnet.exitCode === 0, `configured dotnet alias glob should run: ${dotnet.stderr}`);
+  assertCondition(
+    csharpRequests[0]?.scriptPath === '/home/obi/weather-api/app/App.csproj' &&
+      csharpRequests[0]?.args.join(',') === 'delta',
+    `configured dotnet alias glob should map project path and args: ${JSON.stringify(csharpRequests[0])}`
+  );
+
+  const cppCompile = await workspace.runCommand('clang++ "/workspace/src/*.cpp" -o /workspace/out/app', { cwd: '/workspace' });
+  assertCondition(cppCompile.exitCode === 0, `configured C++ alias glob should compile: ${cppCompile.stderr}`);
+  assertCondition(
+    cppRequests[0]?.args.join(',') === '/home/obi/weather-api/src/main.cpp,-o,/workspace/out/app',
+    `configured C++ alias glob should expand source and preserve output arg: ${JSON.stringify(cppRequests[0])}`
+  );
+
+  const cppRun = await workspace.runCommand('/workspace/out/app epsilon', { cwd: '/workspace' });
+  assertCondition(cppRun.exitCode === 0, `configured direct C++ alias executable should run: ${cppRun.stderr}`);
+  assertCondition(
+    cppRequests[1]?.source === 'run' &&
+      cppRequests[1]?.scriptPath === '/workspace/out/app' &&
+      cppRequests[1]?.args.join(',') === 'epsilon',
+    `configured direct C++ alias executable should route to runner: ${JSON.stringify(cppRequests[1])}`
+  );
+  workspace.dispose();
+}
+
 function testPathValidation(): void {
   assertCondition(normalizeRuntimeProjectPath('./src/solution.py') === 'src/solution.py', 'normalizes segments');
   assertRejects(
@@ -5005,6 +5115,7 @@ async function main(): Promise<void> {
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
   await testConfiguredKernelNativeCompiledRunners();
+  await testConfiguredKernelAliasGlobCommandTranslation();
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 

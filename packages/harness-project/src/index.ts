@@ -1427,7 +1427,8 @@ function formatExpandedGlobPath(original: string, workspaceRoot: string, absolut
 async function expandWorkspaceGlobArg(
   ctx: CommandContext,
   workspaceRoot: string,
-  arg: string
+  arg: string,
+  workspaceAlias?: string
 ): Promise<string[]> {
   if (!hasWorkspaceGlob(arg)) return [arg];
 
@@ -1437,8 +1438,8 @@ async function expandWorkspaceGlobArg(
   }
 
   const absolutePattern = normalized.startsWith('/')
-    ? normalizeWorkspaceCwd(normalized)
-    : resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, normalized);
+    ? mapWorkspaceAlias(workspaceRoot, workspaceAlias, normalizeWorkspaceCwd(normalized))
+    : resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, normalized, workspaceAlias);
   if (!isWithinWorkspace(workspaceRoot, absolutePattern)) {
     throw new Error(`Project path must stay inside the workspace: ${arg}`);
   }
@@ -1493,11 +1494,12 @@ async function expandWorkspaceGlobArg(
 async function expandWorkspaceGlobArgs(
   args: string[],
   ctx: CommandContext,
-  workspaceRoot: string
+  workspaceRoot: string,
+  workspaceAlias?: string
 ): Promise<string[]> {
   const expanded: string[] = [];
   for (const arg of args) {
-    expanded.push(...await expandWorkspaceGlobArg(ctx, workspaceRoot, arg));
+    expanded.push(...await expandWorkspaceGlobArg(ctx, workspaceRoot, arg, workspaceAlias));
   }
   return expanded;
 }
@@ -1506,14 +1508,15 @@ async function expandParsedScriptInvocation(
   ctx: CommandContext,
   workspaceRoot: string,
   scriptFile: string | null,
-  scriptArgs: string[]
+  scriptArgs: string[],
+  workspaceAlias?: string
 ): Promise<{ scriptFile: string | null; scriptArgs: string[] }> {
-  const expandedScriptArgs = await expandWorkspaceGlobArgs(scriptArgs, ctx, workspaceRoot);
+  const expandedScriptArgs = await expandWorkspaceGlobArgs(scriptArgs, ctx, workspaceRoot, workspaceAlias);
   if (scriptFile === null || scriptFile === '-') {
     return { scriptFile, scriptArgs: expandedScriptArgs };
   }
 
-  const expandedScriptFile = await expandWorkspaceGlobArg(ctx, workspaceRoot, scriptFile);
+  const expandedScriptFile = await expandWorkspaceGlobArg(ctx, workspaceRoot, scriptFile, workspaceAlias);
   return {
     scriptFile: expandedScriptFile[0] ?? scriptFile,
     scriptArgs: [...expandedScriptFile.slice(1), ...expandedScriptArgs],
@@ -1715,7 +1718,7 @@ export function createPythonProjectCommands(
     const stdin = decodeCommandStdin(ctx.stdin);
     let parsedScript: { scriptFile: string | null; scriptArgs: string[] };
     try {
-      parsedScript = await expandParsedScriptInvocation(ctx, workspaceRoot, parsed.scriptFile, parsed.scriptArgs);
+      parsedScript = await expandParsedScriptInvocation(ctx, workspaceRoot, parsed.scriptFile, parsed.scriptArgs, workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 2 };
     }
@@ -1803,7 +1806,7 @@ export function createNodeProjectCommands(
     const stdin = decodeCommandStdin(ctx.stdin);
     let parsedScript: { scriptFile: string | null; scriptArgs: string[] };
     try {
-      parsedScript = await expandParsedScriptInvocation(ctx, workspaceRoot, parsed.scriptFile, parsed.scriptArgs);
+      parsedScript = await expandParsedScriptInvocation(ctx, workspaceRoot, parsed.scriptFile, parsed.scriptArgs, workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 2 };
     }
@@ -1899,7 +1902,7 @@ export function createJavaProjectCommands(
     }
     let globExpandedArgs: string[];
     try {
-      globExpandedArgs = await expandWorkspaceGlobArgs(expandedArgs, ctx, workspaceRoot);
+      globExpandedArgs = await expandWorkspaceGlobArgs(expandedArgs, ctx, workspaceRoot, workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 2 };
     }
@@ -1939,8 +1942,8 @@ export function createJavaProjectCommands(
     let parsedJar: { scriptFile: string | null; scriptArgs: string[] };
     let programArgs: string[];
     try {
-      parsedJar = await expandParsedScriptInvocation(ctx, workspaceRoot, parsed.jarPath, parsed.programArgs);
-      programArgs = parsed.jarPath ? parsedJar.scriptArgs : await expandWorkspaceGlobArgs(parsed.programArgs, ctx, workspaceRoot);
+      parsedJar = await expandParsedScriptInvocation(ctx, workspaceRoot, parsed.jarPath, parsed.programArgs, workspaceAlias);
+      programArgs = parsed.jarPath ? parsedJar.scriptArgs : await expandWorkspaceGlobArgs(parsed.programArgs, ctx, workspaceRoot, workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 2 };
     }
@@ -1997,7 +2000,7 @@ export function createCppProjectCommands(
   const runCompiler = (compilerCommand: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
     try {
-      expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot);
+      expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot, options.workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
     }
@@ -2029,7 +2032,7 @@ export function createCppProjectCommands(
   const runExecutable = (defaultPath: string | null) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
     try {
-      expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot);
+      expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot, options.workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
     }
@@ -2073,7 +2076,7 @@ export function createCSharpProjectCommands(
   const runDotnet = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
     try {
-      expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot);
+      expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot, workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 2 };
     }
@@ -2605,7 +2608,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     } as unknown as CommandContext;
     let expandedInvocation: { scriptFile: string | null; scriptArgs: string[] };
     try {
-      expandedInvocation = await expandParsedScriptInvocation(ctx, this.cwd, words[0] ?? null, words.slice(1));
+      expandedInvocation = await expandParsedScriptInvocation(ctx, this.cwd, words[0] ?? null, words.slice(1), this.kernelInfo.workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
     }
@@ -2613,7 +2616,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const executable = expandedInvocation.scriptFile;
     if (!executable || (!executable.includes('/') && !executable.startsWith('/'))) return null;
 
-    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, cwd, executable));
+    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, cwd, executable, this.kernelInfo.workspaceAlias));
     if (!this.cppExecutablePaths.has(executablePath)) return null;
 
     return applyWorkspaceCommandResultFiles(this, await this.cppRunner({
