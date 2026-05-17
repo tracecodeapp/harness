@@ -2150,7 +2150,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private activeDeviceStderr = '';
   private activeCommandStdoutEvent = false;
   private activeCommandStderrEvent = false;
-  private activeRuntimeEventEffects: Promise<void>[] = [];
+  private activeRuntimeEventQueue: Promise<void> = Promise.resolve();
   private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
@@ -2178,7 +2178,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           ...request,
           onEvent: (event) => this.handleRuntimeCommandEvent(event),
         } as Request);
-        await this.flushRuntimeEventEffects();
+        await this.flushRuntimeEventQueue();
         return result;
       }
     );
@@ -2576,7 +2576,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const previousDeviceStderr = this.activeDeviceStderr;
     const previousStdoutEvent = this.activeCommandStdoutEvent;
     const previousStderrEvent = this.activeCommandStderrEvent;
-    const previousRuntimeEventEffects = this.activeRuntimeEventEffects;
+    const previousRuntimeEventQueue = this.activeRuntimeEventQueue;
     this.activeCommandEventHandler = options.onEvent;
     this.activeCommandActor = this.createRuntimeActor();
     this.activeCommandStdin = options.stdin ?? '';
@@ -2584,11 +2584,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.activeDeviceStderr = '';
     this.activeCommandStdoutEvent = false;
     this.activeCommandStderrEvent = false;
-    this.activeRuntimeEventEffects = [];
+    this.activeRuntimeEventQueue = Promise.resolve();
     try {
       const directCppResult = await this.tryRunCppExecutable(command, options);
       if (directCppResult) {
-        await this.flushRuntimeEventEffects();
+        await this.flushRuntimeEventQueue();
         return directCppResult;
       }
 
@@ -2599,7 +2599,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         signal: options.signal,
         args: options.args,
       });
-      await this.flushRuntimeEventEffects();
+      await this.flushRuntimeEventQueue();
       this.emitReturnedOutputEvents(result);
     } finally {
       commandDeviceStdout = this.activeDeviceStdout;
@@ -2611,7 +2611,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.activeDeviceStderr = previousDeviceStderr;
       this.activeCommandStdoutEvent = previousStdoutEvent;
       this.activeCommandStderrEvent = previousStderrEvent;
-      this.activeRuntimeEventEffects = previousRuntimeEventEffects;
+      this.activeRuntimeEventQueue = previousRuntimeEventQueue;
     }
     return {
       stdout: `${result.stdout}${commandDeviceStdout}`,
@@ -2664,7 +2664,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       project: await this.snapshot(),
       onEvent: (event) => this.handleRuntimeCommandEvent(event),
     });
-    await this.flushRuntimeEventEffects();
+    await this.flushRuntimeEventQueue();
     return applyWorkspaceCommandResultFiles(this, result);
   }
 
@@ -2757,29 +2757,25 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private handleRuntimeCommandEvent(event: RuntimeCommandEvent): void {
-    if (event.type !== 'file-change') {
-      this.emitRuntimeEvent(event);
-      return;
-    }
+    this.activeRuntimeEventQueue = this.activeRuntimeEventQueue.then(async () => {
+      if (event.type !== 'file-change') {
+        this.emitRuntimeEvent(event);
+        return;
+      }
 
-    const actor = event.actor ?? this.activeCommandActor ?? SYSTEM_ACTOR;
-    const phase = event.phase ?? 'live';
-    const effect = this.applyRuntimeFileChangeSilently(event.change).then(() => {
+      const actor = event.actor ?? this.activeCommandActor ?? SYSTEM_ACTOR;
+      const phase = event.phase ?? 'live';
+      await this.applyRuntimeFileChangeSilently(event.change);
       this.emitRuntimeEvent({
         ...event,
         phase,
         actor,
       });
     });
-    this.activeRuntimeEventEffects.push(effect);
   }
 
-  private async flushRuntimeEventEffects(): Promise<void> {
-    while (this.activeRuntimeEventEffects.length > 0) {
-      const effects = this.activeRuntimeEventEffects;
-      this.activeRuntimeEventEffects = [];
-      await Promise.all(effects);
-    }
+  private async flushRuntimeEventQueue(): Promise<void> {
+    await this.activeRuntimeEventQueue;
   }
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {

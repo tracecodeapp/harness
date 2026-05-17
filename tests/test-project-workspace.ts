@@ -4837,6 +4837,7 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     ],
     nodeRunner: async (request) => {
       request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'live-runtime.txt', contents: 'live-runtime\n' } });
+      request.onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'after-live-text\n' });
       await new Promise((resolve) => setTimeout(resolve, 0));
       liveTextEventObservedBeforeRunnerReturn = liveRuntimeEvents.some((event) =>
         event.type === 'file-change' &&
@@ -4866,6 +4867,20 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   assertCondition(
     liveTextEventObservedBeforeRunnerReturn,
     `runtime live file-change event should be emitted before the runner completes: ${JSON.stringify(liveRuntimeEvents)}`
+  );
+  const liveTextEventIndex = liveRuntimeEvents.findIndex((event) =>
+    event.type === 'file-change' &&
+    event.phase === 'live' &&
+    event.change.path === 'live-runtime.txt'
+  );
+  const outputAfterTextIndex = liveRuntimeEvents.findIndex((event) =>
+    event.type === 'output' &&
+    event.stream === 'stdout' &&
+    event.data === 'after-live-text\n'
+  );
+  assertCondition(
+    liveTextEventIndex >= 0 && outputAfterTextIndex > liveTextEventIndex,
+    `runtime event queue should preserve file-change before later stdout: ${JSON.stringify(liveRuntimeEvents)}`
   );
   assertCondition(await liveWorkspace.readFile('live-runtime.txt') === 'live-runtime\n', 'runtime live file-change events should update workspace files');
   assertCondition(await liveWorkspace.readFile('live-bytes.bin', 'base64') === 'AP8=', 'runtime live binary file-change events should update workspace files');
