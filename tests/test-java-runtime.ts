@@ -745,6 +745,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'stdout',
                 'java_args=alpha,beta\n'
               );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                'java_stdin=from-stdin\n'
+              );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
                 'generated.txt',
@@ -787,7 +792,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify(JSON.stringify({
-                  stdout: '5\njava_args=alpha,beta\n',
+                  stdout: '5\njava_args=alpha,beta\njava_stdin=from-stdin\n',
                   stderr: '',
                   exitCode: 0,
                 })),
@@ -1248,7 +1253,7 @@ async function main(): Promise<void> {
       args: ['alpha', 'beta'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
+      stdin: 'from-stdin\n',
       project: {
         directories: ['empty/child'],
         files: [
@@ -1270,6 +1275,7 @@ async function main(): Promise<void> {
               '    Files.deleteIfExists(Path.of("stale.txt"));',
               '    System.out.println(Helper.add(2, 3));',
               '    System.out.println("java_args=" + String.join(",", args));',
+              '    System.out.println("java_stdin=" + new BufferedReader(new InputStreamReader(System.in)).readLine());',
               '  }',
               '}',
               '',
@@ -1280,7 +1286,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === '5\njava_args=alpha,beta\n',
+      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\n',
       'Java execute-project-java should return captured stdout'
     );
     assertCondition(
@@ -1295,6 +1301,12 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stdout' &&
             event.data === 'java_args=alpha,beta\n'
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'java_stdin=from-stdin\n'
       ) === true,
       `Java execute-project-java should emit live stdout project events: ${JSON.stringify(projectExecute.events)}`
     );
@@ -1451,6 +1463,11 @@ async function main(): Promise<void> {
         defaultManifestEntries.has('Main.java') &&
         Array.from(defaultManifestEntries.values()).some((source) => source.includes('public class Exports')),
       'Java execute-project-java should pass project files and an adapter source separately'
+    );
+    const defaultAdapterSource = Array.from(defaultManifestEntries.values()).find((source) => source.includes('public class Exports')) ?? '';
+    assertCondition(
+      defaultAdapterSource.includes('System.setIn(new java.io.ByteArrayInputStream("from-stdin\\n".getBytes("UTF-8")))'),
+      'Java execute-project-java adapter should wire request stdin into System.in'
     );
     assertCondition(
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("generated.txt")') === true &&
