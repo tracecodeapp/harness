@@ -10,6 +10,8 @@ import type {
   RuntimeExecutionTimings,
 } from '../../harness-core/src/types';
 import type {
+  RuntimeCommandEvent,
+  RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeProjectCommandRequest,
 } from '../../harness-core/src/runtime-project';
@@ -32,6 +34,7 @@ export interface CSharpWorkerClientOptions {
 interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  onEvent?: RuntimeCommandEventHandler;
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
@@ -176,6 +179,10 @@ export class CSharpWorkerClient {
       if (!id) return;
       const pending = this.pendingMessages.get(id);
       if (!pending) return;
+      if (type === 'project-event') {
+        pending.onEvent?.(payload as RuntimeCommandEvent);
+        return;
+      }
       this.pendingMessages.delete(id);
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
 
@@ -257,7 +264,8 @@ export class CSharpWorkerClient {
   private async sendMessage<T>(
     type: string,
     payload?: unknown,
-    timeoutMs = MESSAGE_TIMEOUT_MS
+    timeoutMs = MESSAGE_TIMEOUT_MS,
+    onEvent?: RuntimeCommandEventHandler
   ): Promise<T> {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
@@ -267,6 +275,7 @@ export class CSharpWorkerClient {
       this.pendingMessages.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
+        ...(onEvent ? { onEvent } : {}),
       });
 
       const timeoutId = globalThis.setTimeout(() => {
@@ -636,7 +645,8 @@ export class CSharpWorkerClient {
 
   async executeProjectCSharp(
     request: CSharpProjectCommandRequest,
-    timeoutMs = this.executionTimeoutMs
+    timeoutMs = this.executionTimeoutMs,
+    onEvent?: RuntimeCommandEventHandler
   ): Promise<CSharpProjectCommandResult> {
     await this.init();
     return this.executeWithTimeout(
@@ -649,7 +659,8 @@ export class CSharpWorkerClient {
             timeoutMs: Math.max(100, timeoutMs - 1_000),
             ...this.workerOptionsPayload(),
           },
-          timeoutMs + 5_000
+          timeoutMs + 5_000,
+          onEvent
         ),
       timeoutMs
     );

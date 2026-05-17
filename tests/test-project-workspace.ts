@@ -3922,12 +3922,14 @@ async function testNativeCSharpCommandLinePropertiesProjectRunner(): Promise<voi
 async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   let received: JavaProjectCommandRequest | null = null;
   let callCount = 0;
+  const events: RuntimeCommandEvent[] = [];
   const runner = createBrowserJavaProjectRunner({
-    async executeProjectJava(request) {
+    async executeProjectJava(request, _timeoutMs, onEvent) {
       callCount += 1;
       received = request;
+      onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'java-streamed\n' });
       return {
-        stdout: `${request.source}:${request.scriptPath}:${request.project.files.length}`,
+        stdout: `java-streamed\n${request.source}:${request.scriptPath}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
       };
@@ -3945,10 +3947,15 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     },
+    onEvent: (event) => events.push(event),
   });
 
-  assertCondition(result.stdout === 'run:Main:1', 'browser java runner should delegate to worker client');
+  assertCondition(result.stdout === 'java-streamed\nrun:Main:1', 'browser java runner should delegate to worker client');
   assertCondition(received?.scriptPath === 'Main', 'browser java runner should pass through request');
+  assertCondition(
+    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
+    `browser java runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
 
   const previewResult = await runner({
     code: '',
@@ -4050,11 +4057,13 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
 
 async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
   let received: CSharpProjectCommandRequest | null = null;
+  const events: RuntimeCommandEvent[] = [];
   const runner = createBrowserCSharpProjectRunner({
-    async executeProjectCSharp(request) {
+    async executeProjectCSharp(request, _timeoutMs, onEvent) {
       received = request;
+      onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'csharp-streamed\n' });
       return {
-        stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}`,
+        stdout: `csharp-streamed\n${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
       };
@@ -4072,10 +4081,15 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'Program.cs', contents: 'Console.WriteLine("hello");\n' }],
     },
+    onEvent: (event) => events.push(event),
   });
 
-  assertCondition(result.stdout === 'run:<project>:alpha,beta:1', 'browser C# runner should delegate to worker client');
+  assertCondition(result.stdout === 'csharp-streamed\nrun:<project>:alpha,beta:1', 'browser C# runner should delegate to worker client');
   assertCondition(received?.scriptPath === '<project>', 'browser C# runner should pass through request');
+  assertCondition(
+    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
+    `browser C# runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
 
   const noBuildResult = await runner({
     code: '',

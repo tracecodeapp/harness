@@ -1,4 +1,6 @@
 import type {
+  RuntimeCommandEvent,
+  RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeFile,
   RuntimeFileEncoding,
@@ -6,6 +8,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
+import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import type { CSharpWorkerClient } from '../../harness-browser/src/csharp-worker-client';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;
@@ -23,7 +26,13 @@ export interface BrowserCSharpProjectRunnerOptions {
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 export function createBrowserCSharpProjectRunner(
-  workerClient: Pick<CSharpWorkerClient, 'executeProjectCSharp'>,
+  workerClient: Pick<CSharpWorkerClient, 'executeProjectCSharp'> & {
+    executeProjectCSharp(
+      request: CSharpProjectCommandRequest,
+      timeoutMs?: number,
+      onEvent?: RuntimeCommandEventHandler
+    ): Promise<CSharpProjectCommandResult>;
+  },
   options: BrowserCSharpProjectRunnerOptions = {}
 ): CSharpProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -35,22 +44,32 @@ export function createBrowserCSharpProjectRunner(
         exitCode: 2,
       });
     }
-    request.onEvent?.({
-      type: 'status',
-      phase: request.source === 'compile' ? 'compile-start' : 'process-start',
-      message: request.source === 'compile' ? 'Starting C# browser compile' : 'Starting C# browser run',
-      detail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
+    let stdoutStreamed = false;
+    let stderrStreamed = false;
+    const io = createRuntimeProjectIoBridge((event: RuntimeCommandEvent) => {
+      if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
+      if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
+      request.onEvent?.(event);
     });
+    const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
+      if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
+      if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
+      request.onEvent?.(event);
+    };
+    io.status(
+      request.source === 'compile' ? 'compile-start' : 'process-start',
+      request.source === 'compile' ? 'Starting C# browser compile' : 'Starting C# browser run',
+      { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd }
+    );
     const { onEvent: _onEvent, ...workerRequest } = request;
-    return workerClient.executeProjectCSharp(workerRequest, timeoutMs).then((result) => {
-      request.onEvent?.({
-        type: 'status',
-        phase: request.source === 'compile' ? 'compile-end' : 'process-exit',
-        message: request.source === 'compile' ? 'Finished C# browser compile' : 'Finished C# browser run',
-        detail: { exitCode: result.exitCode },
-      });
-      if (result.stdout) request.onEvent?.({ type: 'output', stream: 'stdout', data: result.stdout });
-      if (result.stderr) request.onEvent?.({ type: 'output', stream: 'stderr', data: result.stderr });
+    return workerClient.executeProjectCSharp(workerRequest, timeoutMs, forwardWorkerEvent).then((result) => {
+      io.status(
+        request.source === 'compile' ? 'compile-end' : 'process-exit',
+        request.source === 'compile' ? 'Finished C# browser compile' : 'Finished C# browser run',
+        { exitCode: result.exitCode }
+      );
+      if (result.stdout && !stdoutStreamed) io.output('stdout', result.stdout);
+      if (result.stderr && !stderrStreamed) io.output('stderr', result.stderr);
       return result;
     });
   };

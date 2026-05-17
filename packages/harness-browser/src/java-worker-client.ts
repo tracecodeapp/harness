@@ -1,5 +1,7 @@
 import type { CodeExecutionResult, RuntimeExecutionTimings } from '../../harness-core/src/types';
 import type {
+  RuntimeCommandEvent,
+  RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeProjectCommandRequest,
 } from '../../harness-core/src/runtime-project';
@@ -19,6 +21,7 @@ export interface JavaWorkerClientOptions {
 interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  onEvent?: RuntimeCommandEventHandler;
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
@@ -155,6 +158,10 @@ export class JavaWorkerClient {
       if (!id) return;
       const pending = this.pendingMessages.get(id);
       if (!pending) return;
+      if (type === 'project-event') {
+        pending.onEvent?.(payload as RuntimeCommandEvent);
+        return;
+      }
       this.pendingMessages.delete(id);
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
 
@@ -236,7 +243,8 @@ export class JavaWorkerClient {
   private async sendMessage<T>(
     type: string,
     payload?: unknown,
-    timeoutMs = MESSAGE_TIMEOUT_MS
+    timeoutMs = MESSAGE_TIMEOUT_MS,
+    onEvent?: RuntimeCommandEventHandler
   ): Promise<T> {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
@@ -246,6 +254,7 @@ export class JavaWorkerClient {
       this.pendingMessages.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
+        ...(onEvent ? { onEvent } : {}),
       });
 
       const timeoutId = globalThis.setTimeout(() => {
@@ -481,7 +490,8 @@ export class JavaWorkerClient {
 
   async executeProjectJava(
     request: JavaWorkerProjectRequest,
-    timeoutMs = EXECUTION_TIMEOUT_MS
+    timeoutMs = EXECUTION_TIMEOUT_MS,
+    onEvent?: RuntimeCommandEventHandler
   ): Promise<JavaWorkerProjectResult> {
     await this.init();
     return this.executeWithTimeout(
@@ -489,7 +499,8 @@ export class JavaWorkerClient {
         this.sendMessage<JavaWorkerProjectResult>(
           'execute-project-java',
           request,
-          timeoutMs + 5_000
+          timeoutMs + 5_000,
+          onEvent
         ),
       timeoutMs
     );
