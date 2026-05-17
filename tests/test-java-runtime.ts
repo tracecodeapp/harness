@@ -750,6 +750,16 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'generated.txt',
                 Buffer.from('created\n', 'utf8').toString('base64')
               );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'writer.txt',
+                Buffer.from('writer\n', 'utf8').toString('base64')
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'printed.txt',
+                Buffer.from('printed\n', 'utf8').toString('base64')
+              );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
                 null,
                 'stale.txt'
@@ -765,6 +775,8 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 compilerStderr: '',
                 changedFiles: [
                   { path: 'generated.txt', contents: Buffer.from('created\n', 'utf8').toString('base64'), encoding: 'base64' },
+                  { path: 'writer.txt', contents: Buffer.from('writer\n', 'utf8').toString('base64'), encoding: 'base64' },
+                  { path: 'printed.txt', contents: Buffer.from('printed\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'bytes.bin', contents: Buffer.from([0, 255]).toString('base64'), encoding: 'base64' },
                   { path: 'stale.txt', deleted: true },
                 ],
@@ -1220,10 +1232,13 @@ async function main(): Promise<void> {
           {
             path: 'Main.java',
             contents: [
+              'import java.io.*;',
               'import java.nio.file.*;',
               'class Main {',
               '  public static void main(String[] args) throws Exception {',
               '    Files.writeString(Path.of("generated.txt"), "created\\n");',
+              '    try (var writer = new FileWriter("writer.txt")) { writer.write("writer\\n"); }',
+              '    try (var writer = new PrintWriter("printed.txt")) { writer.println("printed"); }',
               '    Files.deleteIfExists(Path.of("stale.txt"));',
               '    System.out.println(Helper.add(2, 3));',
               '    System.out.println("java_args=" + String.join(",", args));',
@@ -1274,11 +1289,40 @@ async function main(): Promise<void> {
       `Java execute-project-java should emit live file-change project events: ${JSON.stringify(projectExecute.events)}`
     );
     assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'writer.txt' &&
+          event.change.encoding === 'base64' &&
+          Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'writer\n'
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'printed.txt' &&
+            event.change.encoding === 'base64' &&
+            Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'printed\n'
+        ) === true,
+      `Java execute-project-java should emit live writer file-change project events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
       projectExecute.files?.some((file) =>
         file.path === 'generated.txt' &&
           file.encoding === 'base64' &&
           Buffer.from(file.contents, 'base64').toString('utf8') === 'created\n'
       ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'writer.txt' &&
+            file.encoding === 'base64' &&
+            Buffer.from(file.contents, 'base64').toString('utf8') === 'writer\n'
+        ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'printed.txt' &&
+            file.encoding === 'base64' &&
+            Buffer.from(file.contents, 'base64').toString('utf8') === 'printed\n'
+        ) &&
         projectExecute.files?.some((file) =>
           file.path === 'bytes.bin' &&
             file.encoding === 'base64' &&
@@ -1324,8 +1368,10 @@ async function main(): Promise<void> {
     );
     assertCondition(
       defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("generated.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("writer.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("printed.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.deleteIfExists(Path.of("stale.txt")') === true,
-      'Java execute-project-java should route project source Files mutations through the live event bridge'
+      'Java execute-project-java should route project source file mutations through the live event bridge'
     );
     assertCondition(
       defaultWorkspaceManifest.includes('Helper.java') &&

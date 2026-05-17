@@ -3157,7 +3157,11 @@ function javaProjectSourcePath(file) {
 function augmentJavaProjectFileMutations(source) {
   return String(source ?? '')
     .replace(/\bjava\.nio\.file\.Files\.(writeString|write|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
-    .replace(/(?<![\w.])Files\.(writeString|write|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(');
+    .replace(/(?<![\w.])Files\.(writeString|write|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
+    .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
+    .replace(/\bnew\s+java\.io\.PrintWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectPrintWriter(')
+    .replace(/(?<![\w.])new\s+PrintWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectPrintWriter(');
 }
 
 function javaProjectSystemProperties(payload) {

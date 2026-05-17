@@ -107,6 +107,10 @@ async function main(): Promise<void> {
     'setProjectWorkspaceRoot',
     'Files.writeString',
     'Files.deleteIfExists',
+    'ProjectFileWriter',
+    'ProjectPrintWriter',
+    'extends FileWriter',
+    'extends PrintWriter',
   ];
   for (const marker of projectEventsMarkers) {
     assertCondition(

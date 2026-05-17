@@ -1,15 +1,18 @@
 package tracecode.browser;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.nio.file.CopyOption;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Base64;
 
 public final class ProjectEvents {
@@ -90,6 +93,133 @@ public final class ProjectEvents {
     emitFileDelete(source);
     emitFileSnapshot(target);
     return result;
+  }
+
+  public static final class ProjectFileWriter extends FileWriter {
+    private final Path path;
+
+    public ProjectFileWriter(String fileName) throws IOException {
+      super(fileName);
+      this.path = Path.of(fileName);
+    }
+
+    public ProjectFileWriter(String fileName, boolean append) throws IOException {
+      super(fileName, append);
+      this.path = Path.of(fileName);
+    }
+
+    public ProjectFileWriter(String fileName, Charset charset) throws IOException {
+      super(fileName, charset);
+      this.path = Path.of(fileName);
+    }
+
+    public ProjectFileWriter(String fileName, Charset charset, boolean append) throws IOException {
+      super(fileName, charset, append);
+      this.path = Path.of(fileName);
+    }
+
+    public ProjectFileWriter(File file) throws IOException {
+      super(file);
+      this.path = file.toPath();
+    }
+
+    public ProjectFileWriter(File file, boolean append) throws IOException {
+      super(file, append);
+      this.path = file.toPath();
+    }
+
+    public ProjectFileWriter(File file, Charset charset) throws IOException {
+      super(file, charset);
+      this.path = file.toPath();
+    }
+
+    public ProjectFileWriter(File file, Charset charset, boolean append) throws IOException {
+      super(file, charset, append);
+      this.path = file.toPath();
+    }
+
+    @Override
+    public void flush() throws IOException {
+      super.flush();
+      emitFileSnapshot(path);
+    }
+
+    @Override
+    public void close() throws IOException {
+      super.close();
+      emitFileSnapshot(path);
+    }
+  }
+
+  public static final class ProjectPrintWriter extends PrintWriter {
+    private final Path path;
+
+    public ProjectPrintWriter(String fileName) throws IOException {
+      super(fileName);
+      this.path = Path.of(fileName);
+    }
+
+    public ProjectPrintWriter(String fileName, String charsetName) throws IOException {
+      super(fileName, charsetName);
+      this.path = Path.of(fileName);
+    }
+
+    public ProjectPrintWriter(String fileName, Charset charset) throws IOException {
+      super(fileName, charset);
+      this.path = Path.of(fileName);
+    }
+
+    public ProjectPrintWriter(File file) throws IOException {
+      super(file);
+      this.path = file.toPath();
+    }
+
+    public ProjectPrintWriter(File file, String charsetName) throws IOException {
+      super(file, charsetName);
+      this.path = file.toPath();
+    }
+
+    public ProjectPrintWriter(File file, Charset charset) throws IOException {
+      super(file, charset);
+      this.path = file.toPath();
+    }
+
+    public ProjectPrintWriter(OutputStream out) {
+      super(out);
+      this.path = null;
+    }
+
+    public ProjectPrintWriter(OutputStream out, boolean autoFlush) {
+      super(out, autoFlush);
+      this.path = null;
+    }
+
+    public ProjectPrintWriter(OutputStream out, boolean autoFlush, Charset charset) {
+      super(out, autoFlush, charset);
+      this.path = null;
+    }
+
+    public ProjectPrintWriter(Writer out) {
+      super(out);
+      this.path = null;
+    }
+
+    public ProjectPrintWriter(Writer out, boolean autoFlush) {
+      super(out, autoFlush);
+      this.path = null;
+    }
+
+    @Override
+    public void flush() {
+      super.flush();
+      emitFileSnapshot(path);
+    }
+
+    @Override
+    public void close() {
+      super.close();
+      emitFileSnapshot(path);
+    }
   }
 
   private static void emitOutput(String stream, String data) {
