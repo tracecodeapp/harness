@@ -255,6 +255,24 @@ function procInfoJson(info: RuntimeKernelInfo): string {
   return `${JSON.stringify(info, null, 2)}\n`;
 }
 
+function mountInfoField(value: string): string {
+  return value.replace(/\\/g, '\\134').replace(/ /g, '\\040').replace(/\t/g, '\\011').replace(/\n/g, '\\012');
+}
+
+function procMountInfo(info: RuntimeKernelInfo): string {
+  const workspaceRoot = mountInfoField(info.workspaceRoot);
+  const workspaceName = mountInfoField(info.workspace.name);
+  const aliasLine = info.workspaceAlias
+    ? `27 24 0:1 / ${mountInfoField(info.workspaceAlias)} rw,relatime alias=${workspaceRoot} - tracefs tracekernel:workspace rw,name=${workspaceName}`
+    : null;
+  return [
+    `24 0 0:1 / ${workspaceRoot} rw,relatime - tracefs tracekernel:workspace rw,name=${workspaceName}`,
+    aliasLine,
+    '25 0 0:2 / /dev rw,nosuid - tracefs tracekernel:dev rw,mode=755',
+    '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw',
+  ].filter((line): line is string => Boolean(line)).join('\n') + '\n';
+}
+
 function mapWorkspaceAlias(workspaceRoot: string, workspaceAlias: string | undefined, absolutePath: string): string {
   if (!workspaceAlias || workspaceAlias === workspaceRoot) return absolutePath;
   if (absolutePath === workspaceAlias) return workspaceRoot;
@@ -2210,9 +2228,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (encoding === 'base64') {
       throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
     }
-    if (procPath === '/proc/kernel/info' || procPath === '/proc/self/mountinfo') {
+    if (procPath === '/proc/kernel/info') {
       return procInfoJson(this.kernelInfo);
     }
+    if (procPath === '/proc/self/mountinfo') return procMountInfo(this.kernelInfo);
     throw new Error(`Kernel proc path not found: ${path}`);
   }
 

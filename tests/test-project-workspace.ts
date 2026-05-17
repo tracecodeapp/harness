@@ -4784,6 +4784,11 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   assertCondition(procInfo.name === 'tracekernel', 'kernel /proc info should expose kernel name');
   assertCondition(procInfo.user.username === 'obi', 'kernel /proc info should expose username');
   assertCondition(procInfo.workspace.root === '/home/obi/weather-api', 'kernel /proc info should expose workspace root');
+  const mountInfo = await workspace.kernel.readFile('/proc/self/mountinfo');
+  assertCondition(mountInfo.includes('tracekernel:workspace'), 'kernel /proc mountinfo should expose workspace mount');
+  assertCondition(mountInfo.includes('/home/obi/weather-api'), 'kernel /proc mountinfo should expose canonical workspace mountpoint');
+  assertCondition(mountInfo.includes('/workspace'), 'kernel /proc mountinfo should expose compatibility alias mountpoint');
+  assertCondition(mountInfo.includes('tracekernel:dev') && mountInfo.includes('tracekernel:proc'), 'kernel /proc mountinfo should expose dev and proc mounts');
   assertCondition(await workspace.exists('/proc/kernel/info'), 'kernel /proc info should exist');
   const procInfoStat = await workspace.stat('/proc/kernel/info');
   assertCondition(procInfoStat.isFile && !procInfoStat.isDirectory, 'kernel /proc info should stat as file');
