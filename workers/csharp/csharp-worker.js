@@ -81,6 +81,7 @@ function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
 
   const roots = ['/workspace'];
   const project = request?.project;
+  if (typeof project?.cwd === 'string' && project.cwd) roots.push(project.cwd);
   if (typeof project?.workspaceRoot === 'string' && project.workspaceRoot) roots.push(project.workspaceRoot);
   if (typeof project?.workspaceAlias === 'string' && project.workspaceAlias) roots.push(project.workspaceAlias);
 
@@ -97,6 +98,64 @@ function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
     return normalized;
   }
   return null;
+}
+
+function projectRuntimeRoots(request) {
+  const project = request?.project;
+  const roots = [];
+  for (const value of [project?.cwd, project?.workspaceRoot, project?.workspaceAlias, '/workspace']) {
+    if (typeof value !== 'string' || !value) continue;
+    const root = value.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+    if (root.startsWith('/') && !roots.includes(root)) roots.push(root);
+  }
+  return roots.sort((left, right) => right.length - left.length);
+}
+
+function mapProjectRuntimePath(value, request) {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  const normalized = value.replace(/\\/g, '/');
+  for (const root of projectRuntimeRoots(request)) {
+    if (normalized === root) return '/workspace';
+    if (root !== '/' && normalized.startsWith(`${root}/`)) {
+      return `/workspace/${normalized.slice(root.length + 1)}`;
+    }
+  }
+  return value;
+}
+
+function mapProjectRuntimePathList(value, request) {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  return value
+    .split(/([:;])/)
+    .map((entry) => entry === ':' || entry === ';' ? entry : mapProjectRuntimePath(entry, request))
+    .join('');
+}
+
+function projectRuntimeRequest(request) {
+  const project = request?.project && typeof request.project === 'object'
+    ? {
+        ...request.project,
+        cwd: '/workspace',
+        workspaceRoot: '/workspace',
+        workspaceAlias: request.project.workspaceAlias || '/workspace',
+      }
+    : request?.project;
+  const env = request?.env && typeof request.env === 'object'
+    ? Object.fromEntries(Object.entries(request.env).map(([key, value]) => [
+        key,
+        typeof value === 'string' ? mapProjectRuntimePathList(value, request) : value,
+      ]))
+    : request?.env;
+  return {
+    ...request,
+    cwd: mapProjectRuntimePath(request?.cwd, request),
+    scriptPath: mapProjectRuntimePath(request?.scriptPath, request),
+    args: Array.isArray(request?.args)
+      ? request.args.map((arg) => mapProjectRuntimePath(String(arg), request))
+      : request?.args,
+    env,
+    project,
+  };
 }
 
 function encodeRuntimeFileChange(path, bytes) {
@@ -469,7 +528,7 @@ async function handleMessage(message) {
     };
     let result;
     try {
-      result = JSON.parse(executeProjectExport(JSON.stringify(request)));
+      result = JSON.parse(executeProjectExport(JSON.stringify(projectRuntimeRequest(request))));
     } finally {
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');

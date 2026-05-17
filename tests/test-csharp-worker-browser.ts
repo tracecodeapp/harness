@@ -2850,6 +2850,45 @@ async function main(): Promise<void> {
       `C# project worker should surface dotnet build output, received ${JSON.stringify(projectBuild.stdout)}`
     );
 
+    const canonicalProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/home/ada/weather-api/src',
+        env: {},
+        stdin: '',
+        project: {
+          cwd: '/home/ada/weather-api',
+          workspaceAlias: '/workspace',
+          files: [
+            { path: 'src/Program.cs', contents: 'Console.WriteLine("canonical-csharp"); File.WriteAllText("canonical.txt", "ok\\n");\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(canonicalProjectRun.exitCode === 0, `C# project worker should run from canonical /home project cwd: ${canonicalProjectRun.stderr}`);
+    assertCondition(
+      canonicalProjectRun.stdout.endsWith('canonical-csharp\n'),
+      `C# project worker should preserve canonical /home run stdout: ${canonicalProjectRun.stdout}`
+    );
+    assertCondition(
+      canonicalProjectRun.files?.some((file) => file.path === 'src/canonical.txt' && file.contents === 'ok\n') === true,
+      `C# project worker should persist canonical /home cwd writes, received ${JSON.stringify(canonicalProjectRun.files)}`
+    );
+    assertCondition(
+      canonicalProjectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/canonical.txt' &&
+          event.change.contents === 'ok\n'
+      ) === true,
+      `C# project worker should stream canonical /home cwd file changes, received ${JSON.stringify(canonicalProjectRun.events)}`
+    );
+
     const outsideCwdRun = await runProjectWorkerCase(
       page,
       {
