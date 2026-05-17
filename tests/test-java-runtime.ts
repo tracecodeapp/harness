@@ -1735,6 +1735,47 @@ async function main(): Promise<void> {
     );
     console.log('PASS: java worker resolves cwd-relative javac source, output, sourcepath, and classpath paths');
 
+    const canonicalRootCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; files?: Array<{ path: string; contents?: string; encoding?: string }> }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: '/home/ada/weather-api/src/app/Main.java',
+      args: [
+        '-cp',
+        '/home/ada/weather-api/lib/external.jar',
+        '-d',
+        '/home/ada/weather-api/out',
+        '-sourcepath',
+        '/home/ada/weather-api/src',
+        '/home/ada/weather-api/src/app/Main.java',
+      ],
+      cwd: '/home/ada/weather-api/src',
+      env: {},
+      stdin: '',
+      project: {
+        cwd: '/home/ada/weather-api',
+        workspaceRoot: '/home/ada/weather-api',
+        workspaceAlias: '/workspace',
+        files: [
+          {
+            path: 'src/app/Main.java',
+            contents: 'package app;\nimport lib.External;\npublic class Main { public static void main(String[] args) { System.out.println(External.value()); } }\n',
+          },
+          { path: 'lib/external.jar', contents: 'UEsDBAo=', encoding: 'base64' },
+        ],
+      },
+    });
+    assertCondition(canonicalRootCompileProjectExecute.exitCode === 0, 'Java execute-project-java should accept canonical /home javac paths');
+    const canonicalRootCompileCall = harness.projectCompileCalls.at(-1);
+    assertCondition(
+      canonicalRootCompileCall?.resourceManifest?.includes('lib/external.jar') &&
+        canonicalRootCompileCall.compileClasspath?.includes('/classpath/lib/external.jar') &&
+        canonicalRootCompileCall.compileSourcePaths === 'src/app/Main.java' &&
+        canonicalRootCompileCall.compileSourceRootPaths === 'src' &&
+        canonicalRootCompileProjectExecute.files?.some((file) => file.path === 'out/app/Main.class'),
+      'Java execute-project-java should normalize canonical /home javac paths inside the browser workspace'
+    );
+    console.log('PASS: java worker resolves canonical /home javac source, output, sourcepath, and classpath paths');
+
     const envClasspathCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
       code: '',
       source: 'compile',

@@ -2996,24 +2996,49 @@ function normalizeProjectDirectoryPath(path) {
   return normalizeProjectPathWithinWorkspace(path, true);
 }
 
+function normalizeProjectRoot(value) {
+  const raw = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!raw || !raw.startsWith('/')) return '';
+  return raw || '/';
+}
+
+function projectVirtualRoot(project) {
+  return normalizeProjectRoot(project?.workspaceRoot || project?.cwd || '/workspace') || '/workspace';
+}
+
+function projectVirtualRoots(project, fallbackProjectCwd = '/workspace') {
+  const roots = [];
+  for (const value of [project?.workspaceRoot, project?.cwd, fallbackProjectCwd, project?.workspaceAlias, '/workspace']) {
+    const root = normalizeProjectRoot(value);
+    if (root && !roots.includes(root)) roots.push(root);
+  }
+  return roots;
+}
+
+function stripProjectVirtualPrefix(value, project, fallbackProjectCwd = '/workspace') {
+  const normalized = String(value ?? '').replace(/\\/g, '/');
+  for (const root of projectVirtualRoots(project, fallbackProjectCwd)) {
+    if (normalized === root) return '';
+    if (root !== '/' && normalized.startsWith(`${root}/`)) return normalized.slice(root.length + 1);
+  }
+  return null;
+}
+
 function projectRelativeCwd(payload) {
-  const projectCwd = String(payload?.project?.cwd || '/workspace').replace(/\/+$/, '') || '/';
-  const requestCwd = String(payload?.cwd || projectCwd).replace(/\/+$/, '') || '/';
-  if (requestCwd === projectCwd) return '';
-  if (requestCwd.startsWith(`${projectCwd}/`)) {
-    return normalizeProjectDirectoryPath(requestCwd.slice(projectCwd.length + 1));
+  const projectCwd = projectVirtualRoot(payload?.project);
+  const requestCwd = String(payload?.cwd || projectCwd).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  const stripped = stripProjectVirtualPrefix(requestCwd, payload?.project, projectCwd);
+  if (stripped !== null) {
+    return normalizeProjectDirectoryPath(stripped);
   }
   throw new Error(`Project cwd must stay inside the workspace: ${requestCwd}`);
 }
 
-function resolveProjectCommandPath(path, relativeCwd, projectCwd = '/workspace', allowEmpty = false) {
+function resolveProjectCommandPath(path, relativeCwd, projectCwd = '/workspace', allowEmpty = false, project) {
   const raw = String(path ?? '').replace(/\\/g, '/');
-  const normalizedProjectCwd = String(projectCwd || '/workspace').replace(/\/+$/, '') || '/';
-  if (raw === normalizedProjectCwd) return allowEmpty ? '' : '.';
-  if (raw.startsWith(`${normalizedProjectCwd}/`)) {
-    return normalizeProjectPathWithinWorkspace(raw.slice(normalizedProjectCwd.length + 1), allowEmpty);
-  }
   if (raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) {
+    const stripped = stripProjectVirtualPrefix(raw, project, projectCwd);
+    if (stripped !== null) return normalizeProjectPathWithinWorkspace(stripped, allowEmpty) || '.';
     throw new Error(`Project path must stay within the workspace: ${path}`);
   }
   const joined = relativeCwd ? `${relativeCwd}/${raw}` : raw;
@@ -3307,7 +3332,7 @@ function buildProjectJavaRunnableSource(payload, compileId) {
   const exportsClassName = buildExportsClassName(compileId);
   const compileOnly = payload.source === 'compile';
   const relativeCwd = projectRelativeCwd(payload);
-  const projectCwd = String(payload?.project?.cwd || '/workspace');
+  const projectCwd = projectVirtualRoot(payload?.project);
   if (compileOnly) {
     assertBrowserProjectJavacOptionsSupported(payload.args, payload.project, relativeCwd, projectCwd);
   }
@@ -3343,7 +3368,8 @@ function buildProjectJavaRunnableSource(payload, compileId) {
       classpathRoot,
       compileOnly ? undefined : HELPER_JAR_PATH,
       relativeCwd,
-      projectCwd
+      projectCwd,
+      payload.project
     ),
     compileSourcePaths: javaCompileSourcePaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
     compileSourceRootPaths: javaCompileSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
@@ -3371,7 +3397,7 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
     ? projectJarMainClass(payload)
     : assertProjectMainClass(payload.scriptPath);
   const relativeCwd = projectRelativeCwd(payload);
-  const projectCwd = String(payload?.project?.cwd || '/workspace');
+  const projectCwd = projectVirtualRoot(payload?.project);
   const adapter = {
     path: `${exportsClassName}.java`,
     source: buildProjectJavaAdapterSource(
@@ -3397,7 +3423,7 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
     workspaceManifest: projectWorkspaceManifest(payload.project),
     workspaceRoot,
     workspaceCwd: projectWorkspaceCwd(payload, workspaceRoot),
-    runtimeClasspath: javaProjectClasspath(javaProjectEffectiveClasspath(payload), classRoot, undefined, relativeCwd, projectCwd),
+    runtimeClasspath: javaProjectClasspath(javaProjectEffectiveClasspath(payload), classRoot, undefined, relativeCwd, projectCwd, payload.project),
     mainClassName: exportsClassName,
   };
 }
@@ -3414,7 +3440,7 @@ function javaExpandedCompilerArgs(args, project, relativeCwd = '', projectCwd = 
         continue;
       }
 
-      const argPath = resolveProjectCommandPath(item.slice(1), relativeCwd, projectCwd);
+      const argPath = resolveProjectCommandPath(item.slice(1), relativeCwd, projectCwd, false, project);
       if (seen.has(argPath)) {
         throw new Error(`Recursive Java argfile reference: ${argPath}`);
       }
@@ -3558,7 +3584,7 @@ function javaCompileSourcePaths(args, project, relativeCwd = '', projectCwd = '/
       continue;
     }
     if (typeof arg === 'string' && arg.endsWith('.java')) {
-      sources.push(resolveProjectCommandPath(arg, relativeCwd, projectCwd));
+      sources.push(resolveProjectCommandPath(arg, relativeCwd, projectCwd, false, project));
     }
   }
   return sources;
@@ -3576,7 +3602,7 @@ function javaCompileSourceRootPaths(args, project, relativeCwd = '', projectCwd 
           .split(':')
           .map((entry) => entry.trim())
           .filter(Boolean)
-          .map((entry) => resolveProjectCommandPath(entry, relativeCwd, projectCwd, true)));
+          .map((entry) => resolveProjectCommandPath(entry, relativeCwd, projectCwd, true, project)));
       }
       index += 1;
       continue;
@@ -3586,13 +3612,13 @@ function javaCompileSourceRootPaths(args, project, relativeCwd = '', projectCwd 
         .split(':')
         .map((entry) => entry.trim())
         .filter(Boolean)
-        .map((entry) => resolveProjectCommandPath(entry, relativeCwd, projectCwd, true)));
+        .map((entry) => resolveProjectCommandPath(entry, relativeCwd, projectCwd, true, project)));
     }
   }
   return roots;
 }
 
-function javaProjectClasspath(rawClasspath, classRoot, extraEntry, relativeCwd = '', projectCwd = '/workspace') {
+function javaProjectClasspath(rawClasspath, classRoot, extraEntry, relativeCwd = '', projectCwd = '/workspace', project) {
   const entries = [];
   if (typeof rawClasspath !== 'string' || rawClasspath.trim().length === 0) {
     entries.push(relativeCwd ? `${classRoot}/${relativeCwd}` : classRoot);
@@ -3602,7 +3628,7 @@ function javaProjectClasspath(rawClasspath, classRoot, extraEntry, relativeCwd =
       .map((entry) => entry.trim())
       .filter(Boolean)
       .map((entry) => {
-        const resolved = resolveProjectCommandPath(entry, relativeCwd, projectCwd, true);
+        const resolved = resolveProjectCommandPath(entry, relativeCwd, projectCwd, true, project);
         return resolved ? `${classRoot}/${resolved}` : classRoot;
       }));
   }
@@ -3620,7 +3646,7 @@ function javaJavacVerboseRequested(args, project, relativeCwd = '', projectCwd =
 
 function javaSyntheticJavacVerboseOutput(payload, outputDir) {
   const relativeCwd = projectRelativeCwd(payload);
-  const projectCwd = String(payload?.project?.cwd || '/workspace');
+  const projectCwd = projectVirtualRoot(payload?.project);
   const sourcePaths = javaCompileSourcePaths(payload.args, payload.project, relativeCwd, projectCwd);
   const sourceRoots = javaCompileSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd);
   const classpath = javaCompileClasspath(payload.args, payload.project, relativeCwd, projectCwd);
@@ -3638,7 +3664,7 @@ function javaSyntheticJavacVerboseOutput(payload, outputDir) {
     lines.push(`[checking ${javaSyntheticClassNameForSource(sourcePath)}]`);
   }
   for (const sourcePath of sourcePaths) {
-    lines.push(`[wrote ${javaSyntheticClassOutputPath(sourcePath, classOutputDir)}]`);
+    lines.push(`[wrote ${javaSyntheticClassOutputPath(sourcePath, classOutputDir, projectCwd)}]`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -3648,10 +3674,10 @@ function javaSyntheticClassNameForSource(sourcePath) {
   return fileName.replace(/\.java$/i, '');
 }
 
-function javaSyntheticClassOutputPath(sourcePath, outputDir) {
+function javaSyntheticClassOutputPath(sourcePath, outputDir, projectCwd = '/workspace') {
   const withoutExtension = String(sourcePath).replace(/\.java$/i, '.class');
   const relativeOutput = outputDir === '.' ? withoutExtension : `${outputDir}/${withoutExtension}`;
-  return `/workspace/${relativeOutput}`;
+  return `${projectCwd.replace(/\/+$/, '') || '/workspace'}/${relativeOutput}`;
 }
 
 function postProjectEvent(id, payload) {
@@ -3700,7 +3726,7 @@ function commandResultFromJavaProjectReport(report, totalEnd, totalStart, librar
       payload.args,
       payload.project,
       projectRelativeCwd(payload),
-      String(payload?.project?.cwd || '/workspace')
+      projectVirtualRoot(payload?.project)
     )
   ) {
     compilerOutput = javaSyntheticJavacVerboseOutput(payload, outputDir);
@@ -3759,7 +3785,7 @@ function javaCompileOutputDir(args, project, relativeCwd = '', projectCwd = '/wo
     const arg = expandedArgs[index];
     if (arg === '-d') {
       return typeof expandedArgs[index + 1] === 'string' && expandedArgs[index + 1].length > 0
-        ? resolveProjectCommandPath(expandedArgs[index + 1], relativeCwd, projectCwd, true) || '.'
+        ? resolveProjectCommandPath(expandedArgs[index + 1], relativeCwd, projectCwd, true, project) || '.'
         : '.';
     }
   }
@@ -4214,7 +4240,7 @@ async function runJavaProjectRequest(payload, requestId) {
           payload.args,
           payload.project,
           projectRelativeCwd(payload),
-          String(payload?.project?.cwd || '/workspace')
+          projectVirtualRoot(payload?.project)
         )
       : null,
     payload
