@@ -179,7 +179,12 @@ Project mode is exposed through explicit `/project` subpaths so ordinary single-
 
 ## Project Workspace API
 
-Project mode runs shell-like commands over a virtual `/workspace` file tree. The shell/parser layer is provided by `just-bash`; language execution is delegated through one shared `RuntimeProjectCommandRequest` shape for browser and native runners.
+Project mode runs shell-like commands over a tracekernel workspace. By default
+the compatibility root is `/workspace`; when callers provide kernel identity,
+the canonical root becomes `/home/<user>/<project>` and `/workspace` remains an
+alias for older callers. The shell/parser layer is provided by `just-bash`;
+language execution is delegated through one shared
+`RuntimeProjectCommandRequest` shape for browser and native runners.
 
 Browser project workspace:
 
@@ -188,6 +193,11 @@ import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/projec
 
 const workspace = await createBrowserProjectWorkspace({
   assetBaseUrl: '/workers',
+  kernel: {
+    user: { id: 'auth-user-123', username: 'ada' },
+    host: { hostname: 'tracevm' },
+    workspace: { id: 'weather-api-1', name: 'weather-api' },
+  },
   files: [
     { path: 'src/main.py', contents: 'from lib.msg import message\nprint(message())\n' },
     { path: 'src/lib/msg.py', contents: 'def message():\n    return "hello"\n' },
@@ -195,6 +205,8 @@ const workspace = await createBrowserProjectWorkspace({
 });
 
 const result = await workspace.runCommand('python3 src/main.py');
+console.log(workspace.cwd); // /home/ada/weather-api
+console.log(await workspace.readFile('/proc/self/mountinfo'));
 
 workspace.dispose();
 ```
@@ -231,6 +243,14 @@ Supported project commands include:
 - Java: `javac` and `java`, including classpaths, source paths, argfiles, jars, packages, and explicit unsupported stubs for browser-only gaps such as preview/assertion flags
 - C#: `dotnet run` and build-style project execution, including project files, multiple source files, properties, unsafe blocks, resources, `HintPath`, and `ProjectReference`
 - C/C++: `clang`, `clang++`, `gcc`, `g++`, executable runs, object files, archives, include/library paths, and `CPATH`/`C_INCLUDE_PATH`/`CPLUS_INCLUDE_PATH`/`LIBRARY_PATH`
+
+The `workspace.kernel` API exposes tracekernel identity and virtual system
+files. `/proc/kernel/info` returns the configured kernel info,
+`/proc/self/mountinfo` describes the workspace, alias, `/dev`, and `/proc`
+mounts, and `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, and `/dev/tty` connect
+to streaming command I/O. `workspace.watch(...)` and per-command `onEvent`
+receive stdout/stderr chunks and live/final file mutation events with actor
+metadata.
 
 Project snapshots preserve generated/deleted files and empty directories so a browser app can keep an in-memory project synchronized with command results.
 

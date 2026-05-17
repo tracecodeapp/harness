@@ -482,11 +482,39 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         }
       }
       const projectWorkspace = await projectMod.createRuntimeWorkspace({
+        kernel: {
+          user: { id: 'surface-user-123', username: 'surface' },
+          host: { hostname: 'tracevm-surface' },
+          workspace: { id: 'surface-project-1', name: 'surface-project', startedAt: '2026-05-17T12:00:00.000Z' },
+        },
         files: [{ path: 'hello.txt', contents: 'hello\\n' }],
       });
       const projectCat = await projectWorkspace.runCommand('cat hello.txt');
       if (projectCat.stdout !== 'hello\\n' || projectCat.exitCode !== 0) {
         throw new Error('@tracecode/harness-project workspace command smoke failed');
+      }
+      if (projectWorkspace.cwd !== '/home/surface/surface-project') {
+        throw new Error('@tracecode/harness-project tracekernel cwd mismatch: ' + projectWorkspace.cwd);
+      }
+      if (projectWorkspace.kernel.info.name !== 'tracekernel' || projectWorkspace.kernel.info.workspaceAlias !== '/workspace') {
+        throw new Error('@tracecode/harness-project tracekernel info missing: ' + JSON.stringify(projectWorkspace.kernel.info));
+      }
+      await projectWorkspace.writeFile('/workspace/alias.txt', 'alias\\n');
+      if ((await projectWorkspace.readFile('/home/surface/surface-project/alias.txt')) !== 'alias\\n') {
+        throw new Error('@tracecode/harness-project /workspace alias smoke failed');
+      }
+      const mountInfo = await projectWorkspace.readFile('/proc/self/mountinfo');
+      if (!mountInfo.includes('tracekernel:workspace') || !mountInfo.includes('/home/surface/surface-project') || !mountInfo.includes('/workspace')) {
+        throw new Error('@tracecode/harness-project mountinfo smoke failed: ' + mountInfo);
+      }
+      const outputEvents = [];
+      const output = await projectWorkspace.runCommand('printf "surface-out\\\\n" > /dev/stdout', {
+        onEvent(event) {
+          outputEvents.push(event);
+        },
+      });
+      if (output.stdout !== 'surface-out\\n' || !outputEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout')) {
+        throw new Error('@tracecode/harness-project /dev/stdout event smoke failed: ' + JSON.stringify({ output, outputEvents }));
       }
       const pythonMain = await import('@tracecode/harness-python');
       if (
@@ -627,6 +655,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error('@tracecode/harness-browser/project missing createBrowserProjectWorkspace');
       }
       const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
+        kernel: {
+          user: { id: 'browser-surface-user', username: 'surface' },
+          host: { hostname: 'tracevm-browser' },
+          workspace: { id: 'browser-surface-project', name: 'surface-browser', startedAt: '2026-05-17T12:00:00.000Z' },
+        },
         files: [
           { path: 'main.py', contents: 'print("standalone-browser-python")\\n' },
           { path: 'index.js', contents: 'const fs = require("node:fs"); fs.writeFileSync("node.txt", "standalone-browser-node\\\\n"); console.log("standalone-browser-node");\\n' },
@@ -661,6 +694,17 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         },
       });
       try {
+        if (browserWorkspace.cwd !== '/home/surface/surface-browser') {
+          throw new Error('@tracecode/harness-browser/project tracekernel cwd mismatch: ' + browserWorkspace.cwd);
+        }
+        await browserWorkspace.writeFile('/workspace/browser-alias.txt', 'browser-alias\\n');
+        if ((await browserWorkspace.readFile('/home/surface/surface-browser/browser-alias.txt')) !== 'browser-alias\\n') {
+          throw new Error('@tracecode/harness-browser/project /workspace alias smoke failed');
+        }
+        const browserMountInfo = await browserWorkspace.readFile('/proc/self/mountinfo');
+        if (!browserMountInfo.includes('tracekernel:workspace') || !browserMountInfo.includes('/home/surface/surface-browser')) {
+          throw new Error('@tracecode/harness-browser/project mountinfo smoke failed: ' + browserMountInfo);
+        }
         const browserPython = await browserWorkspace.runCommand('python3 main.py');
         if (browserPython.exitCode !== 0 || browserPython.stdout !== 'main.py:standalone-browser-python\\n') {
           throw new Error('@tracecode/harness-browser/project Python smoke failed: ' + JSON.stringify(browserPython));
