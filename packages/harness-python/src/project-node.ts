@@ -127,20 +127,39 @@ async function changedProjectFiles(root: string, project: PythonProjectSnapshot)
   return files;
 }
 
+function projectVirtualRoot(project: PythonProjectSnapshot): string {
+  return project.workspaceRoot ?? project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
+}
+
+function projectVirtualAliases(project: PythonProjectSnapshot): string[] {
+  return Array.from(new Set([
+    project.workspaceAlias,
+    VIRTUAL_WORKSPACE_ROOT,
+  ].filter((item): item is string => typeof item === 'string' && item.length > 0 && item !== projectVirtualRoot(project))));
+}
+
+function stripProjectVirtualPrefix(value: string, project: PythonProjectSnapshot): string | null {
+  const roots = [projectVirtualRoot(project), ...projectVirtualAliases(project)];
+  for (const root of roots) {
+    if (value === root) return '';
+    if (value.startsWith(`${root}/`)) return value.slice(root.length + 1);
+  }
+  return null;
+}
+
 function cwdForRequest(request: PythonProjectCommandRequest, root: string): string {
-  const projectCwd = request.project.cwd ?? '/workspace';
-  if (request.cwd === projectCwd) return root;
-  if (request.cwd.startsWith(`${projectCwd}/`)) {
-    return join(root, request.cwd.slice(projectCwd.length + 1));
+  const relativeCwd = stripProjectVirtualPrefix(request.cwd, request.project);
+  if (relativeCwd !== null) {
+    return relativeCwd ? join(root, relativeCwd) : root;
   }
   throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
 }
 
-function workspaceRelativeOperand(root: string, cwd: string, value: string, label: string): string {
+function workspaceRelativeOperand(root: string, cwd: string, value: string, label: string, project?: PythonProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
-  if (normalized === VIRTUAL_WORKSPACE_ROOT) return root;
-  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
-    return join(root, normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
+  const relativeToVirtualRoot = project ? stripProjectVirtualPrefix(normalized, project) : null;
+  if (relativeToVirtualRoot !== null) {
+    return relativeToVirtualRoot ? join(root, relativeToVirtualRoot) : root;
   }
   if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
     throw new Error(`${label} must stay inside the workspace: ${value}`);
@@ -154,13 +173,13 @@ function workspaceRelativeOperand(root: string, cwd: string, value: string, labe
 }
 
 function scriptPathForRequest(request: PythonProjectCommandRequest, root: string, cwd: string): string {
-  const projectCwd = request.project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
   const normalized = request.scriptPath.replace(/\\/g, '/');
-  if (normalized === projectCwd) {
+  const virtualRelativePath = stripProjectVirtualPrefix(normalized, request.project);
+  if (virtualRelativePath === '') {
     throw new Error(`Project file path must point to a file: ${request.scriptPath}`);
   }
-  if (normalized.startsWith(`${projectCwd}/`)) {
-    return join(root, assertSafeProjectPath(normalized.slice(projectCwd.length + 1)));
+  if (virtualRelativePath !== null) {
+    return join(root, assertSafeProjectPath(virtualRelativePath));
   }
   try {
     const relativePath = assertSafeProjectPath(normalized);
@@ -170,7 +189,7 @@ function scriptPathForRequest(request: PythonProjectCommandRequest, root: string
   } catch {
     // Fall back to cwd-relative resolution below.
   }
-  return resolve(cwd, workspaceRelativeOperand(root, cwd, request.scriptPath, 'Project file path'));
+  return resolve(cwd, workspaceRelativeOperand(root, cwd, request.scriptPath, 'Project file path', request.project));
 }
 
 function pythonArgsForRequest(request: PythonProjectCommandRequest, root: string, cwd: string): string[] {
@@ -189,14 +208,15 @@ function pythonArgsForRequest(request: PythonProjectCommandRequest, root: string
   return [scriptPathForRequest(request, root, cwd), ...request.args];
 }
 
-async function writeWorkspaceSiteCustomize(supportDir: string, root: string): Promise<void> {
+async function writeWorkspaceSiteCustomize(supportDir: string, root: string, virtualRoot: string, virtualAliases: readonly string[]): Promise<void> {
   await writeFile(join(supportDir, 'sitecustomize.py'), `
 import builtins
 import io
 import os
 
 _tracecode_root = ${JSON.stringify(root)}
-_tracecode_virtual_root = ${JSON.stringify(VIRTUAL_WORKSPACE_ROOT)}
+_tracecode_virtual_root = ${JSON.stringify(virtualRoot)}
+_tracecode_virtual_aliases = ${JSON.stringify(virtualAliases)}
 
 def _tracecode_map_path(value):
     if isinstance(value, (str, bytes, os.PathLike)):
@@ -205,6 +225,11 @@ def _tracecode_map_path(value):
             return _tracecode_root
         if isinstance(original, str) and original.startswith(_tracecode_virtual_root + "/"):
             return os.path.join(_tracecode_root, original[len(_tracecode_virtual_root) + 1:])
+        for alias in _tracecode_virtual_aliases:
+            if original == alias:
+                return _tracecode_root
+            if isinstance(original, str) and original.startswith(alias + "/"):
+                return os.path.join(_tracecode_root, original[len(alias) + 1:])
     return value
 
 def _tracecode_virtual_path(value):
@@ -268,21 +293,21 @@ os.environ["PWD"] = _tracecode_getcwd()
 }
 
 function pythonPathForRequest(request: PythonProjectCommandRequest, root: string, cwd: string, supportDir: string): string {
-  const existing = mapPythonPathList(request.env.PYTHONPATH, root, cwd);
+  const existing = mapPythonPathList(request.env.PYTHONPATH, root, cwd, request.project);
   if (typeof existing === 'string' && existing.length > 0) {
     return `${supportDir}${delimiter}${root}${delimiter}${existing}`;
   }
   return `${supportDir}${delimiter}${root}`;
 }
 
-function mapPythonPathList(value: unknown, root: string, cwd: string): string | undefined {
+function mapPythonPathList(value: unknown, root: string, cwd: string, project: PythonProjectSnapshot): string | undefined {
   if (typeof value !== 'string' || value.length === 0) {
     return undefined;
   }
 
   return value
     .split(delimiter)
-    .map((entry) => workspaceRelativeOperand(root, cwd, entry, 'Project path'))
+    .map((entry) => workspaceRelativeOperand(root, cwd, entry, 'Project path', project))
     .join(delimiter);
 }
 
@@ -305,7 +330,7 @@ export function createNativePythonProjectRunner(
 
       const cwd = cwdForRequest(request, root);
       await mkdir(cwd, { recursive: true });
-      await writeWorkspaceSiteCustomize(supportDir, root);
+      await writeWorkspaceSiteCustomize(supportDir, root, projectVirtualRoot(request.project), projectVirtualAliases(request.project));
 
       const result = await new Promise<PythonProjectCommandResult>((resolve) => {
         const args = pythonArgsForRequest(request, root, cwd);

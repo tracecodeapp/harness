@@ -91,6 +91,8 @@ export interface RuntimeProjectSnapshot {
   directories?: string[];
   entrypoint?: string;
   cwd?: string;
+  workspaceRoot?: string;
+  workspaceAlias?: string;
 }
 
 export interface RuntimeCommandOptions {

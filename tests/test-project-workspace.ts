@@ -4665,6 +4665,56 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   workspace.dispose();
 }
 
+async function testConfiguredKernelNativePythonAndNodeRunners(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    kernel: {
+      user: { id: 'auth-user-123', username: 'obi' },
+      host: { hostname: 'tracevm' },
+      workspace: {
+        id: 'weather-api-native',
+        name: 'weather-api',
+        startedAt: '2026-05-17T12:00:00.000Z',
+      },
+    },
+    files: [
+      {
+        path: 'py_main.py',
+        contents: [
+          'import os',
+          'print(os.getcwd())',
+          'with open("/workspace/py-alias.txt", "w", encoding="utf-8") as handle:',
+          '    handle.write("python-alias\\n")',
+        ].join('\n') + '\n',
+      },
+      {
+        path: 'node_main.js',
+        contents: [
+          'const fs = require("node:fs");',
+          'console.log(process.cwd());',
+          'fs.writeFileSync("/workspace/node-alias.txt", "node-alias\\n");',
+        ].join('\n') + '\n',
+      },
+    ],
+    pythonRunner: createNativePythonProjectRunner(),
+    nodeRunner: createNativeJavaScriptProjectRunner(),
+  });
+
+  const snapshot = await workspace.snapshot();
+  assertCondition(snapshot.workspaceRoot === '/home/obi/weather-api', `snapshot should expose canonical workspace root: ${JSON.stringify(snapshot)}`);
+  assertCondition(snapshot.workspaceAlias === '/workspace', `snapshot should expose workspace alias: ${JSON.stringify(snapshot)}`);
+
+  const python = await workspace.runCommand('python3 /workspace/py_main.py', { cwd: '/workspace' });
+  assertCondition(python.exitCode === 0, `configured native Python should run through /workspace alias: ${python.stderr}`);
+  assertCondition(python.stdout === '/home/obi/weather-api\n', `configured native Python should report canonical cwd: ${python.stdout}`);
+  assertCondition(await workspace.readFile('py-alias.txt') === 'python-alias\n', 'configured native Python should persist /workspace alias writes');
+
+  const node = await workspace.runCommand('node /workspace/node_main.js', { cwd: '/workspace' });
+  assertCondition(node.exitCode === 0, `configured native Node should run through /workspace alias: ${node.stderr}`);
+  assertCondition(node.stdout === '/home/obi/weather-api\n', `configured native Node should report canonical cwd: ${node.stdout}`);
+  assertCondition(await workspace.readFile('node-alias.txt') === 'node-alias\n', 'configured native Node should persist /workspace alias writes');
+  workspace.dispose();
+}
+
 function testPathValidation(): void {
   assertCondition(normalizeRuntimeProjectPath('./src/solution.py') === 'src/solution.py', 'normalizes segments');
   assertRejects(
@@ -4752,6 +4802,7 @@ async function main(): Promise<void> {
   await testProjectWorkspaceCommandEvents();
   await testWorkspaceKernelEvents();
   await testTraceKernelInfoConfig();
+  await testConfiguredKernelNativePythonAndNodeRunners();
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 

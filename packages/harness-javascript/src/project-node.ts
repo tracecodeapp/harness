@@ -127,20 +127,39 @@ async function changedProjectFiles(root: string, project: JavaScriptProjectSnaps
   return files;
 }
 
+function projectVirtualRoot(project: JavaScriptProjectSnapshot): string {
+  return project.workspaceRoot ?? project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
+}
+
+function projectVirtualAliases(project: JavaScriptProjectSnapshot): string[] {
+  return Array.from(new Set([
+    project.workspaceAlias,
+    VIRTUAL_WORKSPACE_ROOT,
+  ].filter((item): item is string => typeof item === 'string' && item.length > 0 && item !== projectVirtualRoot(project))));
+}
+
+function stripProjectVirtualPrefix(value: string, project: JavaScriptProjectSnapshot): string | null {
+  const roots = [projectVirtualRoot(project), ...projectVirtualAliases(project)];
+  for (const root of roots) {
+    if (value === root) return '';
+    if (value.startsWith(`${root}/`)) return value.slice(root.length + 1);
+  }
+  return null;
+}
+
 function cwdForRequest(request: JavaScriptProjectCommandRequest, root: string): string {
-  const projectCwd = request.project.cwd ?? '/workspace';
-  if (request.cwd === projectCwd) return root;
-  if (request.cwd.startsWith(`${projectCwd}/`)) {
-    return join(root, request.cwd.slice(projectCwd.length + 1));
+  const relativeCwd = stripProjectVirtualPrefix(request.cwd, request.project);
+  if (relativeCwd !== null) {
+    return relativeCwd ? join(root, relativeCwd) : root;
   }
   throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
 }
 
-function workspaceRelativeOperand(root: string, cwd: string, value: string, label: string): string {
+function workspaceRelativeOperand(root: string, cwd: string, value: string, label: string, project?: JavaScriptProjectSnapshot): string {
   const normalized = value.replace(/\\/g, '/');
-  if (normalized === VIRTUAL_WORKSPACE_ROOT) return root;
-  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
-    return join(root, normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
+  const relativeToVirtualRoot = project ? stripProjectVirtualPrefix(normalized, project) : null;
+  if (relativeToVirtualRoot !== null) {
+    return relativeToVirtualRoot ? join(root, relativeToVirtualRoot) : root;
   }
   if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
     throw new Error(`${label} must stay inside the workspace: ${value}`);
@@ -154,13 +173,13 @@ function workspaceRelativeOperand(root: string, cwd: string, value: string, labe
 }
 
 function scriptPathForRequest(request: JavaScriptProjectCommandRequest, root: string, cwd: string): string {
-  const projectCwd = request.project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
   const normalized = request.scriptPath.replace(/\\/g, '/');
-  if (normalized === projectCwd) {
+  const virtualRelativePath = stripProjectVirtualPrefix(normalized, request.project);
+  if (virtualRelativePath === '') {
     throw new Error(`Project file path must point to a file: ${request.scriptPath}`);
   }
-  if (normalized.startsWith(`${projectCwd}/`)) {
-    return join(root, assertSafeProjectPath(normalized.slice(projectCwd.length + 1)));
+  if (virtualRelativePath !== null) {
+    return join(root, assertSafeProjectPath(virtualRelativePath));
   }
   try {
     const relativePath = assertSafeProjectPath(normalized);
@@ -170,7 +189,7 @@ function scriptPathForRequest(request: JavaScriptProjectCommandRequest, root: st
   } catch {
     // Fall back to cwd-relative resolution below.
   }
-  return resolve(cwd, workspaceRelativeOperand(root, cwd, request.scriptPath, 'Project file path'));
+  return resolve(cwd, workspaceRelativeOperand(root, cwd, request.scriptPath, 'Project file path', request.project));
 }
 
 function nodeArgsForRequest(request: JavaScriptProjectCommandRequest, root: string, cwd: string): string[] {
@@ -180,7 +199,7 @@ function nodeArgsForRequest(request: JavaScriptProjectCommandRequest, root: stri
   const requireModules = Array.isArray(request.options?.require)
     ? request.options.require.filter((item): item is string => typeof item === 'string')
     : [];
-  const requireArgs = requireModules.flatMap((moduleName) => ['--require', workspaceRelativeOperand(root, cwd, moduleName, 'Project path')]);
+  const requireArgs = requireModules.flatMap((moduleName) => ['--require', workspaceRelativeOperand(root, cwd, moduleName, 'Project path', request.project)]);
   if (request.source === 'argument') {
     return [...inputType, ...requireArgs, '-e', request.code, ...request.args];
   }
@@ -193,25 +212,31 @@ function nodeArgsForRequest(request: JavaScriptProjectCommandRequest, root: stri
 }
 
 function nodePathForRequest(request: JavaScriptProjectCommandRequest, root: string, cwd: string): string {
-  const existing = mapNodePathList(request.env.NODE_PATH, root, cwd);
+  const existing = mapNodePathList(request.env.NODE_PATH, root, cwd, request.project);
   if (typeof existing === 'string' && existing.length > 0) {
     return `${root}${delimiter}${existing}`;
   }
   return root;
 }
 
-function mapNodePathList(value: unknown, root: string, cwd: string): string | undefined {
+function mapNodePathList(value: unknown, root: string, cwd: string, project: JavaScriptProjectSnapshot): string | undefined {
   if (typeof value !== 'string' || value.length === 0) {
     return undefined;
   }
 
   return value
     .split(delimiter)
-    .map((entry) => workspaceRelativeOperand(root, cwd, entry, 'Project path'))
+    .map((entry) => workspaceRelativeOperand(root, cwd, entry, 'Project path', project))
     .join(delimiter);
 }
 
-async function writeWorkspacePreload(supportDir: string, root: string, patchCwd: boolean): Promise<string> {
+async function writeWorkspacePreload(
+  supportDir: string,
+  root: string,
+  virtualRoot: string,
+  virtualAliases: readonly string[],
+  patchCwd: boolean
+): Promise<string> {
   const preloadPath = join(supportDir, 'tracecode-workspace-preload.cjs');
   await writeFile(preloadPath, `
 const fs = require('node:fs');
@@ -219,7 +244,8 @@ const path = require('node:path');
 const Module = require('node:module');
 
 const root = ${JSON.stringify(root)};
-const virtualRoot = ${JSON.stringify(VIRTUAL_WORKSPACE_ROOT)};
+const virtualRoot = ${JSON.stringify(virtualRoot)};
+const virtualAliases = ${JSON.stringify(virtualAliases)};
 
 function mapPath(value) {
   if (value instanceof URL) {
@@ -230,6 +256,10 @@ function mapPath(value) {
   if (typeof value !== 'string') return value;
   if (value === virtualRoot) return root;
   if (value.startsWith(virtualRoot + '/')) return path.join(root, value.slice(virtualRoot.length + 1));
+  for (const alias of virtualAliases) {
+    if (value === alias) return root;
+    if (value.startsWith(alias + '/')) return path.join(root, value.slice(alias.length + 1));
+  }
   return value;
 }
 
@@ -349,7 +379,13 @@ export function createNativeJavaScriptProjectRunner(
 
       const cwd = cwdForRequest(request, root);
       await mkdir(cwd, { recursive: true });
-      const preloadPath = await writeWorkspacePreload(supportDir, root, request.source !== 'argument');
+      const preloadPath = await writeWorkspacePreload(
+        supportDir,
+        root,
+        projectVirtualRoot(request.project),
+        projectVirtualAliases(request.project),
+        request.source !== 'argument'
+      );
 
       const result = await new Promise<JavaScriptProjectCommandResult>((resolve) => {
         const args = nodeArgsForRequest(request, root, cwd);
