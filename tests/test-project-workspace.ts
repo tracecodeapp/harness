@@ -4568,6 +4568,43 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     `runCommand onEvent should receive live shell filesystem mutations: ${JSON.stringify(shellCommandEvents)}`
   );
   shellWorkspace.dispose();
+
+  const deviceWorkspace = await createRuntimeWorkspace();
+  const deviceWatchEvents: RuntimeWorkspaceEvent[] = [];
+  const deviceCommandEvents: RuntimeCommandEvent[] = [];
+  deviceWorkspace.watch((event) => deviceWatchEvents.push(event));
+  const stdinResult = await deviceWorkspace.runCommand('cat /dev/stdin', { stdin: 'from-stdin\n' });
+  assertCondition(stdinResult.stdout === 'from-stdin\n', `/dev/stdin should feed command stdin: ${JSON.stringify(stdinResult)}`);
+  const stdoutResult = await deviceWorkspace.runCommand('printf "device-out\\n" > /dev/stdout', {
+    onEvent: (event) => deviceCommandEvents.push(event),
+  });
+  assertCondition(stdoutResult.stdout === 'device-out\n', `/dev/stdout writes should be command stdout: ${JSON.stringify(stdoutResult)}`);
+  const stderrResult = await deviceWorkspace.runCommand('printf "device-err\\n" > /dev/stderr');
+  assertCondition(stderrResult.stderr === 'device-err\n', `/dev/stderr writes should be command stderr: ${JSON.stringify(stderrResult)}`);
+  assertCondition(
+    deviceCommandEvents.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.data === 'device-out\n'
+    ),
+    `runCommand onEvent should receive /dev/stdout output events: ${JSON.stringify(deviceCommandEvents)}`
+  );
+  assertCondition((await deviceWorkspace.readDir('/dev')).join(',') === 'stderr,stdin,stdout,tty', '/dev should list kernel devices');
+  const stdoutStat = await deviceWorkspace.stat('/dev/stdout');
+  assertCondition(stdoutStat.isFile && !stdoutStat.isDirectory, '/dev/stdout should stat as a file device');
+  await assertRejectsAsync(() => deviceWorkspace.writeFile('/dev/stdin', 'blocked\n'), '/dev/stdin should be read-only');
+  await deviceWorkspace.writeFile('/dev/stdout', 'principal-out\n');
+  assertCondition(
+    deviceWatchEvents.some((event) =>
+      event.type === 'output' &&
+      event.actor?.kind === 'principal' &&
+      event.device === '/dev/stdout' &&
+      event.data === 'principal-out\n'
+    ),
+    `workspace writeFile should emit /dev/stdout output events: ${JSON.stringify(deviceWatchEvents)}`
+  );
+  deviceWorkspace.dispose();
 }
 
 async function testTraceKernelInfoConfig(): Promise<void> {

@@ -18,6 +18,7 @@ import type {
   RuntimeCommandFileChangeEvent,
   RuntimeCommandOutputEvent,
   RuntimeCommandStatusEvent,
+  RuntimeKernelDevicePath,
   RuntimeFileMutationPhase,
   RuntimeFile,
   RuntimeFileChange,
@@ -219,6 +220,35 @@ function normalizeProcPath(path: string): string | null {
   if (!raw.startsWith('/')) return null;
   const normalized = normalizeWorkspaceCwd(raw);
   return normalized === '/proc' || normalized.startsWith('/proc/') ? normalized : null;
+}
+
+function normalizeDevPath(path: string): '/dev' | RuntimeKernelDevicePath | null {
+  assertNoNul(path, 'Kernel path');
+  const raw = path.replace(/\\/g, '/');
+  if (!raw.startsWith('/')) return null;
+  const normalized = normalizeWorkspaceCwd(raw);
+  if (normalized === '/dev') return '/dev';
+  if (
+    normalized === '/dev/stdin' ||
+    normalized === '/dev/stdout' ||
+    normalized === '/dev/stderr' ||
+    normalized === '/dev/tty'
+  ) {
+    return normalized;
+  }
+  return normalized.startsWith('/dev/') ? null : null;
+}
+
+function isDevNamespacePath(path: string): boolean {
+  assertNoNul(path, 'Kernel path');
+  const raw = path.replace(/\\/g, '/');
+  if (!raw.startsWith('/')) return false;
+  const normalized = normalizeWorkspaceCwd(raw);
+  return normalized === '/dev' || normalized.startsWith('/dev/');
+}
+
+function isKernelVirtualPath(path: string): boolean {
+  return normalizeProcPath(path) !== null || isDevNamespacePath(path);
 }
 
 function procInfoJson(info: RuntimeKernelInfo): string {
@@ -496,6 +526,11 @@ function decodeUtf8(bytes: Uint8Array): string | null {
   }
 }
 
+function contentToText(content: FileContent): string {
+  if (typeof content === 'string') return content;
+  return decodeUtf8(content) ?? Array.from(content, (byte) => String.fromCharCode(byte)).join('');
+}
+
 type FsReadFileOptions = Parameters<IFileSystem['readFile']>[1];
 type FsWriteFileOptions = Parameters<IFileSystem['writeFile']>[2];
 type FsMkdirOptions = Parameters<IFileSystem['mkdir']>[1];
@@ -509,7 +544,9 @@ class KernelObservedFileSystem implements IFileSystem {
     private readonly base: IFileSystem,
     private readonly workspaceRoot: () => string,
     private readonly workspaceAlias: () => string | undefined,
-    private readonly onFileChange: (change: RuntimeFileChange) => void
+    private readonly onFileChange: (change: RuntimeFileChange) => void,
+    private readonly readDevice: (device: RuntimeKernelDevicePath) => string,
+    private readonly writeDevice: (device: RuntimeKernelDevicePath, data: string) => void
   ) {}
 
   suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
@@ -520,52 +557,97 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   readFile(path: string, options?: FsReadFileOptions): Promise<string> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) return Promise.resolve(this.readDeviceFile(devicePath, options));
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     return this.base.readFile(this.mapPath(path), options);
   }
 
   readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) {
+      return Promise.resolve(this.readDeviceFile(devicePath)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+    }
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
     return this.base.readFileBytes(this.mapPath(path)) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
   }
 
   readFileBuffer(path: string): Promise<Uint8Array> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(devicePath)));
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
   async writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) {
+      this.writeDeviceFile(devicePath, content);
+      return;
+    }
+    if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
     const mappedPath = this.mapPath(path);
     await this.base.writeFile(mappedPath, content, options);
     await this.emitFileWrite(mappedPath);
   }
 
   async appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) {
+      this.writeDeviceFile(devicePath, content);
+      return;
+    }
+    if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
     const mappedPath = this.mapPath(path);
     await this.base.appendFile(mappedPath, content, options);
     await this.emitFileWrite(mappedPath);
   }
 
   exists(path: string): Promise<boolean> {
+    if (normalizeDevPath(path) !== null) return Promise.resolve(true);
+    if (isDevNamespacePath(path)) return Promise.resolve(false);
     return this.base.exists(this.mapPath(path));
   }
 
   stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) return Promise.resolve(this.deviceStat(devicePath));
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     return this.base.stat(this.mapPath(path));
   }
 
   mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device namespace is read-only: ${path}`));
     return this.base.mkdir(this.mapPath(path), options);
   }
 
   readdir(path: string): Promise<string[]> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath === '/dev') return Promise.resolve(['stderr', 'stdin', 'stdout', 'tty']);
+    if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     return this.base.readdir(this.mapPath(path));
   }
 
   readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath === '/dev') {
+      return Promise.resolve(['stderr', 'stdin', 'stdout', 'tty'].map((name) => ({
+        name,
+        isFile: true,
+        isDirectory: false,
+        isSymbolicLink: false,
+      })));
+    }
+    if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     if (!this.base.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
     return this.base.readdirWithFileTypes(this.mapPath(path));
   }
 
   async rm(path: string, options?: FsRmOptions): Promise<void> {
+    if (isDevNamespacePath(path)) throw new Error(`Kernel device namespace is read-only: ${path}`);
     const mappedPath = this.mapPath(path);
     const deletedFiles = await this.collectExistingFiles(mappedPath);
     await this.base.rm(mappedPath, options);
@@ -575,6 +657,24 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
+    const sourceDevice = normalizeDevPath(src);
+    const destinationDevice = normalizeDevPath(dest);
+    if (sourceDevice !== null && destinationDevice !== null) {
+      this.writeDeviceFile(destinationDevice, this.readDeviceFile(sourceDevice));
+      return;
+    }
+    if (sourceDevice !== null) {
+      const mappedDestination = this.mapPath(dest);
+      await this.base.writeFile(mappedDestination, this.readDeviceFile(sourceDevice));
+      await this.emitFileWrite(mappedDestination);
+      return;
+    }
+    if (destinationDevice !== null) {
+      if (destinationDevice === '/dev') throw new Error(`Kernel device path is a directory: ${dest}`);
+      this.writeDevice(destinationDevice, contentToText(await this.base.readFileBuffer(this.mapPath(src))));
+      return;
+    }
+    if (isDevNamespacePath(src) || isDevNamespacePath(dest)) throw new Error('Kernel device path not found.');
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     await this.base.cp(mappedSource, mappedDestination, options);
@@ -582,6 +682,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async mv(src: string, dest: string): Promise<void> {
+    if (isDevNamespacePath(src) || isDevNamespacePath(dest)) {
+      throw new Error('Kernel device namespace is read-only.');
+    }
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     const deletedFiles = await this.collectExistingFiles(mappedSource);
@@ -593,6 +696,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   resolvePath(base: string, path: string): string {
+    if (path.startsWith('/dev') || base.startsWith('/dev')) {
+      return this.base.resolvePath(base, path);
+    }
     return this.mapPath(this.base.resolvePath(this.mapPath(base), path));
   }
 
@@ -600,40 +706,52 @@ class KernelObservedFileSystem implements IFileSystem {
     const paths = this.base.getAllPaths();
     const alias = this.workspaceAlias();
     const root = this.workspaceRoot();
-    if (!alias || alias === root) return paths;
-    const aliasPaths = paths.flatMap((path) => {
-      if (path === root) return [path, alias];
-      if (path.startsWith(`${root}/`)) return [path, `${alias}${path.slice(root.length)}`];
-      return [path];
-    });
-    return Array.from(new Set(aliasPaths)).sort((left, right) => left.localeCompare(right));
+    const aliasPaths = !alias || alias === root
+      ? paths
+      : paths.flatMap((path) => {
+          if (path === root) return [path, alias];
+          if (path.startsWith(`${root}/`)) return [path, `${alias}${path.slice(root.length)}`];
+          return [path];
+        });
+    return Array.from(new Set([...aliasPaths, '/dev', '/dev/stderr', '/dev/stdin', '/dev/stdout', '/dev/tty'])).sort((left, right) => left.localeCompare(right));
   }
 
   chmod(path: string, mode: number): Promise<void> {
+    if (isDevNamespacePath(path)) return Promise.resolve();
     return this.base.chmod(this.mapPath(path), mode);
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
+    if (isDevNamespacePath(linkPath)) return Promise.reject(new Error(`Kernel device namespace is read-only: ${linkPath}`));
     return this.base.symlink(target, this.mapPath(linkPath));
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
+    if (isDevNamespacePath(existingPath) || isDevNamespacePath(newPath)) {
+      return Promise.reject(new Error('Kernel device namespace is read-only.'));
+    }
     return this.base.link(this.mapPath(existingPath), this.mapPath(newPath));
   }
 
   readlink(path: string): Promise<string> {
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path is not a symbolic link: ${path}`));
     return this.base.readlink(this.mapPath(path));
   }
 
   lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) return Promise.resolve(this.deviceStat(devicePath));
+    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     return this.base.lstat(this.mapPath(path));
   }
 
   realpath(path: string): Promise<string> {
+    if (isDevNamespacePath(path)) return Promise.resolve(path);
     return this.base.realpath(this.mapPath(path));
   }
 
   utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+    if (isDevNamespacePath(path)) return Promise.resolve();
     return this.base.utimes(this.mapPath(path), atime, mtime);
   }
 
@@ -674,6 +792,30 @@ class KernelObservedFileSystem implements IFileSystem {
   private emitFileDelete(path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
     this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), deleted: true });
+  }
+
+  private readDeviceFile(device: '/dev' | RuntimeKernelDevicePath, options?: FsReadFileOptions): string {
+    if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
+    if (device === '/dev/stdin' || device === '/dev/tty') return this.readDevice('/dev/stdin');
+    if (options === 'base64' || (typeof options === 'object' && options?.encoding === 'base64')) return '';
+    return '';
+  }
+
+  private writeDeviceFile(device: '/dev' | RuntimeKernelDevicePath, content: FileContent): void {
+    if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
+    if (device === '/dev/stdin') throw new Error('Kernel device is read-only: /dev/stdin');
+    this.writeDevice(device === '/dev/tty' ? '/dev/stdout' : device, contentToText(content));
+  }
+
+  private deviceStat(device: '/dev' | RuntimeKernelDevicePath): Awaited<ReturnType<IFileSystem['stat']>> {
+    return {
+      isFile: device !== '/dev',
+      isDirectory: device === '/dev',
+      isSymbolicLink: false,
+      mode: device === '/dev' ? 0o755 : 0o666,
+      size: 0,
+      mtime: new Date(0),
+    };
   }
 }
 
@@ -1967,6 +2109,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private activeCommandEventHandler?: RuntimeCommandEventHandler;
   private activeCommandActor?: RuntimeWorkspaceActor;
+  private activeCommandStdin = '';
+  private activeDeviceStdout = '';
+  private activeDeviceStderr = '';
+  private activeCommandStdoutEvent = false;
+  private activeCommandStderrEvent = false;
   private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
@@ -1982,7 +2129,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       (change) => {
         if (!this.activeCommandActor) return;
         this.emitRuntimeEvent({ type: 'file-change', change, phase: 'live' });
-      }
+      },
+      (device) => this.readDevice(device),
+      (device, data) => this.writeDevice(device, data)
     );
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>
@@ -2072,6 +2221,62 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     throw new Error(`Kernel proc path is not a directory: ${path}`);
   }
 
+  private readDeviceFile(path: string, encoding?: RuntimeFileEncoding): string | null {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath === null) {
+      if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
+      return null;
+    }
+    if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
+    if (encoding === 'base64') return base64FromBytes(new TextEncoder().encode(this.readDevice(devicePath)));
+    return this.readDevice(devicePath);
+  }
+
+  private deviceStat(path: string): RuntimeWorkspaceStat | null {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath === null) {
+      if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
+      return null;
+    }
+    return {
+      isFile: devicePath !== '/dev',
+      isDirectory: devicePath === '/dev',
+    };
+  }
+
+  private deviceReadDir(path: string): string[] | null {
+    const devicePath = normalizeDevPath(path);
+    if (devicePath === null) {
+      if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
+      return null;
+    }
+    if (devicePath === '/dev') return ['stderr', 'stdin', 'stdout', 'tty'];
+    throw new Error(`Kernel device path is not a directory: ${path}`);
+  }
+
+  private readDevice(device: RuntimeKernelDevicePath): string {
+    if (device === '/dev/stdin' || device === '/dev/tty') return this.activeCommandStdin;
+    return '';
+  }
+
+  private writeDevice(device: RuntimeKernelDevicePath, data: string, actor?: RuntimeWorkspaceActor): void {
+    if (device === '/dev/stdin') {
+      throw new Error('Kernel device is read-only: /dev/stdin');
+    }
+    const outputDevice = device === '/dev/tty' ? '/dev/stdout' : device;
+    if (this.activeCommandActor) {
+      if (outputDevice === '/dev/stdout') this.activeDeviceStdout += data;
+      if (outputDevice === '/dev/stderr') this.activeDeviceStderr += data;
+    }
+    this.emitRuntimeEvent({
+      type: 'output',
+      stream: outputDevice === '/dev/stderr' ? 'stderr' : 'stdout',
+      device: outputDevice,
+      data,
+      ...(actor ? { actor } : {}),
+    });
+  }
+
   private async writeFileAs(
     path: string,
     contents: string,
@@ -2081,6 +2286,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   ): Promise<void> {
     if (normalizeProcPath(path) !== null) {
       throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) {
+      if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
+      const normalizedEncoding = assertSupportedEncoding(encoding);
+      this.writeDevice(
+        devicePath,
+        normalizedEncoding === 'base64'
+          ? new TextDecoder().decode(bytesFromBase64(contents))
+          : contents,
+        actor
+      );
+      return;
+    }
+    if (isDevNamespacePath(path)) {
+      throw new Error(`Kernel device path not found: ${path}`);
     }
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
@@ -2117,6 +2338,21 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (normalizeProcPath(path) !== null) {
       throw new Error(`Kernel proc path is read-only: ${path}`);
     }
+    const devicePath = normalizeDevPath(path);
+    if (devicePath !== null) {
+      if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
+      this.writeDevice(
+        devicePath,
+        normalizedEncoding === 'base64'
+          ? new TextDecoder().decode(bytesFromBase64(contents))
+          : contents,
+        PRINCIPAL_ACTOR
+      );
+      return;
+    }
+    if (isDevNamespacePath(path)) {
+      throw new Error(`Kernel device path not found: ${path}`);
+    }
     const absolutePath = this.toWorkspacePath(path);
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
     const nextBytes = normalizedEncoding === 'base64'
@@ -2140,6 +2376,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
     const procFile = this.readProcFile(path, encoding);
     if (procFile !== null) return procFile;
+    const deviceFile = this.readDeviceFile(path, encoding);
+    if (deviceFile !== null) return deviceFile;
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
     if (normalizedEncoding === 'base64') {
@@ -2156,12 +2394,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     } catch {
       return false;
     }
+    try {
+      const deviceStat = this.deviceStat(path);
+      if (deviceStat !== null) return true;
+    } catch {
+      return false;
+    }
     return this.bash.fs.exists(this.toWorkspaceEntryPath(path));
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
     const procStat = this.procStat(path);
     if (procStat !== null) return procStat;
+    const deviceStat = this.deviceStat(path);
+    if (deviceStat !== null) return deviceStat;
     const stat = await this.bash.fs.stat(this.toWorkspaceEntryPath(path));
     return {
       isFile: stat.isFile,
@@ -2172,6 +2418,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async readDir(path = '.'): Promise<string[]> {
     const procEntries = this.procReadDir(path);
     if (procEntries !== null) return procEntries;
+    const deviceEntries = this.deviceReadDir(path);
+    if (deviceEntries !== null) return deviceEntries;
     const entries = await this.bash.fs.readdir(this.toWorkspaceEntryPath(path));
     return [...entries].sort((left, right) => left.localeCompare(right));
   }
@@ -2180,6 +2428,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (normalizeProcPath(path) !== null) {
       throw new Error(`Kernel proc path is read-only: ${path}`);
     }
+    if (isDevNamespacePath(path)) {
+      throw new Error(`Kernel device namespace is read-only: ${path}`);
+    }
     await this.bash.fs.mkdir(this.toWorkspaceEntryPath(path), { recursive: true });
   }
 
@@ -2187,6 +2438,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const procFile = this.readProcFile(sourcePath);
     if (normalizeProcPath(destinationPath) !== null) {
       throw new Error(`Kernel proc path is read-only: ${destinationPath}`);
+    }
+    const deviceSource = this.readDeviceFile(sourcePath);
+    const deviceDestination = normalizeDevPath(destinationPath);
+    if (deviceDestination !== null) {
+      if (deviceDestination === '/dev') throw new Error(`Kernel device path is a directory: ${destinationPath}`);
+      this.writeDevice(deviceDestination, procFile ?? deviceSource ?? await this.readFile(sourcePath), PRINCIPAL_ACTOR);
+      return;
+    }
+    if (isDevNamespacePath(destinationPath)) {
+      throw new Error(`Kernel device path not found: ${destinationPath}`);
+    }
+    if (deviceSource !== null) {
+      await this.writeFileAs(destinationPath, deviceSource, PRINCIPAL_ACTOR, 'utf8', 'live');
+      return;
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
     if (procFile !== null) {
@@ -2206,8 +2471,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
-    if (normalizeProcPath(sourcePath) !== null || normalizeProcPath(destinationPath) !== null) {
-      throw new Error('Kernel proc paths are read-only.');
+    if (isKernelVirtualPath(sourcePath) || isKernelVirtualPath(destinationPath)) {
+      throw new Error('Kernel virtual paths are read-only for move operations.');
     }
     await this.copyFile(sourcePath, destinationPath);
     await this.bash.fs.rm(this.toWorkspacePath(sourcePath), { force: true });
@@ -2223,6 +2488,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (normalizeProcPath(path) !== null) {
       throw new Error(`Kernel proc path is read-only: ${path}`);
     }
+    if (isDevNamespacePath(path)) {
+      throw new Error(`Kernel device namespace is read-only: ${path}`);
+    }
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
       type: 'file-change',
@@ -2235,6 +2503,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
     if (normalizeProcPath(path) !== null) {
       throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
+    if (isDevNamespacePath(path)) {
+      throw new Error(`Kernel device namespace is read-only: ${path}`);
     }
     const deletedFiles = await this.collectDeletedFilesForRemove(path, options);
     await this.bash.fs.rm(this.toWorkspaceEntryPath(path), {
@@ -2253,10 +2524,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async runCommand(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
     let result: { stdout: string; stderr: string; exitCode: number };
+    let commandDeviceStdout = '';
+    let commandDeviceStderr = '';
     const previousEventHandler = this.activeCommandEventHandler;
     const previousActor = this.activeCommandActor;
+    const previousStdin = this.activeCommandStdin;
+    const previousDeviceStdout = this.activeDeviceStdout;
+    const previousDeviceStderr = this.activeDeviceStderr;
+    const previousStdoutEvent = this.activeCommandStdoutEvent;
+    const previousStderrEvent = this.activeCommandStderrEvent;
     this.activeCommandEventHandler = options.onEvent;
     this.activeCommandActor = this.createRuntimeActor();
+    this.activeCommandStdin = options.stdin ?? '';
+    this.activeDeviceStdout = '';
+    this.activeDeviceStderr = '';
+    this.activeCommandStdoutEvent = false;
+    this.activeCommandStderrEvent = false;
     try {
       const directCppResult = await this.tryRunCppExecutable(command, options);
       if (directCppResult) return directCppResult;
@@ -2268,13 +2551,21 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         signal: options.signal,
         args: options.args,
       });
+      this.emitReturnedOutputEvents(result);
     } finally {
+      commandDeviceStdout = this.activeDeviceStdout;
+      commandDeviceStderr = this.activeDeviceStderr;
       this.activeCommandEventHandler = previousEventHandler;
       this.activeCommandActor = previousActor;
+      this.activeCommandStdin = previousStdin;
+      this.activeDeviceStdout = previousDeviceStdout;
+      this.activeDeviceStderr = previousDeviceStderr;
+      this.activeCommandStdoutEvent = previousStdoutEvent;
+      this.activeCommandStderrEvent = previousStderrEvent;
     }
     return {
-      stdout: result.stdout,
-      stderr: result.stderr,
+      stdout: `${result.stdout}${commandDeviceStdout}`,
+      stderr: `${result.stderr}${commandDeviceStderr}`,
       exitCode: result.exitCode,
     };
   }
@@ -2412,11 +2703,34 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private emitRuntimeEvent(event: RuntimeCommandEvent): void {
+    if (event.type === 'output') {
+      if (event.stream === 'stdout') this.activeCommandStdoutEvent = true;
+      if (event.stream === 'stderr') this.activeCommandStderrEvent = true;
+    }
     const actor = 'actor' in event && event.actor ? event.actor : this.activeCommandActor;
     const enriched = this.enrichRuntimeEvent(event, actor);
     this.activeCommandEventHandler?.(enriched);
     for (const watcher of this.eventWatchers) {
       watcher(enriched);
+    }
+  }
+
+  private emitReturnedOutputEvents(result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>): void {
+    if (result.stdout && !this.activeCommandStdoutEvent) {
+      this.emitRuntimeEvent({
+        type: 'output',
+        stream: 'stdout',
+        device: '/dev/stdout',
+        data: result.stdout,
+      });
+    }
+    if (result.stderr && !this.activeCommandStderrEvent) {
+      this.emitRuntimeEvent({
+        type: 'output',
+        stream: 'stderr',
+        device: '/dev/stderr',
+        data: result.stderr,
+      });
     }
   }
 
@@ -2501,6 +2815,7 @@ export type {
   RuntimeKernelUserInfo,
   RuntimeKernelWorkspaceConfig,
   RuntimeKernelWorkspaceInfo,
+  RuntimeKernelDevicePath,
   RuntimeFileMutationPhase,
   RuntimeTraceKernelConfig,
   RuntimeProjectCommandRequest,
