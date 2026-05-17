@@ -13,6 +13,28 @@ function assertCondition(condition: boolean, message: string): void {
   }
 }
 
+interface CppProjectWorkerFile {
+  path: string;
+  contents?: string;
+  encoding?: string;
+  deleted?: true;
+}
+
+interface CppProjectWorkerResponse {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  files?: CppProjectWorkerFile[];
+  events?: Array<{
+    type: string;
+    stream?: 'stdout' | 'stderr';
+    device?: string;
+    data?: string;
+    phase?: string;
+    change?: CppProjectWorkerFile;
+  }>;
+}
+
 async function main(): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-cpp-browser-'));
   const workersRoot = join(tempRoot, 'workers');
@@ -90,11 +112,15 @@ async function main(): Promise<void> {
         if (!id) return;
         const request = pending.get(id);
         if (!request) return;
+        if (type === 'project-event') {
+          request.events.push(payload);
+          return;
+        }
         pending.delete(id);
         if (type === 'error') {
           request.reject(new Error(String((payload && payload.error) || 'C++ worker error')));
         } else {
-          request.resolve(payload);
+          request.resolve({ ...payload, events: request.events });
         }
       };
       worker.onerror = (event) => {
@@ -107,7 +133,7 @@ async function main(): Promise<void> {
       const send = (type, payload) =>
         new Promise((resolve, reject) => {
           const id = String(++nextId);
-          pending.set(id, { resolve, reject });
+          pending.set(id, { resolve, reject, events: [] });
           worker.postMessage({ id, type, payload });
         });
 
@@ -195,16 +221,25 @@ async function main(): Promise<void> {
           contents: [
             '#include "helper.hpp"',
             '#include <cstdlib>',
+            '#include <cstdio>',
             '#include <fstream>',
             '#include <iostream>',
             '#include <string>',
             'int main(int argc, char** argv) {',
-            '  std::string line;',
-            '  std::getline(std::cin, line);',
+            '  FILE* stdin_device = std::fopen("/dev/stdin", "r");',
+            '  char device_line[64] = {0};',
+            '  if (stdin_device) { std::fgets(device_line, sizeof(device_line), stdin_device); std::fclose(stdin_device); }',
+            '  std::string line(device_line);',
+            '  if (!line.empty() && line.back() == 10) line.pop_back();',
             '  std::cout << helper_value() << "\\\\n";',
             '  std::cout << line << "\\\\n";',
             '  std::cout << (std::getenv("MODE") ? std::getenv("MODE") : "") << "\\\\n";',
             '  std::cout << (argc > 2 ? std::string(argv[1]) + "," + argv[2] : "") << "\\\\n";',
+            '  std::cout << line << "\\\\n";',
+            '  FILE* stdout_device = std::fopen("/dev/stdout", "w");',
+            '  if (stdout_device) { std::fputs("device-out\\\\n", stdout_device); std::fclose(stdout_device); }',
+            '  FILE* stderr_device = std::fopen("/dev/stderr", "w");',
+            '  if (stderr_device) { std::fputs("device-err\\\\n", stderr_device); std::fclose(stderr_device); }',
             '  std::ofstream("generated.txt") << helper_value() << "\\\\n";',
             '  std::ofstream bytes("bytes.bin", std::ios::binary);',
             '  char raw[2] = {0, static_cast<char>(255)};',
@@ -728,18 +763,8 @@ async function main(): Promise<void> {
     const cachedAdd = results.cachedAdd as { success?: boolean; output?: unknown; timings?: { compileCacheHit?: boolean } };
     const twoSum = results.twoSum as { success?: boolean; output?: unknown; error?: string };
     const syntaxError = results.syntaxError as { success?: boolean; error?: string; errorLine?: number };
-    const projectCompile = results.projectCompile as {
-      stdout?: string;
-      stderr?: string;
-      exitCode?: number;
-      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
-    };
-    const projectRun = results.projectRun as {
-      stdout?: string;
-      stderr?: string;
-      exitCode?: number;
-      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
-    };
+    const projectCompile = results.projectCompile as CppProjectWorkerResponse;
+    const projectRun = results.projectRun as CppProjectWorkerResponse;
     const absoluteProjectCompile = results.absoluteProjectCompile as {
       stdout?: string;
       stderr?: string;
@@ -957,8 +982,26 @@ async function main(): Promise<void> {
       `C++ browser project compile should emit a.out: ${JSON.stringify(projectCompile)}`
     );
     assertCondition(
-      projectRun.exitCode === 0 && projectRun.stdout === '42\nfrom-stdin\nbrowser-cpp-project\nalpha,beta\n',
+      projectRun.exitCode === 0 && projectRun.stdout === '42\ndevice-out\nfrom-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\n',
       `C++ browser project run should preserve stdout/stdin/env/argv: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.stderr === 'device-err\n',
+      `C++ browser project run should route /dev/stderr writes: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.events
+        ?.filter((event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout')
+        .map((event) => event.data)
+        .join('') === projectRun.stdout,
+      `C++ browser project run should stream stdout events: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events
+        ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
+        .map((event) => event.data)
+        .join('') === projectRun.stderr,
+      `C++ browser project run should stream stderr events: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,
@@ -971,6 +1014,34 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/stale.txt' && file.deleted === true) === true,
       `C++ browser project run should return deleted files: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/generated.txt' &&
+        event.change.contents === '42\n'
+      )) === true,
+      `C++ browser project run should stream live text mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/bytes.bin' &&
+        event.change.contents === 'AP8=' &&
+        event.change.encoding === 'base64'
+      )) === true,
+      `C++ browser project run should stream live binary mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/stale.txt' &&
+        event.change.deleted === true
+      )) === true,
+      `C++ browser project run should stream live deletions: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       absoluteProjectCompile.exitCode === 0 &&
