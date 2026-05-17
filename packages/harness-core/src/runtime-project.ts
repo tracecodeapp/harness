@@ -13,6 +13,23 @@ export interface RuntimeFileDeletion {
 
 export type RuntimeFileChange = RuntimeFile | RuntimeFileDeletion;
 
+export type RuntimeWorkspaceActorKind = 'principal' | 'runtime' | 'system';
+
+export interface RuntimeWorkspaceCapabilities {
+  read?: readonly string[];
+  write?: readonly string[];
+  delete?: readonly string[];
+  execute?: boolean;
+}
+
+export interface RuntimeWorkspaceActor {
+  id: string;
+  kind: RuntimeWorkspaceActorKind;
+  capabilities?: RuntimeWorkspaceCapabilities;
+}
+
+export type RuntimeFileMutationPhase = 'live' | 'flush' | 'final-diff';
+
 export interface RuntimeProjectSnapshot {
   files: RuntimeFile[];
   directories?: string[];
@@ -38,10 +55,18 @@ export interface RuntimeCommandResult {
 
 export type RuntimeCommandEventStream = 'stdout' | 'stderr';
 
+export type RuntimeKernelDevicePath =
+  | '/dev/stdin'
+  | '/dev/stdout'
+  | '/dev/stderr'
+  | '/dev/tty';
+
 export interface RuntimeCommandOutputEvent {
   type: 'output';
   stream: RuntimeCommandEventStream;
+  device?: RuntimeKernelDevicePath;
   data: string;
+  actor?: RuntimeWorkspaceActor;
 }
 
 export interface RuntimeCommandStatusEvent {
@@ -49,11 +74,14 @@ export interface RuntimeCommandStatusEvent {
   phase: string;
   message: string;
   detail?: Record<string, unknown>;
+  actor?: RuntimeWorkspaceActor;
 }
 
 export interface RuntimeCommandFileChangeEvent {
   type: 'file-change';
   change: RuntimeFileChange;
+  phase?: RuntimeFileMutationPhase;
+  actor?: RuntimeWorkspaceActor;
 }
 
 export type RuntimeCommandEvent =
@@ -62,6 +90,21 @@ export type RuntimeCommandEvent =
   | RuntimeCommandFileChangeEvent;
 
 export type RuntimeCommandEventHandler = (event: RuntimeCommandEvent) => void;
+
+export type RuntimeWorkspaceEvent = RuntimeCommandEvent;
+
+export type RuntimeWorkspaceEventHandler = (event: RuntimeWorkspaceEvent) => void;
+
+export type RuntimeWorkspaceUnsubscribe = () => void;
+
+export interface RuntimeWorkspaceKernel {
+  readFile(path: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<string>;
+  writeFile(path: string, contents: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<void>;
+  deleteFile(path: string, actor?: RuntimeWorkspaceActor): Promise<void>;
+  applyFileChange(change: RuntimeFileChange, actor?: RuntimeWorkspaceActor, phase?: RuntimeFileMutationPhase): Promise<void>;
+  snapshot(options?: { entrypoint?: string }): Promise<RuntimeProjectSnapshot>;
+  watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
+}
 
 export interface RuntimeWorkspaceStat {
   isFile: boolean;
@@ -95,6 +138,7 @@ export type RuntimeProjectCommandRunner<
 > = (request: Request) => Promise<RuntimeCommandResult>;
 
 export interface RuntimeWorkspace {
+  readonly kernel: RuntimeWorkspaceKernel;
   readonly cwd: string;
   writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void>;
   writeFiles(files: readonly RuntimeFile[]): Promise<void>;
@@ -110,5 +154,6 @@ export interface RuntimeWorkspace {
   remove(path: string, options?: RuntimeWorkspaceRemoveOptions): Promise<void>;
   runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
   snapshot(options?: { entrypoint?: string }): Promise<RuntimeProjectSnapshot>;
+  watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
   dispose(): void;
 }

@@ -12,6 +12,7 @@ import {
   type CSharpProjectCommandRequest,
   type PythonProjectCommandRequest,
   type RuntimeCommandEvent,
+  type RuntimeWorkspaceEvent,
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,
 } from '../packages/harness-project/src/index';
@@ -4397,14 +4398,133 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
     `project command should emit process-exit status: ${JSON.stringify(events)}`
   );
   assertCondition(
-    events.some((event) => event.type === 'output' && event.stream === 'stdout' && event.data.includes('event-out')),
+    events.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.actor?.kind === 'runtime' &&
+      event.data.includes('event-out')
+    ),
     `project command should emit stdout chunks: ${JSON.stringify(events)}`
   );
   assertCondition(
-    events.some((event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('event-err')),
+    events.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.actor?.kind === 'runtime' &&
+      event.data.includes('event-err')
+    ),
     `project command should emit stderr chunks: ${JSON.stringify(events)}`
   );
   workspace.dispose();
+}
+
+async function testWorkspaceKernelEvents(): Promise<void> {
+  const events: RuntimeWorkspaceEvent[] = [];
+  const workspace = await createRuntimeWorkspace();
+  const unsubscribe = workspace.watch((event) => events.push(event));
+
+  await workspace.writeFile('user.txt', 'one\n');
+  await workspace.appendFile('user.txt', 'two\n');
+  await workspace.kernel.writeFile(
+    'agent.txt',
+    'agent\n',
+    { id: 'agent:test', kind: 'principal', capabilities: { write: ['/workspace/**'], execute: true } }
+  );
+  await workspace.kernel.applyFileChange(
+    { path: 'runtime.txt', contents: 'runtime\n' },
+    { id: 'runtime:test', kind: 'runtime', capabilities: { write: ['/workspace/**'], execute: true } },
+    'final-diff'
+  );
+  await workspace.deleteFile('user.txt');
+
+  assertCondition(await workspace.readFile('agent.txt') === 'agent\n', 'kernel writeFile should persist through workspace FS');
+  assertCondition(await workspace.readFile('runtime.txt') === 'runtime\n', 'kernel final-diff application should persist files');
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'principal' &&
+      event.phase === 'live' &&
+      event.change.path === 'user.txt' &&
+      !('deleted' in event.change)
+    ),
+    `workspace watch should report user live writes: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'principal' &&
+      event.actor.id === 'agent:test' &&
+      event.change.path === 'agent.txt'
+    ),
+    `workspace watch should preserve agent provenance: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'runtime.txt'
+    ),
+    `workspace watch should report runtime final-diff changes: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'principal' &&
+      event.change.path === 'user.txt' &&
+      'deleted' in event.change &&
+      event.change.deleted === true
+    ),
+    `workspace watch should report deletes: ${JSON.stringify(events)}`
+  );
+
+  const countBeforeUnsubscribe = events.length;
+  unsubscribe();
+  await workspace.writeFile('ignored.txt', 'ignored\n');
+  assertCondition(events.length === countBeforeUnsubscribe, 'workspace watch unsubscribe should stop events');
+  workspace.dispose();
+
+  const commandEvents: RuntimeWorkspaceEvent[] = [];
+  const commandWorkspace = await createRuntimeWorkspace({
+    files: [{ path: 'index.js', contents: 'console.log("runner")\n' }],
+    nodeRunner: async () => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      files: [
+        { path: 'generated.txt', contents: 'generated\n' },
+        { path: 'stale.txt', deleted: true },
+      ],
+    }),
+  });
+  await commandWorkspace.writeFile('stale.txt', 'stale\n');
+  commandWorkspace.watch((event) => commandEvents.push(event));
+  const commandResult = await commandWorkspace.runCommand('node index.js');
+  assertCondition(commandResult.exitCode === 0, 'workspace command should succeed');
+  assertCondition(await commandWorkspace.readFile('generated.txt') === 'generated\n', 'command final diff should persist generated files');
+  await assertRejectsAsync(() => commandWorkspace.readFile('stale.txt'), 'command final diff should persist deletions');
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'generated.txt'
+    ),
+    `workspace watch should report command final-diff writes: ${JSON.stringify(commandEvents)}`
+  );
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'stale.txt' &&
+      'deleted' in event.change
+    ),
+    `workspace watch should report command final-diff deletes: ${JSON.stringify(commandEvents)}`
+  );
+  commandWorkspace.dispose();
 }
 
 function testPathValidation(): void {
@@ -4492,6 +4612,7 @@ async function main(): Promise<void> {
   await testBrowserProjectWorkspaceAdvancedCommandTranslation();
   await testNativeProjectWorkspaceFactory();
   await testProjectWorkspaceCommandEvents();
+  await testWorkspaceKernelEvents();
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 

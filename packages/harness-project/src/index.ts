@@ -12,6 +12,7 @@ import type {
   RuntimeCommandFileChangeEvent,
   RuntimeCommandOutputEvent,
   RuntimeCommandStatusEvent,
+  RuntimeFileMutationPhase,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
@@ -19,8 +20,15 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
+  RuntimeWorkspaceActor,
+  RuntimeWorkspaceActorKind,
+  RuntimeWorkspaceCapabilities,
+  RuntimeWorkspaceEvent,
+  RuntimeWorkspaceEventHandler,
+  RuntimeWorkspaceKernel,
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
+  RuntimeWorkspaceUnsubscribe,
 } from '../../harness-core/src/runtime-project';
 
 export type ProjectWorkspaceCommand = unknown;
@@ -81,6 +89,8 @@ export interface CreateRuntimeWorkspaceOptions {
 }
 
 const DEFAULT_CWD = '/workspace';
+const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = { id: 'principal', kind: 'principal' };
+const SYSTEM_ACTOR: RuntimeWorkspaceActor = { id: 'system', kind: 'system' };
 
 function assertNoNul(value: string, label: string): void {
   if (value.includes('\0')) {
@@ -302,15 +312,19 @@ async function snapshotCommandContext(
   };
 }
 
+type RuntimeFileChangeObserver = (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => void;
+
 async function applyCommandResultFiles(
   ctx: CommandContext,
   workspaceRoot: string,
-  result: RuntimeCommandResult
+  result: RuntimeCommandResult,
+  onFileChange?: RuntimeFileChangeObserver
 ): Promise<RuntimeCommandResult> {
   for (const file of result.files ?? []) {
     const absolutePath = toWorkspacePath(workspaceRoot, file.path);
     if ((file as { deleted?: boolean }).deleted === true) {
       await ctx.fs.rm(absolutePath, { force: true });
+      onFileChange?.(file, 'final-diff');
       continue;
     }
     const changedFile = file as RuntimeFile;
@@ -320,6 +334,7 @@ async function applyCommandResultFiles(
     } else {
       await ctx.fs.writeFile(absolutePath, changedFile.contents);
     }
+    onFileChange?.(changedFile, 'final-diff');
   }
 
   const { files: _files, ...commandResult } = result;
@@ -331,12 +346,7 @@ async function applyWorkspaceCommandResultFiles(
   result: RuntimeCommandResult
 ): Promise<RuntimeCommandResult> {
   for (const file of result.files ?? []) {
-    if ((file as { deleted?: boolean }).deleted === true) {
-      await workspace.deleteFile(file.path);
-      continue;
-    }
-    const changedFile = file as RuntimeFile;
-    await workspace.writeFile(changedFile.path, changedFile.contents, changedFile.encoding);
+    await workspace.applyKernelFileChange(file, 'final-diff');
   }
 
   const { files: _files, ...commandResult } = result;
@@ -1265,7 +1275,8 @@ function commandEnv(ctx: CommandContext): Record<string, string> {
 export function createPythonProjectCommands(
   runner: PythonProjectCommandRunner,
   workspaceRoot: string = DEFAULT_CWD,
-  entrypoint?: string
+  entrypoint?: string,
+  onFileChange?: RuntimeFileChangeObserver
 ): ProjectWorkspaceCommand[] {
   const runPython = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parsePythonInvocation(args);
@@ -1339,7 +1350,7 @@ export function createPythonProjectCommands(
       env: commandEnv(ctx),
       stdin,
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint),
-    }));
+    }), onFileChange);
   };
 
   return [
@@ -1351,7 +1362,8 @@ export function createPythonProjectCommands(
 export function createNodeProjectCommands(
   runner: JavaScriptProjectCommandRunner,
   workspaceRoot: string = DEFAULT_CWD,
-  entrypoint?: string
+  entrypoint?: string,
+  onFileChange?: RuntimeFileChangeObserver
 ): ProjectWorkspaceCommand[] {
   const runNode = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parseNodeInvocation(args);
@@ -1436,7 +1448,7 @@ export function createNodeProjectCommands(
             }
           : {}
       ),
-    }));
+    }), onFileChange);
   };
 
   return [
@@ -1447,7 +1459,8 @@ export function createNodeProjectCommands(
 export function createJavaProjectCommands(
   runner: JavaProjectCommandRunner,
   workspaceRoot: string = DEFAULT_CWD,
-  entrypoint?: string
+  entrypoint?: string,
+  onFileChange?: RuntimeFileChangeObserver
 ): ProjectWorkspaceCommand[] {
   const runJavac = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -1478,7 +1491,7 @@ export function createJavaProjectCommands(
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint),
-    }));
+    }), onFileChange);
   };
 
   const runJava = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
@@ -1534,7 +1547,7 @@ export function createJavaProjectCommands(
         ...(parsed.enablePreview ? { enablePreview: true } : {}),
         ...(parsed.enableAssertions ? { enableAssertions: true } : {}),
       },
-    }));
+    }), onFileChange);
   };
 
   return [
@@ -1546,7 +1559,7 @@ export function createJavaProjectCommands(
 export function createCppProjectCommands(
   runner: CppProjectCommandRunner,
   workspaceRoot: string = DEFAULT_CWD,
-  options: { recordExecutablePath?: (path: string) => void; entrypoint?: string } = {}
+  options: { recordExecutablePath?: (path: string) => void; entrypoint?: string; onFileChange?: RuntimeFileChangeObserver } = {}
 ): ProjectWorkspaceCommand[] {
   const runCompiler = (compilerCommand: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -1573,7 +1586,7 @@ export function createCppProjectCommands(
       project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint),
       options: { compilerCommand },
     });
-    const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result);
+    const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result, options.onFileChange);
     if (commandResult.exitCode === 0) {
       options.recordExecutablePath?.(toProjectPath(workspaceRoot, resolveWorkspaceCommandPath(workspaceRoot, ctx.cwd, cppOutputPathFromArgs(parsed.args))));
     }
@@ -1601,7 +1614,7 @@ export function createCppProjectCommands(
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
       project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint),
-    }));
+    }), options.onFileChange);
   };
 
   return [
@@ -1620,7 +1633,8 @@ export function createCppProjectCommands(
 export function createCSharpProjectCommands(
   runner: CSharpProjectCommandRunner,
   workspaceRoot: string = DEFAULT_CWD,
-  entrypoint?: string
+  entrypoint?: string,
+  onFileChange?: RuntimeFileChangeObserver
 ): ProjectWorkspaceCommand[] {
   const runDotnet = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -1653,7 +1667,7 @@ export function createCSharpProjectCommands(
             },
           }
         : {}),
-    }));
+    }), onFileChange);
   };
 
   return [
@@ -1662,34 +1676,43 @@ export function createCSharpProjectCommands(
 }
 
 export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
+  readonly kernel: RuntimeWorkspaceKernel;
   readonly cwd: string;
   private readonly bash: Bash;
   private readonly entrypoint?: string;
   private readonly cppRunner?: CppProjectCommandRunner;
   private readonly cppExecutablePaths = new Set<string>();
+  private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private activeCommandEventHandler?: RuntimeCommandEventHandler;
+  private activeCommandActor?: RuntimeWorkspaceActor;
+  private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.cwd = normalizeWorkspaceCwd(options.cwd);
     this.entrypoint = options.entrypoint ? toWorkspaceRelativePath(this.cwd, options.entrypoint) : undefined;
     this.cppRunner = options.cppRunner;
+    this.kernel = this.createKernel();
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>
     ): RuntimeProjectCommandRunner<Request> => (
       (request) => runner({
         ...request,
-        ...(this.activeCommandEventHandler ? { onEvent: this.activeCommandEventHandler } : {}),
+        onEvent: (event) => this.emitRuntimeEvent(event),
       } as Request)
     );
+    const observeFileChange: RuntimeFileChangeObserver = (change, phase) => {
+      this.emitRuntimeEvent({ type: 'file-change', change, phase });
+    };
     const customCommands = [
-      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint) : []),
+      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange) : []),
+      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.cppExecutablePaths.add(path),
         entrypoint: this.entrypoint,
+        onFileChange: observeFileChange,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange) : []),
       ...(options.customCommands ?? []),
     ];
     this.bash = new Bash({
@@ -1708,16 +1731,38 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
+    await this.writeFileAs(path, contents, PRINCIPAL_ACTOR, encoding, 'live');
+  }
+
+  private async writeFileAs(
+    path: string,
+    contents: string,
+    actor: RuntimeWorkspaceActor,
+    encoding?: RuntimeFileEncoding,
+    phase: RuntimeFileMutationPhase = 'live'
+  ): Promise<void> {
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = toWorkspacePath(this.cwd, path);
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
 
     if (normalizedEncoding === 'base64') {
       await this.bash.fs.writeFile(absolutePath, bytesFromBase64(contents));
+      this.emitRuntimeEvent({
+        type: 'file-change',
+        change: { path: toProjectPath(this.cwd, absolutePath), contents, encoding: 'base64' },
+        phase,
+        actor,
+      });
       return;
     }
 
     await this.bash.fs.writeFile(absolutePath, contents);
+    this.emitRuntimeEvent({
+      type: 'file-change',
+      change: { path: toProjectPath(this.cwd, absolutePath), contents },
+      phase,
+      actor,
+    });
   }
 
   async writeFiles(files: readonly RuntimeFile[]): Promise<void> {
@@ -1736,7 +1781,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const previousBytes = await this.bash.fs.exists(absolutePath)
       ? await this.bash.fs.readFileBuffer(absolutePath)
       : new Uint8Array();
-    await this.bash.fs.writeFile(absolutePath, concatBytes(previousBytes, nextBytes));
+    const bytes = concatBytes(previousBytes, nextBytes);
+    await this.bash.fs.writeFile(absolutePath, bytes);
+    this.emitRuntimeEvent({
+      type: 'file-change',
+      change: normalizedEncoding === 'base64'
+        ? { path: toProjectPath(this.cwd, absolutePath), contents: base64FromBytes(bytes), encoding: 'base64' }
+        : { path: toProjectPath(this.cwd, absolutePath), contents: new TextDecoder().decode(bytes) },
+      phase: 'live',
+      actor: PRINCIPAL_ACTOR,
+    });
   }
 
   async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
@@ -1776,32 +1830,61 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const sourceBytes = await this.bash.fs.readFileBuffer(absoluteSourcePath);
     await this.bash.fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
     await this.bash.fs.writeFile(absoluteDestinationPath, sourceBytes);
+    this.emitRuntimeEvent({
+      type: 'file-change',
+      change: { path: toProjectPath(this.cwd, absoluteDestinationPath), contents: base64FromBytes(sourceBytes), encoding: 'base64' },
+      phase: 'live',
+      actor: PRINCIPAL_ACTOR,
+    });
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
     await this.copyFile(sourcePath, destinationPath);
     await this.bash.fs.rm(toWorkspacePath(this.cwd, sourcePath), { force: true });
+    this.emitRuntimeEvent({
+      type: 'file-change',
+      change: { path: toWorkspaceRelativePath(this.cwd, sourcePath), deleted: true },
+      phase: 'live',
+      actor: PRINCIPAL_ACTOR,
+    });
   }
 
   async deleteFile(path: string): Promise<void> {
     await this.bash.fs.rm(toWorkspacePath(this.cwd, path), { force: true });
+    this.emitRuntimeEvent({
+      type: 'file-change',
+      change: { path: toWorkspaceRelativePath(this.cwd, path), deleted: true },
+      phase: 'live',
+      actor: PRINCIPAL_ACTOR,
+    });
   }
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
+    const deletedFiles = await this.collectDeletedFilesForRemove(path, options);
     await this.bash.fs.rm(toWorkspaceEntryPath(this.cwd, path), {
       force: options.force ?? true,
       recursive: options.recursive,
     });
+    for (const deletedPath of deletedFiles) {
+      this.emitRuntimeEvent({
+        type: 'file-change',
+        change: { path: deletedPath, deleted: true },
+        phase: 'live',
+        actor: PRINCIPAL_ACTOR,
+      });
+    }
   }
 
   async runCommand(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
-    const directCppResult = await this.tryRunCppExecutable(command, options);
-    if (directCppResult) return directCppResult;
-
     let result: { stdout: string; stderr: string; exitCode: number };
     const previousEventHandler = this.activeCommandEventHandler;
+    const previousActor = this.activeCommandActor;
     this.activeCommandEventHandler = options.onEvent;
+    this.activeCommandActor = this.createRuntimeActor();
     try {
+      const directCppResult = await this.tryRunCppExecutable(command, options);
+      if (directCppResult) return directCppResult;
+
       result = await this.bash.exec(command, {
         cwd: options.cwd ? toWorkspacePath(this.cwd, options.cwd) : this.cwd,
         env: options.env,
@@ -1811,6 +1894,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       });
     } finally {
       this.activeCommandEventHandler = previousEventHandler;
+      this.activeCommandActor = previousActor;
     }
     return {
       stdout: result.stdout,
@@ -1861,7 +1945,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       env,
       stdin: options.stdin ?? '',
       project: await this.snapshot(),
-      ...(options.onEvent ? { onEvent: options.onEvent } : {}),
+      onEvent: (event) => this.emitRuntimeEvent(event),
     }));
   }
 
@@ -1882,7 +1966,115 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   dispose(): void {
+    this.eventWatchers.clear();
     // Native/just-bash workspaces currently own no external resources.
+  }
+
+  watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe {
+    this.eventWatchers.add(listener);
+    return () => {
+      this.eventWatchers.delete(listener);
+    };
+  }
+
+  async applyKernelFileChange(
+    change: RuntimeFileChange,
+    phase: RuntimeFileMutationPhase = 'final-diff',
+    actor: RuntimeWorkspaceActor = this.activeCommandActor ?? SYSTEM_ACTOR
+  ): Promise<void> {
+    await this.kernel.applyFileChange(change, actor, phase);
+  }
+
+  private createKernel(): RuntimeWorkspaceKernel {
+    return {
+      readFile: (path, _actor, encoding) => this.readFile(path, encoding),
+      writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
+      deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
+      applyFileChange: async (change, actor = SYSTEM_ACTOR, phase = 'final-diff') => {
+        if ((change as { deleted?: boolean }).deleted === true) {
+          await this.deleteFileAs(change.path, actor, phase);
+          return;
+        }
+        const changedFile = change as RuntimeFile;
+        await this.writeFileAs(changedFile.path, changedFile.contents, actor, changedFile.encoding, phase);
+      },
+      snapshot: (options) => this.snapshot(options),
+      watch: (listener) => this.watch(listener),
+    };
+  }
+
+  private async deleteFileAs(
+    path: string,
+    actor: RuntimeWorkspaceActor,
+    phase: RuntimeFileMutationPhase
+  ): Promise<void> {
+    const relativePath = toWorkspaceRelativePath(this.cwd, path);
+    await this.bash.fs.rm(toWorkspacePath(this.cwd, path), { force: true });
+    this.emitRuntimeEvent({
+      type: 'file-change',
+      change: { path: relativePath, deleted: true },
+      phase,
+      actor,
+    });
+  }
+
+  private createRuntimeActor(): RuntimeWorkspaceActor {
+    return {
+      id: `runtime:${this.nextCommandId++}`,
+      kind: 'runtime',
+      capabilities: {
+        read: [`${this.cwd}/**`],
+        write: [`${this.cwd}/**`],
+        delete: [`${this.cwd}/**`],
+        execute: true,
+      },
+    };
+  }
+
+  private emitRuntimeEvent(event: RuntimeCommandEvent): void {
+    const actor = 'actor' in event && event.actor ? event.actor : this.activeCommandActor;
+    const enriched = this.enrichRuntimeEvent(event, actor);
+    this.activeCommandEventHandler?.(enriched);
+    for (const watcher of this.eventWatchers) {
+      watcher(enriched);
+    }
+  }
+
+  private enrichRuntimeEvent(event: RuntimeCommandEvent, actor?: RuntimeWorkspaceActor): RuntimeWorkspaceEvent {
+    if (event.type === 'output') {
+      return {
+        ...event,
+        device: event.device ?? (event.stream === 'stdout' ? '/dev/stdout' : '/dev/stderr'),
+        ...(actor && !event.actor ? { actor } : {}),
+      };
+    }
+    if (event.type === 'file-change') {
+      return {
+        ...event,
+        phase: event.phase ?? 'live',
+        ...(actor && !event.actor ? { actor } : {}),
+      };
+    }
+    return {
+      ...event,
+      ...(actor && !event.actor ? { actor } : {}),
+    };
+  }
+
+  private async collectDeletedFilesForRemove(
+    path: string,
+    options: RuntimeWorkspaceRemoveOptions
+  ): Promise<string[]> {
+    const absolutePath = toWorkspaceEntryPath(this.cwd, path);
+    if (!(await this.bash.fs.exists(absolutePath))) return [];
+    const stat = await this.bash.fs.stat(absolutePath);
+    if (stat.isFile) return [toProjectPath(this.cwd, absolutePath)];
+    if (!stat.isDirectory || !options.recursive) return [];
+
+    const files: RuntimeFile[] = [];
+    const directories: string[] = [];
+    await collectSnapshotFiles(this.bash.fs, this.cwd, absolutePath, files, directories);
+    return files.map((file) => file.path);
   }
 
   private async collectFiles(absolutePath: string, files: RuntimeFile[], directories: string[]): Promise<void> {
@@ -1922,10 +2114,18 @@ export type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
+  RuntimeFileMutationPhase,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
+  RuntimeWorkspaceActor,
+  RuntimeWorkspaceActorKind,
+  RuntimeWorkspaceCapabilities,
+  RuntimeWorkspaceEvent,
+  RuntimeWorkspaceEventHandler,
+  RuntimeWorkspaceKernel,
   RuntimeWorkspaceRemoveOptions,
   RuntimeWorkspaceStat,
+  RuntimeWorkspaceUnsubscribe,
 };
