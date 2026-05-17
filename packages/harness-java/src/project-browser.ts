@@ -42,6 +42,23 @@ export function createBrowserJavaProjectRunner(
         exitCode: 2,
       });
     }
-    return workerClient.executeProjectJava(request, timeoutMs);
+    request.onEvent?.({
+      type: 'status',
+      phase: request.source === 'compile' ? 'compile-start' : 'process-start',
+      message: request.source === 'compile' ? 'Starting Java browser compile' : 'Starting Java browser run',
+      detail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
+    });
+    const { onEvent: _onEvent, ...workerRequest } = request;
+    return workerClient.executeProjectJava(workerRequest, timeoutMs).then((result) => {
+      request.onEvent?.({
+        type: 'status',
+        phase: request.source === 'compile' ? 'compile-end' : 'process-exit',
+        message: request.source === 'compile' ? 'Finished Java browser compile' : 'Finished Java browser run',
+        detail: { exitCode: result.exitCode },
+      });
+      if (result.stdout) request.onEvent?.({ type: 'output', stream: 'stdout', data: result.stdout });
+      if (result.stderr) request.onEvent?.({ type: 'output', stream: 'stderr', data: result.stderr });
+      return result;
+    });
   };
 }

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import type {
   RuntimeCommandResult,
+  RuntimeCommandEventHandler,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
@@ -28,6 +29,10 @@ export interface NativeJavaProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const VIRTUAL_WORKSPACE_ROOT = '/workspace';
+
+function emitCommandStatus(onEvent: RuntimeCommandEventHandler | undefined, phase: string, message: string, detail?: Record<string, unknown>): void {
+  onEvent?.({ type: 'status', phase, message, ...(detail ? { detail } : {}) });
+}
 
 function assertSafeProjectPath(path: string): string {
   const normalized = path.replace(/\\/g, '/');
@@ -471,9 +476,11 @@ function runProcess(
     stdin: string;
     timeoutMs: number;
     timeoutLabel: string;
+    onEvent?: RuntimeCommandEventHandler;
   }
 ): Promise<JavaProjectCommandResult> {
   return new Promise<JavaProjectCommandResult>((resolve) => {
+    emitCommandStatus(options.onEvent, 'process-start', `Starting ${command}`, { command, args, cwd: options.cwd });
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: {
@@ -499,15 +506,20 @@ function runProcess(
     }, options.timeoutMs);
 
     child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
+      const data = String(chunk);
+      stdout += data;
+      options.onEvent?.({ type: 'output', stream: 'stdout', data });
     });
     child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
+      const data = String(chunk);
+      stderr += data;
+      options.onEvent?.({ type: 'output', stream: 'stderr', data });
     });
     child.on('error', (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      emitCommandStatus(options.onEvent, 'process-error', `${command} failed to start`, { command, error: error.message });
       resolve({
         stdout,
         stderr: `${stderr}${error.message}\n`,
@@ -518,6 +530,7 @@ function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      emitCommandStatus(options.onEvent, 'process-exit', `${command} exited`, { command, exitCode: code ?? 1 });
       resolve({
         stdout,
         stderr,
@@ -557,6 +570,7 @@ export function createNativeJavaProjectRunner(
           stdin: request.stdin,
           timeoutMs,
           timeoutLabel: 'java',
+          onEvent: request.onEvent,
         });
         return { ...run, files: await changedProjectFiles(root, baseline) };
       }
@@ -570,6 +584,7 @@ export function createNativeJavaProjectRunner(
           stdin: request.stdin,
           timeoutMs,
           timeoutLabel: 'java',
+          onEvent: request.onEvent,
         });
         return { ...run, files: await changedProjectFiles(root, baseline) };
       }
@@ -580,6 +595,7 @@ export function createNativeJavaProjectRunner(
         stdin: '',
         timeoutMs,
         timeoutLabel: 'javac',
+        onEvent: request.onEvent,
       });
       if (request.source === 'compile') {
         return compile.exitCode === 0
@@ -597,6 +613,7 @@ export function createNativeJavaProjectRunner(
         stdin: request.stdin,
         timeoutMs,
         timeoutLabel: 'java',
+        onEvent: request.onEvent,
       });
       return {
         stdout: `${compile.stdout}${run.stdout}`,

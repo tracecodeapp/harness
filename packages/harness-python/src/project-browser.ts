@@ -38,7 +38,26 @@ export function createBrowserPythonProjectRunner(
   workerClient: PyodidePythonProjectWorkerClient | PythonWorkerClient,
   options: BrowserPythonProjectRunnerOptions = {}
 ): BrowserPythonProjectCommandRunner {
-  return (request) => workerClient.executeProjectPython(request, options.timeoutMs);
+  return (request) => {
+    request.onEvent?.({
+      type: 'status',
+      phase: 'process-start',
+      message: 'Starting Python browser project command',
+      detail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
+    });
+    const { onEvent: _onEvent, ...workerRequest } = request;
+    return workerClient.executeProjectPython(workerRequest, options.timeoutMs).then((result) => {
+      request.onEvent?.({
+        type: 'status',
+        phase: 'process-exit',
+        message: 'Finished Python browser project command',
+        detail: { exitCode: result.exitCode },
+      });
+      if (result.stdout) request.onEvent?.({ type: 'output', stream: 'stdout', data: result.stdout });
+      if (result.stderr) request.onEvent?.({ type: 'output', stream: 'stderr', data: result.stderr });
+      return result;
+    });
+  };
 }
 
 export const createPyodidePythonProjectRunner = createBrowserPythonProjectRunner;

@@ -35,6 +35,23 @@ export function createBrowserCSharpProjectRunner(
         exitCode: 2,
       });
     }
-    return workerClient.executeProjectCSharp(request, timeoutMs);
+    request.onEvent?.({
+      type: 'status',
+      phase: request.source === 'compile' ? 'compile-start' : 'process-start',
+      message: request.source === 'compile' ? 'Starting C# browser compile' : 'Starting C# browser run',
+      detail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
+    });
+    const { onEvent: _onEvent, ...workerRequest } = request;
+    return workerClient.executeProjectCSharp(workerRequest, timeoutMs).then((result) => {
+      request.onEvent?.({
+        type: 'status',
+        phase: request.source === 'compile' ? 'compile-end' : 'process-exit',
+        message: request.source === 'compile' ? 'Finished C# browser compile' : 'Finished C# browser run',
+        detail: { exitCode: result.exitCode },
+      });
+      if (result.stdout) request.onEvent?.({ type: 'output', stream: 'stdout', data: result.stdout });
+      if (result.stderr) request.onEvent?.({ type: 'output', stream: 'stderr', data: result.stderr });
+      return result;
+    });
   };
 }

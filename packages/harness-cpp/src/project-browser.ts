@@ -27,5 +27,24 @@ export function createBrowserCppProjectRunner(
   options: BrowserCppProjectRunnerOptions = {}
 ): CppProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  return (request) => workerClient.executeProjectCpp(request, timeoutMs);
+  return (request) => {
+    request.onEvent?.({
+      type: 'status',
+      phase: request.source === 'compile' ? 'compile-start' : 'process-start',
+      message: request.source === 'compile' ? 'Starting C++ browser compile' : 'Starting C++ browser executable',
+      detail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
+    });
+    const { onEvent: _onEvent, ...workerRequest } = request;
+    return workerClient.executeProjectCpp(workerRequest, timeoutMs).then((result) => {
+      request.onEvent?.({
+        type: 'status',
+        phase: request.source === 'compile' ? 'compile-end' : 'process-exit',
+        message: request.source === 'compile' ? 'Finished C++ browser compile' : 'Finished C++ browser executable',
+        detail: { source: request.source, exitCode: result.exitCode },
+      });
+      if (result.stdout) request.onEvent?.({ type: 'output', stream: 'stdout', data: result.stdout });
+      if (result.stderr) request.onEvent?.({ type: 'output', stream: 'stderr', data: result.stderr });
+      return result;
+    });
+  };
 }

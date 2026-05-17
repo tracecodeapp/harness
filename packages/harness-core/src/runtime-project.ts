@@ -26,6 +26,7 @@ export interface RuntimeCommandOptions {
   stdin?: string;
   signal?: AbortSignal;
   args?: string[];
+  onEvent?: RuntimeCommandEventHandler;
 }
 
 export interface RuntimeCommandResult {
@@ -34,6 +35,33 @@ export interface RuntimeCommandResult {
   exitCode: number;
   files?: RuntimeFileChange[];
 }
+
+export type RuntimeCommandEventStream = 'stdout' | 'stderr';
+
+export interface RuntimeCommandOutputEvent {
+  type: 'output';
+  stream: RuntimeCommandEventStream;
+  data: string;
+}
+
+export interface RuntimeCommandStatusEvent {
+  type: 'status';
+  phase: string;
+  message: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface RuntimeCommandFileChangeEvent {
+  type: 'file-change';
+  change: RuntimeFileChange;
+}
+
+export type RuntimeCommandEvent =
+  | RuntimeCommandOutputEvent
+  | RuntimeCommandStatusEvent
+  | RuntimeCommandFileChangeEvent;
+
+export type RuntimeCommandEventHandler = (event: RuntimeCommandEvent) => void;
 
 export interface RuntimeWorkspaceStat {
   isFile: boolean;
@@ -59,6 +87,7 @@ export interface RuntimeProjectCommandRequest<
   stdin: string;
   project: RuntimeProjectSnapshot;
   options?: Record<string, unknown>;
+  onEvent?: RuntimeCommandEventHandler;
 }
 
 export type RuntimeProjectCommandRunner<

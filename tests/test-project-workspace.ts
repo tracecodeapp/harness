@@ -11,6 +11,7 @@ import {
   type CppProjectCommandRequest,
   type CSharpProjectCommandRequest,
   type PythonProjectCommandRequest,
+  type RuntimeCommandEvent,
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,
 } from '../packages/harness-project/src/index';
@@ -4378,6 +4379,34 @@ async function testNativeProjectWorkspaceFactory(): Promise<void> {
   workspace.dispose();
 }
 
+async function testProjectWorkspaceCommandEvents(): Promise<void> {
+  const events: RuntimeCommandEvent[] = [];
+  const workspace = await createNativeProjectWorkspace({
+    files: [{ path: 'events.py', contents: 'import sys\nprint("event-out")\nprint("event-err", file=sys.stderr)\n' }],
+  });
+  const result = await workspace.runCommand('python3 events.py', {
+    onEvent: (event) => events.push(event),
+  });
+  assertCondition(result.exitCode === 0, `event project command should succeed: ${result.stderr}`);
+  assertCondition(
+    events.some((event) => event.type === 'status' && event.phase === 'process-start'),
+    `project command should emit process-start status: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) => event.type === 'status' && event.phase === 'process-exit'),
+    `project command should emit process-exit status: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) => event.type === 'output' && event.stream === 'stdout' && event.data.includes('event-out')),
+    `project command should emit stdout chunks: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('event-err')),
+    `project command should emit stderr chunks: ${JSON.stringify(events)}`
+  );
+  workspace.dispose();
+}
+
 function testPathValidation(): void {
   assertCondition(normalizeRuntimeProjectPath('./src/solution.py') === 'src/solution.py', 'normalizes segments');
   assertRejects(
@@ -4462,6 +4491,7 @@ async function main(): Promise<void> {
   await testBrowserProjectWorkspaceFactory();
   await testBrowserProjectWorkspaceAdvancedCommandTranslation();
   await testNativeProjectWorkspaceFactory();
+  await testProjectWorkspaceCommandEvents();
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import type {
   RuntimeCommandResult,
+  RuntimeCommandEventHandler,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
@@ -29,6 +30,10 @@ export interface NativePythonProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const VIRTUAL_WORKSPACE_ROOT = '/workspace';
+
+function emitCommandStatus(onEvent: RuntimeCommandEventHandler | undefined, phase: string, message: string, detail?: Record<string, unknown>): void {
+  onEvent?.({ type: 'status', phase, message, ...(detail ? { detail } : {}) });
+}
 
 function assertSafeProjectPath(path: string): string {
   const normalized = path.replace(/\\/g, '/');
@@ -303,7 +308,9 @@ export function createNativePythonProjectRunner(
       await writeWorkspaceSiteCustomize(supportDir, root);
 
       const result = await new Promise<PythonProjectCommandResult>((resolve) => {
-        const child = spawn(pythonCommand, pythonArgsForRequest(request, root, cwd), {
+        const args = pythonArgsForRequest(request, root, cwd);
+        emitCommandStatus(request.onEvent, 'process-start', `Starting ${pythonCommand}`, { command: pythonCommand, args, cwd });
+        const child = spawn(pythonCommand, args, {
           cwd,
           env: {
             ...process.env,
@@ -329,10 +336,14 @@ export function createNativePythonProjectRunner(
         }, timeoutMs);
 
         child.stdout.on('data', (chunk) => {
-          stdout += String(chunk);
+          const data = String(chunk);
+          stdout += data;
+          request.onEvent?.({ type: 'output', stream: 'stdout', data });
         });
         child.stderr.on('data', (chunk) => {
-          stderr += String(chunk);
+          const data = String(chunk);
+          stderr += data;
+          request.onEvent?.({ type: 'output', stream: 'stderr', data });
         });
         child.on('error', (error) => {
           if (settled) return;
@@ -348,6 +359,7 @@ export function createNativePythonProjectRunner(
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
+          emitCommandStatus(request.onEvent, 'process-exit', `${pythonCommand} exited`, { command: pythonCommand, exitCode: code ?? 1 });
           resolve({
             stdout,
             stderr,

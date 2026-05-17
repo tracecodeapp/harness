@@ -6,6 +6,12 @@ import type { CommandContext } from 'just-bash/browser';
 import type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
+  RuntimeCommandEvent,
+  RuntimeCommandEventHandler,
+  RuntimeCommandEventStream,
+  RuntimeCommandFileChangeEvent,
+  RuntimeCommandOutputEvent,
+  RuntimeCommandStatusEvent,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
@@ -1661,20 +1667,29 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly entrypoint?: string;
   private readonly cppRunner?: CppProjectCommandRunner;
   private readonly cppExecutablePaths = new Set<string>();
+  private activeCommandEventHandler?: RuntimeCommandEventHandler;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.cwd = normalizeWorkspaceCwd(options.cwd);
     this.entrypoint = options.entrypoint ? toWorkspaceRelativePath(this.cwd, options.entrypoint) : undefined;
     this.cppRunner = options.cppRunner;
+    const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
+      runner: RuntimeProjectCommandRunner<Request>
+    ): RuntimeProjectCommandRunner<Request> => (
+      (request) => runner({
+        ...request,
+        ...(this.activeCommandEventHandler ? { onEvent: this.activeCommandEventHandler } : {}),
+      } as Request)
+    );
     const customCommands = [
-      ...(options.pythonRunner ? createPythonProjectCommands(options.pythonRunner, this.cwd, this.entrypoint) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(options.nodeRunner, this.cwd, this.entrypoint) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(options.javaRunner, this.cwd, this.entrypoint) : []),
-      ...(options.cppRunner ? createCppProjectCommands(options.cppRunner, this.cwd, {
+      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint) : []),
+      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint) : []),
+      ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.cppExecutablePaths.add(path),
         entrypoint: this.entrypoint,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(options.csharpRunner, this.cwd, this.entrypoint) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint) : []),
       ...(options.customCommands ?? []),
     ];
     this.bash = new Bash({
@@ -1783,13 +1798,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const directCppResult = await this.tryRunCppExecutable(command, options);
     if (directCppResult) return directCppResult;
 
-    const result = await this.bash.exec(command, {
-      cwd: options.cwd ? toWorkspacePath(this.cwd, options.cwd) : this.cwd,
-      env: options.env,
-      stdin: options.stdin,
-      signal: options.signal,
-      args: options.args,
-    });
+    let result: { stdout: string; stderr: string; exitCode: number };
+    const previousEventHandler = this.activeCommandEventHandler;
+    this.activeCommandEventHandler = options.onEvent;
+    try {
+      result = await this.bash.exec(command, {
+        cwd: options.cwd ? toWorkspacePath(this.cwd, options.cwd) : this.cwd,
+        env: options.env,
+        stdin: options.stdin,
+        signal: options.signal,
+        args: options.args,
+      });
+    } finally {
+      this.activeCommandEventHandler = previousEventHandler;
+    }
     return {
       stdout: result.stdout,
       stderr: result.stderr,
@@ -1839,6 +1861,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       env,
       stdin: options.stdin ?? '',
       project: await this.snapshot(),
+      ...(options.onEvent ? { onEvent: options.onEvent } : {}),
     }));
   }
 
@@ -1890,6 +1913,12 @@ export async function createRuntimeWorkspace(
 export type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
+  RuntimeCommandEvent,
+  RuntimeCommandEventHandler,
+  RuntimeCommandEventStream,
+  RuntimeCommandFileChangeEvent,
+  RuntimeCommandOutputEvent,
+  RuntimeCommandStatusEvent,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
