@@ -106,6 +106,8 @@ async function main(): Promise<void> {
     'emitFileDeleteNative',
     'setProjectWorkspaceRoot',
     'Files.writeString',
+    'Files.newOutputStream',
+    'Files.newBufferedWriter',
     'Files.deleteIfExists',
     'ProjectFileWriter',
     'ProjectFileOutputStream',

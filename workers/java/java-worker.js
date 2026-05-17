@@ -3156,8 +3156,8 @@ function javaProjectSourcePath(file) {
 
 function augmentJavaProjectFileMutations(source) {
   return String(source ?? '')
-    .replace(/\bjava\.nio\.file\.Files\.(writeString|write|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
-    .replace(/(?<![\w.])Files\.(writeString|write|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/\bjava\.nio\.file\.Files\.(writeString|write|newOutputStream|newBufferedWriter|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/(?<![\w.])Files\.(writeString|write|newOutputStream|newBufferedWriter|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
     .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/\bnew\s+java\.io\.FileOutputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileOutputStream(')

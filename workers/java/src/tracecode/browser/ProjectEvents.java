@@ -1,6 +1,7 @@
 package tracecode.browser;
 
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
@@ -97,6 +98,18 @@ public final class ProjectEvents {
     return result;
   }
 
+  public static OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+    return new ProjectOutputStream(Files.newOutputStream(path, options), path);
+  }
+
+  public static BufferedWriter newBufferedWriter(Path path, OpenOption... options) throws IOException {
+    return new ProjectBufferedWriter(Files.newBufferedWriter(path, options), path);
+  }
+
+  public static BufferedWriter newBufferedWriter(Path path, Charset charset, OpenOption... options) throws IOException {
+    return new ProjectBufferedWriter(Files.newBufferedWriter(path, charset, options), path);
+  }
+
   public static final class ProjectFileWriter extends FileWriter {
     private final Path path;
 
@@ -179,6 +192,64 @@ public final class ProjectEvents {
     public ProjectFileOutputStream(FileDescriptor fdObj) {
       super(fdObj);
       this.path = null;
+    }
+
+    @Override
+    public void flush() throws IOException {
+      super.flush();
+      emitFileSnapshot(path);
+    }
+
+    @Override
+    public void close() throws IOException {
+      super.close();
+      emitFileSnapshot(path);
+    }
+  }
+
+  private static final class ProjectOutputStream extends OutputStream {
+    private final OutputStream delegate;
+    private final Path path;
+
+    ProjectOutputStream(OutputStream delegate, Path path) {
+      this.delegate = delegate;
+      this.path = path;
+    }
+
+    @Override
+    public void write(int value) throws IOException {
+      delegate.write(value);
+    }
+
+    @Override
+    public void write(byte[] bytes) throws IOException {
+      delegate.write(bytes);
+    }
+
+    @Override
+    public void write(byte[] bytes, int offset, int length) throws IOException {
+      delegate.write(bytes, offset, length);
+    }
+
+    @Override
+    public void flush() throws IOException {
+      delegate.flush();
+      emitFileSnapshot(path);
+    }
+
+    @Override
+    public void close() throws IOException {
+      delegate.close();
+      emitFileSnapshot(path);
+    }
+  }
+
+  private static final class ProjectBufferedWriter extends BufferedWriter {
+    private final Path path;
+
+    ProjectBufferedWriter(Writer delegate, Path path) {
+      super(delegate);
+      this.path = path;
     }
 
     @Override

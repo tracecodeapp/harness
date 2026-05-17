@@ -770,6 +770,16 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'data.bin',
                 Buffer.from([0, 253]).toString('base64')
               );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'nio-stream.bin',
+                Buffer.from([0, 252]).toString('base64')
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'nio-writer.txt',
+                Buffer.from('nio-writer\n', 'utf8').toString('base64')
+              );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
                 null,
                 'stale.txt'
@@ -789,6 +799,8 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   { path: 'printed.txt', contents: Buffer.from('printed\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'stream.bin', contents: Buffer.from([0, 254]).toString('base64'), encoding: 'base64' },
                   { path: 'data.bin', contents: Buffer.from([0, 253]).toString('base64'), encoding: 'base64' },
+                  { path: 'nio-stream.bin', contents: Buffer.from([0, 252]).toString('base64'), encoding: 'base64' },
+                  { path: 'nio-writer.txt', contents: Buffer.from('nio-writer\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'bytes.bin', contents: Buffer.from([0, 255]).toString('base64'), encoding: 'base64' },
                   { path: 'stale.txt', deleted: true },
                 ],
@@ -1253,6 +1265,8 @@ async function main(): Promise<void> {
               '    try (var writer = new PrintWriter("printed.txt")) { writer.println("printed"); }',
               '    try (var stream = new FileOutputStream("stream.bin")) { stream.write(new byte[] { 0, (byte)254 }); }',
               '    try (var stream = new DataOutputStream(new FileOutputStream("data.bin"))) { stream.write(new byte[] { 0, (byte)253 }); }',
+              '    try (var stream = Files.newOutputStream(Path.of("nio-stream.bin"))) { stream.write(new byte[] { 0, (byte)252 }); }',
+              '    try (var writer = Files.newBufferedWriter(Path.of("nio-writer.txt"))) { writer.write("nio-writer\\n"); }',
               '    Files.deleteIfExists(Path.of("stale.txt"));',
               '    System.out.println(Helper.add(2, 3));',
               '    System.out.println("java_args=" + String.join(",", args));',
@@ -1341,6 +1355,25 @@ async function main(): Promise<void> {
       `Java execute-project-java should emit live binary stream file-change project events: ${JSON.stringify(projectExecute.events)}`
     );
     assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'nio-stream.bin' &&
+          event.change.encoding === 'base64' &&
+          event.change.contents === Buffer.from([0, 252]).toString('base64')
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'nio-writer.txt' &&
+            event.change.encoding === 'base64' &&
+            Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'nio-writer\n'
+        ) === true,
+      `Java execute-project-java should emit live NIO stream file-change project events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
       projectExecute.files?.some((file) =>
         file.path === 'generated.txt' &&
           file.encoding === 'base64' &&
@@ -1365,6 +1398,16 @@ async function main(): Promise<void> {
           file.path === 'data.bin' &&
             file.encoding === 'base64' &&
             file.contents === Buffer.from([0, 253]).toString('base64')
+        ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'nio-stream.bin' &&
+            file.encoding === 'base64' &&
+            file.contents === Buffer.from([0, 252]).toString('base64')
+        ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'nio-writer.txt' &&
+            file.encoding === 'base64' &&
+            Buffer.from(file.contents, 'base64').toString('utf8') === 'nio-writer\n'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'bytes.bin' &&
@@ -1415,6 +1458,8 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("printed.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileOutputStream("stream.bin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new DataOutputStream(new tracecode.browser.ProjectEvents.ProjectFileOutputStream("data.bin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newOutputStream(Path.of("nio-stream.bin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newBufferedWriter(Path.of("nio-writer.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.deleteIfExists(Path.of("stale.txt")') === true,
       'Java execute-project-java should route project source file mutations through the live event bridge'
     );
