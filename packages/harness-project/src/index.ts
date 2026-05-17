@@ -23,6 +23,7 @@ import type {
   RuntimeFileMutationPhase,
   RuntimeFile,
   RuntimeFileChange,
+  RuntimeFileDeletion,
   RuntimeFileEncoding,
   RuntimeKernelHostConfig,
   RuntimeKernelHostInfo,
@@ -2149,6 +2150,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private activeDeviceStderr = '';
   private activeCommandStdoutEvent = false;
   private activeCommandStderrEvent = false;
+  private activeRuntimeEventEffects: Promise<void>[] = [];
   private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
@@ -2171,10 +2173,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>
     ): RuntimeProjectCommandRunner<Request> => (
-      (request) => runner({
-        ...request,
-        onEvent: (event) => this.emitRuntimeEvent(event),
-      } as Request)
+      async (request) => {
+        const result = await runner({
+          ...request,
+          onEvent: (event) => this.handleRuntimeCommandEvent(event),
+        } as Request);
+        await this.flushRuntimeEventEffects();
+        return result;
+      }
     );
     const observeFileChange: RuntimeFileChangeObserver = (change, phase) => {
       this.emitRuntimeEvent({ type: 'file-change', change, phase });
@@ -2570,6 +2576,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const previousDeviceStderr = this.activeDeviceStderr;
     const previousStdoutEvent = this.activeCommandStdoutEvent;
     const previousStderrEvent = this.activeCommandStderrEvent;
+    const previousRuntimeEventEffects = this.activeRuntimeEventEffects;
     this.activeCommandEventHandler = options.onEvent;
     this.activeCommandActor = this.createRuntimeActor();
     this.activeCommandStdin = options.stdin ?? '';
@@ -2577,9 +2584,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.activeDeviceStderr = '';
     this.activeCommandStdoutEvent = false;
     this.activeCommandStderrEvent = false;
+    this.activeRuntimeEventEffects = [];
     try {
       const directCppResult = await this.tryRunCppExecutable(command, options);
-      if (directCppResult) return directCppResult;
+      if (directCppResult) {
+        await this.flushRuntimeEventEffects();
+        return directCppResult;
+      }
 
       result = await this.bash.exec(command, {
         cwd: options.cwd ? this.toWorkspacePath(options.cwd) : this.cwd,
@@ -2588,6 +2599,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         signal: options.signal,
         args: options.args,
       });
+      await this.flushRuntimeEventEffects();
       this.emitReturnedOutputEvents(result);
     } finally {
       commandDeviceStdout = this.activeDeviceStdout;
@@ -2599,6 +2611,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.activeDeviceStderr = previousDeviceStderr;
       this.activeCommandStdoutEvent = previousStdoutEvent;
       this.activeCommandStderrEvent = previousStderrEvent;
+      this.activeRuntimeEventEffects = previousRuntimeEventEffects;
     }
     return {
       stdout: `${result.stdout}${commandDeviceStdout}`,
@@ -2640,7 +2653,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, cwd, executable, this.kernelInfo.workspaceAlias));
     if (!this.cppExecutablePaths.has(executablePath)) return null;
 
-    return applyWorkspaceCommandResultFiles(this, await this.cppRunner({
+    const result = await this.cppRunner({
       code: '',
       source: 'run',
       scriptPath: executable.startsWith('./') ? executable.slice(2) : executable,
@@ -2649,8 +2662,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       env,
       stdin: options.stdin ?? '',
       project: await this.snapshot(),
-      onEvent: (event) => this.emitRuntimeEvent(event),
-    }));
+      onEvent: (event) => this.handleRuntimeCommandEvent(event),
+    });
+    await this.flushRuntimeEventEffects();
+    return applyWorkspaceCommandResultFiles(this, result);
   }
 
   async snapshot(options: { entrypoint?: string } = {}): Promise<RuntimeProjectSnapshot> {
@@ -2739,6 +2754,50 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         execute: true,
       },
     };
+  }
+
+  private handleRuntimeCommandEvent(event: RuntimeCommandEvent): void {
+    if (event.type !== 'file-change') {
+      this.emitRuntimeEvent(event);
+      return;
+    }
+
+    const actor = event.actor ?? this.activeCommandActor ?? SYSTEM_ACTOR;
+    const phase = event.phase ?? 'live';
+    const effect = this.applyRuntimeFileChangeSilently(event.change).then(() => {
+      this.emitRuntimeEvent({
+        ...event,
+        phase,
+        actor,
+      });
+    });
+    this.activeRuntimeEventEffects.push(effect);
+  }
+
+  private async flushRuntimeEventEffects(): Promise<void> {
+    while (this.activeRuntimeEventEffects.length > 0) {
+      const effects = this.activeRuntimeEventEffects;
+      this.activeRuntimeEventEffects = [];
+      await Promise.all(effects);
+    }
+  }
+
+  private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {
+    await withSuspendedFsNotifications(this.bash.fs, async () => {
+      const absolutePath = this.toWorkspacePath(change.path);
+      if ((change as RuntimeFileDeletion).deleted === true) {
+        await this.bash.fs.rm(absolutePath, { force: true });
+        return;
+      }
+
+      const changedFile = change as RuntimeFile;
+      await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
+      if ((changedFile.encoding ?? 'utf8') === 'base64') {
+        await this.bash.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
+        return;
+      }
+      await this.bash.fs.writeFile(absolutePath, changedFile.contents);
+    });
   }
 
   private emitRuntimeEvent(event: RuntimeCommandEvent): void {

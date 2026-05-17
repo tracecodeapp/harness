@@ -4825,6 +4825,65 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   );
   commandWorkspace.dispose();
 
+  const liveRuntimeEvents: RuntimeWorkspaceEvent[] = [];
+  const liveReadPromises: Promise<string>[] = [];
+  const liveBinaryReadPromises: Promise<string>[] = [];
+  const liveDeleteReadPromises: Promise<boolean>[] = [];
+  let liveTextEventObservedBeforeRunnerReturn = false;
+  const liveWorkspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'live.js', contents: 'console.log("live")\n' },
+      { path: 'stale-live.txt', contents: 'stale\n' },
+    ],
+    nodeRunner: async (request) => {
+      request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'live-runtime.txt', contents: 'live-runtime\n' } });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      liveTextEventObservedBeforeRunnerReturn = liveRuntimeEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'live-runtime.txt'
+      );
+      request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'live-bytes.bin', contents: 'AP8=', encoding: 'base64' } });
+      request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'stale-live.txt', deleted: true } });
+      return { stdout: 'live-runner\n', stderr: '', exitCode: 0 };
+    },
+  });
+  const liveResult = await liveWorkspace.runCommand('node live.js', {
+    onEvent: (event) => {
+      liveRuntimeEvents.push(event);
+      if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'live-runtime.txt') {
+        liveReadPromises.push(liveWorkspace.readFile('live-runtime.txt'));
+      }
+      if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'live-bytes.bin') {
+        liveBinaryReadPromises.push(liveWorkspace.readFile('live-bytes.bin', 'base64'));
+      }
+      if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'stale-live.txt') {
+        liveDeleteReadPromises.push(liveWorkspace.readFile('stale-live.txt').then(() => false, () => true));
+      }
+    },
+  });
+  assertCondition(liveResult.exitCode === 0, `live runtime event command should succeed: ${liveResult.stderr}`);
+  assertCondition(
+    liveTextEventObservedBeforeRunnerReturn,
+    `runtime live file-change event should be emitted before the runner completes: ${JSON.stringify(liveRuntimeEvents)}`
+  );
+  assertCondition(await liveWorkspace.readFile('live-runtime.txt') === 'live-runtime\n', 'runtime live file-change events should update workspace files');
+  assertCondition(await liveWorkspace.readFile('live-bytes.bin', 'base64') === 'AP8=', 'runtime live binary file-change events should update workspace files');
+  await assertRejectsAsync(() => liveWorkspace.readFile('stale-live.txt'), 'runtime live deletion events should update workspace files');
+  assertCondition(
+    (await Promise.all(liveReadPromises)).includes('live-runtime\n'),
+    `runtime live text changes should be readable before onEvent returns: ${JSON.stringify(liveRuntimeEvents)}`
+  );
+  assertCondition(
+    (await Promise.all(liveBinaryReadPromises)).includes('AP8='),
+    `runtime live binary changes should be readable before onEvent returns: ${JSON.stringify(liveRuntimeEvents)}`
+  );
+  assertCondition(
+    (await Promise.all(liveDeleteReadPromises)).includes(true),
+    `runtime live deletions should be visible before onEvent returns: ${JSON.stringify(liveRuntimeEvents)}`
+  );
+  liveWorkspace.dispose();
+
   const shellWorkspace = await createRuntimeWorkspace();
   const shellWatchEvents: RuntimeWorkspaceEvent[] = [];
   const shellCommandEvents: RuntimeCommandEvent[] = [];
