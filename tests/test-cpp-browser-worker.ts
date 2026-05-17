@@ -353,6 +353,37 @@ async function main(): Promise<void> {
         stdin: '',
         project: { files: [...projectFiles, ...(inlineAbsoluteIncludeCompile.files || [])] },
       });
+      const canonicalProject = {
+        cwd: '/home/ada/weather-api',
+        workspaceRoot: '/home/ada/weather-api',
+        workspaceAlias: '/workspace',
+        files: projectFiles,
+      };
+      const canonicalProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/home/ada/weather-api/src/absolute_main.cpp',
+        args: [
+          '/home/ada/weather-api/src/absolute_main.cpp',
+          '-I',
+          '/home/ada/weather-api/include',
+          '-isystem/home/ada/weather-api/include',
+          '-o',
+          '/home/ada/weather-api/out/canonical-app',
+        ],
+        cwd: '/home/ada/weather-api/src',
+        env: { CPATH: '/home/ada/weather-api/include' },
+        stdin: '',
+        project: canonicalProject,
+      });
+      const canonicalProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/home/ada/weather-api/out/canonical-app',
+        args: [],
+        cwd: '/home/ada/weather-api/src',
+        env: {},
+        stdin: '',
+        project: { ...canonicalProject, files: [...projectFiles, ...(canonicalProjectCompile.files || [])] },
+      });
       let outsideCwdError = '';
       try {
         await send('execute-project-cpp', {
@@ -720,6 +751,8 @@ async function main(): Promise<void> {
         absoluteProjectRun,
         inlineAbsoluteIncludeCompile,
         inlineAbsoluteIncludeRun,
+        canonicalProjectCompile,
+        canonicalProjectRun,
         outsideCwdError,
         outsideIncludeArgError,
         outsideRelativeIncludeArgError,
@@ -784,6 +817,18 @@ async function main(): Promise<void> {
       files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
     };
     const inlineAbsoluteIncludeRun = results.inlineAbsoluteIncludeRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const canonicalProjectCompile = results.canonicalProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const canonicalProjectRun = results.canonicalProjectRun as {
       stdout?: string;
       stderr?: string;
       exitCode?: number;
@@ -1060,6 +1105,15 @@ async function main(): Promise<void> {
     assertCondition(
       inlineAbsoluteIncludeRun.exitCode === 0 && inlineAbsoluteIncludeRun.stdout === '99\n',
       `C++ browser project run should execute inline absolute include output: ${JSON.stringify(inlineAbsoluteIncludeRun)}`
+    );
+    assertCondition(
+      canonicalProjectCompile.exitCode === 0 &&
+        canonicalProjectCompile.files?.some((file) => file.path === 'out/canonical-app' && file.encoding === 'base64'),
+      `C++ browser project compile should honor canonical /home workspace roots: ${JSON.stringify(canonicalProjectCompile)}`
+    );
+    assertCondition(
+      canonicalProjectRun.exitCode === 0 && canonicalProjectRun.stdout === '99\n',
+      `C++ browser project run should execute canonical /home workspace paths: ${JSON.stringify(canonicalProjectRun)}`
     );
     assertCondition(
       outsideCwdError.includes('Project cwd must stay inside the workspace'),

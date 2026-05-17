@@ -112,13 +112,35 @@ async function compileWithYowasp(payload) {
   }
 }
 
-function normalizeProjectPath(pathname) {
+function normalizeProjectRoot(value) {
+  const raw = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!raw || !raw.startsWith('/')) return '';
+  return raw || '/';
+}
+
+function projectWorkspaceRoots(context) {
+  const project = context?.project && typeof context.project === 'object' ? context.project : context;
+  const roots = [];
+  for (const value of [project?.workspaceRoot, project?.cwd, project?.workspaceAlias, '/workspace']) {
+    const root = normalizeProjectRoot(value);
+    if (root && !roots.includes(root)) roots.push(root);
+  }
+  return roots;
+}
+
+function stripProjectWorkspaceRoot(context, pathname) {
   const raw = String(pathname || '').replace(/\\/g, '/');
-  const withoutWorkspace = raw === '/workspace'
-    ? ''
-    : raw.startsWith('/workspace/')
-      ? raw.slice('/workspace/'.length)
-      : raw.replace(/^\/+/, '');
+  for (const root of projectWorkspaceRoots(context)) {
+    if (raw === root) return '';
+    if (root !== '/' && raw.startsWith(`${root}/`)) return raw.slice(root.length + 1);
+  }
+  return null;
+}
+
+function normalizeProjectPath(pathname, context) {
+  const raw = String(pathname || '').replace(/\\/g, '/');
+  const stripped = stripProjectWorkspaceRoot(context, raw);
+  const withoutWorkspace = stripped === null ? raw.replace(/^\/+/, '') : stripped;
   const parts = [];
   for (const part of withoutWorkspace.split('/')) {
     if (!part || part === '.') continue;
@@ -151,9 +173,9 @@ function includeRelativePath(path, includePath) {
   return path.startsWith(`${includePath}/`) ? path.slice(includePath.length + 1) : '';
 }
 
-function relativePathFromCwd(path, cwd) {
-  const normalizedPath = normalizeProjectPath(path);
-  const normalizedCwd = normalizeProjectPath(cwd);
+function relativePathFromCwd(path, cwd, context) {
+  const normalizedPath = normalizeProjectPath(path, context);
+  const normalizedCwd = normalizeProjectPath(cwd, context);
   if (!normalizedCwd) return normalizedPath;
   const pathParts = normalizedPath.split('/').filter(Boolean);
   const cwdParts = normalizedCwd.split('/').filter(Boolean);
@@ -190,19 +212,19 @@ async function compileProjectWithYowasp(payload) {
   }
 
   const sourceFiles = {};
-  const cwd = normalizeProjectPath(payload?.cwd || '');
+  const cwd = normalizeProjectPath(payload?.cwd || '', payload);
   const includePaths = Array.isArray(payload?.includePaths)
-    ? payload.includePaths.map((path) => normalizeProjectPath(path)).filter(Boolean)
+    ? payload.includePaths.map((path) => normalizeProjectPath(path, payload)).filter(Boolean)
     : [];
   for (const file of payload?.project?.files || []) {
-    const path = normalizeProjectPath(file.path);
+    const path = normalizeProjectPath(file.path, payload);
     if (!path) continue;
     const bytes = projectFileBytes(file);
     sourceFiles[path] = bytes;
     if (cwd && path.startsWith(`${cwd}/`)) {
       sourceFiles[path.slice(cwd.length + 1)] = bytes;
     }
-    const relativeFromCwd = relativePathFromCwd(path, cwd);
+    const relativeFromCwd = relativePathFromCwd(path, cwd, payload);
     if (relativeFromCwd && relativeFromCwd !== path && sourceFiles[relativeFromCwd] === undefined) {
       sourceFiles[relativeFromCwd] = bytes;
     }
@@ -238,17 +260,17 @@ async function compileProjectWithYowasp(payload) {
     }
   }
   const outputIndex = requestedArgs.indexOf('-o');
-  const outputPath = normalizeProjectPath(outputIndex >= 0 ? requestedArgs[outputIndex + 1] || 'a.out' : 'a.out') || 'a.out';
+  const outputPath = normalizeProjectPath(outputIndex >= 0 ? requestedArgs[outputIndex + 1] || 'a.out' : 'a.out', payload) || 'a.out';
   const workspaceOutputPath = payload?.workspaceOutputPath
-    ? normalizeProjectPath(payload.workspaceOutputPath)
+    ? normalizeProjectPath(payload.workspaceOutputPath, payload)
     : cwd && !outputPath.startsWith(`${cwd}/`)
-      ? normalizeProjectPath(`${cwd}/${outputPath}`)
+      ? normalizeProjectPath(`${cwd}/${outputPath}`, payload)
       : outputPath;
   const compilerCommand = payload?.compilerCommand === 'clang' ? 'clang' : 'clang++';
   const defaultStandard = compilerCommand === 'clang' ? 'c17' : 'c++23';
   const compileArgs = [
     compilerCommand,
-    ...requestedArgs.map((arg, index) => outputIndex >= 0 && index === outputIndex + 1 ? outputPath : normalizeCompilePathArg(arg)),
+    ...requestedArgs.map((arg, index) => outputIndex >= 0 && index === outputIndex + 1 ? outputPath : normalizeCompilePathArg(arg, payload)),
     ...(outputIndex >= 0 ? [] : ['-o', outputPath]),
   ];
   if (!compileArgs.some((arg) => arg.startsWith('-std='))) {
@@ -306,11 +328,25 @@ async function compileProjectWithYowasp(payload) {
   }
 }
 
-function normalizeCompilePathArg(arg) {
-  if (arg === '/workspace') return '.';
-  if (arg.startsWith('/workspace/')) return normalizeProjectPath(arg);
-  if (arg.startsWith('-I/workspace/')) return `-I${normalizeProjectPath(arg.slice(2))}`;
-  if (arg.startsWith('-L/workspace/')) return `-L${normalizeProjectPath(arg.slice(2))}`;
+function normalizePrefixedPathArg(arg, prefix, context) {
+  if (!arg.startsWith(prefix) || arg.length <= prefix.length) return null;
+  const value = arg.slice(prefix.length);
+  if (!value.startsWith('/')) return null;
+  const stripped = stripProjectWorkspaceRoot(context, value);
+  return stripped === null ? null : `${prefix}${normalizeProjectPath(stripped, context)}`;
+}
+
+function normalizeCompilePathArg(arg, context) {
+  if (stripProjectWorkspaceRoot(context, arg) === '') return '.';
+  if (arg.startsWith('/') && stripProjectWorkspaceRoot(context, arg) !== null) {
+    return normalizeProjectPath(arg, context);
+  }
+  const includeArg = normalizePrefixedPathArg(arg, '-I', context);
+  if (includeArg !== null) return includeArg;
+  const libraryArg = normalizePrefixedPathArg(arg, '-L', context);
+  if (libraryArg !== null) return libraryArg;
+  const systemIncludeArg = normalizePrefixedPathArg(arg, '-isystem', context);
+  if (systemIncludeArg !== null) return systemIncludeArg;
   return arg;
 }
 

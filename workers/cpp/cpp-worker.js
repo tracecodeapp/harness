@@ -4081,13 +4081,39 @@ function projectPathBytes(file) {
     : encodeUtf8(String(file?.contents || ''));
 }
 
-function relativeProjectPath(pathname) {
+function projectFromContext(context) {
+  return context?.project && typeof context.project === 'object' ? context.project : context;
+}
+
+function normalizeProjectRoot(value) {
+  const raw = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!raw || !raw.startsWith('/')) return '';
+  return raw || '/';
+}
+
+function projectWorkspaceRoots(context) {
+  const project = projectFromContext(context) || {};
+  const roots = [];
+  for (const value of [project.workspaceRoot, project.cwd, project.workspaceAlias, '/workspace']) {
+    const root = normalizeProjectRoot(value);
+    if (root && !roots.includes(root)) roots.push(root);
+  }
+  return roots;
+}
+
+function stripProjectWorkspaceRoot(context, pathname) {
   const raw = String(pathname || '').replace(/\\/g, '/');
-  const withoutWorkspace = raw === '/workspace'
-    ? ''
-    : raw.startsWith('/workspace/')
-      ? raw.slice('/workspace/'.length)
-      : raw.replace(/^\/+/, '');
+  for (const root of projectWorkspaceRoots(context)) {
+    if (raw === root) return '';
+    if (root !== '/' && raw.startsWith(`${root}/`)) return raw.slice(root.length + 1);
+  }
+  return null;
+}
+
+function relativeProjectPath(pathname, context) {
+  const raw = String(pathname || '').replace(/\\/g, '/');
+  const stripped = stripProjectWorkspaceRoot(context, raw);
+  const withoutWorkspace = stripped === null ? raw.replace(/^\/+/, '') : stripped;
   const parts = [];
   for (const part of withoutWorkspace.split('/')) {
     if (!part || part === '.') continue;
@@ -4097,13 +4123,10 @@ function relativeProjectPath(pathname) {
   return parts.join('/');
 }
 
-function relativeProjectOperandPath(pathname) {
+function relativeProjectOperandPath(pathname, context) {
   const raw = String(pathname || '').replace(/\\/g, '/');
-  const withoutWorkspace = raw === '/workspace'
-    ? ''
-    : raw.startsWith('/workspace/')
-      ? raw.slice('/workspace/'.length)
-      : raw.replace(/^\/+/, '');
+  const stripped = stripProjectWorkspaceRoot(context, raw);
+  const withoutWorkspace = stripped === null ? raw.replace(/^\/+/, '') : stripped;
   const parts = [];
   for (const part of withoutWorkspace.split('/')) {
     if (!part || part === '.') continue;
@@ -4118,11 +4141,12 @@ function relativeProjectOperandPath(pathname) {
 }
 
 function requestCwdRelative(request) {
-  const cwd = String(request?.cwd || '/workspace').replace(/\\/g, '/');
-  const projectCwd = String(request?.project?.cwd || '/workspace').replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  if (cwd === projectCwd) return '';
-  if (cwd.startsWith(`${projectCwd}/`)) {
-    return relativeProjectPath(cwd.slice(projectCwd.length + 1));
+  const defaultRoot = projectWorkspaceRoots(request)[0] || '/workspace';
+  const cwd = String(request?.cwd || defaultRoot).replace(/\\/g, '/');
+  if (!cwd.startsWith('/')) return relativeProjectOperandPath(cwd, request);
+  const stripped = stripProjectWorkspaceRoot(request, cwd);
+  if (stripped !== null) {
+    return relativeProjectPath(stripped, request);
   }
   throw new Error(`Project cwd must stay inside the workspace: ${cwd}`);
 }
@@ -4130,19 +4154,25 @@ function requestCwdRelative(request) {
 function resolveProjectRequestPath(request, value, fallback = '') {
   const text = String(value || fallback);
   if (!text || text === '<compile>' || text === '<project>') return fallback;
-  if (text.startsWith('/workspace')) return relativeProjectPath(text);
-  if (text.startsWith('/')) throw new Error(`Project path escapes workspace: ${text}`);
+  if (text.startsWith('/')) {
+    const stripped = stripProjectWorkspaceRoot(request, text);
+    if (stripped === null) throw new Error(`Project path escapes workspace: ${text}`);
+    return relativeProjectPath(stripped, request);
+  }
   const cwd = requestCwdRelative(request);
-  return relativeProjectOperandPath(cwd ? `${cwd}/${text}` : text);
+  return relativeProjectOperandPath(cwd ? `${cwd}/${text}` : text, request);
 }
 
 function projectPathRelativeToWorkspace(request, value) {
   const text = String(value || '');
   if (!text) return '';
-  if (text.startsWith('/workspace')) return relativeProjectPath(text);
-  if (text.startsWith('/')) throw new Error(`Project path escapes workspace: ${text}`);
+  if (text.startsWith('/')) {
+    const stripped = stripProjectWorkspaceRoot(request, text);
+    if (stripped === null) throw new Error(`Project path escapes workspace: ${text}`);
+    return relativeProjectPath(stripped, request);
+  }
   const cwd = requestCwdRelative(request);
-  return relativeProjectOperandPath(cwd ? `${cwd}/${text}` : text);
+  return relativeProjectOperandPath(cwd ? `${cwd}/${text}` : text, request);
 }
 
 function projectCompilerPathArg(request, value) {
@@ -4230,16 +4260,8 @@ function projectCompileIncludePaths(request) {
       }
       continue;
     }
-    if (arg.startsWith('-I/workspace/')) {
-      includePaths.push(relativeProjectPath(arg.slice(2)));
-      continue;
-    }
     if (arg.startsWith('-I') && arg.length > 2 && !arg.startsWith('-include')) {
       includePaths.push(resolveProjectRequestPath(request, arg.slice(2), arg.slice(2)));
-      continue;
-    }
-    if (arg.startsWith('-isystem/workspace/')) {
-      includePaths.push(relativeProjectPath(arg.slice('-isystem'.length)));
       continue;
     }
     if (arg.startsWith('-isystem') && arg.length > '-isystem'.length) {
@@ -4259,24 +4281,22 @@ function projectCompileWorkspaceOutputPath(request) {
     const inlineOutputArg = args.find((arg) => arg.startsWith('-o') && arg.length > 2);
     if (inlineOutputArg) {
       const inlineValue = inlineOutputArg.slice(2);
-      if (inlineValue.startsWith('/workspace/')) {
-        return relativeProjectPath(inlineValue);
-      }
       if (inlineValue.startsWith('/')) {
-        throw new Error(`Project path escapes workspace: ${inlineValue}`);
+        const stripped = stripProjectWorkspaceRoot(request, inlineValue);
+        if (stripped === null) throw new Error(`Project path escapes workspace: ${inlineValue}`);
+        return relativeProjectPath(stripped, request);
       }
-      return relativeProjectOperandPath(cwd ? `${cwd}/${inlineValue}` : inlineValue);
+      return relativeProjectOperandPath(cwd ? `${cwd}/${inlineValue}` : inlineValue, request);
     }
-    return relativeProjectOperandPath(cwd ? `${cwd}/a.out` : 'a.out');
+    return relativeProjectOperandPath(cwd ? `${cwd}/a.out` : 'a.out', request);
   }
   const value = args[outputIndex + 1] || 'a.out';
-  if (value.startsWith('/workspace/')) {
-    return relativeProjectPath(value);
-  }
   if (value.startsWith('/')) {
-    throw new Error(`Project path escapes workspace: ${value}`);
+    const stripped = stripProjectWorkspaceRoot(request, value);
+    if (stripped === null) throw new Error(`Project path escapes workspace: ${value}`);
+    return relativeProjectPath(stripped, request);
   }
-  return relativeProjectOperandPath(cwd ? `${cwd}/${value}` : value);
+  return relativeProjectOperandPath(cwd ? `${cwd}/${value}` : value, request);
 }
 
 function projectCompileArgs(request) {
@@ -4320,26 +4340,14 @@ function projectCompileArgs(request) {
       }
       continue;
     }
-    if (arg.startsWith('-I/workspace/')) {
-      mapped.push('-I.');
-      continue;
-    }
     if (arg.startsWith('-I') && arg.length > 2 && !arg.startsWith('-include')) {
       mapped.push('-I.');
       projectPathRelativeToWorkspace(request, arg.slice(2));
       continue;
     }
-    if (arg.startsWith('-L/workspace/')) {
-      mapped.push('-L.');
-      continue;
-    }
-    if (/^-L(?!\/).+/.test(arg)) {
+    if (arg.startsWith('-L') && arg.length > 2) {
       mapped.push('-L.');
       projectPathRelativeToWorkspace(request, arg.slice(2));
-      continue;
-    }
-    if (arg.startsWith('-isystem/workspace/')) {
-      mapped.push('-isystem.');
       continue;
     }
     if (arg.startsWith('-isystem') && arg.length > '-isystem'.length) {
@@ -4355,7 +4363,7 @@ function projectCompileArgs(request) {
       mapped.push(projectCompilerSourcePathArg(request, arg));
       continue;
     }
-    if (/^\/workspace\/.*\.(?:a|lib|o|obj)$/i.test(arg)) {
+    if (/^\/.*\.(?:a|lib|o|obj)$/i.test(arg) && stripProjectWorkspaceRoot(request, arg) !== null) {
       mapped.push(projectCompilerLinkerArtifactPathArg(request, arg));
       continue;
     }
@@ -4370,11 +4378,11 @@ function projectCompileArgs(request) {
 function createProjectRuntimeFs(project) {
   const fs = new InMemoryFileSystem();
   for (const directory of project?.directories || []) {
-    const path = relativeProjectPath(directory);
+    const path = relativeProjectPath(directory, project);
     if (path) fs.addDirectory(`/${path}`);
   }
   for (const file of project?.files || []) {
-    const path = relativeProjectPath(file.path);
+    const path = relativeProjectPath(file.path, project);
     if (path) fs.addFile(`/${path}`, projectPathBytes(file));
   }
   return fs;
@@ -4450,7 +4458,7 @@ async function handleProjectCpp(request, messageId) {
         exitCode: 1,
       };
     }
-    const outputPath = relativeProjectPath(compileResult.outputPath || 'a.out') || 'a.out';
+    const outputPath = relativeProjectPath(compileResult.outputPath || 'a.out', request) || 'a.out';
     const programBytes = new Uint8Array(compileResult.programBuffer);
     return {
       stdout: compileResult.stdout || '',
@@ -4467,7 +4475,7 @@ async function handleProjectCpp(request, messageId) {
   const fs = createProjectRuntimeFs(request?.project);
   const before = snapshotProjectFs(fs);
   fs.setFileChangeObserver((change) => {
-    const relativePath = relativeProjectPath(change.path);
+    const relativePath = relativeProjectPath(change.path, request?.project);
     if (!relativePath) return;
     events.fileChange(change.deleted
       ? { path: relativePath, deleted: true }
