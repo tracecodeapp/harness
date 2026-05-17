@@ -3,6 +3,9 @@ let warmupPromise = null;
 let executeExport = null;
 let executeProjectExport = null;
 let configuredAssetBaseUrl = null;
+let runtimeModule = null;
+let runtimeFsHooksInstalled = false;
+let activeProjectIo = null;
 const WORKER_DEBUG = (() => {
   try {
     return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
@@ -27,6 +30,28 @@ let idleTimer = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let queuedTasks = 0;
 
+function encodeUtf8(value) {
+  return new TextEncoder().encode(value);
+}
+
+function decodeUtf8(value, options) {
+  return new TextDecoder('utf-8', options).decode(value);
+}
+
+function encodeBase64(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function arraysEqual(left, right) {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
 function emitRuntimeDiagnostic(level, phase, message, detail) {
   if (!WORKER_DEBUG && level !== 'error') return;
   const method = level === 'error' ? 'error' : level === 'warn' ? 'warn' : level === 'debug' ? 'debug' : 'info';
@@ -47,6 +72,171 @@ function now() {
 
 function elapsedMs(startedAt) {
   return Math.max(0, Math.round(now() - startedAt));
+}
+
+function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
+  if (typeof path !== 'string' || !path) return null;
+  const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
+  if (normalized === '/dev/stdout' || normalized === '/dev/stderr' || normalized.startsWith('/proc/')) return null;
+
+  const roots = ['/workspace'];
+  const project = request?.project;
+  if (typeof project?.workspaceRoot === 'string' && project.workspaceRoot) roots.push(project.workspaceRoot);
+  if (typeof project?.workspaceAlias === 'string' && project.workspaceAlias) roots.push(project.workspaceAlias);
+
+  for (const root of roots.sort((left, right) => right.length - left.length)) {
+    const cleanRoot = root.replace(/\/+$/, '') || '/';
+    if (normalized === cleanRoot) return null;
+    if (normalized.startsWith(`${cleanRoot}/`)) {
+      const relative = normalized.slice(cleanRoot.length + 1);
+      return relative && !relative.startsWith('../') && relative !== '..' ? relative : null;
+    }
+  }
+
+  if (!normalized.startsWith('/') && normalized !== '.' && !normalized.startsWith('../') && normalized !== '..') {
+    return normalized;
+  }
+  return null;
+}
+
+function encodeRuntimeFileChange(path, bytes) {
+  try {
+    const text = decodeUtf8(bytes, { fatal: true });
+    if (arraysEqual(encodeUtf8(text), bytes)) {
+      return { path, contents: text };
+    }
+  } catch {
+    // Binary or invalid UTF-8 content is sent as base64.
+  }
+  return { path, contents: encodeBase64(bytes), encoding: 'base64' };
+}
+
+function emitProjectEvent(payload) {
+  if (!activeProjectIo?.messageId) return;
+  self.postMessage({ id: activeProjectIo.messageId, type: 'project-event', payload });
+}
+
+function emitProjectEventJson(payloadJson) {
+  if (!activeProjectIo?.messageId || typeof payloadJson !== 'string') return;
+  try {
+    emitProjectEvent(JSON.parse(payloadJson));
+  } catch (error) {
+    emitRuntimeDiagnostic('warn', 'project-event', 'C# host emitted an invalid project event payload.', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function emitProjectOutput(stream, data) {
+  if (!data) return;
+  emitProjectEvent({
+    type: 'output',
+    stream,
+    device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
+    data,
+  });
+}
+
+function flushProjectOutput(stream) {
+  const context = activeProjectIo;
+  if (!context) return;
+  const buffer = stream === 'stdout' ? context.stdoutBytes : context.stderrBytes;
+  if (!buffer.length) return;
+  const bytes = new Uint8Array(buffer);
+  buffer.length = 0;
+  emitProjectOutput(stream, decodeUtf8(bytes));
+}
+
+function writeProjectOutputByte(stream, value) {
+  const context = activeProjectIo;
+  if (!context || typeof value !== 'number' || value < 0) return;
+  const buffer = stream === 'stdout' ? context.stdoutBytes : context.stderrBytes;
+  buffer.push(value & 0xff);
+  if (value === 10) flushProjectOutput(stream);
+}
+
+function readProjectInputByte() {
+  const context = activeProjectIo;
+  if (!context) return null;
+  if (context.stdinIndex >= context.stdinBytes.length) return null;
+  return context.stdinBytes[context.stdinIndex++];
+}
+
+function emitProjectFileSnapshot(path) {
+  const context = activeProjectIo;
+  const fs = runtimeModule?.FS;
+  const relativePath = normalizeProjectFsPath(path, context?.request);
+  if (!context || !fs || !relativePath) return;
+  try {
+    const stat = fs.stat(path);
+    if (!stat || !fs.isFile(stat.mode)) return;
+    const bytes = fs.readFile(path, { encoding: 'binary' });
+    emitProjectEvent({ type: 'file-change', phase: 'live', change: encodeRuntimeFileChange(relativePath, bytes) });
+  } catch {
+    // The file may have been deleted or may be a special device.
+  }
+}
+
+function emitProjectFileDelete(path) {
+  const relativePath = normalizeProjectFsPath(path);
+  if (!relativePath) return;
+  emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relativePath, deleted: true } });
+}
+
+function installRuntimeFsHooks(runtime) {
+  const module = runtime?.Module;
+  const fs = module?.FS;
+  if (!module || !fs || runtimeFsHooksInstalled) return;
+  runtimeModule = module;
+  runtimeFsHooksInstalled = true;
+
+  const originalWrite = fs.write;
+  if (typeof originalWrite === 'function') {
+    fs.write = function writeWithProjectEvents(stream, buffer, offset, length, position, canOwn) {
+      const result = originalWrite.apply(this, arguments);
+      if (activeProjectIo && stream?.path) emitProjectFileSnapshot(stream.path);
+      return result;
+    };
+  }
+
+  const originalWriteFile = fs.writeFile;
+  if (typeof originalWriteFile === 'function') {
+    fs.writeFile = function writeFileWithProjectEvents(path) {
+      const result = originalWriteFile.apply(this, arguments);
+      if (activeProjectIo) emitProjectFileSnapshot(path);
+      return result;
+    };
+  }
+
+  const originalUnlink = fs.unlink;
+  if (typeof originalUnlink === 'function') {
+    fs.unlink = function unlinkWithProjectEvents(path) {
+      const result = originalUnlink.apply(this, arguments);
+      if (activeProjectIo) emitProjectFileDelete(path);
+      return result;
+    };
+  }
+
+  const originalRmdir = fs.rmdir;
+  if (typeof originalRmdir === 'function') {
+    fs.rmdir = function rmdirWithProjectEvents(path) {
+      const result = originalRmdir.apply(this, arguments);
+      if (activeProjectIo) emitProjectFileDelete(path);
+      return result;
+    };
+  }
+
+  const originalRename = fs.rename;
+  if (typeof originalRename === 'function') {
+    fs.rename = function renameWithProjectEvents(oldPath, newPath) {
+      const result = originalRename.apply(this, arguments);
+      if (activeProjectIo) {
+        emitProjectFileDelete(oldPath);
+        emitProjectFileSnapshot(newPath);
+      }
+      return result;
+    };
+  }
 }
 
 function clearIdleTimer() {
@@ -109,7 +299,19 @@ async function loadRuntime(assetBaseUrl) {
     runtimePromise = (async () => {
       const startedAt = now();
       const { dotnet } = await import(resolveAssetUrl(resolvedAssetBaseUrl, '_framework/dotnet.js'));
-      const runtime = await dotnet.withApplicationArguments('tracecode-csharp-worker').create();
+      const runtimeBuilder = dotnet
+        .withModuleConfig({
+          stdin: readProjectInputByte,
+          stdout: (value) => writeProjectOutputByte('stdout', value),
+          stderr: (value) => writeProjectOutputByte('stderr', value),
+        })
+        .withApplicationArguments('tracecode-csharp-worker');
+      const runtime = await runtimeBuilder.create();
+      runtimeModule = runtime?.Module ?? null;
+      installRuntimeFsHooks(runtime);
+      runtime.setModuleImports('tracecode', {
+        emitProjectEvent: emitProjectEventJson,
+      });
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
       executeProjectExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecuteProject;
@@ -257,7 +459,22 @@ async function handleMessage(message) {
     const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
     const { assetBaseUrl, idleTimeoutMs, timeoutMs, ...request } = message.payload ?? {};
     const hostCallStartedAt = now();
-    const result = JSON.parse(executeProjectExport(JSON.stringify(request)));
+    activeProjectIo = {
+      messageId: message.id,
+      request,
+      stdinBytes: encodeUtf8(request.stdin || ''),
+      stdinIndex: 0,
+      stdoutBytes: [],
+      stderrBytes: [],
+    };
+    let result;
+    try {
+      result = JSON.parse(executeProjectExport(JSON.stringify(request)));
+    } finally {
+      flushProjectOutput('stdout');
+      flushProjectOutput('stderr');
+      activeProjectIo = null;
+    }
     const hostCallMs = elapsedMs(hostCallStartedAt);
     return {
       ...result,
@@ -285,7 +502,7 @@ self.addEventListener('message', (event) => {
   queue = queue
     .catch(() => {})
     .then(async () => {
-      const result = await handleMessage({ type, payload });
+      const result = await handleMessage({ id, type, payload });
       self.postMessage({ id, type, payload: result });
     })
     .catch((error) => {

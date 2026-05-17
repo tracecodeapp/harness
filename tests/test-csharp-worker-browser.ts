@@ -45,6 +45,18 @@ interface CSharpProjectWorkerResponse {
     encoding?: 'utf8' | 'base64';
     deleted?: true;
   }>;
+  events?: Array<{
+    type: string;
+    stream?: 'stdout' | 'stderr';
+    data?: string;
+    phase?: string;
+    change?: {
+      path: string;
+      contents?: string;
+      encoding?: 'utf8' | 'base64';
+      deleted?: true;
+    };
+  }>;
 }
 
 type CSharpProjectWorkerRequest = {
@@ -270,14 +282,19 @@ async function runProjectWorkerCase(
       worker.addEventListener('message', (event) => {
         const id = event.data?.id;
         if (!id || !pending.has(id)) return;
-        const { resolve, reject, timeoutId } = pending.get(id);
+        const pendingMessage = pending.get(id);
+        const { resolve, reject, timeoutId } = pendingMessage;
+        if (event.data.type === 'project-event') {
+          pendingMessage.events.push(event.data.payload);
+          return;
+        }
         pending.delete(id);
         clearTimeout(timeoutId);
         if (event.data.type === 'error') {
           reject(new Error(event.data.payload?.error ?? 'C# worker error'));
           return;
         }
-        resolve(event.data.payload);
+        resolve({ ...event.data.payload, events: pendingMessage.events });
       });
 
       worker.addEventListener('error', (event) => {
@@ -290,7 +307,7 @@ async function runProjectWorkerCase(
           const timeoutId = setTimeout(() => {
             terminate(new Error(`C# worker request timed out: ${type}`));
           }, workerRequestTimeoutMs);
-          pending.set(id, { resolve, reject, timeoutId });
+          pending.set(id, { resolve, reject, timeoutId, events: [] });
           worker.postMessage({ id, type, payload });
         });
       }
@@ -329,14 +346,19 @@ async function runProjectWorkerSequenceCase(
       worker.addEventListener('message', (event) => {
         const id = event.data?.id;
         if (!id || !pending.has(id)) return;
-        const { resolve, reject, timeoutId } = pending.get(id);
+        const pendingMessage = pending.get(id);
+        const { resolve, reject, timeoutId } = pendingMessage;
+        if (event.data.type === 'project-event') {
+          pendingMessage.events.push(event.data.payload);
+          return;
+        }
         pending.delete(id);
         clearTimeout(timeoutId);
         if (event.data.type === 'error') {
           reject(new Error(event.data.payload?.error ?? 'C# worker error'));
           return;
         }
-        resolve(event.data.payload);
+        resolve({ ...event.data.payload, events: pendingMessage.events });
       });
 
       worker.addEventListener('error', (event) => {
@@ -349,7 +371,7 @@ async function runProjectWorkerSequenceCase(
           const timeoutId = setTimeout(() => {
             terminate(new Error(`C# worker request timed out: ${type}`));
           }, workerRequestTimeoutMs);
-          pending.set(id, { resolve, reject, timeoutId });
+          pending.set(id, { resolve, reject, timeoutId, events: [] });
           worker.postMessage({ id, type, payload });
         });
       }
@@ -2634,16 +2656,57 @@ async function main(): Promise<void> {
       `C# project worker should preserve stdout/stdin/env/args: ${projectRun.stdout}`
     );
     assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          typeof event.data === 'string' &&
+          event.data.includes('browser-csharp-project')
+      ) === true,
+      `C# project worker should stream stdout events, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
       projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,
       `C# project worker should return generated text file changes, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'final-diff' &&
+          event.change?.path === 'src/generated.txt' &&
+          event.change.contents === '42\n'
+      ) === true,
+      `C# project worker should stream generated text file changes, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/bytes.bin' && file.encoding === 'base64' && file.contents === 'AP8=') === true,
       `C# project worker should return generated binary file changes, received ${JSON.stringify(projectRun.files)}`
     );
     assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'final-diff' &&
+          event.change?.path === 'src/bytes.bin' &&
+          event.change.encoding === 'base64' &&
+          event.change.contents === 'AP8='
+      ) === true,
+      `C# project worker should stream generated binary file changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
       projectRun.files?.some((file) => file.path === 'src/stale.txt' && file.deleted === true) === true,
       `C# project worker should return deleted files, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'final-diff' &&
+          event.change?.path === 'src/stale.txt' &&
+          event.change.deleted === true
+      ) === true,
+      `C# project worker should stream deleted file changes, received ${JSON.stringify(projectRun.events)}`
     );
 
     const projectBuild = await runProjectWorkerCase(

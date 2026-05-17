@@ -36,6 +36,9 @@ public static partial class CompilerHost
         MaxDepth = 256,
     };
 
+    [JSImport("emitProjectEvent", "tracecode")]
+    internal static partial void EmitProjectEventJson(string payloadJson);
+
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static string Execute(string requestJson)
@@ -157,7 +160,7 @@ public static partial class CompilerHost
         TextWriter originalOut = Console.Out;
         string originalDirectory = Directory.GetCurrentDirectory();
         var originalEnvironment = Environment.GetEnvironmentVariables();
-        using StringWriter capturedOut = new();
+        using StreamingProjectTextWriter capturedOut = new("stdout");
         Console.SetOut(capturedOut);
 
         try
@@ -200,12 +203,14 @@ public static partial class CompilerHost
             if (string.Equals(request.Source, "compile", StringComparison.Ordinal))
             {
                 string buildOutput = FormatDotnetBuildOutput(request, outputInfo, emitResult.Diagnostics, stopwatch.Elapsed);
+                List<CSharpProjectFileChange> files = DiffProjectWorkspace(beforeSnapshot);
+                EmitProjectFileChanges(files, "final-diff");
                 return SerializeProject(new CSharpProjectCommandResponse
                 {
                     Stdout = capturedOut.ToString() + buildOutput,
                     Stderr = string.Empty,
                     ExitCode = 0,
-                    Files = DiffProjectWorkspace(beforeSnapshot),
+                    Files = files,
                 });
             }
 
@@ -227,12 +232,14 @@ public static partial class CompilerHost
             {
                 AssemblyLoadContext.Default.Resolving -= ResolveProjectAssembly;
             }
+            List<CSharpProjectFileChange> runFiles = DiffProjectWorkspace(beforeSnapshot);
+            EmitProjectFileChanges(runFiles, "final-diff");
             return SerializeProject(new CSharpProjectCommandResponse
             {
                 Stdout = capturedOut.ToString(),
                 Stderr = string.Empty,
                 ExitCode = 0,
-                Files = DiffProjectWorkspace(beforeSnapshot),
+                Files = runFiles,
             });
         }
         catch (Exception error)
@@ -1193,6 +1200,88 @@ public static class ProjectStdin
         }
 
         return changes;
+    }
+
+    private static void EmitProjectFileChanges(IEnumerable<CSharpProjectFileChange> changes, string phase)
+    {
+        foreach (CSharpProjectFileChange change in changes)
+        {
+            EmitProjectEvent(new
+            {
+                type = "file-change",
+                phase,
+                change,
+            });
+        }
+    }
+
+    private static void EmitProjectOutput(string stream, string data)
+    {
+        if (string.IsNullOrEmpty(data))
+        {
+            return;
+        }
+
+        EmitProjectEvent(new
+        {
+            type = "output",
+            stream,
+            device = string.Equals(stream, "stderr", StringComparison.Ordinal) ? "/dev/stderr" : "/dev/stdout",
+            data,
+        });
+    }
+
+    private static void EmitProjectEvent(object payload)
+    {
+        try
+        {
+            EmitProjectEventJson(JsonSerializer.Serialize(payload, JsonOptions));
+        }
+        catch
+        {
+            // Project events are best-effort and must not change user code behavior.
+        }
+    }
+
+    private sealed class StreamingProjectTextWriter : TextWriter
+    {
+        private readonly string stream;
+        private readonly StringBuilder buffer = new();
+
+        public StreamingProjectTextWriter(string stream)
+        {
+            this.stream = stream;
+        }
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void Write(char value)
+        {
+            buffer.Append(value);
+            EmitProjectOutput(stream, value.ToString());
+        }
+
+        public override void Write(string? value)
+        {
+            if (value is null)
+            {
+                return;
+            }
+
+            buffer.Append(value);
+            EmitProjectOutput(stream, value);
+        }
+
+        public override void Write(char[] buffer, int index, int count)
+        {
+            string value = new(buffer, index, count);
+            Write(value);
+        }
+
+        public override string ToString()
+        {
+            return buffer.ToString();
+        }
     }
 
     private static CSharpProjectFileChange EncodeProjectFileChange(string path, byte[] bytes)
