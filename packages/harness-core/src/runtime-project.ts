@@ -30,6 +30,62 @@ export interface RuntimeWorkspaceActor {
 
 export type RuntimeFileMutationPhase = 'live' | 'flush' | 'final-diff';
 
+export interface RuntimeKernelUserConfig {
+  id?: string;
+  username?: string;
+  home?: string;
+}
+
+export interface RuntimeKernelHostConfig {
+  hostname?: string;
+  osName?: string;
+}
+
+export interface RuntimeKernelWorkspaceConfig {
+  id?: string;
+  name?: string;
+  root?: string;
+  startedAt?: string | Date;
+}
+
+export interface RuntimeTraceKernelConfig {
+  version?: string;
+  user?: RuntimeKernelUserConfig;
+  host?: RuntimeKernelHostConfig;
+  workspace?: RuntimeKernelWorkspaceConfig;
+  workspaceAlias?: string | false;
+}
+
+export interface RuntimeKernelUserInfo {
+  id: string;
+  username: string;
+  home: string;
+}
+
+export interface RuntimeKernelHostInfo {
+  hostname: string;
+  osName: string;
+}
+
+export interface RuntimeKernelWorkspaceInfo {
+  id: string;
+  name: string;
+  root: string;
+  startedAt: string;
+}
+
+export interface RuntimeKernelInfo {
+  name: 'tracekernel';
+  version: string;
+  user: RuntimeKernelUserInfo;
+  host: RuntimeKernelHostInfo;
+  workspace: RuntimeKernelWorkspaceInfo;
+  home: string;
+  cwd: string;
+  workspaceRoot: string;
+  workspaceAlias?: string;
+}
+
 export interface RuntimeProjectSnapshot {
   files: RuntimeFile[];
   directories?: string[];
@@ -98,6 +154,7 @@ export type RuntimeWorkspaceEventHandler = (event: RuntimeWorkspaceEvent) => voi
 export type RuntimeWorkspaceUnsubscribe = () => void;
 
 export interface RuntimeWorkspaceKernel {
+  readonly info: RuntimeKernelInfo;
   readFile(path: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<string>;
   writeFile(path: string, contents: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<void>;
   deleteFile(path: string, actor?: RuntimeWorkspaceActor): Promise<void>;

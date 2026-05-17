@@ -3,6 +3,7 @@ import {
   defineCommand,
 } from 'just-bash/browser';
 import type { CommandContext } from 'just-bash/browser';
+import packageJson from '../package.json' with { type: 'json' };
 import type {
   RuntimeCommandOptions,
   RuntimeCommandResult,
@@ -16,6 +17,14 @@ import type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
+  RuntimeKernelHostConfig,
+  RuntimeKernelHostInfo,
+  RuntimeKernelInfo,
+  RuntimeKernelUserConfig,
+  RuntimeKernelUserInfo,
+  RuntimeKernelWorkspaceConfig,
+  RuntimeKernelWorkspaceInfo,
+  RuntimeTraceKernelConfig,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
@@ -86,9 +95,11 @@ export interface CreateRuntimeWorkspaceOptions {
   python?: boolean;
   javascript?: boolean | ProjectWorkspaceJavaScriptConfig;
   executionLimits?: ProjectWorkspaceExecutionLimits;
+  kernel?: RuntimeTraceKernelConfig;
 }
 
 const DEFAULT_CWD = '/workspace';
+const TRACE_KERNEL_NAME = 'tracekernel';
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = { id: 'principal', kind: 'principal' };
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = { id: 'system', kind: 'system' };
 
@@ -142,6 +153,59 @@ function normalizeWorkspaceCwd(cwd: string | undefined): string {
     parts.push(part);
   }
   return `/${parts.join('/')}`;
+}
+
+function normalizeKernelNamePart(value: string, fallback: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return fallback;
+  return trimmed.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || fallback;
+}
+
+function normalizeIsoTimestamp(value: string | Date | undefined): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string' && value.trim()) return new Date(value).toISOString();
+  return new Date().toISOString();
+}
+
+function createWorkspaceId(workspaceName: string, startedAt: string): string {
+  return `${normalizeKernelNamePart(workspaceName, 'workspace')}-${startedAt.replace(/[:.]/g, '-')}`;
+}
+
+function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwdOption: string | undefined): RuntimeKernelInfo {
+  const username = normalizeKernelNamePart(config?.user?.username ?? 'user', 'user');
+  const home = normalizeWorkspaceCwd(config?.user?.home ?? `/home/${username}`);
+  const workspaceName = normalizeKernelNamePart(config?.workspace?.name ?? 'workspace', 'workspace');
+  const workspaceRoot = normalizeWorkspaceCwd(
+    cwdOption ?? config?.workspace?.root ?? (config ? `${home}/${workspaceName}` : DEFAULT_CWD)
+  );
+  const startedAt = normalizeIsoTimestamp(config?.workspace?.startedAt);
+  const workspaceAlias = config?.workspaceAlias === false
+    ? undefined
+    : normalizeWorkspaceCwd(config?.workspaceAlias ?? DEFAULT_CWD);
+
+  return {
+    name: TRACE_KERNEL_NAME,
+    version: config?.version ?? packageJson.version,
+    user: {
+      id: config?.user?.id ?? username,
+      username,
+      home,
+    },
+    host: {
+      hostname: normalizeKernelNamePart(config?.host?.hostname ?? 'tracevm', 'tracevm'),
+      osName: config?.host?.osName ?? 'tracecode',
+    },
+    workspace: {
+      id: config?.workspace?.id ?? createWorkspaceId(workspaceName, startedAt),
+      name: workspaceName,
+      root: workspaceRoot,
+      startedAt,
+    },
+    home,
+    cwd: workspaceRoot,
+    workspaceRoot,
+    ...(workspaceAlias ? { workspaceAlias } : {}),
+  };
 }
 
 function toWorkspacePath(cwd: string, path: string): string {
@@ -1678,6 +1742,7 @@ export function createCSharpProjectCommands(
 export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly cwd: string;
+  readonly kernelInfo: RuntimeKernelInfo;
   private readonly bash: Bash;
   private readonly entrypoint?: string;
   private readonly cppRunner?: CppProjectCommandRunner;
@@ -1688,7 +1753,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
-    this.cwd = normalizeWorkspaceCwd(options.cwd);
+    this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
+    this.cwd = this.kernelInfo.workspaceRoot;
     this.entrypoint = options.entrypoint ? toWorkspaceRelativePath(this.cwd, options.entrypoint) : undefined;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
@@ -1987,6 +2053,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private createKernel(): RuntimeWorkspaceKernel {
     return {
+      info: this.kernelInfo,
       readFile: (path, _actor, encoding) => this.readFile(path, encoding),
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
@@ -2114,7 +2181,15 @@ export type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
+  RuntimeKernelHostConfig,
+  RuntimeKernelHostInfo,
+  RuntimeKernelInfo,
+  RuntimeKernelUserConfig,
+  RuntimeKernelUserInfo,
+  RuntimeKernelWorkspaceConfig,
+  RuntimeKernelWorkspaceInfo,
   RuntimeFileMutationPhase,
+  RuntimeTraceKernelConfig,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,

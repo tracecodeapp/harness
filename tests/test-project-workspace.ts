@@ -4527,6 +4527,46 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   commandWorkspace.dispose();
 }
 
+async function testTraceKernelInfoConfig(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    kernel: {
+      user: {
+        id: 'auth-user-123',
+        username: 'obi',
+      },
+      host: {
+        hostname: 'tracevm',
+      },
+      workspace: {
+        id: 'weather-api-attempt-1',
+        name: 'weather-api',
+        startedAt: '2026-05-17T12:00:00.000Z',
+      },
+    },
+  });
+
+  assertCondition(workspace.cwd === '/home/obi/weather-api', `workspace cwd should default to project under home: ${workspace.cwd}`);
+  assertCondition(workspace.kernel.info.name === 'tracekernel', 'kernel info should report tracekernel');
+  assertCondition(workspace.kernel.info.user.id === 'auth-user-123', 'kernel info should preserve stable user id');
+  assertCondition(workspace.kernel.info.user.username === 'obi', 'kernel info should preserve display username');
+  assertCondition(workspace.kernel.info.home === '/home/obi', `kernel home should derive from username: ${workspace.kernel.info.home}`);
+  assertCondition(workspace.kernel.info.host.hostname === 'tracevm', 'kernel info should preserve hostname');
+  assertCondition(workspace.kernel.info.workspace.id === 'weather-api-attempt-1', 'kernel info should preserve stable workspace id');
+  assertCondition(workspace.kernel.info.workspace.name === 'weather-api', 'kernel info should preserve workspace display name');
+  assertCondition(
+    workspace.kernel.info.workspaceRoot === '/home/obi/weather-api' &&
+      workspace.kernel.info.workspace.root === '/home/obi/weather-api',
+    `kernel info should expose canonical workspace root: ${JSON.stringify(workspace.kernel.info)}`
+  );
+  assertCondition(workspace.kernel.info.workspaceAlias === '/workspace', 'kernel info should expose /workspace compatibility alias');
+
+  await workspace.writeFile('src/main.py', 'print("weather")\n');
+  const snapshot = await workspace.snapshot();
+  assertCondition(snapshot.cwd === '/home/obi/weather-api', `snapshot cwd should use canonical workspace root: ${snapshot.cwd}`);
+  assertCondition(snapshot.files.some((file) => file.path === 'src/main.py'), 'snapshot should still use project-relative file paths');
+  workspace.dispose();
+}
+
 function testPathValidation(): void {
   assertCondition(normalizeRuntimeProjectPath('./src/solution.py') === 'src/solution.py', 'normalizes segments');
   assertRejects(
@@ -4613,6 +4653,7 @@ async function main(): Promise<void> {
   await testNativeProjectWorkspaceFactory();
   await testProjectWorkspaceCommandEvents();
   await testWorkspaceKernelEvents();
+  await testTraceKernelInfoConfig();
   console.log('PASS: project workspace primitives are backed by just-bash');
 }
 
