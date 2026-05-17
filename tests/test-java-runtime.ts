@@ -1436,6 +1436,31 @@ async function main(): Promise<void> {
     );
     console.log('PASS: java worker compiles project sources against persisted jar resources');
 
+    const verboseJavacProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'src/app/Main.java',
+      args: ['-verbose', '-d', 'out', '-sourcepath', 'src', 'src/app/Main.java'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'src/app/Main.java',
+            contents: 'package app;\npublic class Main { public static void main(String[] args) {} }\n',
+          },
+        ],
+      },
+    });
+    assertCondition(verboseJavacProjectExecute.exitCode === 0, 'Java execute-project-java should compile with -verbose');
+    assertCondition(
+      verboseJavacProjectExecute.stderr.includes('[search path for source files: src]') &&
+        verboseJavacProjectExecute.stderr.includes('[wrote /workspace/out/src/app/Main.class]'),
+      `Java execute-project-java should surface javac -verbose output, received ${JSON.stringify(verboseJavacProjectExecute.stderr)}`
+    );
+    console.log('PASS: java worker surfaces javac -verbose output for browser project compile');
+
     const cwdRelativeJarCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; files?: Array<{ path: string; contents?: string; encoding?: string }> }>('execute-project-java', {
       code: '',
       source: 'compile',

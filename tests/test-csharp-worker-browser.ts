@@ -2646,6 +2646,33 @@ async function main(): Promise<void> {
       `C# project worker should return deleted files, received ${JSON.stringify(projectRun.files)}`
     );
 
+    const projectBuild = await runProjectWorkerCase(
+      page,
+      {
+        source: 'compile',
+        scriptPath: '<project>',
+        args: ['--verbosity', 'normal'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            { path: 'src/App.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n' },
+            { path: 'src/Program.cs', contents: 'Console.WriteLine("build");\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(projectBuild.exitCode === 0, `C# project worker should build multifile project: ${projectBuild.stderr}`);
+    assertCondition(
+      projectBuild.stdout.includes('  Determining projects to restore...\n') &&
+        projectBuild.stdout.includes('  App -> /workspace/src/bin/Debug/net8.0/App.dll\n') &&
+        projectBuild.stdout.includes('Build succeeded.\n') &&
+        projectBuild.stdout.includes('0 Error(s)'),
+      `C# project worker should surface dotnet build output, received ${JSON.stringify(projectBuild.stdout)}`
+    );
+
     const outsideCwdRun = await runProjectWorkerCase(
       page,
       {

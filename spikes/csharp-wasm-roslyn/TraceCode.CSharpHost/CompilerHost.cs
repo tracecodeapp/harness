@@ -195,13 +195,14 @@ public static partial class CompilerHost
                 });
             }
             byte[] peBytes = peStream.ToArray();
-            MaterializeProjectAssembly(request, peBytes);
+            ProjectOutputInfo outputInfo = MaterializeProjectAssembly(request, peBytes);
 
             if (string.Equals(request.Source, "compile", StringComparison.Ordinal))
             {
+                string buildOutput = FormatDotnetBuildOutput(request, outputInfo, emitResult.Diagnostics, stopwatch.Elapsed);
                 return SerializeProject(new CSharpProjectCommandResponse
                 {
-                    Stdout = capturedOut.ToString(),
+                    Stdout = capturedOut.ToString() + buildOutput,
                     Stderr = string.Empty,
                     ExitCode = 0,
                     Files = DiffProjectWorkspace(beforeSnapshot),
@@ -251,7 +252,24 @@ public static partial class CompilerHost
         }
     }
 
-    private static void MaterializeProjectAssembly(CSharpProjectCommandRequest request, byte[] peBytes)
+    private sealed record ProjectOutputInfo(
+        string ProjectPath,
+        string ProjectDirectory,
+        string AssemblyName,
+        string TargetFramework,
+        string DllRelativePath
+    );
+
+    private static ProjectOutputInfo MaterializeProjectAssembly(CSharpProjectCommandRequest request, byte[] peBytes)
+    {
+        ProjectOutputInfo outputInfo = ResolveProjectOutputInfo(request);
+        string absoluteOutputPath = ResolveProjectPath(outputInfo.DllRelativePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(absoluteOutputPath) ?? ProjectWorkspaceRoot);
+        File.WriteAllBytes(absoluteOutputPath, peBytes);
+        return outputInfo;
+    }
+
+    private static ProjectOutputInfo ResolveProjectOutputInfo(CSharpProjectCommandRequest request)
     {
         Dictionary<string, CSharpProjectFile> filesByPath = request.Project.Files
             .Select(file => new KeyValuePair<string, CSharpProjectFile>(NormalizeProjectPath(file.Path), file))
@@ -259,20 +277,120 @@ public static partial class CompilerHost
             .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.Ordinal);
         string? projectPath = ResolveProjectFilePath(request, filesByPath.Keys);
         string projectDirectory = projectPath is null ? NormalizeProjectDirectoryPath(request.Cwd) : ProjectDirectory(projectPath);
-        string assemblyName = projectPath is null
-            ? "TraceCodeProject"
-            : Path.GetFileNameWithoutExtension(projectPath);
+        string assemblyName = ResolveProjectPropertyValue(request, "AssemblyName")
+            ?? (projectPath is null ? "TraceCodeProject" : Path.GetFileNameWithoutExtension(projectPath));
         if (string.IsNullOrWhiteSpace(assemblyName))
         {
             assemblyName = "TraceCodeProject";
         }
 
+        string targetFramework = ResolveProjectPropertyValue(request, "TargetFramework") ?? "net8.0";
+        if (string.IsNullOrWhiteSpace(targetFramework))
+        {
+            targetFramework = "net8.0";
+        }
+
         string outputPath = string.IsNullOrEmpty(projectDirectory)
-            ? $"bin/Debug/net8.0/{assemblyName}.dll"
-            : $"{projectDirectory}/bin/Debug/net8.0/{assemblyName}.dll";
-        string absoluteOutputPath = ResolveProjectPath(outputPath);
-        Directory.CreateDirectory(Path.GetDirectoryName(absoluteOutputPath) ?? ProjectWorkspaceRoot);
-        File.WriteAllBytes(absoluteOutputPath, peBytes);
+            ? $"bin/Debug/{targetFramework}/{assemblyName}.dll"
+            : $"{projectDirectory}/bin/Debug/{targetFramework}/{assemblyName}.dll";
+        return new ProjectOutputInfo(
+            projectPath ?? string.Empty,
+            projectDirectory,
+            assemblyName,
+            targetFramework,
+            outputPath
+        );
+    }
+
+    private static string FormatDotnetBuildOutput(
+        CSharpProjectCommandRequest request,
+        ProjectOutputInfo outputInfo,
+        IEnumerable<Diagnostic> diagnostics,
+        TimeSpan elapsed
+    )
+    {
+        string verbosity = ResolveDotnetBuildVerbosity(request);
+        if (string.Equals(verbosity, "quiet", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        int warningCount = diagnostics.Count(diagnostic =>
+            diagnostic.Severity == DiagnosticSeverity.Warning &&
+            !IsSyntheticProjectDiagnostic(diagnostic));
+        int errorCount = diagnostics.Count(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+        string dllPath = "/workspace/" + outputInfo.DllRelativePath;
+        string elapsedText = $"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}.{elapsed.Milliseconds / 10:00}";
+
+        StringBuilder output = new();
+        if (!string.Equals(verbosity, "minimal", StringComparison.OrdinalIgnoreCase))
+        {
+            output.AppendLine("  Determining projects to restore...");
+            output.AppendLine("  All projects are up-to-date for restore.");
+        }
+        output.AppendLine($"  {outputInfo.AssemblyName} -> {dllPath}");
+        output.AppendLine();
+        output.AppendLine(errorCount == 0 ? "Build succeeded." : "Build FAILED.");
+        output.AppendLine($"    {warningCount} Warning(s)");
+        output.AppendLine($"    {errorCount} Error(s)");
+        output.AppendLine();
+        output.AppendLine($"Time Elapsed {elapsedText}");
+        return output.ToString();
+    }
+
+    private static bool IsSyntheticProjectDiagnostic(Diagnostic diagnostic)
+    {
+        string? path = diagnostic.Location.SourceTree?.FilePath;
+        return path is not null && path.StartsWith("TraceCode", StringComparison.Ordinal);
+    }
+
+    private static string ResolveDotnetBuildVerbosity(CSharpProjectCommandRequest request)
+    {
+        IReadOnlyList<string> args = ResolveProjectCommandLinePropertyArgs(request);
+        for (int index = 0; index < args.Count; index += 1)
+        {
+            string arg = args[index];
+            if (arg.Equals("--verbosity", StringComparison.OrdinalIgnoreCase) || arg.Equals("-v", StringComparison.OrdinalIgnoreCase))
+            {
+                if (index + 1 < args.Count)
+                {
+                    return NormalizeDotnetVerbosity(args[index + 1]);
+                }
+                continue;
+            }
+            if (arg.StartsWith("--verbosity:", StringComparison.OrdinalIgnoreCase))
+            {
+                return NormalizeDotnetVerbosity(arg["--verbosity:".Length..]);
+            }
+            if (arg.StartsWith("--verbosity=", StringComparison.OrdinalIgnoreCase))
+            {
+                return NormalizeDotnetVerbosity(arg["--verbosity=".Length..]);
+            }
+            if (arg.StartsWith("-v:", StringComparison.OrdinalIgnoreCase))
+            {
+                return NormalizeDotnetVerbosity(arg["-v:".Length..]);
+            }
+        }
+        return "normal";
+    }
+
+    private static string NormalizeDotnetVerbosity(string value)
+    {
+        string normalized = value.Trim();
+        return normalized.ToLowerInvariant() switch
+        {
+            "q" => "quiet",
+            "quiet" => "quiet",
+            "m" => "minimal",
+            "minimal" => "minimal",
+            "n" => "normal",
+            "normal" => "normal",
+            "d" => "detailed",
+            "detailed" => "detailed",
+            "diag" => "diagnostic",
+            "diagnostic" => "diagnostic",
+            _ => "normal",
+        };
     }
 
     private static void RestoreEnvironment(System.Collections.IDictionary originalEnvironment)

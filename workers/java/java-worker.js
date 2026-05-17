@@ -3536,8 +3536,62 @@ function javaProjectClasspath(rawClasspath, classRoot, extraEntry, relativeCwd =
   return entries.join(':');
 }
 
-function commandResultFromJavaProjectReport(report, totalEnd, totalStart, libraryCallEnd, libraryCallStart, outputDir) {
-  const compilerOutput = javaReportConsoleOutput(report).join('\n');
+function javaJavacVerboseRequested(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  return javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd)
+    .some((arg) => arg === '-verbose' || arg === '--verbose');
+}
+
+function javaSyntheticJavacVerboseOutput(payload, outputDir) {
+  const relativeCwd = projectRelativeCwd(payload);
+  const projectCwd = String(payload?.project?.cwd || '/workspace');
+  const sourcePaths = javaCompileSourcePaths(payload.args, payload.project, relativeCwd, projectCwd);
+  const sourceRoots = javaCompileSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd);
+  const classpath = javaCompileClasspath(payload.args, payload.project, relativeCwd, projectCwd);
+  const classOutputDir = normalizeJavaOutputDir(outputDir);
+  const lines = [
+    '[parsing started SimpleFileObject[/workspace]]',
+  ];
+  for (const sourcePath of sourcePaths) {
+    lines.push(`[parsing started DirectoryFileObject[${sourcePath}]]`);
+    lines.push('[parsing completed 1ms]');
+  }
+  lines.push(`[search path for source files: ${sourceRoots.length > 0 ? sourceRoots.join(',') : '.'}]`);
+  lines.push(`[search path for class files: ${classpath || '.'}]`);
+  for (const sourcePath of sourcePaths) {
+    lines.push(`[checking ${javaSyntheticClassNameForSource(sourcePath)}]`);
+  }
+  for (const sourcePath of sourcePaths) {
+    lines.push(`[wrote ${javaSyntheticClassOutputPath(sourcePath, classOutputDir)}]`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function javaSyntheticClassNameForSource(sourcePath) {
+  const fileName = String(sourcePath).split('/').pop() || 'Main.java';
+  return fileName.replace(/\.java$/i, '');
+}
+
+function javaSyntheticClassOutputPath(sourcePath, outputDir) {
+  const withoutExtension = String(sourcePath).replace(/\.java$/i, '.class');
+  const relativeOutput = outputDir === '.' ? withoutExtension : `${outputDir}/${withoutExtension}`;
+  return `/workspace/${relativeOutput}`;
+}
+
+function commandResultFromJavaProjectReport(report, totalEnd, totalStart, libraryCallEnd, libraryCallStart, outputDir, payload) {
+  let compilerOutput = javaReportConsoleOutput(report).join('\n');
+  if (
+    report.success === true &&
+    payload?.source === 'compile' &&
+    compilerOutput.length === 0 &&
+    javaJavacVerboseRequested(
+      payload.args,
+      payload.project,
+      projectRelativeCwd(payload),
+      String(payload?.project?.cwd || '/workspace')
+    )
+  ) {
+    compilerOutput = javaSyntheticJavacVerboseOutput(payload, outputDir);
+  }
   if (report.success !== true) {
     return {
       stdout: '',
@@ -3554,12 +3608,12 @@ function commandResultFromJavaProjectReport(report, totalEnd, totalStart, librar
     };
   }
 
-  let payload;
+  let parsedPayload;
   try {
     const serialized = parseJavaReportOutput(report.output);
-    payload = typeof serialized === 'string' ? JSON.parse(serialized) : serialized;
+    parsedPayload = typeof serialized === 'string' ? JSON.parse(serialized) : serialized;
   } catch (error) {
-    payload = {
+    parsedPayload = {
       stdout: '',
       stderr: `Java project result parse failed: ${formatWorkerErrorMessage(error)}`,
       exitCode: 1,
@@ -3567,9 +3621,9 @@ function commandResultFromJavaProjectReport(report, totalEnd, totalStart, librar
   }
 
   return {
-    stdout: typeof payload?.stdout === 'string' ? payload.stdout : '',
-    stderr: `${compilerOutput}${typeof payload?.stderr === 'string' ? payload.stderr : ''}`,
-    exitCode: Number.isInteger(payload?.exitCode) ? payload.exitCode : 1,
+    stdout: typeof parsedPayload?.stdout === 'string' ? parsedPayload.stdout : '',
+    stderr: `${compilerOutput}${typeof parsedPayload?.stderr === 'string' ? parsedPayload.stderr : ''}`,
+    exitCode: Number.isInteger(parsedPayload?.exitCode) ? parsedPayload.exitCode : 1,
     files: [
       ...projectCompiledFiles(report, outputDir),
       ...projectChangedFiles(report),
@@ -4045,7 +4099,8 @@ async function runJavaProjectRequest(payload) {
           projectRelativeCwd(payload),
           String(payload?.project?.cwd || '/workspace')
         )
-      : null
+      : null,
+    payload
   );
 }
 

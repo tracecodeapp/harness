@@ -512,6 +512,10 @@ body {
   color: #8fb4ff;
 }
 
+.dev-terminal-line.status {
+  color: #8f98a8;
+}
+
 .dev-terminal-line.stderr,
 .dev-terminal-line.exit {
   color: var(--error-color);

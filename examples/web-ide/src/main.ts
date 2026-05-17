@@ -649,9 +649,28 @@ int main(int argc, char** argv) {
     appendLine(`$ ${command}`, 'command');
 
     try {
-      const result = await workspace.runCommand(command);
-      appendBlock(result.stdout, 'stdout');
-      appendBlock(result.stderr, 'stderr');
+      const streamedOutput = { stdout: '', stderr: '' };
+      const result = await workspace.runCommand(command, {
+        onEvent: (event) => {
+          if (event.type === 'status') {
+            appendLine(`[${event.phase}] ${event.message}`, 'status');
+            return;
+          }
+          if (event.type === 'output') {
+            streamedOutput[event.stream] += event.data;
+            appendBlock(event.data, event.stream);
+          }
+        },
+      });
+      (window as unknown as { __tracecodeLastDevResult?: unknown }).__tracecodeLastDevResult = result;
+      const remainingStdout = result.stdout.startsWith(streamedOutput.stdout)
+        ? result.stdout.slice(streamedOutput.stdout.length)
+        : result.stdout;
+      const remainingStderr = result.stderr.startsWith(streamedOutput.stderr)
+        ? result.stderr.slice(streamedOutput.stderr.length)
+        : result.stderr;
+      appendBlock(remainingStdout, 'stdout');
+      appendBlock(remainingStderr, 'stderr');
       if (result.exitCode !== 0) {
         appendLine(`exit ${result.exitCode}`, 'exit');
       }
