@@ -745,6 +745,15 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'stdout',
                 'java_args=alpha,beta\n'
               );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'generated.txt',
+                Buffer.from('created\n', 'utf8').toString('base64')
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
+                null,
+                'stale.txt'
+              );
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify(JSON.stringify({
@@ -1211,8 +1220,11 @@ async function main(): Promise<void> {
           {
             path: 'Main.java',
             contents: [
+              'import java.nio.file.*;',
               'class Main {',
-              '  public static void main(String[] args) {',
+              '  public static void main(String[] args) throws Exception {',
+              '    Files.writeString(Path.of("generated.txt"), "created\\n");',
+              '    Files.deleteIfExists(Path.of("stale.txt"));',
               '    System.out.println(Helper.add(2, 3));',
               '    System.out.println("java_args=" + String.join(",", args));',
               '  }',
@@ -1242,6 +1254,24 @@ async function main(): Promise<void> {
             event.data === 'java_args=alpha,beta\n'
       ) === true,
       `Java execute-project-java should emit live stdout project events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'generated.txt' &&
+          event.change.encoding === 'base64' &&
+          Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'created\n'
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'stale.txt' &&
+            event.change.deleted === true
+        ) === true,
+      `Java execute-project-java should emit live file-change project events: ${JSON.stringify(projectExecute.events)}`
     );
     assertCondition(
       projectExecute.files?.some((file) =>
@@ -1291,6 +1321,11 @@ async function main(): Promise<void> {
         defaultManifestEntries.has('Main.java') &&
         Array.from(defaultManifestEntries.values()).some((source) => source.includes('public class Exports')),
       'Java execute-project-java should pass project files and an adapter source separately'
+    );
+    assertCondition(
+      defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("generated.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.deleteIfExists(Path.of("stale.txt")') === true,
+      'Java execute-project-java should route project source Files mutations through the live event bridge'
     );
     assertCondition(
       defaultWorkspaceManifest.includes('Helper.java') &&

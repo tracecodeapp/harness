@@ -39,6 +39,10 @@ async function main(): Promise<void> {
     join(root, 'workers', 'java', 'src', 'tracecode', 'browser', 'BrowserCompileAndTraceLibrary.java'),
     'utf8'
   );
+  const projectEventsSource = await readFile(
+    join(root, 'workers', 'java', 'src', 'tracecode', 'browser', 'ProjectEvents.java'),
+    'utf8'
+  );
   const requiredMarkers = [
     'https://cjrtnc.leaningtech.com/4.2/loader.js',
     '/app/workers/vendor/java-browser-helper.jar',
@@ -47,6 +51,7 @@ async function main(): Promise<void> {
     '/app/workers/vendor/javaparser-core-3.25.10.jar',
     'cheerpjRunLibrary',
     'Java_tracecode_browser_ProjectEvents_emitOutputNative',
+    'Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative',
     'tracecode.browser.BrowserCompileAndTraceLibrary',
     'harness.browser.JavaRewriteLibrary',
     "message.type === 'init'",
@@ -61,6 +66,7 @@ async function main(): Promise<void> {
     'workspaceManifest',
     'workspaceCwd',
     'ProjectEvents.streamingOutput',
+    'augmentJavaProjectFileMutations',
     'projectChangedFiles(report)',
     'runJavaProjectRequest',
     'buildProjectJavaRunnableSource',
@@ -94,6 +100,21 @@ async function main(): Promise<void> {
     );
   }
   console.log('PASS: java helper project workspace markers present');
+
+  const projectEventsMarkers = [
+    'emitFileSnapshotNative',
+    'emitFileDeleteNative',
+    'setProjectWorkspaceRoot',
+    'Files.writeString',
+    'Files.deleteIfExists',
+  ];
+  for (const marker of projectEventsMarkers) {
+    assertCondition(
+      projectEventsSource.includes(marker),
+      `Java project events helper drift detected. Missing marker: ${marker}`
+    );
+  }
+  console.log('PASS: java project events helper markers present');
 
   assertCondition(
     augmentationSource.includes('augmentJavaCollectionOperations') &&

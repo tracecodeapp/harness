@@ -80,10 +80,43 @@ function emitLiveJavaProjectOutput(stream, data) {
   });
 }
 
+function emitLiveJavaProjectFileSnapshot(path, contents) {
+  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0 || typeof contents !== 'string') {
+    return;
+  }
+  postProjectEvent(activeJavaProjectIo.messageId, {
+    type: 'file-change',
+    phase: 'live',
+    change: {
+      path: normalizeProjectFilePath(path),
+      contents,
+      encoding: 'base64',
+    },
+  });
+}
+
+function emitLiveJavaProjectFileDelete(path) {
+  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0) return;
+  postProjectEvent(activeJavaProjectIo.messageId, {
+    type: 'file-change',
+    phase: 'live',
+    change: {
+      path: normalizeProjectFilePath(path),
+      deleted: true,
+    },
+  });
+}
+
 function javaProjectNativeBridge() {
   return {
     Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data) => {
       emitLiveJavaProjectOutput(String(stream ?? 'stdout'), String(data ?? ''));
+    },
+    Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative: (_library, path, contents) => {
+      emitLiveJavaProjectFileSnapshot(String(path ?? ''), String(contents ?? ''));
+    },
+    Java_tracecode_browser_ProjectEvents_emitFileDeleteNative: (_library, path) => {
+      emitLiveJavaProjectFileDelete(String(path ?? ''));
     },
   };
 }
@@ -3121,6 +3154,12 @@ function javaProjectSourcePath(file) {
   return file.path;
 }
 
+function augmentJavaProjectFileMutations(source) {
+  return String(source ?? '')
+    .replace(/\bjava\.nio\.file\.Files\.(writeString|write|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/(?<![\w.])Files\.(writeString|write|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(');
+}
+
 function javaProjectSystemProperties(payload) {
   const properties = payload?.options?.systemProperties;
   if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
@@ -3212,6 +3251,7 @@ public class ${exportsClassName} {
         System.setProperty(propertyKeys[index], propertyValues[index]);
       }
       ProjectEvents.setProjectEventBridgeEnabled(true);
+      ProjectEvents.setProjectWorkspaceRoot(java.nio.file.Paths.get(System.getProperty("user.dir", ".")));
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
       System.setErr(new java.io.PrintStream(ProjectEvents.streamingOutput(stderrBytes, "stderr"), true, "UTF-8"));
       System.setIn(new java.io.ByteArrayInputStream(${stdinSource}.getBytes("UTF-8")));
@@ -3225,6 +3265,7 @@ ${invocation}
       System.setOut(previousOut);
       System.setErr(previousErr);
       System.setIn(previousIn);
+      ProjectEvents.setProjectWorkspaceRoot(null);
       ProjectEvents.setProjectEventBridgeEnabled(false);
       for (String key : propertyKeys) {
         if (previousProperties.containsKey(key)) {
@@ -3267,7 +3308,7 @@ function buildProjectJavaRunnableSource(payload, compileId) {
   const mainClassName = compileOnly ? javaProjectBasename(files[0].path).replace(/\.java$/, '') : assertProjectMainClass(payload.scriptPath);
   const projectFiles = files.map((file) => ({
     path: javaProjectSourcePath(file),
-    source: file.contents,
+    source: compileOnly ? file.contents : augmentJavaProjectFileMutations(file.contents),
   }));
   const adapter = compileOnly
     ? null
