@@ -177,6 +177,495 @@ const getEditorLanguage = (lang: Language): string => {
   if (lang === 'cpp') return 'cpp';
   return 'plaintext';
 };
+
+async function bootDevTerminal(): Promise<void> {
+  document.body.innerHTML = `
+    <main class="dev-terminal-root">
+      <section class="dev-terminal">
+        <div class="dev-terminal-header">
+          <span class="dev-terminal-title">/dev</span>
+          <span class="dev-terminal-status" id="dev-terminal-status">booting</span>
+        </div>
+        <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite"></div>
+        <form class="dev-terminal-form" id="dev-terminal-form">
+          <span class="dev-terminal-prompt">$</span>
+          <input
+            id="dev-terminal-input"
+            class="dev-terminal-input"
+            autocomplete="off"
+            spellcheck="false"
+            autofocus
+          />
+        </form>
+      </section>
+    </main>
+  `;
+
+  const output = document.querySelector<HTMLDivElement>('#dev-terminal-output')!;
+  const status = document.querySelector<HTMLSpanElement>('#dev-terminal-status')!;
+  const form = document.querySelector<HTMLFormElement>('#dev-terminal-form')!;
+  const input = document.querySelector<HTMLInputElement>('#dev-terminal-input')!;
+
+  const appendLine = (text: string, className = ''): void => {
+    const line = document.createElement('div');
+    line.className = `dev-terminal-line ${className}`.trim();
+    line.textContent = text;
+    output.append(line);
+    output.scrollTop = output.scrollHeight;
+  };
+
+  const appendBlock = (text: string, className = ''): void => {
+    if (!text) return;
+    for (const line of text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')) {
+      appendLine(line, className);
+    }
+  };
+
+  appendLine('Loading project workspace...');
+
+  const { createBrowserProjectWorkspace } = await import('@tracecode/harness/browser/project');
+
+  const workspace = await createBrowserProjectWorkspace({
+    assetBaseUrl: '/workers',
+    pythonProjectTimeoutMs: 120_000,
+    javaProjectTimeoutMs: 120_000,
+    csharpProjectTimeoutMs: 120_000,
+    cppProjectTimeoutMs: 120_000,
+    files: [
+      {
+        path: 'helper.py',
+        contents: `def add(left, right):
+    return left + right
+`,
+      },
+      {
+        path: 'main.py',
+        contents: `from helper import add
+import sys
+
+print(add(2, 3))
+if len(sys.argv) > 1:
+    print("args=" + ",".join(sys.argv[1:]))
+`,
+      },
+      {
+        path: 'app/__init__.py',
+        contents: '',
+      },
+      {
+        path: 'app/mathlib.py',
+        contents: `def add(left, right):
+    return left + right
+`,
+      },
+      {
+        path: 'app/main.py',
+        contents: `from .mathlib import add
+import sys
+
+print(add(2, 3))
+print("package=" + str(__package__))
+if len(sys.argv) > 1:
+    print("module_args=" + ",".join(sys.argv[1:]))
+`,
+      },
+      {
+        path: 'src/py/helper.py',
+        contents: `def value():
+    return 31
+`,
+      },
+      {
+        path: 'src/py/main.py',
+        contents: `import os
+from helper import value
+
+print(os.getcwd())
+print(value())
+open("generated.txt", "w").write("created\\n")
+`,
+      },
+      {
+        path: 'vendor/pkgtools.py',
+        contents: `def value():
+    return 42
+`,
+      },
+      {
+        path: 'py_env.py',
+        contents: `import os
+from pkgtools import value
+
+print(value())
+print(os.environ.get("MODE"))
+`,
+      },
+      {
+        path: 'pkg_a/__init__.py',
+        contents: '',
+      },
+      {
+        path: 'pkg_a/helper.py',
+        contents: `def value():
+    return "a-helper"
+`,
+      },
+      {
+        path: 'pkg_a/main.py',
+        contents: `from .helper import value
+
+print(value())
+open("pkg-a-generated.txt", "w").write(value() + "\\n")
+`,
+      },
+      {
+        path: 'pkg_b/__init__.py',
+        contents: '',
+      },
+      {
+        path: 'pkg_b/helper.py',
+        contents: `def value():
+    return "b-helper"
+`,
+      },
+      {
+        path: 'pkg_b/main.py',
+        contents: `from .helper import value
+
+print(value())
+open("pkg-b-generated.txt", "w").write(value() + "\\n")
+`,
+      },
+      {
+        path: 'vendor/pkg_b/helper.py',
+        contents: `def value():
+    return "vendor-helper"
+`,
+      },
+      {
+        path: 'reload_target.py',
+        contents: `def value():
+    return "old"
+`,
+      },
+      {
+        path: 'reload_main.py',
+        contents: `from reload_target import value
+
+print(value())
+`,
+      },
+      {
+        path: 'stale.txt',
+        contents: 'delete me\n',
+      },
+      {
+        path: 'java-stale.txt',
+        contents: 'delete me\n',
+      },
+      {
+        path: 'README.txt',
+        contents: 'Try: ls, cat main.py, python3 main.py alpha beta, python3 globpy/*.py data/*.txt, python3 -m app.main alpha beta, node index.js alpha beta, node globjs/*.js data/*.txt, javac -d out src/app/PackageMain.java src/app/PackageHelper.java, javac -d glob-out src/app/*.java, java --class-path out app.PackageMain alpha beta, java --class-path glob-out app.PackageMain alpha beta, java Main alpha beta, java app.PackageMain alpha beta, java right.Main, dotnet run -- alpha beta, dotnet run -- data/*.txt, clang++ -std=c++17 main.cpp helper.cpp, clang++ -std=c++17 *.cpp -o glob-app, ./a.out alpha beta, ./glob-app alpha beta, ./glob-app data/*.txt\\n',
+      },
+      {
+        path: 'data/a.txt',
+        contents: 'a\n',
+      },
+      {
+        path: 'data/b.txt',
+        contents: 'b\n',
+      },
+      {
+        path: 'globpy/run.py',
+        contents: `import sys
+
+print(2 + 3)
+print("python_glob_args=" + ",".join(sys.argv[1:]))
+`,
+      },
+      {
+        path: 'math.js',
+        contents: `exports.add = (left, right) => left + right;
+`,
+      },
+      {
+        path: 'index.js',
+        contents: `const { add } = require("./math");
+
+console.log(add(2, 3));
+if (process.argv.length > 2) {
+  console.log("node_args=" + process.argv.slice(2).join(","));
+}
+`,
+      },
+      {
+        path: 'globjs/run.js',
+        contents: `console.log(2 + 3);
+console.log("node_glob_args=" + process.argv.slice(2).join(","));
+`,
+      },
+      {
+        path: 'Helper.java',
+        contents: `class Helper {
+  static int add(int left, int right) {
+    return left + right;
+  }
+}
+`,
+      },
+      {
+        path: 'Main.java',
+        contents: `class Main {
+  public static void main(String[] args) {
+    System.out.println(Helper.add(2, 3));
+    if (args.length > 0) {
+      System.out.println("java_args=" + String.join(",", args));
+    }
+  }
+}
+`,
+      },
+      {
+        path: 'src/app/PackageHelper.java',
+        contents: `package app;
+
+class PackageHelper {
+  static int add(int left, int right) {
+    return left + right;
+  }
+}
+`,
+      },
+      {
+        path: 'src/app/PackageMain.java',
+        contents: `package app;
+
+public class PackageMain {
+  public static void main(String[] args) {
+    System.out.println(PackageHelper.add(2, 3));
+    if (args.length > 0) {
+      System.out.println("java_package_args=" + String.join(",", args));
+    }
+  }
+}
+`,
+      },
+      {
+        path: 'src/left/Main.java',
+        contents: `package left;
+
+public class Main {
+  public static int value() {
+    return 5;
+  }
+}
+`,
+      },
+      {
+        path: 'src/right/Main.java',
+        contents: `package right;
+
+public class Main {
+  public static void main(String[] args) {
+    System.out.println(left.Main.value());
+  }
+}
+`,
+      },
+      {
+        path: 'src/javawd/CwdMain.java',
+        contents: `public class CwdMain {
+  public static void main(String[] args) throws Exception {
+    System.out.println(System.getProperty("user.dir"));
+    java.nio.file.Path cwd = java.nio.file.Path.of(System.getProperty("user.dir"));
+    java.nio.file.Files.writeString(cwd.resolve("generated.txt"), "java-created\\n");
+    java.nio.file.Files.deleteIfExists(cwd.resolve("../../java-stale.txt").normalize());
+  }
+}
+`,
+      },
+      {
+        path: 'src/javacwd/CompileMain.java',
+        contents: `public class CompileMain {
+  public static void main(String[] args) {
+    System.out.println("cwd-compile");
+  }
+}
+`,
+      },
+      {
+        path: 'src/javaarg/ArgMain.java',
+        contents: `public class ArgMain {
+  public static void main(String[] args) {
+    System.out.println("argfile-compile");
+  }
+}
+`,
+      },
+      {
+        path: 'src/javaarg/javac.args',
+        contents: `-d out
+ArgMain.java
+`,
+      },
+      {
+        path: 'src/javasourcepath/src/app/Main.java',
+        contents: `package app;
+
+public class Main {
+  public static void main(String[] args) {
+    System.out.println(Helper.value());
+  }
+}
+`,
+      },
+      {
+        path: 'src/javasourcepath/src/app/Helper.java',
+        contents: `package app;
+
+class Helper {
+  static String value() {
+    return "sourcepath-helper";
+  }
+}
+`,
+      },
+      {
+        path: 'src/javasourcepath/javac.args',
+        contents: `-d out
+-sourcepath src
+src/app/Main.java
+`,
+      },
+      {
+        path: 'src/javastdin/InputMain.java',
+        contents: `public class InputMain {
+  public static void main(String[] args) throws Exception {
+    java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(System.in));
+    System.out.println("stdin=" + reader.readLine());
+  }
+}
+`,
+      },
+      {
+        path: 'Program.cs',
+        contents: `using System;
+
+Console.WriteLine(Helper.Add(2, 3));
+if (args.Length > 0) {
+  Console.WriteLine("csharp_args=" + string.Join(",", args));
+}
+`,
+      },
+      {
+        path: 'Helper.cs',
+        contents: `static class Helper
+{
+  public static int Add(int left, int right) => left + right;
+}
+`,
+      },
+      {
+        path: 'helper.hpp',
+        contents: `#pragma once
+
+int add(int left, int right);
+`,
+      },
+      {
+        path: 'helper.cpp',
+        contents: `#include "helper.hpp"
+
+int add(int left, int right) {
+  return left + right;
+}
+`,
+      },
+      {
+        path: 'main.cpp',
+        contents: `#include "helper.hpp"
+
+#include <iostream>
+#include <string>
+
+int main(int argc, char** argv) {
+  std::cout << add(2, 3) << "\\n";
+  if (argc > 1) {
+    std::cout << "cpp_args=";
+    for (int index = 1; index < argc; ++index) {
+      if (index > 1) std::cout << ",";
+      std::cout << argv[index];
+    }
+    std::cout << "\\n";
+  }
+  return 0;
+}
+`,
+      },
+    ],
+  });
+
+  const disposeTerminal = (): void => {
+    workspace.dispose();
+  };
+
+  (
+    window as Window & {
+      __tracecodeProjectWorkspace?: typeof workspace;
+    }
+  ).__tracecodeProjectWorkspace = workspace;
+
+  window.addEventListener('beforeunload', disposeTerminal);
+  if (import.meta.hot) {
+    import.meta.hot.dispose(disposeTerminal);
+  }
+
+  status.textContent = 'ready';
+  appendLine('Ready. Try: python3 main.py alpha beta');
+  appendLine('Ready. Try: python3 globpy/*.py data/*.txt');
+  appendLine('Ready. Try: node index.js alpha beta');
+  appendLine('Ready. Try: node globjs/*.js data/*.txt');
+  appendLine('Ready. Try: java Main alpha beta');
+  appendLine('Ready. Try: javac -d out src/app/PackageMain.java src/app/PackageHelper.java');
+  appendLine('Ready. Try: java --class-path out app.PackageMain alpha beta');
+  appendLine('Ready. Try: java app.PackageMain alpha beta');
+  appendLine('Ready. Try: java right.Main');
+  appendLine('Ready. Try: dotnet run -- alpha beta');
+  appendLine('Ready. Try: dotnet run -- data/*.txt');
+  appendLine('Ready. Try: clang++ -std=c++17 main.cpp helper.cpp');
+  appendLine('Ready. Try: ./a.out alpha beta');
+  appendLine('Ready. Try: ./glob-app data/*.txt');
+  input.disabled = false;
+  input.focus();
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const command = input.value.trim();
+    if (!command) return;
+
+    input.value = '';
+    input.disabled = true;
+    status.textContent = 'running';
+    appendLine(`$ ${command}`, 'command');
+
+    try {
+      const result = await workspace.runCommand(command);
+      appendBlock(result.stdout, 'stdout');
+      appendBlock(result.stderr, 'stderr');
+      if (result.exitCode !== 0) {
+        appendLine(`exit ${result.exitCode}`, 'exit');
+      }
+    } catch (error) {
+      appendLine(error instanceof Error ? error.message : String(error), 'stderr');
+    } finally {
+      status.textContent = 'ready';
+      input.disabled = false;
+      input.focus();
+    }
+  });
+}
+
+function bootIde(): void {
 // ----------------------------------------------------------------------
 // Harness Setup
 // ----------------------------------------------------------------------
@@ -409,3 +898,14 @@ document.querySelectorAll('.panel-tab').forEach(tab => {
 // Boot
 // ----------------------------------------------------------------------
 applyExample(activeLanguage);
+}
+
+if (window.location.pathname.replace(/\/+$/, '') === '/dev') {
+  bootDevTerminal().catch((error) => {
+    document.body.innerHTML = `<pre class="dev-terminal-error"></pre>`;
+    document.querySelector<HTMLPreElement>('.dev-terminal-error')!.textContent =
+      error instanceof Error ? error.stack ?? error.message : String(error);
+  });
+} else {
+  bootIde();
+}

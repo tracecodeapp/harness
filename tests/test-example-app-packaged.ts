@@ -1,6 +1,6 @@
 #!/usr/bin/env npx tsx
 
-import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
@@ -47,9 +47,8 @@ async function createPackagedExampleApp(tempRoot: string): Promise<string> {
   return appDir;
 }
 
-async function main(): Promise<void> {
+async function runWithTempRoot(tempRoot: string): Promise<void> {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-example-pack-'));
   const packOutput = spawnSync('pnpm', ['pack', '--pack-destination', tempRoot], {
     cwd: repoRoot,
     encoding: 'utf8',
@@ -98,6 +97,15 @@ async function main(): Promise<void> {
   }
 
   console.log('PASS: packaged example web IDE works against the packed harness release');
+}
+
+async function main(): Promise<void> {
+  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-harness-example-pack-'));
+  try {
+    await runWithTempRoot(tempRoot);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 }
 
 main().catch((error) => {

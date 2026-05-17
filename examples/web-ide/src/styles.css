@@ -446,3 +446,118 @@ body {
   outline: 1px solid var(--accent-color);
   outline-offset: -1px;
 }
+
+/* === Dev Terminal === */
+.dev-terminal-root {
+  height: 100vh;
+  width: 100vw;
+  background: #161719;
+  color: var(--text-main);
+  display: flex;
+  min-width: 0;
+}
+
+.dev-terminal {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-terminal);
+}
+
+.dev-terminal-header {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 14px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.dev-terminal-title {
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dev-terminal-status {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.dev-terminal-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dev-terminal-line {
+  min-height: 20px;
+  color: #c6cad2;
+}
+
+.dev-terminal-line.command {
+  color: #8fb4ff;
+}
+
+.dev-terminal-line.stderr,
+.dev-terminal-line.exit {
+  color: var(--error-color);
+}
+
+.dev-terminal-form {
+  height: 42px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  background: #191a1d;
+  border-top: 1px solid var(--border-color);
+  font-family: var(--font-mono);
+}
+
+.dev-terminal-prompt {
+  color: var(--accent-run);
+  font-size: 13px;
+}
+
+.dev-terminal-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.dev-terminal-input:disabled {
+  color: var(--text-muted);
+}
+
+.dev-terminal-error {
+  height: 100vh;
+  width: 100vw;
+  padding: 16px;
+  background: var(--bg-terminal);
+  color: var(--error-color);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

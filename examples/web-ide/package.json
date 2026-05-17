@@ -10,6 +10,10 @@
   },
   "dependencies": {
     "@tracecode/harness": "workspace:*",
+    "@tracecode/harness-java": "workspace:*",
+    "@tracecode/harness-javascript": "workspace:*",
+    "@tracecode/harness-project": "workspace:*",
+    "@tracecode/harness-python": "workspace:*",
     "monaco-editor": "^0.55.1"
   },
   "devDependencies": {

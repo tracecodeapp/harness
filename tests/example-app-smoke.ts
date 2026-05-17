@@ -1,12 +1,70 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { chromium } from 'playwright';
 
-export function assertCondition(condition: boolean, message: string): void {
+export function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+interface BrowserCommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+interface BrowserProjectSmokeResults {
+  pythonCwd: BrowserCommandResult;
+  pythonGenerated: string;
+  pythonGeneratedAtRoot: string;
+  pythonEnv: BrowserCommandResult;
+  pythonStdin: BrowserCommandResult;
+  pythonStdinGenerated: string;
+  pythonStdinGeneratedAtRoot: string;
+  pythonSideEffects: BrowserCommandResult;
+  pythonCreated: string;
+  pythonBytes: string;
+  staleAfterPython: BrowserCommandResult;
+  pythonModuleA: BrowserCommandResult;
+  pythonModuleAGenerated: string;
+  pythonModuleB: BrowserCommandResult;
+  pythonModuleBGenerated: string;
+  pythonPathPrecedence: BrowserCommandResult;
+  pythonReloadOld: BrowserCommandResult;
+  pythonReloadNew: BrowserCommandResult;
+  nodeCwd: BrowserCommandResult;
+  nodeGenerated: string;
+  nodeGeneratedAtRoot: string;
+  nodeSideEffects: BrowserCommandResult;
+  nodeCreated: string;
+  nodeBytes: string;
+  staleAfterNode: BrowserCommandResult;
+  nodePath: BrowserCommandResult;
+  nodeEsm: BrowserCommandResult;
+  nodeEsmGenerated: string;
+  javaCwd: BrowserCommandResult;
+  javaGenerated: string;
+  javaGeneratedAtRoot: string;
+  staleAfterJava: BrowserCommandResult;
+  javaCwdCompile: BrowserCommandResult;
+  javaCwdClass: string;
+  javaCwdRun: BrowserCommandResult;
+  javaArgCompile: BrowserCommandResult;
+  javaArgClass: string;
+  javaArgRun: BrowserCommandResult;
+  javaSourcepathCompile: BrowserCommandResult;
+  javaSourcepathMainClass: string;
+  javaSourcepathHelperClass: string;
+  javaSourcepathRun: BrowserCommandResult;
+  javaStdin: BrowserCommandResult;
+  javaJarCompile: BrowserCommandResult;
+  javaJarClass: string;
+  javaJarRun: BrowserCommandResult;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -39,6 +97,27 @@ export async function runCommand(
 
     child.on('error', reject);
   });
+}
+
+async function createExternalJavaJarBase64(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'tracecode-example-java-jar-'));
+  try {
+    const sourcePath = join(root, 'src/lib/External.java');
+    const classesPath = join(root, 'classes');
+    const jarPath = join(root, 'external.jar');
+    await mkdir(dirname(sourcePath), { recursive: true });
+    await mkdir(classesPath, { recursive: true });
+    await writeFile(
+      sourcePath,
+      'package lib;\npublic class External { public static int value() { return 42; } }\n',
+      'utf8'
+    );
+    await runCommand('javac', ['-d', classesPath, sourcePath], root);
+    await runCommand('jar', ['cf', jarPath, '-C', classesPath, '.'], root);
+    return (await readFile(jarPath)).toString('base64');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 export async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
@@ -243,6 +322,458 @@ async function runCSharpExampleSmoke(page: import('playwright').Page): Promise<v
   }
 }
 
+async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: string): Promise<void> {
+  await page.goto(`${previewUrl}/dev/`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#dev-terminal-input', { timeout: 180_000 });
+  await page.waitForFunction(
+    () => document.querySelector('#dev-terminal-status')?.textContent === 'ready',
+    undefined,
+    { timeout: 180_000 }
+  );
+
+  const runTerminalCommand = async (
+    command: string,
+    expectedOutput: string,
+    predicate: (text: string) => boolean,
+    timeoutMs = 60_000
+  ): Promise<void> => {
+    await page.fill('#dev-terminal-input', command);
+    await page.press('#dev-terminal-input', 'Enter');
+    try {
+      await page.waitForFunction(
+        (expected) => {
+          const text = document.querySelector('#dev-terminal-output')?.textContent ?? '';
+          const status = document.querySelector('#dev-terminal-status')?.textContent ?? '';
+          return status === 'ready' && text.includes(expected);
+        },
+        expectedOutput,
+        { timeout: timeoutMs }
+      );
+    } catch (error) {
+      const diagnostics = await page.evaluate(() => ({
+        status: document.querySelector('#dev-terminal-status')?.textContent ?? '',
+        output: document.querySelector('#dev-terminal-output')?.textContent ?? '',
+      }));
+      throw new Error(`Dev terminal command did not finish: ${JSON.stringify(diagnostics)}`, {
+        cause: error,
+      });
+    }
+
+    const output = await page.textContent('#dev-terminal-output');
+    assertCondition(typeof output === 'string' && predicate(output), `Unexpected dev terminal output for ${command}`);
+  };
+
+  await runTerminalCommand('pwd', '/workspace', (text) => text.includes('/workspace'));
+  await runTerminalCommand(
+    'python3 main.py alpha beta',
+    'args=alpha,beta',
+    (text) => text.includes('5') && text.includes('args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'python3 globpy/*.py data/*.txt',
+    'python_glob_args=data/a.txt,data/b.txt',
+    (text) => text.includes('5') && text.includes('python_glob_args=data/a.txt,data/b.txt'),
+    240_000
+  );
+  await runTerminalCommand(
+    'python3 -m app.main alpha beta',
+    'module_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('package=app') && text.includes('module_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'node index.js alpha beta',
+    'node_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('node_args=alpha,beta')
+  );
+  await runTerminalCommand(
+    'node globjs/*.js data/*.txt',
+    'node_glob_args=data/a.txt,data/b.txt',
+    (text) => text.includes('5') && text.includes('node_glob_args=data/a.txt,data/b.txt')
+  );
+  await runTerminalCommand(
+    'java Main alpha beta',
+    'java_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('java_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
+    '$ javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
+    (text) => text.includes('$ javac -d out src/app/PackageMain.java src/app/PackageHelper.java') && !text.includes('Java compilation failed'),
+    240_000
+  );
+  await runTerminalCommand(
+    'find out -type f | sort',
+    'out/app/PackageMain.class',
+    (text) => text.includes('out/app/PackageHelper.class') && text.includes('out/app/PackageMain.class'),
+    60_000
+  );
+  await runTerminalCommand(
+    'java --class-path out app.PackageMain alpha beta',
+    'java_package_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('java_package_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'javac -d glob-out src/app/*.java',
+    '$ javac -d glob-out src/app/*.java',
+    (text) => text.includes('$ javac -d glob-out src/app/*.java') && !text.includes('Java compilation failed'),
+    240_000
+  );
+  await runTerminalCommand(
+    'java --class-path glob-out app.PackageMain alpha beta',
+    'java_package_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('java_package_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'java app.PackageMain alpha beta',
+    'java_package_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('java_package_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'java right.Main',
+    '$ java right.Main',
+    (text) => text.includes('$ java right.Main') && text.includes('5'),
+    240_000
+  );
+  await runTerminalCommand(
+    'dotnet run -- alpha beta',
+    'csharp_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('csharp_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'dotnet run -- data/*.txt',
+    'csharp_args=data/a.txt,data/b.txt',
+    (text) => text.includes('5') && text.includes('csharp_args=data/a.txt,data/b.txt'),
+    240_000
+  );
+  await runTerminalCommand(
+    'clang++ -std=c++17 main.cpp helper.cpp',
+    '$ clang++ -std=c++17 main.cpp helper.cpp',
+    (text) => text.includes('$ clang++ -std=c++17 main.cpp helper.cpp') && !text.includes('C++ compilation failed'),
+    240_000
+  );
+  await runTerminalCommand(
+    './a.out alpha beta',
+    'cpp_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('cpp_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    'clang++ -std=c++17 *.cpp -o glob-app',
+    '$ clang++ -std=c++17 *.cpp -o glob-app',
+    (text) => text.includes('$ clang++ -std=c++17 *.cpp -o glob-app') && !text.includes('C++ compilation failed'),
+    240_000
+  );
+  await runTerminalCommand(
+    './glob-app alpha beta',
+    'cpp_args=alpha,beta',
+    (text) => text.includes('5') && text.includes('cpp_args=alpha,beta'),
+    240_000
+  );
+  await runTerminalCommand(
+    './glob-app data/*.txt',
+    'cpp_args=data/a.txt,data/b.txt',
+    (text) => text.includes('5') && text.includes('cpp_args=data/a.txt,data/b.txt'),
+    240_000
+  );
+
+  const externalJar = await createExternalJavaJarBase64();
+  const projectResults = (await page.evaluate(`(async () => {
+    const workspace = window.__tracecodeProjectWorkspace;
+    if (!workspace) throw new Error('Missing browser project workspace test handle');
+    const externalJar = ${JSON.stringify(externalJar)};
+    const safeReadFile = async (path, encoding) => {
+      try {
+        return await workspace.readFile(path, encoding);
+      } catch (error) {
+        return '__missing__:' + String(error);
+      }
+    };
+    const pythonCwd = await workspace.runCommand('python3 main.py', { cwd: 'src/py' });
+    const pythonGenerated = await safeReadFile('src/py/generated.txt');
+    const pythonGeneratedAtRoot = await safeReadFile('generated.txt');
+    const pythonEnv = await workspace.runCommand('python3 py_env.py', {
+      env: { MODE: 'project', PYTHONPATH: 'vendor' },
+    });
+    const pythonStdin = await workspace.runCommand('python3 -', {
+      cwd: 'src/py',
+      stdin: [
+        'import os',
+        'from helper import value',
+        'print(os.getcwd())',
+        'print(value())',
+        'open("stdin-generated.txt", "w").write("stdin-created\\\\n")',
+        '',
+      ].join('\\n'),
+    });
+    const pythonStdinGenerated = await safeReadFile('src/py/stdin-generated.txt');
+    const pythonStdinGeneratedAtRoot = await safeReadFile('stdin-generated.txt');
+    const pythonSideEffects = await workspace.runCommand(
+      'python3 -c "open(\\\\\\"py-created.txt\\\\\\", \\\\\\"w\\\\\\").write(\\\\\\"created\\\\\\\\n\\\\\\"); open(\\\\\\"bytes.bin\\\\\\", \\\\\\"wb\\\\\\").write(bytes([0, 255])); import os; os.remove(\\\\\\"stale.txt\\\\\\")"'
+    );
+    const pythonCreated = await safeReadFile('py-created.txt');
+    const pythonBytes = await safeReadFile('bytes.bin', 'base64');
+    const staleAfterPython = await workspace.runCommand('test ! -e stale.txt && echo deleted');
+    const pythonModuleA = await workspace.runCommand('python3 -m pkg_a.main');
+    const pythonModuleAGenerated = await safeReadFile('pkg-a-generated.txt');
+    const pythonModuleB = await workspace.runCommand('python3 -m pkg_b.main');
+    const pythonModuleBGenerated = await safeReadFile('pkg-b-generated.txt');
+    const pythonPathPrecedence = await workspace.runCommand('python3 -m pkg_b.main', {
+      env: { PYTHONPATH: 'vendor' },
+    });
+    const pythonReloadOld = await workspace.runCommand('python3 reload_main.py');
+    await workspace.writeFile('reload_target.py', [
+      'def value():',
+      '    return "new"',
+      '',
+    ].join('\\n'));
+    const pythonReloadNew = await workspace.runCommand('python3 reload_main.py');
+    await workspace.writeFile('src/js/helper.js', 'exports.value = () => 61;\\n');
+    await workspace.writeFile('src/js/main.js', [
+      'const fs = require("node:fs");',
+      'const { value } = require("./helper");',
+      'console.log(process.cwd());',
+      'console.log(value());',
+      'fs.writeFileSync("generated.txt", "node-created\\\\n");',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('js-stale.txt', 'delete me\\n');
+    const nodeCwd = await workspace.runCommand('node main.js', { cwd: 'src/js' });
+    const nodeGenerated = await safeReadFile('src/js/generated.txt');
+    const nodeGeneratedAtRoot = await safeReadFile('generated.txt');
+    const nodeSideEffects = await workspace.runCommand(
+      'node -e "const fs = require(\\\\\\"node:fs\\\\\\"); fs.writeFileSync(\\\\\\"node-created.txt\\\\\\", \\\\\\"created\\\\\\\\n\\\\\\"); fs.writeFileSync(\\\\\\"node-bytes.bin\\\\\\", Buffer.from([0, 255])); fs.unlinkSync(\\\\\\"js-stale.txt\\\\\\")"'
+    );
+    const nodeCreated = await safeReadFile('node-created.txt');
+    const nodeBytes = await safeReadFile('node-bytes.bin', 'base64');
+    const staleAfterNode = await workspace.runCommand('test ! -e js-stale.txt && echo deleted');
+    await workspace.writeFile('vendor/envpkg.js', 'exports.value = 77;\\n');
+    const nodePath = await workspace.runCommand('node -e "console.log(require(\\\\\\"envpkg\\\\\\").value)"', {
+      env: { NODE_PATH: 'vendor' },
+    });
+    await workspace.writeFile('src/js-esm/helper.mjs', 'export const value = 88;\\n');
+    await workspace.writeFile('src/js-esm/main.mjs', [
+      'import { writeFileSync } from "node:fs";',
+      'import { value } from "./helper.mjs";',
+      'const dynamic = await import("./helper.mjs");',
+      'console.log(value + dynamic.value);',
+      'console.log(process.argv.slice(2).join(","));',
+      'writeFileSync("esm-generated.txt", "esm-created\\\\n");',
+      '',
+    ].join('\\n'));
+    const nodeEsm = await workspace.runCommand('node main.mjs alpha beta', { cwd: 'src/js-esm' });
+    const nodeEsmGenerated = await safeReadFile('src/js-esm/esm-generated.txt');
+    const javaCwd = await workspace.runCommand('java CwdMain', { cwd: 'src/javawd' });
+    const javaGenerated = await safeReadFile('src/javawd/generated.txt');
+    const javaGeneratedAtRoot = await safeReadFile('generated.txt');
+    const staleAfterJava = await workspace.runCommand('test ! -e java-stale.txt && echo deleted');
+    const javaCwdCompile = await workspace.runCommand('javac -d out CompileMain.java', { cwd: 'src/javacwd' });
+    const javaCwdClass = await safeReadFile('src/javacwd/out/CompileMain.class', 'base64');
+    const javaCwdRun = await workspace.runCommand('java --class-path out CompileMain', { cwd: 'src/javacwd' });
+    const javaArgCompile = await workspace.runCommand('javac @javac.args', { cwd: 'src/javaarg' });
+    const javaArgClass = await safeReadFile('src/javaarg/out/ArgMain.class', 'base64');
+    const javaArgRun = await workspace.runCommand('java --class-path out ArgMain', { cwd: 'src/javaarg' });
+    const javaSourcepathCompile = await workspace.runCommand('javac @javac.args', { cwd: 'src/javasourcepath' });
+    const javaSourcepathMainClass = await safeReadFile('src/javasourcepath/out/app/Main.class', 'base64');
+    const javaSourcepathHelperClass = await safeReadFile('src/javasourcepath/out/app/Helper.class', 'base64');
+    const javaSourcepathRun = await workspace.runCommand('java --class-path out app.Main', { cwd: 'src/javasourcepath' });
+    const javaStdin = await workspace.runCommand('java InputMain', {
+      cwd: 'src/javastdin',
+      stdin: ['from-browser', ''].join('\\n'),
+    });
+    await workspace.writeFile('lib/external.jar', externalJar, 'base64');
+    await workspace.writeFile('src/jar/JarMain.java', [
+      'package jarapp;',
+      'import lib.External;',
+      'public class JarMain {',
+      '  public static void main(String[] args) {',
+      '    System.out.println(External.value());',
+      '    System.out.println(String.join(",", args));',
+      '  }',
+      '}',
+      '',
+    ].join('\\n'));
+    const javaJarCompile = await workspace.runCommand('javac -cp lib/external.jar -d jar-out src/jar/JarMain.java');
+    const javaJarClass = await safeReadFile('jar-out/jarapp/JarMain.class', 'base64');
+    const javaJarRun = await workspace.runCommand('java -cp jar-out:lib/external.jar jarapp.JarMain alpha beta');
+    return {
+      pythonCwd,
+      pythonGenerated,
+      pythonGeneratedAtRoot,
+      pythonEnv,
+      pythonStdin,
+      pythonStdinGenerated,
+      pythonStdinGeneratedAtRoot,
+      pythonSideEffects,
+      pythonCreated,
+      pythonBytes,
+      staleAfterPython,
+      pythonModuleA,
+      pythonModuleAGenerated,
+      pythonModuleB,
+      pythonModuleBGenerated,
+      pythonPathPrecedence,
+      pythonReloadOld,
+      pythonReloadNew,
+      nodeCwd,
+      nodeGenerated,
+      nodeGeneratedAtRoot,
+      nodeSideEffects,
+      nodeCreated,
+      nodeBytes,
+      staleAfterNode,
+      nodePath,
+      nodeEsm,
+      nodeEsmGenerated,
+      javaCwd,
+      javaGenerated,
+      javaGeneratedAtRoot,
+      staleAfterJava,
+      javaCwdCompile,
+      javaCwdClass,
+      javaCwdRun,
+      javaArgCompile,
+      javaArgClass,
+      javaArgRun,
+      javaSourcepathCompile,
+      javaSourcepathMainClass,
+      javaSourcepathHelperClass,
+      javaSourcepathRun,
+      javaStdin,
+      javaJarCompile,
+      javaJarClass,
+      javaJarRun,
+    };
+  })()`)) as BrowserProjectSmokeResults;
+
+  assertCondition(
+    projectResults.pythonCwd.exitCode === 0 &&
+      projectResults.pythonCwd.stdout.endsWith('/src/py\n31\n') &&
+      projectResults.pythonGenerated === 'created\n',
+    `Browser Python project cwd/files mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.pythonEnv.exitCode === 0 && projectResults.pythonEnv.stdout === '42\nproject\n',
+    `Browser Python project env/PYTHONPATH mismatch: ${JSON.stringify(projectResults.pythonEnv)}`
+  );
+  assertCondition(
+      projectResults.pythonStdin.exitCode === 0 &&
+      projectResults.pythonStdin.stdout.endsWith('/src/py\n31\n') &&
+      projectResults.pythonStdinGenerated === 'stdin-created\n',
+    `Browser Python project stdin mismatch: ${JSON.stringify(projectResults.pythonStdin)}`
+  );
+  assertCondition(
+    projectResults.pythonSideEffects.exitCode === 0 &&
+      projectResults.pythonCreated === 'created\n' &&
+      projectResults.pythonBytes === 'AP8=' &&
+      projectResults.staleAfterPython.stdout === 'deleted\n',
+    `Browser Python project side effects mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.pythonModuleA.exitCode === 0 &&
+      projectResults.pythonModuleA.stdout === 'a-helper\n' &&
+      projectResults.pythonModuleAGenerated === 'a-helper\n' &&
+      projectResults.pythonModuleB.exitCode === 0 &&
+      projectResults.pythonModuleB.stdout === 'b-helper\n' &&
+      projectResults.pythonModuleBGenerated === 'b-helper\n',
+    `Browser Python project module/duplicate import mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.pythonPathPrecedence.exitCode === 0 &&
+      projectResults.pythonPathPrecedence.stdout === 'b-helper\n',
+    `Browser Python project PYTHONPATH precedence mismatch: ${JSON.stringify(projectResults.pythonPathPrecedence)}`
+  );
+  assertCondition(
+    projectResults.pythonReloadOld.exitCode === 0 &&
+      projectResults.pythonReloadOld.stdout === 'old\n' &&
+      projectResults.pythonReloadNew.exitCode === 0 &&
+      projectResults.pythonReloadNew.stdout === 'new\n',
+    `Browser Python project import cache invalidation mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.nodeCwd.exitCode === 0 &&
+      projectResults.nodeCwd.stdout === '/workspace/src/js\n61\n' &&
+      projectResults.nodeGenerated === 'node-created\n' &&
+      projectResults.nodeGeneratedAtRoot !== 'node-created\n',
+    `Browser Node project cwd/files mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.nodeSideEffects.exitCode === 0 &&
+      projectResults.nodeCreated === 'created\n' &&
+      projectResults.nodeBytes === 'AP8=' &&
+      projectResults.staleAfterNode.stdout === 'deleted\n',
+    `Browser Node project side effects mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.nodePath.exitCode === 0 &&
+      projectResults.nodePath.stdout === '77\n',
+    `Browser Node project NODE_PATH mismatch: ${JSON.stringify(projectResults.nodePath)}`
+  );
+  assertCondition(
+    projectResults.nodeEsm.exitCode === 0 &&
+      projectResults.nodeEsm.stdout === '176\nalpha,beta\n' &&
+      projectResults.nodeEsmGenerated === 'esm-created\n',
+    `Browser Node project ESM/import side effects mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.javaCwd.exitCode === 0 &&
+      projectResults.javaCwd.stdout.endsWith('/workspace/src/javawd\n') &&
+      projectResults.javaGenerated === 'java-created\n' &&
+      projectResults.staleAfterJava.stdout === 'deleted\n',
+    `Browser Java project cwd/files mismatch: ${JSON.stringify(projectResults.javaCwd)}`
+  );
+  assertCondition(
+    projectResults.javaCwdCompile.exitCode === 0 &&
+      typeof projectResults.javaCwdClass === 'string' &&
+      projectResults.javaCwdClass.length > 0 &&
+      !projectResults.javaCwdClass.startsWith('__missing__') &&
+      projectResults.javaCwdRun.exitCode === 0 &&
+      projectResults.javaCwdRun.stdout === 'cwd-compile\n',
+    `Browser Java project cwd compile/classpath mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.javaArgCompile.exitCode === 0 &&
+      typeof projectResults.javaArgClass === 'string' &&
+      projectResults.javaArgClass.length > 0 &&
+      !projectResults.javaArgClass.startsWith('__missing__') &&
+      projectResults.javaArgRun.exitCode === 0 &&
+      projectResults.javaArgRun.stdout === 'argfile-compile\n',
+    `Browser Java project argfile compile mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.javaSourcepathCompile.exitCode === 0 &&
+      typeof projectResults.javaSourcepathMainClass === 'string' &&
+      projectResults.javaSourcepathMainClass.length > 0 &&
+      !projectResults.javaSourcepathMainClass.startsWith('__missing__') &&
+      typeof projectResults.javaSourcepathHelperClass === 'string' &&
+      projectResults.javaSourcepathHelperClass.length > 0 &&
+      !projectResults.javaSourcepathHelperClass.startsWith('__missing__') &&
+      projectResults.javaSourcepathRun.exitCode === 0 &&
+      projectResults.javaSourcepathRun.stdout === 'sourcepath-helper\n',
+    `Browser Java project sourcepath transitive compile mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.javaStdin.exitCode === 0 &&
+      projectResults.javaStdin.stdout === 'stdin=from-browser\n',
+    `Browser Java project stdin mismatch: ${JSON.stringify(projectResults.javaStdin)}`
+  );
+  assertCondition(
+    projectResults.javaJarCompile.exitCode === 0 &&
+      typeof projectResults.javaJarClass === 'string' &&
+      projectResults.javaJarClass.length > 0 &&
+      !projectResults.javaJarClass.startsWith('__missing__') &&
+      projectResults.javaJarRun.exitCode === 0 &&
+      projectResults.javaJarRun.stdout === '42\nalpha,beta\n',
+    `Browser Java project jar/classpath mismatch: ${JSON.stringify(projectResults)}`
+  );
+}
+
 function runtimeTraceEvents(trace: unknown): unknown[] {
   if (Array.isArray(trace)) return trace;
   if (trace && typeof trace === 'object' && Array.isArray((trace as { events?: unknown }).events)) {
@@ -275,6 +806,7 @@ export async function runExampleBrowserSmoke(previewUrl: string): Promise<void> 
       });
     }
     await runCSharpExampleSmoke(page);
+    await runDevTerminalSmoke(page, previewUrl);
   } finally {
     await browser.close();
   }
