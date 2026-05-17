@@ -68,6 +68,11 @@ interface PackageMetadata {
 
 type PackageResolutionCondition = 'require' | 'import';
 
+interface WorkspacePathContext {
+  root: string;
+  alias?: string;
+}
+
 function normalizeProjectPath(path: string): string {
   const cleaned = path
     .replace(/\\/g, '/')
@@ -106,22 +111,46 @@ function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | nu
   return null;
 }
 
-function normalizeWorkspaceEntryPath(path: unknown, basePath = '', allowRoot = false): string {
+function normalizeAbsoluteWorkspaceRoot(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalized.startsWith('/') ? normalized || '/' : `/${normalized}`;
+}
+
+function createWorkspacePathContext(project: RuntimeProjectSnapshot): WorkspacePathContext {
+  return {
+    root: normalizeAbsoluteWorkspaceRoot(project.workspaceRoot ?? project.cwd ?? '/workspace'),
+    ...(project.workspaceAlias ? { alias: normalizeAbsoluteWorkspaceRoot(project.workspaceAlias) } : {}),
+  };
+}
+
+function workspaceRelativeFromAbsolutePath(rawPath: string, workspace: WorkspacePathContext): string | null {
+  const raw = normalizeAbsoluteWorkspaceRoot(rawPath);
+  if (raw === workspace.root) return '';
+  if (raw.startsWith(`${workspace.root}/`)) return raw.slice(workspace.root.length + 1);
+  if (workspace.alias && raw === workspace.alias) return '';
+  if (workspace.alias && raw.startsWith(`${workspace.alias}/`)) return raw.slice(workspace.alias.length + 1);
+  return null;
+}
+
+function normalizeWorkspaceEntryPath(
+  path: unknown,
+  basePath = '',
+  allowRoot = false,
+  workspace: WorkspacePathContext = { root: '/workspace' }
+): string {
   const rawInput = workspacePathInputToString(path);
   const raw = rawInput.replace(/\\/g, '/');
-  const withBase = raw.startsWith('/workspace/')
-    ? raw.slice('/workspace/'.length)
-    : raw === '/workspace'
-      ? ''
-      : raw.startsWith('/')
-        ? raw
-        : basePath
-          ? `${basePath}/${raw}`
-          : raw;
+  const workspaceRelative = raw.startsWith('/') ? workspaceRelativeFromAbsolutePath(raw, workspace) : null;
+  const withBase = workspaceRelative !== null
+    ? workspaceRelative
+    : raw.startsWith('/')
+      ? raw
+      : basePath
+        ? `${basePath}/${raw}`
+        : raw;
   const cleaned = withBase
     .replace(/\\/g, '/')
-    .replace(/^\.\//, '')
-    .replace(/^\/workspace\//, '');
+    .replace(/^\.\//, '');
   if (cleaned.startsWith('/') || /^[A-Za-z]:\//.test(cleaned)) {
     throw new Error(`Path must be inside workspace: ${rawInput}`);
   }
@@ -146,8 +175,12 @@ function normalizeWorkspaceEntryPath(path: unknown, basePath = '', allowRoot = f
   return parts.join('/');
 }
 
-function assertSafeWorkspaceFilePath(path: unknown, basePath = ''): string {
-  return normalizeWorkspaceEntryPath(path, basePath, false);
+function assertSafeWorkspaceFilePath(
+  path: unknown,
+  basePath = '',
+  workspace: WorkspacePathContext = { root: '/workspace' }
+): string {
+  return normalizeWorkspaceEntryPath(path, basePath, false, workspace);
 }
 
 function utf8Bytes(value: string): Uint8Array {
@@ -313,7 +346,7 @@ function createZlibApi() {
   };
 }
 
-function createPathApi(getCwd: () => string) {
+function createPathApi(getCwd: () => string, workspaceRoot: string) {
   const normalizePath = (value: string): string => {
     const raw = String(value).replace(/\\/g, '/');
     const isAbsolute = raw.startsWith('/');
@@ -337,7 +370,7 @@ function createPathApi(getCwd: () => string) {
   };
   const cwdAbsolutePath = (): string => {
     const cwd = getCwd();
-    return cwd ? `/workspace/${cwd}` : '/workspace';
+    return cwd ? `${workspaceRoot}/${cwd}` : workspaceRoot;
   };
   const isAbsolute = (path: string): boolean => String(path).startsWith('/');
   const normalize = (path: string): string => normalizePath(path);
@@ -422,24 +455,39 @@ function createPathApi(getCwd: () => string) {
   return { ...api, posix: api };
 }
 
-function createOsApi() {
+function inferWorkspaceHome(workspaceRoot: string): string {
+  const parts = workspaceRoot.split('/').filter(Boolean);
+  if (parts.length >= 3 && parts[0] === 'home') {
+    return `/${parts.slice(0, 2).join('/')}`;
+  }
+  const parent = dirname(workspaceRoot);
+  return parent || workspaceRoot;
+}
+
+function workspaceUsername(workspaceHome: string): string {
+  const parts = workspaceHome.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? 'browser';
+}
+
+function createOsApi(workspaceRoot: string) {
+  const home = inferWorkspaceHome(workspaceRoot);
   return {
     EOL: '\n',
     arch: () => 'wasm32',
     cpus: () => [],
     endianness: () => 'LE',
-    homedir: () => '/workspace',
-    hostname: () => 'browser',
+    homedir: () => home,
+    hostname: () => 'tracevm',
     platform: () => 'browser',
     release: () => '',
     tmpdir: () => '/tmp',
-    type: () => 'Browser',
+    type: () => 'tracekernel',
     userInfo: () => ({
-      username: 'browser',
+      username: workspaceUsername(home),
       uid: -1,
       gid: -1,
       shell: null,
-      homedir: '/workspace',
+      homedir: home,
     }),
   };
 }
@@ -478,18 +526,18 @@ function dirname(path: string): string {
   return index === -1 ? '' : path.slice(0, index);
 }
 
-function workspaceFilename(path: string): string {
+function workspaceFilename(path: string, workspaceRoot = '/workspace'): string {
   const normalized = normalizeProjectPath(path);
-  return `/workspace/${normalized}`;
+  return normalized ? `${workspaceRoot}/${normalized}` : workspaceRoot;
 }
 
-function workspaceFileUrl(path: string): string {
-  return `file://${workspaceFilename(path).split('/').map((part) => encodeURIComponent(part)).join('/')}`;
+function workspaceFileUrl(path: string, workspaceRoot = '/workspace'): string {
+  return `file://${workspaceFilename(path, workspaceRoot).split('/').map((part) => encodeURIComponent(part)).join('/')}`;
 }
 
-function workspaceDirname(path: string): string {
+function workspaceDirname(path: string, workspaceRoot = '/workspace'): string {
   const normalizedDir = dirname(normalizeProjectPath(path));
-  return normalizedDir ? `/workspace/${normalizedDir}` : '/workspace';
+  return normalizedDir ? `${workspaceRoot}/${normalizedDir}` : workspaceRoot;
 }
 
 function joinModulePath(parentPath: string, specifier: string): string {
@@ -660,7 +708,11 @@ function moduleCandidates(
   ];
 }
 
-function nodePathEntries(request: JavaScriptProjectCommandRequest, cwdPath: string): string[] {
+function nodePathEntries(
+  request: JavaScriptProjectCommandRequest,
+  cwdPath: string,
+  workspace: WorkspacePathContext
+): string[] {
   const rawNodePath = request.env.NODE_PATH;
   if (typeof rawNodePath !== 'string' || rawNodePath.trim().length === 0) {
     return [];
@@ -670,7 +722,7 @@ function nodePathEntries(request: JavaScriptProjectCommandRequest, cwdPath: stri
     .split(':')
     .map((entry) => entry.trim())
     .filter(Boolean)
-    .map((entry) => normalizeWorkspaceEntryPath(entry, cwdPath, true))
+    .map((entry) => normalizeWorkspaceEntryPath(entry, cwdPath, true, workspace))
     .filter((entry, index, entries) => entries.indexOf(entry) === index);
 }
 
@@ -857,8 +909,8 @@ function nodeModulesSearchPaths(parentPath: string, specifier: string): string[]
   return paths;
 }
 
-function moduleSearchPaths(parentPath: string): string[] {
-  return nodeModulesSearchPaths(parentPath, '').map((path) => workspaceFilename(path.replace(/\/$/, '')));
+function moduleSearchPaths(parentPath: string, workspaceRoot = '/workspace'): string[] {
+  return nodeModulesSearchPaths(parentPath, '').map((path) => workspaceFilename(path.replace(/\/$/, ''), workspaceRoot));
 }
 
 function formatConsoleValues(values: unknown[]): string {
@@ -930,9 +982,11 @@ async function runBrowserJavaScriptProjectRequest(
     const stdout: string[] = [];
     const stderr: string[] = [];
     const io = createRuntimeProjectIoBridge(request.onEvent);
+    const workspacePathContext = createWorkspacePathContext(request.project);
+    const workspaceRoot = workspacePathContext.root;
     const cwdPath = workspaceCwdPath(request);
     const fileStore = new Map(
-      request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path), fileBytes(file)])
+      request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)])
     );
     const directoryStore = new Set<string>(['']);
     for (const filePath of fileStore.keys()) {
@@ -942,7 +996,7 @@ async function runBrowserJavaScriptProjectRequest(
       }
     }
     for (const directory of request.project.directories ?? []) {
-      const directoryPath = normalizeWorkspaceEntryPath(directory, '', true);
+      const directoryPath = normalizeWorkspaceEntryPath(directory, '', true, workspacePathContext);
       if (!directoryPath) continue;
       const parts = directoryPath.split('/');
       for (let index = 1; index <= parts.length; index += 1) {
@@ -953,7 +1007,7 @@ async function runBrowserJavaScriptProjectRequest(
     const modules = new Map(
       request.project.files
         .filter((file) => file.encoding !== 'base64')
-        .map((file) => [normalizeProjectPath(file.path), file.contents])
+        .map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), file.contents])
     );
     const cache = new Map<string, ModuleRecord>();
     const requireCache: Record<string, ModuleRecord> = {};
@@ -1014,7 +1068,7 @@ async function runBrowserJavaScriptProjectRequest(
         });
       },
     };
-    const nodePathSearchEntries = nodePathEntries(request, cwdPath);
+    const nodePathSearchEntries = nodePathEntries(request, cwdPath, workspacePathContext);
     const syncTextModule = (path: string, bytes: Uint8Array): void => {
       const text = textFromBytes(bytes);
       if (byteEqual(utf8Bytes(text), bytes)) {
@@ -1034,7 +1088,7 @@ async function runBrowserJavaScriptProjectRequest(
       io.fileChange(bytesToRuntimeFile(path, bytes), 'live');
     };
     const deleteFile = (path: unknown): void => {
-      const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
+      const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (!fileStore.delete(normalized)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: 'ENOENT' });
       }
@@ -1051,7 +1105,7 @@ async function runBrowserJavaScriptProjectRequest(
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
         }
-        const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
+        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalized);
         if (!bytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
@@ -1068,7 +1122,7 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
+        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
       appendFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
@@ -1077,7 +1131,7 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
+        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const previous = fileStore.get(normalized) ?? new Uint8Array();
         const next = bytesFromFsWriteValue(value, options);
         const combined = new Uint8Array(previous.byteLength + next.byteLength);
@@ -1090,7 +1144,7 @@ async function runBrowserJavaScriptProjectRequest(
         const destinationDevice = normalizeRuntimeDevicePath(destination);
         const sourceBytes = sourceDevice
           ? utf8Bytes(readDevice(sourceDevice))
-          : fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath));
+          : fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
@@ -1098,12 +1152,12 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(destinationDevice, textFromBytes(sourceBytes));
           return;
         }
-        const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath);
+        const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);
         setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
       },
       renameSync: (oldPath: unknown, newPath: unknown) => {
-        const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath);
-        const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath);
+        const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
+        const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalizedOldPath);
         if (!bytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`), { code: 'ENOENT' });
@@ -1117,7 +1171,7 @@ async function runBrowserJavaScriptProjectRequest(
       unlinkSync: deleteFile,
       rmSync: (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         try {
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true);
+          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           if (fileStore.has(normalized)) {
             deleteFile(path);
             return;
@@ -1155,7 +1209,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       existsSync: (path: unknown) => {
         try {
-          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true);
+          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           const prefix = normalized ? `${normalized}/` : '';
           return fileStore.has(normalized)
             || directoryStore.has(normalized)
@@ -1165,7 +1219,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean } | string | null) => {
-        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true);
+        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
         const entries = new Map<string, 'file' | 'directory'>();
         for (const filePath of fileStore.keys()) {
@@ -1197,7 +1251,7 @@ async function runBrowserJavaScriptProjectRequest(
         }));
       },
       statSync: (path: unknown) => {
-        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true);
+        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const isFile = fileStore.has(normalized);
         const prefix = normalized ? `${normalized}/` : '';
         const isDirectory = !isFile && (
@@ -1216,7 +1270,7 @@ async function runBrowserJavaScriptProjectRequest(
         };
       },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
-        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true);
+        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
         const parent = dirname(normalized);
         const parentPath = parent === '' ? '' : parent;
@@ -1231,7 +1285,7 @@ async function runBrowserJavaScriptProjectRequest(
         return undefined;
       },
       rmdirSync: (path: unknown) => {
-        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true);
+        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
         const hasChildren = Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
           || Array.from(directoryStore).some((directoryPath) => directoryPath !== normalized && directoryPath.startsWith(prefix));
@@ -1277,10 +1331,10 @@ async function runBrowserJavaScriptProjectRequest(
       ['node:fs', fsApi],
       ['fs/promises', fsPromisesApi],
       ['node:fs/promises', fsPromisesApi],
-      ['path', createPathApi(() => cwdPath)],
-      ['node:path', createPathApi(() => cwdPath)],
-      ['os', createOsApi()],
-      ['node:os', createOsApi()],
+      ['path', createPathApi(() => cwdPath, workspaceRoot)],
+      ['node:path', createPathApi(() => cwdPath, workspaceRoot)],
+      ['os', createOsApi(workspaceRoot)],
+      ['node:os', createOsApi(workspaceRoot)],
       ['url', createUrlApi()],
       ['node:url', createUrlApi()],
       ['buffer', { Buffer: BrowserBuffer }],
@@ -1288,13 +1342,20 @@ async function runBrowserJavaScriptProjectRequest(
       ['zlib', zlibApi],
       ['node:zlib', zlibApi],
     ]);
+    const normalizeModuleSpecifier = (specifier: string): string => (
+      specifier.startsWith('/')
+        ? normalizeWorkspaceEntryPath(specifier, '', false, workspacePathContext)
+        : specifier
+    );
     const requireModule = (specifier: string, parentPath: string, parentModule: ModuleRecord | null = null) => {
       if (builtins.has(specifier)) return builtins.get(specifier);
-      return executeModule(resolveModulePath(modules, specifier, parentPath, nodePathSearchEntries, 'require'), parentModule);
+      const normalizedSpecifier = normalizeModuleSpecifier(specifier);
+      return executeModule(resolveModulePath(modules, normalizedSpecifier, parentPath, nodePathSearchEntries, 'require'), parentModule);
     };
     const resolveRequireModule = (specifier: string, parentPath: string): string => {
       if (builtins.has(specifier)) return specifier;
-      return workspaceFilename(resolveModulePath(modules, specifier, parentPath, nodePathSearchEntries, 'require'));
+      const normalizedSpecifier = normalizeModuleSpecifier(specifier);
+      return workspaceFilename(resolveModulePath(modules, normalizedSpecifier, parentPath, nodePathSearchEntries, 'require'), workspaceRoot);
     };
     const createWorkspaceRequire = (
       parentPath: string,
@@ -1321,19 +1382,19 @@ async function runBrowserJavaScriptProjectRequest(
     const importModule = (specifier: string, parentPath: string) => (
       builtins.has(specifier)
         ? Promise.resolve(builtins.get(specifier))
-        : Promise.resolve(executeModule(resolveModulePath(modules, specifier, parentPath, nodePathSearchEntries, 'import')))
+        : Promise.resolve(executeModule(resolveModulePath(modules, normalizeModuleSpecifier(specifier), parentPath, nodePathSearchEntries, 'import')))
     );
     const preloadParentPath = cwdPath ? `${cwdPath}/repl.js` : 'repl.js';
 
     const createModuleRecord = (normalizedPath: string, parent: ModuleRecord | null): ModuleRecord => ({
       exports: {},
-      id: workspaceFilename(normalizedPath),
-      filename: workspaceFilename(normalizedPath),
+      id: workspaceFilename(normalizedPath, workspaceRoot),
+      filename: workspaceFilename(normalizedPath, workspaceRoot),
       loaded: false,
       parent,
       children: [],
-      path: workspaceDirname(normalizedPath),
-      paths: moduleSearchPaths(normalizedPath),
+      path: workspaceDirname(normalizedPath, workspaceRoot),
+      paths: moduleSearchPaths(normalizedPath, workspaceRoot),
     });
 
     const executeModule = (modulePath: string, parent: ModuleRecord | null = null, isMain = false): unknown => {
@@ -1341,7 +1402,7 @@ async function runBrowserJavaScriptProjectRequest(
       if (!normalizedPath) {
         throw new Error(`Cannot find module '${modulePath}'`);
       }
-      const cacheKey = workspaceFilename(normalizedPath);
+      const cacheKey = workspaceFilename(normalizedPath, workspaceRoot);
 
       const cached = cache.get(normalizedPath);
       if (cached && requireCache[cacheKey]) {
@@ -1379,7 +1440,7 @@ async function runBrowserJavaScriptProjectRequest(
       module.require = localRequire;
       const localImport = (specifier: string) => importModule(specifier, normalizedPath);
       const executableCode = isEsmModule(modules, normalizedPath)
-        ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath))
+        ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot))
         : code;
       const fn = new Function('require', '__import', 'module', 'exports', 'console', 'process', 'Buffer', '__filename', '__dirname', executableCode);
       fn(
@@ -1390,8 +1451,8 @@ async function runBrowserJavaScriptProjectRequest(
         consoleApi,
         processApi,
         BrowserBuffer,
-        workspaceFilename(normalizedPath),
-        workspaceDirname(normalizedPath)
+        workspaceFilename(normalizedPath, workspaceRoot),
+        workspaceDirname(normalizedPath, workspaceRoot)
       );
       module.loaded = true;
       return module.exports;
@@ -1421,11 +1482,11 @@ async function runBrowserJavaScriptProjectRequest(
       module.id = '.';
       mainModule = module;
       cache.set(normalizedPath, module);
-      requireCache[workspaceFilename(normalizedPath)] = module;
+      requireCache[workspaceFilename(normalizedPath, workspaceRoot)] = module;
       const localRequire = createWorkspaceRequire(normalizedPath, module);
       module.require = localRequire;
       const localImport = (specifier: string) => importModule(specifier, normalizedPath);
-      const executableCode = transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath));
+      const executableCode = transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot));
       const fn = new AsyncFunction('require', '__import', 'module', 'exports', 'console', 'process', 'Buffer', '__filename', '__dirname', executableCode);
       await fn(
         localRequire,
@@ -1435,8 +1496,8 @@ async function runBrowserJavaScriptProjectRequest(
         consoleApi,
         processApi,
         BrowserBuffer,
-        workspaceFilename(normalizedPath),
-        workspaceDirname(normalizedPath)
+        workspaceFilename(normalizedPath, workspaceRoot),
+        workspaceDirname(normalizedPath, workspaceRoot)
       );
       module.loaded = true;
       await Promise.resolve();
@@ -1450,24 +1511,34 @@ async function runBrowserJavaScriptProjectRequest(
       if (request.source === 'file') {
         let entryPath: string | null = null;
         try {
-          const workspaceRelativePath = assertSafeWorkspaceFilePath(request.scriptPath);
+          const workspaceRelativePath = assertSafeWorkspaceFilePath(request.scriptPath, '', workspacePathContext);
           if (modules.has(workspaceRelativePath)) {
             entryPath = workspaceRelativePath;
           }
         } catch {
           // Fall back to cwd-relative resolution below.
         }
-        await executeEntrypoint(entryPath ?? normalizeWorkspaceEntryPath(request.scriptPath, cwdPath));
+        await executeEntrypoint(entryPath ?? normalizeWorkspaceEntryPath(request.scriptPath, cwdPath, false, workspacePathContext));
       } else {
         const module: ModuleRecord = { exports: {} };
         const replPath = preloadParentPath;
         const requireFromRoot = createWorkspaceRequire(replPath);
         const importFromRoot = (specifier: string) => importModule(specifier, replPath);
         const evalCode = request.options?.inputType === 'module'
-          ? transformStaticEsmToCommonJs(request.code)
+          ? transformStaticEsmToCommonJs(request.code, workspaceFileUrl('[eval]', workspaceRoot))
           : request.code;
         const fn = new AsyncFunction('require', '__import', 'module', 'exports', 'console', 'process', 'Buffer', '__filename', '__dirname', transformDynamicImports(evalCode));
-        await fn(requireFromRoot, importFromRoot, module, module.exports, consoleApi, processApi, BrowserBuffer, '[eval]', '/workspace');
+        await fn(
+          requireFromRoot,
+          importFromRoot,
+          module,
+          module.exports,
+          consoleApi,
+          processApi,
+          BrowserBuffer,
+          `${workspaceRoot}/[eval]`,
+          cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot
+        );
         await Promise.resolve();
       }
 

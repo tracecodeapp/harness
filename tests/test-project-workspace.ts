@@ -4380,6 +4380,27 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     },
     files: [
       { path: 'main.py', contents: 'print("python")\n' },
+      {
+        path: 'index.js',
+        contents: [
+          'const fs = require("node:fs");',
+          'const os = require("node:os");',
+          'const path = require("node:path");',
+          'const value = require("/home/ada/weather-api/lib/value.js");',
+          'console.log(process.cwd());',
+          'console.log(os.homedir());',
+          'console.log(path.resolve("src/alias.txt"));',
+          'console.log(__filename);',
+          'console.log(__dirname);',
+          'console.log(require.resolve("./index.js"));',
+          'console.log(require.resolve("/home/ada/weather-api/lib/value.js"));',
+          'console.log(value.answer);',
+          'fs.writeFileSync("/home/ada/weather-api/node-canonical.txt", "node-canonical\\n");',
+          'fs.appendFileSync("/workspace/node-alias.txt", "node-alias\\n");',
+          '',
+        ].join('\n'),
+      },
+      { path: 'lib/value.js', contents: 'exports.answer = 42;\n' },
       { path: 'Main.java', contents: 'class Main {}\n' },
       { path: 'Program.cs', contents: 'Console.WriteLine("csharp");\n' },
       { path: 'main.cpp', contents: 'int main() { return 0; }\n' },
@@ -4459,6 +4480,33 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       `browser Python request should use canonical cwd and expose alias metadata: ${python.stdout}`
     );
     assertCondition(await workspace.readFile('python-browser.txt') === 'python-browser\n', 'browser Python final diff should persist through kernel FS');
+
+    const nodeEvents: RuntimeCommandEvent[] = [];
+    const node = await workspace.runCommand('node /home/ada/weather-api/index.js', {
+      cwd: '/workspace',
+      onEvent: (event) => nodeEvents.push(event),
+    });
+    assertCondition(node.exitCode === 0, `browser Node project command should succeed with canonical script path: ${node.stderr}`);
+    assertCondition(
+      node.stdout === [
+        '/home/ada/weather-api',
+        '/home/ada',
+        '/home/ada/weather-api/src/alias.txt',
+        '/home/ada/weather-api/index.js',
+        '/home/ada/weather-api',
+        '/home/ada/weather-api/index.js',
+        '/home/ada/weather-api/lib/value.js',
+        '42',
+        '',
+      ].join('\n'),
+      `browser Node APIs should use canonical tracekernel paths: ${node.stdout}`
+    );
+    assertCondition(await workspace.readFile('node-canonical.txt') === 'node-canonical\n', 'browser Node should write canonical absolute paths');
+    assertCondition(await workspace.readFile('node-alias.txt') === 'node-alias\n', 'browser Node should still map /workspace alias paths');
+    assertCondition(
+      nodeEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'node-canonical.txt'),
+      `browser Node should stream canonical absolute file mutations live: ${JSON.stringify(nodeEvents)}`
+    );
 
     const java = await workspace.runCommand('java Main', { cwd: '/workspace' });
     assertCondition(java.exitCode === 0, `browser Java project command should succeed with alias cwd: ${java.stderr}`);
