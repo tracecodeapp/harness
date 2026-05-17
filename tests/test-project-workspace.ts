@@ -4525,6 +4525,49 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     `workspace watch should report command final-diff deletes: ${JSON.stringify(commandEvents)}`
   );
   commandWorkspace.dispose();
+
+  const shellWorkspace = await createRuntimeWorkspace();
+  const shellWatchEvents: RuntimeWorkspaceEvent[] = [];
+  const shellCommandEvents: RuntimeCommandEvent[] = [];
+  shellWorkspace.watch((event) => shellWatchEvents.push(event));
+  const shellResult = await shellWorkspace.runCommand(
+    'printf "live\\n" > live.txt && printf "again\\n" >> live.txt && cp live.txt copied.txt && mv copied.txt moved.txt && rm live.txt',
+    { onEvent: (event) => shellCommandEvents.push(event) }
+  );
+  assertCondition(shellResult.exitCode === 0, `shell filesystem mutation command should succeed: ${shellResult.stderr}`);
+  assertCondition(await shellWorkspace.readFile('moved.txt') === 'live\nagain\n', 'shell filesystem mutations should persist through just-bash FS');
+  await assertRejectsAsync(() => shellWorkspace.readFile('live.txt'), 'shell rm should persist deleted files');
+  assertCondition(
+    shellWatchEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'live' &&
+      event.change.path === 'live.txt' &&
+      !('deleted' in event.change) &&
+      event.change.contents === 'live\nagain\n'
+    ),
+    `workspace watch should report live shell append writes: ${JSON.stringify(shellWatchEvents)}`
+  );
+  assertCondition(
+    shellWatchEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'live' &&
+      event.change.path === 'live.txt' &&
+      'deleted' in event.change
+    ),
+    `workspace watch should report live shell deletes: ${JSON.stringify(shellWatchEvents)}`
+  );
+  assertCondition(
+    shellCommandEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'live' &&
+      event.change.path === 'moved.txt'
+    ),
+    `runCommand onEvent should receive live shell filesystem mutations: ${JSON.stringify(shellCommandEvents)}`
+  );
+  shellWorkspace.dispose();
 }
 
 async function testTraceKernelInfoConfig(): Promise<void> {

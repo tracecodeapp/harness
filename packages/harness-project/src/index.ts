@@ -1,8 +1,13 @@
 import {
   Bash,
   defineCommand,
+  InMemoryFs,
 } from 'just-bash/browser';
-import type { CommandContext } from 'just-bash/browser';
+import type {
+  CommandContext,
+  FileContent,
+  IFileSystem,
+} from 'just-bash/browser';
 import packageJson from '../package.json' with { type: 'json' };
 import type {
   RuntimeCommandOptions,
@@ -405,25 +410,34 @@ async function applyCommandResultFiles(
   result: RuntimeCommandResult,
   onFileChange?: RuntimeFileChangeObserver
 ): Promise<RuntimeCommandResult> {
-  for (const file of result.files ?? []) {
-    const absolutePath = toWorkspacePath(workspaceRoot, file.path);
-    if ((file as { deleted?: boolean }).deleted === true) {
-      await ctx.fs.rm(absolutePath, { force: true });
-      onFileChange?.(file, 'final-diff');
-      continue;
+  await withSuspendedFsNotifications(ctx.fs, async () => {
+    for (const file of result.files ?? []) {
+      const absolutePath = toWorkspacePath(workspaceRoot, file.path);
+      if ((file as { deleted?: boolean }).deleted === true) {
+        await ctx.fs.rm(absolutePath, { force: true });
+        onFileChange?.(file, 'final-diff');
+        continue;
+      }
+      const changedFile = file as RuntimeFile;
+      await ctx.fs.mkdir(dirname(absolutePath), { recursive: true });
+      if ((changedFile.encoding ?? 'utf8') === 'base64') {
+        await ctx.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
+      } else {
+        await ctx.fs.writeFile(absolutePath, changedFile.contents);
+      }
+      onFileChange?.(changedFile, 'final-diff');
     }
-    const changedFile = file as RuntimeFile;
-    await ctx.fs.mkdir(dirname(absolutePath), { recursive: true });
-    if ((changedFile.encoding ?? 'utf8') === 'base64') {
-      await ctx.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
-    } else {
-      await ctx.fs.writeFile(absolutePath, changedFile.contents);
-    }
-    onFileChange?.(changedFile, 'final-diff');
-  }
+  });
 
   const { files: _files, ...commandResult } = result;
   return commandResult;
+}
+
+async function withSuspendedFsNotifications<T>(fs: CommandContext['fs'], fn: () => Promise<T>): Promise<T> {
+  if (fs instanceof KernelObservedFileSystem) {
+    return fs.suspendNotifications(fn);
+  }
+  return fn();
 }
 
 async function applyWorkspaceCommandResultFiles(
@@ -479,6 +493,187 @@ function decodeUtf8(bytes: Uint8Array): string | null {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   } catch {
     return null;
+  }
+}
+
+type FsReadFileOptions = Parameters<IFileSystem['readFile']>[1];
+type FsWriteFileOptions = Parameters<IFileSystem['writeFile']>[2];
+type FsMkdirOptions = Parameters<IFileSystem['mkdir']>[1];
+type FsRmOptions = Parameters<IFileSystem['rm']>[1];
+type FsCpOptions = Parameters<IFileSystem['cp']>[2];
+
+class KernelObservedFileSystem implements IFileSystem {
+  private suspendDepth = 0;
+
+  constructor(
+    private readonly base: IFileSystem,
+    private readonly workspaceRoot: () => string,
+    private readonly workspaceAlias: () => string | undefined,
+    private readonly onFileChange: (change: RuntimeFileChange) => void
+  ) {}
+
+  suspendNotifications<T>(fn: () => Promise<T>): Promise<T> {
+    this.suspendDepth += 1;
+    return fn().finally(() => {
+      this.suspendDepth -= 1;
+    });
+  }
+
+  readFile(path: string, options?: FsReadFileOptions): Promise<string> {
+    return this.base.readFile(this.mapPath(path), options);
+  }
+
+  readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
+    if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
+    return this.base.readFileBytes(this.mapPath(path)) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+  }
+
+  readFileBuffer(path: string): Promise<Uint8Array> {
+    return this.base.readFileBuffer(this.mapPath(path));
+  }
+
+  async writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    const mappedPath = this.mapPath(path);
+    await this.base.writeFile(mappedPath, content, options);
+    await this.emitFileWrite(mappedPath);
+  }
+
+  async appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
+    const mappedPath = this.mapPath(path);
+    await this.base.appendFile(mappedPath, content, options);
+    await this.emitFileWrite(mappedPath);
+  }
+
+  exists(path: string): Promise<boolean> {
+    return this.base.exists(this.mapPath(path));
+  }
+
+  stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
+    return this.base.stat(this.mapPath(path));
+  }
+
+  mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
+    return this.base.mkdir(this.mapPath(path), options);
+  }
+
+  readdir(path: string): Promise<string[]> {
+    return this.base.readdir(this.mapPath(path));
+  }
+
+  readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
+    if (!this.base.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
+    return this.base.readdirWithFileTypes(this.mapPath(path));
+  }
+
+  async rm(path: string, options?: FsRmOptions): Promise<void> {
+    const mappedPath = this.mapPath(path);
+    const deletedFiles = await this.collectExistingFiles(mappedPath);
+    await this.base.rm(mappedPath, options);
+    for (const deletedPath of deletedFiles) {
+      this.emitFileDelete(deletedPath);
+    }
+  }
+
+  async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
+    const mappedSource = this.mapPath(src);
+    const mappedDestination = this.mapPath(dest);
+    await this.base.cp(mappedSource, mappedDestination, options);
+    await this.emitExistingFiles(mappedDestination);
+  }
+
+  async mv(src: string, dest: string): Promise<void> {
+    const mappedSource = this.mapPath(src);
+    const mappedDestination = this.mapPath(dest);
+    const deletedFiles = await this.collectExistingFiles(mappedSource);
+    await this.base.mv(mappedSource, mappedDestination);
+    await this.emitExistingFiles(mappedDestination);
+    for (const deletedPath of deletedFiles) {
+      this.emitFileDelete(deletedPath);
+    }
+  }
+
+  resolvePath(base: string, path: string): string {
+    return this.mapPath(this.base.resolvePath(this.mapPath(base), path));
+  }
+
+  getAllPaths(): string[] {
+    const paths = this.base.getAllPaths();
+    const alias = this.workspaceAlias();
+    const root = this.workspaceRoot();
+    if (!alias || alias === root) return paths;
+    const aliasPaths = paths.flatMap((path) => {
+      if (path === root) return [path, alias];
+      if (path.startsWith(`${root}/`)) return [path, `${alias}${path.slice(root.length)}`];
+      return [path];
+    });
+    return Array.from(new Set(aliasPaths)).sort((left, right) => left.localeCompare(right));
+  }
+
+  chmod(path: string, mode: number): Promise<void> {
+    return this.base.chmod(this.mapPath(path), mode);
+  }
+
+  symlink(target: string, linkPath: string): Promise<void> {
+    return this.base.symlink(target, this.mapPath(linkPath));
+  }
+
+  link(existingPath: string, newPath: string): Promise<void> {
+    return this.base.link(this.mapPath(existingPath), this.mapPath(newPath));
+  }
+
+  readlink(path: string): Promise<string> {
+    return this.base.readlink(this.mapPath(path));
+  }
+
+  lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
+    return this.base.lstat(this.mapPath(path));
+  }
+
+  realpath(path: string): Promise<string> {
+    return this.base.realpath(this.mapPath(path));
+  }
+
+  utimes(path: string, atime: Date, mtime: Date): Promise<void> {
+    return this.base.utimes(this.mapPath(path), atime, mtime);
+  }
+
+  private mapPath(path: string): string {
+    if (!path.startsWith('/')) return path;
+    return mapWorkspaceAlias(this.workspaceRoot(), this.workspaceAlias(), path);
+  }
+
+  private async emitExistingFiles(path: string): Promise<void> {
+    for (const filePath of await this.collectExistingFiles(path)) {
+      await this.emitFileWrite(filePath);
+    }
+  }
+
+  private async collectExistingFiles(path: string): Promise<string[]> {
+    if (!isWithinWorkspace(this.workspaceRoot(), path) || !(await this.base.exists(path))) return [];
+    const stat = await this.base.stat(path);
+    if (stat.isFile) return [path];
+    if (!stat.isDirectory) return [];
+    const files: string[] = [];
+    for (const entry of await this.base.readdir(path)) {
+      files.push(...await this.collectExistingFiles(`${path}/${entry}`));
+    }
+    return files;
+  }
+
+  private async emitFileWrite(path: string): Promise<void> {
+    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
+    const bytes = await this.base.readFileBuffer(path);
+    const text = decodeUtf8(bytes);
+    this.onFileChange({
+      path: toProjectPath(this.workspaceRoot(), path),
+      contents: text ?? base64FromBytes(bytes),
+      ...(text === null ? { encoding: 'base64' as const } : {}),
+    });
+  }
+
+  private emitFileDelete(path: string): void {
+    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
+    this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), deleted: true });
   }
 }
 
@@ -1765,6 +1960,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   readonly cwd: string;
   readonly kernelInfo: RuntimeKernelInfo;
   private readonly bash: Bash;
+  private readonly fs: KernelObservedFileSystem;
   private readonly entrypoint?: string;
   private readonly cppRunner?: CppProjectCommandRunner;
   private readonly cppExecutablePaths = new Set<string>();
@@ -1779,6 +1975,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.entrypoint = options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : undefined;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
+    this.fs = new KernelObservedFileSystem(
+      new InMemoryFs(),
+      () => this.cwd,
+      () => this.kernelInfo.workspaceAlias,
+      (change) => {
+        if (!this.activeCommandActor) return;
+        this.emitRuntimeEvent({ type: 'file-change', change, phase: 'live' });
+      }
+    );
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
       runner: RuntimeProjectCommandRunner<Request>
     ): RuntimeProjectCommandRunner<Request> => (
@@ -1803,6 +2008,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(options.customCommands ?? []),
     ];
     this.bash = new Bash({
+      fs: this.fs,
       cwd: this.cwd,
       env: options.env,
       commands: options.commands as never,
