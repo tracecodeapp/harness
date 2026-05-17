@@ -4099,11 +4099,14 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
 
 async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
   let received: CppProjectCommandRequest | null = null;
+  const events: RuntimeCommandEvent[] = [];
   const runner = createBrowserCppProjectRunner({
-    async executeProjectCpp(request) {
+    async executeProjectCpp(request, _timeoutMs, onEvent) {
       received = request;
+      onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'cpp-streamed\n' });
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'cpp-live.txt', contents: 'live\n' } });
       return {
-        stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}`,
+        stdout: `cpp-streamed\n${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
       };
@@ -4121,10 +4124,23 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
     },
+    onEvent: (event) => events.push(event),
   });
 
-  assertCondition(result.stdout === 'compile:main.cpp:main.cpp,-o,a.out:1', 'browser C++ runner should delegate to worker client');
+  assertCondition(result.stdout === 'cpp-streamed\ncompile:main.cpp:main.cpp,-o,a.out:1', 'browser C++ runner should delegate to worker client');
   assertCondition(received?.scriptPath === 'main.cpp', 'browser C++ runner should pass through request');
+  assertCondition(
+    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
+    `browser C++ runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'cpp-live.txt'
+    ),
+    `browser C++ runner should forward worker live file-change events: ${JSON.stringify(events)}`
+  );
 }
 
 async function testBrowserProjectWorkspaceFactory(): Promise<void> {

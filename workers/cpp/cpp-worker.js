@@ -288,6 +288,11 @@ function postFailure(id, error) {
   });
 }
 
+function postProjectEvent(id, payload) {
+  if (!id) return;
+  postMessage({ id, type: 'project-event', payload });
+}
+
 async function fetchAsset(name, url, responseType) {
   if (!url || typeof url !== 'string') {
     throw new Error(`Missing C++ toolchain asset URL for ${name}.`);
@@ -371,6 +376,11 @@ class InMemoryFileSystem {
   constructor() {
     this.files = new Map();
     this.dirs = new Set(['/']);
+    this.fileChangeObserver = null;
+  }
+
+  setFileChangeObserver(observer) {
+    this.fileChangeObserver = observer;
   }
 
   clone() {
@@ -418,8 +428,10 @@ class InMemoryFileSystem {
 
   writeFile(pathname, contents) {
     const normalized = normalizePath(pathname);
+    const bytes = contents instanceof Uint8Array ? cloneBytes(contents) : encodeUtf8(String(contents));
     this.addDirectory(dirname(normalized));
-    this.files.set(normalized, contents instanceof Uint8Array ? cloneBytes(contents) : encodeUtf8(String(contents)));
+    this.files.set(normalized, bytes);
+    this.fileChangeObserver?.({ path: normalized, bytes });
   }
 
   resizeFile(pathname, size) {
@@ -430,7 +442,9 @@ class InMemoryFileSystem {
   }
 
   unlink(pathname) {
-    this.files.delete(normalizePath(pathname));
+    const normalized = normalizePath(pathname);
+    this.files.delete(normalized);
+    this.fileChangeObserver?.({ path: normalized, deleted: true });
   }
 
   listDirectory(pathname) {
@@ -544,6 +558,7 @@ class WasiProcess {
     this.stdinOffset = 0;
     this.stdoutChunks = [];
     this.stderrChunks = [];
+    this.onOutput = options.onOutput;
     this.filestatSizeOffset = options.filestatSizeOffset || 32;
     this.fds = new Map([
       [0, { kind: 'stdio', name: 'stdin', offset: 0, readable: true, writable: false }],
@@ -687,6 +702,7 @@ class WasiProcess {
     if (fd === 1 || fd === 2) {
       if (fd === 1) this.stdoutChunks.push(...chunks);
       if (fd === 2) this.stderrChunks.push(...chunks);
+      this.onOutput?.(fd === 1 ? 'stdout' : 'stderr', decodeUtf8(concatBytes(chunks)));
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -1020,6 +1036,7 @@ async function runWasi(module, args, fs, options = {}) {
     stdin: options.stdin || '',
     env: options.env || { USER: 'tracecode' },
     filestatSizeOffset: options.filestatSizeOffset,
+    onOutput: options.onOutput,
   });
   const instance = await instantiateWasi(module, process);
   const start = instance.exports._start || instance.exports.__main_argc_argv || instance.exports.main;
@@ -4379,7 +4396,25 @@ function diffProjectFs(before, fs) {
   return changes;
 }
 
-async function handleProjectCpp(request) {
+function createProjectEventBridge(messageId) {
+  return {
+    output(stream, data) {
+      if (!data) return;
+      postProjectEvent(messageId, {
+        type: 'output',
+        stream,
+        device: stream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
+        data,
+      });
+    },
+    fileChange(change) {
+      postProjectEvent(messageId, { type: 'file-change', phase: 'live', change });
+    },
+  };
+}
+
+async function handleProjectCpp(request, messageId) {
+  const events = createProjectEventBridge(messageId);
   if (request?.source === 'compile') {
     const startedAt = now();
     const compileResult = await compileProjectOutsideMainWorker(request);
@@ -4407,6 +4442,13 @@ async function handleProjectCpp(request) {
 
   const fs = createProjectRuntimeFs(request?.project);
   const before = snapshotProjectFs(fs);
+  fs.setFileChangeObserver((change) => {
+    const relativePath = relativeProjectPath(change.path);
+    if (!relativePath) return;
+    events.fileChange(change.deleted
+      ? { path: relativePath, deleted: true }
+      : encodeProjectFileChange(relativePath, change.bytes));
+  });
   const executablePath = `/${resolveProjectRequestPath(request, request?.scriptPath || './a.out', 'a.out')}`;
   if (!fs.isFile(executablePath)) {
     return {
@@ -4421,6 +4463,7 @@ async function handleProjectCpp(request) {
     cwd: `/${requestCwdRelative(request)}`,
     stdin: request?.stdin || '',
     env: request?.env || { USER: 'tracecode' },
+    onOutput: (stream, data) => events.output(stream, data),
   });
   return {
     stdout: program.stdout,
@@ -5236,7 +5279,7 @@ self.onmessage = (event) => {
           : type === 'compile-run'
             ? await handleCompileRun(payload)
             : type === 'execute-project-cpp'
-              ? await handleProjectCpp(payload)
+              ? await handleProjectCpp(payload, id)
             : type === 'execute-with-tracing'
               ? await handleExecuteWithTracing(payload)
               : type === 'execute-code-interview'

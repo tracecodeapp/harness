@@ -4,6 +4,8 @@ import type {
   RuntimeExecutionTimings,
 } from '../../harness-core/src/types';
 import type {
+  RuntimeCommandEvent,
+  RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeProjectCommandRequest,
 } from '../../harness-core/src/runtime-project';
@@ -40,6 +42,7 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
 interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  onEvent?: RuntimeCommandEventHandler;
   timeoutId?: ReturnType<typeof setTimeout>;
 }
 
@@ -188,6 +191,10 @@ export class CppWorkerClient {
       if (!id) return;
       const pending = this.pendingMessages.get(id);
       if (!pending) return;
+      if (type === 'project-event') {
+        pending.onEvent?.(payload as RuntimeCommandEvent);
+        return;
+      }
       this.pendingMessages.delete(id);
       if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
 
@@ -264,7 +271,8 @@ export class CppWorkerClient {
   private async sendMessage<T>(
     type: string,
     payload?: unknown,
-    timeoutMs = MESSAGE_TIMEOUT_MS
+    timeoutMs = MESSAGE_TIMEOUT_MS,
+    onEvent?: RuntimeCommandEventHandler
   ): Promise<T> {
     const worker = this.getWorker();
     await this.waitForWorkerReady();
@@ -274,6 +282,7 @@ export class CppWorkerClient {
       this.pendingMessages.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
+        ...(onEvent ? { onEvent } : {}),
       });
 
       const timeoutId = globalThis.setTimeout(() => {
@@ -692,7 +701,8 @@ export class CppWorkerClient {
 
   async executeProjectCpp(
     request: CppProjectCommandRequest,
-    timeoutMs = this.executionTimeoutMs
+    timeoutMs = this.executionTimeoutMs,
+    onEvent?: RuntimeCommandEventHandler
   ): Promise<CppProjectCommandResult> {
     await this.init();
     return this.executeWithTimeout(
@@ -703,7 +713,8 @@ export class CppWorkerClient {
             ...request,
             ...this.workerOptionsPayload(),
           },
-          timeoutMs + 5_000
+          timeoutMs + 5_000,
+          onEvent
         ),
       timeoutMs,
       'compile-run'
