@@ -203,6 +203,21 @@ function decodeUtf8(value) {
   return new TextDecoder().decode(value);
 }
 
+function encodeBase64(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function decodeBase64(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
 function concatBytes(chunks) {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Uint8Array(total);
@@ -523,6 +538,8 @@ class WasiProcess {
     this.args = options.args || [];
     this.env = options.env || {};
     this.fs = options.fs;
+    this.cwd = normalizePath(options.cwd || '/');
+    this.fs.addDirectory(this.cwd);
     this.stdin = encodeUtf8(options.stdin || '');
     this.stdinOffset = 0;
     this.stdoutChunks = [];
@@ -532,7 +549,7 @@ class WasiProcess {
       [0, { kind: 'stdio', name: 'stdin', offset: 0, readable: true, writable: false }],
       [1, { kind: 'stdio', name: 'stdout', offset: 0, readable: false, writable: true }],
       [2, { kind: 'stdio', name: 'stderr', offset: 0, readable: false, writable: true }],
-      [3, { kind: 'dir', path: '/', offset: 0, readable: true, writable: false, preopen: '/' }],
+      [3, { kind: 'dir', path: this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
     ]);
     this.nextFd = 4;
     this.memory = null;
@@ -999,6 +1016,7 @@ async function runWasi(module, args, fs, options = {}) {
   const process = new WasiProcess({
     args,
     fs,
+    cwd: options.cwd || '/',
     stdin: options.stdin || '',
     env: options.env || { USER: 'tracecode' },
     filestatSizeOffset: options.filestatSizeOffset,
@@ -3925,6 +3943,25 @@ function runCompilerWorker(driverSource) {
   });
 }
 
+function runCompilerWorkerPayload(payload) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = getPersistentCompilerWorker();
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const id = `compile-${++compilerWorkerRequestId}`;
+    pendingCompilerWorkerRequests.set(id, { resolve, reject });
+    worker.postMessage({
+      id,
+      type: 'compile',
+      payload,
+    });
+  });
+}
+
 function requestExternalCompile(driverSource) {
   const requestId = String(++externalCompileRequestId);
 
@@ -3948,11 +3985,453 @@ function requestExternalCompile(driverSource) {
   });
 }
 
+function requestExternalCompilePayload(payload) {
+  const requestId = String(++externalCompileRequestId);
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      pendingExternalCompiles.delete(requestId);
+      reject(new Error('C++ external compiler request timed out.'));
+    }, 120_000);
+
+    pendingExternalCompiles.set(requestId, { resolve, reject, timeoutId });
+    postMessage({
+      type: 'compile-request',
+      requestId,
+      payload,
+    });
+  });
+}
+
 function compileDriverOutsideMainWorker(driverSource) {
   if (canUseExternalCompilerHost()) {
     return requestExternalCompile(driverSource);
   }
   return runCompilerWorker(driverSource);
+}
+
+function compileProjectOutsideMainWorker(request) {
+  const payload = {
+    assets: configuredAssets,
+    project: request.project,
+    cwd: requestCwdRelative(request),
+    args: projectCompileArgs(request),
+    compilerCommand: projectCompilerCommand(request),
+    stdin: request?.stdin || '',
+    includePaths: projectCompileIncludePaths(request),
+    workspaceOutputPath: projectCompileWorkspaceOutputPath(request),
+    standard: CPP_STANDARD,
+    stackSize: CPP_PROGRAM_STACK_SIZE,
+  };
+  if (canUseExternalCompilerHost()) {
+    return requestExternalCompilePayload(payload);
+  }
+  return runCompilerWorkerPayload(payload);
+}
+
+function projectCompilerCommand(request) {
+  const command = String(request?.options?.compilerCommand || 'clang++');
+  return command === 'clang' || command === 'gcc' || command === 'cc' ? 'clang' : 'clang++';
+}
+
+function projectPathBytes(file) {
+  return file?.encoding === 'base64'
+    ? decodeBase64(String(file.contents || ''))
+    : encodeUtf8(String(file?.contents || ''));
+}
+
+function relativeProjectPath(pathname) {
+  const raw = String(pathname || '').replace(/\\/g, '/');
+  const withoutWorkspace = raw === '/workspace'
+    ? ''
+    : raw.startsWith('/workspace/')
+      ? raw.slice('/workspace/'.length)
+      : raw.replace(/^\/+/, '');
+  const parts = [];
+  for (const part of withoutWorkspace.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') throw new Error(`Project path escapes workspace: ${pathname}`);
+    parts.push(part);
+  }
+  return parts.join('/');
+}
+
+function relativeProjectOperandPath(pathname) {
+  const raw = String(pathname || '').replace(/\\/g, '/');
+  const withoutWorkspace = raw === '/workspace'
+    ? ''
+    : raw.startsWith('/workspace/')
+      ? raw.slice('/workspace/'.length)
+      : raw.replace(/^\/+/, '');
+  const parts = [];
+  for (const part of withoutWorkspace.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length === 0) throw new Error(`Project path escapes workspace: ${pathname}`);
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.join('/');
+}
+
+function requestCwdRelative(request) {
+  const cwd = String(request?.cwd || '/workspace').replace(/\\/g, '/');
+  const projectCwd = String(request?.project?.cwd || '/workspace').replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  if (cwd === projectCwd) return '';
+  if (cwd.startsWith(`${projectCwd}/`)) {
+    return relativeProjectPath(cwd.slice(projectCwd.length + 1));
+  }
+  throw new Error(`Project cwd must stay inside the workspace: ${cwd}`);
+}
+
+function resolveProjectRequestPath(request, value, fallback = '') {
+  const text = String(value || fallback);
+  if (!text || text === '<compile>' || text === '<project>') return fallback;
+  if (text.startsWith('/workspace')) return relativeProjectPath(text);
+  if (text.startsWith('/')) throw new Error(`Project path escapes workspace: ${text}`);
+  const cwd = requestCwdRelative(request);
+  return relativeProjectOperandPath(cwd ? `${cwd}/${text}` : text);
+}
+
+function projectPathRelativeToWorkspace(request, value) {
+  const text = String(value || '');
+  if (!text) return '';
+  if (text.startsWith('/workspace')) return relativeProjectPath(text);
+  if (text.startsWith('/')) throw new Error(`Project path escapes workspace: ${text}`);
+  const cwd = requestCwdRelative(request);
+  return relativeProjectOperandPath(cwd ? `${cwd}/${text}` : text);
+}
+
+function projectCompilerPathArg(request, value) {
+  const text = String(value || '');
+  const path = projectPathRelativeToWorkspace(request, text);
+  const cwd = requestCwdRelative(request);
+  if (cwd && (path === cwd || path.startsWith(`${cwd}/`))) {
+    return path === cwd ? '.' : path.slice(cwd.length + 1);
+  }
+  return path;
+}
+
+function projectCompilerIncludePathArg(request, value) {
+  const text = String(value || '');
+  if (!text) return text;
+  projectPathRelativeToWorkspace(request, text);
+  return '.';
+}
+
+function projectCompilerLibraryPathArg(request, value) {
+  const text = String(value || '');
+  if (!text) return text;
+  projectPathRelativeToWorkspace(request, text);
+  return '.';
+}
+
+function projectCompilerSourcePathArg(request, value) {
+  const text = String(value || '');
+  if (text && !text.startsWith('/')) {
+    projectPathRelativeToWorkspace(request, text);
+    if (text.includes('../')) return basename(text);
+    return text;
+  }
+  return projectCompilerPathArg(request, text);
+}
+
+function projectCompilerOutputPathArg(request, value) {
+  const mapped = projectCompilerPathArg(request, value);
+  const index = mapped.lastIndexOf('/');
+  return index >= 0 ? mapped.slice(index + 1) || 'a.out' : mapped || 'a.out';
+}
+
+function projectCompilerLinkerArtifactPathArg(request, value) {
+  const mapped = projectCompilerPathArg(request, value);
+  const index = mapped.lastIndexOf('/');
+  return index >= 0 ? mapped.slice(index + 1) || mapped : mapped;
+}
+
+function projectEnvPathList(request, name) {
+  const raw = request?.env && typeof request.env[name] === 'string' ? request.env[name] : '';
+  return raw
+    .split(/[:;]/)
+    .map((path) => path.trim())
+    .filter(Boolean);
+}
+
+function projectCompileEnvIncludePaths(request) {
+  const paths = [
+    ...projectEnvPathList(request, 'CPATH'),
+  ];
+  if (projectCompilerCommand(request) === 'clang') {
+    paths.push(...projectEnvPathList(request, 'C_INCLUDE_PATH'));
+  } else {
+    paths.push(...projectEnvPathList(request, 'CPLUS_INCLUDE_PATH'));
+  }
+  return paths;
+}
+
+function projectCompileEnvLibraryPaths(request) {
+  return projectEnvPathList(request, 'LIBRARY_PATH');
+}
+
+function projectCompileIncludePaths(request) {
+  const args = Array.isArray(request?.args) && request.args.length > 0
+    ? request.args.map(String)
+    : [request?.scriptPath || 'main.cpp'];
+  const includePaths = projectCompileEnvIncludePaths(request).map((path) => resolveProjectRequestPath(request, path, path));
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-I' || arg === '-isystem') {
+      const value = args[index + 1];
+      if (typeof value === 'string') {
+        includePaths.push(resolveProjectRequestPath(request, value, value));
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith('-I/workspace/')) {
+      includePaths.push(relativeProjectPath(arg.slice(2)));
+      continue;
+    }
+    if (arg.startsWith('-I') && arg.length > 2 && !arg.startsWith('-include')) {
+      includePaths.push(resolveProjectRequestPath(request, arg.slice(2), arg.slice(2)));
+      continue;
+    }
+    if (arg.startsWith('-isystem/workspace/')) {
+      includePaths.push(relativeProjectPath(arg.slice('-isystem'.length)));
+      continue;
+    }
+    if (arg.startsWith('-isystem') && arg.length > '-isystem'.length) {
+      includePaths.push(resolveProjectRequestPath(request, arg.slice('-isystem'.length), arg.slice('-isystem'.length)));
+    }
+  }
+  return [...new Set(includePaths.filter(Boolean))];
+}
+
+function projectCompileWorkspaceOutputPath(request) {
+  const args = Array.isArray(request?.args) && request.args.length > 0
+    ? request.args.map(String)
+    : [request?.scriptPath || 'main.cpp'];
+  const outputIndex = args.indexOf('-o');
+  const cwd = requestCwdRelative(request);
+  if (outputIndex < 0) {
+    const inlineOutputArg = args.find((arg) => arg.startsWith('-o') && arg.length > 2);
+    if (inlineOutputArg) {
+      const inlineValue = inlineOutputArg.slice(2);
+      if (inlineValue.startsWith('/workspace/')) {
+        return relativeProjectPath(inlineValue);
+      }
+      if (inlineValue.startsWith('/')) {
+        throw new Error(`Project path escapes workspace: ${inlineValue}`);
+      }
+      return relativeProjectOperandPath(cwd ? `${cwd}/${inlineValue}` : inlineValue);
+    }
+    return relativeProjectOperandPath(cwd ? `${cwd}/a.out` : 'a.out');
+  }
+  const value = args[outputIndex + 1] || 'a.out';
+  if (value.startsWith('/workspace/')) {
+    return relativeProjectPath(value);
+  }
+  if (value.startsWith('/')) {
+    throw new Error(`Project path escapes workspace: ${value}`);
+  }
+  return relativeProjectOperandPath(cwd ? `${cwd}/${value}` : value);
+}
+
+function projectCompileArgs(request) {
+  const args = Array.isArray(request?.args) && request.args.length > 0
+    ? request.args.map(String)
+    : [request?.scriptPath || 'main.cpp'];
+  const cwd = requestCwdRelative(request);
+  const mapped = [];
+  for (const path of projectCompileEnvIncludePaths(request)) {
+    mapped.push('-I', projectCompilerIncludePathArg(request, path));
+  }
+  for (const path of projectCompileEnvLibraryPaths(request)) {
+    mapped.push('-L', projectCompilerLibraryPathArg(request, path));
+  }
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-o') {
+      mapped.push(arg);
+      const value = args[index + 1];
+      if (typeof value === 'string') {
+        mapped.push(projectCompilerOutputPathArg(request, value));
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === '-I' || arg === '-isystem') {
+      mapped.push(arg);
+      const value = args[index + 1];
+      if (typeof value === 'string') {
+        mapped.push(projectCompilerIncludePathArg(request, value));
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === '-L') {
+      mapped.push(arg);
+      const value = args[index + 1];
+      if (typeof value === 'string') {
+        mapped.push(projectCompilerLibraryPathArg(request, value));
+        index += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith('-I/workspace/')) {
+      mapped.push('-I.');
+      continue;
+    }
+    if (arg.startsWith('-I') && arg.length > 2 && !arg.startsWith('-include')) {
+      mapped.push('-I.');
+      projectPathRelativeToWorkspace(request, arg.slice(2));
+      continue;
+    }
+    if (arg.startsWith('-L/workspace/')) {
+      mapped.push('-L.');
+      continue;
+    }
+    if (/^-L(?!\/).+/.test(arg)) {
+      mapped.push('-L.');
+      projectPathRelativeToWorkspace(request, arg.slice(2));
+      continue;
+    }
+    if (arg.startsWith('-isystem/workspace/')) {
+      mapped.push('-isystem.');
+      continue;
+    }
+    if (arg.startsWith('-isystem') && arg.length > '-isystem'.length) {
+      mapped.push('-isystem.');
+      projectPathRelativeToWorkspace(request, arg.slice('-isystem'.length));
+      continue;
+    }
+    if (arg.startsWith('-o') && arg.length > 2) {
+      mapped.push('-o', projectCompilerOutputPathArg(request, arg.slice(2)));
+      continue;
+    }
+    if (/^(?:[^-].*\.(?:c|cc|cpp|cxx|h|hpp|hh))$/i.test(arg)) {
+      mapped.push(projectCompilerSourcePathArg(request, arg));
+      continue;
+    }
+    if (/^\/workspace\/.*\.(?:a|lib|o|obj)$/i.test(arg)) {
+      mapped.push(projectCompilerLinkerArtifactPathArg(request, arg));
+      continue;
+    }
+    mapped.push(arg);
+  }
+  if (!mapped.includes('-o')) {
+    mapped.push('-o', relativeProjectOperandPath(cwd ? `${cwd}/a.out` : 'a.out'));
+  }
+  return mapped;
+}
+
+function createProjectRuntimeFs(project) {
+  const fs = new InMemoryFileSystem();
+  for (const directory of project?.directories || []) {
+    const path = relativeProjectPath(directory);
+    if (path) fs.addDirectory(`/${path}`);
+  }
+  for (const file of project?.files || []) {
+    const path = relativeProjectPath(file.path);
+    if (path) fs.addFile(`/${path}`, projectPathBytes(file));
+  }
+  return fs;
+}
+
+function snapshotProjectFs(fs) {
+  const snapshot = new Map();
+  for (const [path, bytes] of fs.files.entries()) {
+    const relativePath = relativeProjectPath(path);
+    if (relativePath) snapshot.set(relativePath, cloneBytes(bytes));
+  }
+  return snapshot;
+}
+
+function encodeProjectFileChange(path, bytes) {
+  const text = decodeUtf8(bytes);
+  if (arraysEqual(encodeUtf8(text), bytes)) {
+    return { path, contents: text };
+  }
+  return { path, contents: encodeBase64(bytes), encoding: 'base64' };
+}
+
+function arraysEqual(left, right) {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function diffProjectFs(before, fs) {
+  const after = snapshotProjectFs(fs);
+  const changes = [];
+  for (const [path, bytes] of [...after.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const oldBytes = before.get(path);
+    before.delete(path);
+    if (oldBytes && arraysEqual(oldBytes, bytes)) continue;
+    changes.push(encodeProjectFileChange(path, bytes));
+  }
+  for (const path of [...before.keys()].sort()) {
+    changes.push({ path, deleted: true });
+  }
+  return changes;
+}
+
+async function handleProjectCpp(request) {
+  if (request?.source === 'compile') {
+    const startedAt = now();
+    const compileResult = await compileProjectOutsideMainWorker(request);
+    if (!compileResult.success) {
+      const stderr = [compileResult.stderr, compileResult.error].filter(Boolean).join('\n').trim();
+      return {
+        stdout: compileResult.stdout || '',
+        stderr: stderr ? `${stderr}\n` : 'C++ compilation failed.\n',
+        exitCode: 1,
+      };
+    }
+    const outputPath = relativeProjectPath(compileResult.outputPath || 'a.out') || 'a.out';
+    const programBytes = new Uint8Array(compileResult.programBuffer);
+    return {
+      stdout: compileResult.stdout || '',
+      stderr: compileResult.stderr || '',
+      exitCode: 0,
+      files: [encodeProjectFileChange(outputPath, programBytes)],
+      timings: {
+        compileMs: compileResult.compileMs,
+        totalMs: elapsedMs(startedAt),
+      },
+    };
+  }
+
+  const fs = createProjectRuntimeFs(request?.project);
+  const before = snapshotProjectFs(fs);
+  const executablePath = `/${resolveProjectRequestPath(request, request?.scriptPath || './a.out', 'a.out')}`;
+  if (!fs.isFile(executablePath)) {
+    return {
+      stdout: '',
+      stderr: `${request?.scriptPath || './a.out'}: executable not found\n`,
+      exitCode: 127,
+    };
+  }
+  const startedAt = now();
+  const module = await WebAssembly.compile(fs.readFile(executablePath));
+  const program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], fs, {
+    cwd: `/${requestCwdRelative(request)}`,
+    stdin: request?.stdin || '',
+    env: request?.env || { USER: 'tracecode' },
+  });
+  return {
+    stdout: program.stdout,
+    stderr: program.stderr,
+    exitCode: program.exitCode,
+    files: diffProjectFs(before, fs),
+    timings: {
+      runMs: elapsedMs(startedAt),
+      totalMs: elapsedMs(startedAt),
+    },
+  };
 }
 
 async function compileAndRun(source, functionName, inputs, options = {}) {
@@ -4756,6 +5235,8 @@ self.onmessage = (event) => {
             ? await handleWarmup(payload)
           : type === 'compile-run'
             ? await handleCompileRun(payload)
+            : type === 'execute-project-cpp'
+              ? await handleProjectCpp(payload)
             : type === 'execute-with-tracing'
               ? await handleExecuteWithTracing(payload)
               : type === 'execute-code-interview'

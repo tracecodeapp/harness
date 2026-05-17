@@ -1,15 +1,18 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Runtime.InteropServices.JavaScript;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Emit;
 using Microsoft.CodeAnalysis.Text;
 
 namespace TraceCode.CSharpHost;
@@ -18,6 +21,7 @@ public static partial class CompilerHost
 {
     private const int CompilationCacheLimit = 32;
     private const string UserCodePath = "solution.cs";
+    private const string ProjectWorkspaceRoot = "/tmp/tracecode-csharp-project";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
     private static readonly CSharpParseOptions ParseOptions = new(LanguageVersion.CSharp14);
     private static readonly Lazy<MetadataReference[]> CachedReferences = new(() => ResolveReferences().ToArray());
@@ -145,6 +149,170 @@ public static partial class CompilerHost
         }
     }
 
+    [JSExport]
+    [SupportedOSPlatform("browser")]
+    public static string ExecuteProject(string requestJson)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        TextWriter originalOut = Console.Out;
+        string originalDirectory = Directory.GetCurrentDirectory();
+        var originalEnvironment = Environment.GetEnvironmentVariables();
+        using StringWriter capturedOut = new();
+        Console.SetOut(capturedOut);
+
+        try
+        {
+            CSharpProjectCommandRequest? request = JsonSerializer.Deserialize<CSharpProjectCommandRequest>(requestJson, JsonOptions);
+            if (request is null)
+            {
+                return SerializeProject(new CSharpProjectCommandResponse
+                {
+                    Stderr = "dotnet: invalid C# project request\n",
+                    ExitCode = 2,
+                });
+            }
+
+            PrepareProjectWorkspace(request, out Dictionary<string, byte[]> beforeSnapshot);
+            string cwd = ResolveProjectPath(request.Cwd);
+            Directory.CreateDirectory(cwd);
+            Directory.SetCurrentDirectory(cwd);
+            foreach ((string key, string value) in request.Env)
+            {
+                Environment.SetEnvironmentVariable(key, value);
+            }
+
+            CSharpCompilation compilation = CreateProjectCompilation(request);
+            IEnumerable<ResourceDescription> manifestResources = ResolveProjectEmbeddedResources(request);
+            using MemoryStream peStream = new();
+            EmitResult emitResult = compilation.Emit(peStream, manifestResources: manifestResources);
+            if (!emitResult.Success)
+            {
+                return SerializeProject(new CSharpProjectCommandResponse
+                {
+                    Stdout = capturedOut.ToString(),
+                    Stderr = FormatProjectDiagnostics(emitResult.Diagnostics),
+                    ExitCode = 1,
+                });
+            }
+            byte[] peBytes = peStream.ToArray();
+            MaterializeProjectAssembly(request, peBytes);
+
+            if (string.Equals(request.Source, "compile", StringComparison.Ordinal))
+            {
+                return SerializeProject(new CSharpProjectCommandResponse
+                {
+                    Stdout = capturedOut.ToString(),
+                    Stderr = string.Empty,
+                    ExitCode = 0,
+                    Files = DiffProjectWorkspace(beforeSnapshot),
+                });
+            }
+
+            ProjectHintPathAssembly[] projectAssemblies = ResolveProjectHintPathAssemblies(request).ToArray();
+            Assembly? ResolveProjectAssembly(AssemblyLoadContext context, AssemblyName assemblyName)
+            {
+                ProjectHintPathAssembly? match = projectAssemblies.FirstOrDefault(assembly =>
+                    string.Equals(assembly.Name, assemblyName.Name, StringComparison.OrdinalIgnoreCase));
+                return match is null ? null : context.LoadFromStream(new MemoryStream(match.Bytes));
+            }
+
+            AssemblyLoadContext.Default.Resolving += ResolveProjectAssembly;
+            try
+            {
+                Assembly assembly = AssemblyLoadContext.Default.LoadFromStream(new MemoryStream(peBytes, writable: false));
+                InvokeProjectEntryPoint(assembly, request.Args.ToArray());
+            }
+            finally
+            {
+                AssemblyLoadContext.Default.Resolving -= ResolveProjectAssembly;
+            }
+            return SerializeProject(new CSharpProjectCommandResponse
+            {
+                Stdout = capturedOut.ToString(),
+                Stderr = string.Empty,
+                ExitCode = 0,
+                Files = DiffProjectWorkspace(beforeSnapshot),
+            });
+        }
+        catch (Exception error)
+        {
+            return SerializeProject(new CSharpProjectCommandResponse
+            {
+                Stdout = capturedOut.ToString(),
+                Stderr = error.GetBaseException().Message + "\n",
+                ExitCode = 1,
+            });
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+            Directory.SetCurrentDirectory(originalDirectory);
+            RestoreEnvironment(originalEnvironment);
+        }
+    }
+
+    private static void MaterializeProjectAssembly(CSharpProjectCommandRequest request, byte[] peBytes)
+    {
+        Dictionary<string, CSharpProjectFile> filesByPath = request.Project.Files
+            .Select(file => new KeyValuePair<string, CSharpProjectFile>(NormalizeProjectPath(file.Path), file))
+            .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.Ordinal);
+        string? projectPath = ResolveProjectFilePath(request, filesByPath.Keys);
+        string projectDirectory = projectPath is null ? NormalizeProjectDirectoryPath(request.Cwd) : ProjectDirectory(projectPath);
+        string assemblyName = projectPath is null
+            ? "TraceCodeProject"
+            : Path.GetFileNameWithoutExtension(projectPath);
+        if (string.IsNullOrWhiteSpace(assemblyName))
+        {
+            assemblyName = "TraceCodeProject";
+        }
+
+        string outputPath = string.IsNullOrEmpty(projectDirectory)
+            ? $"bin/Debug/net8.0/{assemblyName}.dll"
+            : $"{projectDirectory}/bin/Debug/net8.0/{assemblyName}.dll";
+        string absoluteOutputPath = ResolveProjectPath(outputPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(absoluteOutputPath) ?? ProjectWorkspaceRoot);
+        File.WriteAllBytes(absoluteOutputPath, peBytes);
+    }
+
+    private static void RestoreEnvironment(System.Collections.IDictionary originalEnvironment)
+    {
+        HashSet<string> originalKeys = new(StringComparer.Ordinal);
+        HashSet<string> currentKeys = new(StringComparer.Ordinal);
+
+        foreach (System.Collections.DictionaryEntry entry in originalEnvironment)
+        {
+            if (entry.Key is string key)
+            {
+                originalKeys.Add(key);
+            }
+        }
+
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            if (entry.Key is string key)
+            {
+                currentKeys.Add(key);
+            }
+        }
+
+        foreach (string key in currentKeys)
+        {
+            if (!originalKeys.Contains(key))
+            {
+                Environment.SetEnvironmentVariable(key, null);
+            }
+        }
+
+        foreach (System.Collections.DictionaryEntry entry in originalEnvironment)
+        {
+            if (entry.Key is string key)
+            {
+                Environment.SetEnvironmentVariable(key, entry.Value?.ToString());
+            }
+        }
+    }
+
     private static CSharpCompilation CreateCompilation(CSharpExecuteRequest request)
     {
         SyntaxTree originalUserTree = CSharpSyntaxTree.ParseText(
@@ -183,6 +351,841 @@ public static partial class CompilerHost
                 allowUnsafe: false
             )
         );
+    }
+
+    private static CSharpCompilation CreateProjectCompilation(CSharpProjectCommandRequest request)
+    {
+        List<SyntaxTree> syntaxTrees = new()
+        {
+            CSharpSyntaxTree.ParseText(
+                GenerateGlobalUsingsSource(),
+                ParseOptions,
+                path: "TraceCodeGlobalUsings.cs"
+            ),
+            CSharpSyntaxTree.ParseText(
+                GenerateProjectRuntimeSource(request.Stdin ?? string.Empty),
+                ParseOptions,
+                path: "TraceCodeProjectRuntime.cs"
+            ),
+        };
+
+        HashSet<string> compileFilePaths = ResolveProjectCompileFilePaths(request);
+        CSharpParseOptions projectParseOptions = ParseOptions.WithPreprocessorSymbols(ResolveProjectDefineConstants(request));
+        foreach (CSharpProjectFile file in request.Project.Files)
+        {
+            string path = NormalizeProjectPath(file.Path);
+            if (!compileFilePaths.Contains(path))
+            {
+                continue;
+            }
+            SyntaxTree projectTree = CSharpSyntaxTree.ParseText(
+                DecodeProjectFileContents(file),
+                projectParseOptions,
+                path: path
+            );
+            syntaxTrees.Add(RewriteProjectSyntaxTree(projectTree));
+        }
+
+        CSharpCompilationOptions options = new CSharpCompilationOptions(
+            ResolveProjectOutputKind(request),
+            optimizationLevel: OptimizationLevel.Release,
+            concurrentBuild: false,
+            allowUnsafe: ResolveProjectBooleanProperty(request, "AllowUnsafeBlocks")
+        );
+        string? startupObject = ResolveProjectStartupObject(request);
+        if (!string.IsNullOrWhiteSpace(startupObject))
+        {
+            options = options.WithMainTypeName(startupObject);
+        }
+
+        return CSharpCompilation.Create(
+            assemblyName: "TraceCode.Project." + Guid.NewGuid().ToString("N"),
+            syntaxTrees: syntaxTrees,
+            references: CachedReferences.Value.Concat(ResolveProjectMetadataReferences(request)),
+            options: options
+        );
+    }
+
+    private static OutputKind ResolveProjectOutputKind(CSharpProjectCommandRequest request)
+    {
+        string? outputType = ResolveProjectPropertyValue(request, "OutputType");
+        if (string.Equals(outputType, "Library", StringComparison.OrdinalIgnoreCase))
+        {
+            return OutputKind.DynamicallyLinkedLibrary;
+        }
+
+        return OutputKind.ConsoleApplication;
+    }
+
+    private static string? ResolveProjectStartupObject(CSharpProjectCommandRequest request)
+    {
+        return ResolveProjectPropertyValue(request, "StartupObject");
+    }
+
+    private static IReadOnlyList<string> ResolveProjectDefineConstants(CSharpProjectCommandRequest request)
+    {
+        string? value = ResolveProjectPropertyValue(request, "DefineConstants");
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return Array.Empty<string>();
+        }
+
+        return value
+            .Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(symbol => Regex.IsMatch(symbol, @"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static bool ResolveProjectBooleanProperty(CSharpProjectCommandRequest request, string propertyName)
+    {
+        string? value = ResolveProjectPropertyValue(request, propertyName);
+        return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveProjectPropertyValue(CSharpProjectCommandRequest request, string propertyName)
+    {
+        string? commandLineValue = ResolveProjectCommandLinePropertyValue(request, propertyName);
+        if (!string.IsNullOrWhiteSpace(commandLineValue))
+        {
+            return commandLineValue;
+        }
+
+        Dictionary<string, CSharpProjectFile> filesByPath = request.Project.Files
+            .Select(file => new KeyValuePair<string, CSharpProjectFile>(NormalizeProjectPath(file.Path), file))
+            .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.Ordinal);
+        string? projectPath = ResolveProjectFilePath(request, filesByPath.Keys);
+        if (projectPath is null || !filesByPath.TryGetValue(projectPath, out CSharpProjectFile? projectFile))
+        {
+            return null;
+        }
+
+        try
+        {
+            XDocument document = XDocument.Parse(DecodeProjectFileContents(projectFile));
+            return document
+                .Descendants()
+                .Where(element => string.Equals(element.Name.LocalName, propertyName, StringComparison.OrdinalIgnoreCase))
+                .Select(element => (element.Value ?? string.Empty).Trim())
+                .FirstOrDefault(value => value.Length > 0);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? ResolveProjectCommandLinePropertyValue(CSharpProjectCommandRequest request, string propertyName)
+    {
+        foreach (string arg in ResolveProjectCommandLinePropertyArgs(request))
+        {
+            string text = arg.Trim();
+            string propertyText;
+            if (text.StartsWith("-p:", StringComparison.OrdinalIgnoreCase) || text.StartsWith("/p:", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyText = text[3..];
+            }
+            else if (text.StartsWith("-property:", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyText = text["-property:".Length..];
+            }
+            else if (text.StartsWith("--property:", StringComparison.OrdinalIgnoreCase))
+            {
+                propertyText = text["--property:".Length..];
+            }
+            else
+            {
+                continue;
+            }
+
+            foreach ((string name, string value) in ParseProjectCommandLineProperties(propertyText))
+            {
+                if (string.Equals(name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return value;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<string> ResolveProjectCommandLinePropertyArgs(CSharpProjectCommandRequest request)
+    {
+        if (string.Equals(request.Source, "compile", StringComparison.Ordinal))
+        {
+            return request.Args;
+        }
+
+        if (
+            request.Options.TryGetValue("buildArgs", out JsonElement buildArgsElement) &&
+            buildArgsElement.ValueKind == JsonValueKind.Array
+        )
+        {
+            return buildArgsElement
+                .EnumerateArray()
+                .Where(element => element.ValueKind == JsonValueKind.String)
+                .Select(element => element.GetString() ?? string.Empty)
+                .ToArray();
+        }
+
+        return Array.Empty<string>();
+    }
+
+    private static IEnumerable<(string Name, string Value)> ParseProjectCommandLineProperties(string propertyText)
+    {
+        string? currentName = null;
+        StringBuilder currentValue = new();
+
+        foreach (string segment in propertyText.Split(';', StringSplitOptions.None))
+        {
+            int equalsIndex = segment.IndexOf('=');
+            string candidateName = equalsIndex > 0 ? segment[..equalsIndex].Trim() : string.Empty;
+            bool startsProperty = candidateName.Length > 0 && Regex.IsMatch(candidateName, @"^[A-Za-z_][A-Za-z0-9_.-]*$", RegexOptions.CultureInvariant);
+            if (startsProperty)
+            {
+                if (currentName is not null)
+                {
+                    yield return (currentName, UnescapeProjectCommandLinePropertyValue(currentValue.ToString().Trim()));
+                }
+
+                currentName = candidateName;
+                currentValue.Clear();
+                currentValue.Append(segment[(equalsIndex + 1)..]);
+                continue;
+            }
+
+            if (currentName is null)
+            {
+                continue;
+            }
+
+            currentValue.Append(';');
+            currentValue.Append(segment);
+        }
+
+        if (currentName is not null)
+        {
+            yield return (currentName, UnescapeProjectCommandLinePropertyValue(currentValue.ToString().Trim()));
+        }
+    }
+
+    private static string UnescapeProjectCommandLinePropertyValue(string value)
+    {
+        try
+        {
+            return System.Uri.UnescapeDataString(value);
+        }
+        catch
+        {
+            return value;
+        }
+    }
+
+    private static IEnumerable<MetadataReference> ResolveProjectMetadataReferences(CSharpProjectCommandRequest request)
+    {
+        foreach (ProjectHintPathAssembly referenceAssembly in ResolveProjectHintPathAssemblies(request))
+        {
+            yield return MetadataReference.CreateFromImage(referenceAssembly.Bytes);
+        }
+    }
+
+    private sealed record ProjectHintPathAssembly(string Name, byte[] Bytes);
+
+    private static IEnumerable<ProjectHintPathAssembly> ResolveProjectHintPathAssemblies(CSharpProjectCommandRequest request)
+    {
+        Dictionary<string, CSharpProjectFile> filesByPath = request.Project.Files
+            .Select(file => new KeyValuePair<string, CSharpProjectFile>(NormalizeProjectPath(file.Path), file))
+            .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.Ordinal);
+        string? projectPath = ResolveProjectFilePath(request, filesByPath.Keys);
+        if (projectPath is null || !filesByPath.TryGetValue(projectPath, out CSharpProjectFile? projectFile))
+        {
+            yield break;
+        }
+
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(DecodeProjectFileContents(projectFile));
+        }
+        catch
+        {
+            yield break;
+        }
+
+        string projectDirectory = ProjectDirectory(projectPath);
+        HashSet<string> yielded = new(StringComparer.Ordinal);
+        foreach (XElement referenceElement in document.Descendants().Where(element => string.Equals(element.Name.LocalName, "Reference", StringComparison.OrdinalIgnoreCase)))
+        {
+            string? hintPath = referenceElement
+                .Elements()
+                .Where(element => string.Equals(element.Name.LocalName, "HintPath", StringComparison.OrdinalIgnoreCase))
+                .Select(element => (element.Value ?? string.Empty).Trim())
+                .FirstOrDefault(value => value.Length > 0);
+            if (string.IsNullOrWhiteSpace(hintPath))
+            {
+                continue;
+            }
+
+            string referencePath = NormalizeProjectItemPattern(projectDirectory, hintPath);
+            if (!yielded.Add(referencePath))
+            {
+                continue;
+            }
+            if (filesByPath.TryGetValue(referencePath, out CSharpProjectFile? referenceFile))
+            {
+                byte[] referenceBytes = DecodeProjectFileBytes(referenceFile);
+                string name = Path.GetFileNameWithoutExtension(referencePath);
+                try
+                {
+                    name = AssemblyName.GetAssemblyName(ResolveProjectPath(referencePath)).Name ?? name;
+                }
+                catch
+                {
+                }
+                yield return new ProjectHintPathAssembly(name, referenceBytes);
+            }
+        }
+    }
+
+    private static IEnumerable<ResourceDescription> ResolveProjectEmbeddedResources(CSharpProjectCommandRequest request)
+    {
+        Dictionary<string, CSharpProjectFile> filesByPath = request.Project.Files
+            .Select(file => new KeyValuePair<string, CSharpProjectFile>(NormalizeProjectPath(file.Path), file))
+            .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.Ordinal);
+        string? projectPath = ResolveProjectFilePath(request, filesByPath.Keys);
+        if (projectPath is null || !filesByPath.TryGetValue(projectPath, out CSharpProjectFile? projectFile))
+        {
+            return Array.Empty<ResourceDescription>();
+        }
+
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(DecodeProjectFileContents(projectFile));
+        }
+        catch
+        {
+            return Array.Empty<ResourceDescription>();
+        }
+
+        string projectDirectory = ProjectDirectory(projectPath);
+        List<ResourceDescription> resources = new();
+        foreach (XElement resourceElement in document.Descendants().Where(element => string.Equals(element.Name.LocalName, "EmbeddedResource", StringComparison.OrdinalIgnoreCase)))
+        {
+            string? include = resourceElement.Attribute("Include")?.Value;
+            if (string.IsNullOrWhiteSpace(include))
+            {
+                continue;
+            }
+
+            string? logicalName = ProjectItemMetadata(resourceElement, "LogicalName") ?? ProjectItemMetadata(resourceElement, "ManifestResourceName");
+            foreach (string resourcePath in ResolveProjectItemPaths(include, projectDirectory, filesByPath.Keys))
+            {
+                if (!filesByPath.TryGetValue(resourcePath, out CSharpProjectFile? resourceFile))
+                {
+                    continue;
+                }
+
+                byte[] bytes = DecodeProjectFileBytes(resourceFile);
+                string resourceName = !string.IsNullOrWhiteSpace(logicalName)
+                    ? logicalName
+                    : DefaultEmbeddedResourceName(request, projectPath, resourcePath);
+                resources.Add(new ResourceDescription(resourceName, () => new MemoryStream(bytes, writable: false), isPublic: true));
+            }
+        }
+        return resources;
+    }
+
+    private static string? ProjectItemMetadata(XElement element, string metadataName)
+    {
+        return element
+            .Elements()
+            .Where(child => string.Equals(child.Name.LocalName, metadataName, StringComparison.OrdinalIgnoreCase))
+            .Select(child => (child.Value ?? string.Empty).Trim())
+            .FirstOrDefault(value => value.Length > 0);
+    }
+
+    private static IEnumerable<string> ResolveProjectItemPaths(string value, string projectDirectory, IEnumerable<string> candidatePaths)
+    {
+        foreach (string rawPattern in value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string pattern = NormalizeProjectItemPattern(projectDirectory, rawPattern);
+            foreach (string path in candidatePaths.Where(path => ProjectGlobMatches(pattern, path)).OrderBy(path => path, StringComparer.Ordinal))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static string DefaultEmbeddedResourceName(CSharpProjectCommandRequest request, string projectPath, string resourcePath)
+    {
+        string? rootNamespace = ResolveProjectPropertyValue(request, "RootNamespace");
+        string projectDirectory = ProjectDirectory(projectPath);
+        string relativePath = IsUnderProjectDirectory(resourcePath, projectDirectory) && !string.IsNullOrEmpty(projectDirectory)
+            ? resourcePath[(projectDirectory.Length + 1)..]
+            : resourcePath;
+        string normalized = Regex.Replace(relativePath, @"[^A-Za-z0-9_]+", ".", RegexOptions.CultureInvariant).Trim('.');
+        return string.IsNullOrWhiteSpace(rootNamespace) ? normalized : rootNamespace + "." + normalized;
+    }
+
+    private static HashSet<string> ResolveProjectCompileFilePaths(CSharpProjectCommandRequest request)
+    {
+        Dictionary<string, CSharpProjectFile> filesByPath = request.Project.Files
+            .Select(file => new KeyValuePair<string, CSharpProjectFile>(NormalizeProjectPath(file.Path), file))
+            .GroupBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.Ordinal);
+        List<string> csharpFiles = filesByPath.Keys
+            .Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+        string? projectPath = ResolveProjectFilePath(request, filesByPath.Keys);
+        if (projectPath is null || !filesByPath.TryGetValue(projectPath, out CSharpProjectFile? projectFile))
+        {
+            string cwd = NormalizeProjectDirectoryPath(request.Cwd);
+            return csharpFiles
+                .Where(path => IsUnderProjectDirectory(path, cwd)
+                    && !IsInBuildOutputDirectory(path, cwd))
+                .ToHashSet(StringComparer.Ordinal);
+        }
+
+        return ResolveProjectCompileFilePaths(projectPath, projectFile, filesByPath, csharpFiles, new HashSet<string>(StringComparer.Ordinal));
+    }
+
+    private static HashSet<string> ResolveProjectCompileFilePaths(
+        string projectPath,
+        CSharpProjectFile projectFile,
+        IReadOnlyDictionary<string, CSharpProjectFile> filesByPath,
+        IReadOnlyList<string> csharpFiles,
+        HashSet<string> visitedProjects
+    )
+    {
+        if (!visitedProjects.Add(projectPath))
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        string projectDirectory = ProjectDirectory(projectPath);
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(DecodeProjectFileContents(projectFile));
+        }
+        catch
+        {
+            return csharpFiles
+                .Where(path => IsUnderProjectDirectory(path, projectDirectory)
+                    && !IsInBuildOutputDirectory(path, projectDirectory))
+                .ToHashSet(StringComparer.Ordinal);
+        }
+
+        bool enableDefaultCompileItems = !document
+            .Descendants()
+            .Where(element => string.Equals(element.Name.LocalName, "EnableDefaultCompileItems", StringComparison.OrdinalIgnoreCase))
+            .Any(element => string.Equals((element.Value ?? string.Empty).Trim(), "false", StringComparison.OrdinalIgnoreCase));
+
+        HashSet<string> selected = enableDefaultCompileItems
+            ? csharpFiles
+                .Where(path => IsUnderProjectDirectory(path, projectDirectory)
+                    && !IsInBuildOutputDirectory(path, projectDirectory))
+                .ToHashSet(StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (XElement compileElement in document.Descendants().Where(element => string.Equals(element.Name.LocalName, "Compile", StringComparison.OrdinalIgnoreCase)))
+        {
+            ApplyCompileAttribute(compileElement.Attribute("Include")?.Value, projectDirectory, csharpFiles, selected, include: true);
+            ApplyCompileAttribute(compileElement.Attribute("Remove")?.Value, projectDirectory, csharpFiles, selected, include: false);
+            ApplyCompileAttribute(compileElement.Attribute("Exclude")?.Value, projectDirectory, csharpFiles, selected, include: false);
+        }
+
+        foreach (XElement referenceElement in document.Descendants().Where(element => string.Equals(element.Name.LocalName, "ProjectReference", StringComparison.OrdinalIgnoreCase)))
+        {
+            foreach (string referencedProjectPath in ResolveProjectReferencePaths(referenceElement.Attribute("Include")?.Value, projectDirectory))
+            {
+                if (filesByPath.TryGetValue(referencedProjectPath, out CSharpProjectFile? referencedProjectFile))
+                {
+                    selected.UnionWith(ResolveProjectCompileFilePaths(
+                        referencedProjectPath,
+                        referencedProjectFile,
+                        filesByPath,
+                        csharpFiles,
+                        visitedProjects
+                    ));
+                }
+            }
+        }
+
+        return selected;
+    }
+
+    private static IEnumerable<string> ResolveProjectReferencePaths(string? value, string projectDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            yield break;
+        }
+
+        foreach (string rawPath in value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string path = NormalizeProjectItemPattern(projectDirectory, rawPath);
+            if (path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return path;
+            }
+        }
+    }
+
+    private static string? ResolveProjectFilePath(CSharpProjectCommandRequest request, IEnumerable<string> projectPaths)
+    {
+        if (request.ScriptPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+        {
+            string scriptCwd = NormalizeProjectDirectoryPath(request.Cwd);
+            return NormalizeProjectItemPattern(scriptCwd, request.ScriptPath);
+        }
+
+        string cwd = NormalizeProjectDirectoryPath(request.Cwd);
+        return projectPaths
+            .Where(path => path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(path => IsUnderProjectDirectory(path, cwd))
+            .ThenBy(path => path, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    private static string ProjectDirectory(string path)
+    {
+        int index = path.LastIndexOf('/');
+        return index < 0 ? string.Empty : path[..index];
+    }
+
+    private static string NormalizeProjectDirectoryPath(string path)
+    {
+        if (string.Equals(path, "/workspace", StringComparison.Ordinal)
+            || string.Equals(path, "<project>", StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+        return NormalizeProjectPath(path);
+    }
+
+    private static bool IsUnderProjectDirectory(string path, string projectDirectory)
+    {
+        return string.IsNullOrEmpty(projectDirectory)
+            || path.StartsWith(projectDirectory + "/", StringComparison.Ordinal);
+    }
+
+    private static bool IsInBuildOutputDirectory(string path, string projectDirectory)
+    {
+        string relativePath = string.IsNullOrEmpty(projectDirectory) ? path : path[(projectDirectory.Length + 1)..];
+        return relativePath.StartsWith("bin/", StringComparison.Ordinal)
+            || relativePath.StartsWith("obj/", StringComparison.Ordinal);
+    }
+
+    private static void ApplyCompileAttribute(
+        string? value,
+        string projectDirectory,
+        IReadOnlyList<string> csharpFiles,
+        HashSet<string> selected,
+        bool include
+    )
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        foreach (string rawPattern in value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string pattern = NormalizeProjectItemPattern(projectDirectory, rawPattern);
+            foreach (string path in csharpFiles.Where(path => ProjectGlobMatches(pattern, path)))
+            {
+                if (include)
+                {
+                    selected.Add(path);
+                }
+                else
+                {
+                    selected.Remove(path);
+                }
+            }
+        }
+    }
+
+    private static string NormalizeProjectItemPattern(string projectDirectory, string pattern)
+    {
+        string normalized = pattern.Replace('\\', '/');
+        if (normalized.StartsWith("/workspace/", StringComparison.Ordinal))
+        {
+            return NormalizeProjectPath(normalized);
+        }
+        if (normalized.StartsWith("/", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Project path escapes workspace: {pattern}");
+        }
+        normalized = normalized.TrimStart('/');
+        return NormalizeProjectPath(string.IsNullOrEmpty(projectDirectory) ? normalized : projectDirectory + "/" + normalized);
+    }
+
+    private static bool ProjectGlobMatches(string pattern, string path)
+    {
+        string regex = "^" + Regex.Escape(pattern)
+            .Replace("\\*\\*/", "(?:.*/)?", StringComparison.Ordinal)
+            .Replace("\\*\\*", ".*", StringComparison.Ordinal)
+            .Replace("\\*", "[^/]*", StringComparison.Ordinal)
+            .Replace("\\?", "[^/]", StringComparison.Ordinal) + "$";
+        return Regex.IsMatch(path, regex, RegexOptions.CultureInvariant);
+    }
+
+    private static SyntaxTree RewriteProjectSyntaxTree(SyntaxTree tree)
+    {
+        SyntaxNode rewrittenRoot = new ProjectConsoleRewriter().Visit(tree.GetRoot()) ?? tree.GetRoot();
+        return CSharpSyntaxTree.Create(
+            (CSharpSyntaxNode)rewrittenRoot,
+            ParseOptions,
+            path: tree.FilePath,
+            encoding: Encoding.UTF8
+        );
+    }
+
+    private sealed class ProjectConsoleRewriter : CSharpSyntaxRewriter
+    {
+        public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
+        {
+            if (node.Expression is MemberAccessExpressionSyntax memberAccess
+                && string.Equals(memberAccess.Name.Identifier.ValueText, "ReadLine", StringComparison.Ordinal)
+                && memberAccess.Expression is IdentifierNameSyntax identifier
+                && string.Equals(identifier.Identifier.ValueText, "Console", StringComparison.Ordinal))
+            {
+                return node.WithExpression(
+                    SyntaxFactory.ParseExpression("TraceCode.Project.ProjectStdin.ReadLine")
+                        .WithTriviaFrom(node.Expression)
+                );
+            }
+
+            return base.VisitInvocationExpression(node);
+        }
+    }
+
+    private static string GenerateProjectRuntimeSource(string stdin)
+    {
+        string serializedLines = JsonSerializer.Serialize(SplitProjectStdinLines(stdin), JsonOptions);
+        return $$"""
+namespace TraceCode.Project;
+
+public static class ProjectStdin
+{
+    private static readonly string[] Lines = System.Text.Json.JsonSerializer.Deserialize<string[]>({{JsonSerializer.Serialize(serializedLines)}}) ?? System.Array.Empty<string>();
+    private static int Index;
+
+    public static string? ReadLine()
+    {
+        if (Index >= Lines.Length)
+        {
+            return null;
+        }
+
+        return Lines[Index++];
+    }
+}
+""";
+    }
+
+    private static string[] SplitProjectStdinLines(string stdin)
+    {
+        string normalized = stdin.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        if (normalized.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+        string[] lines = normalized.Split('\n');
+        if (normalized.EndsWith("\n", StringComparison.Ordinal))
+        {
+            return lines.Take(lines.Length - 1).ToArray();
+        }
+        return lines;
+    }
+
+    private static void PrepareProjectWorkspace(
+        CSharpProjectCommandRequest request,
+        out Dictionary<string, byte[]> beforeSnapshot
+    )
+    {
+        if (Directory.Exists(ProjectWorkspaceRoot))
+        {
+            Directory.Delete(ProjectWorkspaceRoot, recursive: true);
+        }
+        Directory.CreateDirectory(ProjectWorkspaceRoot);
+
+        foreach (string directory in request.Project.Directories)
+        {
+            string relativePath = NormalizeProjectPath(directory);
+            if (string.IsNullOrEmpty(relativePath) || string.Equals(relativePath, ".", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            Directory.CreateDirectory(ResolveProjectPath(relativePath));
+        }
+
+        foreach (CSharpProjectFile file in request.Project.Files)
+        {
+            string relativePath = NormalizeProjectPath(file.Path);
+            string absolutePath = ResolveProjectPath(relativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(absolutePath) ?? ProjectWorkspaceRoot);
+            File.WriteAllBytes(absolutePath, DecodeProjectFileBytes(file));
+        }
+
+        beforeSnapshot = SnapshotProjectWorkspace();
+    }
+
+    private static Dictionary<string, byte[]> SnapshotProjectWorkspace()
+    {
+        Dictionary<string, byte[]> files = new(StringComparer.Ordinal);
+        if (!Directory.Exists(ProjectWorkspaceRoot))
+        {
+            return files;
+        }
+
+        foreach (string filePath in Directory.EnumerateFiles(ProjectWorkspaceRoot, "*", SearchOption.AllDirectories))
+        {
+            string relativePath = Path.GetRelativePath(ProjectWorkspaceRoot, filePath).Replace('\\', '/');
+            files[relativePath] = File.ReadAllBytes(filePath);
+        }
+        return files;
+    }
+
+    private static List<CSharpProjectFileChange> DiffProjectWorkspace(Dictionary<string, byte[]> beforeSnapshot)
+    {
+        Dictionary<string, byte[]> afterSnapshot = SnapshotProjectWorkspace();
+        List<CSharpProjectFileChange> changes = new();
+
+        foreach ((string path, byte[] afterBytes) in afterSnapshot.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            if (beforeSnapshot.TryGetValue(path, out byte[]? beforeBytes) && beforeBytes.SequenceEqual(afterBytes))
+            {
+                continue;
+            }
+            changes.Add(EncodeProjectFileChange(path, afterBytes));
+        }
+
+        foreach (string deletedPath in beforeSnapshot.Keys.Except(afterSnapshot.Keys, StringComparer.Ordinal).OrderBy(path => path, StringComparer.Ordinal))
+        {
+            changes.Add(new CSharpProjectFileChange { Path = deletedPath, Deleted = true });
+        }
+
+        return changes;
+    }
+
+    private static CSharpProjectFileChange EncodeProjectFileChange(string path, byte[] bytes)
+    {
+        string text = Encoding.UTF8.GetString(bytes);
+        if (Encoding.UTF8.GetBytes(text).SequenceEqual(bytes))
+        {
+            return new CSharpProjectFileChange
+            {
+                Path = path,
+                Contents = text,
+                Encoding = "utf8",
+            };
+        }
+
+        return new CSharpProjectFileChange
+        {
+            Path = path,
+            Contents = Convert.ToBase64String(bytes),
+            Encoding = "base64",
+        };
+    }
+
+    private static byte[] DecodeProjectFileBytes(CSharpProjectFile file)
+    {
+        return string.Equals(file.Encoding, "base64", StringComparison.OrdinalIgnoreCase)
+            ? Convert.FromBase64String(file.Contents)
+            : Encoding.UTF8.GetBytes(file.Contents);
+    }
+
+    private static string DecodeProjectFileContents(CSharpProjectFile file)
+    {
+        return Encoding.UTF8.GetString(DecodeProjectFileBytes(file));
+    }
+
+    private static string NormalizeProjectPath(string path)
+    {
+        string normalized = path.Replace('\\', '/');
+        if (normalized.StartsWith("/workspace/", StringComparison.Ordinal))
+        {
+            normalized = normalized["/workspace/".Length..];
+        }
+        else if (normalized.StartsWith("/", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Project path escapes workspace: {path}");
+        }
+        normalized = normalized.TrimStart('/');
+        string collapsed = Path.GetFullPath(Path.Combine(ProjectWorkspaceRoot, normalized));
+        if (!collapsed.StartsWith(ProjectWorkspaceRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            && !string.Equals(collapsed, ProjectWorkspaceRoot, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Project path escapes workspace: {path}");
+        }
+        return Path.GetRelativePath(ProjectWorkspaceRoot, collapsed).Replace('\\', '/');
+    }
+
+    private static string ResolveProjectPath(string path)
+    {
+        string normalized = path.Replace('\\', '/');
+        if (string.Equals(normalized, "/workspace", StringComparison.Ordinal) || string.Equals(normalized, "<project>", StringComparison.Ordinal))
+        {
+            normalized = string.Empty;
+        }
+        else if (normalized.StartsWith("/workspace/", StringComparison.Ordinal))
+        {
+            normalized = normalized["/workspace/".Length..];
+        }
+        else if (normalized.StartsWith("/", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Project path escapes workspace: {path}");
+        }
+        normalized = normalized.TrimStart('/');
+        string resolved = Path.GetFullPath(Path.Combine(ProjectWorkspaceRoot, normalized));
+        if (!resolved.StartsWith(ProjectWorkspaceRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            && !string.Equals(resolved, ProjectWorkspaceRoot, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Project path escapes workspace: {path}");
+        }
+        return resolved;
+    }
+
+    private static string FormatProjectDiagnostics(IEnumerable<Diagnostic> diagnostics)
+    {
+        StringBuilder builder = new();
+        foreach (Diagnostic diagnostic in diagnostics.Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error))
+        {
+            CSharpDiagnostic mapped = CSharpDiagnostic.FromRoslyn(diagnostic);
+            builder.Append(mapped.File);
+            builder.Append('(');
+            builder.Append(mapped.Line);
+            builder.Append(',');
+            builder.Append(mapped.Column);
+            builder.Append("): error ");
+            builder.Append(mapped.Id);
+            builder.Append(": ");
+            builder.AppendLine(mapped.Message);
+        }
+        return builder.ToString();
+    }
+
+    private static void InvokeProjectEntryPoint(Assembly assembly, string[] args)
+    {
+        MethodInfo entryPoint = assembly.EntryPoint
+            ?? throw new InvalidOperationException("Program does not contain a static entry point.");
+        object? result = entryPoint.GetParameters().Length == 0
+            ? entryPoint.Invoke(null, null)
+            : entryPoint.Invoke(null, new object?[] { args });
+        if (result is Task task)
+        {
+            task.GetAwaiter().GetResult();
+        }
     }
 
     private static bool IsScriptExecutionRequest(CSharpExecuteRequest request)
@@ -685,6 +1688,7 @@ public static class TraceCodeDriver
 global using System;
 global using System.Collections;
 global using System.Collections.Generic;
+global using System.IO;
 global using System.Linq;
 global using System.Numerics;
 global using System.Text;
@@ -2654,6 +3658,11 @@ public class TreeNode
     }
 
     private static string Serialize(CSharpExecuteResponse response)
+    {
+        return JsonSerializer.Serialize(response, JsonOptions);
+    }
+
+    private static string SerializeProject(CSharpProjectCommandResponse response)
     {
         return JsonSerializer.Serialize(response, JsonOptions);
     }

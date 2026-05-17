@@ -1,13 +1,13 @@
 {
-  "name": "@tracecode/harness-browser",
+  "name": "@tracecode/harness-project",
   "version": "0.7.0-beta6",
-  "description": "Browser harness factory and runtime clients for TraceCode.",
+  "description": "Project-mode workspace primitives for TraceCode harness.",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
     "type": "git",
     "url": "https://github.com/tracecodeapp/harness.git",
-    "directory": "packages/harness-browser"
+    "directory": "packages/harness-project"
   },
   "type": "module",
   "main": "./dist/index.cjs",
@@ -30,19 +30,10 @@
       "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     },
-    "./internal": {
-      "types": "./dist/internal.d.ts",
-      "import": "./dist/internal.js",
-      "require": "./dist/internal.cjs",
-      "default": "./dist/internal.js"
-    },
-    "./project": {
-      "types": "./dist/project.d.ts",
-      "import": "./dist/project.js",
-      "require": "./dist/project.cjs",
-      "default": "./dist/project.js"
-    },
     "./package.json": "./package.json"
   },
-  "sideEffects": false
+  "sideEffects": false,
+  "dependencies": {
+    "just-bash": "3.0.1"
+  }
 }

@@ -1,6 +1,7 @@
 let runtimePromise = null;
 let warmupPromise = null;
 let executeExport = null;
+let executeProjectExport = null;
 let configuredAssetBaseUrl = null;
 const WORKER_DEBUG = (() => {
   try {
@@ -78,7 +79,7 @@ function resolveAssetUrl(assetBaseUrl, pathname) {
 
 function configureAssetBaseUrl(assetBaseUrl) {
   if (typeof assetBaseUrl === 'string' && assetBaseUrl.trim()) {
-    if (!configuredAssetBaseUrl || (!executeExport && !runtimePromise)) {
+    if (!configuredAssetBaseUrl || (!executeExport && !executeProjectExport && !runtimePromise)) {
       configuredAssetBaseUrl = assetBaseUrl;
     }
   }
@@ -96,7 +97,7 @@ function runWarmup() {
 
 async function loadRuntime(assetBaseUrl) {
   const resolvedAssetBaseUrl = configureAssetBaseUrl(assetBaseUrl);
-  if (executeExport) {
+  if (executeExport && executeProjectExport) {
     return {
       success: true,
       loadTimeMs: 0,
@@ -111,8 +112,12 @@ async function loadRuntime(assetBaseUrl) {
       const runtime = await dotnet.withApplicationArguments('tracecode-csharp-worker').create();
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;
+      executeProjectExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.ExecuteProject;
       if (typeof executeExport !== 'function') {
         throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.Execute JS export');
+      }
+      if (typeof executeProjectExport !== 'function') {
+        throw new Error('Unable to resolve TraceCode.CSharpHost.CompilerHost.ExecuteProject JS export');
       }
       const initMs = elapsedMs(startedAt);
       const totalMs = elapsedMs(startedAt);
@@ -125,6 +130,7 @@ async function loadRuntime(assetBaseUrl) {
     runtimePromise.catch(() => {
       runtimePromise = null;
       executeExport = null;
+      executeProjectExport = null;
     });
   }
 
@@ -232,6 +238,26 @@ async function handleMessage(message) {
     };
     const hostCallStartedAt = now();
     const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))));
+    const hostCallMs = elapsedMs(hostCallStartedAt);
+    return {
+      ...result,
+      timings: {
+        ...(result?.timings && typeof result.timings === 'object' ? result.timings : {}),
+        initMs,
+        hostCallMs,
+        totalMs: elapsedMs(startedAt),
+      },
+    };
+  }
+
+  if (message.type === 'execute-project-csharp') {
+    const startedAt = now();
+    const runtimeStartedAt = now();
+    const runtimeResult = await loadRuntime(message.payload?.assetBaseUrl);
+    const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
+    const { assetBaseUrl, idleTimeoutMs, timeoutMs, ...request } = message.payload ?? {};
+    const hostCallStartedAt = now();
+    const result = JSON.parse(executeProjectExport(JSON.stringify(request)));
     const hostCallMs = elapsedMs(hostCallStartedAt);
     return {
       ...result,

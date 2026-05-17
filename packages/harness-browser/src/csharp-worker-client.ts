@@ -9,6 +9,10 @@ import type {
   ExecutionResult,
   RuntimeExecutionTimings,
 } from '../../harness-core/src/types';
+import type {
+  RuntimeCommandResult,
+  RuntimeProjectCommandRequest,
+} from '../../harness-core/src/runtime-project';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 
 type MessageId = string;
@@ -67,6 +71,9 @@ export interface CSharpDiagnostic {
   severity: string;
   id?: string;
 }
+
+export type CSharpProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
+export type CSharpProjectCommandResult = RuntimeCommandResult;
 
 interface CSharpWorkerExecuteResult {
   success: boolean;
@@ -625,6 +632,27 @@ export class CSharpWorkerClient {
       traceStepCount: trace.traceStepCount,
       timings: result.timings,
     };
+  }
+
+  async executeProjectCSharp(
+    request: CSharpProjectCommandRequest,
+    timeoutMs = this.executionTimeoutMs
+  ): Promise<CSharpProjectCommandResult> {
+    await this.init();
+    return this.executeWithTimeout(
+      () =>
+        this.sendMessage<CSharpProjectCommandResult>(
+          'execute-project-csharp',
+          {
+            ...request,
+            assetBaseUrl: this.options.assetBaseUrl,
+            timeoutMs: Math.max(100, timeoutMs - 1_000),
+            ...this.workerOptionsPayload(),
+          },
+          timeoutMs + 5_000
+        ),
+      timeoutMs
+    );
   }
 
   private createTrace(events: RuntimeTraceEvent[]): RuntimeTrace {

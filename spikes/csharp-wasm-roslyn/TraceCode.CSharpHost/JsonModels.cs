@@ -41,6 +41,88 @@ public sealed class CSharpExecuteRequest
     public bool MinimalTrace { get; set; }
 }
 
+public sealed class CSharpProjectCommandRequest
+{
+    [JsonPropertyName("source")]
+    public string Source { get; set; } = "run";
+
+    [JsonPropertyName("scriptPath")]
+    public string ScriptPath { get; set; } = "<project>";
+
+    [JsonPropertyName("args")]
+    public List<string> Args { get; set; } = new();
+
+    [JsonPropertyName("cwd")]
+    public string Cwd { get; set; } = "/workspace";
+
+    [JsonPropertyName("env")]
+    public Dictionary<string, string> Env { get; set; } = new();
+
+    [JsonPropertyName("stdin")]
+    public string Stdin { get; set; } = string.Empty;
+
+    [JsonPropertyName("project")]
+    public CSharpProjectSnapshot Project { get; set; } = new();
+
+    [JsonPropertyName("options")]
+    public Dictionary<string, JsonElement> Options { get; set; } = new();
+}
+
+public sealed class CSharpProjectSnapshot
+{
+    [JsonPropertyName("files")]
+    public List<CSharpProjectFile> Files { get; set; } = new();
+
+    [JsonPropertyName("directories")]
+    public List<string> Directories { get; set; } = new();
+}
+
+public sealed class CSharpProjectFile
+{
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
+
+    [JsonPropertyName("contents")]
+    public string Contents { get; set; } = string.Empty;
+
+    [JsonPropertyName("encoding")]
+    public string? Encoding { get; set; }
+}
+
+public sealed class CSharpProjectFileChange
+{
+    [JsonPropertyName("path")]
+    public string Path { get; set; } = string.Empty;
+
+    [JsonPropertyName("contents")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Contents { get; set; }
+
+    [JsonPropertyName("encoding")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Encoding { get; set; }
+
+    [JsonPropertyName("deleted")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Deleted { get; set; }
+}
+
+public sealed class CSharpProjectCommandResponse
+{
+    [JsonPropertyName("stdout")]
+    public string Stdout { get; set; } = string.Empty;
+
+    [JsonPropertyName("stderr")]
+    public string Stderr { get; set; } = string.Empty;
+
+    [JsonPropertyName("exitCode")]
+    public int ExitCode { get; set; }
+
+    [JsonPropertyName("files")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<CSharpProjectFileChange>? Files { get; set; }
+}
+
 public sealed class CSharpExecuteResponse
 {
     [JsonPropertyName("success")]

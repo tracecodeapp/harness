@@ -23,6 +23,10 @@
   "bin": {
     "tracecode-harness": "./dist/cli.cjs"
   },
+  "browser": {
+    "zlib": "./dist/zlib-browser-shim.js",
+    "node:zlib": "./dist/zlib-browser-shim.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -41,6 +45,24 @@
       "import": "./dist/browser.js",
       "require": "./dist/browser.cjs",
       "default": "./dist/browser.js"
+    },
+    "./browser/project": {
+      "types": "./dist/browser/project.d.ts",
+      "import": "./dist/browser/project.js",
+      "require": "./dist/browser/project.cjs",
+      "default": "./dist/browser/project.js"
+    },
+    "./project": {
+      "types": "./dist/project.d.ts",
+      "import": "./dist/project.js",
+      "require": "./dist/project.cjs",
+      "default": "./dist/project.js"
+    },
+    "./project-node": {
+      "types": "./dist/project-node.d.ts",
+      "import": "./dist/project-node.js",
+      "require": "./dist/project-node.cjs",
+      "default": "./dist/project-node.js"
     },
     "./internal/browser": {
       "types": "./dist/internal/browser.d.ts",
@@ -86,8 +108,9 @@
     "generate:python-harness": "pnpm exec tsx scripts/generate-python-harness-artifacts.ts",
     "sync:package-assets": "pnpm exec tsx scripts/sync-language-package-assets.ts",
     "update:csharp-runtime": "bash scripts/update-csharp-wasm-runtime.sh",
-    "typecheck": "pnpm typecheck:packages",
-    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit",
+    "typecheck": "pnpm typecheck:root && pnpm typecheck:packages",
+    "typecheck:root": "pnpm exec tsc -p tsconfig.root.json --noEmit",
+    "typecheck:packages": "pnpm exec tsc -p packages/harness-core/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-browser/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-python/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-javascript/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-java/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-csharp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-cpp/tsconfig.json --noEmit && pnpm exec tsc -p packages/harness-project/tsconfig.json --noEmit",
     "test:smoke": "pnpm exec tsx tests/test-harness-workspace-smoke.ts",
     "test:packaged-surface": "pnpm exec tsx tests/test-packaged-surface.ts",
     "test:browser-harness": "pnpm exec tsx tests/test-browser-harness.ts",
@@ -110,9 +133,11 @@
     "test:cpp-rewriter": "pnpm exec tsx tests/test-cpp-rewriter.ts",
     "test:cpp-browser-worker": "pnpm exec tsx tests/test-cpp-browser-worker.ts",
     "test:js-runtime": "pnpm exec tsx tests/test-javascript-runtime.ts",
+    "test:project": "pnpm exec tsx tests/test-project-workspace.ts",
     "test:python-harness-sync": "pnpm run test:python-sync",
     "test:java-harness-sync": "pnpm run test:java-sync",
     "test:javascript-runtime": "pnpm run test:js-runtime",
+    "test:python-browser-worker": "pnpm exec tsx tests/test-python-browser-worker.ts",
     "test:runtime-contract": "pnpm exec tsx tests/test-runtime-contract.ts",
     "test:runtime-info-sync": "pnpm exec tsx scripts/generate-runtime-language-info.ts --check",
     "test:runtime-trace-parity": "pnpm exec tsx tests/test-runtime-trace-parity.ts",
@@ -125,8 +150,8 @@
     "local:test:cpp-algoflow-smoke": "pnpm exec tsx tests/mine-cpp-algoflow-corpus.ts --sample=two-sum,map-sum-pairs,range-frequency-queries,binary-tree-tilt --loose-any-valid-output --fail-on-failure --report=reports/cpp-algoflow-smoke.json",
     "local:mine:cpp-algoflow-corpus": "pnpm exec tsx tests/mine-cpp-algoflow-corpus.ts --limit=50 --max-stored-events=10000 --loose-any-valid-output --report=reports/cpp-algoflow-corpus.json",
     "local:mine:cpp-algoflow-corpus:isolated": "pnpm exec tsx tests/mine-cpp-algoflow-corpus.ts --limit=0 --no-trace --jobs=4 --batch-size=16 --worker-timeout-ms=600000 --max-stored-events=10000 --loose-any-valid-output --compare-languages=javascript,typescript,python,java --report=reports/cpp-algoflow-corpus-isolated.json",
-    "test:ci": "pnpm test:runtime-info-sync && pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-script-lambda-trace && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:asset-sync",
-    "test": "pnpm test:runtime-info-sync && pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-script-lambda-trace && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
+    "test:ci": "pnpm test:runtime-info-sync && pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:python-browser-worker && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-script-lambda-trace && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:project && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:asset-sync",
+    "test": "pnpm test:runtime-info-sync && pnpm typecheck && pnpm test:trace-adapters && pnpm test:python-sync && pnpm test:python-runtime && pnpm test:python-browser-worker && pnpm test:java-sync && pnpm test:java-runtime && pnpm test:csharp-runtime && pnpm test:csharp-worker-browser && pnpm test:cpp-rewriter && pnpm test:cpp-script-lambda-trace && pnpm test:cpp-runtime && pnpm test:js-runtime && pnpm test:project && pnpm test:runtime-contract && pnpm test:runtime-trace && pnpm test:standalone-boundary && pnpm build && pnpm test:packaged-surface && pnpm test:language-packages && pnpm test:smoke && pnpm test:browser-harness && pnpm test:asset-sync && pnpm test:example-app && pnpm test:java-example-app && pnpm test:example-app-packaged && pnpm test:java-example-app-packaged",
     "mine:runtime-trace-final300": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts",
     "mine:runtime-trace-final300:parallel": "pnpm exec tsx tests/mine-runtime-trace-corpus.ts --jobs=8",
     "test:runtime-raw-emission-contract": "pnpm exec tsx tests/test-runtime-raw-emission-contract.ts",
@@ -166,6 +191,7 @@
     "@datastructures-js/stack": "3.1.6",
     "@datastructures-js/trie": "4.2.3",
     "@yowasp/clang": "22.0.0-git20542-10",
+    "fflate": "^0.8.3",
     "lodash": "4.17.21"
   }
 }

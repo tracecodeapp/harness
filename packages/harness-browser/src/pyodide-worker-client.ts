@@ -7,6 +7,12 @@
 
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
+import type {
+  RuntimeCommandResult,
+  RuntimeFile,
+  RuntimeProjectCommandRequest,
+  RuntimeProjectSnapshot,
+} from '../../harness-core/src/runtime-project';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 
 type MessageId = string;
@@ -44,8 +50,16 @@ interface StatusResult {
   isLoading: boolean;
 }
 
+export type PythonProjectFile = RuntimeFile;
+export type PythonProjectSnapshot = RuntimeProjectSnapshot;
+export type PythonProjectCommandRequest = RuntimeProjectCommandRequest<
+  'argument' | 'file' | 'stdin' | 'module'
+>;
+export type PythonProjectCommandResult = RuntimeCommandResult;
+
 // Execution timeout in milliseconds for simple code execution (10 seconds)
-const EXECUTION_TIMEOUT_MS = 10000;
+const EXECUTION_TIMEOUT_MS = 30000;
+const PROJECT_EXECUTION_TIMEOUT_MS = 30000;
 
 // Interview mode timeout - shorter, no detailed error info (5 seconds)
 const INTERVIEW_MODE_TIMEOUT_MS = 5000;
@@ -563,6 +577,21 @@ export class PythonWorkerClient {
         consoleOutput: [],
       };
     }
+  }
+
+  async executeProjectPython(
+    request: PythonProjectCommandRequest,
+    timeoutMs: number = PROJECT_EXECUTION_TIMEOUT_MS
+  ): Promise<PythonProjectCommandResult> {
+    await this.init();
+    return this.executeWithTimeout(
+      () => this.sendMessage<PythonProjectCommandResult>(
+        'execute-project-python',
+        request,
+        timeoutMs + 5000
+      ),
+      timeoutMs
+    );
   }
 
   /**

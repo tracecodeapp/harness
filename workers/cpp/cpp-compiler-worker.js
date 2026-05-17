@@ -6,6 +6,10 @@ function decodeUtf8(value) {
   return new TextDecoder().decode(value);
 }
 
+function encodeUtf8(value) {
+  return new TextEncoder().encode(value);
+}
+
 function concatBytes(chunks) {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Uint8Array(total);
@@ -108,15 +112,219 @@ async function compileWithYowasp(payload) {
   }
 }
 
+function normalizeProjectPath(pathname) {
+  const raw = String(pathname || '').replace(/\\/g, '/');
+  const withoutWorkspace = raw === '/workspace'
+    ? ''
+    : raw.startsWith('/workspace/')
+      ? raw.slice('/workspace/'.length)
+      : raw.replace(/^\/+/, '');
+  const parts = [];
+  for (const part of withoutWorkspace.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      throw new Error(`Project path escapes workspace: ${pathname}`);
+    }
+    parts.push(part);
+  }
+  return parts.join('/');
+}
+
+function decodeBase64(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function projectFileBytes(file) {
+  return file?.encoding === 'base64'
+    ? decodeBase64(String(file.contents || ''))
+    : new TextEncoder().encode(String(file?.contents || ''));
+}
+
+function includeRelativePath(path, includePath) {
+  if (!includePath) return path;
+  if (path === includePath) return '';
+  return path.startsWith(`${includePath}/`) ? path.slice(includePath.length + 1) : '';
+}
+
+function relativePathFromCwd(path, cwd) {
+  const normalizedPath = normalizeProjectPath(path);
+  const normalizedCwd = normalizeProjectPath(cwd);
+  if (!normalizedCwd) return normalizedPath;
+  const pathParts = normalizedPath.split('/').filter(Boolean);
+  const cwdParts = normalizedCwd.split('/').filter(Boolean);
+  let shared = 0;
+  while (shared < pathParts.length && shared < cwdParts.length && pathParts[shared] === cwdParts[shared]) {
+    shared += 1;
+  }
+  return [
+    ...Array(cwdParts.length - shared).fill('..'),
+    ...pathParts.slice(shared),
+  ].join('/') || '.';
+}
+
+function basename(pathname) {
+  const normalized = normalizeProjectPath(pathname);
+  const slash = normalized.lastIndexOf('/');
+  return slash >= 0 ? normalized.slice(slash + 1) : normalized;
+}
+
+function isLinkerArtifactPath(pathname) {
+  return /\.(?:a|lib|o|obj)$/i.test(pathname);
+}
+
+function projectStdinSourcePath(payload) {
+  return 'tracecode-stdin.cpp';
+}
+
+async function compileProjectWithYowasp(payload) {
+  const startedAt = performance.now();
+  const assets = payload?.assets || {};
+  const compilerBundle = await import(assets.compilerBundleUrl);
+  if (typeof compilerBundle.runClang !== 'function') {
+    throw new Error('C++ compiler bundle does not expose runClang.');
+  }
+
+  const sourceFiles = {};
+  const cwd = normalizeProjectPath(payload?.cwd || '');
+  const includePaths = Array.isArray(payload?.includePaths)
+    ? payload.includePaths.map((path) => normalizeProjectPath(path)).filter(Boolean)
+    : [];
+  for (const file of payload?.project?.files || []) {
+    const path = normalizeProjectPath(file.path);
+    if (!path) continue;
+    const bytes = projectFileBytes(file);
+    sourceFiles[path] = bytes;
+    if (cwd && path.startsWith(`${cwd}/`)) {
+      sourceFiles[path.slice(cwd.length + 1)] = bytes;
+    }
+    const relativeFromCwd = relativePathFromCwd(path, cwd);
+    if (relativeFromCwd && relativeFromCwd !== path && sourceFiles[relativeFromCwd] === undefined) {
+      sourceFiles[relativeFromCwd] = bytes;
+    }
+    for (const includePath of includePaths) {
+      const includeRelative = includeRelativePath(path, includePath);
+      if (includeRelative && sourceFiles[includeRelative] === undefined) {
+        sourceFiles[includeRelative] = bytes;
+      }
+    }
+    if (isLinkerArtifactPath(path)) {
+      const localName = basename(path);
+      if (localName && sourceFiles[localName] === undefined) {
+        sourceFiles[localName] = bytes;
+      }
+    }
+    if (/\.(?:c|cc|cpp|cxx|h|hpp|hh)$/i.test(path)) {
+      const localName = basename(path);
+      if (localName && sourceFiles[localName] === undefined) {
+        sourceFiles[localName] = bytes;
+      }
+    }
+  }
+
+  const stdinSourcePath = projectStdinSourcePath(payload);
+  const requestedArgs = Array.isArray(payload?.args)
+    ? payload.args.map((arg) => String(arg) === '-' ? stdinSourcePath : String(arg))
+    : [];
+  if (requestedArgs.includes(stdinSourcePath)) {
+    const stdinBytes = encodeUtf8(String(payload?.stdin ?? ''));
+    sourceFiles[stdinSourcePath] = stdinBytes;
+    if (cwd && stdinSourcePath.startsWith(`${cwd}/`)) {
+      sourceFiles[stdinSourcePath.slice(cwd.length + 1)] = stdinBytes;
+    }
+  }
+  const outputIndex = requestedArgs.indexOf('-o');
+  const outputPath = normalizeProjectPath(outputIndex >= 0 ? requestedArgs[outputIndex + 1] || 'a.out' : 'a.out') || 'a.out';
+  const workspaceOutputPath = payload?.workspaceOutputPath
+    ? normalizeProjectPath(payload.workspaceOutputPath)
+    : cwd && !outputPath.startsWith(`${cwd}/`)
+      ? normalizeProjectPath(`${cwd}/${outputPath}`)
+      : outputPath;
+  const compilerCommand = payload?.compilerCommand === 'clang' ? 'clang' : 'clang++';
+  const defaultStandard = compilerCommand === 'clang' ? 'c17' : 'c++23';
+  const compileArgs = [
+    compilerCommand,
+    ...requestedArgs.map((arg, index) => outputIndex >= 0 && index === outputIndex + 1 ? outputPath : normalizeCompilePathArg(arg)),
+    ...(outputIndex >= 0 ? [] : ['-o', outputPath]),
+  ];
+  if (!compileArgs.some((arg) => arg.startsWith('-std='))) {
+    compileArgs.splice(1, 0, `-std=${compilerCommand === 'clang' ? defaultStandard : payload?.standard || defaultStandard}`);
+  }
+  if (!compileArgs.includes('-fno-exceptions')) {
+    compileArgs.splice(1, 0, '-fno-exceptions');
+  }
+  if (!compileArgs.some((arg) => arg.startsWith('-Wl,-z,stack-size='))) {
+    compileArgs.splice(1, 0, `-Wl,-z,stack-size=${Number(payload?.stackSize) || 8 * 1024 * 1024}`);
+  }
+
+  const stdoutChunks = [];
+  const stderrChunks = [];
+  const collect = (chunks) => (bytes) => {
+    if (bytes) chunks.push(bytes);
+  };
+
+  try {
+    const files = await compilerBundle.runClang(
+      compileArgs,
+      sourceFiles,
+      {
+        stdout: collect(stdoutChunks),
+        stderr: collect(stderrChunks),
+        fetchProgress: () => {},
+      }
+    );
+    const programBytes = files?.[outputPath];
+    if (!(programBytes instanceof Uint8Array)) {
+      return {
+        success: false,
+        error: `C++ compilation did not produce ${outputPath}.`,
+        stdout: decodeUtf8(concatBytes(stdoutChunks)),
+        stderr: decodeUtf8(concatBytes(stderrChunks)),
+        compileMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      };
+    }
+    return {
+      success: true,
+      outputPath: workspaceOutputPath,
+      programBuffer: transferableArrayBuffer(programBytes),
+      stdout: decodeUtf8(concatBytes(stdoutChunks)),
+      stderr: decodeUtf8(concatBytes(stderrChunks)),
+      compileMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: encodeError(error),
+      stdout: decodeUtf8(concatBytes(stdoutChunks)),
+      stderr: decodeUtf8(concatBytes(stderrChunks)),
+      compileMs: Math.max(0, Math.round(performance.now() - startedAt)),
+    };
+  }
+}
+
+function normalizeCompilePathArg(arg) {
+  if (arg === '/workspace') return '.';
+  if (arg.startsWith('/workspace/')) return normalizeProjectPath(arg);
+  if (arg.startsWith('-I/workspace/')) return `-I${normalizeProjectPath(arg.slice(2))}`;
+  if (arg.startsWith('-L/workspace/')) return `-L${normalizeProjectPath(arg.slice(2))}`;
+  return arg;
+}
+
 self.onmessage = async (event) => {
   const { id, type, payload } = event.data || {};
   if (!id) return;
 
   try {
-    if (type !== 'compile') {
+    if (type !== 'compile' && type !== 'compile-project') {
       throw new Error(`Unknown C++ compiler worker message: ${type}`);
     }
-    const result = await compileWithYowasp(payload);
+    const result = type === 'compile-project' || payload?.project
+      ? await compileProjectWithYowasp(payload)
+      : await compileWithYowasp(payload);
     const transfer = result.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
     postMessage({ id, type: 'compile-result', payload: result }, transfer);
   } catch (error) {

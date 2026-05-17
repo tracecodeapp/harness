@@ -2889,6 +2889,750 @@ function parseJavaReportOutput(output) {
   return output ? normalizeJavaSerializedOutput(JSON.parse(output)) : undefined;
 }
 
+function normalizeProjectFilePath(path) {
+  const normalized = String(path ?? '').replace(/\\/g, '/');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
+    throw new Error(`Project file path must be relative: ${path}`);
+  }
+
+  const parts = [];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      throw new Error(`Project file path must not escape the workspace: ${path}`);
+    }
+    parts.push(part);
+  }
+  if (parts.length === 0) {
+    throw new Error(`Project file path must point to a file: ${path}`);
+  }
+  return parts.join('/');
+}
+
+function normalizeProjectPathWithinWorkspace(path, allowEmpty = false) {
+  const normalized = String(path ?? '').replace(/\\/g, '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
+    throw new Error(`Project path must be relative: ${path}`);
+  }
+
+  const parts = [];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (parts.length === 0) {
+        throw new Error(`Project path must not escape the workspace: ${path}`);
+      }
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  if (parts.length === 0) {
+    if (allowEmpty) return '';
+    throw new Error(`Project path must point to a file: ${path}`);
+  }
+  return parts.join('/');
+}
+
+function normalizeProjectDirectoryPath(path) {
+  return normalizeProjectPathWithinWorkspace(path, true);
+}
+
+function projectRelativeCwd(payload) {
+  const projectCwd = String(payload?.project?.cwd || '/workspace').replace(/\/+$/, '') || '/';
+  const requestCwd = String(payload?.cwd || projectCwd).replace(/\/+$/, '') || '/';
+  if (requestCwd === projectCwd) return '';
+  if (requestCwd.startsWith(`${projectCwd}/`)) {
+    return normalizeProjectDirectoryPath(requestCwd.slice(projectCwd.length + 1));
+  }
+  throw new Error(`Project cwd must stay inside the workspace: ${requestCwd}`);
+}
+
+function resolveProjectCommandPath(path, relativeCwd, projectCwd = '/workspace', allowEmpty = false) {
+  const raw = String(path ?? '').replace(/\\/g, '/');
+  const normalizedProjectCwd = String(projectCwd || '/workspace').replace(/\/+$/, '') || '/';
+  if (raw === normalizedProjectCwd) return allowEmpty ? '' : '.';
+  if (raw.startsWith(`${normalizedProjectCwd}/`)) {
+    return normalizeProjectPathWithinWorkspace(raw.slice(normalizedProjectCwd.length + 1), allowEmpty);
+  }
+  if (raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) {
+    throw new Error(`Project path must stay within the workspace: ${path}`);
+  }
+  const joined = relativeCwd ? `${relativeCwd}/${raw}` : raw;
+  const resolved = normalizeProjectPathWithinWorkspace(joined, allowEmpty);
+  return resolved || '.';
+}
+
+function javaStringLiteral(value) {
+  return JSON.stringify(String(value))
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+function base64Utf8(value) {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(value, 'utf8').toString('base64');
+  }
+
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function projectJavaFiles(project) {
+  const files = Array.isArray(project?.files) ? project.files : [];
+  return files
+    .map((file) => ({
+      path: normalizeProjectFilePath(file?.path),
+      contents: String(file?.contents ?? ''),
+      encoding: file?.encoding ?? 'utf8',
+    }))
+    .filter((file) => file.path.endsWith('.java'))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function projectJavaClasspathFiles(project) {
+  const files = Array.isArray(project?.files) ? project.files : [];
+  return files
+    .map((file) => ({
+      path: normalizeProjectFilePath(file?.path),
+      contents: String(file?.contents ?? ''),
+      encoding: file?.encoding ?? 'utf8',
+    }))
+    .filter((file) => file.path.endsWith('.class') || file.path.endsWith('.jar'))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function projectJavaWorkspaceFiles(project) {
+  const files = Array.isArray(project?.files) ? project.files : [];
+  return files
+    .map((file) => ({
+      path: normalizeProjectFilePath(file?.path),
+      contents: String(file?.contents ?? ''),
+      encoding: file?.encoding ?? 'utf8',
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function projectJavaWorkspaceDirectories(project) {
+  const directories = Array.isArray(project?.directories) ? project.directories : [];
+  return Array.from(new Set(
+    directories
+      .map((directory) => normalizeProjectDirectoryPath(directory))
+      .filter(Boolean)
+  )).sort((left, right) => left.localeCompare(right));
+}
+
+function projectFileMap(project) {
+  const files = Array.isArray(project?.files) ? project.files : [];
+  const map = new Map();
+  for (const file of files) {
+    map.set(normalizeProjectFilePath(file?.path), {
+      contents: String(file?.contents ?? ''),
+      encoding: file?.encoding ?? 'utf8',
+    });
+  }
+  return map;
+}
+
+function projectFileManifestEntry(file) {
+  const contents = file.encoding === 'base64' ? file.contents : base64Utf8(file.contents);
+  return `${file.path}\t${contents}`;
+}
+
+function projectDirectoryManifestEntry(directory) {
+  return `\tdir\t${directory}`;
+}
+
+function projectWorkspaceManifest(project) {
+  return [
+    ...projectJavaWorkspaceDirectories(project).map(projectDirectoryManifestEntry),
+    ...projectJavaWorkspaceFiles(project).map(projectFileManifestEntry),
+  ].join('\n');
+}
+
+function projectWorkspaceCwd(payload, workspaceRoot) {
+  const relativeCwd = projectRelativeCwd(payload);
+  return relativeCwd ? `${workspaceRoot}/${relativeCwd}` : workspaceRoot;
+}
+
+function assertProjectJavaSource(file) {
+  if (file.encoding !== 'utf8') {
+    throw new Error(`Browser Java project runner only supports utf8 Java source files: ${file.path}`);
+  }
+}
+
+function assertProjectJavaClasspathFile(file) {
+  if (file.encoding !== 'base64') {
+    throw new Error(`Browser Java project runner only supports base64 Java classpath files: ${file.path}`);
+  }
+}
+
+function assertProjectMainClass(value) {
+  const mainClass = String(value ?? '').trim();
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(mainClass)) {
+    throw new Error(`Browser Java project runner requires a Java class name: ${value}`);
+  }
+  return mainClass;
+}
+
+function projectJarMainClass(payload) {
+  const mainClass = payload?.options?.jarMainClass;
+  if (typeof mainClass === 'string' && mainClass.trim().length > 0) {
+    return assertProjectMainClass(mainClass);
+  }
+  throw new Error('Browser Java -jar execution requires a manifest Main-Class.');
+}
+
+function javaProjectBasename(path) {
+  return path.split('/').at(-1);
+}
+
+function javaProjectSourcePath(file) {
+  return file.path;
+}
+
+function javaProjectSystemProperties(payload) {
+  const properties = payload?.options?.systemProperties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return [];
+  }
+  return Object.entries(properties)
+    .filter(([key]) => typeof key === 'string' && key.length > 0 && !key.includes('=') && !key.includes('\0'))
+    .map(([key, value]) => [key, String(value ?? '')]);
+}
+
+function javaProjectEnvClasspath(payload) {
+  return typeof payload?.env?.CLASSPATH === 'string' && payload.env.CLASSPATH.trim().length > 0
+    ? payload.env.CLASSPATH
+    : null;
+}
+
+function javaProjectEffectiveClasspath(payload) {
+  return typeof payload?.options?.classpath === 'string'
+    ? payload.options.classpath
+    : javaProjectEnvClasspath(payload);
+}
+
+function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = []) {
+  const argsSource = args.map((arg) => javaStringLiteral(arg)).join(', ');
+  const stdinSource = javaStringLiteral(stdin);
+  const propertyKeysSource = systemProperties.map(([key]) => javaStringLiteral(key)).join(', ');
+  const propertyValuesSource = systemProperties.map(([, value]) => javaStringLiteral(value)).join(', ');
+  const invocation = compileOnly
+    ? ''
+    : `      ${mainClassName}.main(new String[] { ${argsSource} });`;
+
+  return `
+import tracecode.user.TraceHooks;
+import java.io.*;
+
+public class ${exportsClassName} {
+  private static String __tracecodeJsonString(String value) {
+    if (value == null) return "null";
+    StringBuilder out = new StringBuilder();
+    out.append('"');
+    for (int index = 0; index < value.length(); index += 1) {
+      char ch = value.charAt(index);
+      switch (ch) {
+        case '"': out.append("\\\\\\""); break;
+        case '\\\\': out.append("\\\\\\\\"); break;
+        case '\\b': out.append("\\\\b"); break;
+        case '\\f': out.append("\\\\f"); break;
+        case '\\n': out.append("\\\\n"); break;
+        case '\\r': out.append("\\\\r"); break;
+        case '\\t': out.append("\\\\t"); break;
+        default:
+          if (ch < 0x20) {
+            String hex = Integer.toHexString(ch);
+            out.append("\\\\u");
+            for (int pad = hex.length(); pad < 4; pad += 1) out.append('0');
+            out.append(hex);
+          } else {
+            out.append(ch);
+          }
+      }
+    }
+    out.append('"');
+    return out.toString();
+  }
+
+  private static String __tracecodeProjectResult(String stdout, String stderr, int exitCode) {
+    return "{\\"stdout\\":" + __tracecodeJsonString(stdout)
+      + ",\\"stderr\\":" + __tracecodeJsonString(stderr)
+      + ",\\"exitCode\\":" + exitCode + "}";
+  }
+
+  public static String run() {
+    java.io.PrintStream previousOut = System.out;
+    java.io.PrintStream previousErr = System.err;
+    java.io.InputStream previousIn = System.in;
+    String[] propertyKeys = new String[] { ${propertyKeysSource} };
+    String[] propertyValues = new String[] { ${propertyValuesSource} };
+    java.util.Properties previousProperties = new java.util.Properties();
+    java.io.ByteArrayOutputStream stdoutBytes = new java.io.ByteArrayOutputStream();
+    java.io.ByteArrayOutputStream stderrBytes = new java.io.ByteArrayOutputStream();
+    int exitCode = 0;
+    try {
+      for (String key : propertyKeys) {
+        String previousValue = System.getProperty(key);
+        if (previousValue != null) previousProperties.setProperty(key, previousValue);
+      }
+      for (int index = 0; index < propertyKeys.length; index += 1) {
+        System.setProperty(propertyKeys[index], propertyValues[index]);
+      }
+      System.setOut(new java.io.PrintStream(stdoutBytes, true, "UTF-8"));
+      System.setErr(new java.io.PrintStream(stderrBytes, true, "UTF-8"));
+      System.setIn(new java.io.ByteArrayInputStream(${stdinSource}.getBytes("UTF-8")));
+${invocation}
+    } catch (Throwable error) {
+      exitCode = 1;
+      error.printStackTrace();
+    } finally {
+      System.setOut(previousOut);
+      System.setErr(previousErr);
+      System.setIn(previousIn);
+      for (String key : propertyKeys) {
+        if (previousProperties.containsKey(key)) {
+          System.setProperty(key, previousProperties.getProperty(key));
+        } else {
+          System.clearProperty(key);
+        }
+      }
+    }
+    try {
+      return TraceHooks.serializeOutputResult(__tracecodeProjectResult(
+        stdoutBytes.toString("UTF-8"),
+        stderrBytes.toString("UTF-8"),
+        exitCode
+      ));
+    } catch (java.io.UnsupportedEncodingException error) {
+      return TraceHooks.serializeOutputResult(__tracecodeProjectResult("", error.toString(), 1));
+    }
+  }
+}
+`;
+}
+
+function buildProjectJavaRunnableSource(payload, compileId) {
+  const files = projectJavaFiles(payload.project);
+  if (files.length === 0) {
+    throw new Error('Java project execution requires at least one .java file.');
+  }
+
+  files.forEach(assertProjectJavaSource);
+  const classpathFiles = projectJavaClasspathFiles(payload.project);
+  classpathFiles.forEach(assertProjectJavaClasspathFile);
+  const exportsClassName = buildExportsClassName(compileId);
+  const compileOnly = payload.source === 'compile';
+  const relativeCwd = projectRelativeCwd(payload);
+  const projectCwd = String(payload?.project?.cwd || '/workspace');
+  if (compileOnly) {
+    assertBrowserProjectJavacOptionsSupported(payload.args, payload.project, relativeCwd, projectCwd);
+  }
+  const mainClassName = compileOnly ? javaProjectBasename(files[0].path).replace(/\.java$/, '') : assertProjectMainClass(payload.scriptPath);
+  const projectFiles = files.map((file) => ({
+    path: javaProjectSourcePath(file),
+    source: file.contents,
+  }));
+  const adapter = compileOnly
+    ? null
+    : {
+        path: `${exportsClassName}.java`,
+        source: buildProjectJavaAdapterSource(
+          exportsClassName,
+          mainClassName,
+          Array.isArray(payload.args) ? payload.args : [],
+          false,
+          String(payload.stdin ?? ''),
+          javaProjectSystemProperties(payload)
+        ).trim(),
+      };
+
+  const classpathRoot = `/files/java-worker/${compileId}/classpath`;
+  const workspaceRoot = `/files/java-worker/${compileId}/workspace`;
+  const sourceEntries = adapter === null ? projectFiles : [...projectFiles, adapter];
+  return {
+    classpathManifest: classpathFiles
+      .map((file) => `${file.path}\t${file.contents}`)
+      .join('\n'),
+    classpathRoot,
+    compileClasspath: javaProjectClasspath(
+      javaCompileClasspath(payload.args, payload.project, relativeCwd, projectCwd) ?? javaProjectEnvClasspath(payload),
+      classpathRoot,
+      compileOnly ? undefined : HELPER_JAR_PATH,
+      relativeCwd,
+      projectCwd
+    ),
+    compileSourcePaths: javaCompileSourcePaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
+    compileSourceRootPaths: javaCompileSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
+    workspaceManifest: projectWorkspaceManifest(payload.project),
+    workspaceRoot,
+    workspaceCwd: projectWorkspaceCwd(payload, workspaceRoot),
+    sourceManifest: sourceEntries
+      .map((file) => `${file.path}\t${base64Utf8(file.source)}`)
+      .join('\n'),
+    sourceRoot: `/files/java-worker/${compileId}/sources`,
+    classesDir: `/files/java-worker/${compileId}/classes`,
+    mainClassName: exportsClassName,
+  };
+}
+
+function buildProjectJavaClassRunnableSource(payload, compileId) {
+  const classpathFiles = projectJavaClasspathFiles(payload.project);
+  if (classpathFiles.length === 0) {
+    throw new Error('Java classpath execution requires persisted .class or .jar files.');
+  }
+
+  classpathFiles.forEach(assertProjectJavaClasspathFile);
+  const exportsClassName = buildExportsClassName(compileId);
+  const mainClassName = typeof payload?.options?.jarPath === 'string'
+    ? projectJarMainClass(payload)
+    : assertProjectMainClass(payload.scriptPath);
+  const relativeCwd = projectRelativeCwd(payload);
+  const projectCwd = String(payload?.project?.cwd || '/workspace');
+  const adapter = {
+    path: `${exportsClassName}.java`,
+    source: buildProjectJavaAdapterSource(
+      exportsClassName,
+      mainClassName,
+      Array.isArray(payload.args) ? payload.args : [],
+      false,
+      String(payload.stdin ?? ''),
+      javaProjectSystemProperties(payload)
+    ).trim(),
+  };
+
+  const classRoot = `/files/java-worker/${compileId}/classpath`;
+  const workspaceRoot = `/files/java-worker/${compileId}/workspace`;
+  return {
+    classManifest: classpathFiles
+      .map((file) => `${file.path}\t${file.contents}`)
+      .join('\n'),
+    sourceManifest: `${adapter.path}\t${base64Utf8(adapter.source)}`,
+    sourceRoot: `/files/java-worker/${compileId}/sources`,
+    classesDir: `/files/java-worker/${compileId}/classes`,
+    classRoot,
+    workspaceManifest: projectWorkspaceManifest(payload.project),
+    workspaceRoot,
+    workspaceCwd: projectWorkspaceCwd(payload, workspaceRoot),
+    runtimeClasspath: javaProjectClasspath(javaProjectEffectiveClasspath(payload), classRoot, undefined, relativeCwd, projectCwd),
+    mainClassName: exportsClassName,
+  };
+}
+
+function javaExpandedCompilerArgs(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  if (!Array.isArray(args)) return [];
+  const files = projectFileMap(project);
+  const expand = (items, seen) => {
+    const out = [];
+    for (const item of items) {
+      if (typeof item !== 'string') continue;
+      if (!item.startsWith('@') || item === '@') {
+        out.push(item);
+        continue;
+      }
+
+      const argPath = resolveProjectCommandPath(item.slice(1), relativeCwd, projectCwd);
+      if (seen.has(argPath)) {
+        throw new Error(`Recursive Java argfile reference: ${argPath}`);
+      }
+      const file = files.get(argPath);
+      if (!file) {
+        throw new Error(`Java argfile not found: ${argPath}`);
+      }
+      if (file.encoding !== 'utf8') {
+        throw new Error(`Java argfile must be utf8: ${argPath}`);
+      }
+      seen.add(argPath);
+      out.push(...expand(parseJavaArgFile(file.contents), seen));
+      seen.delete(argPath);
+    }
+    return out;
+  };
+  return expand(args, new Set());
+}
+
+function assertBrowserProjectJavacOptionsSupported(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  const expandedArgs = javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd);
+  if (expandedArgs.includes('--enable-preview')) {
+    throw new Error('javac: --enable-preview is not supported in the browser project environment');
+  }
+}
+
+function parseJavaArgFile(contents) {
+  const args = [];
+  let current = '';
+  let quote = null;
+  let escaping = false;
+  for (const ch of String(contents ?? '')) {
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaping = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (escaping) current += '\\';
+  if (current.length > 0) args.push(current);
+  return args;
+}
+
+function javaCompileClasspath(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  const expandedArgs = javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd);
+  let classpath = null;
+  for (let index = 0; index < expandedArgs.length; index += 1) {
+    const arg = expandedArgs[index];
+    if (arg === '-cp' || arg === '-classpath' || arg === '--class-path') {
+      classpath = typeof expandedArgs[index + 1] === 'string' ? expandedArgs[index + 1] : null;
+      index += 1;
+      continue;
+    }
+    if (typeof arg === 'string' && arg.startsWith('--class-path=')) {
+      classpath = arg.slice('--class-path='.length);
+    }
+  }
+  return classpath;
+}
+
+const JAVAC_OPTIONS_WITH_OPERAND = new Set([
+  '-bootclasspath',
+  '-classpath',
+  '-cp',
+  '-d',
+  '-encoding',
+  '-endorseddirs',
+  '-extdirs',
+  '-h',
+  '-module',
+  '-modulepath',
+  '-processor',
+  '-processorpath',
+  '-profile',
+  '-s',
+  '-source',
+  '-sourcepath',
+  '-target',
+  '--add-exports',
+  '--add-modules',
+  '--add-reads',
+  '--boot-class-path',
+  '--class-path',
+  '--default-module-for-created-files',
+  '--limit-modules',
+  '--module',
+  '--module-path',
+  '--module-source-path',
+  '--processor',
+  '--processor-module-path',
+  '--processor-path',
+  '--release',
+  '--source',
+  '--source-path',
+  '--system',
+  '--target',
+  '--upgrade-module-path',
+]);
+
+function javacOptionConsumesNext(arg) {
+  if (typeof arg !== 'string') return false;
+  if (JAVAC_OPTIONS_WITH_OPERAND.has(arg)) return true;
+  if (/^-A[^=].+/.test(arg)) return false;
+  return false;
+}
+
+function javaCompileSourcePaths(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  const expandedArgs = javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd);
+  const sources = [];
+  for (let index = 0; index < expandedArgs.length; index += 1) {
+    const arg = expandedArgs[index];
+    if (javacOptionConsumesNext(arg)) {
+      index += 1;
+      continue;
+    }
+    if (typeof arg === 'string' && arg.startsWith('--') && arg.includes('=')) {
+      continue;
+    }
+    if (typeof arg === 'string' && arg.endsWith('.java')) {
+      sources.push(resolveProjectCommandPath(arg, relativeCwd, projectCwd));
+    }
+  }
+  return sources;
+}
+
+function javaCompileSourceRootPaths(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  const expandedArgs = javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd);
+  const roots = [];
+  for (let index = 0; index < expandedArgs.length; index += 1) {
+    const arg = expandedArgs[index];
+    if (arg === '-sourcepath' || arg === '--source-path') {
+      const sourcepath = expandedArgs[index + 1];
+      if (typeof sourcepath === 'string') {
+        roots.push(...sourcepath
+          .split(':')
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .map((entry) => resolveProjectCommandPath(entry, relativeCwd, projectCwd, true)));
+      }
+      index += 1;
+      continue;
+    }
+    if (typeof arg === 'string' && arg.startsWith('--source-path=')) {
+      roots.push(...arg.slice('--source-path='.length)
+        .split(':')
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+        .map((entry) => resolveProjectCommandPath(entry, relativeCwd, projectCwd, true)));
+    }
+  }
+  return roots;
+}
+
+function javaProjectClasspath(rawClasspath, classRoot, extraEntry, relativeCwd = '', projectCwd = '/workspace') {
+  const entries = [];
+  if (typeof rawClasspath !== 'string' || rawClasspath.trim().length === 0) {
+    entries.push(relativeCwd ? `${classRoot}/${relativeCwd}` : classRoot);
+  } else {
+    entries.push(...rawClasspath
+      .split(':')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const resolved = resolveProjectCommandPath(entry, relativeCwd, projectCwd, true);
+        return resolved ? `${classRoot}/${resolved}` : classRoot;
+      }));
+  }
+
+  if (typeof extraEntry === 'string' && extraEntry.length > 0) {
+    entries.push(extraEntry);
+  }
+  return entries.join(':');
+}
+
+function commandResultFromJavaProjectReport(report, totalEnd, totalStart, libraryCallEnd, libraryCallStart, outputDir) {
+  const compilerOutput = javaReportConsoleOutput(report).join('\n');
+  if (report.success !== true) {
+    return {
+      stdout: '',
+      stderr: report.runtimeError || report.compilerStderr || report.compilerStdout || 'Java execution failed',
+      exitCode: 1,
+      timings: {
+        hostCallMs: libraryCallEnd - libraryCallStart,
+        totalMs: totalEnd - totalStart,
+        compileMs: report.compileTimeMs ?? 0,
+        classLoadMs: report.classLoadTimeMs ?? 0,
+        runMs: report.runTimeMs ?? 0,
+        compileCacheHit: report.compileCacheHit ?? false,
+      },
+    };
+  }
+
+  let payload;
+  try {
+    const serialized = parseJavaReportOutput(report.output);
+    payload = typeof serialized === 'string' ? JSON.parse(serialized) : serialized;
+  } catch (error) {
+    payload = {
+      stdout: '',
+      stderr: `Java project result parse failed: ${formatWorkerErrorMessage(error)}`,
+      exitCode: 1,
+    };
+  }
+
+  return {
+    stdout: typeof payload?.stdout === 'string' ? payload.stdout : '',
+    stderr: `${compilerOutput}${typeof payload?.stderr === 'string' ? payload.stderr : ''}`,
+    exitCode: Number.isInteger(payload?.exitCode) ? payload.exitCode : 1,
+    files: [
+      ...projectCompiledFiles(report, outputDir),
+      ...projectChangedFiles(report),
+    ],
+    timings: {
+      hostCallMs: libraryCallEnd - libraryCallStart,
+      totalMs: totalEnd - totalStart,
+      compileMs: report.compileTimeMs ?? 0,
+      classLoadMs: report.classLoadTimeMs ?? 0,
+      runMs: report.runTimeMs ?? 0,
+      compileCacheHit: report.compileCacheHit ?? false,
+    },
+  };
+}
+
+function javaCompileOutputDir(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  if (!Array.isArray(args)) return '.';
+  const expandedArgs = javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd);
+  for (let index = 0; index < expandedArgs.length; index += 1) {
+    const arg = expandedArgs[index];
+    if (arg === '-d') {
+      return typeof expandedArgs[index + 1] === 'string' && expandedArgs[index + 1].length > 0
+        ? resolveProjectCommandPath(expandedArgs[index + 1], relativeCwd, projectCwd, true) || '.'
+        : '.';
+    }
+  }
+  return relativeCwd || '.';
+}
+
+function normalizeJavaOutputDir(path) {
+  const raw = String(path ?? '.').trim();
+  if (!raw || raw === '.') return '.';
+  return normalizeProjectFilePath(raw);
+}
+
+function projectCompiledFiles(report, outputDir) {
+  if (outputDir == null) return [];
+  if (!Array.isArray(report?.compiledFiles)) return [];
+  const normalizedOutputDir = normalizeJavaOutputDir(outputDir);
+  return report.compiledFiles
+    .filter((file) => file && typeof file.path === 'string' && typeof file.contents === 'string')
+    .map((file) => ({
+      path: normalizedOutputDir === '.'
+        ? normalizeProjectFilePath(file.path)
+        : normalizeProjectFilePath(`${normalizedOutputDir}/${file.path}`),
+      contents: file.contents,
+      encoding: file.encoding === 'base64' ? 'base64' : 'utf8',
+    }));
+}
+
+function projectChangedFiles(report) {
+  if (!Array.isArray(report?.changedFiles)) return [];
+  return report.changedFiles
+    .filter((file) => file && typeof file.path === 'string' && (file.deleted === true || typeof file.contents === 'string'))
+    .map((file) => file.deleted === true
+      ? { path: normalizeProjectFilePath(file.path), deleted: true }
+      : {
+          path: normalizeProjectFilePath(file.path),
+          contents: file.contents,
+          encoding: file.encoding === 'base64' ? 'base64' : 'utf8',
+        });
+}
+
 async function runJavaTraceRequest(payload, requestId) {
   const totalStart = performance.now();
   const rewriteStart = performance.now();
@@ -3154,6 +3898,157 @@ async function runJavaCodeRequest(payload) {
   };
 }
 
+async function runJavaProjectRequest(payload) {
+  const totalStart = performance.now();
+  if (payload?.options?.enablePreview === true) {
+    return {
+      stdout: '',
+      stderr: 'java: --enable-preview is not supported in the browser project environment\n',
+      exitCode: 2,
+    };
+  }
+  const explicitClasspath = payload.source === 'run' && typeof javaProjectEffectiveClasspath(payload) === 'string';
+  const compileId = stableHash({
+    compileMode: 'project',
+    request: {
+      files: explicitClasspath
+        ? projectJavaClasspathFiles(payload.project).map((file) => [file.path, file.contents])
+        : [
+            ...projectJavaFiles(payload.project).map((file) => [file.path, file.contents]),
+            ...projectJavaClasspathFiles(payload.project).map((file) => [file.path, file.contents]),
+          ],
+      source: payload.source,
+      scriptPath: payload.scriptPath,
+      args: Array.isArray(payload.args) ? payload.args : [],
+      classpath: javaProjectEffectiveClasspath(payload) ?? '',
+    },
+  });
+
+  let runnableSource;
+  try {
+    runnableSource = explicitClasspath
+      ? buildProjectJavaClassRunnableSource(payload, compileId)
+      : buildProjectJavaRunnableSource(payload, compileId);
+  } catch (error) {
+    return {
+      stdout: '',
+      stderr: `${formatWorkerErrorMessage(error)}\n`,
+      exitCode: 1,
+    };
+  }
+
+  let compileLibraryClass;
+  try {
+    compileLibraryClass = await getCompileLibraryClass();
+  } catch (error) {
+    throw makeWorkerStageError('compiler bridge load', error);
+  }
+
+  const libraryCallStart = performance.now();
+  let reportText;
+  try {
+    reportText = explicitClasspath
+      ? typeof compileLibraryClass.compileAndRunProjectClassFilesWithWorkspace === 'function'
+        ? await compileLibraryClass.compileAndRunProjectClassFilesWithWorkspace(
+          runnableSource.classManifest,
+          runnableSource.classRoot,
+          runnableSource.sourceManifest,
+          runnableSource.sourceRoot,
+          runnableSource.workspaceManifest,
+          runnableSource.workspaceRoot,
+          runnableSource.workspaceCwd,
+          runnableSource.classesDir,
+          runnableSource.mainClassName,
+          runnableSource.runtimeClasspath,
+          HELPER_JAR_PATH,
+          DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+        )
+        : await compileLibraryClass.compileAndRunProjectClassFiles(
+          runnableSource.classManifest,
+          runnableSource.classRoot,
+          runnableSource.sourceManifest,
+          runnableSource.sourceRoot,
+          runnableSource.classesDir,
+          runnableSource.mainClassName,
+          runnableSource.runtimeClasspath,
+          HELPER_JAR_PATH,
+          DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+        )
+      : payload.source === 'compile' && typeof compileLibraryClass.compileProjectSourcesWithResources === 'function'
+        ? await compileLibraryClass.compileProjectSourcesWithResources(
+            runnableSource.sourceManifest,
+            runnableSource.sourceRoot,
+            runnableSource.classpathManifest,
+            runnableSource.classpathRoot,
+            runnableSource.compileSourcePaths,
+            runnableSource.compileSourceRootPaths,
+            runnableSource.classesDir,
+            runnableSource.compileClasspath,
+            DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+          )
+      : typeof compileLibraryClass.compileAndRunProjectSourcesWithWorkspace === 'function'
+        ? await compileLibraryClass.compileAndRunProjectSourcesWithWorkspace(
+            runnableSource.sourceManifest,
+            runnableSource.sourceRoot,
+            runnableSource.classpathManifest,
+            runnableSource.classpathRoot,
+            runnableSource.workspaceManifest,
+            runnableSource.workspaceRoot,
+            runnableSource.workspaceCwd,
+            runnableSource.classesDir,
+            runnableSource.mainClassName,
+            runnableSource.compileClasspath,
+            DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+          )
+        : typeof compileLibraryClass.compileAndRunProjectSourcesWithResources === 'function'
+          ? await compileLibraryClass.compileAndRunProjectSourcesWithResources(
+            runnableSource.sourceManifest,
+            runnableSource.sourceRoot,
+            runnableSource.classpathManifest,
+            runnableSource.classpathRoot,
+            runnableSource.classesDir,
+            runnableSource.mainClassName,
+            runnableSource.compileClasspath,
+            DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+          )
+          : await compileLibraryClass.compileAndRunProjectSources(
+            runnableSource.sourceManifest,
+            runnableSource.sourceRoot,
+            runnableSource.classesDir,
+            runnableSource.mainClassName,
+            runnableSource.compileClasspath,
+            DEFAULT_EXECUTE_COMPILER_DEBUG_PROFILE
+          );
+  } catch (error) {
+    throw makeWorkerStageError('project compile and run', error);
+  }
+  const libraryCallEnd = performance.now();
+
+  let report;
+  try {
+    report = JSON.parse(reportText);
+  } catch (error) {
+    throw makeWorkerStageError('project execution report parse', error);
+  }
+
+  const totalEnd = performance.now();
+  return commandResultFromJavaProjectReport(
+    report,
+    totalEnd,
+    totalStart,
+    libraryCallEnd,
+    libraryCallStart,
+    payload.source === 'compile'
+      ? javaCompileOutputDir(
+          payload.args,
+          payload.project,
+          projectRelativeCwd(payload),
+          String(payload?.project?.cwd || '/workspace')
+        )
+      : null
+  );
+}
+
 async function runJavaCodeBatchRequest(payload) {
   const totalStart = performance.now();
   const inputBatch = Array.isArray(payload.inputBatch)
@@ -3367,7 +4262,8 @@ self.onmessage = (event) => {
     message.type === 'execute-with-tracing' ||
     message.type === 'execute-code' ||
     message.type === 'execute-code-batch' ||
-    message.type === 'execute-code-interview'
+    message.type === 'execute-code-interview' ||
+    message.type === 'execute-project-java'
   ) {
     queue = queue.then(async () => {
       try {
@@ -3377,7 +4273,9 @@ self.onmessage = (event) => {
           ? await runJavaTraceRequest(message.payload, message.id)
           : message.type === 'execute-code-batch'
             ? await runJavaCodeBatchRequest(message.payload)
-            : await runJavaCodeRequest(message.payload);
+            : message.type === 'execute-project-java'
+              ? await runJavaProjectRequest(message.payload)
+              : await runJavaCodeRequest(message.payload);
         postMessageResponse({
           id: message.id,
           type: message.type,

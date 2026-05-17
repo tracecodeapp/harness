@@ -1,0 +1,613 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join, relative, resolve } from 'node:path';
+import type {
+  RuntimeCommandResult,
+  RuntimeFile,
+  RuntimeFileChange,
+  RuntimeFileEncoding,
+  RuntimeProjectCommandRequest,
+  RuntimeProjectCommandRunner,
+  RuntimeProjectSnapshot,
+} from '../../harness-core/src/runtime-project';
+
+export type JavaProjectFileEncoding = RuntimeFileEncoding;
+export type JavaProjectFile = RuntimeFile;
+export type JavaProjectSnapshot = RuntimeProjectSnapshot;
+export type JavaProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
+export type JavaProjectCommandResult = RuntimeCommandResult;
+export type JavaProjectCommandRunner = RuntimeProjectCommandRunner<JavaProjectCommandRequest>;
+
+export interface NativeJavaProjectRunnerOptions {
+  javacCommand?: string;
+  javaCommand?: string;
+  timeoutMs?: number;
+  keepTempDir?: boolean;
+}
+
+const DEFAULT_TIMEOUT_MS = 10_000;
+const VIRTUAL_WORKSPACE_ROOT = '/workspace';
+
+function assertSafeProjectPath(path: string): string {
+  const normalized = path.replace(/\\/g, '/');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
+    throw new Error(`Project file path must be relative: ${path}`);
+  }
+
+  const parts: string[] = [];
+  for (const part of normalized.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      throw new Error(`Project file path must not escape the workspace: ${path}`);
+    }
+    parts.push(part);
+  }
+
+  if (parts.length === 0) {
+    throw new Error(`Project file path must point to a file: ${path}`);
+  }
+  return parts.join('/');
+}
+
+function assertSafeMainClass(value: string): string {
+  if (!/^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(value)) {
+    throw new Error(`Java main class must be a class name: ${value}`);
+  }
+  return value;
+}
+
+async function writeProjectFile(root: string, file: JavaProjectFile): Promise<void> {
+  const relativePath = assertSafeProjectPath(file.path);
+  const targetPath = join(root, relativePath);
+  await mkdir(dirname(targetPath), { recursive: true });
+
+  if (file.encoding === 'base64') {
+    await writeFile(targetPath, Buffer.from(file.contents, 'base64'));
+    return;
+  }
+
+  await writeFile(targetPath, file.contents, 'utf8');
+}
+
+async function writeProjectDirectory(root: string, path: string): Promise<void> {
+  await mkdir(join(root, assertSafeProjectPath(path)), { recursive: true });
+}
+
+function fileBytes(file: JavaProjectFile): Buffer {
+  if (file.encoding === 'base64') {
+    return Buffer.from(file.contents, 'base64');
+  }
+  return Buffer.from(file.contents, 'utf8');
+}
+
+function javaSourceFiles(project: JavaProjectSnapshot): string[] {
+  return project.files
+    .map((file) => file.path)
+    .filter((path) => path.endsWith('.java'))
+    .map(assertSafeProjectPath)
+    .sort();
+}
+
+function cwdForRequest(request: JavaProjectCommandRequest, root: string): string {
+  const projectCwd = request.project.cwd ?? '/workspace';
+  if (request.cwd === projectCwd) return root;
+  if (request.cwd.startsWith(`${projectCwd}/`)) {
+    return join(root, request.cwd.slice(projectCwd.length + 1));
+  }
+  throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
+}
+
+function mapWorkspaceAbsolutePath(root: string, value: string): string {
+  const normalized = value.replace(/\\/g, '/');
+  if (normalized === VIRTUAL_WORKSPACE_ROOT) return root;
+  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    return join(root, normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
+  }
+  return value;
+}
+
+function mapWorkspaceProjectPath(root: string, value: string): string {
+  const normalized = value.replace(/\\/g, '/');
+  if (normalized.startsWith('/') && normalized !== VIRTUAL_WORKSPACE_ROOT && !normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    throw new Error(`Project path must stay inside the workspace: ${value}`);
+  }
+  return mapWorkspaceAbsolutePath(root, value);
+}
+
+function assertWorkspaceRelativeOperand(root: string, cwd: string, value: string, label: string): string {
+  if (value.length === 0) return value;
+  const normalized = value.replace(/\\/g, '/');
+  if (normalized === VIRTUAL_WORKSPACE_ROOT || normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    return mapWorkspaceAbsolutePath(root, normalized);
+  }
+  if (normalized.startsWith('/')) {
+    throw new Error(`${label} must stay inside the workspace: ${value}`);
+  }
+  const absolute = resolve(cwd, normalized);
+  const relativePath = relative(root, absolute).replace(/\\/g, '/');
+  if (relativePath === '') return value;
+  if (relativePath.startsWith('..')) {
+    throw new Error(`${label} must stay inside the workspace: ${value}`);
+  }
+  return value;
+}
+
+async function collectFileBytes(root: string, absolutePath: string, files: Map<string, Buffer>): Promise<void> {
+  const info = await stat(absolutePath);
+  if (info.isDirectory()) {
+    for (const entry of await readdir(absolutePath)) {
+      await collectFileBytes(root, join(absolutePath, entry), files);
+    }
+    return;
+  }
+
+  if (!info.isFile()) return;
+
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (!relativePath || relativePath.startsWith('..')) return;
+  files.set(relativePath, await readFile(absolutePath));
+}
+
+async function snapshotFileBytes(root: string): Promise<Map<string, Buffer>> {
+  const files = new Map<string, Buffer>();
+  await collectFileBytes(root, root, files);
+  return files;
+}
+
+async function collectChangedFiles(
+  root: string,
+  absolutePath: string,
+  baselineFiles: Map<string, Buffer>,
+  files: RuntimeFileChange[]
+): Promise<void> {
+  const info = await stat(absolutePath);
+  if (info.isDirectory()) {
+    for (const entry of await readdir(absolutePath)) {
+      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, files);
+    }
+    return;
+  }
+
+  if (!info.isFile()) return;
+
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (!relativePath || relativePath.startsWith('..')) return;
+
+  const contents = await readFile(absolutePath);
+  const baseline = baselineFiles.get(relativePath);
+  baselineFiles.delete(relativePath);
+  if (baseline && Buffer.compare(baseline, contents) === 0) return;
+
+  const utf8 = contents.toString('utf8');
+  files.push(
+    Buffer.compare(Buffer.from(utf8, 'utf8'), contents) === 0
+      ? { path: relativePath, contents: utf8 }
+      : { path: relativePath, contents: contents.toString('base64'), encoding: 'base64' }
+  );
+}
+
+async function changedProjectFiles(root: string, baselineFiles: Map<string, Buffer>): Promise<RuntimeFileChange[]> {
+  const files: RuntimeFileChange[] = [];
+  await collectChangedFiles(root, root, baselineFiles, files);
+  for (const path of baselineFiles.keys()) {
+    files.push({ path, deleted: true });
+  }
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
+}
+
+async function collectGeneratedFiles(
+  root: string,
+  absolutePath: string,
+  originalFiles: Set<string>,
+  files: JavaProjectFile[]
+): Promise<void> {
+  const info = await stat(absolutePath);
+  if (info.isDirectory()) {
+    for (const entry of await readdir(absolutePath)) {
+      await collectGeneratedFiles(root, join(absolutePath, entry), originalFiles, files);
+    }
+    return;
+  }
+
+  if (!info.isFile()) return;
+
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (!relativePath || relativePath.startsWith('..') || originalFiles.has(relativePath)) return;
+
+  files.push({
+    path: relativePath,
+    contents: (await readFile(absolutePath)).toString('base64'),
+    encoding: 'base64',
+  });
+}
+
+async function generatedProjectFiles(root: string, project: JavaProjectSnapshot): Promise<JavaProjectFile[]> {
+  const originalFiles = new Set(project.files.map((file) => assertSafeProjectPath(file.path)));
+  const files: JavaProjectFile[] = [];
+  await collectGeneratedFiles(root, root, originalFiles, files);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
+}
+
+function originalProjectFileBytes(project: JavaProjectSnapshot): Map<string, Buffer> {
+  return new Map(project.files.map((file) => [assertSafeProjectPath(file.path), fileBytes(file)]));
+}
+
+function mapJavaClasspath(root: string, cwd: string, classpath: string): string {
+  return classpath
+    .split(delimiter)
+    .map((entry) => assertWorkspaceRelativeOperand(root, cwd, entry, 'Java classpath entry'))
+    .join(delimiter);
+}
+
+function parseJavaArgFile(contents: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+  let escaping = false;
+  for (const ch of contents) {
+    if (escaping) {
+      current += ch;
+      escaping = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaping = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+  if (escaping) current += '\\';
+  if (current.length > 0) args.push(current);
+  return args;
+}
+
+function projectRelativeCwd(request: JavaProjectCommandRequest): string {
+  const projectCwd = request.project.cwd ?? VIRTUAL_WORKSPACE_ROOT;
+  if (request.cwd === projectCwd) return '';
+  if (request.cwd.startsWith(`${projectCwd}/`)) {
+    return request.cwd.slice(projectCwd.length + 1);
+  }
+  throw new Error(`Project cwd must stay inside the workspace: ${request.cwd}`);
+}
+
+function resolveProjectCommandPath(request: JavaProjectCommandRequest, path: string): string {
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized === VIRTUAL_WORKSPACE_ROOT) return '';
+  if (normalized.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    return assertSafeProjectPath(normalized.slice(VIRTUAL_WORKSPACE_ROOT.length + 1));
+  }
+  if (normalized.startsWith('/')) {
+    throw new Error(`Java argfile path must stay inside the workspace: ${path}`);
+  }
+  const relativeCwd = projectRelativeCwd(request);
+  return assertSafeProjectPath(relativeCwd ? `${relativeCwd}/${normalized}` : normalized);
+}
+
+function expandedJavacArgsForRequest(request: JavaProjectCommandRequest): string[] {
+  if (request.source !== 'compile') return request.args;
+  const files = new Map(request.project.files.map((file) => [assertSafeProjectPath(file.path), file]));
+  const expand = (args: string[], seen: Set<string>): string[] => {
+    const expanded: string[] = [];
+    for (const arg of args) {
+      if (!arg.startsWith('@') || arg === '@') {
+        expanded.push(arg);
+        continue;
+      }
+      const argfilePath = resolveProjectCommandPath(request, arg.slice(1));
+      if (seen.has(argfilePath)) {
+        throw new Error(`Recursive Java argfile reference: ${argfilePath}`);
+      }
+      const file = files.get(argfilePath);
+      if (!file) {
+        throw new Error(`Java argfile not found: ${argfilePath}`);
+      }
+      if (file.encoding === 'base64') {
+        throw new Error(`Java argfile must be utf8: ${argfilePath}`);
+      }
+      seen.add(argfilePath);
+      expanded.push(...expand(parseJavaArgFile(file.contents), seen));
+      seen.delete(argfilePath);
+    }
+    return expanded;
+  };
+  return expand(request.args, new Set());
+}
+
+function mapJavaPathList(root: string, cwd: string, value: string): string {
+  return value
+    .split(delimiter)
+    .map((entry) => assertWorkspaceRelativeOperand(root, cwd, entry, 'Java path entry'))
+    .join(delimiter);
+}
+
+function javacArgsForRequest(request: JavaProjectCommandRequest, root: string, cwd: string): string[] {
+  if (request.source === 'compile') {
+    const mapped: string[] = [];
+    const args = expandedJavacArgsForRequest(request);
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index];
+      if (arg === '-d') {
+        mapped.push(arg);
+        const outputDir = args[index + 1];
+        if (typeof outputDir === 'string') {
+          mapped.push(assertWorkspaceRelativeOperand(root, cwd, outputDir, 'Java output directory'));
+          index += 1;
+        }
+        continue;
+      }
+      if (arg === '-cp' || arg === '-classpath' || arg === '--class-path') {
+        mapped.push(arg);
+        const classpath = args[index + 1];
+        if (typeof classpath === 'string') {
+          mapped.push(mapJavaClasspath(root, cwd, classpath));
+          index += 1;
+        }
+        continue;
+      }
+      if (arg === '-sourcepath' || arg === '--source-path') {
+        mapped.push(arg);
+        const sourcepath = args[index + 1];
+        if (typeof sourcepath === 'string') {
+          mapped.push(mapJavaPathList(root, cwd, sourcepath));
+          index += 1;
+        }
+        continue;
+      }
+      if (arg.startsWith('--class-path=')) {
+        mapped.push(`--class-path=${mapJavaClasspath(root, cwd, arg.slice('--class-path='.length))}`);
+        continue;
+      }
+      if (arg.startsWith('--source-path=')) {
+        mapped.push(`--source-path=${mapJavaPathList(root, cwd, arg.slice('--source-path='.length))}`);
+        continue;
+      }
+      if (arg.startsWith('@') && arg.length > 1) {
+        mapped.push(`@${assertWorkspaceRelativeOperand(root, cwd, arg.slice(1), 'Java argfile path')}`);
+        continue;
+      }
+      if (arg.endsWith('.java')) {
+        mapped.push(assertWorkspaceRelativeOperand(root, cwd, arg, 'Java source path'));
+        continue;
+      }
+      mapped.push(arg);
+    }
+    return mapped;
+  }
+  return ['-d', '.', ...javaSourceFiles(request.project).map((path) => join(root, path))];
+}
+
+function workspacePathForClasspathEntry(root: string, cwd: string, entry: string): string {
+  if (entry === VIRTUAL_WORKSPACE_ROOT || entry.startsWith(`${VIRTUAL_WORKSPACE_ROOT}/`)) {
+    return mapWorkspaceAbsolutePath(root, entry);
+  }
+  if (entry === '.') return cwd;
+  const absolute = resolve(cwd, entry);
+  const relativePath = relative(root, absolute).replace(/\\/g, '/');
+  if (!relativePath || relativePath.startsWith('..')) {
+    throw new Error(`Java classpath entry must stay inside the workspace: ${entry}`);
+  }
+  return absolute;
+}
+
+function classpathEntriesForRequest(request: JavaProjectCommandRequest, root: string, cwd: string): string[] {
+  const rawClasspath = effectiveJavaClasspath(request);
+  if (typeof rawClasspath !== 'string' || rawClasspath.trim().length === 0) {
+    return [cwd];
+  }
+
+  return rawClasspath
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => workspacePathForClasspathEntry(root, cwd, entry));
+}
+
+function effectiveJavaClasspath(request: JavaProjectCommandRequest): unknown {
+  return typeof request.options?.classpath === 'string'
+    ? request.options.classpath
+    : request.env.CLASSPATH;
+}
+
+function mapJavaEnv(root: string, cwd: string, env: Record<string, string>): Record<string, string> {
+  return typeof env.CLASSPATH === 'string'
+    ? { ...env, CLASSPATH: mapJavaClasspath(root, cwd, env.CLASSPATH) }
+    : env;
+}
+
+function javaSystemPropertyArgs(request: JavaProjectCommandRequest): string[] {
+  const properties = request.options?.systemProperties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    return [];
+  }
+
+  return Object.entries(properties as Record<string, unknown>)
+    .filter(([key]) => /^[^=\0]+$/.test(key))
+    .map(([key, value]) => `-D${key}=${String(value ?? '')}`);
+}
+
+function javaRuntimeOptionArgs(request: JavaProjectCommandRequest): string[] {
+  return [
+    ...(request.options?.enablePreview === true ? ['--enable-preview'] : []),
+    ...(request.options?.enableAssertions === true ? ['-ea'] : []),
+  ];
+}
+
+function jarPathForRequest(request: JavaProjectCommandRequest, root: string, cwd: string): string | null {
+  const jarPath = request.options?.jarPath;
+  if (typeof jarPath !== 'string' || jarPath.trim().length === 0) {
+    return null;
+  }
+  return workspacePathForClasspathEntry(root, cwd, jarPath);
+}
+
+function runProcess(
+  command: string,
+  args: string[],
+  options: {
+    cwd: string;
+    env: Record<string, string>;
+    stdin: string;
+    timeoutMs: number;
+    timeoutLabel: string;
+  }
+): Promise<JavaProjectCommandResult> {
+  return new Promise<JavaProjectCommandResult>((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: {
+        ...process.env,
+        ...options.env,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGKILL');
+      resolve({
+        stdout,
+        stderr: `${stderr}${options.timeoutLabel}: execution timed out after ${options.timeoutMs}ms\n`,
+        exitCode: 124,
+      });
+    }, options.timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        stdout,
+        stderr: `${stderr}${error.message}\n`,
+        exitCode: 1,
+      });
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        stdout,
+        stderr,
+        exitCode: code ?? 1,
+      });
+    });
+
+    child.stdin.end(options.stdin);
+  });
+}
+
+export function createNativeJavaProjectRunner(
+  options: NativeJavaProjectRunnerOptions = {}
+): JavaProjectCommandRunner {
+  const javacCommand = options.javacCommand ?? 'javac';
+  const javaCommand = options.javaCommand ?? 'java';
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  return async (request) => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'tracecode-java-project-')));
+    try {
+      for (const file of request.project.files) {
+        await writeProjectFile(root, file);
+      }
+      for (const directory of request.project.directories ?? []) {
+        await writeProjectDirectory(root, directory);
+      }
+
+      const cwd = cwdForRequest(request, root);
+      await mkdir(cwd, { recursive: true });
+      const jarPath = request.source === 'run' ? jarPathForRequest(request, root, cwd) : null;
+      if (request.source === 'run' && jarPath) {
+        const baseline = originalProjectFileBytes(request.project);
+        const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-jar', jarPath, ...request.args], {
+          cwd,
+          env: mapJavaEnv(root, cwd, request.env),
+          stdin: request.stdin,
+          timeoutMs,
+          timeoutLabel: 'java',
+        });
+        return { ...run, files: await changedProjectFiles(root, baseline) };
+      }
+      const mainClass = request.source === 'run' ? assertSafeMainClass(request.scriptPath) : null;
+      const runClasspath = request.source === 'run' ? classpathEntriesForRequest(request, root, cwd).join(delimiter) : '';
+      if (request.source === 'run' && effectiveJavaClasspath(request)) {
+        const baseline = originalProjectFileBytes(request.project);
+        const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
+          cwd,
+          env: mapJavaEnv(root, cwd, request.env),
+          stdin: request.stdin,
+          timeoutMs,
+          timeoutLabel: 'java',
+        });
+        return { ...run, files: await changedProjectFiles(root, baseline) };
+      }
+
+      const compile = await runProcess(javacCommand, javacArgsForRequest(request, root, cwd), {
+        cwd,
+        env: mapJavaEnv(root, cwd, request.env),
+        stdin: '',
+        timeoutMs,
+        timeoutLabel: 'javac',
+      });
+      if (request.source === 'compile') {
+        return compile.exitCode === 0
+          ? { ...compile, files: await generatedProjectFiles(root, request.project) }
+          : compile;
+      }
+      if (compile.exitCode !== 0) {
+        return compile;
+      }
+
+      const baseline = await snapshotFileBytes(root);
+      const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
+        cwd,
+        env: mapJavaEnv(root, cwd, request.env),
+        stdin: request.stdin,
+        timeoutMs,
+        timeoutLabel: 'java',
+      });
+      return {
+        stdout: `${compile.stdout}${run.stdout}`,
+        stderr: `${compile.stderr}${run.stderr}`,
+        exitCode: run.exitCode,
+        files: await changedProjectFiles(root, baseline),
+      };
+    } finally {
+      if (!options.keepTempDir) {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  };
+}

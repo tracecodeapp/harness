@@ -229,6 +229,7 @@ export const LANGUAGE_RUNTIME_INFOS = Object.freeze({
       "System",
       "System.Collections",
       "System.Collections.Generic",
+      "System.IO",
       "System.Linq",
       "System.Numerics",
       "System.Text",

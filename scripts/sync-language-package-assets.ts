@@ -31,6 +31,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
     assets: [],
   },
   {
+    packageDir: 'packages/harness-project',
+    assets: [],
+  },
+  {
     packageDir: 'packages/harness-python',
     assets: [
       {

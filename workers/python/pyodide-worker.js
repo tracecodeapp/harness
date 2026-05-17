@@ -707,6 +707,340 @@ async function executeCode(code, functionName, inputs, executionStyle = 'functio
   );
 }
 
+async function executeProjectPython(request) {
+  await loadPyodideInstance();
+
+  const requestJson = JSON.stringify(request ?? {});
+  const projectCode = `
+import base64
+import builtins
+import contextlib
+import io
+import importlib
+import json
+import os
+import runpy
+import shutil
+import sys
+import traceback
+
+_request = json.loads(${JSON.stringify(requestJson)})
+_root = "/tracecode_project"
+shutil.rmtree(_root, ignore_errors=True)
+os.makedirs(_root, exist_ok=True)
+_original_file_bytes = {}
+
+for _directory in _request.get("project", {}).get("directories", []):
+    _relative_directory = str(_directory).replace("\\\\", "/")
+    if (
+        not _relative_directory
+        or _relative_directory.startswith("/")
+        or ".." in [part for part in _relative_directory.split("/") if part]
+    ):
+        raise ValueError(f"Unsafe project directory path: {_relative_directory}")
+    os.makedirs(os.path.join(_root, _relative_directory), exist_ok=True)
+
+for _file in _request.get("project", {}).get("files", []):
+    _relative_path = str(_file.get("path", "")).replace("\\\\", "/")
+    if (
+        not _relative_path
+        or _relative_path.startswith("/")
+        or ".." in [part for part in _relative_path.split("/") if part]
+    ):
+        raise ValueError(f"Unsafe project file path: {_relative_path}")
+    _target = os.path.join(_root, _relative_path)
+    os.makedirs(os.path.dirname(_target), exist_ok=True)
+    if _file.get("encoding") == "base64":
+        _contents = base64.b64decode(str(_file.get("contents", "")))
+    else:
+        _contents = str(_file.get("contents", "")).encode("utf-8")
+    _original_file_bytes[_relative_path] = _contents
+    with open(_target, "wb") as _handle:
+        _handle.write(_contents)
+
+_source = _request.get("source")
+_script_path = str(_request.get("scriptPath") or "")
+_args = [str(value) for value in _request.get("args", [])]
+_stdout = io.StringIO()
+_stderr = io.StringIO()
+_previous_argv = sys.argv[:]
+_previous_stdin = sys.stdin
+_previous_cwd = os.getcwd()
+_previous_environ = os.environ.copy()
+_previous_path = sys.path[:]
+_previous_modules = set(sys.modules.keys())
+_env = {str(key): str(value) for key, value in _request.get("env", {}).items()}
+_exit_code = 0
+_restore_workspace_paths = lambda: None
+_active_project_cwd = _root
+
+def _is_project_module(_module):
+    _module_file = getattr(_module, "__file__", None)
+    return isinstance(_module_file, str) and _module_file.startswith(_root + os.sep)
+
+def _clear_project_import_state():
+    for _module_name, _module in list(sys.modules.items()):
+        if _module_name not in _previous_modules or _is_project_module(_module):
+            sys.modules.pop(_module_name, None)
+    for _cache_path in list(sys.path_importer_cache.keys()):
+        if isinstance(_cache_path, str) and (_cache_path == _root or _cache_path.startswith(_root + os.sep)):
+            sys.path_importer_cache.pop(_cache_path, None)
+    importlib.invalidate_caches()
+
+def _project_path_entry(_entry):
+    _entry = str(_entry).replace("\\\\", "/")
+    if not _entry:
+        return None
+    if _entry == "." or _entry == "/workspace":
+        return _root
+    if _entry.startswith("/workspace/"):
+        _entry = _entry[len("/workspace/"):]
+        _absolute = os.path.abspath(os.path.join(_root, _entry))
+    elif _entry.startswith("/tracecode_project"):
+        return _entry
+    elif _entry.startswith("/"):
+        raise ValueError(f"Project path must stay within the workspace: {_entry}")
+    else:
+        _absolute = os.path.abspath(os.path.join(_active_project_cwd, _entry))
+    if _absolute != _root and not _absolute.startswith(_root + os.sep):
+        raise ValueError(f"Project path must stay within the workspace: {_entry}")
+    return _absolute
+
+def _project_pythonpath_entries():
+    _entries = [_root]
+    for _entry in str(_env.get("PYTHONPATH", "")).split(os.pathsep):
+        _path = _project_path_entry(_entry)
+        if _path and _path not in _entries:
+            _entries.append(_path)
+    return _entries
+
+def _project_files_after_execution():
+    _files = []
+    _seen_paths = set()
+    for _dirpath, _dirnames, _filenames in os.walk(_root):
+        _dirnames.sort()
+        for _filename in sorted(_filenames):
+            _absolute_path = os.path.join(_dirpath, _filename)
+            _relative_path = os.path.relpath(_absolute_path, _root).replace(os.sep, "/")
+            _seen_paths.add(_relative_path)
+            with open(_absolute_path, "rb") as _handle:
+                _contents = _handle.read()
+            if _original_file_bytes.get(_relative_path) == _contents:
+                continue
+            try:
+                _text = _contents.decode("utf-8")
+                _files.append({"path": _relative_path, "contents": _text})
+            except UnicodeDecodeError:
+                _files.append({
+                    "path": _relative_path,
+                    "contents": base64.b64encode(_contents).decode("ascii"),
+                    "encoding": "base64",
+                })
+    for _relative_path in sorted(_original_file_bytes.keys()):
+        if _relative_path not in _seen_paths:
+            _files.append({"path": _relative_path, "deleted": True})
+    return _files
+
+def _project_cwd():
+    _project_cwd_value = str(_request.get("project", {}).get("cwd") or "/workspace")
+    _request_cwd_value = str(_request.get("cwd") or _project_cwd_value)
+    if _request_cwd_value == _project_cwd_value:
+        return _root
+    if _request_cwd_value.startswith(_project_cwd_value + "/"):
+        _relative_cwd = _request_cwd_value[len(_project_cwd_value) + 1:]
+        _parts = [part for part in _relative_cwd.replace("\\\\", "/").split("/") if part and part != "."]
+        if ".." not in _parts:
+            return os.path.join(_root, *_parts)
+    raise ValueError(f"Project cwd must stay inside the workspace: {_request_cwd_value}")
+
+def _project_script_absolute_path():
+    _project_cwd_value = str(_request.get("project", {}).get("cwd") or "/workspace").rstrip("/") or "/"
+    _raw_path = _script_path.replace("\\\\", "/")
+    if _raw_path == _project_cwd_value:
+        raise ValueError(f"Project path must point to a file: {_script_path}")
+    if _raw_path.startswith(_project_cwd_value + "/"):
+        _raw_path = _raw_path[len(_project_cwd_value) + 1:]
+        _absolute = os.path.abspath(os.path.join(_root, _raw_path))
+    elif _raw_path.startswith("/"):
+        raise ValueError(f"Project path must stay within the workspace: {_script_path}")
+    else:
+        _workspace_absolute = os.path.abspath(os.path.join(_root, _raw_path))
+        if (
+            _workspace_absolute != _root
+            and _workspace_absolute.startswith(_root + os.sep)
+            and os.path.exists(_workspace_absolute)
+        ):
+            _absolute = _workspace_absolute
+        else:
+            _absolute = os.path.abspath(os.path.join(_active_project_cwd, _raw_path))
+    if _absolute == _root or not _absolute.startswith(_root + os.sep):
+        raise ValueError(f"Project path must stay within the workspace: {_script_path}")
+    return _absolute
+
+def _map_workspace_path(_value):
+    if isinstance(_value, (str, bytes, os.PathLike)):
+        _original = os.fspath(_value)
+        if _original == "/workspace":
+            return _root
+        if isinstance(_original, str) and _original.startswith("/workspace/"):
+            return os.path.join(_root, _original[len("/workspace/"):])
+    return _value
+
+def _virtual_workspace_path(_value):
+    if isinstance(_value, str):
+        _relative = os.path.relpath(_value, _root)
+        if _relative == ".":
+            return "/workspace"
+        if not _relative.startswith("..") and not os.path.isabs(_relative):
+            return "/workspace/" + _relative.replace(os.sep, "/")
+    return _value
+
+def _install_virtual_workspace_paths():
+    _original_open = builtins.open
+    _original_io_open = io.open
+    _original_getcwd = os.getcwd
+    _original_chdir = os.chdir
+    _patched = []
+
+    def _patched_open(_file, *args, **kwargs):
+        return _original_open(_map_workspace_path(_file), *args, **kwargs)
+
+    def _patched_getcwd():
+        return _virtual_workspace_path(_original_getcwd())
+
+    def _patched_chdir(_path):
+        return _original_chdir(_map_workspace_path(_path))
+
+    builtins.open = _patched_open
+    io.open = _patched_open
+    os.getcwd = _patched_getcwd
+    os.chdir = _patched_chdir
+
+    def _patch_one(_target, _name):
+        _original = getattr(_target, _name, None)
+        if _original is None:
+            return
+        def _patched_one(_path, *args, **kwargs):
+            return _original(_map_workspace_path(_path), *args, **kwargs)
+        setattr(_target, _name, _patched_one)
+        _patched.append((_target, _name, _original))
+
+    def _patch_two(_target, _name):
+        _original = getattr(_target, _name, None)
+        if _original is None:
+            return
+        def _patched_two(_src, _dst, *args, **kwargs):
+            return _original(_map_workspace_path(_src), _map_workspace_path(_dst), *args, **kwargs)
+        setattr(_target, _name, _patched_two)
+        _patched.append((_target, _name, _original))
+
+    for _name in [
+        "access", "chmod", "chown", "listdir", "lstat", "mkdir", "makedirs", "readlink",
+        "remove", "removedirs", "rmdir", "scandir", "stat", "unlink", "utime",
+    ]:
+        _patch_one(os, _name)
+
+    for _name in ["link", "rename", "replace", "symlink"]:
+        _patch_two(os, _name)
+
+    for _name in [
+        "exists", "lexists", "getatime", "getctime", "getmtime", "getsize", "isdir",
+        "isfile", "islink", "ismount", "realpath",
+    ]:
+        _patch_one(os.path, _name)
+
+    os.environ["PWD"] = _patched_getcwd()
+
+    def _restore():
+        builtins.open = _original_open
+        io.open = _original_io_open
+        os.getcwd = _original_getcwd
+        os.chdir = _original_chdir
+        for _target, _name, _original in reversed(_patched):
+            setattr(_target, _name, _original)
+
+    return _restore
+
+def _project_argv():
+    if _source == "argument":
+        return ["-c"] + _args
+    if _source == "stdin":
+        return ["-"] + _args
+    if _source == "module":
+        try:
+            _module_spec = importlib.util.find_spec(_script_path)
+            _module_origin = getattr(_module_spec, "origin", None)
+            if isinstance(_module_origin, str) and _module_origin:
+                return [_module_origin] + _args
+        except Exception:
+            pass
+    return [_script_path] + _args
+
+try:
+    _clear_project_import_state()
+    os.environ.clear()
+    os.environ.update(_previous_environ)
+    os.environ.update(_env)
+    _cwd = _project_cwd()
+    _active_project_cwd = _cwd
+    os.makedirs(_cwd, exist_ok=True)
+    os.chdir(_cwd)
+    _restore_workspace_paths = _install_virtual_workspace_paths()
+    if _cwd not in sys.path:
+        sys.path.insert(0, _cwd)
+    for _index, _path_entry in enumerate(_project_pythonpath_entries()):
+        if _path_entry not in sys.path:
+            sys.path.insert(_index + 1, _path_entry)
+    _script_absolute_path = _project_script_absolute_path() if _source == "file" else _script_path
+    if _source == "file":
+        _script_dir = os.path.dirname(os.path.abspath(_script_absolute_path))
+        if _script_dir and _script_dir not in sys.path:
+            sys.path.insert(0, _script_dir)
+    sys.argv = _project_argv()
+    sys.stdin = io.StringIO(str(_request.get("stdin", "")))
+    with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
+        try:
+            if _source == "file":
+                runpy.run_path(_script_absolute_path, run_name="__main__")
+            elif _source == "module":
+                runpy.run_module(_script_path, run_name="__main__")
+            else:
+                exec(compile(str(_request.get("code", "")), _script_path or "<string>", "exec"), {
+                    "__name__": "__main__",
+                })
+        except SystemExit as exc:
+            if exc.code is None:
+                _exit_code = 0
+            elif isinstance(exc.code, int):
+                _exit_code = exc.code
+            else:
+                _stderr.write(str(exc.code) + "\\n")
+                _exit_code = 1
+        except BaseException:
+            traceback.print_exc(file=_stderr)
+            _exit_code = 1
+finally:
+    _restore_workspace_paths()
+    sys.argv = _previous_argv
+    sys.stdin = _previous_stdin
+    os.environ.clear()
+    os.environ.update(_previous_environ)
+    sys.path[:] = _previous_path
+    os.chdir(_previous_cwd)
+    _clear_project_import_state()
+
+json.dumps({
+    "stdout": _stdout.getvalue(),
+    "stderr": _stderr.getvalue(),
+    "exitCode": _exit_code,
+    "files": _project_files_after_execution(),
+})
+`;
+
+  const resultJson = await pyodide.runPythonAsync(projectCode);
+  return JSON.parse(resultJson);
+}
+
 async function processMessage(data) {
   const { id, type, payload } = data;
   try {
@@ -747,6 +1081,13 @@ async function processMessage(data) {
         const result = await executeCode(code, functionName, inputs, executionStyle ?? 'function', {
           interviewGuard: true,
         });
+        analyzerInitialized = false;
+        self.postMessage({ id, type: 'execute-result', payload: result });
+        break;
+      }
+
+      case 'execute-project-python': {
+        const result = await executeProjectPython(payload);
         analyzerInitialized = false;
         self.postMessage({ id, type: 'execute-result', payload: result });
         break;

@@ -7,3 +7,18 @@ export {
   type JavaScriptWorkerClientOptions,
   type JavaScriptWorkerLanguage,
 } from '../../harness-browser/src/javascript-worker-client';
+export {
+  createBrowserJavaScriptProjectRunner,
+  type BrowserJavaScriptProjectCommandRunner,
+  type BrowserJavaScriptProjectRunnerOptions,
+} from './project-browser';
+export {
+  createNativeJavaScriptProjectRunner,
+  type JavaScriptProjectCommandRequest,
+  type JavaScriptProjectCommandResult,
+  type JavaScriptProjectCommandRunner,
+  type JavaScriptProjectFile,
+  type JavaScriptProjectFileEncoding,
+  type JavaScriptProjectSnapshot,
+  type NativeJavaScriptProjectRunnerOptions,
+} from './project-node';

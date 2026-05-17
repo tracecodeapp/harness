@@ -3,6 +3,10 @@ import type {
   ExecutionResult,
   RuntimeExecutionTimings,
 } from '../../harness-core/src/types';
+import type {
+  RuntimeCommandResult,
+  RuntimeProjectCommandRequest,
+} from '../../harness-core/src/runtime-project';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
@@ -10,6 +14,8 @@ import { logRuntimeDiagnostic } from './runtime-diagnostics';
 type MessageId = string;
 
 export type CppExecutionStyle = 'function' | 'solution-method' | 'ops-class';
+export type CppProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
+export type CppProjectCommandResult = RuntimeCommandResult;
 
 export interface CppWorkerAssets {
   clangWasmUrl: string;
@@ -682,6 +688,26 @@ export class CppWorkerClient {
         timings: { totalMs: this.interviewTimeoutMs },
       };
     }
+  }
+
+  async executeProjectCpp(
+    request: CppProjectCommandRequest,
+    timeoutMs = this.executionTimeoutMs
+  ): Promise<CppProjectCommandResult> {
+    await this.init();
+    return this.executeWithTimeout(
+      () =>
+        this.sendMessage<CppProjectCommandResult>(
+          'execute-project-cpp',
+          {
+            ...request,
+            ...this.workerOptionsPayload(),
+          },
+          timeoutMs + 5_000
+        ),
+      timeoutMs,
+      'compile-run'
+    );
   }
 
   terminate(): void {

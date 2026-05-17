@@ -1,4 +1,8 @@
 import type { CodeExecutionResult, RuntimeExecutionTimings } from '../../harness-core/src/types';
+import type {
+  RuntimeCommandResult,
+  RuntimeProjectCommandRequest,
+} from '../../harness-core/src/runtime-project';
 import { javaTraceHooksEventsToRuntimeTrace } from '../../harness-core/src/trace-adapters/java';
 import { createEmptyRuntimeTrace, type RuntimeTrace } from '../../harness-core/src/runtime-trace';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
@@ -64,6 +68,9 @@ interface JavaWorkerCodeResult {
   consoleOutput?: string[];
   timings?: RuntimeExecutionTimings;
 }
+
+export type JavaWorkerProjectRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
+export type JavaWorkerProjectResult = RuntimeCommandResult;
 
 export interface JavaTraceExecutionOptions {
   maxTraceSteps?: number;
@@ -470,6 +477,22 @@ export class JavaWorkerClient {
     executionStyle: JavaExecutionStyle
   ): Promise<CodeExecutionResult> {
     return this.executeCodeMessage('execute-code-interview', code, functionName, inputs, options, executionStyle);
+  }
+
+  async executeProjectJava(
+    request: JavaWorkerProjectRequest,
+    timeoutMs = EXECUTION_TIMEOUT_MS
+  ): Promise<JavaWorkerProjectResult> {
+    await this.init();
+    return this.executeWithTimeout(
+      () =>
+        this.sendMessage<JavaWorkerProjectResult>(
+          'execute-project-java',
+          request,
+          timeoutMs + 5_000
+        ),
+      timeoutMs
+    );
   }
 
   terminate(): void {
