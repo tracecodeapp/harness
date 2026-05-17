@@ -1088,8 +1088,36 @@ public static partial class CompilerHost
                         .WithTriviaFrom(node.Expression)
                 );
             }
+            if (node.Expression is MemberAccessExpressionSyntax fileMemberAccess
+                && IsProjectFileApi(fileMemberAccess.Expression)
+                && IsProjectFileMutationMethod(fileMemberAccess.Name.Identifier.ValueText))
+            {
+                return node.WithExpression(
+                    SyntaxFactory.ParseExpression($"TraceCode.Project.ProjectFile.{fileMemberAccess.Name.Identifier.ValueText}")
+                        .WithTriviaFrom(node.Expression)
+                );
+            }
 
             return base.VisitInvocationExpression(node);
+        }
+
+        private static bool IsProjectFileApi(ExpressionSyntax expression)
+        {
+            string text = expression.ToString();
+            return string.Equals(text, "File", StringComparison.Ordinal)
+                || string.Equals(text, "System.IO.File", StringComparison.Ordinal)
+                || string.Equals(text, "global::System.IO.File", StringComparison.Ordinal);
+        }
+
+        private static bool IsProjectFileMutationMethod(string method)
+        {
+            return method is
+                "WriteAllText" or
+                "WriteAllBytes" or
+                "AppendAllText" or
+                "Delete" or
+                "Move" or
+                "Copy";
         }
     }
 
@@ -1112,6 +1140,71 @@ public static class ProjectStdin
         }
 
         return Lines[Index++];
+    }
+}
+
+public static class ProjectFile
+{
+    public static void WriteAllText(string path, string? contents)
+    {
+        System.IO.File.WriteAllText(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void WriteAllText(string path, string? contents, System.Text.Encoding encoding)
+    {
+        System.IO.File.WriteAllText(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void WriteAllBytes(string path, byte[] bytes)
+    {
+        System.IO.File.WriteAllBytes(path, bytes);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void AppendAllText(string path, string? contents)
+    {
+        System.IO.File.AppendAllText(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void AppendAllText(string path, string? contents, System.Text.Encoding encoding)
+    {
+        System.IO.File.AppendAllText(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void Delete(string path)
+    {
+        System.IO.File.Delete(path);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileDelete(path);
+    }
+
+    public static void Move(string sourceFileName, string destFileName)
+    {
+        System.IO.File.Move(sourceFileName, destFileName);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileDelete(sourceFileName);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(destFileName);
+    }
+
+    public static void Move(string sourceFileName, string destFileName, bool overwrite)
+    {
+        System.IO.File.Move(sourceFileName, destFileName, overwrite);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileDelete(sourceFileName);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(destFileName);
+    }
+
+    public static void Copy(string sourceFileName, string destFileName)
+    {
+        System.IO.File.Copy(sourceFileName, destFileName);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(destFileName);
+    }
+
+    public static void Copy(string sourceFileName, string destFileName, bool overwrite)
+    {
+        System.IO.File.Copy(sourceFileName, destFileName, overwrite);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(destFileName);
     }
 }
 """;
@@ -1212,6 +1305,61 @@ public static class ProjectStdin
                 phase,
                 change,
             });
+        }
+    }
+
+    public static void EmitLiveProjectFileSnapshot(string path)
+    {
+        string? relativePath = ProjectRelativePathForRuntimePath(path);
+        if (relativePath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            string absolutePath = Path.GetFullPath(path);
+            if (!File.Exists(absolutePath))
+            {
+                return;
+            }
+            EmitProjectFileChanges(new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) }, "live");
+        }
+        catch
+        {
+            // Live project events are best-effort and must not change user code behavior.
+        }
+    }
+
+    public static void EmitLiveProjectFileDelete(string path)
+    {
+        string? relativePath = ProjectRelativePathForRuntimePath(path);
+        if (relativePath is null)
+        {
+            return;
+        }
+
+        EmitProjectFileChanges(new[] { new CSharpProjectFileChange { Path = relativePath, Deleted = true } }, "live");
+    }
+
+    private static string? ProjectRelativePathForRuntimePath(string path)
+    {
+        try
+        {
+            string absolutePath = Path.GetFullPath(path);
+            if (!absolutePath.StartsWith(ProjectWorkspaceRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(absolutePath, ProjectWorkspaceRoot, StringComparison.Ordinal))
+            {
+                return null;
+            }
+            string relativePath = Path.GetRelativePath(ProjectWorkspaceRoot, absolutePath).Replace('\\', '/');
+            return string.IsNullOrEmpty(relativePath) || string.Equals(relativePath, ".", StringComparison.Ordinal)
+                ? null
+                : relativePath;
+        }
+        catch
+        {
+            return null;
         }
     }
 

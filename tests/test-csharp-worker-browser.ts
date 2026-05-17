@@ -2637,7 +2637,10 @@ async function main(): Promise<void> {
                 'Console.WriteLine(Environment.GetEnvironmentVariable("MODE"));',
                 'Console.WriteLine(string.Join(",", args));',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
+                'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
                 'File.WriteAllBytes("bytes.bin", new byte[] { 0, 255 });',
+                'File.Copy("generated.txt", "copied.txt");',
+                'File.Move("copied.txt", "moved.txt");',
                 'File.Delete("stale.txt");',
                 '',
               ].join('\n'),
@@ -2666,16 +2669,23 @@ async function main(): Promise<void> {
       `C# project worker should stream stdout events, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
-      projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,
+      projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\nappended\n') === true,
       `C# project worker should return generated text file changes, received ${JSON.stringify(projectRun.files)}`
     );
     assertCondition(
       projectRun.events?.some(
         (event) =>
           event.type === 'file-change' &&
-          event.phase === 'final-diff' &&
+          event.phase === 'live' &&
           event.change?.path === 'src/generated.txt' &&
           event.change.contents === '42\n'
+      ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/generated.txt' &&
+            event.change.contents === '42\nappended\n'
       ) === true,
       `C# project worker should stream generated text file changes, received ${JSON.stringify(projectRun.events)}`
     );
@@ -2687,12 +2697,36 @@ async function main(): Promise<void> {
       projectRun.events?.some(
         (event) =>
           event.type === 'file-change' &&
-          event.phase === 'final-diff' &&
+          event.phase === 'live' &&
           event.change?.path === 'src/bytes.bin' &&
           event.change.encoding === 'base64' &&
           event.change.contents === 'AP8='
       ) === true,
       `C# project worker should stream generated binary file changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/copied.txt' &&
+          event.change.contents === '42\nappended\n'
+      ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/copied.txt' &&
+            event.change.deleted === true
+        ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/moved.txt' &&
+            event.change.contents === '42\nappended\n'
+        ) === true,
+      `C# project worker should stream copied and moved file changes, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/stale.txt' && file.deleted === true) === true,
@@ -2702,7 +2736,7 @@ async function main(): Promise<void> {
       projectRun.events?.some(
         (event) =>
           event.type === 'file-change' &&
-          event.phase === 'final-diff' &&
+          event.phase === 'live' &&
           event.change?.path === 'src/stale.txt' &&
           event.change.deleted === true
       ) === true,
