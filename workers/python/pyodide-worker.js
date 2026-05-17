@@ -731,6 +731,18 @@ from js import self as _js_self
 
 _request = json.loads(${JSON.stringify(requestJson)})
 _root = "/tracecode_project"
+_project_info = _request.get("project", {}) if isinstance(_request.get("project", {}), dict) else {}
+def _normalize_virtual_root(_value, _fallback="/workspace"):
+    _text = str(_value or _fallback).replace("\\\\", "/").rstrip("/")
+    if not _text:
+        _text = _fallback
+    if not _text.startswith("/"):
+        _text = "/" + _text
+    return _text
+
+_workspace_root = _normalize_virtual_root(_project_info.get("workspaceRoot") or _project_info.get("cwd") or "/workspace")
+_workspace_alias_value = _project_info.get("workspaceAlias")
+_workspace_alias = _normalize_virtual_root(_workspace_alias_value) if _workspace_alias_value else None
 shutil.rmtree(_root, ignore_errors=True)
 os.makedirs(_root, exist_ok=True)
 _original_file_bytes = {}
@@ -946,10 +958,11 @@ def _project_path_entry(_entry):
     _entry = str(_entry).replace("\\\\", "/")
     if not _entry:
         return None
-    if _entry == "." or _entry == "/workspace":
+    if _entry == ".":
         return _root
-    if _entry.startswith("/workspace/"):
-        _entry = _entry[len("/workspace/"):]
+    _relative_entry = _project_relative_from_virtual_path(_entry)
+    if _relative_entry is not None:
+        _entry = _relative_entry
         _absolute = os.path.abspath(os.path.join(_root, _entry))
     elif _entry.startswith("/tracecode_project"):
         return _entry
@@ -960,6 +973,24 @@ def _project_path_entry(_entry):
     if _absolute != _root and not _absolute.startswith(_root + os.sep):
         raise ValueError(f"Project path must stay within the workspace: {_entry}")
     return _absolute
+
+def _project_relative_from_virtual_path(_path):
+    _path = str(_path).replace("\\\\", "/").rstrip("/") or "/"
+    if _path == _workspace_root:
+        return ""
+    if _path.startswith(_workspace_root + "/"):
+        return _path[len(_workspace_root) + 1:]
+    if _workspace_alias:
+        if _path == _workspace_alias:
+            return ""
+        if _path.startswith(_workspace_alias + "/"):
+            return _path[len(_workspace_alias) + 1:]
+    return None
+
+def _virtual_path_from_project_relative(_relative):
+    if not _relative or _relative == ".":
+        return _workspace_root
+    return _workspace_root + "/" + str(_relative).replace(os.sep, "/")
 
 def _project_pythonpath_entries():
     _entries = [_root]
@@ -997,25 +1028,23 @@ def _project_files_after_execution():
     return _files
 
 def _project_cwd():
-    _project_cwd_value = str(_request.get("project", {}).get("cwd") or "/workspace")
-    _request_cwd_value = str(_request.get("cwd") or _project_cwd_value)
-    if _request_cwd_value == _project_cwd_value:
-        return _root
-    if _request_cwd_value.startswith(_project_cwd_value + "/"):
-        _relative_cwd = _request_cwd_value[len(_project_cwd_value) + 1:]
-        _parts = [part for part in _relative_cwd.replace("\\\\", "/").split("/") if part and part != "."]
+    _request_cwd_value = str(_request.get("cwd") or _workspace_root).replace("\\\\", "/").rstrip("/") or "/"
+    _relative_cwd = _project_relative_from_virtual_path(_request_cwd_value)
+    if _relative_cwd is not None:
+        _parts = [part for part in _relative_cwd.split("/") if part and part != "."]
         if ".." not in _parts:
             return os.path.join(_root, *_parts)
+    if _request_cwd_value == _root or _request_cwd_value.startswith(_root + "/"):
+        return _request_cwd_value
     raise ValueError(f"Project cwd must stay inside the workspace: {_request_cwd_value}")
 
 def _project_script_absolute_path():
-    _project_cwd_value = str(_request.get("project", {}).get("cwd") or "/workspace").rstrip("/") or "/"
     _raw_path = _script_path.replace("\\\\", "/")
-    if _raw_path == _project_cwd_value:
+    _relative_script_path = _project_relative_from_virtual_path(_raw_path)
+    if _relative_script_path == "":
         raise ValueError(f"Project path must point to a file: {_script_path}")
-    if _raw_path.startswith(_project_cwd_value + "/"):
-        _raw_path = _raw_path[len(_project_cwd_value) + 1:]
-        _absolute = os.path.abspath(os.path.join(_root, _raw_path))
+    if _relative_script_path is not None:
+        _absolute = os.path.abspath(os.path.join(_root, _relative_script_path))
     elif _raw_path.startswith("/"):
         raise ValueError(f"Project path must stay within the workspace: {_script_path}")
     else:
@@ -1035,10 +1064,9 @@ def _project_script_absolute_path():
 def _map_workspace_path(_value):
     if isinstance(_value, (str, bytes, os.PathLike)):
         _original = os.fspath(_value)
-        if _original == "/workspace":
-            return _root
-        if isinstance(_original, str) and _original.startswith("/workspace/"):
-            return os.path.join(_root, _original[len("/workspace/"):])
+        _relative_path = _project_relative_from_virtual_path(_original)
+        if _relative_path is not None:
+            return os.path.join(_root, _relative_path)
     return _value
 
 def _normalize_device_path(_value):
@@ -1069,9 +1097,9 @@ def _virtual_workspace_path(_value):
     if isinstance(_value, str):
         _relative = os.path.relpath(_value, _root)
         if _relative == ".":
-            return "/workspace"
+            return _workspace_root
         if not _relative.startswith("..") and not os.path.isabs(_relative):
-            return "/workspace/" + _relative.replace(os.sep, "/")
+            return _virtual_path_from_project_relative(_relative)
     return _value
 
 def _install_virtual_workspace_paths():
@@ -1223,6 +1251,10 @@ try:
     os.environ.clear()
     os.environ.update(_previous_environ)
     os.environ.update(_env)
+    if "HOME" not in _env:
+        _workspace_parts = [part for part in _workspace_root.split("/") if part]
+        if len(_workspace_parts) >= 2 and _workspace_parts[0] == "home":
+            os.environ["HOME"] = "/" + "/".join(_workspace_parts[:2])
     _cwd = _project_cwd()
     _active_project_cwd = _cwd
     os.makedirs(_cwd, exist_ok=True)

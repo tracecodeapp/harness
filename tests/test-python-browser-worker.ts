@@ -238,6 +238,38 @@ async function main(): Promise<void> {
         project: { cwd: '/workspace', directories: ['empty/child'], files: [] },
       });
 
+      const canonicalRootRun = await send('execute-project-python', {
+        source: 'file',
+        scriptPath: '/home/ada/weather-api/app.py',
+        args: [],
+        cwd: '/workspace/src',
+        env: { PYTHONPATH: '/home/ada/weather-api/libs' },
+        stdin: '',
+        project: {
+          cwd: '/home/ada/weather-api',
+          workspaceRoot: '/home/ada/weather-api',
+          workspaceAlias: '/workspace',
+          files: [
+            {
+              path: 'app.py',
+              contents: [
+                'import os',
+                'from helper import value',
+                'print(os.getcwd())',
+                'print(os.environ.get("HOME", ""))',
+                'print(value())',
+                'with open("/home/ada/weather-api/canonical.txt", "w", encoding="utf-8") as handle:',
+                '    handle.write("canonical\\\\n")',
+                'with open("/workspace/alias.txt", "w", encoding="utf-8") as handle:',
+                '    handle.write("alias\\\\n")',
+                '',
+              ].join('\\n'),
+            },
+            { path: 'libs/helper.py', contents: 'def value():\\n    return "helper-ok"\\n' },
+          ],
+        },
+      });
+
       let outsideCwdError = '';
       try {
         await send('execute-project-python', {
@@ -254,7 +286,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, directoryRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, directoryRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -263,6 +295,7 @@ async function main(): Promise<void> {
       stdinRun: PythonProjectWorkerResponse;
       argumentRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
+      canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
     };
 
@@ -377,6 +410,25 @@ async function main(): Promise<void> {
     assertCondition(
       results.directoryRun.stdout === 'True\nchild\n',
       `Python project worker should materialize snapshot directories: ${JSON.stringify(results.directoryRun.stdout)}`
+    );
+    assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
+    assertCondition(
+      results.canonicalRootRun.stdout === '/home/ada/weather-api/src\n/home/ada\nhelper-ok\n',
+      `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
+    );
+    assertCondition(
+      findFile(results.canonicalRootRun, 'canonical.txt')?.contents === 'canonical\n' &&
+        findFile(results.canonicalRootRun, 'alias.txt')?.contents === 'alias\n',
+      'Python project canonical root run should map canonical and alias writes'
+    );
+    assertCondition(
+      results.canonicalRootRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'canonical.txt' &&
+        event.change.contents === 'canonical\n'
+      )) === true,
+      `Python project canonical root run should stream live canonical writes: ${JSON.stringify(results.canonicalRootRun.events)}`
     );
     assertCondition(
       results.outsideCwdError.includes('Project cwd must stay inside the workspace'),
