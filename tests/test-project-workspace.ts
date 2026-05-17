@@ -2269,6 +2269,104 @@ async function testBrowserJavaScriptProjectRunnerStdin(): Promise<void> {
   assertCondition(argvResult.stdout === '-,alpha,beta\n', `browser node stdin argv should match desktop semantics: ${argvResult.stdout}`);
 }
 
+async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'stale.txt', contents: 'stale\n' },
+      {
+        path: 'io.js',
+        contents: [
+          'const fs = require("node:fs");',
+          'console.log("console-out");',
+          'console.error("console-err");',
+          'process.stdout.write("stream-out\\n");',
+          'process.stderr.write("stream-err\\n");',
+          'fs.writeFileSync("live.txt", "one\\n");',
+          'fs.appendFileSync("live.txt", "two\\n");',
+          'fs.renameSync("live.txt", "moved.txt");',
+          'fs.writeFileSync("/dev/stdout", "device-out\\n");',
+          'fs.writeFileSync("/dev/stderr", "device-err\\n");',
+          'fs.unlinkSync("stale.txt");',
+          '',
+        ].join('\n'),
+      },
+    ],
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
+  });
+  const watchEvents: RuntimeWorkspaceEvent[] = [];
+  const commandEvents: RuntimeCommandEvent[] = [];
+  workspace.watch((event) => watchEvents.push(event));
+
+  const result = await workspace.runCommand('node io.js', {
+    onEvent: (event) => commandEvents.push(event),
+  });
+
+  assertCondition(result.exitCode === 0, `browser node live I/O command should succeed: ${result.stderr}`);
+  assertCondition(
+    result.stdout === 'console-out\nstream-out\ndevice-out\n',
+    `browser node should preserve streamed stdout in command result: ${result.stdout}`
+  );
+  assertCondition(
+    result.stderr === 'console-err\nstream-err\ndevice-err\n',
+    `browser node should preserve streamed stderr in command result: ${result.stderr}`
+  );
+  assertCondition(await workspace.readFile('moved.txt') === 'one\ntwo\n', 'browser node final diff should persist moved file');
+  await assertRejectsAsync(() => workspace.readFile('stale.txt'), 'browser node final diff should persist removed file');
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.actor?.kind === 'runtime' &&
+      event.data === 'stream-out\n'
+    ),
+    `browser node onEvent should receive process.stdout chunks: ${JSON.stringify(commandEvents)}`
+  );
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.actor?.kind === 'runtime' &&
+      event.data === 'device-err\n'
+    ),
+    `browser node onEvent should receive /dev/stderr writes: ${JSON.stringify(commandEvents)}`
+  );
+  assertCondition(
+    watchEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'live' &&
+      event.change.path === 'live.txt' &&
+      !('deleted' in event.change) &&
+      event.change.contents === 'one\ntwo\n'
+    ),
+    `workspace watch should receive browser node live append events: ${JSON.stringify(watchEvents)}`
+  );
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'live' &&
+      event.change.path === 'live.txt' &&
+      'deleted' in event.change
+    ),
+    `browser node onEvent should receive live rename delete events: ${JSON.stringify(commandEvents)}`
+  );
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'live' &&
+      event.change.path === 'moved.txt' &&
+      !('deleted' in event.change) &&
+      event.change.contents === 'one\ntwo\n'
+    ),
+    `browser node onEvent should receive live rename write events: ${JSON.stringify(commandEvents)}`
+  );
+  workspace.dispose();
+}
+
 async function testNativeJavaScriptProjectRunnerModuleGlobals(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     files: [
@@ -5072,6 +5170,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptProjectRunner();
   await testBrowserJavaScriptProjectRunnerCwd();
   await testBrowserJavaScriptProjectRunnerStdin();
+  await testBrowserJavaScriptProjectRunnerLiveIoEvents();
   await testNativeJavaScriptProjectRunnerModuleGlobals();
   await testBrowserJavaScriptProjectRunnerModuleGlobals();
   await testNativeJavaScriptProjectRunnerEsmImports();

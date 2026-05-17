@@ -3,10 +3,12 @@ import type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
+  RuntimeKernelDevicePath,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
+import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import * as fflateModule from 'fflate/browser';
 
 export type JavaScriptProjectFileEncoding = RuntimeFileEncoding;
@@ -91,6 +93,17 @@ function workspacePathInputToString(path: unknown): string {
     return decodeURIComponent(path.pathname);
   }
   return String(path);
+}
+
+function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | null {
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/');
+  if (raw === '/dev/stdin' || raw === '/dev/stdout' || raw === '/dev/stderr' || raw === '/dev/tty') {
+    return raw;
+  }
+  if (raw.startsWith('/dev/')) {
+    throw Object.assign(new Error(`ENOENT: no such file or directory, open '${raw}'`), { code: 'ENOENT' });
+  }
+  return null;
 }
 
 function normalizeWorkspaceEntryPath(path: unknown, basePath = '', allowRoot = false): string {
@@ -916,6 +929,7 @@ async function runBrowserJavaScriptProjectRequest(
 
     const stdout: string[] = [];
     const stderr: string[] = [];
+    const io = createRuntimeProjectIoBridge(request.onEvent);
     const cwdPath = workspaceCwdPath(request);
     const fileStore = new Map(
       request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path), fileBytes(file)])
@@ -945,20 +959,54 @@ async function runBrowserJavaScriptProjectRequest(
     const requireCache: Record<string, ModuleRecord> = {};
     let mainModule: ModuleRecord | undefined;
 
+    const emitOutput = (stream: 'stdout' | 'stderr', data: string, device?: RuntimeKernelDevicePath): void => {
+      if (stream === 'stdout') {
+        stdout.push(data);
+      } else {
+        stderr.push(data);
+      }
+      io.output(stream, data, device);
+    };
+
+    const writeDevice = (device: RuntimeKernelDevicePath, data: string): void => {
+      if (device === '/dev/stdin') {
+        throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
+      }
+      const outputDevice = device === '/dev/tty' ? '/dev/stdout' : device;
+      emitOutput(outputDevice === '/dev/stderr' ? 'stderr' : 'stdout', data, outputDevice);
+    };
+
+    const readDevice = (device: RuntimeKernelDevicePath): string => {
+      if (device === '/dev/stdin' || device === '/dev/tty') return request.stdin;
+      return '';
+    };
+
     const consoleApi = {
       log: (...values: unknown[]) => {
-        stdout.push(`${formatConsoleValues(values)}\n`);
+        emitOutput('stdout', `${formatConsoleValues(values)}\n`);
       },
       error: (...values: unknown[]) => {
-        stderr.push(`${formatConsoleValues(values)}\n`);
+        emitOutput('stderr', `${formatConsoleValues(values)}\n`);
       },
     };
+
+    const createWritableDevice = (device: RuntimeKernelDevicePath) => ({
+      write: (value: unknown, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
+        const data = textFromBytes(bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined));
+        writeDevice(device, data);
+        const done = typeof encoding === 'function' ? encoding : callback;
+        done?.(null);
+        return true;
+      },
+    });
 
     const processApi = {
       argv: processArgvForRequest(request),
       env: request.env,
       cwd: () => request.cwd,
       stdin: request.stdin,
+      stdout: createWritableDevice('/dev/stdout'),
+      stderr: createWritableDevice('/dev/stderr'),
       exit: (code = 0) => {
         throw Object.assign(new Error(`process.exit(${code})`), {
           exitCode: Number(code) || 0,
@@ -983,6 +1031,7 @@ async function runBrowserJavaScriptProjectRequest(
       fileStore.set(path, bytes);
       syncTextModule(path, bytes);
       cache.delete(path);
+      io.fileChange(bytesToRuntimeFile(path, bytes), 'live');
     };
     const deleteFile = (path: unknown): void => {
       const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
@@ -991,9 +1040,17 @@ async function runBrowserJavaScriptProjectRequest(
       }
       modules.delete(normalized);
       cache.delete(normalized);
+      io.fileChange({ path: normalized, deleted: true }, 'live');
     };
     const fsApi = {
       readFileSync: (path: unknown, encoding?: string | { encoding?: string }) => {
+        const device = normalizeRuntimeDevicePath(path);
+        if (device) {
+          const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
+          const contents = readDevice(device);
+          if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
+          return BrowserBuffer.from(contents);
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
         const bytes = fileStore.get(normalized);
         if (!bytes) {
@@ -1006,10 +1063,20 @@ async function runBrowserJavaScriptProjectRequest(
         return BrowserBuffer.from(bytes);
       },
       writeFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
+        const device = normalizeRuntimeDevicePath(path);
+        if (device) {
+          writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
+          return;
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
       appendFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
+        const device = normalizeRuntimeDevicePath(path);
+        if (device) {
+          writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
+          return;
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath);
         const previous = fileStore.get(normalized) ?? new Uint8Array();
         const next = bytesFromFsWriteValue(value, options);
@@ -1019,12 +1086,19 @@ async function runBrowserJavaScriptProjectRequest(
         setFileBytes(normalized, combined);
       },
       copyFileSync: (source: unknown, destination: unknown) => {
-        const normalizedSource = assertSafeWorkspaceFilePath(source, cwdPath);
-        const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath);
-        const sourceBytes = fileStore.get(normalizedSource);
+        const sourceDevice = normalizeRuntimeDevicePath(source);
+        const destinationDevice = normalizeRuntimeDevicePath(destination);
+        const sourceBytes = sourceDevice
+          ? utf8Bytes(readDevice(sourceDevice))
+          : fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
+        if (destinationDevice) {
+          writeDevice(destinationDevice, textFromBytes(sourceBytes));
+          return;
+        }
+        const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath);
         setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
       },
       renameSync: (oldPath: unknown, newPath: unknown) => {
@@ -1037,6 +1111,7 @@ async function runBrowserJavaScriptProjectRequest(
         fileStore.delete(normalizedOldPath);
         modules.delete(normalizedOldPath);
         cache.delete(normalizedOldPath);
+        io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
         setFileBytes(normalizedNewPath, bytes);
       },
       unlinkSync: deleteFile,
@@ -1057,6 +1132,7 @@ async function runBrowserJavaScriptProjectRequest(
               fileStore.delete(filePath);
               modules.delete(filePath);
               cache.delete(filePath);
+              io.fileChange({ path: filePath, deleted: true }, 'live');
             }
             for (const directoryPath of Array.from(directoryStore)) {
               if (directoryPath === normalized || directoryPath.startsWith(prefix)) {
