@@ -186,6 +186,69 @@ public class Main {
   }
 }
 
+function testJavaBrowserHelperWorkspaceDirectories(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-workspace-dirs-'));
+  try {
+    const classesPath = join(tmpRoot, 'classes');
+    const sourcePath = join(tmpRoot, 'ProjectWorkspaceDirectorySmoke.java');
+    writeFileSync(
+      sourcePath,
+      `import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import tracecode.browser.BrowserCompileAndTraceLibrary;
+
+public class ProjectWorkspaceDirectorySmoke {
+  public static void main(String[] args) throws Exception {
+    Path root = Paths.get(args[0]);
+    String manifest = "\\tdir\\tempty/child";
+    Method writeProjectResourceFiles = BrowserCompileAndTraceLibrary.class.getDeclaredMethod(
+      "writeProjectResourceFiles",
+      String.class,
+      Path.class);
+    writeProjectResourceFiles.setAccessible(true);
+    writeProjectResourceFiles.invoke(null, manifest, root);
+    Method collectChangedProjectFilesJson = BrowserCompileAndTraceLibrary.class.getDeclaredMethod(
+      "collectChangedProjectFilesJson",
+      Path.class,
+      String.class);
+    collectChangedProjectFilesJson.setAccessible(true);
+    System.out.println(Files.isDirectory(root.resolve("empty/child")));
+    System.out.println(collectChangedProjectFilesJson.invoke(null, root, manifest));
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      [
+        '-cp',
+        [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'),
+        'ProjectWorkspaceDirectorySmoke',
+        tmpRoot,
+      ],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const [isDirectory, changedFilesJson] = output.trim().split('\n');
+    assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
+    assertCondition(
+      Array.isArray(JSON.parse(changedFilesJson ?? 'null')) && JSON.parse(changedFilesJson ?? 'null').length === 0,
+      'Java browser helper should not report directory manifest entries as file changes'
+    );
+    console.log('PASS: Java browser helper materializes workspace directories');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testJavaRuntimeMultiSnapshotFragments(): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-multi-snapshot-'));
   try {
@@ -414,6 +477,25 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
   >();
   const rewriteCalls: RewriteCall[] = [];
   const stringFiles: Array<{ path: string; source: string }> = [];
+  const projectCompileCalls: Array<{
+    sourcePaths: string;
+    mainClassName: string;
+    resourceManifest?: string;
+    compileClasspath?: string;
+    compileSourcePaths?: string;
+    compileSourceRootPaths?: string;
+    workspaceManifest?: string;
+    workspaceRoot?: string;
+    workspaceCwd?: string;
+  }> = [];
+  const projectClassCompileCalls: Array<{
+    classManifest: string;
+    mainClassName: string;
+    runtimeClasspath: string;
+    workspaceManifest?: string;
+    workspaceRoot?: string;
+    workspaceCwd?: string;
+  }> = [];
   const runLibraryClasspaths: string[] = [];
   let nextId = 0;
 
@@ -568,6 +650,186 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 classLoadTimeMs: 1,
                 runTimeMs: 1,
                 compileCacheHit: true,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            compileAndRunProjectSources: async (
+              sourceManifest: string,
+              _sourceRoot: string,
+              _classesDir: string,
+              mainClassName: string,
+              compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName, compileClasspath });
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify(JSON.stringify({
+                  stdout: '5\njava_args=alpha,beta\n',
+                  stderr: '',
+                  exitCode: 0,
+                })),
+                compilerStdout: '',
+                compilerStderr: '',
+                compileTimeMs: 1,
+                classLoadTimeMs: 1,
+                runTimeMs: 1,
+                compileCacheHit: true,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            compileAndRunProjectSourcesWithResources: async (
+              sourceManifest: string,
+              _sourceRoot: string,
+              resourceManifest: string,
+              _resourceRoot: string,
+              _classesDir: string,
+              mainClassName: string,
+              compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName, resourceManifest, compileClasspath });
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify(JSON.stringify({
+                  stdout: '5\njava_args=alpha,beta\n',
+                  stderr: '',
+                  exitCode: 0,
+                })),
+                compilerStdout: '',
+                compilerStderr: '',
+                compileTimeMs: 1,
+                classLoadTimeMs: 1,
+                runTimeMs: 1,
+                compileCacheHit: true,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            compileAndRunProjectSourcesWithWorkspace: async (
+              sourceManifest: string,
+              _sourceRoot: string,
+              resourceManifest: string,
+              _resourceRoot: string,
+              workspaceManifest: string,
+              workspaceRoot: string,
+              workspaceCwd: string,
+              _classesDir: string,
+              mainClassName: string,
+              compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName, resourceManifest, compileClasspath, workspaceManifest, workspaceRoot, workspaceCwd });
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify(JSON.stringify({
+                  stdout: '5\njava_args=alpha,beta\n',
+                  stderr: '',
+                  exitCode: 0,
+                })),
+                compilerStdout: '',
+                compilerStderr: '',
+                changedFiles: [
+                  { path: 'generated.txt', contents: Buffer.from('created\n', 'utf8').toString('base64'), encoding: 'base64' },
+                  { path: 'bytes.bin', contents: Buffer.from([0, 255]).toString('base64'), encoding: 'base64' },
+                  { path: 'stale.txt', deleted: true },
+                ],
+                compileTimeMs: 1,
+                classLoadTimeMs: 1,
+                runTimeMs: 1,
+                compileCacheHit: true,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            compileProjectSourcesWithResources: async (
+              sourceManifest: string,
+              _sourceRoot: string,
+              resourceManifest: string,
+              _resourceRoot: string,
+              compileSourcePaths: string,
+              compileSourceRootPaths: string,
+              _classesDir: string,
+              compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName: '<javac>', resourceManifest, compileClasspath, compileSourcePaths, compileSourceRootPaths });
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify({
+                  stdout: '',
+                  stderr: '',
+                  exitCode: 0,
+                }),
+                compilerStdout: '',
+                compilerStderr: '',
+                compiledFiles: [
+                  { path: 'app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
+                ],
+                compileTimeMs: 1,
+                classLoadTimeMs: 0,
+                runTimeMs: 0,
+                compileCacheHit: false,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            compileAndRunProjectClassFiles: async (
+              classManifest: string,
+              _classRoot: string,
+              _sourceManifest: string,
+              _sourceRoot: string,
+              _classesDir: string,
+              mainClassName: string,
+              runtimeClasspath: string,
+              _compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              projectClassCompileCalls.push({ classManifest, mainClassName, runtimeClasspath });
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify(JSON.stringify({
+                  stdout: '5\njava_args=alpha,beta\n',
+                  stderr: '',
+                  exitCode: 0,
+                })),
+                compilerStdout: '',
+                compilerStderr: '',
+                compileTimeMs: 1,
+                classLoadTimeMs: 1,
+                runTimeMs: 1,
+                compileCacheHit: false,
+                compilerDebugProfile: compilerProfile,
+              });
+            },
+            compileAndRunProjectClassFilesWithWorkspace: async (
+              classManifest: string,
+              _classRoot: string,
+              _sourceManifest: string,
+              _sourceRoot: string,
+              workspaceManifest: string,
+              workspaceRoot: string,
+              workspaceCwd: string,
+              _classesDir: string,
+              mainClassName: string,
+              runtimeClasspath: string,
+              _compileClasspath: string,
+              compilerProfile: string
+            ) => {
+              projectClassCompileCalls.push({ classManifest, mainClassName, runtimeClasspath, workspaceManifest, workspaceRoot, workspaceCwd });
+              return JSON.stringify({
+                success: true,
+                output: JSON.stringify(JSON.stringify({
+                  stdout: '5\njava_args=alpha,beta\n',
+                  stderr: '',
+                  exitCode: 0,
+                })),
+                compilerStdout: '',
+                compilerStderr: '',
+                changedFiles: [
+                  { path: 'generated.txt', contents: Buffer.from('created\n', 'utf8').toString('base64'), encoding: 'base64' },
+                ],
+                compileTimeMs: 1,
+                classLoadTimeMs: 1,
+                runTimeMs: 1,
+                compileCacheHit: false,
                 compilerDebugProfile: compilerProfile,
               });
             },
@@ -761,11 +1023,13 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
   };
 
   const context = vm.createContext({
+    btoa: (value: string) => Buffer.from(value, 'binary').toString('base64'),
     console,
     self: selfObject,
     performance: { now: () => Date.now() },
     setTimeout,
     clearTimeout,
+    TextEncoder,
     queueMicrotask,
   });
 
@@ -796,12 +1060,13 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
     onmessage?.({ data: { type: 'terminate' } });
   }
 
-  return { rewriteCalls, runLibraryClasspaths, sendMessage, stringFiles, terminate };
+  return { projectClassCompileCalls, projectCompileCalls, rewriteCalls, runLibraryClasspaths, sendMessage, stringFiles, terminate };
 }
 
 async function main(): Promise<void> {
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
+  testJavaBrowserHelperWorkspaceDirectories();
   testJavaRuntimeMultiSnapshotFragments();
 
   const workerSource = await loadWorkerSource();
@@ -892,6 +1157,583 @@ async function main(): Promise<void> {
     );
     assertJavaSourceCompiles(defaultImportSource, 'Java runnable source with default imports and javafx.util.Pair');
     console.log('PASS: java worker injects default imports and Pair helper');
+
+    const projectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }> }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'Main',
+      args: ['alpha', 'beta'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        directories: ['empty/child'],
+        files: [
+          { path: 'Helper.java', contents: 'class Helper { static int add(int a, int b) { return a + b; } }\n' },
+          {
+            path: 'Main.java',
+            contents: [
+              'class Main {',
+              '  public static void main(String[] args) {',
+              '    System.out.println(Helper.add(2, 3));',
+              '    System.out.println("java_args=" + String.join(",", args));',
+              '  }',
+              '}',
+              '',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+    assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
+    assertCondition(
+      projectExecute.stdout === '5\njava_args=alpha,beta\n',
+      'Java execute-project-java should return captured stdout'
+    );
+    assertCondition(
+      projectExecute.files?.some((file) =>
+        file.path === 'generated.txt' &&
+          file.encoding === 'base64' &&
+          Buffer.from(file.contents, 'base64').toString('utf8') === 'created\n'
+      ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'bytes.bin' &&
+            file.encoding === 'base64' &&
+            file.contents === Buffer.from([0, 255]).toString('base64')
+        ) &&
+        projectExecute.files?.some((file) => file.path === 'stale.txt' && file.deleted === true),
+      'Java execute-project-java should return browser workspace changed files through result files'
+    );
+    const defaultProjectManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
+    const defaultWorkspaceManifest = harness.projectCompileCalls.at(-1)?.workspaceManifest ?? '';
+    const defaultManifestEntries = new Map(
+      defaultProjectManifest
+        .split('\n')
+        .filter(Boolean)
+        .map((entry) => {
+          const [path, encodedSource] = entry.split('\t');
+          return [path, Buffer.from(encodedSource ?? '', 'base64').toString('utf8')] as const;
+        })
+    );
+    assertCondition(
+      defaultManifestEntries.has('Helper.java') &&
+        defaultManifestEntries.has('Main.java') &&
+        Array.from(defaultManifestEntries.values()).some((source) => source.includes('public class Exports')),
+      'Java execute-project-java should pass project files and an adapter source separately'
+    );
+    assertCondition(
+      defaultWorkspaceManifest.includes('Helper.java') &&
+        defaultWorkspaceManifest.includes('Main.java') &&
+        defaultWorkspaceManifest.includes('\tdir\tempty/child') &&
+        harness.projectCompileCalls.at(-1)?.workspaceRoot?.endsWith('/workspace') &&
+        harness.projectCompileCalls.at(-1)?.workspaceCwd?.endsWith('/workspace'),
+      'Java execute-project-java should pass full project workspace files to the browser helper'
+    );
+    console.log('PASS: java worker executes project requests through a multifile compile path');
+
+    await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'Main',
+      args: [],
+      cwd: '/workspace/src',
+      env: {},
+      stdin: '',
+      project: {
+        cwd: '/workspace',
+        files: [
+          { path: 'src/Main.java', contents: 'public class Main { public static void main(String[] args) {} }\n' },
+        ],
+      },
+    });
+    assertCondition(
+      harness.projectCompileCalls.at(-1)?.workspaceRoot?.endsWith('/workspace') &&
+        harness.projectCompileCalls.at(-1)?.workspaceCwd?.endsWith('/workspace/src'),
+      'Java execute-project-java should pass request cwd separately from workspace root'
+    );
+    console.log('PASS: java worker preserves project cwd for browser workspace runs');
+
+    const systemPropertyProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'PropMain',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      options: { systemProperties: { 'trace.mode': 'browser', 'empty.value': '' } },
+      project: {
+        files: [
+          {
+            path: 'PropMain.java',
+            contents: [
+              'public class PropMain {',
+              '  public static void main(String[] args) {',
+              '    System.out.println(System.getProperty("trace.mode", "missing"));',
+              '    System.out.println(System.getProperty("empty.value", "missing"));',
+              '  }',
+              '}',
+              '',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+    assertCondition(systemPropertyProjectExecute.exitCode === 0, 'Java execute-project-java should accept system properties');
+    const systemPropertyManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
+    const systemPropertyAdapterSource = Array.from(
+      new Map(
+        systemPropertyManifest
+          .split('\n')
+          .filter(Boolean)
+          .map((entry) => {
+            const [path, encodedSource] = entry.split('\t');
+            return [path, Buffer.from(encodedSource ?? '', 'base64').toString('utf8')] as const;
+          })
+      ).values()
+    ).find((source) => source.includes('"trace.mode"') && source.includes('"browser"'));
+    assertCondition(
+      systemPropertyAdapterSource?.includes('"empty.value"') === true &&
+        systemPropertyAdapterSource.includes('System.setProperty(propertyKeys[index], propertyValues[index])') &&
+        systemPropertyAdapterSource.includes('System.clearProperty(key)'),
+      'Java execute-project-java should set and restore -D system properties in the browser adapter'
+    );
+    console.log('PASS: java worker applies browser project system properties without changing the project API');
+
+    const jarProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'app.jar',
+      args: ['alpha', 'beta'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      options: { jarPath: 'app.jar', classpath: 'app.jar', jarMainClass: 'app.Main', systemProperties: { 'trace.mode': 'jar' } },
+      project: {
+        files: [
+          { path: 'app.jar', contents: 'UEsDBAo=', encoding: 'base64' },
+        ],
+      },
+    });
+    assertCondition(jarProjectExecute.exitCode === 0, 'Java execute-project-java should accept jar execution options');
+    const jarClassCall = harness.projectClassCompileCalls.at(-1);
+    const jarAdapterSource = Array.from(
+      new Map(
+        (jarClassCall ? harness.stringFiles.at(-1)?.source ?? '' : '')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => [line, line] as const)
+      ).values()
+    ).join('\n');
+    assertCondition(
+      jarClassCall?.classManifest.includes('app.jar') &&
+        jarClassCall.runtimeClasspath.endsWith('/classpath/app.jar') &&
+        jarClassCall.workspaceManifest?.includes('app.jar') &&
+        jarClassCall.mainClassName.startsWith('Exports'),
+      'Java execute-project-java should run -jar requests from the persisted jar classpath'
+    );
+    assertCondition(
+      harness.projectClassCompileCalls.length > 0,
+      `Java execute-project-java should route jar execution through classpath project mode: ${jarAdapterSource}`
+    );
+    console.log('PASS: java worker routes browser jar execution through persisted project jar resources');
+
+    const packagedProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'app.Main',
+      args: ['alpha', 'beta'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          { path: 'src/app/Helper.java', contents: 'package app;\nclass Helper { static int add(int a, int b) { return a + b; } }\n' },
+          {
+            path: 'src/app/Main.java',
+            contents: [
+              'package app;',
+              'public class Main {',
+              '  public static void main(String[] args) {',
+              '    System.out.println(Helper.add(2, 3));',
+              '    System.out.println("java_args=" + String.join(",", args));',
+              '  }',
+              '}',
+              '',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+    assertCondition(packagedProjectExecute.exitCode === 0, 'Java execute-project-java should accept packaged main classes');
+    const latestProjectManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
+    const manifestEntries = new Map(
+      latestProjectManifest
+        .split('\n')
+        .filter(Boolean)
+        .map((entry) => {
+          const [path, encodedSource] = entry.split('\t');
+          return [path, Buffer.from(encodedSource ?? '', 'base64').toString('utf8')] as const;
+        })
+    );
+    assertCondition(
+      manifestEntries.get('src/app/Main.java')?.includes('package app;') &&
+        manifestEntries.get('src/app/Helper.java')?.includes('package app;'),
+      'Java execute-project-java should preserve packaged project paths in the source manifest'
+    );
+    assertCondition(
+      harness.projectCompileCalls.at(-1)?.mainClassName.startsWith('Exports') &&
+        Array.from(manifestEntries.values()).some((source) => source.includes('app.Main.main(new String[] { "alpha", "beta" });')),
+      'Java execute-project-java should compile packaged project files through the multifile helper'
+    );
+    console.log('PASS: java worker executes packaged project requests through the shared project path');
+
+    const jarCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'src/app/Main.java',
+      args: ['@javac.args'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'javac.args',
+            contents: [
+              '-cp lib/external.jar',
+              '-d out',
+              '-encoding UTF-8',
+              '-sourcepath src',
+              '-s generated/NotSource.java',
+              '-h headers/NotSource.java',
+              '--module-path lib/external.jar',
+              '-processorpath lib/external.jar',
+              'src/app/Main.java',
+              '',
+            ].join('\n'),
+          },
+          {
+            path: 'src/app/Main.java',
+            contents: 'package app;\nimport lib.External;\npublic class Main { public static void main(String[] args) { System.out.println(External.value()); } }\n',
+          },
+          { path: 'src/app/Broken.java', contents: 'package app;\nclass Broken { syntax error }\n' },
+          { path: 'lib/external.jar', contents: 'UEsDBAo=', encoding: 'base64' },
+        ],
+      },
+    });
+    assertCondition(jarCompileProjectExecute.exitCode === 0, 'Java execute-project-java should accept javac classpath jar resources');
+    const jarCompileCall = harness.projectCompileCalls.at(-1);
+    assertCondition(
+      jarCompileCall?.resourceManifest?.includes('lib/external.jar') &&
+        jarCompileCall.compileClasspath?.includes('/classpath/lib/external.jar') &&
+        !jarCompileCall.compileClasspath.includes('/java-browser-helper.jar') &&
+        jarCompileCall.compileSourcePaths === 'src/app/Main.java' &&
+        jarCompileCall.compileSourceRootPaths === 'src' &&
+        jarCompileCall.sourcePaths.includes('src/app/Broken.java') &&
+        !jarCompileCall.sourcePaths.includes('Exports'),
+      'Java execute-project-java should materialize jar resources before browser javac classpath compile'
+    );
+    console.log('PASS: java worker compiles project sources against persisted jar resources');
+
+    const cwdRelativeJarCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; files?: Array<{ path: string; contents?: string; encoding?: string }> }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: '../src/app/Main.java',
+      args: ['-cp', '../lib/external.jar', '-d', '../rel-out', '-sourcepath', '../src', '../src/app/Main.java'],
+      cwd: '/workspace/build',
+      env: {},
+      stdin: '',
+      project: {
+        cwd: '/workspace',
+        files: [
+          { path: 'build/.keep', contents: '' },
+          {
+            path: 'src/app/Main.java',
+            contents: 'package app;\nimport lib.External;\npublic class Main { public static void main(String[] args) { System.out.println(External.value()); } }\n',
+          },
+          { path: 'lib/external.jar', contents: 'UEsDBAo=', encoding: 'base64' },
+        ],
+      },
+    });
+    assertCondition(cwdRelativeJarCompileProjectExecute.exitCode === 0, 'Java execute-project-java should accept cwd-relative javac resources');
+    const cwdRelativeJarCompileCall = harness.projectCompileCalls.at(-1);
+    assertCondition(
+      cwdRelativeJarCompileCall?.resourceManifest?.includes('lib/external.jar') &&
+        cwdRelativeJarCompileCall.compileClasspath?.includes('/classpath/lib/external.jar') &&
+        cwdRelativeJarCompileCall.compileSourcePaths === 'src/app/Main.java' &&
+        cwdRelativeJarCompileCall.compileSourceRootPaths === 'src' &&
+        cwdRelativeJarCompileProjectExecute.files?.some((file) => file.path === 'rel-out/app/Main.class'),
+      'Java execute-project-java should normalize cwd-relative javac paths inside the browser workspace'
+    );
+    console.log('PASS: java worker resolves cwd-relative javac source, output, sourcepath, and classpath paths');
+
+    const envClasspathCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'src/app/Main.java',
+      args: ['-d', 'out', 'src/app/Main.java'],
+      cwd: '/workspace',
+      env: { CLASSPATH: '/workspace/lib/external.jar' },
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'src/app/Main.java',
+            contents: 'package app;\nimport lib.External;\npublic class Main { public static void main(String[] args) { System.out.println(External.value()); } }\n',
+          },
+          { path: 'lib/external.jar', contents: 'UEsDBAo=', encoding: 'base64' },
+        ],
+      },
+    });
+    assertCondition(envClasspathCompileProjectExecute.exitCode === 0, 'Java execute-project-java should accept javac CLASSPATH jar resources');
+    const envClasspathCompileCall = harness.projectCompileCalls.at(-1);
+    assertCondition(
+      envClasspathCompileCall?.resourceManifest?.includes('lib/external.jar') &&
+        envClasspathCompileCall.compileClasspath?.includes('/classpath/lib/external.jar') &&
+        !envClasspathCompileCall.compileClasspath.includes('/java-browser-helper.jar') &&
+        envClasspathCompileCall.compileSourcePaths === 'src/app/Main.java',
+      'Java execute-project-java should materialize CLASSPATH jar resources for browser javac'
+    );
+    console.log('PASS: java worker compiles project sources against env CLASSPATH resources');
+
+    const outsideCompileClasspathExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'src/app/Main.java',
+      args: ['-d', 'out', '-cp', '/outside/lib/external.jar', 'src/app/Main.java'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'src/app/Main.java',
+            contents: 'package app;\npublic class Main { public static void main(String[] args) {} }\n',
+          },
+        ],
+      },
+    });
+    assertCondition(
+      outsideCompileClasspathExecute.exitCode !== 0 &&
+        outsideCompileClasspathExecute.stderr.includes('Project path must stay within the workspace: /outside/lib/external.jar'),
+      `Java execute-project-java should reject javac classpath entries outside the workspace: ${outsideCompileClasspathExecute.stderr}`
+    );
+
+    const relativeOutsideCompileClasspathExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'src/app/Main.java',
+      args: ['-d', 'out', '-cp', '../outside/lib/external.jar', 'src/app/Main.java'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'src/app/Main.java',
+            contents: 'package app;\npublic class Main { public static void main(String[] args) {} }\n',
+          },
+        ],
+      },
+    });
+    assertCondition(
+      relativeOutsideCompileClasspathExecute.exitCode !== 0 &&
+        relativeOutsideCompileClasspathExecute.stderr.includes('Project path must not escape the workspace: ../outside/lib/external.jar'),
+      `Java execute-project-java should reject cwd-relative javac classpath escapes: ${relativeOutsideCompileClasspathExecute.stderr}`
+    );
+
+    const previewCompileCallCount = harness.projectCompileCalls.length;
+    const previewCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'Main.java',
+      args: ['--enable-preview', 'Main.java'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'Main.java',
+            contents: 'class Main { public static void main(String[] args) {} }\n',
+          },
+        ],
+      },
+    });
+    assertCondition(
+      previewCompileProjectExecute.exitCode !== 0 &&
+        previewCompileProjectExecute.stderr.includes('--enable-preview is not supported in the browser project environment'),
+      `Java execute-project-java should explicitly reject browser javac preview mode: ${previewCompileProjectExecute.stderr}`
+    );
+    assertCondition(
+      harness.projectCompileCalls.length === previewCompileCallCount,
+      'Java execute-project-java should reject unsupported browser javac flags before invoking the compile helper'
+    );
+    const previewRunCallCount = harness.projectCompileCalls.length;
+    const previewRunProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'Main',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      options: { enablePreview: true },
+      project: {
+        files: [
+          {
+            path: 'Main.java',
+            contents: 'class Main { public static void main(String[] args) {} }\n',
+          },
+        ],
+      },
+    });
+    assertCondition(
+      previewRunProjectExecute.exitCode !== 0 &&
+        previewRunProjectExecute.stderr.includes('--enable-preview is not supported in the browser project environment'),
+      `Java execute-project-java should explicitly reject browser java preview mode: ${previewRunProjectExecute.stderr}`
+    );
+    assertCondition(
+      harness.projectCompileCalls.length === previewRunCallCount,
+      'Java execute-project-java should reject unsupported browser java preview mode before invoking the compile helper'
+    );
+
+    const duplicateBasenameProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'b.Main',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'src/a/Main.java',
+            contents: 'package a;\npublic class Main { public static int value() { return 5; } }\n',
+          },
+          {
+            path: 'src/b/Main.java',
+            contents: 'package b;\npublic class Main { public static void main(String[] args) { System.out.println(a.Main.value()); } }\n',
+          },
+        ],
+      },
+    });
+    assertCondition(duplicateBasenameProjectExecute.exitCode === 0, 'Java execute-project-java should accept duplicate basenames in different packages');
+    const duplicateBasenameManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
+    assertCondition(
+      duplicateBasenameManifest.includes('src/a/Main.java') &&
+        duplicateBasenameManifest.includes('src/b/Main.java'),
+      'Java execute-project-java should keep duplicate basenames distinct by project path'
+    );
+    console.log('PASS: java worker preserves duplicate Java basenames across packages');
+
+    const classpathProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'app.Main',
+      args: ['alpha', 'beta'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      options: { classpath: 'out' },
+      project: {
+        files: [
+          { path: 'out/app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
+          { path: 'out/app/Helper.class', contents: 'yv66vg==', encoding: 'base64' },
+          { path: 'lib/external.jar', contents: 'UEsDBAo=', encoding: 'base64' },
+          { path: 'src/app/Main.java', contents: 'package app;\npublic class Main {}\n' },
+        ],
+      },
+    });
+    assertCondition(classpathProjectExecute.exitCode === 0, 'Java execute-project-java should run explicit classpath class files');
+    const classpathCall = harness.projectClassCompileCalls.at(-1);
+    assertCondition(
+      classpathCall?.classManifest.includes('out/app/Main.class') &&
+        classpathCall.classManifest.includes('lib/external.jar') &&
+        !classpathCall.classManifest.includes('src/app/Main.java') &&
+        classpathCall.runtimeClasspath.endsWith('/classpath/out') &&
+        classpathCall.workspaceManifest?.includes('src/app/Main.java') &&
+        classpathCall.workspaceRoot?.endsWith('/workspace'),
+      'Java execute-project-java should use persisted class files for explicit classpath runs'
+    );
+    console.log('PASS: java worker runs explicit project classpath requests from persisted class files');
+
+    const envClasspathProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'app.Main',
+      args: ['gamma'],
+      cwd: '/workspace',
+      env: { CLASSPATH: '/workspace/out' },
+      stdin: '',
+      project: {
+        files: [
+          { path: 'out/app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
+          { path: 'out/app/Helper.class', contents: 'yv66vg==', encoding: 'base64' },
+          { path: 'src/app/Main.java', contents: 'package app;\npublic class Main {}\n' },
+        ],
+      },
+    });
+    assertCondition(envClasspathProjectExecute.exitCode === 0, 'Java execute-project-java should run env CLASSPATH class files');
+    const envClasspathCall = harness.projectClassCompileCalls.at(-1);
+    assertCondition(
+      envClasspathCall?.classManifest.includes('out/app/Main.class') &&
+        !envClasspathCall.classManifest.includes('src/app/Main.java') &&
+        envClasspathCall.runtimeClasspath.endsWith('/classpath/out') &&
+        envClasspathCall.workspaceManifest?.includes('src/app/Main.java'),
+      'Java execute-project-java should use persisted class files for env CLASSPATH runs'
+    );
+    console.log('PASS: java worker runs project classpath requests from env CLASSPATH');
+
+    const cwdRelativeClasspathProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'app.Main',
+      args: ['delta'],
+      cwd: '/workspace/build',
+      env: { CLASSPATH: '../out:../lib/external.jar' },
+      stdin: '',
+      project: {
+        cwd: '/workspace',
+        files: [
+          { path: 'build/.keep', contents: '' },
+          { path: 'out/app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
+          { path: 'lib/external.jar', contents: 'UEsDBAo=', encoding: 'base64' },
+          { path: 'src/app/Main.java', contents: 'package app;\npublic class Main {}\n' },
+        ],
+      },
+    });
+    assertCondition(cwdRelativeClasspathProjectExecute.exitCode === 0, 'Java execute-project-java should run cwd-relative env CLASSPATH class files');
+    const cwdRelativeClasspathCall = harness.projectClassCompileCalls.at(-1);
+    assertCondition(
+      cwdRelativeClasspathCall?.runtimeClasspath.includes('/classpath/out') &&
+        cwdRelativeClasspathCall.runtimeClasspath.includes('/classpath/lib/external.jar') &&
+        cwdRelativeClasspathCall.workspaceCwd?.endsWith('/workspace/build'),
+      'Java execute-project-java should normalize cwd-relative runtime classpath entries inside the browser workspace'
+    );
+    console.log('PASS: java worker runs project classpath requests from cwd-relative env CLASSPATH');
+
+    const outsideRunClasspathExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'app.Main',
+      args: [],
+      cwd: '/workspace',
+      env: { CLASSPATH: '/outside/out' },
+      stdin: '',
+      project: {
+        files: [
+          { path: 'out/app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
+        ],
+      },
+    });
+    assertCondition(
+      outsideRunClasspathExecute.exitCode !== 0 &&
+        outsideRunClasspathExecute.stderr.includes('Project path must stay within the workspace: /outside/out'),
+      `Java execute-project-java should reject runtime CLASSPATH entries outside the workspace: ${outsideRunClasspathExecute.stderr}`
+    );
 
     const batchExecute = await harness.sendMessage<{
       success: boolean;

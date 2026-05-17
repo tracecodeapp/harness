@@ -179,6 +179,85 @@ async function assertToPythonLiteralParity(workerSource: string): Promise<void> 
   console.log('PASS: toPythonLiteral parity');
 }
 
+async function assertProjectPythonEnvContract(workerSource: string): Promise<void> {
+  let capturedCode = '';
+  const selfObject: Record<string, unknown> = {
+    location: { search: '' },
+    loadPyodide: async () => ({
+      runPythonAsync: async (code: string) => {
+        capturedCode = code;
+        return JSON.stringify({ stdout: '', stderr: '', exitCode: 0 });
+      },
+    }),
+    postMessage: () => {},
+    onmessage: null,
+  };
+
+  const context = vm.createContext({
+    console,
+    performance: { now: () => Date.now() },
+    self: selfObject,
+    setTimeout,
+    clearTimeout,
+  }) as vm.Context & {
+    executeProjectPython?: (request: unknown) => Promise<unknown>;
+  };
+
+  vm.runInContext(workerSource, context, {
+    filename: 'pyodide-worker.js',
+  });
+
+  assertCondition(typeof context.executeProjectPython === 'function', 'Worker should expose executeProjectPython in VM context');
+  await context.executeProjectPython?.({
+    code: 'from pkgtools import value',
+    source: 'argument',
+    scriptPath: '-c',
+    args: [],
+    cwd: '/workspace',
+    env: { PYTHONPATH: '/workspace/vendor', MODE: 'project' },
+    stdin: '',
+    project: {
+      files: [
+        { path: 'vendor/pkgtools.py', contents: 'def value(): return 42\n' },
+      ],
+    },
+  });
+
+  assertCondition(capturedCode.includes('_env = {str(key): str(value)'), 'Project Python runner should normalize request env');
+  assertCondition(capturedCode.includes('os.environ.update(_env)'), 'Project Python runner should apply request env');
+  assertCondition(capturedCode.includes('def _project_pythonpath_entries()'), 'Project Python runner should compute project PYTHONPATH entries');
+  assertCondition(capturedCode.includes('_env.get("PYTHONPATH", "")'), 'Project Python runner should read PYTHONPATH from request env');
+  assertCondition(capturedCode.includes('"/workspace/"'), 'Project Python runner should map /workspace PYTHONPATH entries');
+  assertCondition(
+    capturedCode.includes('Project path must stay within the workspace: {_entry}'),
+    'Project Python runner should reject PYTHONPATH entries outside the workspace'
+  );
+  assertCondition(capturedCode.includes('def _project_cwd()'), 'Project Python runner should map request cwd into the project root');
+  assertCondition(capturedCode.includes('Project cwd must stay inside the workspace'), 'Project Python runner should reject cwd outside the workspace');
+  assertCondition(capturedCode.includes('def _project_script_absolute_path()'), 'Project Python runner should map absolute virtual script paths');
+  assertCondition(capturedCode.includes('Project path must stay within the workspace'), 'Project Python runner should reject script paths outside the workspace');
+  assertCondition(capturedCode.includes('def _project_files_after_execution()'), 'Project Python runner should collect changed project files');
+  assertCondition(capturedCode.includes('"deleted": True'), 'Project Python runner should report deleted project files');
+  assertCondition(capturedCode.includes('"files": _project_files_after_execution()'), 'Project Python runner should return file side effects');
+  assertCondition(capturedCode.includes('def _clear_project_import_state()'), 'Project Python runner should clear project import state');
+  assertCondition(capturedCode.includes('sys.path_importer_cache.pop'), 'Project Python runner should clear project import caches');
+  assertCondition(capturedCode.includes('importlib.invalidate_caches()'), 'Project Python runner should invalidate importlib caches');
+  assertCondition(capturedCode.includes('def _project_argv()'), 'Project Python runner should compute source-aware argv');
+  assertCondition(capturedCode.includes('return ["-c"] + _args'), 'Project Python -c should expose -c as sys.argv[0]');
+  assertCondition(capturedCode.includes('return ["-"] + _args'), 'Project Python stdin should expose - as sys.argv[0]');
+  assertCondition(capturedCode.includes('importlib.util.find_spec(_script_path)'), 'Project Python -m should resolve module argv[0]');
+  assertCondition(capturedCode.includes('sys.argv = _project_argv()'), 'Project Python runner should apply source-aware argv');
+  assertCondition(capturedCode.includes('def _map_workspace_path(_value)'), 'Project Python runner should map virtual /workspace paths');
+  assertCondition(capturedCode.includes('def _virtual_workspace_path(_value)'), 'Project Python runner should expose virtual /workspace cwd');
+  assertCondition(capturedCode.includes('def _install_virtual_workspace_paths()'), 'Project Python runner should install virtual path shims');
+  assertCondition(capturedCode.includes('builtins.open = _patched_open'), 'Project Python runner should map /workspace paths through open');
+  assertCondition(capturedCode.includes('os.getcwd = _patched_getcwd'), 'Project Python runner should virtualize os.getcwd');
+  assertCondition(capturedCode.includes('_restore_workspace_paths()'), 'Project Python runner should restore virtual path shims');
+  assertCondition(!capturedCode.includes('"__file__": _script_path'), 'Project Python -c/stdin should not define __file__');
+
+  console.log('PASS: Python project worker env/PYTHONPATH contract');
+}
+
 function selectSerializeContractLines(serializedBlock: string, keepers: string[]): string {
   const lines = normalizeLines(serializedBlock);
   const filtered = lines.filter((line) => keepers.some((marker) => line.includes(marker)));
@@ -384,6 +463,7 @@ async function main(): Promise<void> {
 
   await assertWorkerInitWarmupContract(workerSource);
   await assertToPythonLiteralParity(workerSource);
+  await assertProjectPythonEnvContract(workerSource);
   await assertDeprecatedRuntimeNotImported();
 
   console.log('\nPython harness sync checks passed.');

@@ -111,6 +111,45 @@ async function main(): Promise<void> {
           worker.postMessage({ id, type, payload });
         });
 
+      const decodeBase64 = (value) => {
+        const binary = atob(value);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        return bytes;
+      };
+
+      const encodeBase64 = (bytes) => {
+        let binary = '';
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return btoa(binary);
+      };
+
+      const archiveHeader = (name, size) => {
+        const field = (value, width) => String(value).slice(0, width).padEnd(width, ' ');
+        return [
+          field(name.endsWith('/') ? name : name + '/', 16),
+          field('0', 12),
+          field('0', 6),
+          field('0', 6),
+          field('100644', 8),
+          field(size, 10),
+          '\`\\n',
+        ].join('');
+      };
+
+      const createArchiveBase64 = (name, contentsBase64) => {
+        const contents = decodeBase64(contentsBase64);
+        const header = new TextEncoder().encode('!<arch>\\n' + archiveHeader(name, contents.length));
+        const padding = contents.length % 2 === 0 ? 0 : 1;
+        const archive = new Uint8Array(header.length + contents.length + padding);
+        archive.set(header, 0);
+        archive.set(contents, header.length);
+        if (padding) archive[archive.length - 1] = 10;
+        return encodeBase64(archive);
+      };
+
       await send('init', {
         assets: {
           compilerBundleUrl: '/workers/vendor/cpp/yowasp/bundle.js',
@@ -150,6 +189,456 @@ async function main(): Promise<void> {
         functionName: 'add',
         inputs: { a: 2, b: 3 },
       });
+      const projectFiles = [
+        {
+          path: 'src/main.cpp',
+          contents: [
+            '#include "helper.hpp"',
+            '#include <cstdlib>',
+            '#include <fstream>',
+            '#include <iostream>',
+            '#include <string>',
+            'int main(int argc, char** argv) {',
+            '  std::string line;',
+            '  std::getline(std::cin, line);',
+            '  std::cout << helper_value() << "\\\\n";',
+            '  std::cout << line << "\\\\n";',
+            '  std::cout << (std::getenv("MODE") ? std::getenv("MODE") : "") << "\\\\n";',
+            '  std::cout << (argc > 2 ? std::string(argv[1]) + "," + argv[2] : "") << "\\\\n";',
+            '  std::ofstream("generated.txt") << helper_value() << "\\\\n";',
+            '  std::ofstream bytes("bytes.bin", std::ios::binary);',
+            '  char raw[2] = {0, static_cast<char>(255)};',
+            '  bytes.write(raw, 2);',
+            '  std::remove("stale.txt");',
+            '  return 0;',
+            '}',
+            '',
+          ].join('\\n'),
+        },
+        { path: 'src/helper.hpp', contents: 'int helper_value();\\n' },
+        { path: 'src/helper.cpp', contents: '#include "helper.hpp"\\nint helper_value() { return 42; }\\n' },
+        {
+          path: 'src/absolute_main.cpp',
+          contents: [
+            '#include <answer.hpp>',
+            '#include <iostream>',
+            'int main() {',
+            '  std::cout << absolute_answer() << "\\\\n";',
+            '  return 0;',
+            '}',
+            '',
+          ].join('\\n'),
+        },
+        { path: 'include/answer.hpp', contents: 'inline int absolute_answer() { return 99; }\\n' },
+        {
+          path: 'envinclude/env_answer.hpp',
+          contents: 'inline int env_answer() { return 2026; }\\n',
+        },
+        {
+          path: 'cppinclude/cpp_answer.hpp',
+          contents: 'inline int cpp_answer() { return 2028; }\\n',
+        },
+        {
+          path: 'cinclude/c_answer.h',
+          contents: '#define C_ANSWER 2027\\n',
+        },
+        {
+          path: 'src/env_include_main.cpp',
+          contents: '#include <env_answer.hpp>\\n#include <iostream>\\nint main() { std::cout << env_answer() << "\\\\n"; }\\n',
+        },
+        {
+          path: 'src/cplus_include_main.cpp',
+          contents: '#include <cpp_answer.hpp>\\n#include <iostream>\\nint main() { std::cout << cpp_answer() << "\\\\n"; }\\n',
+        },
+        {
+          path: 'src/env_c_include_main.c',
+          contents: '#include <c_answer.h>\\n#include <stdio.h>\\nint main(void) { printf("%d\\\\n", C_ANSWER); return 0; }\\n',
+        },
+        { path: 'src/link_main.cpp', contents: '#include <iostream>\\nint linked_value();\\nint main() { std::cout << linked_value() << "\\\\n"; }\\n' },
+        { path: 'src/linked.cpp', contents: 'int linked_value() { return 1234; }\\n' },
+        { path: 'src/plain.c', contents: '#include <stdio.h>\\nint main(void) { printf("plain-c\\\\n"); return 0; }\\n' },
+        {
+          path: 'src/empty_dir_main.cpp',
+          contents: '#include <dirent.h>\\n#include <iostream>\\n#include <string>\\nint main() { DIR* child = opendir("empty/child"); std::cout << (child ? "dir" : "missing") << "\\\\n"; if (child) closedir(child); DIR* parent = opendir("empty"); bool saw = false; if (parent) { while (dirent* entry = readdir(parent)) { if (std::string(entry->d_name) == "child") saw = true; } closedir(parent); } std::cout << (saw ? "child" : "missing") << "\\\\n"; }\\n',
+        },
+        { path: 'build/.keep', contents: '' },
+        { path: 'src/stale.txt', contents: 'delete me\\n' },
+      ];
+      const projectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: 'main.cpp',
+        args: ['main.cpp', 'helper.cpp', '-o', 'a.out'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const projectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: './a.out',
+        args: ['alpha', 'beta'],
+        cwd: '/workspace/src',
+        env: { MODE: 'browser-cpp-project' },
+        stdin: 'from-stdin\\n',
+        project: { files: [...projectFiles, ...(projectCompile.files || [])] },
+      });
+      const absoluteProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/absolute_main.cpp',
+        args: ['/workspace/src/absolute_main.cpp', '-I', '/workspace/include', '-isystem/workspace/include', '-o', '/workspace/out/absolute-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const absoluteProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/absolute-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: { MODE: 'browser-cpp-absolute' },
+        stdin: 'absolute-stdin\\n',
+        project: { files: [...projectFiles, ...(absoluteProjectCompile.files || [])] },
+      });
+      const inlineAbsoluteIncludeCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/absolute_main.cpp',
+        args: ['/workspace/src/absolute_main.cpp', '-I/workspace/include', '-o', '/workspace/out/inline-include-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const inlineAbsoluteIncludeRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/inline-include-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(inlineAbsoluteIncludeCompile.files || [])] },
+      });
+      let outsideCwdError = '';
+      try {
+        await send('execute-project-cpp', {
+          source: 'compile',
+          scriptPath: 'main.cpp',
+          args: ['main.cpp', '-o', 'bad-app'],
+          cwd: '/outside',
+          env: {},
+          stdin: '',
+          project: { files: projectFiles },
+        });
+      } catch (error) {
+        outsideCwdError = error instanceof Error ? error.message : String(error);
+      }
+      let outsideIncludeArgError = '';
+      try {
+        await send('execute-project-cpp', {
+          source: 'compile',
+          scriptPath: 'main.cpp',
+          args: ['main.cpp', '-I', '/outside/include', '-o', 'bad-app'],
+          cwd: '/workspace/src',
+          env: {},
+          stdin: '',
+          project: { files: projectFiles },
+        });
+      } catch (error) {
+        outsideIncludeArgError = error instanceof Error ? error.message : String(error);
+      }
+      let outsideRelativeIncludeArgError = '';
+      try {
+        await send('execute-project-cpp', {
+          source: 'compile',
+          scriptPath: 'main.cpp',
+          args: ['main.cpp', '-I', '../outside/include', '-o', 'bad-app'],
+          cwd: '/workspace',
+          env: {},
+          stdin: '',
+          project: { files: projectFiles },
+        });
+      } catch (error) {
+        outsideRelativeIncludeArgError = error instanceof Error ? error.message : String(error);
+      }
+      let outsideLibraryArgError = '';
+      try {
+        await send('execute-project-cpp', {
+          source: 'compile',
+          scriptPath: 'main.cpp',
+          args: ['main.cpp', '-L', '/outside/lib', '-o', 'bad-app'],
+          cwd: '/workspace/src',
+          env: {},
+          stdin: '',
+          project: { files: projectFiles },
+        });
+      } catch (error) {
+        outsideLibraryArgError = error instanceof Error ? error.message : String(error);
+      }
+      let outsideLibraryEnvError = '';
+      try {
+        await send('execute-project-cpp', {
+          source: 'compile',
+          scriptPath: 'main.cpp',
+          args: ['main.cpp', '-o', 'bad-app'],
+          cwd: '/workspace/src',
+          env: { LIBRARY_PATH: '/outside/lib' },
+          stdin: '',
+          project: { files: projectFiles },
+        });
+      } catch (error) {
+        outsideLibraryEnvError = error instanceof Error ? error.message : String(error);
+      }
+      const stdinProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '<stdin>',
+        args: ['-x', 'c++', '-', '-o', '/workspace/out/stdin-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '#include <iostream>\\nint main() { std::cout << "stdin-cpp" << "\\\\n"; }\\n',
+        project: { files: projectFiles },
+      });
+      const stdinProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/stdin-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(stdinProjectCompile.files || [])] },
+      });
+      const cProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/plain.c',
+        args: ['/workspace/src/plain.c', '-o', '/workspace/out/plain-c'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+        options: { compilerCommand: 'gcc' },
+      });
+      const cProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/plain-c',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(cProjectCompile.files || [])] },
+      });
+      const emptyDirectoryCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/empty_dir_main.cpp',
+        args: ['/workspace/src/empty_dir_main.cpp', '-o', '/workspace/out/empty-dir-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles, directories: ['empty/child'] },
+      });
+      const emptyDirectoryRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/empty-dir-app',
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(emptyDirectoryCompile.files || [])], directories: ['empty/child'] },
+      });
+      const objectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/linked.cpp',
+        args: ['-c', '/workspace/src/linked.cpp', '-o', '/workspace/lib/linked.o'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const linkProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/link_main.cpp',
+        args: ['/workspace/src/link_main.cpp', '/workspace/lib/linked.o', '-o', '/workspace/out/linked-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(objectCompile.files || [])] },
+      });
+      const linkProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/linked-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(objectCompile.files || []), ...(linkProjectCompile.files || [])] },
+      });
+      const relativeParentCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '../src/link_main.cpp',
+        args: ['../src/link_main.cpp', '../src/linked.cpp', '-o', '../out/relative-parent-app'],
+        cwd: '/workspace/build',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const relativeParentRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/relative-parent-app',
+        args: [],
+        cwd: '/workspace/build',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(relativeParentCompile.files || [])] },
+      });
+      const objectFile = (objectCompile.files || []).find((file) => file.path === 'lib/linked.o' && file.encoding === 'base64');
+      const archiveFile = {
+        path: 'lib/liblinked.a',
+        contents: createArchiveBase64('linked.o', objectFile?.contents || ''),
+        encoding: 'base64',
+      };
+      const libraryProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/link_main.cpp',
+        args: ['/workspace/src/link_main.cpp', '-L', '/workspace/lib', '-llinked', '-o', '/workspace/out/library-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile] },
+      });
+      const libraryProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/library-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile, ...(libraryProjectCompile.files || [])] },
+      });
+      const inlineLibraryProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/link_main.cpp',
+        args: ['/workspace/src/link_main.cpp', '-L/workspace/lib', '-llinked', '-o', '/workspace/out/inline-library-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile] },
+      });
+      const inlineLibraryProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/inline-library-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile, ...(inlineLibraryProjectCompile.files || [])] },
+      });
+      const envIncludeProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/env_include_main.cpp',
+        args: ['/workspace/src/env_include_main.cpp', '-o', '/workspace/out/env-include-app'],
+        cwd: '/workspace/src',
+        env: { CPATH: '/workspace/envinclude' },
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const envIncludeProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/env-include-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(envIncludeProjectCompile.files || [])] },
+      });
+      const cplusIncludeProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/cplus_include_main.cpp',
+        args: ['/workspace/src/cplus_include_main.cpp', '-o', '/workspace/out/cplus-include-app'],
+        cwd: '/workspace/src',
+        env: { CPLUS_INCLUDE_PATH: '/workspace/cppinclude' },
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const cplusIncludeProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/cplus-include-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(cplusIncludeProjectCompile.files || [])] },
+      });
+      const cwdRelativeEnvIncludeProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '../src/env_include_main.cpp',
+        args: ['../src/env_include_main.cpp', '-o', '../out/cwd-env-include-app'],
+        cwd: '/workspace/build',
+        env: { CPATH: '../envinclude' },
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const cwdRelativeEnvIncludeProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/cwd-env-include-app',
+        args: [],
+        cwd: '/workspace/build',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(cwdRelativeEnvIncludeProjectCompile.files || [])] },
+      });
+      const cIncludeProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/env_c_include_main.c',
+        args: ['/workspace/src/env_c_include_main.c', '-o', '/workspace/out/env-c-include-app'],
+        cwd: '/workspace/src',
+        env: { C_INCLUDE_PATH: '/workspace/cinclude' },
+        stdin: '',
+        project: { files: projectFiles },
+        options: { compilerCommand: 'cc' },
+      });
+      const cIncludeProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/env-c-include-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(cIncludeProjectCompile.files || [])] },
+      });
+      const envLibraryProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/link_main.cpp',
+        args: ['/workspace/src/link_main.cpp', '-llinked', '-o', '/workspace/out/env-library-app'],
+        cwd: '/workspace/src',
+        env: { LIBRARY_PATH: '/workspace/lib' },
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile] },
+      });
+      const envLibraryProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/env-library-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile, ...(envLibraryProjectCompile.files || [])] },
+      });
+      const cwdRelativeEnvLibraryProjectCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '../src/link_main.cpp',
+        args: ['../src/link_main.cpp', '-llinked', '-o', '../out/cwd-env-library-app'],
+        cwd: '/workspace/build',
+        env: { LIBRARY_PATH: '../lib' },
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile] },
+      });
+      const cwdRelativeEnvLibraryProjectRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/cwd-env-library-app',
+        args: [],
+        cwd: '/workspace/build',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, archiveFile, ...(cwdRelativeEnvLibraryProjectCompile.files || [])] },
+      });
       const traced = await send('execute-with-tracing', {
         code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
         functionName: 'add',
@@ -184,7 +673,54 @@ async function main(): Promise<void> {
       });
 
       worker.terminate();
-      return { warmup, add, cachedAdd, twoSum, syntaxError, traced, script, interview };
+      return {
+        warmup,
+        add,
+        cachedAdd,
+        twoSum,
+        syntaxError,
+        projectCompile,
+        projectRun,
+        absoluteProjectCompile,
+        absoluteProjectRun,
+        inlineAbsoluteIncludeCompile,
+        inlineAbsoluteIncludeRun,
+        outsideCwdError,
+        outsideIncludeArgError,
+        outsideRelativeIncludeArgError,
+        outsideLibraryArgError,
+        outsideLibraryEnvError,
+        stdinProjectCompile,
+        stdinProjectRun,
+        cProjectCompile,
+        cProjectRun,
+        emptyDirectoryCompile,
+        emptyDirectoryRun,
+        objectCompile,
+        linkProjectCompile,
+        linkProjectRun,
+        relativeParentCompile,
+        relativeParentRun,
+        libraryProjectCompile,
+        libraryProjectRun,
+        inlineLibraryProjectCompile,
+        inlineLibraryProjectRun,
+        envIncludeProjectCompile,
+        envIncludeProjectRun,
+        cplusIncludeProjectCompile,
+        cplusIncludeProjectRun,
+        cwdRelativeEnvIncludeProjectCompile,
+        cwdRelativeEnvIncludeProjectRun,
+        cIncludeProjectCompile,
+        cIncludeProjectRun,
+        envLibraryProjectCompile,
+        envLibraryProjectRun,
+        cwdRelativeEnvLibraryProjectCompile,
+        cwdRelativeEnvLibraryProjectRun,
+        traced,
+        script,
+        interview,
+      };
     })()`);
 
     const warmup = results.warmup as { success?: boolean; timings?: { toolchainLoadMs?: number; compilerWorkerMs?: number; externalCompileMs?: number } };
@@ -192,6 +728,209 @@ async function main(): Promise<void> {
     const cachedAdd = results.cachedAdd as { success?: boolean; output?: unknown; timings?: { compileCacheHit?: boolean } };
     const twoSum = results.twoSum as { success?: boolean; output?: unknown; error?: string };
     const syntaxError = results.syntaxError as { success?: boolean; error?: string; errorLine?: number };
+    const projectCompile = results.projectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const projectRun = results.projectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const absoluteProjectCompile = results.absoluteProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const absoluteProjectRun = results.absoluteProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const inlineAbsoluteIncludeCompile = results.inlineAbsoluteIncludeCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const inlineAbsoluteIncludeRun = results.inlineAbsoluteIncludeRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const outsideCwdError = results.outsideCwdError as string;
+    const outsideIncludeArgError = results.outsideIncludeArgError as string;
+    const outsideRelativeIncludeArgError = results.outsideRelativeIncludeArgError as string;
+    const outsideLibraryArgError = results.outsideLibraryArgError as string;
+    const outsideLibraryEnvError = results.outsideLibraryEnvError as string;
+    const stdinProjectCompile = results.stdinProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const stdinProjectRun = results.stdinProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cProjectCompile = results.cProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cProjectRun = results.cProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const emptyDirectoryCompile = results.emptyDirectoryCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const emptyDirectoryRun = results.emptyDirectoryRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const objectCompile = results.objectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const linkProjectCompile = results.linkProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const linkProjectRun = results.linkProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const relativeParentCompile = results.relativeParentCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const relativeParentRun = results.relativeParentRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const libraryProjectCompile = results.libraryProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const libraryProjectRun = results.libraryProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const inlineLibraryProjectCompile = results.inlineLibraryProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const inlineLibraryProjectRun = results.inlineLibraryProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const envIncludeProjectCompile = results.envIncludeProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const envIncludeProjectRun = results.envIncludeProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cplusIncludeProjectCompile = results.cplusIncludeProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cplusIncludeProjectRun = results.cplusIncludeProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cwdRelativeEnvIncludeProjectCompile = results.cwdRelativeEnvIncludeProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cwdRelativeEnvIncludeProjectRun = results.cwdRelativeEnvIncludeProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cIncludeProjectCompile = results.cIncludeProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cIncludeProjectRun = results.cIncludeProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const envLibraryProjectCompile = results.envLibraryProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const envLibraryProjectRun = results.envLibraryProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cwdRelativeEnvLibraryProjectCompile = results.cwdRelativeEnvLibraryProjectCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const cwdRelativeEnvLibraryProjectRun = results.cwdRelativeEnvLibraryProjectRun as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
     const traced = results.traced as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; value?: unknown }> } };
     const script = results.script as { success?: boolean; output?: unknown; trace?: { events?: Array<{ kind?: string; function?: string }> } };
     const interview = results.interview as { success?: boolean; output?: unknown; trace?: unknown };
@@ -212,6 +951,173 @@ async function main(): Promise<void> {
     assertCondition(
       syntaxError.success === false && syntaxError.errorLine === 4,
       `C++ browser syntax error did not map to user line 4: ${JSON.stringify(syntaxError)}`
+    );
+    assertCondition(
+      projectCompile.exitCode === 0 && projectCompile.files?.some((file) => file.path === 'src/a.out' && file.encoding === 'base64'),
+      `C++ browser project compile should emit a.out: ${JSON.stringify(projectCompile)}`
+    );
+    assertCondition(
+      projectRun.exitCode === 0 && projectRun.stdout === '42\nfrom-stdin\nbrowser-cpp-project\nalpha,beta\n',
+      `C++ browser project run should preserve stdout/stdin/env/argv: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,
+      `C++ browser project run should return generated text file: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/bytes.bin' && file.encoding === 'base64' && file.contents === 'AP8=') === true,
+      `C++ browser project run should return generated binary file: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/stale.txt' && file.deleted === true) === true,
+      `C++ browser project run should return deleted files: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      absoluteProjectCompile.exitCode === 0 &&
+        absoluteProjectCompile.files?.some((file) => file.path === 'out/absolute-app' && file.encoding === 'base64'),
+      `C++ browser project compile should handle absolute /workspace output paths outside cwd: ${JSON.stringify(absoluteProjectCompile)}`
+    );
+    assertCondition(
+      absoluteProjectRun.exitCode === 0 && absoluteProjectRun.stdout === '99\n',
+      `C++ browser project run should execute absolute /workspace executable paths: ${JSON.stringify(absoluteProjectRun)}`
+    );
+    assertCondition(
+      inlineAbsoluteIncludeCompile.exitCode === 0 &&
+        inlineAbsoluteIncludeCompile.files?.some((file) => file.path === 'out/inline-include-app' && file.encoding === 'base64'),
+      `C++ browser project compile should handle inline absolute -I/workspace include paths: ${JSON.stringify(inlineAbsoluteIncludeCompile)}`
+    );
+    assertCondition(
+      inlineAbsoluteIncludeRun.exitCode === 0 && inlineAbsoluteIncludeRun.stdout === '99\n',
+      `C++ browser project run should execute inline absolute include output: ${JSON.stringify(inlineAbsoluteIncludeRun)}`
+    );
+    assertCondition(
+      outsideCwdError.includes('Project cwd must stay inside the workspace'),
+      `C++ browser project runner should reject cwd outside the workspace: ${outsideCwdError}`
+    );
+    assertCondition(
+      outsideIncludeArgError.includes('Project path escapes workspace: /outside/include'),
+      `C++ browser project runner should reject include args outside the workspace: ${outsideIncludeArgError}`
+    );
+    assertCondition(
+      outsideRelativeIncludeArgError.includes('Project path escapes workspace: ../outside/include'),
+      `C++ browser project runner should reject relative include args outside the workspace: ${outsideRelativeIncludeArgError}`
+    );
+    assertCondition(
+      outsideLibraryArgError.includes('Project path escapes workspace: /outside/lib'),
+      `C++ browser project runner should reject library args outside the workspace: ${outsideLibraryArgError}`
+    );
+    assertCondition(
+      outsideLibraryEnvError.includes('Project path escapes workspace: /outside/lib'),
+      `C++ browser project runner should reject LIBRARY_PATH entries outside the workspace: ${outsideLibraryEnvError}`
+    );
+    assertCondition(
+      stdinProjectCompile.exitCode === 0 &&
+        stdinProjectCompile.files?.some((file) => file.path === 'out/stdin-app' && file.encoding === 'base64'),
+      `C++ browser project compile should support source from stdin: ${JSON.stringify(stdinProjectCompile)}`
+    );
+    assertCondition(
+      stdinProjectRun.exitCode === 0 && stdinProjectRun.stdout === 'stdin-cpp\n',
+      `C++ browser project run should execute stdin-compiled output: ${JSON.stringify(stdinProjectRun)}`
+    );
+    assertCondition(
+      cProjectCompile.exitCode === 0 && cProjectCompile.files?.some((file) => file.path === 'out/plain-c' && file.encoding === 'base64'),
+      `C++ browser project compile should support gcc C compiler alias: ${JSON.stringify(cProjectCompile)}`
+    );
+    assertCondition(
+      cProjectRun.exitCode === 0 && cProjectRun.stdout === 'plain-c\n',
+      `C++ browser project run should execute gcc-built C output: ${JSON.stringify(cProjectRun)}`
+    );
+    assertCondition(
+      emptyDirectoryCompile.exitCode === 0 && emptyDirectoryCompile.files?.some((file) => file.path === 'out/empty-dir-app' && file.encoding === 'base64'),
+      `C++ browser project compile should emit empty-directory smoke binary: ${JSON.stringify(emptyDirectoryCompile)}`
+    );
+    assertCondition(
+      emptyDirectoryRun.exitCode === 0 && emptyDirectoryRun.stdout === 'dir\nchild\n',
+      `C++ browser project run should materialize project directories: ${JSON.stringify(emptyDirectoryRun)}`
+    );
+    assertCondition(
+      objectCompile.exitCode === 0 && objectCompile.files?.some((file) => file.path === 'lib/linked.o' && file.encoding === 'base64'),
+      `C++ browser project compile should emit object files outside cwd: ${JSON.stringify(objectCompile)}`
+    );
+    assertCondition(
+      linkProjectCompile.exitCode === 0 && linkProjectCompile.files?.some((file) => file.path === 'out/linked-app' && file.encoding === 'base64'),
+      `C++ browser project compile should link absolute workspace object inputs: ${JSON.stringify(linkProjectCompile)}`
+    );
+    assertCondition(
+      linkProjectRun.exitCode === 0 && linkProjectRun.stdout === '1234\n',
+      `C++ browser project run should execute linked output: ${JSON.stringify(linkProjectRun)}`
+    );
+    assertCondition(
+      relativeParentCompile.exitCode === 0 && relativeParentCompile.files?.some((file) => file.path === 'out/relative-parent-app' && file.encoding === 'base64'),
+      `C++ browser project compile should accept relative parent source and output paths inside the workspace: ${JSON.stringify(relativeParentCompile)}`
+    );
+    assertCondition(
+      relativeParentRun.exitCode === 0 && relativeParentRun.stdout === '1234\n',
+      `C++ browser project run should execute relative-parent compiled output: ${JSON.stringify(relativeParentRun)}`
+    );
+    assertCondition(
+      libraryProjectCompile.exitCode === 0 && libraryProjectCompile.files?.some((file) => file.path === 'out/library-app' && file.encoding === 'base64'),
+      `C++ browser project compile should resolve -L /workspace library archives: ${JSON.stringify(libraryProjectCompile)}`
+    );
+    assertCondition(
+      libraryProjectRun.exitCode === 0 && libraryProjectRun.stdout === '1234\n',
+      `C++ browser project run should execute -l linked output: ${JSON.stringify(libraryProjectRun)}`
+    );
+    assertCondition(
+      inlineLibraryProjectCompile.exitCode === 0 && inlineLibraryProjectCompile.files?.some((file) => file.path === 'out/inline-library-app' && file.encoding === 'base64'),
+      `C++ browser project compile should resolve inline -L/workspace library archives: ${JSON.stringify(inlineLibraryProjectCompile)}`
+    );
+    assertCondition(
+      inlineLibraryProjectRun.exitCode === 0 && inlineLibraryProjectRun.stdout === '1234\n',
+      `C++ browser project run should execute inline -L linked output: ${JSON.stringify(inlineLibraryProjectRun)}`
+    );
+    assertCondition(
+      envIncludeProjectCompile.exitCode === 0 && envIncludeProjectCompile.files?.some((file) => file.path === 'out/env-include-app' && file.encoding === 'base64'),
+      `C++ browser project compile should honor CPATH include directories: ${JSON.stringify(envIncludeProjectCompile)}`
+    );
+    assertCondition(
+      envIncludeProjectRun.exitCode === 0 && envIncludeProjectRun.stdout === '2026\n',
+      `C++ browser project run should execute CPATH-built output: ${JSON.stringify(envIncludeProjectRun)}`
+    );
+    assertCondition(
+      cplusIncludeProjectCompile.exitCode === 0 && cplusIncludeProjectCompile.files?.some((file) => file.path === 'out/cplus-include-app' && file.encoding === 'base64'),
+      `C++ browser project compile should honor CPLUS_INCLUDE_PATH directories: ${JSON.stringify(cplusIncludeProjectCompile)}`
+    );
+    assertCondition(
+      cplusIncludeProjectRun.exitCode === 0 && cplusIncludeProjectRun.stdout === '2028\n',
+      `C++ browser project run should execute CPLUS_INCLUDE_PATH-built output: ${JSON.stringify(cplusIncludeProjectRun)}`
+    );
+    assertCondition(
+      cwdRelativeEnvIncludeProjectCompile.exitCode === 0 && cwdRelativeEnvIncludeProjectCompile.files?.some((file) => file.path === 'out/cwd-env-include-app' && file.encoding === 'base64'),
+      `C++ browser project compile should honor cwd-relative CPATH include directories: ${JSON.stringify(cwdRelativeEnvIncludeProjectCompile)}`
+    );
+    assertCondition(
+      cwdRelativeEnvIncludeProjectRun.exitCode === 0 && cwdRelativeEnvIncludeProjectRun.stdout === '2026\n',
+      `C++ browser project run should execute cwd-relative CPATH-built output: ${JSON.stringify(cwdRelativeEnvIncludeProjectRun)}`
+    );
+    assertCondition(
+      cIncludeProjectCompile.exitCode === 0 && cIncludeProjectCompile.files?.some((file) => file.path === 'out/env-c-include-app' && file.encoding === 'base64'),
+      `C++ browser project compile should honor C_INCLUDE_PATH for cc C compiler alias: ${JSON.stringify(cIncludeProjectCompile)}`
+    );
+    assertCondition(
+      cIncludeProjectRun.exitCode === 0 && cIncludeProjectRun.stdout === '2027\n',
+      `C++ browser project run should execute C_INCLUDE_PATH-built C output: ${JSON.stringify(cIncludeProjectRun)}`
+    );
+    assertCondition(
+      envLibraryProjectCompile.exitCode === 0 && envLibraryProjectCompile.files?.some((file) => file.path === 'out/env-library-app' && file.encoding === 'base64'),
+      `C++ browser project compile should honor LIBRARY_PATH archives: ${JSON.stringify(envLibraryProjectCompile)}`
+    );
+    assertCondition(
+      envLibraryProjectRun.exitCode === 0 && envLibraryProjectRun.stdout === '1234\n',
+      `C++ browser project run should execute LIBRARY_PATH-linked output: ${JSON.stringify(envLibraryProjectRun)}`
+    );
+    assertCondition(
+      cwdRelativeEnvLibraryProjectCompile.exitCode === 0 && cwdRelativeEnvLibraryProjectCompile.files?.some((file) => file.path === 'out/cwd-env-library-app' && file.encoding === 'base64'),
+      `C++ browser project compile should honor cwd-relative LIBRARY_PATH archives: ${JSON.stringify(cwdRelativeEnvLibraryProjectCompile)}`
+    );
+    assertCondition(
+      cwdRelativeEnvLibraryProjectRun.exitCode === 0 && cwdRelativeEnvLibraryProjectRun.stdout === '1234\n',
+      `C++ browser project run should execute cwd-relative LIBRARY_PATH-linked output: ${JSON.stringify(cwdRelativeEnvLibraryProjectRun)}`
     );
     assertCondition(traced.success === true && traced.output === 5, `C++ browser tracing failed: ${JSON.stringify(traced)}`);
     assertCondition(

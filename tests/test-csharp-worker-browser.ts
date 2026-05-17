@@ -1,7 +1,9 @@
 #!/usr/bin/env npx tsx
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -33,6 +35,31 @@ interface CSharpWorkerResponse {
   };
 }
 
+interface CSharpProjectWorkerResponse {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  files?: Array<{
+    path: string;
+    contents?: string;
+    encoding?: 'utf8' | 'base64';
+    deleted?: true;
+  }>;
+}
+
+type CSharpProjectWorkerRequest = {
+  source: 'compile' | 'run';
+  scriptPath: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+  stdin: string;
+  project: {
+    files: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
+    directories?: string[];
+  };
+};
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE_ROOT = join(ROOT, 'spikes', 'csharp-wasm-roslyn', 'fixtures');
 const WORKER_REQUEST_TIMEOUT_MS = 60_000;
@@ -40,6 +67,37 @@ const WORKER_REQUEST_TIMEOUT_MS = 60_000;
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function createExternalCSharpDllBase64(): string {
+  const root = mkdtempSync(join(tmpdir(), 'tracecode-csharp-ref-fixture-'));
+  try {
+    const projectPath = join(root, 'ExternalLib.csproj');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      projectPath,
+      [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        '  <PropertyGroup>',
+        '    <TargetFramework>net8.0</TargetFramework>',
+        '    <ImplicitUsings>enable</ImplicitUsings>',
+        '    <Nullable>disable</Nullable>',
+        '  </PropertyGroup>',
+        '</Project>',
+        '',
+      ].join('\n'),
+      'utf8'
+    );
+    writeFileSync(
+      join(root, 'Helper.cs'),
+      'namespace ExternalLib; public static class Helper { public static int Value() => 314; }\n',
+      'utf8'
+    );
+    execFileSync('dotnet', ['build', projectPath, '-c', 'Release', '-v', 'quiet', '--nologo'], { stdio: 'pipe' });
+    return readFileSync(join(root, 'bin', 'Release', 'net8.0', 'ExternalLib.dll')).toString('base64');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -189,6 +247,128 @@ async function runWorkerCase(
   ) as Promise<CSharpWorkerResponse>;
 }
 
+async function runProjectWorkerCase(
+  page: Page,
+  request: CSharpProjectWorkerRequest,
+  assetBaseUrl: string
+): Promise<CSharpProjectWorkerResponse> {
+  return page.evaluate(
+    async ({ request, assetBaseUrl, workerRequestTimeoutMs }) => {
+      const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
+      let nextId = 0;
+      const pending = new Map();
+
+      function terminate(error = new Error('C# worker terminated')) {
+        worker.terminate();
+        for (const { reject, timeoutId } of pending.values()) {
+          clearTimeout(timeoutId);
+          reject(error);
+        }
+        pending.clear();
+      }
+
+      worker.addEventListener('message', (event) => {
+        const id = event.data?.id;
+        if (!id || !pending.has(id)) return;
+        const { resolve, reject, timeoutId } = pending.get(id);
+        pending.delete(id);
+        clearTimeout(timeoutId);
+        if (event.data.type === 'error') {
+          reject(new Error(event.data.payload?.error ?? 'C# worker error'));
+          return;
+        }
+        resolve(event.data.payload);
+      });
+
+      worker.addEventListener('error', (event) => {
+        terminate(new Error(event.message || 'C# worker failed'));
+      });
+
+      function send(type, payload) {
+        const id = String(++nextId);
+        return new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            terminate(new Error(`C# worker request timed out: ${type}`));
+          }, workerRequestTimeoutMs);
+          pending.set(id, { resolve, reject, timeoutId });
+          worker.postMessage({ id, type, payload });
+        });
+      }
+
+      try {
+        await send('init', { assetBaseUrl });
+        return await send('execute-project-csharp', { ...request, assetBaseUrl });
+      } finally {
+        terminate();
+      }
+    },
+    { request, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
+  ) as Promise<CSharpProjectWorkerResponse>;
+}
+
+async function runProjectWorkerSequenceCase(
+  page: Page,
+  requests: CSharpProjectWorkerRequest[],
+  assetBaseUrl: string
+): Promise<CSharpProjectWorkerResponse[]> {
+  return page.evaluate(
+    async ({ requests, assetBaseUrl, workerRequestTimeoutMs }) => {
+      const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
+      let nextId = 0;
+      const pending = new Map();
+
+      function terminate(error = new Error('C# worker terminated')) {
+        worker.terminate();
+        for (const { reject, timeoutId } of pending.values()) {
+          clearTimeout(timeoutId);
+          reject(error);
+        }
+        pending.clear();
+      }
+
+      worker.addEventListener('message', (event) => {
+        const id = event.data?.id;
+        if (!id || !pending.has(id)) return;
+        const { resolve, reject, timeoutId } = pending.get(id);
+        pending.delete(id);
+        clearTimeout(timeoutId);
+        if (event.data.type === 'error') {
+          reject(new Error(event.data.payload?.error ?? 'C# worker error'));
+          return;
+        }
+        resolve(event.data.payload);
+      });
+
+      worker.addEventListener('error', (event) => {
+        terminate(new Error(event.message || 'C# worker failed'));
+      });
+
+      function send(type, payload) {
+        const id = String(++nextId);
+        return new Promise((resolve, reject) => {
+          const timeoutId = setTimeout(() => {
+            terminate(new Error(`C# worker request timed out: ${type}`));
+          }, workerRequestTimeoutMs);
+          pending.set(id, { resolve, reject, timeoutId });
+          worker.postMessage({ id, type, payload });
+        });
+      }
+
+      try {
+        await send('init', { assetBaseUrl });
+        const results = [];
+        for (const request of requests) {
+          results.push(await send('execute-project-csharp', { ...request, assetBaseUrl }));
+        }
+        return results;
+      } finally {
+        terminate();
+      }
+    },
+    { requests, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
+  ) as Promise<CSharpProjectWorkerResponse[]>;
+}
+
 function fixture(name: string): string {
   return readFileSync(join(FIXTURE_ROOT, name), 'utf8');
 }
@@ -207,6 +387,7 @@ async function main(): Promise<void> {
     await page.evaluate('globalThis.__name = (fn) => fn');
 
     const assetBaseUrl = `${server.origin}/workers/vendor/csharp`;
+    const externalCSharpDllBase64 = createExternalCSharpDllBase64();
     const add = await runWorkerCase(page, fixture('add.cs'), 'Add', { a: 2, b: 3 }, assetBaseUrl);
     assertCondition(add.success, `C# worker Add should succeed: ${add.error ?? 'unknown error'}`);
     assertCondition(add.output === 5, `C# worker Add should return 5, received ${JSON.stringify(add.output)}`);
@@ -2410,6 +2591,944 @@ async function main(): Promise<void> {
     assertCondition(
       voidReturn.output === null,
       `C# worker void-return fixture should return null output, received ${JSON.stringify(voidReturn.output)}`
+    );
+
+    const projectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: ['alpha', 'beta'],
+        cwd: '/workspace/src',
+        env: { MODE: 'browser-csharp-project' },
+        stdin: 'from-stdin\n',
+        project: {
+          directories: ['src/empty/child'],
+          files: [
+            {
+              path: 'src/Program.cs',
+              contents: [
+                'Console.WriteLine(Helper.Value());',
+                'Console.WriteLine(Directory.Exists("empty/child") ? "dir" : "missing");',
+                'Console.WriteLine(Path.GetFileName(Directory.GetDirectories("empty").Single()));',
+                'Console.WriteLine(Console.ReadLine());',
+                'Console.WriteLine(Environment.GetEnvironmentVariable("MODE"));',
+                'Console.WriteLine(string.Join(",", args));',
+                'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
+                'File.WriteAllBytes("bytes.bin", new byte[] { 0, 255 });',
+                'File.Delete("stale.txt");',
+                '',
+              ].join('\n'),
+            },
+            { path: 'src/Helper.cs', contents: 'static class Helper { public static int Value() => 42; }\n' },
+            { path: 'src/stale.txt', contents: 'delete me\n' },
+            { path: 'unrelated/Broken.cs', contents: 'this outside-cwd file should not compile\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(projectRun.exitCode === 0, `C# project worker should run multifile project: ${projectRun.stderr}`);
+    assertCondition(
+      projectRun.stdout.endsWith('42\ndir\nchild\nfrom-stdin\nbrowser-csharp-project\nalpha,beta\n'),
+      `C# project worker should preserve stdout/stdin/env/args: ${projectRun.stdout}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,
+      `C# project worker should return generated text file changes, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/bytes.bin' && file.encoding === 'base64' && file.contents === 'AP8=') === true,
+      `C# project worker should return generated binary file changes, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/stale.txt' && file.deleted === true) === true,
+      `C# project worker should return deleted files, received ${JSON.stringify(projectRun.files)}`
+    );
+
+    const outsideCwdRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/outside',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            { path: 'Program.cs', contents: 'Console.WriteLine("bad");\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(outsideCwdRun.exitCode !== 0, 'C# project worker should reject cwd outside the workspace');
+    assertCondition(
+      outsideCwdRun.stderr.includes('Project path escapes workspace'),
+      `C# project worker should report outside-workspace cwd: ${outsideCwdRun.stderr}`
+    );
+
+    const outsideItemRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/absoluteitem/App.csproj',
+        args: [],
+        cwd: '/workspace/absoluteitem',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'absoluteitem/App.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <ImplicitUsings>enable</ImplicitUsings>',
+                '    <Nullable>disable</Nullable>',
+                '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <Compile Include="/outside/Program.cs" />',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'outside/Program.cs', contents: 'Console.WriteLine("bad");\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(outsideItemRun.exitCode !== 0, 'C# project worker should reject absolute project item paths outside the workspace');
+    assertCondition(
+      outsideItemRun.stderr.includes('Project path escapes workspace'),
+      `C# project worker should report outside-workspace project item paths: ${outsideItemRun.stderr}`
+    );
+
+    const [envFirstRun, envSecondRun] = await runProjectWorkerSequenceCase(
+      page,
+      [
+        {
+          source: 'run',
+          scriptPath: '<project>',
+          args: [],
+          cwd: '/workspace/env',
+          env: { MODE: 'first', TRACE_ENV_BLEED: 'request-value' },
+          stdin: '',
+          project: {
+            files: [
+              {
+                path: 'env/Program.cs',
+                contents: [
+                  'Console.WriteLine(Environment.GetEnvironmentVariable("MODE") ?? "missing");',
+                  'Console.WriteLine(Environment.GetEnvironmentVariable("TRACE_ENV_BLEED") ?? "missing");',
+                  'Console.WriteLine(Environment.GetEnvironmentVariable("TRACE_USER_MUTATED") ?? "missing");',
+                  'Environment.SetEnvironmentVariable("TRACE_USER_MUTATED", "leaked");',
+                  '',
+                ].join('\n'),
+              },
+            ],
+          },
+        },
+        {
+          source: 'run',
+          scriptPath: '<project>',
+          args: [],
+          cwd: '/workspace/env',
+          env: { MODE: 'second' },
+          stdin: '',
+          project: {
+            files: [
+              {
+                path: 'env/Program.cs',
+                contents: [
+                  'Console.WriteLine(Environment.GetEnvironmentVariable("MODE") ?? "missing");',
+                  'Console.WriteLine(Environment.GetEnvironmentVariable("TRACE_ENV_BLEED") ?? "missing");',
+                  'Console.WriteLine(Environment.GetEnvironmentVariable("TRACE_USER_MUTATED") ?? "missing");',
+                  '',
+                ].join('\n'),
+              },
+            ],
+          },
+        },
+      ],
+      assetBaseUrl
+    );
+    assertCondition(envFirstRun.exitCode === 0, `C# project env first run should succeed: ${envFirstRun.stderr}`);
+    assertCondition(
+      envFirstRun.stdout.endsWith('first\nrequest-value\nmissing\n'),
+      `C# project env first run should see request env only: ${envFirstRun.stdout}`
+    );
+    assertCondition(envSecondRun.exitCode === 0, `C# project env second run should succeed: ${envSecondRun.stderr}`);
+    assertCondition(
+      envSecondRun.stdout.endsWith('second\nmissing\nmissing\n'),
+      `C# project env should not bleed between browser worker requests: ${envSecondRun.stdout}`
+    );
+
+    const csprojProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/app/App.csproj',
+        args: [],
+        cwd: '/workspace/app',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'app/App.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <Compile Include="Program.cs;Helper.cs" />',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'app/Program.cs', contents: 'Console.WriteLine(Helper.Value());\n' },
+            { path: 'app/Helper.cs', contents: 'static class Helper { public static int Value() => 77; }\n' },
+            { path: 'app/Ignored.cs', contents: 'this file should not compile if included\n' },
+            { path: 'outside/Other.cs', contents: 'this outside file should not compile if included\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(csprojProjectRun.exitCode === 0, `C# project worker should honor explicit csproj compile includes: ${csprojProjectRun.stderr}`);
+    assertCondition(
+      csprojProjectRun.stdout.endsWith('77\n'),
+      `C# project worker should run csproj-selected sources only: ${csprojProjectRun.stdout}`
+    );
+
+    const cwdRelativeCsprojProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '../app/App.csproj',
+        args: [],
+        cwd: '/workspace/build',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            { path: 'build/.keep', contents: '' },
+            {
+              path: 'app/App.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <Compile Include="Program.cs;Helper.cs" />',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'app/Program.cs', contents: 'Console.WriteLine(Helper.Value());\n' },
+            { path: 'app/Helper.cs', contents: 'static class Helper { public static int Value() => 78; }\n' },
+            { path: 'app/Ignored.cs', contents: 'this file should not compile if included\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      cwdRelativeCsprojProjectRun.exitCode === 0,
+      `C# project worker should resolve cwd-relative explicit csproj paths: ${cwdRelativeCsprojProjectRun.stderr}`
+    );
+    assertCondition(
+      cwdRelativeCsprojProjectRun.stdout.endsWith('78\n'),
+      `C# project worker should run cwd-relative csproj-selected sources only: ${cwdRelativeCsprojProjectRun.stdout}`
+    );
+
+    const libraryProjectCompile = await runProjectWorkerCase(
+      page,
+      {
+        source: 'compile',
+        scriptPath: '/workspace/lib/Lib.csproj',
+        args: [],
+        cwd: '/workspace/lib',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'lib/Lib.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Library</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'lib/Helper.cs',
+              contents: 'namespace LibraryOnly; public static class Helper { public static int Value() => 91; }\n',
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      libraryProjectCompile.exitCode === 0,
+      `C# project worker should compile library projects without an entrypoint: ${libraryProjectCompile.stderr}`
+    );
+    assertCondition(
+      libraryProjectCompile.files?.some((file) =>
+        file.path === 'lib/bin/Debug/net8.0/Lib.dll' &&
+        file.encoding === 'base64' &&
+        typeof file.contents === 'string' &&
+        file.contents.length > 0
+      ) === true,
+      `C# project worker compile should persist a browser build artifact: ${JSON.stringify(libraryProjectCompile.files)}`
+    );
+
+    const libraryProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/lib/Lib.csproj',
+        args: [],
+        cwd: '/workspace/lib',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'lib/Lib.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Library</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'lib/Helper.cs',
+              contents: 'namespace LibraryOnly; public static class Helper { public static int Value() => 91; }\n',
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(libraryProjectRun.exitCode === 1, 'C# project worker should not run library projects without an entrypoint');
+    assertCondition(
+      libraryProjectRun.stderr.includes('Program does not contain a static entry point.'),
+      `C# project worker should report missing library entrypoint on run: ${libraryProjectRun.stderr}`
+    );
+
+    const hintPathReferenceProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/hintref/App.csproj',
+        args: [],
+        cwd: '/workspace/hintref',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'hintref/App.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <Reference Include="ExternalLib">',
+                '      <HintPath>lib/ExternalLib.dll</HintPath>',
+                '    </Reference>',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'hintref/Program.cs', contents: 'Console.WriteLine(ExternalLib.Helper.Value());\n' },
+            { path: 'hintref/lib/ExternalLib.dll', contents: externalCSharpDllBase64, encoding: 'base64' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(hintPathReferenceProjectRun.exitCode === 0, `C# project worker should link HintPath DLL references: ${hintPathReferenceProjectRun.stderr}`);
+    assertCondition(
+      hintPathReferenceProjectRun.stdout.endsWith('314\n'),
+      `C# project worker should run against HintPath DLL references: ${hintPathReferenceProjectRun.stdout}`
+    );
+
+    const outsideHintPathRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/hintescape/App.csproj',
+        args: [],
+        cwd: '/workspace/hintescape',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'hintescape/App.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <Reference Include="ExternalLib">',
+                '      <HintPath>/outside/ExternalLib.dll</HintPath>',
+                '    </Reference>',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'hintescape/Program.cs', contents: 'Console.WriteLine("bad");\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(outsideHintPathRun.exitCode !== 0, 'C# project worker should reject HintPath paths outside the workspace');
+    assertCondition(
+      outsideHintPathRun.stderr.includes('Project path escapes workspace'),
+      `C# project worker should report outside-workspace HintPath paths: ${outsideHintPathRun.stderr}`
+    );
+
+    const embeddedResourceProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/resources/Resources.csproj',
+        args: [],
+        cwd: '/workspace/resources',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'resources/Resources.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <Compile Include="Program.cs" />',
+                '    <EmbeddedResource Include="data/message.txt">',
+                '      <LogicalName>App.Message</LogicalName>',
+                '    </EmbeddedResource>',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'resources/Program.cs',
+              contents: [
+                'using System.Reflection;',
+                'using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("App.Message");',
+                'using var reader = new StreamReader(stream!);',
+                'Console.WriteLine(reader.ReadToEnd());',
+                '',
+              ].join('\n'),
+            },
+            { path: 'resources/data/message.txt', contents: 'embedded-resource\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(embeddedResourceProjectRun.exitCode === 0, `C# project worker should honor EmbeddedResource items: ${embeddedResourceProjectRun.stderr}`);
+    assertCondition(
+      embeddedResourceProjectRun.stdout.endsWith('embedded-resource\n\n'),
+      `C# project worker should expose embedded resources by logical name: ${embeddedResourceProjectRun.stdout}`
+    );
+
+    const projectReferenceRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/refapp/App.csproj',
+        args: [],
+        cwd: '/workspace/refapp',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'refapp/App.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <ProjectReference Include="../reflib/Lib.csproj" />',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'refapp/Program.cs', contents: 'Console.WriteLine(RefLib.Helper.Value());\n' },
+            {
+              path: 'reflib/Lib.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'reflib/Helper.cs', contents: 'namespace RefLib; public static class Helper { public static int Value() => 88; }\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(projectReferenceRun.exitCode === 0, `C# project worker should honor ProjectReference source linking: ${projectReferenceRun.stderr}`);
+    assertCondition(
+      projectReferenceRun.stdout.endsWith('88\n'),
+      `C# project worker should compile referenced project sources: ${projectReferenceRun.stdout}`
+    );
+
+    const outsideProjectReferenceRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/refescape/App.csproj',
+        args: [],
+        cwd: '/workspace/refescape',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'refescape/App.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <ProjectReference Include="/outside/Lib.csproj" />',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'refescape/Program.cs', contents: 'Console.WriteLine("bad");\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(outsideProjectReferenceRun.exitCode !== 0, 'C# project worker should reject ProjectReference paths outside the workspace');
+    assertCondition(
+      outsideProjectReferenceRun.stderr.includes('Project path escapes workspace'),
+      `C# project worker should report outside-workspace ProjectReference paths: ${outsideProjectReferenceRun.stderr}`
+    );
+
+    const removeProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/remove/Remove.csproj',
+        args: [],
+        cwd: '/workspace/remove',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'remove/Remove.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '  <ItemGroup>',
+                '    <Compile Remove="Removed.cs" />',
+                '    <Compile Exclude="Excluded.cs" />',
+                '  </ItemGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            { path: 'remove/Program.cs', contents: 'Console.WriteLine("default-items-pruned");\n' },
+            { path: 'remove/Removed.cs', contents: 'this removed file should not compile\n' },
+            { path: 'remove/Excluded.cs', contents: 'this excluded file should not compile\n' },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(removeProjectRun.exitCode === 0, `C# project worker should honor Compile Remove/Exclude: ${removeProjectRun.stderr}`);
+    assertCondition(
+      removeProjectRun.stdout.endsWith('default-items-pruned\n'),
+      `C# project worker should run default compile items after Remove/Exclude pruning: ${removeProjectRun.stdout}`
+    );
+
+    const startupObjectProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/startup/Startup.csproj',
+        args: [],
+        cwd: '/workspace/startup',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'startup/Startup.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <StartupObject>Picked.Program</StartupObject>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'startup/Program.cs',
+              contents: [
+                'namespace Picked;',
+                'public static class Program {',
+                '  public static void Main(string[] args) {',
+                '    System.Console.WriteLine("picked-startup");',
+                '  }',
+                '}',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'startup/OtherProgram.cs',
+              contents: [
+                'namespace Other;',
+                'public static class Program {',
+                '  public static void Main(string[] args) {',
+                '    System.Console.WriteLine("wrong-startup");',
+                '  }',
+                '}',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(startupObjectProjectRun.exitCode === 0, `C# project worker should honor StartupObject with multiple Main methods: ${startupObjectProjectRun.stderr}`);
+    assertCondition(
+      startupObjectProjectRun.stdout.endsWith('picked-startup\n'),
+      `C# project worker should run the StartupObject entrypoint: ${startupObjectProjectRun.stdout}`
+    );
+
+    const defineConstantsProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/defines/Defines.csproj',
+        args: [],
+        cwd: '/workspace/defines',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'defines/Defines.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <DefineConstants>TRACE_BROWSER;FEATURE_ON</DefineConstants>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'defines/Program.cs',
+              contents: [
+                '#if TRACE_BROWSER && FEATURE_ON',
+                'Console.WriteLine("defined-symbols");',
+                '#else',
+                'this branch should not compile if DefineConstants is honored',
+                '#endif',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(defineConstantsProjectRun.exitCode === 0, `C# project worker should honor DefineConstants: ${defineConstantsProjectRun.stderr}`);
+    assertCondition(
+      defineConstantsProjectRun.stdout.endsWith('defined-symbols\n'),
+      `C# project worker should compile with project-defined symbols: ${defineConstantsProjectRun.stdout}`
+    );
+
+    const cliDefineConstantsProjectCompile = await runProjectWorkerCase(
+      page,
+      {
+        source: 'compile',
+        scriptPath: '/workspace/clidefines/CliDefines.csproj',
+        args: ['-p:DefineConstants=CLI_ONE%3BCLI_TWO'],
+        cwd: '/workspace/clidefines',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'clidefines/CliDefines.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'clidefines/Program.cs',
+              contents: [
+                '#if CLI_ONE && CLI_TWO',
+                'Console.WriteLine("cli-defined");',
+                '#else',
+                'this branch should not compile if command-line DefineConstants is honored',
+                '#endif',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      cliDefineConstantsProjectCompile.exitCode === 0,
+      `C# project worker should honor command-line DefineConstants: ${cliDefineConstantsProjectCompile.stderr}`
+    );
+
+    const cliSeparatedPropertyProjectCompile = await runProjectWorkerCase(
+      page,
+      {
+        source: 'compile',
+        scriptPath: '/workspace/cliseparated/CliSeparated.csproj',
+        args: ['--property:DefineConstants=SEPARATED_SYMBOL'],
+        cwd: '/workspace/cliseparated',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'cliseparated/CliSeparated.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'cliseparated/Program.cs',
+              contents: [
+                '#if SEPARATED_SYMBOL',
+                'Console.WriteLine("separated-defined");',
+                '#else',
+                'this branch should not compile if normalized command-line DefineConstants is honored',
+                '#endif',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      cliSeparatedPropertyProjectCompile.exitCode === 0,
+      `C# project worker should honor normalized command-line DefineConstants: ${cliSeparatedPropertyProjectCompile.stderr}`
+    );
+
+    const cliDefineConstantsProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/clidefines/CliDefines.csproj',
+        args: ['alpha', 'beta'],
+        cwd: '/workspace/clidefines',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'clidefines/CliDefines.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'clidefines/Program.cs',
+              contents: [
+                '#if CLI_ONE && CLI_TWO',
+                'Console.WriteLine(string.Join(",", args));',
+                '#else',
+                'this branch should not compile if command-line DefineConstants is honored for dotnet run',
+                '#endif',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+        options: { buildArgs: ['-p:DefineConstants=CLI_ONE%3BCLI_TWO'] },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      cliDefineConstantsProjectRun.exitCode === 0 && cliDefineConstantsProjectRun.stdout.endsWith('alpha,beta\n'),
+      `C# project worker should honor dotnet run build properties and program args: ${JSON.stringify(cliDefineConstantsProjectRun)}`
+    );
+
+    const unsafeProjectRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '/workspace/unsafe/Unsafe.csproj',
+        args: [],
+        cwd: '/workspace/unsafe',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'unsafe/Unsafe.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'unsafe/Program.cs',
+              contents: [
+                'unsafe {',
+                '  int value = 123;',
+                '  int* pointer = &value;',
+                '  Console.WriteLine(*pointer);',
+                '}',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(unsafeProjectRun.exitCode === 0, `C# project worker should honor AllowUnsafeBlocks: ${unsafeProjectRun.stderr}`);
+    assertCondition(
+      unsafeProjectRun.stdout.endsWith('123\n'),
+      `C# project worker should compile unsafe code when project allows it: ${unsafeProjectRun.stdout}`
+    );
+
+    const cliUnsafeProjectCompile = await runProjectWorkerCase(
+      page,
+      {
+        source: 'compile',
+        scriptPath: '/workspace/cliunsafe/CliUnsafe.csproj',
+        args: ['--property:AllowUnsafeBlocks=true'],
+        cwd: '/workspace/cliunsafe',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'cliunsafe/CliUnsafe.csproj',
+              contents: [
+                '<Project Sdk="Microsoft.NET.Sdk">',
+                '  <PropertyGroup>',
+                '    <OutputType>Exe</OutputType>',
+                '    <TargetFramework>net8.0</TargetFramework>',
+                '  </PropertyGroup>',
+                '</Project>',
+                '',
+              ].join('\n'),
+            },
+            {
+              path: 'cliunsafe/Program.cs',
+              contents: [
+                'unsafe {',
+                '  int value = 456;',
+                '  int* pointer = &value;',
+                '  Console.WriteLine(*pointer);',
+                '}',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      cliUnsafeProjectCompile.exitCode === 0,
+      `C# project worker should honor command-line AllowUnsafeBlocks: ${cliUnsafeProjectCompile.stderr}`
     );
 
     console.log('PASS: browser C# worker compiles and runs through vendored harness assets');

@@ -35,6 +35,10 @@ async function main(): Promise<void> {
 
   const workerSource = await readFile(workerPath, 'utf8');
   const augmentationSource = await readFile(augmentationPath, 'utf8');
+  const helperSource = await readFile(
+    join(root, 'workers', 'java', 'src', 'tracecode', 'browser', 'BrowserCompileAndTraceLibrary.java'),
+    'utf8'
+  );
   const requiredMarkers = [
     'https://cjrtnc.leaningtech.com/4.2/loader.js',
     '/app/workers/vendor/java-browser-helper.jar',
@@ -49,6 +53,16 @@ async function main(): Promise<void> {
     "message.type === 'execute-with-tracing'",
     "message.type === 'execute-code'",
     "message.type === 'execute-code-interview'",
+    "message.type === 'execute-project-java'",
+    'compileAndRunProjectSources',
+    'compileAndRunProjectSourcesWithWorkspace',
+    'compileAndRunProjectClassFilesWithWorkspace',
+    'workspaceManifest',
+    'workspaceCwd',
+    'projectChangedFiles(report)',
+    'runJavaProjectRequest',
+    'buildProjectJavaRunnableSource',
+    'Project cwd must stay inside the workspace',
     "postMessageResponse({ type: 'worker-ready' })",
     "postMessageResponse({ type: 'idle-timeout' })",
     'java-source-augmentations.js',
@@ -62,6 +76,22 @@ async function main(): Promise<void> {
     );
   }
   console.log('PASS: java worker contract markers present');
+
+  const helperMarkers = [
+    'compileAndRunProjectSourcesWithWorkspace',
+    'compileAndRunProjectClassFilesWithWorkspace',
+    'collectChangedProjectFilesJson',
+    'System.setProperty("user.dir"',
+    'changedFiles',
+    ',\\"deleted\\":true',
+  ];
+  for (const marker of helperMarkers) {
+    assertCondition(
+      helperSource.includes(marker),
+      `Java helper project workspace drift detected. Missing marker: ${marker}`
+    );
+  }
+  console.log('PASS: java helper project workspace markers present');
 
   assertCondition(
     augmentationSource.includes('augmentJavaCollectionOperations') &&

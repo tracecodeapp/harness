@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
@@ -34,7 +34,26 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.cjs',
       'dist/internal.js',
       'dist/internal.cjs',
+      'dist/project.js',
+      'dist/project.cjs',
+      'dist/project.d.ts',
+      'dist/zlib-browser-shim.js',
+      'dist/zlib-browser-shim.cjs',
       'dist/index.d.ts',
+      'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
+    ],
+  },
+  {
+    name: '@tracecode/harness-project',
+    dir: 'packages/harness-project',
+    exportName: 'createRuntimeWorkspace',
+    requiredFiles: [
+      'dist/index.js',
+      'dist/index.cjs',
+      'dist/index.d.ts',
+      'dist/zlib-browser-shim.js',
+      'dist/zlib-browser-shim.cjs',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -47,6 +66,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
+      'dist/project-node.js',
+      'dist/project-node.cjs',
+      'dist/project-node.d.ts',
+      'dist/project-browser.js',
+      'dist/project-browser.cjs',
+      'dist/project-browser.d.ts',
       'workers/pyodide-worker.js',
       'workers/generated-python-harness-snippets.js',
       'workers/pyodide/runtime-core.js',
@@ -62,6 +87,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
+      'dist/project-node.js',
+      'dist/project-node.cjs',
+      'dist/project-node.d.ts',
+      'dist/project-browser.js',
+      'dist/project-browser.cjs',
+      'dist/project-browser.d.ts',
       'workers/javascript-worker.js',
       'workers/vendor/typescript.js',
       'workers/vendor/javascript-libraries.js',
@@ -77,6 +108,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
+      'dist/project-node.js',
+      'dist/project-node.cjs',
+      'dist/project-node.d.ts',
+      'dist/project-browser.js',
+      'dist/project-browser.cjs',
+      'dist/project-browser.d.ts',
       'workers/java-worker.js',
       'workers/java-source-augmentations.js',
       'workers/vendor/java-browser-helper.jar',
@@ -95,6 +132,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
+      'dist/project-node.js',
+      'dist/project-node.cjs',
+      'dist/project-node.d.ts',
+      'dist/project-browser.js',
+      'dist/project-browser.cjs',
+      'dist/project-browser.d.ts',
       'workers/csharp-worker.js',
       'workers/vendor/csharp/_framework/dotnet.js',
       'workers/vendor/csharp/_framework/dotnet.native.wasm',
@@ -112,6 +155,12 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.js',
       'dist/index.cjs',
       'dist/index.d.ts',
+      'dist/project-node.js',
+      'dist/project-node.cjs',
+      'dist/project-node.d.ts',
+      'dist/project-browser.js',
+      'dist/project-browser.cjs',
+      'dist/project-browser.d.ts',
       'workers/cpp-worker.js',
       'workers/cpp-compiler-frame.html',
       'workers/cpp-compiler-worker.js',
@@ -140,10 +189,18 @@ function packageNodeModulesDir(appDir: string, packageName: string): string {
   return join(appDir, 'node_modules', scope!, name!);
 }
 
-async function main(): Promise<void> {
-  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-language-packages-'));
+async function runWithTempRoot(tempRoot: string): Promise<void> {
   const appDir = join(tempRoot, 'app');
   await mkdir(join(appDir, 'node_modules', '@tracecode'), { recursive: true });
+  await writeFile(
+    join(appDir, 'package.json'),
+    JSON.stringify({
+      type: 'module',
+      private: true,
+      dependencies: {},
+    }),
+    'utf8'
+  );
 
   for (const packageCheck of PACKAGE_CHECKS) {
     const packOutput = spawnSync('pnpm', ['pack', '--pack-destination', tempRoot], {
@@ -189,6 +246,216 @@ async function main(): Promise<void> {
       const fileStat = await stat(join(packageDir, relativePath));
       assertCondition(fileStat.isFile(), `${packageCheck.name} extracted file should exist at ${relativePath}`);
     }
+
+    const packedPackageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    if (packageCheck.name === '@tracecode/harness-browser') {
+      assertCondition(
+        !Object.prototype.hasOwnProperty.call(packedPackageJson.dependencies ?? {}, 'just-bash'),
+        '@tracecode/harness-browser should not install just-bash unless consumers opt into project workspace primitives'
+      );
+      const browserOnlyAppDir = join(tempRoot, 'browser-only-app');
+      const browserOnlyPackageDir = packageNodeModulesDir(browserOnlyAppDir, packageCheck.name);
+      await mkdir(browserOnlyPackageDir, { recursive: true });
+      await writeFile(
+        join(browserOnlyAppDir, 'package.json'),
+        JSON.stringify({
+          type: 'module',
+          private: true,
+          dependencies: {},
+        }),
+        'utf8'
+      );
+      const browserOnlyExtract = spawnSync('tar', ['-xf', tarballPath, '-C', browserOnlyPackageDir, '--strip-components=1'], {
+        encoding: 'utf8',
+      });
+      if (browserOnlyExtract.status !== 0) {
+        throw new Error(browserOnlyExtract.stderr || browserOnlyExtract.stdout || '@tracecode/harness-browser isolated extraction failed');
+      }
+      const browserOnlyImportScript = `
+        (async () => {
+          const main = await import('@tracecode/harness-browser');
+          if (typeof main.createBrowserProjectWorkspace !== 'undefined') {
+            throw new Error('@tracecode/harness-browser main export should not expose project workspace helpers');
+          }
+          const project = await import('@tracecode/harness-browser/project');
+          if (typeof project.createBrowserProjectWorkspace !== 'function') {
+            throw new Error('@tracecode/harness-browser/project missing createBrowserProjectWorkspace');
+          }
+          const workspace = await project.createBrowserProjectWorkspace({
+            files: [
+              { path: 'index.js', contents: 'console.log("browser-only-node")\\n' },
+              { path: 'main.py', contents: 'print("browser-only-python")\\n' },
+              { path: 'Main.java', contents: 'class Main {}\\n' },
+              { path: 'Program.cs', contents: 'Console.WriteLine("browser-only-csharp");\\n' },
+              { path: 'main.cpp', contents: 'int main() { return 0; }\\n' },
+            ],
+            pythonWorkerClient: {
+              async executeProjectPython(request) {
+                return { stdout: request.scriptPath + ':browser-only-python\\n', stderr: '', exitCode: 0 };
+              },
+              terminate() {},
+            },
+            javaWorkerClient: {
+              async executeProjectJava(request) {
+                return { stdout: request.source + ':' + request.scriptPath + ':browser-only-java\\n', stderr: '', exitCode: 0 };
+              },
+              terminate() {},
+            },
+            csharpWorkerClient: {
+              async executeProjectCSharp(request) {
+                return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-csharp\\n', stderr: '', exitCode: 0 };
+              },
+              terminate() {},
+            },
+            cppWorkerClient: {
+              async executeProjectCpp(request) {
+                return { stdout: request.source + ':' + request.args.join(',') + ':browser-only-cpp\\n', stderr: '', exitCode: 0 };
+              },
+              terminate() {},
+            },
+          });
+          try {
+            const node = await workspace.runCommand('node index.js');
+            if (node.exitCode !== 0 || node.stdout !== 'browser-only-node\\n') {
+              throw new Error('isolated browser project Node command failed: ' + JSON.stringify(node));
+            }
+            const python = await workspace.runCommand('python3 main.py');
+            if (python.exitCode !== 0 || python.stdout !== 'main.py:browser-only-python\\n') {
+              throw new Error('isolated browser project Python command failed: ' + JSON.stringify(python));
+            }
+            const java = await workspace.runCommand('java Main');
+            if (java.exitCode !== 0 || java.stdout !== 'run:Main:browser-only-java\\n') {
+              throw new Error('isolated browser project Java command failed: ' + JSON.stringify(java));
+            }
+            const csharp = await workspace.runCommand('dotnet run -- alpha beta');
+            if (csharp.exitCode !== 0 || csharp.stdout !== 'run:alpha,beta:browser-only-csharp\\n') {
+              throw new Error('isolated browser project C# command failed: ' + JSON.stringify(csharp));
+            }
+            const cpp = await workspace.runCommand('clang++ main.cpp -o a.out');
+            if (cpp.exitCode !== 0 || cpp.stdout !== 'compile:main.cpp,-o,a.out:browser-only-cpp\\n') {
+              throw new Error('isolated browser project C++ command failed: ' + JSON.stringify(cpp));
+            }
+            const cppRun = await workspace.runCommand('./a.out alpha beta');
+            if (cppRun.exitCode !== 0 || cppRun.stdout !== 'run:alpha,beta:browser-only-cpp\\n') {
+              throw new Error('isolated browser project C++ run command failed: ' + JSON.stringify(cppRun));
+            }
+          } finally {
+            workspace.dispose();
+          }
+          console.log('ok');
+        })().catch((error) => {
+          console.error(error);
+          process.exit(1);
+        });
+      `;
+      const browserOnlyImportRun = spawnSync('node', ['-e', browserOnlyImportScript], {
+        cwd: browserOnlyAppDir,
+        encoding: 'utf8',
+      });
+      if (browserOnlyImportRun.status !== 0) {
+        throw new Error(
+          browserOnlyImportRun.stderr ||
+            browserOnlyImportRun.stdout ||
+            '@tracecode/harness-browser/project should work as an isolated bundled project-mode subpath'
+        );
+      }
+    }
+    if (packageCheck.name === '@tracecode/harness-project') {
+      assertCondition(
+        packedPackageJson.dependencies?.['just-bash'] === '3.0.1',
+        '@tracecode/harness-project should declare the just-bash-backed project workspace dependency'
+      );
+    }
+    const browserRunnerTypeAliases: Record<string, string> = {
+      '@tracecode/harness-python': 'BrowserPythonProjectCommandRunner',
+      '@tracecode/harness-javascript': 'BrowserJavaScriptProjectCommandRunner',
+      '@tracecode/harness-java': 'BrowserJavaProjectCommandRunner',
+      '@tracecode/harness-csharp': 'BrowserCSharpProjectCommandRunner',
+      '@tracecode/harness-cpp': 'BrowserCppProjectCommandRunner',
+    };
+    const browserRunnerTypeAlias = browserRunnerTypeAliases[packageCheck.name];
+    if (browserRunnerTypeAlias) {
+      const indexTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      const projectBrowserTypes = await readFile(join(packageDir, 'dist/project-browser.d.ts'), 'utf8');
+      assertCondition(
+        indexTypes.includes(browserRunnerTypeAlias),
+        `${packageCheck.name} main declarations should export ${browserRunnerTypeAlias}`
+      );
+      assertCondition(
+        projectBrowserTypes.includes(browserRunnerTypeAlias),
+        `${packageCheck.name}/project-browser declarations should export ${browserRunnerTypeAlias}`
+      );
+    }
+  }
+
+  const nonProjectImportScript = `
+    (async () => {
+      const checks = ${JSON.stringify(PACKAGE_CHECKS
+        .filter(({ name }) => name !== '@tracecode/harness-project')
+        .map(({ name, exportName }) => ({ name, exportName })))};
+      for (const check of checks) {
+        const mod = await import(check.name);
+        if (typeof mod[check.exportName] !== 'function') {
+          throw new Error(check.name + ' missing ' + check.exportName);
+        }
+      }
+      const browser = await import('@tracecode/harness-browser');
+      if (typeof browser.createBrowserProjectWorkspace !== 'undefined') {
+        throw new Error('@tracecode/harness-browser main export should not include project workspace helpers');
+      }
+      const python = await import('@tracecode/harness-python');
+      const javascript = await import('@tracecode/harness-javascript');
+      const java = await import('@tracecode/harness-java');
+      const csharp = await import('@tracecode/harness-csharp');
+      const cpp = await import('@tracecode/harness-cpp');
+      for (const [name, mod, projectExport] of [
+        ['@tracecode/harness-python', python, 'createNativePythonProjectRunner'],
+        ['@tracecode/harness-javascript', javascript, 'createNativeJavaScriptProjectRunner'],
+        ['@tracecode/harness-java', java, 'createNativeJavaProjectRunner'],
+        ['@tracecode/harness-csharp', csharp, 'createNativeCSharpProjectRunner'],
+        ['@tracecode/harness-cpp', cpp, 'createNativeCppProjectRunner'],
+      ]) {
+        if (typeof mod[projectExport] !== 'function') {
+          throw new Error(name + ' missing additive project runner export ' + projectExport);
+        }
+      }
+      console.log('ok');
+    })().catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
+  `;
+  const nonProjectImportRun = spawnSync('node', ['-e', nonProjectImportScript], {
+    cwd: appDir,
+    encoding: 'utf8',
+  });
+  if (nonProjectImportRun.status !== 0) {
+    throw new Error(
+      nonProjectImportRun.stderr ||
+        nonProjectImportRun.stdout ||
+        'Non-project package imports should not require just-bash'
+    );
+  }
+
+  await writeFile(
+    join(appDir, 'package.json'),
+    JSON.stringify({
+      type: 'module',
+      private: true,
+      dependencies: {
+        'just-bash': '3.0.1',
+      },
+    }),
+    'utf8'
+  );
+  const install = spawnSync('pnpm', ['install', '--prod', '--ignore-scripts'], {
+    cwd: appDir,
+    encoding: 'utf8',
+  });
+  if (install.status !== 0) {
+    throw new Error(install.stderr || install.stdout || 'Language package dependency install failed');
   }
 
   const evalScript = `
@@ -199,6 +466,238 @@ async function main(): Promise<void> {
         if (typeof mod[check.exportName] !== 'function') {
           throw new Error(check.name + ' missing ' + check.exportName);
         }
+      }
+      const projectMod = await import('@tracecode/harness-project');
+      for (const exportName of [
+        'createRuntimeWorkspace',
+        'createPythonProjectCommands',
+        'createNodeProjectCommands',
+        'createJavaProjectCommands',
+        'createCppProjectCommands',
+        'createCSharpProjectCommands',
+        'normalizeRuntimeProjectPath',
+      ]) {
+        if (typeof projectMod[exportName] !== 'function') {
+          throw new Error('@tracecode/harness-project missing ' + exportName);
+        }
+      }
+      const projectWorkspace = await projectMod.createRuntimeWorkspace({
+        files: [{ path: 'hello.txt', contents: 'hello\\n' }],
+      });
+      const projectCat = await projectWorkspace.runCommand('cat hello.txt');
+      if (projectCat.stdout !== 'hello\\n' || projectCat.exitCode !== 0) {
+        throw new Error('@tracecode/harness-project workspace command smoke failed');
+      }
+      const pythonMain = await import('@tracecode/harness-python');
+      if (
+        typeof pythonMain.createNativePythonProjectRunner !== 'function' ||
+        typeof pythonMain.createBrowserPythonProjectRunner !== 'function' ||
+        typeof pythonMain.createPyodidePythonProjectRunner !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-python missing main project runner exports');
+      }
+      const javascriptMain = await import('@tracecode/harness-javascript');
+      if (
+        typeof javascriptMain.createNativeJavaScriptProjectRunner !== 'function' ||
+        typeof javascriptMain.createBrowserJavaScriptProjectRunner !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-javascript missing main project runner exports');
+      }
+      const javaMain = await import('@tracecode/harness-java');
+      if (
+        typeof javaMain.createNativeJavaProjectRunner !== 'function' ||
+        typeof javaMain.createBrowserJavaProjectRunner !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-java missing main project runner exports');
+      }
+      const csharpMain = await import('@tracecode/harness-csharp');
+      if (
+        typeof csharpMain.createNativeCSharpProjectRunner !== 'function' ||
+        typeof csharpMain.createBrowserCSharpProjectRunner !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-csharp missing main project runner exports');
+      }
+      const cppMain = await import('@tracecode/harness-cpp');
+      if (
+        typeof cppMain.createNativeCppProjectRunner !== 'function' ||
+        typeof cppMain.createBrowserCppProjectRunner !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-cpp missing main project runner exports');
+      }
+      const pythonProjectNode = await import('@tracecode/harness-python/project-node');
+      if (typeof pythonProjectNode.createNativePythonProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-python/project-node missing createNativePythonProjectRunner');
+      }
+      const pythonProjectBrowser = await import('@tracecode/harness-python/project-browser');
+      if (
+        typeof pythonProjectBrowser.createBrowserPythonProjectRunner !== 'function' ||
+        typeof pythonProjectBrowser.createPyodidePythonProjectRunner !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-python/project-browser missing browser project runner exports');
+      }
+      const javascriptProjectNode = await import('@tracecode/harness-javascript/project-node');
+      if (typeof javascriptProjectNode.createNativeJavaScriptProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-javascript/project-node missing createNativeJavaScriptProjectRunner');
+      }
+      const javascriptProjectBrowser = await import('@tracecode/harness-javascript/project-browser');
+      if (typeof javascriptProjectBrowser.createBrowserJavaScriptProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-javascript/project-browser missing createBrowserJavaScriptProjectRunner');
+      }
+      const javaProjectNode = await import('@tracecode/harness-java/project-node');
+      if (typeof javaProjectNode.createNativeJavaProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-java/project-node missing createNativeJavaProjectRunner');
+      }
+      const javaProjectBrowser = await import('@tracecode/harness-java/project-browser');
+      if (typeof javaProjectBrowser.createBrowserJavaProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-java/project-browser missing createBrowserJavaProjectRunner');
+      }
+      const cppProjectNode = await import('@tracecode/harness-cpp/project-node');
+      if (typeof cppProjectNode.createNativeCppProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-cpp/project-node missing createNativeCppProjectRunner');
+      }
+      const cppProjectBrowser = await import('@tracecode/harness-cpp/project-browser');
+      if (typeof cppProjectBrowser.createBrowserCppProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-cpp/project-browser missing createBrowserCppProjectRunner');
+      }
+      const csharpProjectNode = await import('@tracecode/harness-csharp/project-node');
+      if (typeof csharpProjectNode.createNativeCSharpProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-csharp/project-node missing createNativeCSharpProjectRunner');
+      }
+      const csharpProjectBrowser = await import('@tracecode/harness-csharp/project-browser');
+      if (typeof csharpProjectBrowser.createBrowserCSharpProjectRunner !== 'function') {
+        throw new Error('@tracecode/harness-csharp/project-browser missing createBrowserCSharpProjectRunner');
+      }
+      const nativeStandaloneWorkspace = await projectMod.createRuntimeWorkspace({
+        files: [
+          { path: 'native.py', contents: 'print("standalone-native-python")\\n' },
+          { path: 'native.js', contents: 'console.log("standalone-native-node")\\n' },
+          { path: 'Native.java', contents: 'class Native { public static void main(String[] args) { System.out.println("standalone-native-java"); } }\\n' },
+          { path: 'native.cpp', contents: '#include <iostream>\\nint main() { std::cout << "standalone-native-cpp\\\\n"; return 0; }\\n' },
+          {
+            path: 'NativeStandalone.csproj',
+            contents: [
+              '<Project Sdk="Microsoft.NET.Sdk">',
+              '  <PropertyGroup>',
+              '    <OutputType>Exe</OutputType>',
+              '    <TargetFramework>net8.0</TargetFramework>',
+              '    <ImplicitUsings>enable</ImplicitUsings>',
+              '  </PropertyGroup>',
+              '</Project>',
+              '',
+            ].join('\\n'),
+          },
+          { path: 'Program.cs', contents: 'Console.WriteLine("standalone-native-csharp");\\n' },
+        ],
+        pythonRunner: pythonProjectNode.createNativePythonProjectRunner(),
+        nodeRunner: javascriptProjectNode.createNativeJavaScriptProjectRunner(),
+        javaRunner: javaProjectNode.createNativeJavaProjectRunner(),
+        cppRunner: cppProjectNode.createNativeCppProjectRunner(),
+        csharpRunner: csharpProjectNode.createNativeCSharpProjectRunner({ timeoutMs: 60000 }),
+      });
+      const nativePython = await nativeStandaloneWorkspace.runCommand('python3 native.py');
+      if (nativePython.exitCode !== 0 || nativePython.stdout !== 'standalone-native-python\\n') {
+        throw new Error('@tracecode standalone native Python project smoke failed: ' + JSON.stringify(nativePython));
+      }
+      const nativeNode = await nativeStandaloneWorkspace.runCommand('node native.js');
+      if (nativeNode.exitCode !== 0 || nativeNode.stdout !== 'standalone-native-node\\n') {
+        throw new Error('@tracecode standalone native Node project smoke failed: ' + JSON.stringify(nativeNode));
+      }
+      const nativeJavac = await nativeStandaloneWorkspace.runCommand('javac Native.java');
+      if (nativeJavac.exitCode !== 0) {
+        throw new Error('@tracecode standalone native javac project smoke failed: ' + JSON.stringify(nativeJavac));
+      }
+      const nativeJava = await nativeStandaloneWorkspace.runCommand('java Native');
+      if (nativeJava.exitCode !== 0 || nativeJava.stdout !== 'standalone-native-java\\n') {
+        throw new Error('@tracecode standalone native Java project smoke failed: ' + JSON.stringify(nativeJava));
+      }
+      const nativeCppCompile = await nativeStandaloneWorkspace.runCommand('clang++ native.cpp -o native-cpp');
+      if (nativeCppCompile.exitCode !== 0) {
+        throw new Error('@tracecode standalone native C++ project compile smoke failed: ' + JSON.stringify(nativeCppCompile));
+      }
+      const nativeCpp = await nativeStandaloneWorkspace.runCommand('./native-cpp');
+      if (nativeCpp.exitCode !== 0 || nativeCpp.stdout !== 'standalone-native-cpp\\n') {
+        throw new Error('@tracecode standalone native C++ project run smoke failed: ' + JSON.stringify(nativeCpp));
+      }
+      const nativeCSharp = await nativeStandaloneWorkspace.runCommand('dotnet run --project NativeStandalone.csproj');
+      if (nativeCSharp.exitCode !== 0 || !nativeCSharp.stdout.endsWith('standalone-native-csharp\\n')) {
+        throw new Error('@tracecode standalone native C# project smoke failed: ' + JSON.stringify(nativeCSharp));
+      }
+      const browserProject = await import('@tracecode/harness-browser/project');
+      if (typeof browserProject.createBrowserProjectWorkspace !== 'function') {
+        throw new Error('@tracecode/harness-browser/project missing createBrowserProjectWorkspace');
+      }
+      const browserWorkspace = await browserProject.createBrowserProjectWorkspace({
+        files: [
+          { path: 'main.py', contents: 'print("standalone-browser-python")\\n' },
+          { path: 'index.js', contents: 'const fs = require("node:fs"); fs.writeFileSync("node.txt", "standalone-browser-node\\\\n"); console.log("standalone-browser-node");\\n' },
+          { path: 'Main.java', contents: 'class Main {}\\n' },
+          { path: 'Program.cs', contents: 'Console.WriteLine("standalone-browser-csharp");\\n' },
+          { path: 'main.cpp', contents: 'int main() { return 0; }\\n' },
+        ],
+        nodeProjectTimeoutMs: 20000,
+        pythonWorkerClient: {
+          async executeProjectPython(request) {
+            return { stdout: request.scriptPath + ':standalone-browser-python\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        javaWorkerClient: {
+          async executeProjectJava(request) {
+            return { stdout: request.source + ':' + request.scriptPath + ':standalone-browser-java\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        csharpWorkerClient: {
+          async executeProjectCSharp(request) {
+            return { stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-csharp\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+        cppWorkerClient: {
+          async executeProjectCpp(request) {
+            return { stdout: request.source + ':' + request.args.join(',') + ':standalone-browser-cpp\\n', stderr: '', exitCode: 0 };
+          },
+          terminate() {},
+        },
+      });
+      try {
+        const browserPython = await browserWorkspace.runCommand('python3 main.py');
+        if (browserPython.exitCode !== 0 || browserPython.stdout !== 'main.py:standalone-browser-python\\n') {
+          throw new Error('@tracecode/harness-browser/project Python smoke failed: ' + JSON.stringify(browserPython));
+        }
+        const browserNode = await browserWorkspace.runCommand('node index.js');
+        if (browserNode.exitCode !== 0 || browserNode.stdout !== 'standalone-browser-node\\n') {
+          throw new Error('@tracecode/harness-browser/project Node smoke failed: ' + JSON.stringify(browserNode));
+        }
+        if ((await browserWorkspace.readFile('node.txt')) !== 'standalone-browser-node\\n') {
+          throw new Error('@tracecode/harness-browser/project Node side effect failed');
+        }
+        const browserJava = await browserWorkspace.runCommand('java Main');
+        if (browserJava.exitCode !== 0 || browserJava.stdout !== 'run:Main:standalone-browser-java\\n') {
+          throw new Error('@tracecode/harness-browser/project Java smoke failed: ' + JSON.stringify(browserJava));
+        }
+        const browserCSharp = await browserWorkspace.runCommand('dotnet run -- alpha beta');
+        if (browserCSharp.exitCode !== 0 || browserCSharp.stdout !== 'run:alpha,beta:standalone-browser-csharp\\n') {
+          throw new Error('@tracecode/harness-browser/project C# smoke failed: ' + JSON.stringify(browserCSharp));
+        }
+        const browserCpp = await browserWorkspace.runCommand('clang++ main.cpp -o a.out');
+        if (browserCpp.exitCode !== 0 || browserCpp.stdout !== 'compile:main.cpp,-o,a.out:standalone-browser-cpp\\n') {
+          throw new Error('@tracecode/harness-browser/project C++ smoke failed: ' + JSON.stringify(browserCpp));
+        }
+        const browserGcc = await browserWorkspace.runCommand('gcc main.cpp -o c-app');
+        if (browserGcc.exitCode !== 0 || browserGcc.stdout !== 'compile:main.cpp,-o,c-app:standalone-browser-cpp\\n') {
+          throw new Error('@tracecode/harness-browser/project gcc alias smoke failed: ' + JSON.stringify(browserGcc));
+        }
+        const browserCc = await browserWorkspace.runCommand('cc main.cpp -o cc-app');
+        if (browserCc.exitCode !== 0 || browserCc.stdout !== 'compile:main.cpp,-o,cc-app:standalone-browser-cpp\\n') {
+          throw new Error('@tracecode/harness-browser/project cc alias smoke failed: ' + JSON.stringify(browserCc));
+        }
+        const browserCppRun = await browserWorkspace.runCommand('./a.out alpha beta');
+        if (browserCppRun.exitCode !== 0 || browserCppRun.stdout !== 'run:alpha,beta:standalone-browser-cpp\\n') {
+          throw new Error('@tracecode/harness-browser/project C++ executable smoke failed: ' + JSON.stringify(browserCppRun));
+        }
+      } finally {
+        browserWorkspace.dispose();
       }
       console.log('ok');
     })().catch((error) => {
@@ -216,7 +715,49 @@ async function main(): Promise<void> {
     throw new Error(importRun.stderr || importRun.stdout || 'Language package import check failed');
   }
 
+  await writeFile(
+    join(appDir, 'browser-project-entry.js'),
+    [
+      'import { createBrowserProjectWorkspace } from "@tracecode/harness-browser/project";',
+      'import { createRuntimeWorkspace } from "@tracecode/harness-project";',
+      'if (typeof createBrowserProjectWorkspace !== "function") throw new Error("missing browser project export");',
+      'if (typeof createRuntimeWorkspace !== "function") throw new Error("missing project export");',
+      'console.log("ok");',
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+  const esbuildPath = join(process.cwd(), 'node_modules', '.bin', 'esbuild');
+  const browserBundle = spawnSync(
+    esbuildPath,
+    [
+      'browser-project-entry.js',
+      '--bundle',
+      '--platform=browser',
+      '--format=esm',
+      '--conditions=browser',
+      '--outfile=browser-project-bundle.js',
+      '--log-level=error',
+    ],
+    {
+      cwd: appDir,
+      encoding: 'utf8',
+    }
+  );
+  if (browserBundle.status !== 0) {
+    throw new Error(browserBundle.stderr || browserBundle.stdout || 'Language browser project bundle check failed');
+  }
+
   console.log('PASS: standalone language packages include scoped assets and public exports');
+}
+
+async function main(): Promise<void> {
+  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-language-packages-'));
+  try {
+    await runWithTempRoot(tempRoot);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 }
 
 main().catch((error) => {
