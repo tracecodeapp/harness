@@ -3577,6 +3577,40 @@ function javaSyntheticClassOutputPath(sourcePath, outputDir) {
   return `/workspace/${relativeOutput}`;
 }
 
+function postProjectEvent(id, payload) {
+  if (!id) return;
+  postMessageResponse({ id, type: 'project-event', payload });
+}
+
+function emitJavaProjectResultEvents(id, result) {
+  if (!id || !result) return;
+  if (typeof result.stdout === 'string' && result.stdout.length > 0) {
+    postProjectEvent(id, {
+      type: 'output',
+      stream: 'stdout',
+      device: '/dev/stdout',
+      data: result.stdout,
+    });
+  }
+  if (typeof result.stderr === 'string' && result.stderr.length > 0) {
+    postProjectEvent(id, {
+      type: 'output',
+      stream: 'stderr',
+      device: '/dev/stderr',
+      data: result.stderr,
+    });
+  }
+  if (Array.isArray(result.files)) {
+    for (const change of result.files) {
+      postProjectEvent(id, {
+        type: 'file-change',
+        phase: 'final-diff',
+        change,
+      });
+    }
+  }
+}
+
 function commandResultFromJavaProjectReport(report, totalEnd, totalStart, libraryCallEnd, libraryCallStart, outputDir, payload) {
   let compilerOutput = javaReportConsoleOutput(report).join('\n');
   if (
@@ -3952,7 +3986,7 @@ async function runJavaCodeRequest(payload) {
   };
 }
 
-async function runJavaProjectRequest(payload) {
+async function runJavaProjectRequest(payload, requestId) {
   const totalStart = performance.now();
   if (payload?.options?.enablePreview === true) {
     return {
@@ -4086,7 +4120,7 @@ async function runJavaProjectRequest(payload) {
   }
 
   const totalEnd = performance.now();
-  return commandResultFromJavaProjectReport(
+  const result = commandResultFromJavaProjectReport(
     report,
     totalEnd,
     totalStart,
@@ -4102,6 +4136,8 @@ async function runJavaProjectRequest(payload) {
       : null,
     payload
   );
+  emitJavaProjectResultEvents(requestId, result);
+  return result;
 }
 
 async function runJavaCodeBatchRequest(payload) {
@@ -4329,7 +4365,7 @@ self.onmessage = (event) => {
           : message.type === 'execute-code-batch'
             ? await runJavaCodeBatchRequest(message.payload)
             : message.type === 'execute-project-java'
-              ? await runJavaProjectRequest(message.payload)
+              ? await runJavaProjectRequest(message.payload, message.id)
               : await runJavaCodeRequest(message.payload);
         postMessageResponse({
           id: message.id,

@@ -473,7 +473,12 @@ async function loadJavaSourceAugmentationSource(): Promise<string> {
 function createWorkerHarness(workerSource: string, augmentationSource: string) {
   const pending = new Map<
     string,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
+    {
+      resolve: (value: unknown) => void;
+      reject: (error: Error) => void;
+      timeoutId: ReturnType<typeof setTimeout>;
+      events: unknown[];
+    }
   >();
   const rewriteCalls: RewriteCall[] = [];
   const stringFiles: Array<{ path: string; source: string }> = [];
@@ -516,6 +521,10 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
       if (!id) return;
       const entry = pending.get(id);
       if (!entry) return;
+      if (message.type === 'project-event') {
+        entry.events.push(message.payload);
+        return;
+      }
       pending.delete(id);
       clearTimeout(entry.timeoutId);
       if (message.type === 'error') {
@@ -523,7 +532,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
         entry.reject(new Error(String(payload?.error ?? 'Worker error')));
         return;
       }
-      entry.resolve(message.payload);
+      entry.resolve(
+        entry.events.length > 0
+          ? { ...(message.payload as Record<string, unknown>), events: entry.events }
+          : message.payload
+      );
     },
     onmessage: null,
     importScripts: (...urls: string[]) => {
@@ -1049,7 +1062,7 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
         pending.delete(id);
         reject(new Error(`Timed out waiting for response: ${type}`));
       }, 5000);
-      pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timeoutId });
+      pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timeoutId, events: [] });
     });
 
     onmessage?.({ data: { id, type, payload } });
@@ -1158,7 +1171,19 @@ async function main(): Promise<void> {
     assertJavaSourceCompiles(defaultImportSource, 'Java runnable source with default imports and javafx.util.Pair');
     console.log('PASS: java worker injects default imports and Pair helper');
 
-    const projectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }> }>('execute-project-java', {
+    const projectExecute = await harness.sendMessage<{
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+      events?: Array<{
+        type: string;
+        stream?: 'stdout' | 'stderr';
+        data?: string;
+        phase?: string;
+        change?: { path: string; contents?: string; encoding?: string; deleted?: true };
+      }>;
+    }>('execute-project-java', {
       code: '',
       source: 'run',
       scriptPath: 'Main',
@@ -1191,6 +1216,15 @@ async function main(): Promise<void> {
       'Java execute-project-java should return captured stdout'
     );
     assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.data === '5\njava_args=alpha,beta\n'
+      ) === true,
+      `Java execute-project-java should emit stdout project events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
       projectExecute.files?.some((file) =>
         file.path === 'generated.txt' &&
           file.encoding === 'base64' &&
@@ -1203,6 +1237,24 @@ async function main(): Promise<void> {
         ) &&
         projectExecute.files?.some((file) => file.path === 'stale.txt' && file.deleted === true),
       'Java execute-project-java should return browser workspace changed files through result files'
+    );
+    assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'final-diff' &&
+          event.change?.path === 'generated.txt' &&
+          event.change.encoding === 'base64' &&
+          Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'created\n'
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'final-diff' &&
+            event.change?.path === 'stale.txt' &&
+            event.change.deleted === true
+        ) === true,
+      `Java execute-project-java should emit final-diff file events: ${JSON.stringify(projectExecute.events)}`
     );
     const defaultProjectManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
     const defaultWorkspaceManifest = harness.projectCompileCalls.at(-1)?.workspaceManifest ?? '';
