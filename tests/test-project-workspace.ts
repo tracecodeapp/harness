@@ -4350,11 +4350,23 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     assertCondition(cppTimeouts[0] === 14, 'browser project workspace should pass cppProjectTimeoutMs to C++ compile runner calls');
     assertCondition(await workspace.readFile('cpp.txt') === 'cpp\n', 'browser project workspace should apply C++ file changes');
 
-    const cppRun = await workspace.runCommand('./a.out alpha beta');
+    const cppRunEvents: RuntimeCommandEvent[] = [];
+    const cppRun = await workspace.runCommand('./a.out alpha beta', {
+      onEvent: (event) => cppRunEvents.push(event),
+    });
     assertCondition(cppRun.exitCode === 0, `browser project workspace C++ executable should run: ${cppRun.stderr}`);
     assertCondition(
       cppRun.stdout === 'run:a.out:alpha,beta:10:2\n',
       `browser project workspace should route direct C++ executable runs with directories: ${cppRun.stdout}`
+    );
+    assertCondition(
+      cppRunEvents.some((event) =>
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.device === '/dev/stdout' &&
+        event.data === 'run:a.out:alpha,beta:10:2\n'
+      ),
+      `browser project workspace should emit final stdout events for direct C++ executable runs: ${JSON.stringify(cppRunEvents)}`
     );
     assertCondition(cppTimeouts[1] === 14, 'browser project workspace should pass cppProjectTimeoutMs to C++ run runner calls');
   } finally {

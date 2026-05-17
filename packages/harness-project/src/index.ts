@@ -2589,6 +2589,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       const directCppResult = await this.tryRunCppExecutable(command, options);
       if (directCppResult) {
         await this.flushRuntimeEventQueue();
+        this.emitReturnedOutputEvents(directCppResult);
         return directCppResult;
       }
 
