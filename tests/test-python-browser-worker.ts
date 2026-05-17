@@ -19,6 +19,14 @@ interface PythonProjectWorkerResponse {
   stderr: string;
   exitCode: number;
   files?: PythonProjectWorkerFile[];
+  events?: Array<{
+    type: string;
+    stream?: 'stdout' | 'stderr';
+    device?: string;
+    data?: string;
+    phase?: string;
+    change?: PythonProjectWorkerFile;
+  }>;
 }
 
 function assertCondition(condition: boolean, message: string): void {
@@ -65,11 +73,15 @@ async function main(): Promise<void> {
         if (!id) return;
         const request = pending.get(id);
         if (!request) return;
+        if (type === 'project-event') {
+          request.events.push(payload);
+          return;
+        }
         pending.delete(id);
         if (type === 'error') {
           request.reject(new Error(String((payload && payload.error) || 'Python worker error')));
         } else {
-          request.resolve(payload);
+          request.resolve({ ...payload, events: request.events });
         }
       };
       worker.onerror = (event) => {
@@ -87,6 +99,7 @@ async function main(): Promise<void> {
             reject(new Error(type + ' timed out'));
           }, timeoutMs);
           pending.set(id, {
+            events: [],
             resolve: (value) => {
               clearTimeout(timeoutId);
               resolve(value);
@@ -115,10 +128,17 @@ async function main(): Promise<void> {
             'print(os.environ.get("MODE", ""))',
             'print(",".join(sys.argv[1:]))',
             'print(os.getcwd())',
+            'print("stderr-line", file=sys.stderr)',
             'with open("/workspace/generated.txt", "w", encoding="utf-8") as handle:',
             '    handle.write(str(answer()) + "\\\\n")',
             'with open("bytes.bin", "wb") as handle:',
             '    handle.write(bytes([0, 255]))',
+            'fd = os.open("/workspace/fd-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
+            'try:',
+            '    os.write(fd, b"fd-one\\\\n")',
+            '    os.write(fd, b"fd-two\\\\n")',
+            'finally:',
+            '    os.close(fd)',
             'os.remove("/workspace/stale.txt")',
             '',
           ].join('\\n'),
@@ -252,6 +272,24 @@ async function main(): Promise<void> {
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
+      results.fileRun.stderr === 'stderr-line\n',
+      `Python project file stderr should match workspace semantics: ${JSON.stringify(results.fileRun.stderr)}`
+    );
+    assertCondition(
+      results.fileRun.events
+        ?.filter((event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout')
+        .map((event) => event.data)
+        .join('') === results.fileRun.stdout,
+      `Python project worker should stream stdout events: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events
+        ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
+        .map((event) => event.data)
+        .join('') === results.fileRun.stderr,
+      `Python project worker should stream stderr events: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
       findFile(results.fileRun, 'generated.txt')?.contents === '42\n',
       'Python project file run should report generated text files'
     );
@@ -260,7 +298,48 @@ async function main(): Promise<void> {
         findFile(results.fileRun, 'bytes.bin')?.encoding === 'base64',
       'Python project file run should report generated binary files as base64'
     );
+    assertCondition(
+      findFile(results.fileRun, 'fd-live.txt')?.contents === 'fd-one\nfd-two\n',
+      'Python project file run should report low-level fd side effects'
+    );
     assertCondition(findFile(results.fileRun, 'stale.txt')?.deleted === true, 'Python project file run should report deletions');
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'generated.txt' &&
+        event.change.contents === '42\n'
+      )) === true,
+      `Python project worker should stream live text file mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'bytes.bin' &&
+        event.change.contents === 'AP8=' &&
+        event.change.encoding === 'base64'
+      )) === true,
+      `Python project worker should stream live binary file mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'fd-live.txt' &&
+        event.change.contents === 'fd-one\nfd-two\n'
+      )) === true,
+      `Python project worker should stream live os.write mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'stale.txt' &&
+        event.change.deleted === true
+      )) === true,
+      `Python project worker should stream live deletions: ${JSON.stringify(results.fileRun.events)}`
+    );
 
     assertCondition(results.moduleRun.exitCode === 0, `Python project module run should succeed: ${results.moduleRun.stderr}`);
     assertCondition(

@@ -887,6 +887,10 @@ class _TraceProjectFile:
                 self._handle.flush()
             except Exception:
                 pass
+            try:
+                os.fsync(self._handle.fileno())
+            except Exception:
+                pass
             _emit_file_change_for_absolute(self._absolute_path)
 
     def write(self, *args, **kwargs):
@@ -901,6 +905,7 @@ class _TraceProjectFile:
 
     def close(self):
         try:
+            self._emit()
             self._handle.close()
         finally:
             self._emit()
@@ -910,6 +915,7 @@ class _TraceProjectFile:
         return self
 
     def __exit__(self, *args):
+        self._emit()
         _result = self._handle.__exit__(*args)
         self._emit()
         return _result
@@ -1046,6 +1052,19 @@ def _is_mutating_file_mode(_mode):
     _mode_text = str(_mode or "r")
     return any(_marker in _mode_text for _marker in ("w", "a", "x", "+"))
 
+def _is_mutating_fd_flags(_flags):
+    try:
+        _flag_value = int(_flags)
+    except Exception:
+        return False
+    return bool(
+        (_flag_value & getattr(os, "O_WRONLY", 0)) or
+        (_flag_value & getattr(os, "O_RDWR", 0)) or
+        (_flag_value & getattr(os, "O_CREAT", 0)) or
+        (_flag_value & getattr(os, "O_TRUNC", 0)) or
+        (_flag_value & getattr(os, "O_APPEND", 0))
+    )
+
 def _virtual_workspace_path(_value):
     if isinstance(_value, str):
         _relative = os.path.relpath(_value, _root)
@@ -1060,7 +1079,19 @@ def _install_virtual_workspace_paths():
     _original_io_open = io.open
     _original_getcwd = os.getcwd
     _original_chdir = os.chdir
+    _original_os_open = os.open
+    _original_os_write = os.write
+    _original_os_close = os.close
+    _open_file_descriptors = {}
     _patched = []
+
+    def _absolute_mapped_path(_path):
+        if not isinstance(_path, (str, bytes, os.PathLike)):
+            return None
+        _file_path = os.fspath(_path)
+        if os.path.isabs(_file_path):
+            return os.path.abspath(_file_path)
+        return os.path.abspath(os.path.join(_original_getcwd(), _file_path))
 
     def _patched_open(_file, *args, **kwargs):
         _device = _normalize_device_path(_file)
@@ -1069,7 +1100,7 @@ def _install_virtual_workspace_paths():
             return _TraceDeviceFile(_device, _mode)
         _mapped_path = _map_workspace_path(_file)
         _handle = _original_open(_mapped_path, *args, **kwargs)
-        return _TraceProjectFile(_handle, os.path.abspath(os.fspath(_mapped_path)), _is_mutating_file_mode(_mode))
+        return _TraceProjectFile(_handle, _absolute_mapped_path(_mapped_path), _is_mutating_file_mode(_mode))
 
     def _patched_getcwd():
         return _virtual_workspace_path(_original_getcwd())
@@ -1077,10 +1108,37 @@ def _install_virtual_workspace_paths():
     def _patched_chdir(_path):
         return _original_chdir(_map_workspace_path(_path))
 
+    def _patched_os_open(_path, _flags, *args, **kwargs):
+        _mapped_path = _map_workspace_path(_path)
+        _absolute_path = _absolute_mapped_path(_mapped_path)
+        _fd = _original_os_open(_mapped_path, _flags, *args, **kwargs)
+        if _absolute_path and _is_mutating_fd_flags(_flags):
+            _open_file_descriptors[_fd] = _absolute_path
+            _emit_file_change_for_absolute(_absolute_path)
+        return _fd
+
+    def _patched_os_write(_fd, _data):
+        _result = _original_os_write(_fd, _data)
+        _absolute_path = _open_file_descriptors.get(_fd)
+        if _absolute_path:
+            _emit_file_change_for_absolute(_absolute_path)
+        return _result
+
+    def _patched_os_close(_fd):
+        _absolute_path = _open_file_descriptors.pop(_fd, None)
+        try:
+            return _original_os_close(_fd)
+        finally:
+            if _absolute_path:
+                _emit_file_change_for_absolute(_absolute_path)
+
     builtins.open = _patched_open
     io.open = _patched_open
     os.getcwd = _patched_getcwd
     os.chdir = _patched_chdir
+    os.open = _patched_os_open
+    os.write = _patched_os_write
+    os.close = _patched_os_close
 
     def _patch_one(_target, _name):
         _original = getattr(_target, _name, None)
@@ -1088,7 +1146,7 @@ def _install_virtual_workspace_paths():
             return
         def _patched_one(_path, *args, **kwargs):
             _mapped_path = _map_workspace_path(_path)
-            _absolute_path = os.path.abspath(os.fspath(_mapped_path)) if isinstance(_mapped_path, (str, bytes, os.PathLike)) else None
+            _absolute_path = _absolute_mapped_path(_mapped_path)
             _result = _original(_mapped_path, *args, **kwargs)
             if _name in ("remove", "unlink"):
                 _emit_file_delete_for_absolute(_absolute_path)
@@ -1103,8 +1161,8 @@ def _install_virtual_workspace_paths():
         def _patched_two(_src, _dst, *args, **kwargs):
             _mapped_src = _map_workspace_path(_src)
             _mapped_dst = _map_workspace_path(_dst)
-            _absolute_src = os.path.abspath(os.fspath(_mapped_src)) if isinstance(_mapped_src, (str, bytes, os.PathLike)) else None
-            _absolute_dst = os.path.abspath(os.fspath(_mapped_dst)) if isinstance(_mapped_dst, (str, bytes, os.PathLike)) else None
+            _absolute_src = _absolute_mapped_path(_mapped_src)
+            _absolute_dst = _absolute_mapped_path(_mapped_dst)
             _result = _original(_mapped_src, _mapped_dst, *args, **kwargs)
             if _name in ("rename", "replace"):
                 _emit_file_delete_for_absolute(_absolute_src)
@@ -1137,6 +1195,9 @@ def _install_virtual_workspace_paths():
         io.open = _original_io_open
         os.getcwd = _original_getcwd
         os.chdir = _original_chdir
+        os.open = _original_os_open
+        os.write = _original_os_write
+        os.close = _original_os_close
         for _target, _name, _original in reversed(_patched):
             setattr(_target, _name, _original)
 
