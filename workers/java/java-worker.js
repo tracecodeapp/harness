@@ -58,9 +58,34 @@ let idleGeneration = 0;
 let initLoadTimeMs = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let runWarmupPromise = null;
+let activeJavaProjectIo = null;
 
 function postMessageResponse(message) {
   self.postMessage(message);
+}
+
+function emitLiveJavaProjectOutput(stream, data) {
+  if (!activeJavaProjectIo?.messageId || typeof data !== 'string' || data.length === 0) return;
+  const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
+  if (normalizedStream === 'stderr') {
+    activeJavaProjectIo.stderrEmitted = true;
+  } else {
+    activeJavaProjectIo.stdoutEmitted = true;
+  }
+  postProjectEvent(activeJavaProjectIo.messageId, {
+    type: 'output',
+    stream: normalizedStream,
+    device: normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
+    data,
+  });
+}
+
+function javaProjectNativeBridge() {
+  return {
+    Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data) => {
+      emitLiveJavaProjectOutput(String(stream ?? 'stdout'), String(data ?? ''));
+    },
+  };
 }
 
 function javaDefaultImportsBlock() {
@@ -2370,7 +2395,7 @@ async function ensureReady() {
       if (typeof self.cheerpjInit !== 'function') {
         throw new Error('CheerpJ loader did not expose cheerpjInit');
       }
-      await self.cheerpjInit({ version: 17, status: 'none' });
+      await self.cheerpjInit({ version: 17, status: 'none', natives: javaProjectNativeBridge() });
       if (
         typeof self.cheerpjRunLibrary !== 'function' ||
         typeof self.cheerpOSAddStringFile !== 'function'
@@ -3129,6 +3154,7 @@ function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, co
 
   return `
 import tracecode.user.TraceHooks;
+import tracecode.browser.ProjectEvents;
 import java.io.*;
 
 public class ${exportsClassName} {
@@ -3185,17 +3211,21 @@ public class ${exportsClassName} {
       for (int index = 0; index < propertyKeys.length; index += 1) {
         System.setProperty(propertyKeys[index], propertyValues[index]);
       }
-      System.setOut(new java.io.PrintStream(stdoutBytes, true, "UTF-8"));
-      System.setErr(new java.io.PrintStream(stderrBytes, true, "UTF-8"));
+      ProjectEvents.setProjectEventBridgeEnabled(true);
+      System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
+      System.setErr(new java.io.PrintStream(ProjectEvents.streamingOutput(stderrBytes, "stderr"), true, "UTF-8"));
       System.setIn(new java.io.ByteArrayInputStream(${stdinSource}.getBytes("UTF-8")));
 ${invocation}
     } catch (Throwable error) {
       exitCode = 1;
       error.printStackTrace();
     } finally {
+      System.out.flush();
+      System.err.flush();
       System.setOut(previousOut);
       System.setErr(previousErr);
       System.setIn(previousIn);
+      ProjectEvents.setProjectEventBridgeEnabled(false);
       for (String key : propertyKeys) {
         if (previousProperties.containsKey(key)) {
           System.setProperty(key, previousProperties.getProperty(key));
@@ -3582,9 +3612,11 @@ function postProjectEvent(id, payload) {
   postMessageResponse({ id, type: 'project-event', payload });
 }
 
-function emitJavaProjectResultEvents(id, result) {
+function emitJavaProjectResultEvents(id, result, options = {}) {
   if (!id || !result) return;
-  if (typeof result.stdout === 'string' && result.stdout.length > 0) {
+  const skipStdout = options.skipStdout === true;
+  const skipStderr = options.skipStderr === true;
+  if (!skipStdout && typeof result.stdout === 'string' && result.stdout.length > 0) {
     postProjectEvent(id, {
       type: 'output',
       stream: 'stdout',
@@ -3592,7 +3624,7 @@ function emitJavaProjectResultEvents(id, result) {
       data: result.stdout,
     });
   }
-  if (typeof result.stderr === 'string' && result.stderr.length > 0) {
+  if (!skipStderr && typeof result.stderr === 'string' && result.stderr.length > 0) {
     postProjectEvent(id, {
       type: 'output',
       stream: 'stderr',
@@ -4033,8 +4065,10 @@ async function runJavaProjectRequest(payload, requestId) {
   }
 
   const libraryCallStart = performance.now();
+  const projectIo = { messageId: requestId, stdoutEmitted: false, stderrEmitted: false };
   let reportText;
   try {
+    activeJavaProjectIo = projectIo;
     reportText = explicitClasspath
       ? typeof compileLibraryClass.compileAndRunProjectClassFilesWithWorkspace === 'function'
         ? await compileLibraryClass.compileAndRunProjectClassFilesWithWorkspace(
@@ -4109,6 +4143,8 @@ async function runJavaProjectRequest(payload, requestId) {
           );
   } catch (error) {
     throw makeWorkerStageError('project compile and run', error);
+  } finally {
+    activeJavaProjectIo = null;
   }
   const libraryCallEnd = performance.now();
 
@@ -4136,7 +4172,10 @@ async function runJavaProjectRequest(payload, requestId) {
       : null,
     payload
   );
-  emitJavaProjectResultEvents(requestId, result);
+  emitJavaProjectResultEvents(requestId, result, {
+    skipStdout: projectIo.stdoutEmitted,
+    skipStderr: projectIo.stderrEmitted,
+  });
   return result;
 }
 

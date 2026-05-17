@@ -502,13 +502,14 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     workspaceCwd?: string;
   }> = [];
   const runLibraryClasspaths: string[] = [];
+  let cheerpjInitOptions: { natives?: Record<string, (...args: unknown[]) => unknown> } | undefined;
   let nextId = 0;
 
   const selfObject: {
     postMessage: (message: WorkerMessage) => void;
     onmessage: ((event: { data: WorkerMessage }) => void) | null;
     importScripts: (...urls: string[]) => void;
-    cheerpjInit: () => Promise<void>;
+    cheerpjInit: (options?: { natives?: Record<string, (...args: unknown[]) => unknown> }) => Promise<void>;
     cheerpOSAddStringFile: (path: string, source: string) => Promise<void>;
     cheerpjRunLibrary: (classpath?: string) => Promise<unknown>;
     close: () => void;
@@ -548,7 +549,9 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
         }
       }
     },
-    cheerpjInit: async () => {},
+    cheerpjInit: async (options) => {
+      cheerpjInitOptions = options;
+    },
     cheerpOSAddStringFile: async (path: string, source: string) => {
       stringFiles.push({ path, source });
     },
@@ -732,6 +735,16 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               compilerProfile: string
             ) => {
               projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName, resourceManifest, compileClasspath, workspaceManifest, workspaceRoot, workspaceCwd });
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                '5\n'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                'java_args=alpha,beta\n'
+              );
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify(JSON.stringify({
@@ -1220,9 +1233,15 @@ async function main(): Promise<void> {
         (event) =>
           event.type === 'output' &&
           event.stream === 'stdout' &&
-          event.data === '5\njava_args=alpha,beta\n'
+          event.data === '5\n'
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'java_args=alpha,beta\n'
       ) === true,
-      `Java execute-project-java should emit stdout project events: ${JSON.stringify(projectExecute.events)}`
+      `Java execute-project-java should emit live stdout project events: ${JSON.stringify(projectExecute.events)}`
     );
     assertCondition(
       projectExecute.files?.some((file) =>
