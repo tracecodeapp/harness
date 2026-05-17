@@ -3928,6 +3928,7 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
       callCount += 1;
       received = request;
       onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'java-streamed\n' });
+      onEvent?.({ type: 'file-change', phase: 'final-diff', change: { path: 'java-generated.txt', contents: 'generated\n' } });
       return {
         stdout: `java-streamed\n${request.source}:${request.scriptPath}:${request.project.files.length}`,
         stderr: '',
@@ -3955,6 +3956,14 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   assertCondition(
     events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
     `browser java runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'java-generated.txt'
+    ),
+    `browser java runner should forward worker final-diff file-change events: ${JSON.stringify(events)}`
   );
 
   const previewResult = await runner({
@@ -4062,6 +4071,7 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     async executeProjectCSharp(request, _timeoutMs, onEvent) {
       received = request;
       onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'csharp-streamed\n' });
+      onEvent?.({ type: 'file-change', phase: 'final-diff', change: { path: 'csharp-generated.txt', contents: 'generated\n' } });
       return {
         stdout: `csharp-streamed\n${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}`,
         stderr: '',
@@ -4089,6 +4099,14 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
   assertCondition(
     events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
     `browser C# runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'csharp-generated.txt'
+    ),
+    `browser C# runner should forward worker final-diff file-change events: ${JSON.stringify(events)}`
   );
 
   const noBuildResult = await runner({
