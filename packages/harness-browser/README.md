@@ -14,6 +14,17 @@ Public surface:
 - runtime capability guards
 - supported-language profiles
 
+Project/workspace mode is exposed separately:
+
+```ts
+import { createBrowserProjectWorkspace } from '@tracecode/harness-browser/project';
+```
+
+The `/project` subpath wires the shared `@tracecode/harness-project` workspace
+layer to browser Python, JavaScript, Java, C#, and C++ project runners. The main
+browser entrypoint stays focused on single-file runtime clients and does not
+export project-mode APIs.
+
 This entrypoint is intentionally high-level. Low-level worker constructors and internal bootstrap details are not the stable public API.
 
 The umbrella package also exposes the same public surface at
