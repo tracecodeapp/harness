@@ -707,10 +707,14 @@ async function executeCode(code, functionName, inputs, executionStyle = 'functio
   );
 }
 
-async function executeProjectPython(request) {
+async function executeProjectPython(request, messageId) {
   await loadPyodideInstance();
 
   const requestJson = JSON.stringify(request ?? {});
+  self.__tracecodeProjectEvent = (event) => {
+    const payload = typeof event === 'string' ? JSON.parse(event) : event;
+    self.postMessage({ id: messageId, type: 'project-event', payload });
+  };
   const projectCode = `
 import base64
 import builtins
@@ -723,6 +727,7 @@ import runpy
 import shutil
 import sys
 import traceback
+from js import self as _js_self
 
 _request = json.loads(${JSON.stringify(requestJson)})
 _root = "/tracecode_project"
@@ -773,6 +778,150 @@ _env = {str(key): str(value) for key, value in _request.get("env", {}).items()}
 _exit_code = 0
 _restore_workspace_paths = lambda: None
 _active_project_cwd = _root
+_project_original_open = builtins.open
+
+def _emit_project_event(_event):
+    try:
+        _js_self.__tracecodeProjectEvent(json.dumps(_event))
+    except Exception:
+        pass
+
+def _project_relative_path_from_absolute(_absolute_path):
+    try:
+        _absolute = os.path.abspath(os.fspath(_absolute_path))
+    except Exception:
+        return None
+    if _absolute == _root or not _absolute.startswith(_root + os.sep):
+        return None
+    return os.path.relpath(_absolute, _root).replace(os.sep, "/")
+
+def _runtime_file_change_for_absolute(_absolute_path):
+    _relative_path = _project_relative_path_from_absolute(_absolute_path)
+    if not _relative_path or not os.path.isfile(_absolute_path):
+        return None
+    with _project_original_open(_absolute_path, "rb") as _handle:
+        _contents = _handle.read()
+    try:
+        return {"path": _relative_path, "contents": _contents.decode("utf-8")}
+    except UnicodeDecodeError:
+        return {
+            "path": _relative_path,
+            "contents": base64.b64encode(_contents).decode("ascii"),
+            "encoding": "base64",
+        }
+
+def _emit_file_change_for_absolute(_absolute_path):
+    _change = _runtime_file_change_for_absolute(_absolute_path)
+    if _change is not None:
+        _emit_project_event({"type": "file-change", "phase": "live", "change": _change})
+
+def _emit_file_delete_for_absolute(_absolute_path):
+    _relative_path = _project_relative_path_from_absolute(_absolute_path)
+    if _relative_path:
+        _emit_project_event({"type": "file-change", "phase": "live", "change": {"path": _relative_path, "deleted": True}})
+
+class _TraceProjectStream(io.StringIO):
+    def __init__(self, _stream):
+        super().__init__()
+        self._stream = _stream
+
+    def write(self, _value):
+        _text = str(_value)
+        if _text:
+            _emit_project_event({
+                "type": "output",
+                "stream": self._stream,
+                "device": "/dev/stderr" if self._stream == "stderr" else "/dev/stdout",
+                "data": _text,
+            })
+        return super().write(_text)
+
+class _TraceDeviceFile:
+    def __init__(self, _device, _mode="r"):
+        self._device = _device
+        self._mode = _mode
+        self.closed = False
+
+    def readable(self):
+        return self._device in ("/dev/stdin", "/dev/tty") and "w" not in self._mode and "a" not in self._mode
+
+    def writable(self):
+        return self._device in ("/dev/stdout", "/dev/stderr", "/dev/tty") and "r" not in self._mode
+
+    def read(self, *args):
+        if not self.readable():
+            raise OSError("Kernel device is not readable: " + self._device)
+        return str(_request.get("stdin", ""))
+
+    def readline(self, *args):
+        return self.read(*args).splitlines(True)[0] if self.read(*args) else ""
+
+    def write(self, _value):
+        if not self.writable():
+            raise OSError("Kernel device is not writable: " + self._device)
+        _target = _stderr if self._device == "/dev/stderr" else _stdout
+        return _target.write(_value)
+
+    def flush(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
+class _TraceProjectFile:
+    def __init__(self, _handle, _absolute_path, _mutates):
+        self._handle = _handle
+        self._absolute_path = _absolute_path
+        self._mutates = _mutates
+
+    def _emit(self):
+        if self._mutates:
+            try:
+                self._handle.flush()
+            except Exception:
+                pass
+            _emit_file_change_for_absolute(self._absolute_path)
+
+    def write(self, *args, **kwargs):
+        _result = self._handle.write(*args, **kwargs)
+        self._emit()
+        return _result
+
+    def flush(self):
+        _result = self._handle.flush()
+        self._emit()
+        return _result
+
+    def close(self):
+        try:
+            self._handle.close()
+        finally:
+            self._emit()
+
+    def __enter__(self):
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        _result = self._handle.__exit__(*args)
+        self._emit()
+        return _result
+
+    def __iter__(self):
+        return iter(self._handle)
+
+    def __getattr__(self, _name):
+        return getattr(self._handle, _name)
+
+_stdout = _TraceProjectStream("stdout")
+_stderr = _TraceProjectStream("stderr")
 
 def _is_project_module(_module):
     _module_file = getattr(_module, "__file__", None)
@@ -886,6 +1035,17 @@ def _map_workspace_path(_value):
             return os.path.join(_root, _original[len("/workspace/"):])
     return _value
 
+def _normalize_device_path(_value):
+    if isinstance(_value, (str, bytes, os.PathLike)):
+        _original = os.fspath(_value)
+        if _original in ("/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty"):
+            return _original
+    return None
+
+def _is_mutating_file_mode(_mode):
+    _mode_text = str(_mode or "r")
+    return any(_marker in _mode_text for _marker in ("w", "a", "x", "+"))
+
 def _virtual_workspace_path(_value):
     if isinstance(_value, str):
         _relative = os.path.relpath(_value, _root)
@@ -903,7 +1063,13 @@ def _install_virtual_workspace_paths():
     _patched = []
 
     def _patched_open(_file, *args, **kwargs):
-        return _original_open(_map_workspace_path(_file), *args, **kwargs)
+        _device = _normalize_device_path(_file)
+        _mode = args[0] if args else kwargs.get("mode", "r")
+        if _device:
+            return _TraceDeviceFile(_device, _mode)
+        _mapped_path = _map_workspace_path(_file)
+        _handle = _original_open(_mapped_path, *args, **kwargs)
+        return _TraceProjectFile(_handle, os.path.abspath(os.fspath(_mapped_path)), _is_mutating_file_mode(_mode))
 
     def _patched_getcwd():
         return _virtual_workspace_path(_original_getcwd())
@@ -921,7 +1087,12 @@ def _install_virtual_workspace_paths():
         if _original is None:
             return
         def _patched_one(_path, *args, **kwargs):
-            return _original(_map_workspace_path(_path), *args, **kwargs)
+            _mapped_path = _map_workspace_path(_path)
+            _absolute_path = os.path.abspath(os.fspath(_mapped_path)) if isinstance(_mapped_path, (str, bytes, os.PathLike)) else None
+            _result = _original(_mapped_path, *args, **kwargs)
+            if _name in ("remove", "unlink"):
+                _emit_file_delete_for_absolute(_absolute_path)
+            return _result
         setattr(_target, _name, _patched_one)
         _patched.append((_target, _name, _original))
 
@@ -930,7 +1101,17 @@ def _install_virtual_workspace_paths():
         if _original is None:
             return
         def _patched_two(_src, _dst, *args, **kwargs):
-            return _original(_map_workspace_path(_src), _map_workspace_path(_dst), *args, **kwargs)
+            _mapped_src = _map_workspace_path(_src)
+            _mapped_dst = _map_workspace_path(_dst)
+            _absolute_src = os.path.abspath(os.fspath(_mapped_src)) if isinstance(_mapped_src, (str, bytes, os.PathLike)) else None
+            _absolute_dst = os.path.abspath(os.fspath(_mapped_dst)) if isinstance(_mapped_dst, (str, bytes, os.PathLike)) else None
+            _result = _original(_mapped_src, _mapped_dst, *args, **kwargs)
+            if _name in ("rename", "replace"):
+                _emit_file_delete_for_absolute(_absolute_src)
+                _emit_file_change_for_absolute(_absolute_dst)
+            elif _name in ("link", "symlink"):
+                _emit_file_change_for_absolute(_absolute_dst)
+            return _result
         setattr(_target, _name, _patched_two)
         _patched.append((_target, _name, _original))
 
@@ -1037,8 +1218,12 @@ json.dumps({
 })
 `;
 
-  const resultJson = await pyodide.runPythonAsync(projectCode);
-  return JSON.parse(resultJson);
+  try {
+    const resultJson = await pyodide.runPythonAsync(projectCode);
+    return JSON.parse(resultJson);
+  } finally {
+    delete self.__tracecodeProjectEvent;
+  }
 }
 
 async function processMessage(data) {
@@ -1087,7 +1272,7 @@ async function processMessage(data) {
       }
 
       case 'execute-project-python': {
-        const result = await executeProjectPython(payload);
+        const result = await executeProjectPython(payload, id);
         analyzerInitialized = false;
         self.postMessage({ id, type: 'execute-result', payload: result });
         break;

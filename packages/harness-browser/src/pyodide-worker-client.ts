@@ -8,6 +8,8 @@
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import type {
+  RuntimeCommandEvent,
+  RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeFile,
   RuntimeProjectCommandRequest,
@@ -26,6 +28,7 @@ export interface PythonWorkerClientOptions {
 interface PendingMessage {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  onEvent?: RuntimeCommandEventHandler;
   timeoutId?: ReturnType<typeof globalThis.setTimeout>;
 }
 
@@ -152,6 +155,10 @@ export class PythonWorkerClient {
       if (id) {
         const pending = this.pendingMessages.get(id);
         if (pending) {
+          if (type === 'project-event') {
+            pending.onEvent?.(payload as RuntimeCommandEvent);
+            return;
+          }
           this.pendingMessages.delete(id);
           if (pending.timeoutId) globalThis.clearTimeout(pending.timeoutId);
           
@@ -248,7 +255,12 @@ export class PythonWorkerClient {
   /**
    * Send a message to the worker and wait for a response
    */
-  private async sendMessage<T>(type: string, payload?: unknown, timeoutMs: number = MESSAGE_TIMEOUT_MS): Promise<T> {
+  private async sendMessage<T>(
+    type: string,
+    payload?: unknown,
+    timeoutMs: number = MESSAGE_TIMEOUT_MS,
+    onEvent?: RuntimeCommandEventHandler
+  ): Promise<T> {
     const worker = this.getWorker();
     
     // Wait for worker to be ready before sending messages
@@ -260,6 +272,7 @@ export class PythonWorkerClient {
       this.pendingMessages.set(id, {
         resolve: resolve as (value: unknown) => void,
         reject,
+        ...(onEvent ? { onEvent } : {}),
       });
 
       logRuntimeDiagnostic('debug', {
@@ -581,14 +594,16 @@ export class PythonWorkerClient {
 
   async executeProjectPython(
     request: PythonProjectCommandRequest,
-    timeoutMs: number = PROJECT_EXECUTION_TIMEOUT_MS
+    timeoutMs: number = PROJECT_EXECUTION_TIMEOUT_MS,
+    onEvent?: RuntimeCommandEventHandler
   ): Promise<PythonProjectCommandResult> {
     await this.init();
     return this.executeWithTimeout(
       () => this.sendMessage<PythonProjectCommandResult>(
         'execute-project-python',
         request,
-        timeoutMs + 5000
+        timeoutMs + 5000,
+        onEvent
       ),
       timeoutMs
     );

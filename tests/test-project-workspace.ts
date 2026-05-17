@@ -3993,16 +3993,25 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
 
 async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
   let received: PythonProjectCommandRequest | null = null;
+  const events: RuntimeCommandEvent[] = [];
   const client = {
-    async executeProjectPython(request) {
+    async executeProjectPython(request, _timeoutMs, onEvent) {
       received = request;
+      onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'streamed\n' });
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'py-live.txt', contents: 'live\n' } });
       return {
-        stdout: `${request.scriptPath}:${request.project.files.length}`,
+        stdout: `streamed\n${request.scriptPath}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
       };
     },
-  } satisfies { executeProjectPython(request: PythonProjectCommandRequest): Promise<{ stdout: string; stderr: string; exitCode: number }> };
+  } satisfies {
+    executeProjectPython(
+      request: PythonProjectCommandRequest,
+      timeoutMs?: number,
+      onEvent?: (event: RuntimeCommandEvent) => void
+    ): Promise<{ stdout: string; stderr: string; exitCode: number }>
+  };
   const runner = createBrowserPythonProjectRunner(client);
 
   const result = await runner({
@@ -4016,10 +4025,23 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'main.py', contents: 'print("hello")\n' }],
     },
+    onEvent: (event) => events.push(event),
   });
 
-  assertCondition(result.stdout === 'main.py:1', 'pyodide runner should delegate to worker client');
+  assertCondition(result.stdout === 'streamed\nmain.py:1', 'pyodide runner should delegate to worker client');
   assertCondition(received?.scriptPath === 'main.py', 'pyodide runner should pass through request');
+  assertCondition(
+    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
+    `pyodide runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'py-live.txt'
+    ),
+    `pyodide runner should forward worker live file-change events: ${JSON.stringify(events)}`
+  );
   assertCondition(
     createPyodidePythonProjectRunner(client) !== runner,
     'pyodide python project runner alias should remain available'
