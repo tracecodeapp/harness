@@ -411,6 +411,10 @@ async function main(): Promise<void> {
       getLanguageRuntimeInfo(language).language === language,
       `${language} should resolve matching runtime info`
     );
+    assertCondition(
+      getLanguageRuntimeInfo(language).description.length > 40,
+      `${language} should expose a natural-language runtime description`
+    );
   }
   const pythonInfo = getLanguageRuntimeInfo('python');
   const javascriptInfo = getLanguageRuntimeInfo('javascript');
@@ -440,6 +444,12 @@ async function main(): Promise<void> {
     'TypeScript runtime info should expose the JavaScript runtime libraries'
   );
   assertCondition(
+    typescriptInfo.description.includes(`TypeScript ${typescriptInfo.compiler?.version}`) &&
+      typescriptInfo.description.includes('Compiler options:') &&
+      typescriptInfo.description.includes('@datastructures-js/priority-queue'),
+    'TypeScript runtime info should expose a natural-language description with compile options and library versions'
+  );
+  assertCondition(
     javaInfo.versionLabel === `Java ${javaInfo.runtime.version}`,
     'Java runtime info should expose the generated Java version'
   );
@@ -464,6 +474,13 @@ async function main(): Promise<void> {
   assertCondition(
     cppInfo.defaultImports?.includes('<regex>') === true,
     'C++ runtime info should expose default header coverage'
+  );
+  assertCondition(
+    pythonInfo.description.includes('sortedcontainers') &&
+      javaInfo.description.includes('javac') &&
+      csharpInfo.description.includes('.NET') &&
+      cppInfo.description.includes(cppInfo.standard ?? 'C++'),
+    'Runtime descriptions should expose language-specific natural-language details'
   );
   console.log('PASS: runtime language/profile/info registry');
 

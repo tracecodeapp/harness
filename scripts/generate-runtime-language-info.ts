@@ -20,6 +20,13 @@ type PackageJson = {
 };
 
 type RuntimeInfo = Record<string, unknown>;
+type LibraryInfo = {
+  name: string;
+  version?: string;
+  importName?: string;
+  globalName?: string;
+  detail?: string;
+};
 
 async function readText(...parts: string[]): Promise<string> {
   return readFile(join(ROOT, ...parts), 'utf8');
@@ -137,6 +144,143 @@ function parsePackageReferenceVersion(csprojSource: string, packageName: string)
   )[1]!;
 }
 
+function parseTypeScriptCompileOptions(javascriptWorkerSource: string): string[] {
+  const transpileBlock = requireMatch(
+    javascriptWorkerSource,
+    /ts\.transpileModule\(transpileInput,\s*\{\s*compilerOptions:\s*\{([\s\S]*?)\}\s*,\s*reportDiagnostics:/,
+    'TypeScript compiler options'
+  )[1] ?? '';
+  const options: string[] = [];
+
+  const target = transpileBlock.match(/target:\s*ts\.ScriptTarget\.([A-Za-z0-9_]+)/)?.[1];
+  if (target) options.push(`--target ${target}`);
+
+  const moduleKind = transpileBlock.match(/module:\s*ts\.ModuleKind\.([A-Za-z0-9_]+)/)?.[1];
+  if (moduleKind) options.push(`--module ${moduleKind}`);
+
+  for (const [, key, value] of transpileBlock.matchAll(/([A-Za-z0-9_]+):\s*(true|false)/g)) {
+    if (key && value === 'true') options.push(`--${key}`);
+    if (key && value === 'false') options.push(`--${key} false`);
+  }
+
+  return options;
+}
+
+function formatPackageVersions(libraries: readonly LibraryInfo[]): string {
+  return libraries
+    .filter((library) => library.version)
+    .map((library) => `"${library.name}": "${library.version}"`)
+    .join('\n');
+}
+
+function findLibrary(libraries: readonly LibraryInfo[], name: string): LibraryInfo {
+  const library = libraries.find((item) => item.name === name);
+  if (!library) {
+    throw new Error(`Unable to derive runtime info description: missing ${name} library`);
+  }
+  return library;
+}
+
+function buildJavaScriptLibraryDescription(libraries: readonly LibraryInfo[]): string {
+  const lodash = findLibrary(libraries, 'lodash');
+  const dataStructureLibraries = libraries.filter((library) => library.name.startsWith('@datastructures-js/'));
+  return [
+    `Lodash ${lodash.version ?? 'unknown'} is available as both lodash and _.`,
+    '',
+    'The @datastructures-js packages are bundled for common algorithm data structures. Queue, Stack, Deque, Heap, PriorityQueue, MinPriorityQueue, and MaxPriorityQueue are available globally.',
+    '',
+    'Bundled @datastructures-js versions:',
+    '',
+    formatPackageVersions(dataStructureLibraries),
+    '',
+    'Binary Search Tree, Trie, and Graph are bundled too, but are not exposed globally because those names can collide with problem definitions. Import or require the matching package when you need one.',
+  ].join('\n');
+}
+
+function buildPythonDescription(input: {
+  pythonVersion: string;
+  pyodideVersion: string;
+  defaultImports: readonly string[];
+  sortedcontainersVersion: string;
+}): string {
+  return [
+    `Python ${input.pythonVersion} (Pyodide ${input.pyodideVersion}).`,
+    '',
+    `Common algorithm helpers are imported automatically, including ${input.defaultImports.slice(0, 6).join(', ')}. Other standard-library modules can be imported normally.`,
+    '',
+    `sortedcontainers ${input.sortedcontainersVersion} is available for TreeMap, ordered-set, and sorted-list style workflows.`,
+  ].join('\n');
+}
+
+function buildJavaScriptDescription(input: {
+  standard: string;
+  libraries: readonly LibraryInfo[];
+}): string {
+  return [
+    `JavaScript runs in an isolated browser Web Worker with ${input.standard}.`,
+    '',
+    buildJavaScriptLibraryDescription(input.libraries),
+  ].join('\n');
+}
+
+function buildTypeScriptDescription(input: {
+  typescriptVersion: string;
+  target: string;
+  compileOptions: readonly string[];
+  libraries: readonly LibraryInfo[];
+}): string {
+  return [
+    `TypeScript ${input.typescriptVersion} is compiled in the browser and then executed on the JavaScript worker runtime.`,
+    '',
+    `Compiler options: ${input.compileOptions.join(' ')}`,
+    '',
+    buildJavaScriptLibraryDescription(input.libraries),
+    '',
+    `The compiled output runs on the same ${input.target} execution lane as JavaScript submissions.`,
+  ].join('\n');
+}
+
+function buildJavaDescription(input: {
+  javaVersion: string;
+  cheerpjVersion: string;
+  defaultImports: readonly string[];
+}): string {
+  return [
+    `Java ${input.javaVersion} is compiled with javac ${input.javaVersion} and executed in the browser through CheerpJ ${input.cheerpjVersion}.`,
+    '',
+    `Common imports are added automatically: ${input.defaultImports.join(', ')}.`,
+  ].join('\n');
+}
+
+function buildCSharpDescription(input: {
+  csharpLanguageVersion: string;
+  dotnetVersion: string;
+  roslynVersion: string;
+  defaultImports: readonly string[];
+}): string {
+  return [
+    `${input.csharpLanguageVersion} with .NET ${input.dotnetVersion} runtime.`,
+    '',
+    `Code is compiled with Microsoft.CodeAnalysis.CSharp ${input.roslynVersion} and executed by a browser-local .NET WebAssembly runtime.`,
+    '',
+    `Common namespaces are imported automatically: ${input.defaultImports.join(', ')}.`,
+  ].join('\n');
+}
+
+function buildCppDescription(input: {
+  cppStandardLabel: string;
+  yowaspClangVersion: string;
+  defaultHeaders: readonly string[];
+}): string {
+  return [
+    `C++ is compiled with YoWASP Clang/LLD ${input.yowaspClangVersion} using the ${input.cppStandardLabel} standard.`,
+    '',
+    'Submissions compile to WebAssembly and run in a browser-local WASI-style execution lane. The harness currently compiles with -O0 and -fno-exceptions, with a fixed program stack size.',
+    '',
+    `Common standard library headers are included automatically, including ${input.defaultHeaders.slice(0, 14).join(', ')} and more.`,
+  ].join('\n');
+}
+
 async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const rootPackage = await readJson<PackageJson>('package.json');
   const pythonWorkerSource = await readText('workers', 'python', 'pyodide-worker.js');
@@ -152,6 +296,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   if (!sortedcontainersVersion) throw new Error('Unable to derive runtime info: missing sortedcontainers version');
 
   const javascriptEntrySource = await readText('workers', 'javascript', 'javascript-libraries-entry.js');
+  const javascriptWorkerSource = await readText('workers', 'javascript', 'javascript-worker.js');
   const javascriptPackages = parseImportedPackages(javascriptEntrySource);
   const javascriptLibraries = await Promise.all(
     javascriptPackages.map(async (packageName) => ({
@@ -165,6 +310,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const typescriptVersion =
     typescriptWorkerSource.match(/\bvar version = "([^"]+)";/)?.[1] ??
     (await packageVersion('typescript', rootPackage));
+  const typeScriptCompileOptions = parseTypeScriptCompileOptions(javascriptWorkerSource);
 
   const javaWorkerSource = await readText('workers', 'java', 'java-worker.js');
   const javaVersion = requireMatch(javaWorkerSource, /cheerpjInit\(\{\s*version:\s*([0-9]+)/, 'Java runtime version')[1]!;
@@ -206,6 +352,7 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
   const yowaspClangMajor = yowaspClangVersion.match(/^[0-9]+/)?.[0] ?? yowaspClangVersion;
   const cppDefaultHeaders = parseCppDefaultHeaders(cppWorkerSource);
   const cppStandardLabel = cppStandard.toUpperCase();
+  const pythonDefaultImports = parsePythonDefaultImports(pythonRuntimeCoreSource);
 
   const javascriptShared = {
     runtime: {
@@ -220,12 +367,18 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'python',
       displayName: 'Python',
       versionLabel: `Python ${pythonVersion} (Pyodide ${pyodideVersion})`,
+      description: buildPythonDescription({
+        pythonVersion,
+        pyodideVersion,
+        defaultImports: pythonDefaultImports,
+        sortedcontainersVersion,
+      }),
       runtime: {
         name: 'Pyodide',
         version: pyodideVersion,
         detail: `CPython ${pythonVersion} compiled to WebAssembly.`,
       },
-      defaultImports: parsePythonDefaultImports(pythonRuntimeCoreSource),
+      defaultImports: pythonDefaultImports,
       libraries: [
         {
           name: 'sortedcontainers',
@@ -241,11 +394,21 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       versionLabel: 'JavaScript (ECMAScript 2023)',
       ...javascriptShared,
       standard: 'ECMAScript 2023-compatible syntax in the browser worker lane.',
+      description: buildJavaScriptDescription({
+        standard: 'ECMAScript 2023-compatible syntax',
+        libraries: javascriptLibraries,
+      }),
     },
     typescript: {
       language: 'typescript',
       displayName: 'TypeScript',
       versionLabel: `TypeScript ${typescriptVersion}`,
+      description: buildTypeScriptDescription({
+        typescriptVersion,
+        target: 'browser worker',
+        compileOptions: typeScriptCompileOptions,
+        libraries: javascriptLibraries,
+      }),
       runtime: {
         ...javascriptShared.runtime,
         detail: 'TypeScript is compiled before execution and runs on the JavaScript worker lane.',
@@ -261,6 +424,11 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'java',
       displayName: 'Java',
       versionLabel: `Java ${javaVersion}`,
+      description: buildJavaDescription({
+        javaVersion,
+        cheerpjVersion,
+        defaultImports: javaDefaultImports,
+      }),
       runtime: {
         name: 'CheerpJ browser-local OpenJDK runtime',
         version: javaVersion,
@@ -280,6 +448,12 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'csharp',
       displayName: 'C#',
       versionLabel: `${csharpLanguageVersion} (.NET ${dotnetVersion})`,
+      description: buildCSharpDescription({
+        csharpLanguageVersion,
+        dotnetVersion,
+        roslynVersion,
+        defaultImports: csharpDefaultImports,
+      }),
       runtime: {
         name: '.NET WebAssembly runtime',
         version: dotnetVersion,
@@ -296,6 +470,11 @@ async function buildRuntimeInfo(): Promise<Record<string, RuntimeInfo>> {
       language: 'cpp',
       displayName: 'C++',
       versionLabel: `${cppStandardLabel} (YoWASP Clang ${yowaspClangMajor})`,
+      description: buildCppDescription({
+        cppStandardLabel,
+        yowaspClangVersion,
+        defaultHeaders: cppDefaultHeaders,
+      }),
       runtime: {
         name: 'WASI/WebAssembly execution lane',
         detail: 'Compiled and executed in a browser-local WASI-style worker lane.',
