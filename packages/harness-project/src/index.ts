@@ -208,9 +208,30 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
   };
 }
 
-function toWorkspacePath(cwd: string, path: string): string {
+function normalizeProcPath(path: string): string | null {
+  assertNoNul(path, 'Kernel path');
+  const raw = path.replace(/\\/g, '/');
+  if (!raw.startsWith('/')) return null;
+  const normalized = normalizeWorkspaceCwd(raw);
+  return normalized === '/proc' || normalized.startsWith('/proc/') ? normalized : null;
+}
+
+function procInfoJson(info: RuntimeKernelInfo): string {
+  return `${JSON.stringify(info, null, 2)}\n`;
+}
+
+function mapWorkspaceAlias(workspaceRoot: string, workspaceAlias: string | undefined, absolutePath: string): string {
+  if (!workspaceAlias || workspaceAlias === workspaceRoot) return absolutePath;
+  if (absolutePath === workspaceAlias) return workspaceRoot;
+  if (absolutePath.startsWith(`${workspaceAlias}/`)) {
+    return `${workspaceRoot}${absolutePath.slice(workspaceAlias.length)}`;
+  }
+  return absolutePath;
+}
+
+function toWorkspacePath(cwd: string, path: string, workspaceAlias?: string): string {
   if (path.startsWith('/')) {
-    const absolutePath = normalizeWorkspaceCwd(path);
+    const absolutePath = mapWorkspaceAlias(cwd, workspaceAlias, normalizeWorkspaceCwd(path));
     if (!isWithinWorkspace(cwd, absolutePath)) {
       throw new Error(`Project path must stay inside the workspace: ${path}`);
     }
@@ -220,11 +241,11 @@ function toWorkspacePath(cwd: string, path: string): string {
   return cwd === '/' ? `/${relativePath}` : `${cwd}/${relativePath}`;
 }
 
-function toWorkspaceEntryPath(cwd: string, path: string): string {
+function toWorkspaceEntryPath(cwd: string, path: string, workspaceAlias?: string): string {
   assertNoNul(path, 'Project path');
   const normalized = path.replace(/\\/g, '/');
   if (normalized.startsWith('/')) {
-    const absolutePath = normalizeWorkspaceCwd(normalized);
+    const absolutePath = mapWorkspaceAlias(cwd, workspaceAlias, normalizeWorkspaceCwd(normalized));
     if (!isWithinWorkspace(cwd, absolutePath)) {
       throw new Error(`Project path must stay inside the workspace: ${path}`);
     }
@@ -305,8 +326,8 @@ function toProjectDirectoryPath(cwd: string, absolutePath: string): string | nul
   return relativePath || null;
 }
 
-function toWorkspaceRelativePath(cwd: string, path: string): string {
-  const relativePath = toProjectPath(cwd, toWorkspacePath(cwd, path));
+function toWorkspaceRelativePath(cwd: string, path: string, workspaceAlias?: string): string {
+  const relativePath = toProjectPath(cwd, toWorkspacePath(cwd, path, workspaceAlias));
   if (!relativePath) {
     throw new Error(`Project path must point to a file: ${path}`);
   }
@@ -1755,7 +1776,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
     this.cwd = this.kernelInfo.workspaceRoot;
-    this.entrypoint = options.entrypoint ? toWorkspaceRelativePath(this.cwd, options.entrypoint) : undefined;
+    this.entrypoint = options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : undefined;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
     const withEvents = <Request extends RuntimeProjectCommandRequest<string>>(
@@ -1800,6 +1821,51 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     await this.writeFileAs(path, contents, PRINCIPAL_ACTOR, encoding, 'live');
   }
 
+  private toWorkspacePath(path: string): string {
+    return toWorkspacePath(this.cwd, path, this.kernelInfo.workspaceAlias);
+  }
+
+  private toWorkspaceEntryPath(path: string): string {
+    return toWorkspaceEntryPath(this.cwd, path, this.kernelInfo.workspaceAlias);
+  }
+
+  private toWorkspaceRelativePath(path: string): string {
+    return toWorkspaceRelativePath(this.cwd, path, this.kernelInfo.workspaceAlias);
+  }
+
+  private readProcFile(path: string, encoding?: RuntimeFileEncoding): string | null {
+    const procPath = normalizeProcPath(path);
+    if (procPath === null) return null;
+    if (encoding === 'base64') {
+      throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
+    }
+    if (procPath === '/proc/kernel/info' || procPath === '/proc/self/mountinfo') {
+      return procInfoJson(this.kernelInfo);
+    }
+    throw new Error(`Kernel proc path not found: ${path}`);
+  }
+
+  private procStat(path: string): RuntimeWorkspaceStat | null {
+    const procPath = normalizeProcPath(path);
+    if (procPath === null) return null;
+    if (procPath === '/proc' || procPath === '/proc/kernel' || procPath === '/proc/self') {
+      return { isFile: false, isDirectory: true };
+    }
+    if (procPath === '/proc/kernel/info' || procPath === '/proc/self/mountinfo') {
+      return { isFile: true, isDirectory: false };
+    }
+    throw new Error(`Kernel proc path not found: ${path}`);
+  }
+
+  private procReadDir(path: string): string[] | null {
+    const procPath = normalizeProcPath(path);
+    if (procPath === null) return null;
+    if (procPath === '/proc') return ['kernel', 'self'];
+    if (procPath === '/proc/kernel') return ['info'];
+    if (procPath === '/proc/self') return ['mountinfo'];
+    throw new Error(`Kernel proc path is not a directory: ${path}`);
+  }
+
   private async writeFileAs(
     path: string,
     contents: string,
@@ -1807,8 +1873,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     encoding?: RuntimeFileEncoding,
     phase: RuntimeFileMutationPhase = 'live'
   ): Promise<void> {
+    if (normalizeProcPath(path) !== null) {
+      throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
     const normalizedEncoding = assertSupportedEncoding(encoding);
-    const absolutePath = toWorkspacePath(this.cwd, path);
+    const absolutePath = this.toWorkspacePath(path);
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
 
     if (normalizedEncoding === 'base64') {
@@ -1839,7 +1908,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
     const normalizedEncoding = assertSupportedEncoding(encoding);
-    const absolutePath = toWorkspacePath(this.cwd, path);
+    if (normalizeProcPath(path) !== null) {
+      throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
+    const absolutePath = this.toWorkspacePath(path);
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
     const nextBytes = normalizedEncoding === 'base64'
       ? bytesFromBase64(contents)
@@ -1860,8 +1932,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
+    const procFile = this.readProcFile(path, encoding);
+    if (procFile !== null) return procFile;
     const normalizedEncoding = assertSupportedEncoding(encoding);
-    const absolutePath = toWorkspacePath(this.cwd, path);
+    const absolutePath = this.toWorkspacePath(path);
     if (normalizedEncoding === 'base64') {
       const bytes = await this.bash.fs.readFileBuffer(absolutePath);
       return base64FromBytes(bytes);
@@ -1870,11 +1944,19 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async exists(path: string): Promise<boolean> {
-    return this.bash.fs.exists(toWorkspaceEntryPath(this.cwd, path));
+    try {
+      const procStat = this.procStat(path);
+      if (procStat !== null) return true;
+    } catch {
+      return false;
+    }
+    return this.bash.fs.exists(this.toWorkspaceEntryPath(path));
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
-    const stat = await this.bash.fs.stat(toWorkspaceEntryPath(this.cwd, path));
+    const procStat = this.procStat(path);
+    if (procStat !== null) return procStat;
+    const stat = await this.bash.fs.stat(this.toWorkspaceEntryPath(path));
     return {
       isFile: stat.isFile,
       isDirectory: stat.isDirectory,
@@ -1882,17 +1964,30 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async readDir(path = '.'): Promise<string[]> {
-    const entries = await this.bash.fs.readdir(toWorkspaceEntryPath(this.cwd, path));
+    const procEntries = this.procReadDir(path);
+    if (procEntries !== null) return procEntries;
+    const entries = await this.bash.fs.readdir(this.toWorkspaceEntryPath(path));
     return [...entries].sort((left, right) => left.localeCompare(right));
   }
 
   async mkdir(path: string): Promise<void> {
-    await this.bash.fs.mkdir(toWorkspaceEntryPath(this.cwd, path), { recursive: true });
+    if (normalizeProcPath(path) !== null) {
+      throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
+    await this.bash.fs.mkdir(this.toWorkspaceEntryPath(path), { recursive: true });
   }
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
-    const absoluteSourcePath = toWorkspacePath(this.cwd, sourcePath);
-    const absoluteDestinationPath = toWorkspacePath(this.cwd, destinationPath);
+    const procFile = this.readProcFile(sourcePath);
+    if (normalizeProcPath(destinationPath) !== null) {
+      throw new Error(`Kernel proc path is read-only: ${destinationPath}`);
+    }
+    const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
+    if (procFile !== null) {
+      await this.writeFileAs(destinationPath, procFile, PRINCIPAL_ACTOR, 'utf8', 'live');
+      return;
+    }
+    const absoluteSourcePath = this.toWorkspacePath(sourcePath);
     const sourceBytes = await this.bash.fs.readFileBuffer(absoluteSourcePath);
     await this.bash.fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
     await this.bash.fs.writeFile(absoluteDestinationPath, sourceBytes);
@@ -1905,29 +2000,38 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
+    if (normalizeProcPath(sourcePath) !== null || normalizeProcPath(destinationPath) !== null) {
+      throw new Error('Kernel proc paths are read-only.');
+    }
     await this.copyFile(sourcePath, destinationPath);
-    await this.bash.fs.rm(toWorkspacePath(this.cwd, sourcePath), { force: true });
+    await this.bash.fs.rm(this.toWorkspacePath(sourcePath), { force: true });
     this.emitRuntimeEvent({
       type: 'file-change',
-      change: { path: toWorkspaceRelativePath(this.cwd, sourcePath), deleted: true },
+      change: { path: this.toWorkspaceRelativePath(sourcePath), deleted: true },
       phase: 'live',
       actor: PRINCIPAL_ACTOR,
     });
   }
 
   async deleteFile(path: string): Promise<void> {
-    await this.bash.fs.rm(toWorkspacePath(this.cwd, path), { force: true });
+    if (normalizeProcPath(path) !== null) {
+      throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
+    await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
       type: 'file-change',
-      change: { path: toWorkspaceRelativePath(this.cwd, path), deleted: true },
+      change: { path: this.toWorkspaceRelativePath(path), deleted: true },
       phase: 'live',
       actor: PRINCIPAL_ACTOR,
     });
   }
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
+    if (normalizeProcPath(path) !== null) {
+      throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
     const deletedFiles = await this.collectDeletedFilesForRemove(path, options);
-    await this.bash.fs.rm(toWorkspaceEntryPath(this.cwd, path), {
+    await this.bash.fs.rm(this.toWorkspaceEntryPath(path), {
       force: options.force ?? true,
       recursive: options.recursive,
     });
@@ -1952,7 +2056,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       if (directCppResult) return directCppResult;
 
       result = await this.bash.exec(command, {
-        cwd: options.cwd ? toWorkspacePath(this.cwd, options.cwd) : this.cwd,
+        cwd: options.cwd ? this.toWorkspacePath(options.cwd) : this.cwd,
         env: options.env,
         stdin: options.stdin,
         signal: options.signal,
@@ -1978,7 +2082,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const words = parseSimpleCommandWords(command);
     if (!words || words.length === 0) return null;
 
-    const cwd = options.cwd ? toWorkspacePath(this.cwd, options.cwd) : this.cwd;
+    const cwd = options.cwd ? this.toWorkspacePath(options.cwd) : this.cwd;
     const env = {
       ...this.bash.getEnv(),
       ...(options.env ?? {}),
@@ -2026,7 +2130,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       files,
       ...(directories.length > 0 ? { directories } : {}),
       ...(options.entrypoint || this.entrypoint
-        ? { entrypoint: options.entrypoint ? toWorkspaceRelativePath(this.cwd, options.entrypoint) : this.entrypoint }
+        ? { entrypoint: options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : this.entrypoint }
         : {}),
     };
   }
@@ -2075,8 +2179,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
-    const relativePath = toWorkspaceRelativePath(this.cwd, path);
-    await this.bash.fs.rm(toWorkspacePath(this.cwd, path), { force: true });
+    if (normalizeProcPath(path) !== null) {
+      throw new Error(`Kernel proc path is read-only: ${path}`);
+    }
+    const relativePath = this.toWorkspaceRelativePath(path);
+    await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
       type: 'file-change',
       change: { path: relativePath, deleted: true },
@@ -2132,7 +2239,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     path: string,
     options: RuntimeWorkspaceRemoveOptions
   ): Promise<string[]> {
-    const absolutePath = toWorkspaceEntryPath(this.cwd, path);
+    const absolutePath = this.toWorkspaceEntryPath(path);
     if (!(await this.bash.fs.exists(absolutePath))) return [];
     const stat = await this.bash.fs.stat(absolutePath);
     if (stat.isFile) return [toProjectPath(this.cwd, absolutePath)];

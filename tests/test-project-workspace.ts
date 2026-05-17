@@ -4561,6 +4561,24 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   assertCondition(workspace.kernel.info.workspaceAlias === '/workspace', 'kernel info should expose /workspace compatibility alias');
 
   await workspace.writeFile('src/main.py', 'print("weather")\n');
+  await workspace.writeFile('/workspace/src/alias.txt', 'alias\n');
+  assertCondition(await workspace.readFile('/home/obi/weather-api/src/alias.txt') === 'alias\n', 'canonical root should read alias writes');
+  assertCondition(await workspace.readFile('/workspace/src/alias.txt') === 'alias\n', '/workspace alias should read canonical files');
+  assertCondition(await workspace.exists('/workspace/src/alias.txt'), '/workspace alias should exist for canonical files');
+  assertCondition((await workspace.readDir('/workspace/src')).join(',') === 'alias.txt,main.py', '/workspace alias should list canonical directories');
+  const aliasPwd = await workspace.runCommand('pwd', { cwd: '/workspace/src' });
+  assertCondition(aliasPwd.stdout === '/home/obi/weather-api/src\n', `command cwd should accept /workspace alias: ${aliasPwd.stdout}`);
+
+  const procInfo = JSON.parse(await workspace.kernel.readFile('/proc/kernel/info')) as typeof workspace.kernel.info;
+  assertCondition(procInfo.name === 'tracekernel', 'kernel /proc info should expose kernel name');
+  assertCondition(procInfo.user.username === 'obi', 'kernel /proc info should expose username');
+  assertCondition(procInfo.workspace.root === '/home/obi/weather-api', 'kernel /proc info should expose workspace root');
+  assertCondition(await workspace.exists('/proc/kernel/info'), 'kernel /proc info should exist');
+  const procInfoStat = await workspace.stat('/proc/kernel/info');
+  assertCondition(procInfoStat.isFile && !procInfoStat.isDirectory, 'kernel /proc info should stat as file');
+  assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self', 'kernel /proc should list virtual namespaces');
+  await assertRejectsAsync(() => workspace.writeFile('/proc/kernel/info', '{}\n'), 'kernel /proc should be read-only');
+
   const snapshot = await workspace.snapshot();
   assertCondition(snapshot.cwd === '/home/obi/weather-api', `snapshot cwd should use canonical workspace root: ${snapshot.cwd}`);
   assertCondition(snapshot.files.some((file) => file.path === 'src/main.py'), 'snapshot should still use project-relative file paths');
