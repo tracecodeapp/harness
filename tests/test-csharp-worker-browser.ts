@@ -2746,6 +2746,9 @@ async function main(): Promise<void> {
                 'try { File.ReadAllText("/dev/stdout"); Console.WriteLine("dev-stdout-read:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-read:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stdin", "bad\\n"); Console.WriteLine("dev-stdin-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdin-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev", "bad\\n"); Console.WriteLine("dev-dir-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-dir-write:" + ex.GetType().Name); }',
+                'try { Directory.CreateDirectory("/dev/new"); Console.WriteLine("dev-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("dev-mkdir:" + ex.GetType().Name); }',
+                'try { File.Move("stale.txt", "/dev/log"); Console.WriteLine("dev-rename-dest:ok"); } catch (Exception ex) { Console.WriteLine("dev-rename-dest:" + ex.GetType().Name); }',
+                'try { File.Move("/dev/log", "dev-log-copy"); Console.WriteLine("dev-rename-source:ok"); } catch (Exception ex) { Console.WriteLine("dev-rename-source:" + ex.GetType().Name); }',
                 'Console.Error.WriteLine("stderr-line");',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
@@ -2861,6 +2864,12 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.stdout.includes('dev-dir-write:') && !projectRun.stdout.includes('dev-dir-write:ok'),
       `C# project worker should reject /dev directory writes, received ${projectRun.stdout}`
+    );
+    assertCondition(
+      projectRun.stdout.includes('dev-mkdir:') && !projectRun.stdout.includes('dev-mkdir:ok') &&
+        projectRun.stdout.includes('dev-rename-dest:') && !projectRun.stdout.includes('dev-rename-dest:ok') &&
+        projectRun.stdout.includes('dev-rename-source:') && !projectRun.stdout.includes('dev-rename-source:ok'),
+      `C# project worker should reject /dev namespace mutations, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stderr === 'dev-stderr\ndev-log\nstderr-line\n',

@@ -441,6 +441,15 @@ function throwKernelDevicePathError(path, operation, code = 'ENOENT') {
   throwKernelFsError(path, operation, code, code === 'EBADF' ? 'bad file descriptor' : 'read-only file system');
 }
 
+function throwKernelVirtualMutationError(path, operation) {
+  if (isKernelDeviceNamespacePath(path)) {
+    throwKernelDevicePathError(path, operation);
+  }
+  if (isKernelVirtualFsPath(path)) {
+    throwKernelFsError(path, operation, 'EROFS', 'read-only file system');
+  }
+}
+
 function emitProjectEvent(payload) {
   if (!activeProjectIo?.messageId) return;
   if (payload?.type === 'output' && typeof payload.data === 'string') {
@@ -682,6 +691,7 @@ function installRuntimeFsHooks(runtime) {
   const originalUnlink = fs.unlink;
   if (typeof originalUnlink === 'function') {
     fs.unlink = function unlinkWithProjectEvents(path) {
+      if (activeProjectIo) throwKernelVirtualMutationError(path, 'unlink');
       const result = originalUnlink.apply(this, arguments);
       if (activeProjectIo) emitProjectFileDelete(path);
       return result;
@@ -691,6 +701,7 @@ function installRuntimeFsHooks(runtime) {
   const originalMkdir = fs.mkdir;
   if (typeof originalMkdir === 'function') {
     fs.mkdir = function mkdirWithProjectEvents(path) {
+      if (activeProjectIo) throwKernelVirtualMutationError(path, 'mkdir');
       const result = originalMkdir.apply(this, arguments);
       if (activeProjectIo) emitProjectDirectoryCreate(path);
       return result;
@@ -700,6 +711,7 @@ function installRuntimeFsHooks(runtime) {
   const originalRmdir = fs.rmdir;
   if (typeof originalRmdir === 'function') {
     fs.rmdir = function rmdirWithProjectEvents(path) {
+      if (activeProjectIo) throwKernelVirtualMutationError(path, 'rmdir');
       const wasDirectory = activeProjectIo && runtimeFsIsDirectory(fs, path);
       const result = originalRmdir.apply(this, arguments);
       if (wasDirectory) emitProjectDirectoryDelete(path);
@@ -710,6 +722,10 @@ function installRuntimeFsHooks(runtime) {
   const originalRename = fs.rename;
   if (typeof originalRename === 'function') {
     fs.rename = function renameWithProjectEvents(oldPath, newPath) {
+      if (activeProjectIo) {
+        throwKernelVirtualMutationError(oldPath, 'rename');
+        throwKernelVirtualMutationError(newPath, 'rename');
+      }
       const wasDirectory = activeProjectIo && runtimeFsIsDirectory(fs, oldPath);
       const result = originalRename.apply(this, arguments);
       if (activeProjectIo) {
@@ -947,7 +963,7 @@ async function handleMessage(message) {
     const { assetBaseUrl, idleTimeoutMs, timeoutMs, ...request } = message.payload ?? {};
     const hostCallStartedAt = now();
     materializeKernelVirtualFiles(request);
-    activeProjectIo = {
+    const projectIo = {
       messageId: message.id,
       request,
       stdinBytes: encodeUtf8(projectRuntimeStdin(request)),
@@ -965,6 +981,7 @@ async function handleMessage(message) {
     let result;
     try {
       materializeKernelDevices(request);
+      activeProjectIo = projectIo;
       result = JSON.parse(executeProjectExport(JSON.stringify(projectRuntimeRequest(request))));
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
