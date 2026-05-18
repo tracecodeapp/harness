@@ -306,6 +306,8 @@ async function main(): Promise<void> {
             '  multi.close();',
             '  int zero_fd = open("zero.txt", O_CREAT | O_WRONLY, 0644);',
             '  if (zero_fd >= 0) { write(zero_fd, "nonzero", 7); ftruncate(zero_fd, 0); close(zero_fd); }',
+            '  int empty_fd = open("empty-open.txt", O_CREAT | O_TRUNC | O_WRONLY, 0644);',
+            '  if (empty_fd >= 0) { close(empty_fd); }',
             '  mkdir("scratch", 0777);',
             '  std::ofstream("scratch/transient.txt") << "gone\\\\n";',
             '  std::remove("scratch/transient.txt");',
@@ -1159,6 +1161,10 @@ async function main(): Promise<void> {
       `C++ browser project run should return zero-length ftruncate contents: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/empty-open.txt' && file.contents === '') === true,
+      `C++ browser project run should return zero-byte open-created files: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
       projectRun.stdout?.includes('rmdir:gone\n') === true,
       `C++ browser project run should remove directories through WASI rmdir: ${JSON.stringify(projectRun)}`
     );
@@ -1231,6 +1237,15 @@ async function main(): Promise<void> {
         event.change.contents === ''
       )) === true,
       `C++ browser project run should stream zero-length ftruncate mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/empty-open.txt' &&
+        event.change.contents === ''
+      )) === true,
+      `C++ browser project run should stream zero-byte open-created files: ${JSON.stringify(projectRun.events)}`
     );
     {
       const events = projectRun.events || [];
