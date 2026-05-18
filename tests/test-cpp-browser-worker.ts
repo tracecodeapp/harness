@@ -259,6 +259,19 @@ async function main(): Promise<void> {
             '  std::cout << (saw_info ? "info" : "missing") << "\\\\n";',
             '  std::ofstream proc_write("/proc/kernel/info");',
             '  std::cout << (proc_write ? "proc-write:ok" : "proc-write:blocked") << "\\\\n";',
+            '  DIR* dev_dir = opendir("/dev");',
+            '  bool saw_stdin = false;',
+            '  bool saw_stdout = false;',
+            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "stdin") saw_stdin = true; if (name == "stdout") saw_stdout = true; } closedir(dev_dir); }',
+            '  std::cout << (saw_stdin && saw_stdout ? "dev-list:ok" : "dev-list:missing") << "\\\\n";',
+            '  struct stat dev_stat = {};',
+            '  struct stat stdout_stat = {};',
+            '  bool dev_stat_ok = stat("/dev", &dev_stat) == 0 && stat("/dev/stdout", &stdout_stat) == 0;',
+            '  std::cout << (dev_stat_ok && S_ISDIR(dev_stat.st_mode) && !S_ISDIR(stdout_stat.st_mode) ? "dev-stat:ok" : "dev-stat:bad") << "\\\\n";',
+            '  std::cout << (std::remove("/dev/stdout") == 0 ? "dev-unlink:ok" : "dev-unlink:blocked") << "\\\\n";',
+            '  std::ofstream("rename-device-source.txt") << "blocked\\\\n";',
+            '  std::cout << (std::rename("rename-device-source.txt", "/dev/stdout") == 0 ? "dev-rename:ok" : "dev-rename:blocked") << "\\\\n";',
+            '  std::remove("rename-device-source.txt");',
             '  FILE* stdout_device = std::fopen("/dev/stdout", "w");',
             '  if (stdout_device) { std::fputs("device-out\\\\n", stdout_device); std::fclose(stdout_device); }',
             '  FILE* stderr_device = std::fopen("/dev/stderr", "w");',
@@ -1075,9 +1088,10 @@ async function main(): Promise<void> {
     );
     assertCondition(projectRun.exitCode === 0, `C++ browser project run should exit successfully: ${JSON.stringify(projectRun)}`);
     assertCondition(
-      projectRun.stdout?.includes('42\n') === true &&
+        projectRun.stdout?.includes('42\n') === true &&
         projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
+        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
