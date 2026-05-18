@@ -2450,6 +2450,28 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node directory rename should stream live old-tree deletes and new-tree snapshots: ${JSON.stringify(renameDirectoryEvents)}`
   );
 
+  await workspace.writeFile('rename-self-file.txt', 'self\n');
+  await workspace.mkdir('rename-self-dir');
+  await workspace.writeFile('rename-self-dir/value.txt', 'dir\n');
+  const renameSelfEvents: RuntimeCommandEvent[] = [];
+  const renameSelfResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; console.log(code(() => fs.renameSync(\\"rename-self-file.txt\\", \\"rename-self-file.txt\\"))); console.log(code(() => fs.renameSync(\\"rename-self-dir\\", \\"rename-self-dir\\"))); console.log(code(() => fs.renameSync(\\"missing-self-rename.txt\\", \\"missing-self-rename.txt\\"))); console.log(fs.readFileSync(\\"rename-self-file.txt\\", \\"utf8\\")); console.log(fs.readFileSync(\\"rename-self-dir/value.txt\\", \\"utf8\\"));"',
+  ].join(' '), { onEvent: (event) => renameSelfEvents.push(event) });
+  assertCondition(renameSelfResult.exitCode === 0, `browser node self rename workflow should succeed: ${renameSelfResult.stderr}`);
+  assertCondition(
+    renameSelfResult.stdout === 'ok\nok\nENOENT\nself\n\ndir\n\n',
+    `browser node self renames should match desktop no-op semantics: ${renameSelfResult.stdout}`
+  );
+  assertCondition(
+    renameSelfEvents.some((event) => (
+      event.type === 'file-change' &&
+      (event.change.path === 'rename-self-file.txt' || event.change.path.startsWith('rename-self-dir'))
+    )) !== true,
+    `browser node self renames should not emit live file mutations: ${JSON.stringify(renameSelfEvents)}`
+  );
+
   const copyModeResult = await workspace.runCommand([
     'node',
     '-e',

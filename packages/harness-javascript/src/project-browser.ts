@@ -3681,6 +3681,18 @@ async function runBrowserJavaScriptProjectRequest(
         }
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
+        if (normalizedOldPath === normalizedNewPath) {
+          const prefix = normalizedOldPath ? `${normalizedOldPath}/` : '';
+          if (
+            fileStore.has(normalizedOldPath) ||
+            directoryStore.has(normalizedOldPath) ||
+            Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix)) ||
+            Array.from(directoryStore).some((directoryPath) => directoryPath.startsWith(prefix))
+          ) {
+            return;
+          }
+          throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`), { code: 'ENOENT' });
+        }
         const bytes = fileStore.get(normalizedOldPath);
         if (bytes) {
           assertWorkspaceFileWritePath(normalizedNewPath, newPath, 'rename');
