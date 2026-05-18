@@ -660,9 +660,7 @@ function createZlibApi() {
   };
 }
 
-function createReadableStdinDevice(input: string) {
-  const bytes = BrowserBuffer.from(input);
-  let offset = 0;
+function createReadableStdinDevice(readBytes: (size?: number) => Uint8Array, remainingBytes: () => number) {
   let encoding: string | undefined;
   let flowScheduled = false;
   let destroyed = false;
@@ -675,15 +673,13 @@ function createReadableStdinDevice(input: string) {
     encoding ? chunk.toString(encoding) : chunk
   );
   const read = (size?: number): BrowserBuffer | string | null => {
-    if (offset >= bytes.byteLength) {
+    if (remainingBytes() <= 0) {
       ended = true;
       return null;
     }
-    const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : bytes.byteLength - offset;
-    const end = Math.min(bytes.byteLength, offset + requested);
-    const chunk = BrowserBuffer.from(bytes.slice(offset, end));
-    offset = end;
-    if (offset >= bytes.byteLength) ended = true;
+    const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : undefined;
+    const chunk = BrowserBuffer.from(readBytes(requested));
+    if (remainingBytes() <= 0) ended = true;
     return formatChunk(chunk);
   };
   const scheduleFlow = (): void => {
@@ -733,7 +729,7 @@ function createReadableStdinDevice(input: string) {
       return readableFlowing;
     },
     get readableLength() {
-      return Math.max(0, bytes.byteLength - offset);
+      return Math.max(0, remainingBytes());
     },
     setEncoding: (nextEncoding: string) => {
       encoding = nextEncoding;
@@ -1551,10 +1547,22 @@ async function runBrowserJavaScriptProjectRequest(
       emitOutput(outputDevice === '/dev/stderr' ? 'stderr' : 'stdout', data, outputDevice, device !== outputDevice ? device : undefined);
     };
 
-    const readDevice = (device: RuntimeKernelDevicePath): string => {
-      if (runtimeKernelDeviceInputSource(kernelDevices, device)) return request.stdin;
-      return '';
+    const stdinBytes = utf8Bytes(request.stdin);
+    let stdinOffset = 0;
+    const readDeviceBytes = (device: RuntimeKernelDevicePath, size?: number): Uint8Array => {
+      if (!runtimeKernelDeviceInputSource(kernelDevices, device)) return new Uint8Array();
+      const remaining = Math.max(0, stdinBytes.byteLength - stdinOffset);
+      const count = typeof size === 'number' && size >= 0 ? Math.min(Math.floor(size), remaining) : remaining;
+      const bytes = stdinBytes.slice(stdinOffset, stdinOffset + count);
+      stdinOffset += count;
+      return bytes;
     };
+    const remainingDeviceBytes = (device: RuntimeKernelDevicePath): number => (
+      runtimeKernelDeviceInputSource(kernelDevices, device)
+        ? Math.max(0, stdinBytes.byteLength - stdinOffset)
+        : 0
+    );
+    const readDevice = (device: RuntimeKernelDevicePath): string => textFromBytes(readDeviceBytes(device));
 
     const consoleApi = {
       log: (...values: unknown[]) => {
@@ -1673,7 +1681,10 @@ async function runBrowserJavaScriptProjectRequest(
       return stream;
     };
 
-    const stdinDevice = createReadableStdinDevice(readDevice('/dev/stdin'));
+    const stdinDevice = createReadableStdinDevice(
+      (size) => readDeviceBytes('/dev/stdin', size),
+      () => remainingDeviceBytes('/dev/stdin')
+    );
     const processApi = {
       argv: processArgvForRequest(request),
       env: request.env,
@@ -2663,6 +2674,7 @@ async function runBrowserJavaScriptProjectRequest(
     const readDescriptorFileBytes = (fd: number): Uint8Array => {
       const entry = fileDescriptor(fd);
       if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+      if (entry.kind === 'device') return readDeviceBytes(entry.device ?? '/dev/stdin');
       const source = descriptorBytes(entry);
       const start = entry.offset;
       const bytes = source.slice(start);
@@ -3072,6 +3084,11 @@ async function runBrowserJavaScriptProjectRequest(
       readSync: (fd: number, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
         const entry = fileDescriptor(fd);
         if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+        if (entry.kind === 'device') {
+          const bytes = readDeviceBytes(entry.device ?? '/dev/stdin', Math.max(0, Math.min(length, buffer.byteLength - offset)));
+          buffer.set(bytes, offset);
+          return bytes.byteLength;
+        }
         const source = descriptorBytes(entry);
         const start = typeof position === 'number' ? Math.max(0, position) : entry.offset;
         const count = Math.max(0, Math.min(length, source.byteLength - start, buffer.byteLength - offset));

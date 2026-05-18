@@ -2095,7 +2095,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
 
   assertCondition(result.exitCode === 0, `browser node custom kernel device inventory should succeed: ${result.stderr}`);
   assertCondition(
-    result.stdout === 'from-tty\nfrom-tty\ntrue\ntrue:false\nrm-log:EROFS\nchmod-log:ok\nrm-missing:ENOENT\nfrom-tty\n',
+    result.stdout === 'from-tty\n\ntrue\ntrue:false\nrm-log:EROFS\nchmod-log:ok\nrm-missing:ENOENT\n\n',
     `browser node should read manifest devices and list them in /dev: ${JSON.stringify(result)}`
   );
   assertCondition(
@@ -2125,6 +2125,35 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       event.sourceDevice === '/dev/log'
     ).map((event) => event.data).join('') === 'log-device\ncopy-device\n',
     `browser node should support manifest-provided custom output devices: ${JSON.stringify(events)}`
+  );
+
+  const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner()({
+    code: [
+      'const fs = require("node:fs");',
+      'process.stdin.setEncoding("utf8");',
+      'process.stdout.write("process=" + process.stdin.read(4) + "\\n");',
+      'process.stdout.write("custom=" + fs.readFileSync("/dev/custom-in", "utf8").replace(/\\n/g, "<lf>") + "\\n");',
+    ].join('\n'),
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: 'one\ntwo\nthree\n',
+    project: {
+      cwd: '/workspace',
+      files: [],
+      kernelDevices: [
+        { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+        { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+      ],
+    },
+  });
+  assertCondition(sharedStdinCursorResult.exitCode === 0, `browser node shared stdin cursor case should succeed: ${sharedStdinCursorResult.stderr}`);
+  assertCondition(
+    sharedStdinCursorResult.stdout === 'process=one\n\ncustom=two<lf>three<lf>\n',
+    `browser node process.stdin and /dev devices should share one stdin cursor: ${JSON.stringify(sharedStdinCursorResult)}`
   );
 
   const restrictedResult = await createBrowserJavaScriptProjectRunner()({
@@ -3136,7 +3165,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   ].join(' '), { stdin: 'from-stream\n' });
   assertCondition(stdioDeviceStreamResult.exitCode === 0, `browser node stdio device stream workflow should succeed: ${stdioDeviceStreamResult.stderr}`);
   assertCondition(
-    stdioDeviceStreamResult.stdout === 'from-stream\nhandle:from-stream\nhandle-second:0\ndevice-stream-out\n' &&
+    stdioDeviceStreamResult.stdout === 'from-stream\nhandle:\nhandle-second:0\ndevice-stream-out\n' &&
       stdioDeviceStreamResult.stderr === 'device-stream-err\n',
     `browser node fd/device streams should consume stdin and stream stdout/stderr live: ${JSON.stringify(stdioDeviceStreamResult)}`
   );

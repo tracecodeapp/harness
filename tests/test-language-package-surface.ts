@@ -359,6 +359,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-javascript browser project runner should ship routed source device output events'
       );
       assertCondition(
+        projectBrowser.includes('let stdinOffset = 0') &&
+          projectBrowser.includes('const readDeviceBytes = (device, size) =>') &&
+          projectBrowser.includes('const stdinDevice = createReadableStdinDevice(') &&
+          projectBrowser.includes('(size) => readDeviceBytes("/dev/stdin", size)') &&
+          projectBrowser.includes('if (entry.kind === "device") return readDeviceBytes(entry.device ?? "/dev/stdin");'),
+        '@tracecode/harness-javascript browser project runner should share process.stdin and device stdin cursor'
+      );
+      assertCondition(
         projectBrowser.includes('io.fileChange({ path, directory: true }, "live")') &&
           projectBrowser.includes('io.fileChange({ path, directory: true, deleted: true }, "live")'),
         '@tracecode/harness-javascript browser project runner should ship live directory mutation events'
@@ -440,6 +448,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         helperApi.stdout.includes('setKernelFiles(java.lang.String)'),
         '@tracecode/harness-java helper jar should expose manifest kernel file bridge'
+      );
+      assertCondition(
+        helperApi.stdout.includes('inputStream()'),
+        '@tracecode/harness-java helper jar should expose shared stdin input stream'
       );
       assertCondition(
         helperApi.stdout.includes('newInputStream(java.nio.file.Path, java.nio.file.OpenOption...)') &&
