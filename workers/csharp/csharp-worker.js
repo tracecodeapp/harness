@@ -16,12 +16,6 @@ const WORKER_DEBUG = (() => {
 const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
-const FALLBACK_KERNEL_DEVICES = Object.freeze([
-  { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
-  { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
-  { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
-  { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
-]);
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
   functionName: 'Add',
@@ -93,7 +87,7 @@ function normalizeKernelDevicePath(value) {
 
 function kernelDeviceEntries(request = activeProjectIo?.request) {
   const devices = request?.project?.kernelDevices;
-  return Array.isArray(devices) && devices.length > 0 ? devices : FALLBACK_KERNEL_DEVICES;
+  return Array.isArray(devices) ? devices : [];
 }
 
 function kernelDeviceInfo(path, request = activeProjectIo?.request) {

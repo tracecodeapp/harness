@@ -85,6 +85,7 @@ const FIXTURE_ROOT = join(ROOT, 'spikes', 'csharp-wasm-roslyn', 'fixtures');
 const WORKER_REQUEST_TIMEOUT_MS = 60_000;
 const TRACE_KERNEL_PROC_FILES = [
   { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
+  { path: '/proc/kernel/version', contents: 'tracekernel test\n' },
   { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
 ];
 const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['kernelDevices']> = [
@@ -2658,7 +2659,8 @@ async function main(): Promise<void> {
                 'Console.WriteLine(Environment.GetEnvironmentVariable("MODE"));',
                 'Console.WriteLine(string.Join(",", args));',
                 'Console.WriteLine(File.ReadAllText("/proc/kernel/info").Contains("\\"name\\": \\"tracekernel\\"") ? "proc-info" : "proc-missing");',
-                'Console.WriteLine(Directory.GetFiles("/proc/kernel").Select(Path.GetFileName).Single());',
+                'Console.WriteLine(File.ReadAllText("/proc/kernel/version").Trim());',
+                'Console.WriteLine(string.Join(",", Directory.GetFiles("/proc/kernel").Select(Path.GetFileName).OrderBy(name => name)));',
                 'try { File.WriteAllText("/proc/kernel/info", "{}\\n"); Console.WriteLine("proc-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-write:" + ex.GetType().Name); }',
                 'try { Directory.CreateDirectory("/proc/kernel/new"); Console.WriteLine("proc-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("proc-mkdir:" + ex.GetType().Name); }',
                 'try { File.Delete("/proc/kernel/info"); Console.WriteLine("proc-delete:ok"); } catch (Exception ex) { Console.WriteLine("proc-delete:" + ex.GetType().Name); }',
@@ -2692,7 +2694,7 @@ async function main(): Promise<void> {
     );
     assertCondition(projectRun.exitCode === 0, `C# project worker should run multifile project: ${projectRun.stderr}`);
     assertCondition(
-      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ninfo\n') &&
+      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\n') &&
         projectRun.stdout.includes('dev-stdout\n') &&
         projectRun.stdout.includes('dev-tty\n'),
       `C# project worker should preserve stdout/stdin/env/args/proc reads: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, events: projectRun.events })}`
