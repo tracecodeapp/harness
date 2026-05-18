@@ -477,6 +477,17 @@ class InMemoryFileSystem {
     this.fileChangeObserver?.({ path: normalized, bytes });
   }
 
+  link(oldPathname, newPathname) {
+    const oldPath = normalizePath(oldPathname);
+    const newPath = normalizePath(newPathname);
+    if (this.isReadOnly(newPath)) return EROFS;
+    if (this.dirs.has(oldPath)) return EISDIR;
+    if (!this.files.has(oldPath)) return ENOENT;
+    if (this.files.has(newPath) || this.dirs.has(newPath)) return EEXIST;
+    this.writeFile(newPath, this.readFile(oldPath));
+    return ESUCCESS;
+  }
+
   resizeFile(pathname, size) {
     const current = this.readFile(pathname);
     const next = new Uint8Array(size);
@@ -1189,16 +1200,33 @@ class WasiProcess {
     return this.fs.rename(oldPath, newPath);
   }
 
-  path_readlink() {
+  path_readlink(dirfd, pathPtr, pathLen, _bufPtr, _bufLen, bufUsedOut) {
+    const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
+    if (!pathname) return EBADF;
+    if (bufUsedOut) this.mem.writeU32(bufUsedOut, 0);
     return EINVAL;
   }
 
-  path_symlink() {
+  path_symlink(_oldPathPtr, _oldPathLen, dirfd, newPathPtr, newPathLen) {
+    const newPath = this.resolveFdPath(dirfd, newPathPtr, newPathLen);
+    if (!newPath) return EBADF;
+    if (isRuntimeProcPath(newPath) || this.isKernelVirtualNamespacePath(newPath)) return EROFS;
+    const deviceErrno = this.deviceNamespaceMutationErrno(newPath);
+    if (deviceErrno !== null) return deviceErrno;
     return ENOTSUP;
   }
 
-  path_link() {
-    return ENOTSUP;
+  path_link(oldFd, _oldFlags, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
+    const oldPath = this.resolveFdPath(oldFd, oldPathPtr, oldPathLen);
+    const newPath = this.resolveFdPath(newFd, newPathPtr, newPathLen);
+    if (!oldPath || !newPath) return EBADF;
+    if (this.fs.isReadOnly(oldPath) || this.isKernelVirtualNamespacePath(oldPath)) return EROFS;
+    if (isRuntimeProcPath(newPath) || this.isKernelVirtualNamespacePath(newPath)) return EROFS;
+    const oldDeviceErrno = this.deviceNamespaceMutationErrno(oldPath);
+    if (oldDeviceErrno !== null) return oldDeviceErrno;
+    const newDeviceErrno = this.deviceNamespaceMutationErrno(newPath);
+    if (newDeviceErrno !== null) return newDeviceErrno;
+    return this.fs.link(oldPath, newPath);
   }
 
   random_get(buf, bufLen) {
