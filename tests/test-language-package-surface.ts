@@ -298,6 +298,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('emitDirectoryDelete(path)'),
         '@tracecode/harness-python worker should ship live directory mutation hooks'
       );
+      assertCondition(
+        worker.includes('const emitPathSnapshot = (path) =>') &&
+          worker.includes('emitPathSnapshot(`${String(path).replace(/\\/+$/, \'\')}/${entry}`)') &&
+          worker.includes('emitPathSnapshot(newPath)'),
+        '@tracecode/harness-python worker should ship recursive moved-directory live snapshots'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-javascript') {
       const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
@@ -383,6 +389,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('fs.rmdir = function rmdirWithProjectEvents') &&
           worker.includes('emitProjectPathSnapshot(newPath)'),
         '@tracecode/harness-csharp worker should ship provider-level live directory mutation hooks'
+      );
+      assertCondition(
+        worker.includes('let materializedKernelDevicePaths = new Set()') &&
+          worker.includes('materializedKernelDevicePaths.add(devicePath)') &&
+          worker.includes('function isKernelDeviceNamespacePath(value)') &&
+          worker.includes('throwKernelDevicePathError(path, \'open\')'),
+        '@tracecode/harness-csharp worker should ship manifest-scoped /dev cleanup and namespace guards'
       );
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
