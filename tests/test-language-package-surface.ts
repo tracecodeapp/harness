@@ -339,6 +339,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('sourceDevice'),
         '@tracecode/harness-java worker should ship routed source device output events'
       );
+      assertCondition(
+        worker.includes('projectKernelFileManifest') &&
+          worker.includes('ProjectEvents.setKernelFiles('),
+        '@tracecode/harness-java worker should ship manifest kernel file bridge setup'
+      );
       const helperJarListing = spawnSync('jar', ['tf', join(packageDir, 'workers/vendor/java-browser-helper.jar')], {
         encoding: 'utf8',
       });
@@ -365,6 +370,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         helperApi.stdout.includes('emitDirectoryCreateNative(java.lang.String)') &&
           helperApi.stdout.includes('emitDirectoryDeleteNative(java.lang.String)'),
         '@tracecode/harness-java helper jar should expose directory native bridge hooks'
+      );
+      assertCondition(
+        helperApi.stdout.includes('setKernelFiles(java.lang.String)'),
+        '@tracecode/harness-java helper jar should expose manifest kernel file bridge'
       );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {
