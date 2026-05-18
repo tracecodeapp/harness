@@ -3041,6 +3041,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('fd-streamed.txt') === 'fd-one\nfd-two\n', 'browser node fd createWriteStream should persist through kernel FS');
 
+  const fdReadStreamOffsetResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const stream = (fd, options) => new Promise((resolve, reject) => { const chunks = []; fs.createReadStream(null, { fd, autoClose: false, encoding: \\"utf8\\", ...options }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", () => resolve(chunks.join(\\"\\"))); }); fs.writeFileSync(\\"fd-read-stream.txt\\", \\"abcdef\\"); let fd = fs.openSync(\\"fd-read-stream.txt\\", \\"r\\"); console.log(await stream(fd, { start: 2 })); console.log(fs.readFileSync(fd, \\"utf8\\")); fs.closeSync(fd); fd = fs.openSync(\\"fd-read-stream.txt\\", \\"r\\"); console.log(await stream(fd, { start: 1, end: 3 })); console.log(fs.readFileSync(fd, \\"utf8\\")); fs.closeSync(fd); fd = fs.openSync(\\"fd-read-stream.txt\\", \\"r\\"); const head = Buffer.alloc(2); fs.readSync(fd, head, 0, 2, null); console.log(head.toString()); console.log(await stream(fd, {})); console.log(fs.readFileSync(fd, \\"utf8\\")); fs.closeSync(fd);"',
+  ].join(' '));
+  assertCondition(fdReadStreamOffsetResult.exitCode === 0, `browser node fd read stream offset workflow should succeed: ${fdReadStreamOffsetResult.stderr}`);
+  assertCondition(
+    fdReadStreamOffsetResult.stdout === 'cdef\nabcdef\nbcd\nabcdef\nab\ncdef\n\n',
+    `browser node fd read streams should match host offset semantics: ${fdReadStreamOffsetResult.stdout}`
+  );
+
   const readOnlyFdStreamResult = await workspace.runCommand([
     'node',
     '-e',

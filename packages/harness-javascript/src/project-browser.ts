@@ -3220,8 +3220,15 @@ async function runBrowserJavaScriptProjectRequest(
             : readTarget.reason === 'permission-denied'
               ? `EBADF: bad file descriptor, open '${path}'`
               : `ENOENT: no such file or directory, open '${path}'`);
-        } else if (optionFd !== null) sourceBytes = readDescriptorFileBytes(optionFd);
-        else {
+        } else if (optionFd !== null) {
+          const entry = fileDescriptor(optionFd);
+          if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+          if (typeof options === 'object' && typeof options?.start === 'number') {
+            sourceBytes = descriptorBytes(entry);
+          } else {
+            sourceBytes = readDescriptorFileBytes(optionFd);
+          }
+        } else {
           const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
           if (workspaceFileAncestor(normalized) !== null) {
             throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: 'ENOTDIR' });
