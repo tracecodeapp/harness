@@ -528,6 +528,7 @@ function runProcess(
       if (settled) return;
       settled = true;
       child.kill('SIGKILL');
+      emitCommandStatus(options.onEvent, 'process-exit', `${command} timed out`, { command, exitCode: 124, timeoutMs: options.timeoutMs });
       resolve({
         stdout,
         stderr: `${stderr}${options.timeoutLabel}: execution timed out after ${options.timeoutMs}ms\n`,

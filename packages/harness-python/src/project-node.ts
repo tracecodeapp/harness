@@ -387,6 +387,7 @@ export function createNativePythonProjectRunner(
           if (settled) return;
           settled = true;
           child.kill('SIGKILL');
+          emitCommandStatus(request.onEvent, 'process-exit', `${pythonCommand} timed out`, { command: pythonCommand, exitCode: 124, timeoutMs });
           resolve({
             stdout,
             stderr: `${stderr}python3: execution timed out after ${timeoutMs}ms\n`,

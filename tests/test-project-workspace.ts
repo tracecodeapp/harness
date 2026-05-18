@@ -1216,6 +1216,26 @@ async function testNativePythonProjectRunner(): Promise<void> {
   const deleteResult = await workspace.runCommand('python3 -c "import os; os.remove(\\"stale.txt\\")"');
   assertCondition(deleteResult.exitCode === 0, `native python file deletion should succeed: ${deleteResult.stderr}`);
   await assertRejectsAsync(() => workspace.readFile('stale.txt'), 'native python should persist deleted files');
+
+  const timeoutEvents: RuntimeCommandEvent[] = [];
+  const timeoutWorkspace = await createRuntimeWorkspace({
+    pythonRunner: createNativePythonProjectRunner({ timeoutMs: 5 }),
+  });
+  const timeoutResult = await timeoutWorkspace.runCommand(
+    'python3 -c "import time; time.sleep(0.025); print(\\"late\\")"',
+    { onEvent: (event) => timeoutEvents.push(event) }
+  );
+  assertCondition(
+    timeoutResult.exitCode === 124 && timeoutResult.stderr.includes('python3: execution timed out after 5ms'),
+    `native Python timeout should return a timeout result: ${JSON.stringify(timeoutResult)}`
+  );
+  assertCondition(
+    timeoutEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      timeoutEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124) &&
+      !timeoutEvents.some((event) => event.type === 'output' && event.data.includes('late')),
+    `native Python timeout should emit terminal process status without late output: ${JSON.stringify(timeoutEvents)}`
+  );
+  timeoutWorkspace.dispose();
 }
 
 async function testNativeNestedPythonProjectRunner(): Promise<void> {
