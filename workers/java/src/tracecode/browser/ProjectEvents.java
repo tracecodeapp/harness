@@ -6,6 +6,7 @@ import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -617,6 +618,28 @@ public final class ProjectEvents {
     public int available() throws IOException {
       if (deviceBytes == null) return super.available();
       return deviceBytes.length - deviceOffset;
+    }
+  }
+
+  public static final class ProjectFileReader extends FileReader {
+    public ProjectFileReader(String fileName) throws IOException {
+      super(inputReaderTarget(Path.of(fileName)));
+    }
+
+    public ProjectFileReader(String fileName, Charset charset) throws IOException {
+      super(inputReaderTarget(Path.of(fileName)), charset);
+    }
+
+    public ProjectFileReader(File file) throws IOException {
+      super(inputReaderTarget(file == null ? null : file.toPath()));
+    }
+
+    public ProjectFileReader(File file, Charset charset) throws IOException {
+      super(inputReaderTarget(file == null ? null : file.toPath()), charset);
+    }
+
+    public ProjectFileReader(FileDescriptor fdObj) {
+      super(fdObj);
     }
   }
 
@@ -1257,6 +1280,14 @@ public final class ProjectEvents {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return temporaryDeviceFile();
     return path.toFile();
+  }
+
+  private static File inputReaderTarget(Path path) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device == null) return path.toFile();
+    File file = temporaryDeviceFile();
+    Files.write(file.toPath(), readKernelDevice(device));
+    return file;
   }
 
   private static File randomAccessFileTarget(Path path, String mode) throws IOException {
