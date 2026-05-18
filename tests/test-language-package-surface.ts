@@ -485,6 +485,27 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           streamingOutputApi.stdout.includes('// Method flush:()V'),
         '@tracecode/harness-java helper jar should flush live stdio after unbuffered writes'
       );
+      const fileWriterApi = spawnSync(
+        'javap',
+        ['-classpath', join(packageDir, 'workers/vendor/java-browser-helper.jar'), '-c', 'tracecode.browser.ProjectEvents$ProjectFileWriter'],
+        { encoding: 'utf8' }
+      );
+      if (fileWriterApi.status !== 0) {
+        throw new Error(fileWriterApi.stderr || fileWriterApi.stdout || '@tracecode/harness-java file writer API listing failed');
+      }
+      const fileOutputStreamApi = spawnSync(
+        'javap',
+        ['-classpath', join(packageDir, 'workers/vendor/java-browser-helper.jar'), '-c', 'tracecode.browser.ProjectEvents$ProjectFileOutputStream'],
+        { encoding: 'utf8' }
+      );
+      if (fileOutputStreamApi.status !== 0) {
+        throw new Error(fileOutputStreamApi.stderr || fileOutputStreamApi.stdout || '@tracecode/harness-java file output stream API listing failed');
+      }
+      assertCondition(
+        fileWriterApi.stdout.includes('// Method emitOpenSnapshot:(Z)V') &&
+          fileOutputStreamApi.stdout.includes('// Method emitOpenSnapshot:(Z)V'),
+        '@tracecode/harness-java helper jar should emit live snapshots for classic open/truncate constructors'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {
       const worker = await readFile(join(packageDir, 'workers/csharp-worker.js'), 'utf8');

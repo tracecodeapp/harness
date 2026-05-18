@@ -63,6 +63,7 @@ public final class ProjectEvents {
       ThreadLocal.withInitial(() -> 0);
   private static final ThreadLocal<ByteArrayOutputStream> STDOUT_CAPTURE = new ThreadLocal<>();
   private static final ThreadLocal<ByteArrayOutputStream> STDERR_CAPTURE = new ThreadLocal<>();
+  private static final ThreadLocal<OutputFileTargetInfo> LAST_OUTPUT_FILE_TARGET = new ThreadLocal<>();
 
   private ProjectEvents() {}
 
@@ -605,6 +606,7 @@ public final class ProjectEvents {
       this.path = Path.of(fileName);
       this.device = kernelDevice(this.path);
       this.charset = Charset.defaultCharset();
+      emitOpenSnapshot(false);
     }
 
     public ProjectFileWriter(String fileName, boolean append) throws IOException {
@@ -612,6 +614,7 @@ public final class ProjectEvents {
       this.path = Path.of(fileName);
       this.device = kernelDevice(this.path);
       this.charset = Charset.defaultCharset();
+      emitOpenSnapshot(append);
     }
 
     public ProjectFileWriter(String fileName, Charset charset) throws IOException {
@@ -619,6 +622,7 @@ public final class ProjectEvents {
       this.path = Path.of(fileName);
       this.device = kernelDevice(this.path);
       this.charset = charset == null ? Charset.defaultCharset() : charset;
+      emitOpenSnapshot(false);
     }
 
     public ProjectFileWriter(String fileName, Charset charset, boolean append) throws IOException {
@@ -626,6 +630,7 @@ public final class ProjectEvents {
       this.path = Path.of(fileName);
       this.device = kernelDevice(this.path);
       this.charset = charset == null ? Charset.defaultCharset() : charset;
+      emitOpenSnapshot(append);
     }
 
     public ProjectFileWriter(File file) throws IOException {
@@ -633,6 +638,7 @@ public final class ProjectEvents {
       this.path = file.toPath();
       this.device = kernelDevice(this.path);
       this.charset = Charset.defaultCharset();
+      emitOpenSnapshot(false);
     }
 
     public ProjectFileWriter(File file, boolean append) throws IOException {
@@ -640,6 +646,7 @@ public final class ProjectEvents {
       this.path = file.toPath();
       this.device = kernelDevice(this.path);
       this.charset = Charset.defaultCharset();
+      emitOpenSnapshot(append);
     }
 
     public ProjectFileWriter(File file, Charset charset) throws IOException {
@@ -647,6 +654,7 @@ public final class ProjectEvents {
       this.path = file.toPath();
       this.device = kernelDevice(this.path);
       this.charset = charset == null ? Charset.defaultCharset() : charset;
+      emitOpenSnapshot(false);
     }
 
     public ProjectFileWriter(File file, Charset charset, boolean append) throws IOException {
@@ -654,6 +662,7 @@ public final class ProjectEvents {
       this.path = file.toPath();
       this.device = kernelDevice(this.path);
       this.charset = charset == null ? Charset.defaultCharset() : charset;
+      emitOpenSnapshot(append);
     }
 
     public ProjectFileWriter(FileDescriptor fdObj) {
@@ -665,6 +674,15 @@ public final class ProjectEvents {
 
     private void emitAfterWrite() throws IOException {
       if (device != null) return;
+      super.flush();
+      emitFileSnapshot(path);
+    }
+
+    private void emitOpenSnapshot(boolean append) throws IOException {
+      OutputFileTargetInfo target = LAST_OUTPUT_FILE_TARGET.get();
+      LAST_OUTPUT_FILE_TARGET.remove();
+      if (device != null) return;
+      if (append && target != null && target.existed) return;
       super.flush();
       emitFileSnapshot(path);
     }
@@ -753,30 +771,43 @@ public final class ProjectEvents {
       super(outputFileTarget(Path.of(name)));
       this.path = Path.of(name);
       this.device = kernelDevice(this.path);
+      emitOpenSnapshot(false);
     }
 
     public ProjectFileOutputStream(String name, boolean append) throws IOException {
       super(outputFileTarget(Path.of(name)), append);
       this.path = Path.of(name);
       this.device = kernelDevice(this.path);
+      emitOpenSnapshot(append);
     }
 
     public ProjectFileOutputStream(File file) throws IOException {
       super(outputFileTarget(file == null ? null : file.toPath()));
       this.path = file.toPath();
       this.device = kernelDevice(this.path);
+      emitOpenSnapshot(false);
     }
 
     public ProjectFileOutputStream(File file, boolean append) throws IOException {
       super(outputFileTarget(file == null ? null : file.toPath()), append);
       this.path = file.toPath();
       this.device = kernelDevice(this.path);
+      emitOpenSnapshot(append);
     }
 
     public ProjectFileOutputStream(FileDescriptor fdObj) {
       super(fdObj);
       this.path = null;
       this.device = writableKernelDevice(fdObj);
+    }
+
+    private void emitOpenSnapshot(boolean append) throws IOException {
+      OutputFileTargetInfo target = LAST_OUTPUT_FILE_TARGET.get();
+      LAST_OUTPUT_FILE_TARGET.remove();
+      if (device != null) return;
+      if (append && target != null && target.existed) return;
+      super.flush();
+      emitFileSnapshot(path);
     }
 
     @Override
@@ -1919,6 +1950,14 @@ public final class ProjectEvents {
     }
   }
 
+  private static final class OutputFileTargetInfo {
+    final boolean existed;
+
+    OutputFileTargetInfo(boolean existed) {
+      this.existed = existed;
+    }
+  }
+
   private static final class KernelDirectoryStream implements DirectoryStream<Path> {
     private final Iterable<Path> entries;
     private boolean open = true;
@@ -2104,8 +2143,12 @@ public final class ProjectEvents {
 
   private static File outputFileTarget(Path path) throws IOException {
     KernelDevice device = writableKernelDevice(path);
-    if (device != null) return temporaryDeviceFile();
+    if (device != null) {
+      LAST_OUTPUT_FILE_TARGET.set(new OutputFileTargetInfo(false));
+      return temporaryDeviceFile();
+    }
     assertWritableProjectPath(path);
+    LAST_OUTPUT_FILE_TARGET.set(new OutputFileTargetInfo(Files.exists(path)));
     return path.toFile();
   }
 
