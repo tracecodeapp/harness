@@ -387,6 +387,25 @@ function installRuntimeFsHooks(runtime) {
     };
   }
 
+  const originalTruncate = fs.truncate;
+  if (typeof originalTruncate === 'function') {
+    fs.truncate = function truncateWithProjectEvents(path) {
+      const result = originalTruncate.apply(this, arguments);
+      if (activeProjectIo) emitProjectFileSnapshot(path);
+      return result;
+    };
+  }
+
+  const originalFtruncate = fs.ftruncate;
+  if (typeof originalFtruncate === 'function') {
+    fs.ftruncate = function ftruncateWithProjectEvents(fd) {
+      const stream = typeof fs.getStream === 'function' ? fs.getStream(fd) : null;
+      const result = originalFtruncate.apply(this, arguments);
+      if (activeProjectIo && stream?.path) emitProjectFileSnapshot(stream.path);
+      return result;
+    };
+  }
+
   const originalUnlink = fs.unlink;
   if (typeof originalUnlink === 'function') {
     fs.unlink = function unlinkWithProjectEvents(path) {

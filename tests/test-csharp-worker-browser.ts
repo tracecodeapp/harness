@@ -2668,6 +2668,7 @@ async function main(): Promise<void> {
                 'using (var writer = File.CreateText("created-stream.txt")) { writer.Write("created"); }',
                 'using (var stream = new FileStream("stream.bin", FileMode.Create, FileAccess.Write)) { stream.Write(new byte[] { 0, 254 }); stream.Flush(); }',
                 'using (var stream = File.OpenWrite("open-write.bin")) { stream.Write(new byte[] { 0, 253 }); }',
+                'using (var stream = new FileStream("truncated.txt", FileMode.Create, FileAccess.ReadWrite)) { stream.Write(System.Text.Encoding.UTF8.GetBytes("abcdef")); stream.SetLength(3); stream.Flush(); }',
                 'using (var writer = new BinaryWriter(File.Create("binary-writer.bin"))) { writer.Write(new byte[] { 0, 252 }); }',
                 'File.Copy("generated.txt", "copied.txt");',
                 'File.Move("copied.txt", "moved.txt");',
@@ -2781,6 +2782,7 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/stream.bin' && file.encoding === 'base64' && file.contents === 'AP4=') === true &&
         projectRun.files?.some((file) => file.path === 'src/open-write.bin' && file.encoding === 'base64' && file.contents === 'AP0=') === true &&
+        projectRun.files?.some((file) => file.path === 'src/truncated.txt' && file.contents === 'abc') === true &&
         projectRun.files?.some((file) => file.path === 'src/binary-writer.bin' && file.encoding === 'base64' && file.contents === 'APw=') === true,
       `C# project worker should return file stream changes, received ${JSON.stringify(projectRun.files)}`
     );
@@ -2800,6 +2802,13 @@ async function main(): Promise<void> {
             event.change?.path === 'src/open-write.bin' &&
             event.change.encoding === 'base64' &&
             event.change.contents === 'AP0='
+        ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/truncated.txt' &&
+            event.change.contents === 'abc'
         ) === true &&
         projectRun.events?.some(
           (event) =>
