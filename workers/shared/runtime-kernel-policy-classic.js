@@ -1,3 +1,10 @@
+/**
+ * AUTO-GENERATED FILE. DO NOT EDIT MANUALLY.
+ *
+ * Source: workers/shared/runtime-kernel-policy.js
+ * Generator: scripts/generate-runtime-kernel-policy-classic.ts
+ */
+
 (function installRuntimeKernelPolicy(globalThis) {
   function normalizeRuntimeKernelPath(value) {
     const raw = String(value ?? '').replace(/\\/g, '/');
@@ -66,23 +73,23 @@
   }
 
   function knownDeviceSet(options) {
-    if (options && options.knownDevices) return normalizedSet(options.knownDevices);
-    return normalizedSet(normalizedDeviceInfos(options && options.devices).keys());
+    if (options?.knownDevices) return normalizedSet(options.knownDevices);
+    return normalizedSet(normalizedDeviceInfos(options?.devices).keys());
   }
 
   function runtimeKernelDeviceInfo(devices, device) {
-    return normalizedDeviceInfos(devices).get(normalizeRuntimeKernelDeviceReference(device)) || null;
+    return normalizedDeviceInfos(devices).get(normalizeRuntimeKernelDeviceReference(device)) ?? null;
   }
 
   function runtimeKernelDeviceInputSource(devices, device) {
     const info = runtimeKernelDeviceInfo(devices, device);
-    if (!info || !info.readable) return '';
+    if (!info?.readable) return '';
     return info.inputDevice || info.path;
   }
 
   function runtimeKernelDeviceOutputTarget(devices, device) {
     const info = runtimeKernelDeviceInfo(devices, device);
-    if (!info || !info.writable) return '';
+    if (!info?.writable) return '';
     return info.outputDevice || info.path;
   }
 
@@ -97,12 +104,12 @@
     return false;
   }
 
-  function runtimeKernelVirtualPathTarget(value, options) {
+  function runtimeKernelVirtualPathTarget(value, options = {}) {
     const path = normalizeRuntimeKernelPath(value);
     if (isRuntimeKernelProcPath(path)) {
       return { kind: 'proc', path };
     }
-    if (isRuntimeKernelReadOnlyPath(path, options && options.readOnlyPaths)) {
+    if (isRuntimeKernelReadOnlyPath(path, options.readOnlyPaths)) {
       return { kind: 'read-only-file', path };
     }
     if (isRuntimeKernelDeviceDirectory(path)) {
@@ -119,7 +126,7 @@
     return { kind: 'workspace', path };
   }
 
-  function runtimeKernelVirtualMutationTarget(value, options) {
+  function runtimeKernelVirtualMutationTarget(value, options = {}) {
     const target = runtimeKernelVirtualPathTarget(value, options);
     if (target.kind === 'workspace') return target;
     if (target.kind === 'device-not-found') {
@@ -134,7 +141,7 @@
     return { kind: 'error', reason: 'device-read-only', path: target.path };
   }
 
-  globalThis.TraceRuntimeKernelPolicy = {
+  globalThis.TraceRuntimeKernelPolicy = Object.freeze({
     normalizeRuntimeKernelPath,
     isRuntimeKernelProcPath,
     isRuntimeKernelDeviceNamespacePath,
@@ -145,5 +152,5 @@
     runtimeKernelDeviceOutputTarget,
     runtimeKernelVirtualPathTarget,
     runtimeKernelVirtualMutationTarget,
-  };
+  });
 })(typeof self !== 'undefined' ? self : globalThis);
