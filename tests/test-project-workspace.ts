@@ -4978,6 +4978,9 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'fs.writeFileSync("copy-device.txt", "copy-device\\n");',
           'fs.copyFileSync("copy-device.txt", "/dev/stdout");',
           'try { fs.copyFileSync("copy-device.txt", "/proc/kernel/info"); } catch (error) { console.log(error.code); }',
+          'try { fs.mkdirSync("/proc/new"); } catch (error) { console.log(error.code); }',
+          'try { fs.rmSync("/dev/stdout"); } catch (error) { console.log(error.code); }',
+          'try { fs.renameSync("copy-device.txt", "/dev/stdout"); } catch (error) { console.log(error.code); }',
           'fs.writeFileSync("/home/ada/weather-api/node-canonical.txt", "node-canonical\\n");',
           'fs.appendFileSync("/workspace/node-alias.txt", "node-alias\\n");',
           '',
@@ -5091,6 +5094,9 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         'true',
         'EROFS',
         'copy-device',
+        'EROFS',
+        'EROFS',
+        'EROFS',
         'EROFS',
         '',
       ].join('\n'),
@@ -5655,6 +5661,9 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   await deviceWorkspace.writeFile('copy-device.txt', 'copy-device-out\n');
   await deviceWorkspace.copyFile('copy-device.txt', '/dev/stdout');
   await assertRejectsAsync(() => deviceWorkspace.copyFile('copy-device.txt', '/proc/kernel/info'), 'copyFile should reject /proc destinations');
+  await assertRejectsAsync(() => deviceWorkspace.mkdir('/proc/new'), 'mkdir should reject /proc paths');
+  await assertRejectsAsync(() => deviceWorkspace.remove('/dev/stdout'), 'remove should reject /dev paths');
+  await assertRejectsAsync(() => deviceWorkspace.deleteFile('/dev/stdout'), 'deleteFile should reject /dev paths');
   assertCondition(
     deviceWatchEvents.some((event) =>
       event.type === 'output' &&

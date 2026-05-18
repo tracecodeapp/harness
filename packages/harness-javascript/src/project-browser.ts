@@ -21,6 +21,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelMutationTarget,
   runtimeKernelWriteTarget,
   runtimeProcCanMutate,
   readRuntimeProcFile as readProcFile,
@@ -158,6 +159,12 @@ function runtimeWriteTarget(path: unknown): ReturnType<typeof runtimeKernelWrite
   return runtimeKernelWriteTarget(raw);
 }
 
+function runtimeMutationTarget(path: unknown): ReturnType<typeof runtimeKernelMutationTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelMutationTarget(raw);
+}
+
 function throwRuntimeWriteTargetError(
   target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>,
   message: string
@@ -172,6 +179,19 @@ function throwRuntimeWriteTargetError(
     throw Object.assign(new Error(message), { code: 'EBADF' });
   }
   throw Object.assign(new Error(message), { code: 'ENOENT' });
+}
+
+function throwRuntimeMutationTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelMutationTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  if (target.reason === 'proc-read-only') {
+    throw Object.assign(new Error(message), { code: 'EROFS' });
+  }
+  if (target.reason === 'device-not-found') {
+    throw Object.assign(new Error(message), { code: 'ENOENT' });
+  }
+  throw Object.assign(new Error(message), { code: 'EROFS' });
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
@@ -2076,7 +2096,13 @@ async function runBrowserJavaScriptProjectRequest(
       return stream;
     };
     const deleteFile = (path: unknown): void => {
-      assertRuntimeProcMutablePath(path, `EROFS: read-only file system, unlink '${path}'`);
+      const mutationTarget = runtimeMutationTarget(path);
+      if (mutationTarget?.kind === 'error') {
+        const message = mutationTarget.reason === 'device-not-found'
+          ? `ENOENT: no such file or directory, unlink '${path}'`
+          : `EROFS: read-only file system, unlink '${path}'`;
+        throwRuntimeMutationTargetError(mutationTarget, message);
+      }
       const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (!fileStore.delete(normalized)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: 'ENOENT' });
@@ -3019,8 +3045,14 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       renameSync: (oldPath: unknown, newPath: unknown) => {
-        assertRuntimeProcMutablePath(oldPath, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
-        assertRuntimeProcMutablePath(newPath, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
+        const oldMutationTarget = runtimeMutationTarget(oldPath);
+        if (oldMutationTarget?.kind === 'error') {
+          throwRuntimeMutationTargetError(oldMutationTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
+        }
+        const newMutationTarget = runtimeMutationTarget(newPath);
+        if (newMutationTarget?.kind === 'error') {
+          throwRuntimeMutationTargetError(newMutationTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
+        }
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalizedOldPath);
@@ -3056,7 +3088,13 @@ async function runBrowserJavaScriptProjectRequest(
       },
       rmSync: (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         try {
-          assertRuntimeProcMutablePath(path, `EROFS: read-only file system, rm '${path}'`);
+          const mutationTarget = runtimeMutationTarget(path);
+          if (mutationTarget?.kind === 'error') {
+            const message = mutationTarget.reason === 'device-not-found'
+              ? `ENOENT: no such file or directory, rm '${path}'`
+              : `EROFS: read-only file system, rm '${path}'`;
+            throwRuntimeMutationTargetError(mutationTarget, message);
+          }
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           if (fileStore.has(normalized)) {
             deleteFile(path);
@@ -3354,7 +3392,10 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
-        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, mkdir '${path}'`);
+        const mutationTarget = runtimeMutationTarget(path);
+        if (mutationTarget?.kind === 'error') {
+          throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, mkdir '${path}'`);
+        }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
         const parent = dirname(normalized);
@@ -3411,7 +3452,10 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       rmdirSync: (path: unknown) => {
-        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, rmdir '${path}'`);
+        const mutationTarget = runtimeMutationTarget(path);
+        if (mutationTarget?.kind === 'error') {
+          throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, rmdir '${path}'`);
+        }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
         const hasChildren = Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))

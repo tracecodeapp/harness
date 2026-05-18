@@ -8,17 +8,16 @@ import {
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
-  classifyRuntimeKernelVirtualPath,
   isRuntimeDeviceNamespacePath,
   normalizeRuntimeProcPath,
   normalizeRuntimeDevicePath,
   RUNTIME_KERNEL_DEVICE_ENTRIES,
-  runtimeProcCanMutate,
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelMutationTarget,
   runtimeKernelWriteTarget,
   readRuntimeProcFile,
   runtimeProcDirEntries,
@@ -253,13 +252,6 @@ function isDevNamespacePath(path: string): boolean {
   return isRuntimeDeviceNamespacePath(path);
 }
 
-function assertProcMutablePath(path: string): void {
-  assertNoNul(path, 'Kernel path');
-  if (!runtimeProcCanMutate(path)) {
-    throw new Error(`Kernel proc path is read-only: ${path}`);
-  }
-}
-
 function kernelWriteTarget(path: string): ReturnType<typeof runtimeKernelWriteTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelWriteTarget(path);
@@ -272,9 +264,19 @@ function throwKernelWriteTargetError(path: string, target: Extract<ReturnType<ty
   throw new Error(`Kernel device path not found: ${path}`);
 }
 
-function isKernelVirtualPath(path: string): boolean {
+function kernelMutationTarget(path: string): ReturnType<typeof runtimeKernelMutationTarget> {
   assertNoNul(path, 'Kernel path');
-  return classifyRuntimeKernelVirtualPath(path) !== null;
+  return runtimeKernelMutationTarget(path);
+}
+
+function throwKernelMutationTargetError(
+  path: string,
+  target: Extract<ReturnType<typeof runtimeKernelMutationTarget>, { kind: 'error' }>,
+  deviceMessage = `Kernel device namespace is read-only: ${path}`
+): never {
+  if (target.reason === 'proc-read-only') throw new Error(`Kernel proc path is read-only: ${path}`);
+  if (target.reason === 'device-not-found') throw new Error(`Kernel device path not found: ${path}`);
+  throw new Error(deviceMessage);
 }
 
 function mapWorkspaceAlias(workspaceRoot: string, workspaceAlias: string | undefined, absolutePath: string): string {
@@ -645,7 +647,12 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device namespace is read-only: ${path}`));
+    const mutationTarget = kernelMutationTarget(path);
+    if (mutationTarget.kind === 'error') return Promise.reject(new Error(
+      mutationTarget.reason === 'proc-read-only'
+        ? `Kernel proc path is read-only: ${path}`
+        : `Kernel device namespace is read-only: ${path}`
+    ));
     return this.base.mkdir(this.mapPath(path), options);
   }
 
@@ -678,7 +685,8 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async rm(path: string, options?: FsRmOptions): Promise<void> {
-    if (isDevNamespacePath(path)) throw new Error(`Kernel device namespace is read-only: ${path}`);
+    const mutationTarget = kernelMutationTarget(path);
+    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
     const mappedPath = this.mapPath(path);
     const deletedFiles = await this.collectExistingFiles(mappedPath);
     await this.base.rm(mappedPath, options);
@@ -712,9 +720,10 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async mv(src: string, dest: string): Promise<void> {
-    if (isDevNamespacePath(src) || isDevNamespacePath(dest)) {
-      throw new Error('Kernel device namespace is read-only.');
-    }
+    const sourceMutationTarget = kernelMutationTarget(src);
+    if (sourceMutationTarget.kind === 'error') throwKernelMutationTargetError(src, sourceMutationTarget, 'Kernel device namespace is read-only.');
+    const destinationMutationTarget = kernelMutationTarget(dest);
+    if (destinationMutationTarget.kind === 'error') throwKernelMutationTargetError(dest, destinationMutationTarget, 'Kernel device namespace is read-only.');
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     const deletedFiles = await this.collectExistingFiles(mappedSource);
@@ -2472,10 +2481,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async mkdir(path: string): Promise<void> {
-    assertProcMutablePath(path);
-    if (isDevNamespacePath(path)) {
-      throw new Error(`Kernel device namespace is read-only: ${path}`);
-    }
+    const mutationTarget = kernelMutationTarget(path);
+    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
     await this.bash.fs.mkdir(this.toWorkspaceEntryPath(path), { recursive: true });
   }
 
@@ -2510,9 +2517,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
-    if (isKernelVirtualPath(sourcePath) || isKernelVirtualPath(destinationPath)) {
-      throw new Error('Kernel virtual paths are read-only for move operations.');
-    }
+    const sourceMutationTarget = kernelMutationTarget(sourcePath);
+    if (sourceMutationTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
+    const destinationMutationTarget = kernelMutationTarget(destinationPath);
+    if (destinationMutationTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
     await this.copyFile(sourcePath, destinationPath);
     await this.bash.fs.rm(this.toWorkspacePath(sourcePath), { force: true });
     this.emitRuntimeEvent({
@@ -2524,10 +2532,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async deleteFile(path: string): Promise<void> {
-    assertProcMutablePath(path);
-    if (isDevNamespacePath(path)) {
-      throw new Error(`Kernel device namespace is read-only: ${path}`);
-    }
+    const mutationTarget = kernelMutationTarget(path);
+    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
       type: 'file-change',
@@ -2538,10 +2544,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
-    assertProcMutablePath(path);
-    if (isDevNamespacePath(path)) {
-      throw new Error(`Kernel device namespace is read-only: ${path}`);
-    }
+    const mutationTarget = kernelMutationTarget(path);
+    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
     const deletedFiles = await this.collectDeletedFilesForRemove(path, options);
     await this.bash.fs.rm(this.toWorkspaceEntryPath(path), {
       force: options.force ?? true,
@@ -2723,7 +2727,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
-    assertProcMutablePath(path);
+    const mutationTarget = kernelMutationTarget(path);
+    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
     const relativePath = this.toWorkspaceRelativePath(path);
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
@@ -2771,9 +2776,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {
     await withSuspendedFsNotifications(this.bash.fs, async () => {
-      assertProcMutablePath(change.path);
-      if (isDevNamespacePath(change.path)) {
-        throw new Error(`Kernel device namespace is not a file-change target: ${change.path}`);
+      const mutationTarget = kernelMutationTarget(change.path);
+      if (mutationTarget.kind === 'error') {
+        throwKernelMutationTargetError(change.path, mutationTarget, `Kernel device namespace is not a file-change target: ${change.path}`);
       }
       const absolutePath = this.toWorkspacePath(change.path);
       if ((change as RuntimeFileDeletion).deleted === true) {
