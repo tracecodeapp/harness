@@ -233,9 +233,11 @@ async function main(): Promise<void> {
             '#include <cstdlib>',
             '#include <cstdio>',
             '#include <dirent.h>',
+            '#include <fcntl.h>',
             '#include <fstream>',
             '#include <iostream>',
             '#include <string>',
+            '#include <unistd.h>',
             'int main(int argc, char** argv) {',
             '  FILE* stdin_device = std::fopen("/dev/stdin", "r");',
             '  char device_line[64] = {0};',
@@ -266,6 +268,12 @@ async function main(): Promise<void> {
             '  std::ofstream bytes("bytes.bin", std::ios::binary);',
             '  char raw[2] = {0, static_cast<char>(255)};',
             '  bytes.write(raw, 2);',
+            '  int patch_fd = open("patched.txt", O_CREAT | O_WRONLY, 0644);',
+            '  if (patch_fd >= 0) { write(patch_fd, "abcd", 4); pwrite(patch_fd, "XY", 2, 1); close(patch_fd); }',
+            '  int truncate_fd = open("truncated.txt", O_CREAT | O_WRONLY, 0644);',
+            '  if (truncate_fd >= 0) { write(truncate_fd, "abcdef", 6); ftruncate(truncate_fd, 3); close(truncate_fd); }',
+            '  std::ofstream("rename-source.txt") << "moved\\\\n";',
+            '  std::rename("rename-source.txt", "renamed.txt");',
             '  std::remove("stale.txt");',
             '  return 0;',
             '}',
@@ -1083,6 +1091,19 @@ async function main(): Promise<void> {
       `C++ browser project run should return generated binary file: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/patched.txt' && file.contents === 'aXYd') === true,
+      `C++ browser project run should return fd_pwrite mutations: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/truncated.txt' && file.contents === 'abc') === true,
+      `C++ browser project run should return ftruncate mutations: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/renamed.txt' && file.contents === 'moved\n') === true &&
+        projectRun.files?.some((file) => file.path === 'src/rename-source.txt' && file.deleted === true) !== true,
+      `C++ browser project run should return renamed file contents without reporting transient creates: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
       projectRun.files?.some((file) => file.path === 'src/stale.txt' && file.deleted === true) === true,
       `C++ browser project run should return deleted files: ${JSON.stringify(projectRun)}`
     );
@@ -1104,6 +1125,39 @@ async function main(): Promise<void> {
         event.change.encoding === 'base64'
       )) === true,
       `C++ browser project run should stream live binary mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/patched.txt' &&
+        event.change.contents === 'aXYd'
+      )) === true,
+      `C++ browser project run should stream live fd_pwrite mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/truncated.txt' &&
+        event.change.contents === 'abc'
+      )) === true,
+      `C++ browser project run should stream live ftruncate mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/renamed.txt' &&
+        event.change.contents === 'moved\n'
+      )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/rename-source.txt' &&
+          event.change.deleted === true
+        )) === true,
+      `C++ browser project run should stream live rename mutations: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some((event) => (
