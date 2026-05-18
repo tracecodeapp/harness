@@ -2147,6 +2147,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
   );
 
+  const accessModeResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error) => error ? reject(error) : resolve())); fs.writeFileSync(\\"access-mode.txt\\", \\"ok\\\\n\\"); fs.chmodSync(\\"access-mode.txt\\", 0o400); try { fs.accessSync(\\"access-mode.txt\\", fs.constants.W_OK); } catch (error) { console.log(error.code); } try { await fsp.access(\\"access-mode.txt\\", fsp.constants.X_OK); } catch (error) { console.log(error.code); } await call((done) => fs.access(\\"access-mode.txt\\", fs.constants.R_OK, done)); try { fs.accessSync(\\"/dev/stdout\\", fs.constants.R_OK); } catch (error) { console.log(error.code); }"',
+  ].join(' '));
+  assertCondition(accessModeResult.exitCode === 0, `browser node fs access mode workflow should succeed: ${accessModeResult.stderr}`);
+  assertCondition(
+    accessModeResult.stdout === 'EACCES\nEACCES\nEACCES\n',
+    `browser node fs access should enforce tracked mode and device permissions: ${accessModeResult.stdout}`
+  );
+
   const metadataResult = await workspace.runCommand([
     'node',
     '-e',
@@ -2167,6 +2178,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   assertCondition(
     statsMetadataResult.stdout === '644->751:0->0:2->2|751->751:0->12:2->2|751->751:12->12:2->2000\n640 56 78 4000\n600 90 91 6000 6 1 4096 1 true\ntrue false false false false false false\n600 90 91 6000\n',
     `browser node Stats metadata should track mode, owner, times, and predicates: ${statsMetadataResult.stdout}`
+  );
+
+  const metadataWatchResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.writeFileSync(\\"metadata-watch.txt\\", \\"ok\\\\n\\"); const events = []; const watcher = fs.watch(\\"metadata-watch.txt\\", (type, name) => events.push(type + \\":\\" + name)); fs.chmodSync(\\"metadata-watch.txt\\", 0o600); fs.chownSync(\\"metadata-watch.txt\\", 3, 4); fs.utimesSync(\\"metadata-watch.txt\\", 1, 2); await flush(); watcher.close(); console.log(events.filter((event) => event === \\"change:metadata-watch.txt\\").length);"',
+  ].join(' '));
+  assertCondition(metadataWatchResult.exitCode === 0, `browser node metadata watch workflow should succeed: ${metadataWatchResult.stderr}`);
+  assertCondition(
+    metadataWatchResult.stdout === '3\n',
+    `browser node fs.watch should observe metadata mutations: ${metadataWatchResult.stdout}`
   );
 
   const watchResult = await workspace.runCommand([

@@ -1505,10 +1505,38 @@ async function runBrowserJavaScriptProjectRequest(
         || directoryStore.has(normalized)
         || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix));
     };
-    const assertFileSystemAccess = (path: unknown, _mode: number = fsConstants.F_OK): void => {
-      if (!fileSystemEntryExists(path)) {
+    const assertFileSystemAccess = (path: unknown, mode: number = fsConstants.F_OK): void => {
+      const device = normalizeRuntimeDevicePath(path);
+      if (device) {
+        const requested = Number(mode) || fsConstants.F_OK;
+        const readable = device === '/dev/stdin' || device === '/dev/tty';
+        const writable = device === '/dev/stdout' || device === '/dev/stderr' || device === '/dev/tty';
+        if (((requested & fsConstants.R_OK) !== 0 && !readable) || ((requested & fsConstants.W_OK) !== 0 && !writable)) {
+          throw Object.assign(new Error(`EACCES: permission denied, access '${path}'`), { code: 'EACCES' });
+        }
+        return;
+      }
+      const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      const stats = statForNormalizedPath(normalized);
+      if (!stats) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
       }
+      const requested = Number(mode) || fsConstants.F_OK;
+      const permissionMode = stats.mode & 0o777;
+      const readable = (permissionMode & 0o444) !== 0;
+      const writable = (permissionMode & 0o222) !== 0;
+      const executable = (permissionMode & 0o111) !== 0;
+      if (
+        ((requested & fsConstants.R_OK) !== 0 && !readable) ||
+        ((requested & fsConstants.W_OK) !== 0 && !writable) ||
+        ((requested & fsConstants.X_OK) !== 0 && !executable)
+      ) {
+        throw Object.assign(new Error(`EACCES: permission denied, access '${path}'`), { code: 'EACCES' });
+      }
+    };
+    const notifyMetadataMutation = (path: string): void => {
+      notifyFsWatchers('change', path);
+      notifyWatchFileWatchers(path);
     };
     const metadataPathForEntry = (path: unknown): string | null => {
       if (normalizeRuntimeDevicePath(path)) return null;
@@ -1680,7 +1708,7 @@ async function runBrowserJavaScriptProjectRequest(
           const stats = statForNormalizedPath(normalized);
           const typeMode = stats?.isDirectory() ? 0o40000 : 0o100000;
           updateEntryMetadata(normalized, { mode: typeMode | (Number(mode) & 0o7777) });
-          notifyWatchFileWatchers(normalized);
+          notifyMetadataMutation(normalized);
         }
         return undefined;
       },
@@ -1696,7 +1724,7 @@ async function runBrowserJavaScriptProjectRequest(
         const normalized = metadataPathForEntry(path);
         if (normalized !== null) {
           updateEntryMetadata(normalized, { uid: Number(uid) || 0, gid: Number(gid) || 0 });
-          notifyWatchFileWatchers(normalized);
+          notifyMetadataMutation(normalized);
         }
         return undefined;
       },
@@ -1712,7 +1740,7 @@ async function runBrowserJavaScriptProjectRequest(
         const normalized = metadataPathForEntry(path);
         if (normalized !== null) {
           updateEntryMetadata(normalized, { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
-          notifyWatchFileWatchers(normalized);
+          notifyMetadataMutation(normalized);
         }
         return undefined;
       },
@@ -2018,7 +2046,7 @@ async function runBrowserJavaScriptProjectRequest(
           const stats = statForNormalizedPath(entry.path ?? '');
           const typeMode = stats?.isDirectory() ? 0o40000 : 0o100000;
           updateEntryMetadata(entry.path ?? '', { mode: typeMode | (Number(mode) & 0o7777) });
-          notifyWatchFileWatchers(entry.path ?? '');
+          notifyMetadataMutation(entry.path ?? '');
         }
         return undefined;
       },
@@ -2034,7 +2062,7 @@ async function runBrowserJavaScriptProjectRequest(
         const entry = fileDescriptor(fd);
         if (entry.kind === 'file') {
           updateEntryMetadata(entry.path ?? '', { uid: Number(uid) || 0, gid: Number(gid) || 0 });
-          notifyWatchFileWatchers(entry.path ?? '');
+          notifyMetadataMutation(entry.path ?? '');
         }
         return undefined;
       },
@@ -2050,7 +2078,7 @@ async function runBrowserJavaScriptProjectRequest(
         const entry = fileDescriptor(fd);
         if (entry.kind === 'file') {
           updateEntryMetadata(entry.path ?? '', { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
-          notifyWatchFileWatchers(entry.path ?? '');
+          notifyMetadataMutation(entry.path ?? '');
         }
         return undefined;
       },
