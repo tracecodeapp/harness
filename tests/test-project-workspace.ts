@@ -2425,6 +2425,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node file streams should expose common stream state properties: ${streamStateResult.stdout}`
   );
 
+  const streamWritableStateResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const out = fs.createWriteStream(\\"stream-writable-state.txt\\"); console.log(out.writableLength + \\":\\" + out.writableNeedDrain + \\":\\" + out.writableCorked); out.cork(); out.cork(); console.log(out.writableCorked); out.write(\\"a\\"); console.log(out.bytesWritten + \\":\\" + out.writableLength + \\":\\" + out.writableNeedDrain); out.uncork(); out.uncork(); out.uncork(); console.log(out.writableCorked); await new Promise((resolve) => out.end(\\"b\\", resolve)); console.log(fs.readFileSync(\\"stream-writable-state.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(streamWritableStateResult.exitCode === 0, `browser node writable stream state workflow should succeed: ${streamWritableStateResult.stderr}`);
+  assertCondition(
+    streamWritableStateResult.stdout === '0:false:0\n2\n1:0:false\n0\nab\n',
+    `browser node writable file streams should expose cork/drain state helpers: ${streamWritableStateResult.stdout}`
+  );
+
   const streamReadResult = await workspace.runCommand([
     'node',
     '-e',

@@ -1720,6 +1720,7 @@ async function runBrowserJavaScriptProjectRequest(
       let bytesWritten = 0;
       let writableEnded = false;
       let writableFinished = false;
+      let writableCorked = 0;
       const writeBytes = (value: unknown, writeEncoding?: string): number => {
         if (closed || destroyed) {
           throw Object.assign(new Error('ERR_STREAM_DESTROYED: Cannot call write after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
@@ -1774,6 +1775,15 @@ async function runBrowserJavaScriptProjectRequest(
         get writableFinished() {
           return writableFinished;
         },
+        get writableLength() {
+          return 0;
+        },
+        get writableNeedDrain() {
+          return false;
+        },
+        get writableCorked() {
+          return writableCorked;
+        },
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
           return stream;
@@ -1794,6 +1804,12 @@ async function runBrowserJavaScriptProjectRequest(
         once: (event: string, listener: (...args: unknown[]) => void) => {
           events.once(event, listener);
           return stream;
+        },
+        cork: () => {
+          writableCorked += 1;
+        },
+        uncork: () => {
+          writableCorked = Math.max(0, writableCorked - 1);
         },
         write: (value: unknown, writeEncoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
           const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
