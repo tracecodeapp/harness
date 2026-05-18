@@ -3353,13 +3353,38 @@ function augmentJavaProjectFileMutations(source) {
 }
 
 function javaProjectSystemProperties(payload) {
+  const project = payload?.project;
+  const kernel = project?.kernel && typeof project.kernel === 'object' ? project.kernel : undefined;
+  const username = typeof kernel?.user?.username === 'string' && kernel.user.username.length > 0
+    ? kernel.user.username
+    : 'user';
+  const home = typeof kernel?.home === 'string' && kernel.home.length > 0
+    ? kernel.home
+    : typeof kernel?.user?.home === 'string' && kernel.user.home.length > 0
+      ? kernel.user.home
+      : `/home/${username}`;
+  const virtualRoot = projectVirtualRoot(project);
+  const relativeCwd = projectRelativeCwd(payload);
+  const virtualCwd = relativeCwd ? `${virtualRoot}/${relativeCwd}` : virtualRoot;
+  const defaults = [
+    ['user.dir', virtualCwd],
+    ['user.home', home],
+    ['user.name', username],
+    ['os.name', typeof kernel?.name === 'string' && kernel.name.length > 0 ? kernel.name : 'tracekernel'],
+    ['os.version', typeof kernel?.version === 'string' && kernel.version.length > 0 ? kernel.version : '1.0'],
+  ];
   const properties = payload?.options?.systemProperties;
   if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
-    return [];
+    return defaults;
   }
-  return Object.entries(properties)
+  const explicit = Object.entries(properties)
     .filter(([key]) => typeof key === 'string' && key.length > 0 && !key.includes('=') && !key.includes('\0'))
     .map(([key, value]) => [key, String(value ?? '')]);
+  const merged = new Map(defaults);
+  for (const [key, value] of explicit) {
+    merged.set(key, value);
+  }
+  return Array.from(merged.entries());
 }
 
 function javaProjectEnvClasspath(payload) {
@@ -3456,6 +3481,7 @@ public class ${exportsClassName} {
     java.io.PrintStream previousOut = System.out;
     java.io.PrintStream previousErr = System.err;
     java.io.InputStream previousIn = System.in;
+    java.nio.file.Path tracecodeWorkspaceRoot = java.nio.file.Paths.get("").toAbsolutePath().normalize();
     String[] propertyKeys = new String[] { ${propertyKeysSource} };
     String[] propertyValues = new String[] { ${propertyValuesSource} };
     java.util.Properties previousProperties = new java.util.Properties();
@@ -3471,7 +3497,7 @@ public class ${exportsClassName} {
         System.setProperty(propertyKeys[index], propertyValues[index]);
       }
       ProjectEvents.setProjectEventBridgeEnabled(true);
-      ProjectEvents.setProjectWorkspaceRoot(java.nio.file.Paths.get(System.getProperty("user.dir", ".")));
+      ProjectEvents.setProjectWorkspaceRoot(tracecodeWorkspaceRoot);
       ProjectEvents.setKernelDevices(${kernelDeviceManifestSource}, ${stdinSource});
       ProjectEvents.setKernelFiles(${kernelFileManifestSource});
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));

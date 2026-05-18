@@ -2976,6 +2976,17 @@ async function main(): Promise<void> {
       'Java execute-project-java adapter should wire request stdin into shared ProjectEvents System.in'
     );
     assertCondition(
+      defaultAdapterSource.includes('"user.dir"') &&
+        defaultAdapterSource.includes('"/workspace"') &&
+        defaultAdapterSource.includes('"user.home"') &&
+        defaultAdapterSource.includes('"/home/user"') &&
+        defaultAdapterSource.includes('"os.name"') &&
+        defaultAdapterSource.includes('"tracekernel"') &&
+        defaultAdapterSource.includes('java.nio.file.Path tracecodeWorkspaceRoot = java.nio.file.Paths.get("").toAbsolutePath().normalize();') &&
+        defaultAdapterSource.includes('ProjectEvents.setProjectWorkspaceRoot(tracecodeWorkspaceRoot)'),
+      'Java execute-project-java adapter should expose tracekernel system properties while retaining the internal ProjectEvents root'
+    );
+    assertCondition(
       defaultAdapterSource.includes('ProjectEvents.setKernelDevices("') &&
         defaultAdapterSource.includes('L2Rldi9zdGRvdXQ='),
       'Java execute-project-java adapter should pass project kernelDevices into ProjectEvents'
