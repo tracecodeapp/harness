@@ -292,7 +292,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
     }
     if (packageCheck.name === '@tracecode/harness-project') {
+      const projectDeclarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
       const projectDist = await readFile(join(packageDir, 'dist/index.js'), 'utf8');
+      assertCondition(
+        projectDeclarations.includes('RuntimeProjectLiveIoController') &&
+          projectDeclarations.includes('RuntimeProjectLiveIoControllerOptions'),
+        '@tracecode/harness-project declarations should re-export the shared live project I/O controller'
+      );
       assertCondition(
         projectDist.includes('function isRuntimeDirectoryChange(') &&
           projectDist.includes('directory: true'),

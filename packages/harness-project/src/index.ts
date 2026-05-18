@@ -69,6 +69,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectIoBridge,
+  RuntimeProjectLiveIoControllerOptions,
   RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
@@ -3190,4 +3191,4 @@ export type {
   RuntimeWorkspaceUnsubscribe,
 };
 
-export { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge };
+export { RuntimeProjectLiveIoController, createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge };

@@ -141,6 +141,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof project.createRuntimeWorkspace !== 'function') {
         throw new Error('Missing root project workspace subpath export');
       }
+      if (typeof project.RuntimeProjectLiveIoController !== 'function') {
+        throw new Error('Missing project live I/O controller subpath export');
+      }
       if (typeof projectNode.createNativeProjectWorkspace !== 'function') {
         throw new Error('Missing root native project workspace subpath export');
       }
@@ -322,9 +325,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     join(appDir, 'browser-project-entry.js'),
     [
       'import { createBrowserProjectWorkspace } from "@tracecode/harness/browser/project";',
-      'import { createRuntimeWorkspace } from "@tracecode/harness/project";',
+      'import { RuntimeProjectLiveIoController, createRuntimeWorkspace } from "@tracecode/harness/project";',
       'if (typeof createBrowserProjectWorkspace !== "function") throw new Error("missing project export");',
       'if (typeof createRuntimeWorkspace !== "function") throw new Error("missing root project export");',
+      'if (typeof RuntimeProjectLiveIoController !== "function") throw new Error("missing live io controller export");',
       'console.log("ok");',
       '',
     ].join('\n'),
