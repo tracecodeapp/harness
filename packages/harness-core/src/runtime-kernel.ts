@@ -1,6 +1,11 @@
 import type { RuntimeKernelDevicePath, RuntimeKernelInfo } from './runtime-project';
 
 export type RuntimeKernelProcEntryKind = 'file' | 'directory';
+export type RuntimeKernelVirtualPath =
+  | { kind: 'proc'; path: string }
+  | { kind: 'device'; path: RuntimeKernelDevicePath }
+  | { kind: 'device-directory'; path: '/dev' }
+  | { kind: 'device-namespace'; path: string };
 export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['stderr', 'stdin', 'stdout', 'tty'] as const;
 
 function normalizeRuntimeAbsolutePath(path: string): string | null {
@@ -21,6 +26,10 @@ export function normalizeRuntimeProcPath(path: string): string | null {
   return normalized === '/proc' || normalized.startsWith('/proc/') ? normalized : null;
 }
 
+export function isRuntimeProcNamespacePath(path: string): boolean {
+  return normalizeRuntimeProcPath(path) !== null;
+}
+
 export function normalizeRuntimeDevicePath(path: string): '/dev' | RuntimeKernelDevicePath | null {
   const normalized = normalizeRuntimeAbsolutePath(path);
   if (normalized === null) return null;
@@ -39,6 +48,21 @@ export function normalizeRuntimeDevicePath(path: string): '/dev' | RuntimeKernel
 export function isRuntimeDeviceNamespacePath(path: string): boolean {
   const normalized = normalizeRuntimeAbsolutePath(path);
   return normalized === '/dev' || normalized?.startsWith('/dev/') === true;
+}
+
+export function classifyRuntimeKernelVirtualPath(path: string): RuntimeKernelVirtualPath | null {
+  const procPath = normalizeRuntimeProcPath(path);
+  if (procPath !== null) return { kind: 'proc', path: procPath };
+  const devicePath = normalizeRuntimeDevicePath(path);
+  if (devicePath === '/dev') return { kind: 'device-directory', path: devicePath };
+  if (devicePath !== null) return { kind: 'device', path: devicePath };
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  if (normalized?.startsWith('/dev/') === true) return { kind: 'device-namespace', path: normalized };
+  return null;
+}
+
+export function runtimeProcCanMutate(path: string): boolean {
+  return !isRuntimeProcNamespacePath(path);
 }
 
 export function runtimeDeviceCanRead(device: RuntimeKernelDevicePath): boolean {

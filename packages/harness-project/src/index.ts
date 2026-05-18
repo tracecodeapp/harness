@@ -8,10 +8,12 @@ import {
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
+  classifyRuntimeKernelVirtualPath,
   isRuntimeDeviceNamespacePath,
   normalizeRuntimeProcPath,
   normalizeRuntimeDevicePath,
   RUNTIME_KERNEL_DEVICE_ENTRIES,
+  runtimeProcCanMutate,
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   readRuntimeProcFile,
@@ -247,8 +249,16 @@ function isDevNamespacePath(path: string): boolean {
   return isRuntimeDeviceNamespacePath(path);
 }
 
+function assertProcMutablePath(path: string): void {
+  assertNoNul(path, 'Kernel path');
+  if (!runtimeProcCanMutate(path)) {
+    throw new Error(`Kernel proc path is read-only: ${path}`);
+  }
+}
+
 function isKernelVirtualPath(path: string): boolean {
-  return normalizeProcPath(path) !== null || isDevNamespacePath(path);
+  assertNoNul(path, 'Kernel path');
+  return classifyRuntimeKernelVirtualPath(path) !== null;
 }
 
 function mapWorkspaceAlias(workspaceRoot: string, workspaceAlias: string | undefined, absolutePath: string): string {
@@ -2312,9 +2322,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     encoding?: RuntimeFileEncoding,
     phase: RuntimeFileMutationPhase = 'live'
   ): Promise<void> {
-    if (normalizeProcPath(path) !== null) {
-      throw new Error(`Kernel proc path is read-only: ${path}`);
-    }
+    assertProcMutablePath(path);
     const devicePath = normalizeDevPath(path);
     if (devicePath !== null) {
       if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
@@ -2363,9 +2371,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
     const normalizedEncoding = assertSupportedEncoding(encoding);
-    if (normalizeProcPath(path) !== null) {
-      throw new Error(`Kernel proc path is read-only: ${path}`);
-    }
+    assertProcMutablePath(path);
     const devicePath = normalizeDevPath(path);
     if (devicePath !== null) {
       if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
@@ -2453,9 +2459,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async mkdir(path: string): Promise<void> {
-    if (normalizeProcPath(path) !== null) {
-      throw new Error(`Kernel proc path is read-only: ${path}`);
-    }
+    assertProcMutablePath(path);
     if (isDevNamespacePath(path)) {
       throw new Error(`Kernel device namespace is read-only: ${path}`);
     }
@@ -2464,9 +2468,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
     const procFile = this.readProcFile(sourcePath);
-    if (normalizeProcPath(destinationPath) !== null) {
-      throw new Error(`Kernel proc path is read-only: ${destinationPath}`);
-    }
+    assertProcMutablePath(destinationPath);
     const deviceSource = this.readDeviceFile(sourcePath);
     const deviceDestination = normalizeDevPath(destinationPath);
     if (deviceDestination !== null) {
@@ -2513,9 +2515,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async deleteFile(path: string): Promise<void> {
-    if (normalizeProcPath(path) !== null) {
-      throw new Error(`Kernel proc path is read-only: ${path}`);
-    }
+    assertProcMutablePath(path);
     if (isDevNamespacePath(path)) {
       throw new Error(`Kernel device namespace is read-only: ${path}`);
     }
@@ -2529,9 +2529,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
-    if (normalizeProcPath(path) !== null) {
-      throw new Error(`Kernel proc path is read-only: ${path}`);
-    }
+    assertProcMutablePath(path);
     if (isDevNamespacePath(path)) {
       throw new Error(`Kernel device namespace is read-only: ${path}`);
     }
@@ -2716,9 +2714,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
-    if (normalizeProcPath(path) !== null) {
-      throw new Error(`Kernel proc path is read-only: ${path}`);
-    }
+    assertProcMutablePath(path);
     const relativePath = this.toWorkspaceRelativePath(path);
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
@@ -2766,9 +2762,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {
     await withSuspendedFsNotifications(this.bash.fs, async () => {
-      if (normalizeProcPath(change.path) !== null) {
-        throw new Error(`Kernel proc path is read-only: ${change.path}`);
-      }
+      assertProcMutablePath(change.path);
       if (isDevNamespacePath(change.path)) {
         throw new Error(`Kernel device namespace is not a file-change target: ${change.path}`);
       }

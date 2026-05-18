@@ -19,6 +19,7 @@ import {
   runtimeDeviceCanWrite,
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
+  runtimeProcCanMutate,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
   runtimeProcEntryKind as procEntryKind,
@@ -138,6 +139,14 @@ function normalizeRuntimeProcPath(path: unknown): string | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return normalizeRuntimeProcPathString(raw);
+}
+
+function assertRuntimeProcMutablePath(path: unknown, message: string): void {
+  if (typeof path === 'number') return;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  if (!runtimeProcCanMutate(raw)) {
+    throw Object.assign(new Error(message), { code: 'EROFS' });
+  }
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
@@ -1882,9 +1891,7 @@ async function runBrowserJavaScriptProjectRequest(
       const events = createEventTarget();
       const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
       const device = optionFd === null ? normalizeRuntimeDevicePath(path) : null;
-      if (optionFd === null && normalizeRuntimeProcPath(path)) {
-        throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
-      }
+      if (optionFd === null) assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
       const encoding = requestedEncodingFromOptions(options);
       const flags = typeof options === 'object' && typeof options?.flags === 'string' ? options.flags : 'w';
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
@@ -2044,9 +2051,7 @@ async function runBrowserJavaScriptProjectRequest(
       return stream;
     };
     const deleteFile = (path: unknown): void => {
-      if (normalizeRuntimeProcPath(path)) {
-        throw Object.assign(new Error(`EROFS: read-only file system, unlink '${path}'`), { code: 'EROFS' });
-      }
+      assertRuntimeProcMutablePath(path, `EROFS: read-only file system, unlink '${path}'`);
       const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (!fileStore.delete(normalized)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: 'ENOENT' });
@@ -2137,9 +2142,7 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const metadataPathForEntry = (path: unknown): string | null => {
       if (normalizeRuntimeDevicePath(path)) return null;
-      if (normalizeRuntimeProcPath(path)) {
-        throw Object.assign(new Error(`EROFS: read-only file system, metadata '${path}'`), { code: 'EROFS' });
-      }
+      assertRuntimeProcMutablePath(path, `EROFS: read-only file system, metadata '${path}'`);
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
@@ -2515,7 +2518,7 @@ async function runBrowserJavaScriptProjectRequest(
             throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
           }
           if (parsed.writable || parsed.create || parsed.truncate || parsed.exclusive) {
-            throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
+            assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
           }
           fileDescriptors.set(fd, {
             kind: 'proc',
@@ -2877,9 +2880,7 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        if (normalizeRuntimeProcPath(path)) {
-          throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
-        }
+        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
@@ -2902,9 +2903,7 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        if (normalizeRuntimeProcPath(path)) {
-          throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
-        }
+        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const previous = fileStore.get(normalized) ?? new Uint8Array();
         const next = bytesFromFsWriteValue(value, options);
@@ -2926,9 +2925,7 @@ async function runBrowserJavaScriptProjectRequest(
         const sourceDevice = normalizeRuntimeDevicePath(source);
         const destinationDevice = normalizeRuntimeDevicePath(destination);
         const sourceProc = normalizeRuntimeProcPath(source);
-        if (normalizeRuntimeProcPath(destination)) {
-          throw Object.assign(new Error(`EROFS: read-only file system, copyfile '${source}' -> '${destination}'`), { code: 'EROFS' });
-        }
+        assertRuntimeProcMutablePath(destination, `EROFS: read-only file system, copyfile '${source}' -> '${destination}'`);
         const sourceBytes = sourceDevice
           ? utf8Bytes(readDevice(sourceDevice))
           : sourceProc
@@ -2970,9 +2967,8 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       renameSync: (oldPath: unknown, newPath: unknown) => {
-        if (normalizeRuntimeProcPath(oldPath) || normalizeRuntimeProcPath(newPath)) {
-          throw Object.assign(new Error(`EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`), { code: 'EROFS' });
-        }
+        assertRuntimeProcMutablePath(oldPath, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
+        assertRuntimeProcMutablePath(newPath, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalizedOldPath);
@@ -3008,9 +3004,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       rmSync: (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         try {
-          if (normalizeRuntimeProcPath(path)) {
-            throw Object.assign(new Error(`EROFS: read-only file system, rm '${path}'`), { code: 'EROFS' });
-          }
+          assertRuntimeProcMutablePath(path, `EROFS: read-only file system, rm '${path}'`);
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           if (fileStore.has(normalized)) {
             deleteFile(path);
@@ -3290,9 +3284,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       truncateSync: (path: unknown, length = 0) => {
-        if (normalizeRuntimeProcPath(path)) {
-          throw Object.assign(new Error(`EROFS: read-only file system, truncate '${path}'`), { code: 'EROFS' });
-        }
+        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, truncate '${path}'`);
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         truncateFileBytes(normalized, length);
         return undefined;
@@ -3307,9 +3299,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
-        if (normalizeRuntimeProcPath(path)) {
-          throw Object.assign(new Error(`EROFS: read-only file system, mkdir '${path}'`), { code: 'EROFS' });
-        }
+        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, mkdir '${path}'`);
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
         const parent = dirname(normalized);
@@ -3366,9 +3356,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       rmdirSync: (path: unknown) => {
-        if (normalizeRuntimeProcPath(path)) {
-          throw Object.assign(new Error(`EROFS: read-only file system, rmdir '${path}'`), { code: 'EROFS' });
-        }
+        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, rmdir '${path}'`);
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
         const hasChildren = Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
