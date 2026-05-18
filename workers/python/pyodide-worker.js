@@ -801,6 +801,24 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     patched.push([name, original]);
   };
 
+  const isCreateOrTruncateOpenFlags = (flags) => {
+    if (typeof flags === 'string') {
+      return flags.includes('w') || flags.includes('a');
+    }
+    const numericFlags = Number(flags);
+    if (!Number.isFinite(numericFlags)) return false;
+    return Boolean(numericFlags & 64) || Boolean(numericFlags & 512);
+  };
+
+  patch('open', (original) => function patchedOpen(path, flags, ...args) {
+    const shouldEmitCreateSnapshot = isCreateOrTruncateOpenFlags(flags);
+    const stream = original.call(this, path, flags, ...args);
+    if (shouldEmitCreateSnapshot) {
+      emitFileChange(streamPath(stream));
+    }
+    return stream;
+  });
+
   patch('write', (original) => function patchedWrite(stream, ...args) {
     const result = original.call(this, stream, ...args);
     emitFileChange(streamPath(stream));

@@ -173,12 +173,15 @@ async function main(): Promise<void> {
             'with open("bytes.bin", "wb") as handle:',
             '    handle.write(bytes([0, 255]))',
             'js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-live.txt", "provider-live\\\\\\\\n", { encoding: "utf8" })\\')',
+            'js.eval(\\'const providerEmpty = pyodide.FS.open("/tracecode_project/provider-empty.txt", "w"); pyodide.FS.close(providerEmpty)\\')',
             'fd = os.open("/workspace/fd-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
             'try:',
             '    os.write(fd, b"fd-one\\\\n")',
             '    os.write(fd, b"fd-two\\\\n")',
             'finally:',
             '    os.close(fd)',
+            'fd = os.open("/workspace/fd-empty.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
+            'os.close(fd)',
             'with open("/workspace/truncated.txt", "w+", encoding="utf-8") as handle:',
             '    handle.write("abcdef")',
             '    handle.truncate(3)',
@@ -483,8 +486,16 @@ async function main(): Promise<void> {
       'Python project file run should report provider-level Pyodide FS writes'
     );
     assertCondition(
+      findFile(results.fileRun, 'provider-empty.txt')?.contents === '',
+      'Python project file run should report provider-level zero-byte creates'
+    );
+    assertCondition(
       findFile(results.fileRun, 'fd-live.txt')?.contents === 'fd-one\nfd-two\n',
       'Python project file run should report low-level fd side effects'
+    );
+    assertCondition(
+      findFile(results.fileRun, 'fd-empty.txt')?.contents === '',
+      'Python project file run should report low-level zero-byte creates'
     );
     assertCondition(
       findFile(results.fileRun, 'renamed-truncated.txt')?.contents === 'abc',
@@ -540,10 +551,28 @@ async function main(): Promise<void> {
       results.fileRun.events?.some((event) => (
         event.type === 'file-change' &&
         event.phase === 'live' &&
+        event.change?.path === 'provider-empty.txt' &&
+        event.change.contents === ''
+      )) === true,
+      `Python project worker should stream provider-level zero-byte creates: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
         event.change?.path === 'fd-live.txt' &&
         event.change.contents === 'fd-one\nfd-two\n'
       )) === true,
       `Python project worker should stream live os.write mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'fd-empty.txt' &&
+        event.change.contents === ''
+      )) === true,
+      `Python project worker should stream low-level zero-byte creates: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (
