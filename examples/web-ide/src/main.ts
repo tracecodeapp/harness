@@ -356,7 +356,7 @@ async function bootDevTerminal(): Promise<void> {
 
   appendLine('Loading project workspace...');
 
-  const { createBrowserProjectWorkspace } = await import('@tracecode/harness/browser/project');
+  const { createBrowserProjectWorkspace, createIndexedDbKernelStorage } = await import('@tracecode/harness/browser/project');
 
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
@@ -369,6 +369,7 @@ async function bootDevTerminal(): Promise<void> {
       host: { hostname: 'tracevm' },
       workspace: { name: 'weather-api' },
     },
+    kernelStorage: createIndexedDbKernelStorage({ key: 'tracecode:dev:user:weather-api' }),
     files: [
       {
         path: 'helper.py',

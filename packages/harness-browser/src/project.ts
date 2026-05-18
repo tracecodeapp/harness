@@ -19,6 +19,20 @@ import {
   resolveBrowserHarnessAssets,
   type BrowserHarnessAssetOverrides,
 } from './runtime-assets';
+import {
+  bindBrowserKernelStorage,
+  hydrateBrowserKernelStorage,
+  persistInitialBrowserKernelSnapshot,
+  type BrowserKernelStorage,
+} from './kernel-storage';
+
+export {
+  createIndexedDbKernelStorage,
+  type BrowserKernelStorage,
+  type BrowserKernelStorageBinding,
+  type BrowserKernelStorageSnapshot,
+  type IndexedDbKernelStorageOptions,
+} from './kernel-storage';
 
 export type BrowserProjectWorkspace = RuntimeWorkspace;
 export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptions, 'applyFileChange'>;
@@ -41,6 +55,7 @@ export interface CreateBrowserProjectWorkspaceOptions
   javaWorkerIdleTimeoutMs?: number;
   csharpWorkerIdleTimeoutMs?: number;
   cppWorkerIdleTimeoutMs?: number;
+  kernelStorage?: BrowserKernelStorage;
 }
 
 export async function createBrowserProjectWorkspace(
@@ -64,6 +79,7 @@ export async function createBrowserProjectWorkspace(
     javaWorkerIdleTimeoutMs,
     csharpWorkerIdleTimeoutMs,
     cppWorkerIdleTimeoutMs,
+    kernelStorage,
     ...workspaceOptions
   } = options;
   const ownedWorkers: Array<{ terminate(): void }> = [];
@@ -115,8 +131,17 @@ export async function createBrowserProjectWorkspace(
       return false;
     };
 
+  const storedSnapshot = await hydrateBrowserKernelStorage(kernelStorage);
+
   workspace = await createRuntimeWorkspace({
     ...workspaceOptions,
+    ...(storedSnapshot
+      ? {
+          files: storedSnapshot.files,
+          directories: storedSnapshot.directories,
+          entrypoint: storedSnapshot.entrypoint ?? workspaceOptions.entrypoint,
+        }
+      : {}),
     pythonRunner: createBrowserPythonProjectRunner(pythonWorkerClient, {
       timeoutMs: pythonProjectTimeoutMs,
       applyFileChange: applyWorkerFileChange,
@@ -140,8 +165,15 @@ export async function createBrowserProjectWorkspace(
     }),
   });
 
+  const storageBinding = bindBrowserKernelStorage(workspace, kernelStorage);
+  await persistInitialBrowserKernelSnapshot(workspace, kernelStorage);
+  const disposeWorkspace = workspace.dispose.bind(workspace);
+
   return Object.assign(workspace, {
     dispose() {
+      storageBinding.dispose();
+      void storageBinding.flush();
+      disposeWorkspace();
       for (const worker of ownedWorkers) {
         worker.terminate();
       }
