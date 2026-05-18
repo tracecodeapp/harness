@@ -156,6 +156,10 @@ async function main(): Promise<void> {
             '    os.write(fd, b"fd-two\\\\n")',
             'finally:',
             '    os.close(fd)',
+            'with open("/workspace/truncated.txt", "w+", encoding="utf-8") as handle:',
+            '    handle.write("abcdef")',
+            '    handle.truncate(3)',
+            'os.rename("/workspace/truncated.txt", "/workspace/renamed-truncated.txt")',
             'os.remove("/workspace/stale.txt")',
             '',
           ].join('\\n'),
@@ -393,6 +397,10 @@ async function main(): Promise<void> {
       findFile(results.fileRun, 'fd-live.txt')?.contents === 'fd-one\nfd-two\n',
       'Python project file run should report low-level fd side effects'
     );
+    assertCondition(
+      findFile(results.fileRun, 'renamed-truncated.txt')?.contents === 'abc',
+      'Python project file run should report truncate and rename side effects'
+    );
     assertCondition(findFile(results.fileRun, 'stale.txt')?.deleted === true, 'Python project file run should report deletions');
     assertCondition(
       results.fileRun.events?.some((event) => (
@@ -430,6 +438,30 @@ async function main(): Promise<void> {
         event.change.contents === 'fd-one\nfd-two\n'
       )) === true,
       `Python project worker should stream live os.write mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'truncated.txt' &&
+        event.change.contents === 'abc'
+      )) === true,
+      `Python project worker should stream live truncate mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'truncated.txt' &&
+        event.change.deleted === true
+      )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'renamed-truncated.txt' &&
+          event.change.contents === 'abc'
+        )) === true,
+      `Python project worker should stream live rename mutations: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (

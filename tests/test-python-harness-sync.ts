@@ -227,7 +227,10 @@ async function assertProjectPythonEnvContract(workerSource: string): Promise<voi
   assertCondition(capturedCode.includes('os.environ.update(_env)'), 'Project Python runner should apply request env');
   assertCondition(capturedCode.includes('def _project_pythonpath_entries()'), 'Project Python runner should compute project PYTHONPATH entries');
   assertCondition(capturedCode.includes('_env.get("PYTHONPATH", "")'), 'Project Python runner should read PYTHONPATH from request env');
-  assertCondition(capturedCode.includes('"/workspace/"'), 'Project Python runner should map /workspace PYTHONPATH entries');
+  assertCondition(
+    capturedCode.includes('_path.startswith(_workspace_root + "/")'),
+    'Project Python runner should map workspace-root PYTHONPATH entries'
+  );
   assertCondition(
     capturedCode.includes('Project path must stay within the workspace: {_entry}'),
     'Project Python runner should reject PYTHONPATH entries outside the workspace'
