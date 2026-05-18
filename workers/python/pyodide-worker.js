@@ -1249,13 +1249,6 @@ for _entry in _kernel_device_entries:
             "inputDevice": str(_entry.get("inputDevice") or ""),
             "outputDevice": str(_entry.get("outputDevice") or ""),
         }
-if not _kernel_devices:
-    _kernel_devices = {
-        "/dev/stdin": {"readable": True, "writable": False, "inputDevice": "/dev/stdin", "outputDevice": ""},
-        "/dev/stdout": {"readable": False, "writable": True, "inputDevice": "", "outputDevice": "/dev/stdout"},
-        "/dev/stderr": {"readable": False, "writable": True, "inputDevice": "", "outputDevice": "/dev/stderr"},
-        "/dev/tty": {"readable": True, "writable": True, "inputDevice": "/dev/stdin", "outputDevice": "/dev/stdout"},
-    }
 
 def _normalize_device_path(_value):
     if isinstance(_value, (str, bytes, os.PathLike)):
@@ -1511,6 +1504,11 @@ def _install_virtual_workspace_paths():
         _mode = args[0] if args else kwargs.get("mode", "r")
         if _device:
             return _TraceDeviceFile(_device, _mode)
+        _device_path = _normalize_device_namespace_path(_file)
+        if _device_path:
+            if _device_entry_kind(_device_path) == "directory":
+                raise IsADirectoryError(_device_path)
+            raise FileNotFoundError(_device_path)
         _proc_path = _normalize_proc_path(_file)
         if _proc_path:
             if _is_mutating_file_mode(_mode):
@@ -1551,6 +1549,11 @@ def _install_virtual_workspace_paths():
                 }
                 return _fd
             raise OSError("Kernel device mode is not supported: " + _device)
+        _device_path = _normalize_device_namespace_path(_path)
+        if _device_path:
+            if _device_entry_kind(_device_path) == "directory":
+                raise IsADirectoryError(_device_path)
+            raise FileNotFoundError(_device_path)
         _proc_path = _normalize_proc_path(_path)
         if _proc_path:
             if _is_mutating_fd_flags(_flags):

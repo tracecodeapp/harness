@@ -114,6 +114,13 @@ async function main(): Promise<void> {
 
       await send('init', {}, 120000);
 
+      const traceKernelDevices = [
+        { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+        { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+      ];
+
       const projectFiles = [
         {
           path: 'main.py',
@@ -184,7 +191,7 @@ async function main(): Promise<void> {
         cwd: '/workspace',
         env: { MODE: 'browser-python-project' },
         stdin: 'from-stdin\\n',
-        project: { cwd: '/workspace', files: projectFiles },
+        project: { cwd: '/workspace', files: projectFiles, kernelDevices: traceKernelDevices },
       });
 
       const moduleRun = await send('execute-project-python', {
@@ -257,6 +264,26 @@ async function main(): Promise<void> {
         project: { cwd: '/workspace', files: [] },
       });
 
+      const noDeviceManifestRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import os',
+          'print(",".join(os.listdir("/dev")))',
+          'print(os.path.exists("/dev/stdout"))',
+          'try:',
+          '    open("/dev/stdout", "w").write("invented\\\\n")',
+          '    print("dev-stdout:ok")',
+          'except OSError:',
+          '    print("dev-stdout:blocked")',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: '',
+        project: { cwd: '/workspace', files: [] },
+      });
+
       const directoryRun = await send('execute-project-python', {
         source: 'argument',
         scriptPath: '<string>',
@@ -294,10 +321,7 @@ async function main(): Promise<void> {
             { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\\n' },
           ],
           kernelDevices: [
-            { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
-            { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
-            { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
-            { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+            ...traceKernelDevices,
           ],
           files: [
             {
@@ -376,7 +400,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, directoryRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, directoryRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -384,6 +408,7 @@ async function main(): Promise<void> {
       workspaceRelativeFileRun: PythonProjectWorkerResponse;
       stdinRun: PythonProjectWorkerResponse;
       argumentRun: PythonProjectWorkerResponse;
+      noDeviceManifestRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
@@ -562,6 +587,11 @@ async function main(): Promise<void> {
     assertCondition(
       results.argumentRun.stdout === 'argument-source\n/workspace\nx,y\n',
       `Python project argument source stdout should match: ${JSON.stringify(results.argumentRun.stdout)}`
+    );
+    assertCondition(results.noDeviceManifestRun.exitCode === 0, `Python project no-device-manifest run should succeed: ${results.noDeviceManifestRun.stderr}`);
+    assertCondition(
+      results.noDeviceManifestRun.stdout === '\nFalse\ndev-stdout:blocked\n',
+      `Python project worker should not invent /dev devices without kernelDevices: ${JSON.stringify(results.noDeviceManifestRun.stdout)}`
     );
     assertCondition(results.directoryRun.exitCode === 0, `Python project directory source should succeed: ${results.directoryRun.stderr}`);
     assertCondition(
