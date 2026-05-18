@@ -240,6 +240,7 @@ async function main(): Promise<void> {
             'with open("bytes.bin", "wb") as handle:',
             '    handle.write(bytes([0, 255]))',
             'js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-live.txt", "provider-live\\\\\\\\n", { encoding: "utf8" })\\')',
+            'js.eval(\\'pyodide.FS.chmod("/tracecode_project/provider-metadata.txt", 0o600); if (typeof pyodide.FS.utime === "function") pyodide.FS.utime("/tracecode_project/provider-metadata.txt", 1, 1)\\')',
             'js.eval(\\'const providerEmpty = pyodide.FS.open("/tracecode_project/provider-empty.txt", "w"); pyodide.FS.close(providerEmpty)\\')',
             'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-tree"); pyodide.FS.mkdir("/tracecode_project/provider-tree/nested"); pyodide.FS.writeFile("/tracecode_project/provider-tree/nested/value.txt", "provider-tree\\\\\\\\n", { encoding: "utf8" }); pyodide.FS.rename("/tracecode_project/provider-tree", "/tracecode_project/provider-tree-moved")\\')',
             'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-dir"); pyodide.FS.rename("/tracecode_project/provider-dir", "/tracecode_project/provider-renamed-dir"); pyodide.FS.rmdir("/tracecode_project/provider-renamed-dir")\\')',
@@ -287,6 +288,7 @@ async function main(): Promise<void> {
           ].join('\\n'),
         },
         { path: 'helpers/value.py', contents: 'def answer():\\n    return 42\\n' },
+        { path: 'provider-metadata.txt', contents: 'provider-meta\\n' },
         { path: 'stale.txt', contents: 'delete me\\n' },
       ];
 
@@ -928,6 +930,15 @@ async function main(): Promise<void> {
         event.change.contents === 'provider-live\n'
       )) === true,
       `Python project worker should stream provider-level Pyodide FS mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'provider-metadata.txt' &&
+        event.change.contents === 'provider-meta\n'
+      )) === true,
+      `Python project worker should stream provider-level Pyodide FS metadata mutations: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (

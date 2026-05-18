@@ -965,6 +965,15 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     return result;
   });
 
+  for (const name of ['chmod', 'chown', 'utime']) {
+    patch(name, (original) => function patchedPathMetadataMutation(path, ...args) {
+      rejectKernelVirtualMutation(path, name);
+      const result = original.call(this, path, ...args);
+      emitPathSnapshot(path);
+      return result;
+    });
+  }
+
   patch('unlink', (original) => function patchedUnlink(path, ...args) {
     rejectKernelVirtualMutation(path, 'unlink');
     const result = original.call(this, path, ...args);
