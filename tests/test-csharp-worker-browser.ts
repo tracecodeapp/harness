@@ -106,6 +106,13 @@ function assertCondition(condition: boolean, message: string): void {
   }
 }
 
+function firstProjectEventIndex(
+  events: CSharpProjectWorkerResponse['events'] | undefined,
+  predicate: (event: NonNullable<CSharpProjectWorkerResponse['events']>[number]) => boolean
+): number {
+  return events?.findIndex(predicate) ?? -1;
+}
+
 async function testBrowserCSharpProjectBridgeFinalDiffApplication(): Promise<void> {
   const applied: string[] = [];
   const observed: RuntimeCommandEvent[] = [];
@@ -2967,6 +2974,52 @@ async function main(): Promise<void> {
           event.change.deleted === true
       ) === true,
       `C# project worker should stream deleted file changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    const liveCreateIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/empty-created.bin' &&
+        event.change.contents === ''
+    );
+    const liveRenameDeleteIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/copied.txt' &&
+        event.change.deleted === true
+    );
+    const liveRenameSnapshotIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/moved.txt' &&
+        event.change.contents === '42\nappended\n'
+    );
+    const liveDeleteIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/stale.txt' &&
+        event.change.deleted === true
+    );
+    const firstFinalDiffIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) => event.type === 'file-change' && event.phase === 'final-diff'
+    );
+    assertCondition(
+      liveCreateIndex >= 0 &&
+        liveRenameDeleteIndex >= 0 &&
+        liveRenameSnapshotIndex > liveRenameDeleteIndex &&
+        liveDeleteIndex >= 0 &&
+        firstFinalDiffIndex > liveCreateIndex &&
+        firstFinalDiffIndex > liveRenameSnapshotIndex &&
+        firstFinalDiffIndex > liveDeleteIndex,
+      `C# project worker should emit create/rename/delete live events before final-diff reconciliation, received ${JSON.stringify(projectRun.events)}`
     );
 
     const restrictedDeviceRun = await runProjectWorkerCase(
