@@ -890,15 +890,21 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   const stdinBytes = encodeUtf8(stdin);
   let stdinOffset = 0;
 
-  const emitProviderOutput = (stream, device, data) => {
+  const emitProviderOutput = (stream, device, data, sourceDevice = '') => {
     if (!data) return;
     try {
       if (typeof self.__tracecodeProjectProviderOutput === 'function') {
-        self.__tracecodeProjectProviderOutput(stream, device, data);
+        self.__tracecodeProjectProviderOutput(stream, device, data, sourceDevice);
         return;
       }
       if (typeof self.__tracecodeProjectEvent === 'function') {
-        self.__tracecodeProjectEvent({ type: 'output', stream, device, data });
+        self.__tracecodeProjectEvent({
+          type: 'output',
+          stream,
+          device,
+          ...(sourceDevice ? { sourceDevice } : {}),
+          data,
+        });
       }
     } catch {
       // Provider stdio events are best-effort; Python-side capture remains authoritative where available.
@@ -910,7 +916,7 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
     const text = textDecoder ? textDecoder.decode(bytes) : String.fromCharCode(...bytes);
     const deviceInfo = devices[defaultDevice] || {};
     const outputDevice = String(deviceInfo.outputDevice || defaultDevice);
-    emitProviderOutput(outputDevice === '/dev/stderr' ? 'stderr' : stream, outputDevice, text);
+    emitProviderOutput(outputDevice === '/dev/stderr' ? 'stderr' : stream, outputDevice, text, defaultDevice !== outputDevice ? defaultDevice : '');
     return bytes.byteLength;
   };
 
@@ -1096,15 +1102,18 @@ class _TraceProjectStream(io.StringIO):
         super().__init__()
         self._stream = _stream
 
-    def write(self, _value):
+    def write(self, _value, _source_device=None):
         _text = str(_value)
         if _text:
-            _emit_project_event({
+            _event = {
                 "type": "output",
                 "stream": self._stream,
                 "device": "/dev/stderr" if self._stream == "stderr" else "/dev/stdout",
                 "data": _text,
-            })
+            }
+            if _source_device:
+                _event["sourceDevice"] = _source_device
+            _emit_project_event(_event)
         return super().write(_text)
 
 class _TraceDeviceFile:
@@ -1132,7 +1141,7 @@ class _TraceDeviceFile:
             raise OSError("Kernel device is not writable: " + self._device)
         _output_device = str(_kernel_devices.get(self._device, {}).get("outputDevice") or self._device)
         _target = _stderr if _output_device == "/dev/stderr" else _stdout
-        return _target.write(_value)
+        return _target.write(_value, self._device if self._device != _output_device else None)
 
     def flush(self):
         return None
@@ -1704,7 +1713,7 @@ def _install_virtual_workspace_paths():
                 raise OSError("Kernel device is not writable: " + _device)
             _bytes = bytes(_data)
             _target = _stderr if _output_device == "/dev/stderr" else _stdout
-            _target.write(_bytes.decode("utf-8", "replace"))
+            _target.write(_bytes.decode("utf-8", "replace"), _device if _device != _output_device else None)
             return len(_bytes)
         if _fd in _proc_file_descriptors:
             raise OSError("Kernel proc path is read-only")

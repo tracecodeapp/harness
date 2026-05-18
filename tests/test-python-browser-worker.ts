@@ -23,6 +23,7 @@ interface PythonProjectWorkerResponse {
     type: string;
     stream?: 'stdout' | 'stderr';
     device?: string;
+    sourceDevice?: string;
     data?: string;
     phase?: string;
     change?: PythonProjectWorkerFile;
@@ -146,6 +147,13 @@ async function main(): Promise<void> {
             '    os.write(stdout_fd, b"dev-fd-out\\\\n")',
             'finally:',
             '    os.close(stdout_fd)',
+            'tty_fd = os.open("/dev/tty", os.O_WRONLY)',
+            'try:',
+            '    os.write(tty_fd, b"dev-fd-tty\\\\n")',
+            'finally:',
+            '    os.close(tty_fd)',
+            'with open("/dev/tty", "w", encoding="utf-8") as tty:',
+            '    tty.write("dev-file-tty\\\\n")',
             'sys.__stdout__.write("provider-hook-out\\\\n")',
             'sys.__stdout__.flush()',
             'stderr_fd = os.open("/dev/stderr", os.O_WRONLY)',
@@ -420,7 +428,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\nprovider-hook-out\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-file-tty\nprovider-hook-out\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
@@ -433,6 +441,18 @@ async function main(): Promise<void> {
         .map((event) => event.data)
         .join('') === results.fileRun.stdout,
       `Python project worker should stream stdout events: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events
+        ?.filter((event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/stdout' &&
+          event.sourceDevice === '/dev/tty'
+        )
+        .map((event) => event.data)
+        .join('') === 'dev-fd-tty\ndev-file-tty\n',
+      `Python project worker should preserve /dev/tty source device on routed output events: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events

@@ -259,6 +259,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('pyodide.setStderr({ write: writeHandler('),
         '@tracecode/harness-python worker should ship Pyodide project stdio bridge hooks'
       );
+      assertCondition(
+        worker.includes('sourceDevice') && worker.includes('_target.write(_value, self._device if self._device != _output_device else None)'),
+        '@tracecode/harness-python worker should ship routed source device output events'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-java') {
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
