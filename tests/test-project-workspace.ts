@@ -2221,6 +2221,28 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('async-fd.txt') === 'callback\npromise\n', 'browser node async fd writes should persist through kernel FS');
 
+  const fileHandleEvents: RuntimeCommandEvent[] = [];
+  const fileHandleResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.writeFileSync(\\"handle-read.txt\\", \\"abcdef\\"); const reader = await fsp.open(\\"handle-read.txt\\", \\"r\\"); const head = Buffer.alloc(2); await reader.read(head, 0, 2, null); const rest = await reader.readFile(\\"utf8\\"); await reader.close(); const writer = await fsp.open(\\"handle-write.txt\\", \\"w+\\"); await writer.writeFile(\\"one\\"); await writer.appendFile(Buffer.from(\\"two\\")); const stat = await writer.stat(); await writer.close(); console.log(head.toString() + \\":\\" + rest); console.log(stat.size + \\":\\" + (stat.mtimeMs > 0)); console.log(await fsp.readFile(\\"handle-write.txt\\", \\"utf8\\"));"',
+  ].join(' '), { onEvent: (event) => fileHandleEvents.push(event) });
+  assertCondition(fileHandleResult.exitCode === 0, `browser node FileHandle workflow should succeed: ${fileHandleResult.stderr}`);
+  assertCondition(
+    fileHandleResult.stdout === 'ab:cdef\n6:true\nonetwo\n',
+    `browser node FileHandle readFile/writeFile/appendFile should match desktop-like behavior: ${fileHandleResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('handle-write.txt') === 'onetwo', 'browser node FileHandle writes should persist through kernel FS');
+  assertCondition(
+    fileHandleEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'handle-write.txt' &&
+      event.change.contents === 'onetwo'
+    ),
+    `browser node FileHandle writes should emit live file changes: ${JSON.stringify(fileHandleEvents)}`
+  );
+
   const vectorEvents: RuntimeCommandEvent[] = [];
   const vectorResult = await workspace.runCommand([
     'node',

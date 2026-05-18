@@ -1877,13 +1877,13 @@ async function runBrowserJavaScriptProjectRequest(
       },
       fstatSync: (fd: number) => {
         const entry = fileDescriptor(fd);
-        const size = entry.kind === 'device' ? 0 : fileStore.get(entry.path ?? '')?.byteLength ?? 0;
-        return {
-          size,
-          isFile: () => true,
-          isDirectory: () => false,
-          isSymbolicLink: () => false,
-        };
+        if (entry.kind === 'device') {
+          return {
+            ...missingFileStat(),
+            isFile: () => true,
+          };
+        }
+        return statForNormalizedPath(entry.path ?? '') ?? missingFileStat();
       },
       fstat: (fd: number, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
         try {
@@ -2387,12 +2387,32 @@ async function runBrowserJavaScriptProjectRequest(
       },
       open: async (path: unknown, flags: unknown = 'r') => {
         const fd = fsApi.openSync(path, flags);
+        const readFileFromHandle = (encoding?: string | { encoding?: string | null } | null): BrowserBuffer | string => {
+          const entry = fileDescriptor(fd);
+          const source = descriptorBytes(entry);
+          const start = entry.kind === 'device' ? 0 : entry.offset;
+          const bytes = BrowserBuffer.from(source.slice(start));
+          if (entry.kind !== 'device') entry.offset = source.byteLength;
+          const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
+          return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
+        };
+        const writeFileToHandle = (value: unknown, options?: string | { encoding?: string | null } | null): number => {
+          const bytes = bytesFromFsWriteValue(value, options);
+          return fsApi.writeSync(fd, bytes, 0, bytes.byteLength, null);
+        };
+        const appendFileToHandle = (value: unknown, options?: string | { encoding?: string | null } | null): number => {
+          const entry = fileDescriptor(fd);
+          const bytes = bytesFromFsWriteValue(value, options);
+          const position = entry.kind === 'device' ? null : descriptorBytes(entry).byteLength;
+          return fsApi.writeSync(fd, bytes, 0, bytes.byteLength, position);
+        };
         return {
           fd,
           read: async (buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
             const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
             return { bytesRead, buffer };
           },
+          readFile: async (encoding?: string | { encoding?: string | null } | null) => readFileFromHandle(encoding),
           readv: async (buffers: Uint8Array[], position?: number | null) => {
             const bytesRead = fsApi.readvSync(fd, buffers, position);
             return { bytesRead, buffers };
@@ -2403,6 +2423,12 @@ async function runBrowserJavaScriptProjectRequest(
               bytesWritten,
               buffer: value,
             };
+          },
+          writeFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
+            writeFileToHandle(value, options);
+          },
+          appendFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
+            appendFileToHandle(value, options);
           },
           writev: async (buffers: Uint8Array[], position?: number | null) => {
             const bytesWritten = fsApi.writevSync(fd, buffers, position);
