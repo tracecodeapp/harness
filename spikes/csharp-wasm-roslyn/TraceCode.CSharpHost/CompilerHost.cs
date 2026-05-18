@@ -1186,6 +1186,7 @@ public static partial class CompilerHost
                 "OpenWrite" or
                 "Create" or
                 "Open" or
+                "SetAttributes" or
                 "Delete" or
                 "Move" or
                 "Copy";
@@ -1436,6 +1437,12 @@ public static class ProjectFile
     {
         System.IO.File.Copy(sourceFileName, destFileName, overwrite);
         TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(destFileName);
+    }
+
+    public static void SetAttributes(string path, System.IO.FileAttributes fileAttributes)
+    {
+        TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "chmod");
+        System.IO.File.SetAttributes(path, fileAttributes);
     }
 }
 
@@ -1822,6 +1829,22 @@ public sealed class ProjectFileStream : System.IO.FileStream
         }
 
         EmitProjectFileChanges(new[] { new CSharpProjectFileChange { Path = relativePath, Deleted = true } }, "live");
+    }
+
+    public static void ThrowIfProjectKernelVirtualMutation(string path, string operation)
+    {
+        string normalized = path.Replace('\\', '/').TrimEnd('/');
+        if (string.IsNullOrEmpty(normalized))
+        {
+            return;
+        }
+        if (string.Equals(normalized, "/dev", StringComparison.Ordinal)
+            || normalized.StartsWith("/dev/", StringComparison.Ordinal)
+            || string.Equals(normalized, "/proc", StringComparison.Ordinal)
+            || normalized.StartsWith("/proc/", StringComparison.Ordinal))
+        {
+            throw new IOException($"Kernel virtual filesystem is read-only: {operation} '{path}'");
+        }
     }
 
     private static CSharpProjectFileChange EncodeProjectDirectoryChange(string path, bool deleted = false)
