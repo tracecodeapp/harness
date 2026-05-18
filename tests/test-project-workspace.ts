@@ -1974,6 +1974,15 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       .join('') === result.stderr,
     `browser node should stream custom device-routed stderr events: ${JSON.stringify(events)}`
   );
+  assertCondition(
+    events.filter((event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.sourceDevice === '/dev/tty'
+    ).map((event) => event.data).join('') === result.stderr,
+    `browser node should preserve source device for custom-routed /dev/tty writes: ${JSON.stringify(events)}`
+  );
 
   const restrictedResult = await createBrowserJavaScriptProjectRunner()({
     code: [

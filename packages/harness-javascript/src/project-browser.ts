@@ -1350,13 +1350,18 @@ async function runBrowserJavaScriptProjectRequest(
     const requireCache: Record<string, ModuleRecord> = {};
     let mainModule: ModuleRecord | undefined;
 
-    const emitOutput = (stream: 'stdout' | 'stderr', data: string, device?: RuntimeKernelDevicePath): void => {
+    const emitOutput = (
+      stream: 'stdout' | 'stderr',
+      data: string,
+      device?: RuntimeKernelDevicePath,
+      sourceDevice?: RuntimeKernelDevicePath
+    ): void => {
       if (stream === 'stdout') {
         stdout.push(data);
       } else {
         stderr.push(data);
       }
-      io.output(stream, data, device);
+      io.output(stream, data, device, sourceDevice);
     };
 
     const writeDevice = (device: RuntimeKernelDevicePath, data: string): void => {
@@ -1364,7 +1369,7 @@ async function runBrowserJavaScriptProjectRequest(
       if (!outputDevice) {
         throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       }
-      emitOutput(outputDevice === '/dev/stderr' ? 'stderr' : 'stdout', data, outputDevice);
+      emitOutput(outputDevice === '/dev/stderr' ? 'stderr' : 'stdout', data, outputDevice, device !== outputDevice ? device : undefined);
     };
 
     const readDevice = (device: RuntimeKernelDevicePath): string => {

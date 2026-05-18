@@ -162,18 +162,24 @@ export type RuntimeCommandEvent =
 export type RuntimeCommandEventHandler = (event: RuntimeCommandEvent) => void;
 
 export interface RuntimeProjectIoBridge {
-  output(stream: RuntimeCommandEventStream, data: string, device?: RuntimeKernelDevicePath): void;
+  output(
+    stream: RuntimeCommandEventStream,
+    data: string,
+    device?: RuntimeKernelDevicePath,
+    sourceDevice?: RuntimeKernelDevicePath
+  ): void;
   fileChange(change: RuntimeFileChange, phase?: RuntimeFileMutationPhase): void;
   status(phase: string, message: string, detail?: Record<string, unknown>): void;
 }
 
 export function createRuntimeProjectIoBridge(onEvent: RuntimeCommandEventHandler | undefined): RuntimeProjectIoBridge {
   return {
-    output: (stream, data, device) => {
+    output: (stream, data, device, sourceDevice) => {
       onEvent?.({
         type: 'output',
         stream,
         device: device ?? (stream === 'stdout' ? '/dev/stdout' : '/dev/stderr'),
+        ...(sourceDevice ? { sourceDevice } : {}),
         data,
       });
     },
