@@ -231,6 +231,12 @@ public class ProjectWorkspaceDirectorySmoke {
     } finally {
       ProjectEvents.clearKernelDevices();
     }
+    ProjectEvents.setKernelDevices("L2Rldi9jdXN0b20taW4=\\tMQ==\\tMA==\\tL2Rldi9jdXN0b20tc291cmNl\\t", "from-custom-source\\n");
+    try {
+      System.out.println(ProjectEvents.readString(Paths.get("/dev/custom-in")).trim());
+    } finally {
+      ProjectEvents.clearKernelDevices();
+    }
     java.util.function.Function<String, String> b64 = (value) -> java.util.Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
     java.util.function.Function<String[], String> device = (fields) ->
       b64.apply(fields[0]) + "\t" + b64.apply(fields[1]) + "\t" + b64.apply(fields[2]) + "\t" + b64.apply(fields[3]) + "\t" + b64.apply(fields[4]);
@@ -392,6 +398,7 @@ public class ProjectWorkspaceDirectorySmoke {
       changedFilesJson,
       kernelChangedFilesJson,
       deviceChannelInput,
+      customDeviceInput,
       deviceWriterOutput,
       fileApiOutput,
       nioStatApiOutput,
@@ -410,6 +417,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       deviceChannelInput === 'from-channel',
       `Java browser helper should read kernel stdin through newByteChannel: ${output}`
+    );
+    assertCondition(
+      customDeviceInput === 'from-custom-source',
+      `Java browser helper should read custom input devices independently of /dev/stdin: ${output}`
     );
     assertCondition(
       deviceWriterOutput === 'file-writer-out|print-writer-out|tty-writer-out|print-writer-err|',

@@ -1716,9 +1716,7 @@ public final class ProjectEvents {
   }
 
   private static byte[] readKernelDevice(KernelDevice device) {
-    String inputDevice = device.inputDevice.isEmpty() ? device.path : device.inputDevice;
-    if (!"/dev/stdin".equals(inputDevice) && !"/dev/tty".equals(device.path)) return new byte[0];
-    return KERNEL_STDIN.get();
+    return device.readable ? KERNEL_STDIN.get() : new byte[0];
   }
 
   private static void writeKernelDevice(KernelDevice device, byte[] bytes) {
