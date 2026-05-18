@@ -118,6 +118,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'cpp-worker.js'],
       },
       {
+        source: ['workers', 'shared', 'runtime-kernel-policy.js'],
+        target: ['workers', 'shared', 'runtime-kernel-policy.js'],
+      },
+      {
         source: ['workers', 'cpp', 'cpp-compiler-frame.html'],
         target: ['workers', 'cpp-compiler-frame.html'],
       },

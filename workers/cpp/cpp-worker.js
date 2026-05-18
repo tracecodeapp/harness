@@ -1,3 +1,11 @@
+import {
+  isRuntimeKernelDeviceDirectory as isRuntimeDeviceDirectory,
+  isRuntimeKernelDeviceNamespacePath as isRuntimeDeviceNamespacePath,
+  isRuntimeKernelProcPath as isRuntimeProcPath,
+  normalizeRuntimeKernelDeviceReference,
+  runtimeKernelVirtualMutationTarget,
+} from './shared/runtime-kernel-policy.js';
+
 const RESULT_MARKER = '__TRACECODE_RESULT__';
 const TRACE_EVENT_MARKER = '__TRACECODE_EVENT__';
 const TRACE_STATUS_MARKER = '__TRACECODE_TRACE_STATUS__';
@@ -266,27 +274,6 @@ function resolveAt(base, child) {
   if (!child || child === '.') return normalizePath(base || '/');
   if (child.startsWith('/')) return normalizePath(child);
   return normalizePath(`${base || '/'}/${child}`);
-}
-
-function isRuntimeProcPath(pathname) {
-  const normalized = normalizePath(pathname);
-  return normalized === '/proc' || normalized.startsWith('/proc/');
-}
-
-function isRuntimeDeviceNamespacePath(pathname) {
-  const normalized = normalizePath(pathname);
-  return normalized === '/dev' || normalized.startsWith('/dev/');
-}
-
-function isRuntimeDeviceDirectory(pathname) {
-  return normalizePath(pathname) === '/dev';
-}
-
-function normalizeRuntimeKernelDeviceReference(pathname) {
-  const normalized = normalizePath(pathname || '');
-  if (normalized === '/dev' || !normalized.startsWith('/dev/')) return '';
-  const deviceName = normalized.slice('/dev/'.length);
-  return deviceName.length > 0 && !deviceName.includes('/') ? normalized : '';
 }
 
 function wasiRights(value) {
@@ -801,10 +788,13 @@ class WasiProcess {
     return false;
   }
 
-  deviceNamespaceMutationErrno(pathname, missingErrno = ENOENT) {
-    const normalized = normalizePath(pathname);
-    if (!isRuntimeDeviceNamespacePath(normalized)) return null;
-    return isRuntimeDeviceDirectory(normalized) || this.isKnownDevicePath(normalized) ? EROFS : missingErrno;
+  kernelVirtualMutationErrno(pathname, missingErrno = ENOENT) {
+    const target = runtimeKernelVirtualMutationTarget(pathname, {
+      knownDevices: this.kernelDevices.keys(),
+      readOnlyPaths: this.fs.readOnlyFiles,
+    });
+    if (target.kind === 'workspace') return null;
+    return target.reason === 'device-not-found' ? missingErrno : EROFS;
   }
 
   parentDirectoryErrno(pathname) {
@@ -1115,7 +1105,8 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     if (entry.kind === 'stdio') return EROFS;
-    if (isRuntimeProcPath(entry.path) || this.fs.isReadOnly(entry.path) || this.isKernelVirtualNamespacePath(entry.path)) return EROFS;
+    const virtualErrno = this.kernelVirtualMutationErrno(entry.path);
+    if (virtualErrno !== null) return virtualErrno;
     if (!this.fs.exists(entry.path)) return ENOENT;
     this.fs.emitPathSnapshot(entry.path);
     return ESUCCESS;
@@ -1208,9 +1199,8 @@ class WasiProcess {
   path_filestat_set_times(dirfd, _flags, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (isRuntimeProcPath(pathname) || this.fs.isReadOnly(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
-    const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
-    if (deviceErrno !== null) return deviceErrno;
+    const virtualErrno = this.kernelVirtualMutationErrno(pathname);
+    if (virtualErrno !== null) return virtualErrno;
     if (!this.fs.exists(pathname)) return ENOENT;
     this.fs.emitPathSnapshot(pathname);
     return ESUCCESS;
@@ -1219,9 +1209,8 @@ class WasiProcess {
   path_create_directory(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (isRuntimeProcPath(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
-    const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
-    if (deviceErrno !== null) return deviceErrno;
+    const virtualErrno = this.kernelVirtualMutationErrno(pathname);
+    if (virtualErrno !== null) return virtualErrno;
     if (this.fs.exists(pathname)) return EEXIST;
     const parentErrno = this.parentDirectoryErrno(pathname);
     if (parentErrno !== null) return parentErrno;
@@ -1232,18 +1221,16 @@ class WasiProcess {
   path_unlink_file(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (this.fs.isReadOnly(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
-    const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
-    if (deviceErrno !== null) return deviceErrno;
+    const virtualErrno = this.kernelVirtualMutationErrno(pathname);
+    if (virtualErrno !== null) return virtualErrno;
     return this.fs.unlink(pathname);
   }
 
   path_remove_directory(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (isRuntimeProcPath(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
-    const deviceErrno = this.deviceNamespaceMutationErrno(pathname, ENOTDIR);
-    if (deviceErrno !== null) return deviceErrno;
+    const virtualErrno = this.kernelVirtualMutationErrno(pathname, ENOTDIR);
+    if (virtualErrno !== null) return virtualErrno;
     if (this.fs.isFile(pathname)) return ENOTDIR;
     return this.fs.removeDirectory(pathname);
   }
@@ -1252,16 +1239,10 @@ class WasiProcess {
     const oldPath = this.resolveFdPath(oldFd, oldPathPtr, oldPathLen);
     const newPath = this.resolveFdPath(newFd, newPathPtr, newPathLen);
     if (!oldPath || !newPath) return EBADF;
-    if (
-      this.fs.isReadOnly(oldPath) ||
-      this.isKernelVirtualNamespacePath(oldPath) ||
-      isRuntimeProcPath(newPath) ||
-      this.isKernelVirtualNamespacePath(newPath)
-    ) return EROFS;
-    const oldDeviceErrno = this.deviceNamespaceMutationErrno(oldPath);
-    if (oldDeviceErrno !== null) return oldDeviceErrno;
-    const newDeviceErrno = this.deviceNamespaceMutationErrno(newPath);
-    if (newDeviceErrno !== null) return newDeviceErrno;
+    const oldVirtualErrno = this.kernelVirtualMutationErrno(oldPath);
+    if (oldVirtualErrno !== null) return oldVirtualErrno;
+    const newVirtualErrno = this.kernelVirtualMutationErrno(newPath);
+    if (newVirtualErrno !== null) return newVirtualErrno;
     const parentErrno = this.parentDirectoryErrno(newPath);
     if (parentErrno !== null) return parentErrno;
     return this.fs.rename(oldPath, newPath);
@@ -1277,9 +1258,8 @@ class WasiProcess {
   path_symlink(_oldPathPtr, _oldPathLen, dirfd, newPathPtr, newPathLen) {
     const newPath = this.resolveFdPath(dirfd, newPathPtr, newPathLen);
     if (!newPath) return EBADF;
-    if (isRuntimeProcPath(newPath) || this.isKernelVirtualNamespacePath(newPath)) return EROFS;
-    const deviceErrno = this.deviceNamespaceMutationErrno(newPath);
-    if (deviceErrno !== null) return deviceErrno;
+    const virtualErrno = this.kernelVirtualMutationErrno(newPath);
+    if (virtualErrno !== null) return virtualErrno;
     return ENOTSUP;
   }
 
@@ -1287,12 +1267,10 @@ class WasiProcess {
     const oldPath = this.resolveFdPath(oldFd, oldPathPtr, oldPathLen);
     const newPath = this.resolveFdPath(newFd, newPathPtr, newPathLen);
     if (!oldPath || !newPath) return EBADF;
-    if (this.fs.isReadOnly(oldPath) || this.isKernelVirtualNamespacePath(oldPath)) return EROFS;
-    if (isRuntimeProcPath(newPath) || this.isKernelVirtualNamespacePath(newPath)) return EROFS;
-    const oldDeviceErrno = this.deviceNamespaceMutationErrno(oldPath);
-    if (oldDeviceErrno !== null) return oldDeviceErrno;
-    const newDeviceErrno = this.deviceNamespaceMutationErrno(newPath);
-    if (newDeviceErrno !== null) return newDeviceErrno;
+    const oldVirtualErrno = this.kernelVirtualMutationErrno(oldPath);
+    if (oldVirtualErrno !== null) return oldVirtualErrno;
+    const newVirtualErrno = this.kernelVirtualMutationErrno(newPath);
+    if (newVirtualErrno !== null) return newVirtualErrno;
     const parentErrno = this.parentDirectoryErrno(newPath);
     if (parentErrno !== null) return parentErrno;
     return this.fs.link(oldPath, newPath);

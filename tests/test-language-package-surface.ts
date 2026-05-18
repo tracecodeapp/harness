@@ -162,6 +162,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
       'workers/cpp-worker.js',
+      'workers/shared/runtime-kernel-policy.js',
       'workers/cpp-compiler-frame.html',
       'workers/cpp-compiler-worker.js',
       'workers/cpp/tracecode_runtime.hpp',
@@ -590,9 +591,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-cpp worker should stream returned compiler output events'
       );
       assertCondition(
-        worker.includes('isKernelVirtualNamespacePath(pathname)') &&
-          worker.includes('this.isKernelVirtualNamespacePath(newPath)'),
-        '@tracecode/harness-cpp worker should guard manifest kernel namespaces with shared read-only semantics'
+        worker.includes("from './shared/runtime-kernel-policy.js'") &&
+          worker.includes('runtimeKernelVirtualMutationTarget(pathname') &&
+          worker.includes('knownDevices: this.kernelDevices.keys()'),
+        '@tracecode/harness-cpp worker should guard manifest kernel namespaces with shared worker kernel policy'
       );
       assertCondition(
         worker.includes('emitPathSnapshot(pathname)') &&

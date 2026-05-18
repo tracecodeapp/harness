@@ -32,6 +32,7 @@ async function main(): Promise<void> {
     'javascript-worker.js',
     'java-worker.js',
     'cpp-worker.js',
+    'shared/runtime-kernel-policy.js',
     'cpp-compiler-frame.html',
     'cpp-compiler-worker.js',
     'cpp/tracecode_runtime.hpp',

@@ -55,6 +55,11 @@ const ASSET_COPY_PLAN = [
     languages: ['cpp'],
   },
   {
+    source: ['workers', 'shared', 'runtime-kernel-policy.js'],
+    target: ['shared', 'runtime-kernel-policy.js'],
+    languages: ['cpp'],
+  },
+  {
     source: ['workers', 'cpp', 'cpp-compiler-frame.html'],
     target: ['cpp-compiler-frame.html'],
     languages: ['cpp'],

@@ -45,6 +45,10 @@ import {
   type RuntimeCommandEvent,
   type RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
+import {
+  normalizeRuntimeKernelDeviceReference as normalizeWorkerKernelDeviceReference,
+  runtimeKernelVirtualMutationTarget as workerRuntimeKernelVirtualMutationTarget,
+} from '../workers/shared/runtime-kernel-policy.js';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -311,6 +315,42 @@ function assertRuntimeProjectIoBridgeOutputDevices(): void {
       { type: 'output', stream: 'stderr', device: '/dev/stderr', sourceDevice: '/dev/log', data: 'log\n' },
     ]),
     `runtime project bridge should suppress redundant sourceDevice values: ${stableStringify(events)}`
+  );
+}
+
+function assertWorkerRuntimeKernelPolicyContract(): void {
+  const knownDevices = ['/dev/stdout', '/dev/log', '/dev/custom-in'];
+  const readOnlyPaths = ['/tracekernel/custom', '/proc/kernel/info'];
+
+  assertCondition(
+    normalizeWorkerKernelDeviceReference('/dev/log') === '/dev/log' &&
+      normalizeWorkerKernelDeviceReference('/dev/nested/device') === '',
+    'shared worker kernel policy should normalize only single-segment device references'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualMutationTarget('/proc/kernel/info', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'error', reason: 'proc-read-only', path: '/proc/kernel/info' }),
+    'shared worker kernel policy should reject proc mutations as read-only'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'error', reason: 'kernel-read-only', path: '/tracekernel/new' }),
+    'shared worker kernel policy should protect materialized kernel file namespaces'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualMutationTarget('/dev/log', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'error', reason: 'device-read-only', path: '/dev/log' }),
+    'shared worker kernel policy should reject manifest device mutations'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualMutationTarget('/dev/missing', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'error', reason: 'device-not-found', path: '/dev/missing' }),
+    'shared worker kernel policy should reject non-manifest device namespace paths as missing'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualMutationTarget('src/value.txt', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'workspace', path: '/src/value.txt' }),
+    'shared worker kernel policy should allow workspace mutations'
   );
 }
 
@@ -781,6 +821,8 @@ async function main(): Promise<void> {
   console.log('PASS: runtime kernel virtual stat target');
   assertRuntimeProjectIoBridgeOutputDevices();
   console.log('PASS: runtime project bridge output device metadata');
+  assertWorkerRuntimeKernelPolicyContract();
+  console.log('PASS: worker runtime kernel mutation policy contract');
   await assertRuntimeProjectWorkerBridgeContract();
   console.log('PASS: runtime project worker bridge live I/O contract');
 
