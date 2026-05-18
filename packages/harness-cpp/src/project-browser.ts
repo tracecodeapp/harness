@@ -4,6 +4,7 @@ import type {
   RuntimeFileChange,
   RuntimeFile,
   RuntimeFileEncoding,
+  RuntimeFileMutationPhase,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
@@ -21,7 +22,7 @@ export type BrowserCppProjectCommandRunner = CppProjectCommandRunner;
 
 export interface BrowserCppProjectRunnerOptions {
   timeoutMs?: number;
-  applyFileChange?: (change: RuntimeFileChange) => Promise<void>;
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;

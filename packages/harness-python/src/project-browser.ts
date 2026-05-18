@@ -3,6 +3,7 @@ import type {
   RuntimeFileChange,
   RuntimeFile,
   RuntimeFileEncoding,
+  RuntimeFileMutationPhase,
   RuntimeCommandEventHandler,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
@@ -24,7 +25,7 @@ export type PyodidePythonProjectCommandRunner = PythonProjectCommandRunner;
 
 export interface BrowserPythonProjectRunnerOptions {
   timeoutMs?: number;
-  applyFileChange?: (change: RuntimeFileChange) => Promise<void>;
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>;
 }
 
 export type CreatePyodidePythonProjectRunnerOptions = BrowserPythonProjectRunnerOptions;

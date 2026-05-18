@@ -107,10 +107,17 @@ export async function createBrowserProjectWorkspace(
   if (!providedCSharpWorkerClient) ownedWorkers.push(csharpWorkerClient);
   if (!providedCppWorkerClient) ownedWorkers.push(cppWorkerClient);
 
-  const workspace = await createRuntimeWorkspace({
+  let workspace: BrowserProjectWorkspace;
+  const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
+    async (change, phase) => {
+      await workspace.kernel.applyFileChange(change, undefined, phase);
+    };
+
+  workspace = await createRuntimeWorkspace({
     ...workspaceOptions,
     pythonRunner: createBrowserPythonProjectRunner(pythonWorkerClient, {
       timeoutMs: pythonProjectTimeoutMs,
+      applyFileChange: applyWorkerFileChange,
     }),
     nodeRunner: createBrowserJavaScriptProjectRunner({
       timeoutMs: nodeProjectTimeoutMs,
@@ -118,12 +125,15 @@ export async function createBrowserProjectWorkspace(
     }),
     javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {
       timeoutMs: javaProjectTimeoutMs,
+      applyFileChange: applyWorkerFileChange,
     }),
     csharpRunner: createBrowserCSharpProjectRunner(csharpWorkerClient, {
       timeoutMs: csharpProjectTimeoutMs,
+      applyFileChange: applyWorkerFileChange,
     }),
     cppRunner: createBrowserCppProjectRunner(cppWorkerClient, {
       timeoutMs: cppProjectTimeoutMs,
+      applyFileChange: applyWorkerFileChange,
     }),
   });
 
