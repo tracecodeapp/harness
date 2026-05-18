@@ -2337,12 +2337,14 @@ public final class ProjectEvents {
     public void write(int value) throws IOException {
       capture.write(value);
       pending.write(value);
+      flush();
     }
 
     @Override
     public void write(byte[] bytes, int offset, int length) throws IOException {
       capture.write(bytes, offset, length);
       pending.write(bytes, offset, length);
+      flush();
     }
 
     @Override
