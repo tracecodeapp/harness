@@ -49,6 +49,8 @@ import {
 } from '../packages/harness-core/src/runtime-project';
 import {
   normalizeRuntimeKernelDeviceReference as normalizeWorkerKernelDeviceReference,
+  runtimeKernelDeviceInputSource as workerRuntimeKernelDeviceInputSource,
+  runtimeKernelDeviceOutputTarget as workerRuntimeKernelDeviceOutputTarget,
   runtimeKernelVirtualMutationTarget as workerRuntimeKernelVirtualMutationTarget,
   runtimeKernelVirtualPathTarget as workerRuntimeKernelVirtualPathTarget,
 } from '../workers/shared/runtime-kernel-policy.js';
@@ -323,6 +325,12 @@ function assertRuntimeProjectIoBridgeOutputDevices(): void {
 
 function assertWorkerRuntimeKernelPolicyContract(): void {
   const knownDevices = ['/dev/stdout', '/dev/log', '/dev/custom-in'];
+  const devices = [
+    { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+    { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+    { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+    { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' },
+  ];
   const readOnlyPaths = ['/tracekernel/custom', '/proc/kernel/info'];
   const classicContext = { self: {} as { TraceRuntimeKernelPolicy?: typeof import('../workers/shared/runtime-kernel-policy.js') } };
   vm.createContext(classicContext);
@@ -355,6 +363,14 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
     'shared worker kernel policy should classify manifest devices'
   );
   assertCondition(
+    stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/log', { devices, readOnlyPaths })) ===
+      stableStringify({ kind: 'device-file', path: '/dev/log' }) &&
+      workerRuntimeKernelDeviceOutputTarget(devices, '/dev/log') === '/dev/stderr' &&
+      workerRuntimeKernelDeviceInputSource(devices, '/dev/custom-in') === '/dev/stdin' &&
+      workerRuntimeKernelDeviceOutputTarget(devices, '/dev/null') === '/dev/null',
+    'shared worker kernel policy should classify and route manifest devices from device metadata'
+  );
+  assertCondition(
     stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
       stableStringify({ kind: 'error', reason: 'kernel-read-only', path: '/tracekernel/new' }),
     'shared worker kernel policy should protect materialized kernel file namespaces'
@@ -379,7 +395,9 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
       stableStringify(classicPolicy.runtimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) ===
         stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) &&
       stableStringify(classicPolicy.runtimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
-        stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })),
+        stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) &&
+      classicPolicy.runtimeKernelDeviceOutputTarget(devices, '/dev/log') === workerRuntimeKernelDeviceOutputTarget(devices, '/dev/log') &&
+      classicPolicy.runtimeKernelDeviceInputSource(devices, '/dev/custom-in') === workerRuntimeKernelDeviceInputSource(devices, '/dev/custom-in'),
     'classic worker kernel policy should match module worker kernel policy'
   );
 }

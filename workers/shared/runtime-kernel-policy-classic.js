@@ -39,6 +39,53 @@
     return new Set(Array.from(values ?? [], (value) => normalizeRuntimeKernelPath(value)).filter(Boolean));
   }
 
+  function normalizedDeviceInfos(devices) {
+    let entries = [];
+    if (devices instanceof Map) {
+      entries = Array.from(devices.values());
+    } else if (Array.isArray(devices)) {
+      entries = devices;
+    } else if (devices && typeof devices === 'object') {
+      entries = Object.entries(devices).map(([path, value]) => ({ ...(value ?? {}), path: value?.path ?? path }));
+    }
+
+    const normalized = new Map();
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const path = normalizeRuntimeKernelDeviceReference(entry.path);
+      if (!path) continue;
+      normalized.set(path, {
+        path,
+        readable: Boolean(entry.readable),
+        writable: Boolean(entry.writable),
+        inputDevice: normalizeRuntimeKernelDeviceReference(entry.inputDevice) || '',
+        outputDevice: normalizeRuntimeKernelDeviceReference(entry.outputDevice) || '',
+      });
+    }
+    return normalized;
+  }
+
+  function knownDeviceSet(options) {
+    if (options && options.knownDevices) return normalizedSet(options.knownDevices);
+    return normalizedSet(normalizedDeviceInfos(options && options.devices).keys());
+  }
+
+  function runtimeKernelDeviceInfo(devices, device) {
+    return normalizedDeviceInfos(devices).get(normalizeRuntimeKernelDeviceReference(device)) || null;
+  }
+
+  function runtimeKernelDeviceInputSource(devices, device) {
+    const info = runtimeKernelDeviceInfo(devices, device);
+    if (!info || !info.readable) return '';
+    return info.inputDevice || info.path;
+  }
+
+  function runtimeKernelDeviceOutputTarget(devices, device) {
+    const info = runtimeKernelDeviceInfo(devices, device);
+    if (!info || !info.writable) return '';
+    return info.outputDevice || info.path;
+  }
+
   function isRuntimeKernelReadOnlyPath(value, readOnlyPaths) {
     const normalized = normalizeRuntimeKernelPath(value);
     if (normalized === '/') return false;
@@ -62,7 +109,7 @@
       return { kind: 'device-directory', path };
     }
     if (isRuntimeKernelDeviceNamespacePath(path)) {
-      const knownDevices = normalizedSet(options && options.knownDevices);
+      const knownDevices = knownDeviceSet(options);
       const device = normalizeRuntimeKernelDeviceReference(path);
       if (!device || !knownDevices.has(device)) {
         return { kind: 'device-not-found', path };
@@ -93,6 +140,9 @@
     isRuntimeKernelDeviceNamespacePath,
     isRuntimeKernelDeviceDirectory,
     normalizeRuntimeKernelDeviceReference,
+    runtimeKernelDeviceInfo,
+    runtimeKernelDeviceInputSource,
+    runtimeKernelDeviceOutputTarget,
     runtimeKernelVirtualPathTarget,
     runtimeKernelVirtualMutationTarget,
   };

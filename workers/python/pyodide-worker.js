@@ -741,7 +741,6 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null;
   const textDecoderLossy = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
   const devices = normalizeProjectKernelDevices(kernelDevices);
-  const knownDevicePaths = Object.keys(devices);
   const kernelPolicy = self.TraceRuntimeKernelPolicy;
 
   const fallbackKernelVirtualPathTarget = (path) => {
@@ -757,15 +756,17 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
 
   const kernelVirtualPathTarget = (path) => {
     if (kernelPolicy && typeof kernelPolicy.runtimeKernelVirtualPathTarget === 'function') {
-      return kernelPolicy.runtimeKernelVirtualPathTarget(path, { knownDevices: knownDevicePaths });
+      return kernelPolicy.runtimeKernelVirtualPathTarget(path, { devices });
     }
     return fallbackKernelVirtualPathTarget(path);
   };
 
   const kernelDeviceOutputTarget = (path) => {
     const target = kernelVirtualPathTarget(path);
-    if (target.kind !== 'device-file' || !devices[target.path]) return null;
-    const outputDevice = String(devices[target.path].outputDevice || '');
+    if (target.kind !== 'device-file') return null;
+    const outputDevice = kernelPolicy && typeof kernelPolicy.runtimeKernelDeviceOutputTarget === 'function'
+      ? String(kernelPolicy.runtimeKernelDeviceOutputTarget(devices, target.path) || '')
+      : String(devices[target.path]?.outputDevice || '');
     return outputDevice ? { device: target.path, outputDevice } : null;
   };
 
@@ -1118,6 +1119,7 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   if (!pyodide) return () => {};
 
   const devices = normalizeProjectKernelDevices(kernelDevices);
+  const kernelPolicy = self.TraceRuntimeKernelPolicy;
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
   const encodeUtf8 = (value) => {
     const text = String(value ?? '');
@@ -1127,11 +1129,20 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   const stdinBytes = encodeUtf8(stdin);
   let stdinOffset = 0;
   const previousReadProjectStdinByte = self.__tracecodeReadProjectStdinByte;
+  const deviceInputSource = (device) => (
+    kernelPolicy && typeof kernelPolicy.runtimeKernelDeviceInputSource === 'function'
+      ? String(kernelPolicy.runtimeKernelDeviceInputSource(devices, device) || '')
+      : String(devices[String(device)]?.inputDevice || (devices[String(device)]?.readable ? device : ''))
+  );
+  const deviceOutputTarget = (device) => (
+    kernelPolicy && typeof kernelPolicy.runtimeKernelDeviceOutputTarget === 'function'
+      ? String(kernelPolicy.runtimeKernelDeviceOutputTarget(devices, device) || '')
+      : String(devices[String(device)]?.outputDevice || (devices[String(device)]?.writable ? device : ''))
+  );
 
   const readProjectStdinByte = (device = '/dev/stdin') => {
-    const deviceInfo = devices[String(device)] || {};
-    if (!deviceInfo.readable) return -1;
-    if (String(deviceInfo.inputDevice || device) === '/dev/null') return -1;
+    const inputDevice = deviceInputSource(device);
+    if (!inputDevice || inputDevice === '/dev/null') return -1;
     if (stdinOffset >= stdinBytes.byteLength) return -1;
     const value = stdinBytes[stdinOffset];
     stdinOffset += 1;
@@ -1163,8 +1174,8 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   const writeHandler = (stream, defaultDevice) => (buffer) => {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
     const text = textDecoder ? textDecoder.decode(bytes) : String.fromCharCode(...bytes);
-    const deviceInfo = devices[defaultDevice] || {};
-    const outputDevice = String(deviceInfo.outputDevice || defaultDevice);
+    const outputDevice = deviceOutputTarget(defaultDevice);
+    if (!outputDevice) return bytes.byteLength;
     if (outputDevice === '/dev/null') return bytes.byteLength;
     emitProviderOutput(outputDevice === '/dev/stderr' ? 'stderr' : stream, outputDevice, text, defaultDevice !== outputDevice ? defaultDevice : '');
     return bytes.byteLength;
