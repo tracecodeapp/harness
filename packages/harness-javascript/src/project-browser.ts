@@ -1489,7 +1489,7 @@ async function runBrowserJavaScriptProjectRequest(
       return stream;
     };
 
-    const stdinDevice = createReadableStdinDevice(request.stdin);
+    const stdinDevice = createReadableStdinDevice(readDevice('/dev/stdin'));
     const processApi = {
       argv: processArgvForRequest(request),
       env: request.env,
@@ -2280,10 +2280,18 @@ async function runBrowserJavaScriptProjectRequest(
       writable: boolean;
       append: boolean;
     };
+    const stdioDescriptor = (device: RuntimeKernelDevicePath, append = false): BrowserFileDescriptor => ({
+      kind: 'device',
+      device,
+      offset: 0,
+      readable: runtimeKernelDeviceInputSource(kernelDevices, device) !== null,
+      writable: runtimeKernelDeviceOutputTarget(kernelDevices, device) !== null,
+      append,
+    });
     const fileDescriptors = new Map<number, BrowserFileDescriptor>([
-      [0, { kind: 'device', device: '/dev/stdin', offset: 0, readable: true, writable: false, append: false }],
-      [1, { kind: 'device', device: '/dev/stdout', offset: 0, readable: false, writable: true, append: true }],
-      [2, { kind: 'device', device: '/dev/stderr', offset: 0, readable: false, writable: true, append: true }],
+      [0, stdioDescriptor('/dev/stdin')],
+      [1, stdioDescriptor('/dev/stdout', true)],
+      [2, stdioDescriptor('/dev/stderr', true)],
     ]);
     let nextFd = 3;
     const parseOpenFlags = (flags: unknown = 'r') => {

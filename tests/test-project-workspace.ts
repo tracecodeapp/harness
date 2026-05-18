@@ -1974,6 +1974,41 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       .join('') === result.stderr,
     `browser node should stream custom device-routed stderr events: ${JSON.stringify(events)}`
   );
+
+  const restrictedResult = await createBrowserJavaScriptProjectRunner()({
+    code: [
+      'const fs = require("node:fs");',
+      'try { fs.readFileSync(0, "utf8"); console.log("fd0:ok"); } catch (error) { console.log("fd0:" + error.code); }',
+      'try { fs.writeSync(1, "fd1-out\\n"); console.log("fd1:ok"); } catch (error) { console.log("fd1:" + error.code); }',
+      'try { process.stdin.resume(); let text = ""; process.stdin.on("data", (chunk) => text += chunk); await new Promise((resolve) => process.stdin.on("end", resolve)); console.log("stdin:" + text.trim()); } catch (error) { console.log("stdin:" + error.code); }',
+      'try { process.stdout.write("process-out\\n"); console.log("process:ok"); } catch (error) { console.log("process:" + error.code); }',
+      'fs.writeFileSync("/dev/stderr", "stderr-ok\\n");',
+    ].join('\n'),
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: 'hidden\n',
+    project: {
+      cwd: '/workspace',
+      files: [],
+      kernelDevices: [
+        { path: '/dev/stdin', readable: false, writable: false },
+        { path: '/dev/stdout', readable: false, writable: false },
+        { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/tty', readable: false, writable: false },
+      ],
+    },
+  });
+  assertCondition(restrictedResult.exitCode === 0, `browser node restricted kernel device inventory should succeed: ${restrictedResult.stderr}`);
+  assertCondition(
+    restrictedResult.stdout === 'fd0:EBADF\nfd1:EBADF\nstdin:\nprocess:EBADF\n',
+    `browser node fd/process stdio should respect restricted kernelDevices: ${JSON.stringify(restrictedResult)}`
+  );
+  assertCondition(
+    restrictedResult.stderr === 'stderr-ok\n',
+    `browser node restricted kernelDevices should still allow configured stderr: ${JSON.stringify(restrictedResult)}`
+  );
 }
 
 async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<void> {
