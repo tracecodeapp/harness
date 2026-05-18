@@ -355,6 +355,8 @@ function createReadableStdinDevice(input: string) {
   let encoding: string | undefined;
   let flowScheduled = false;
   let destroyed = false;
+  let ended = false;
+  let readableFlowing: boolean | null = null;
   const dataListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
   const endListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
 
@@ -362,15 +364,20 @@ function createReadableStdinDevice(input: string) {
     encoding ? chunk.toString(encoding) : chunk
   );
   const read = (size?: number): BrowserBuffer | string | null => {
-    if (offset >= bytes.byteLength) return null;
+    if (offset >= bytes.byteLength) {
+      ended = true;
+      return null;
+    }
     const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : bytes.byteLength - offset;
     const end = Math.min(bytes.byteLength, offset + requested);
     const chunk = BrowserBuffer.from(bytes.slice(offset, end));
     offset = end;
+    if (offset >= bytes.byteLength) ended = true;
     return formatChunk(chunk);
   };
   const scheduleFlow = (): void => {
     if (flowScheduled) return;
+    if (readableFlowing === false) return;
     flowScheduled = true;
     queueMicrotask(() => {
       if (destroyed) return;
@@ -378,12 +385,14 @@ function createReadableStdinDevice(input: string) {
       if (chunk !== null) {
         for (const listener of dataListeners) listener(chunk);
       }
+      ended = true;
       for (const listener of endListeners) listener();
     });
   };
   const on = (event: string, listener: (chunk?: BrowserBuffer | string) => void) => {
     if (event === 'data') {
       dataListeners.push(listener);
+      if (readableFlowing === null) readableFlowing = true;
       scheduleFlow();
     } else if (event === 'end') {
       endListeners.push(listener);
@@ -403,6 +412,18 @@ function createReadableStdinDevice(input: string) {
     fd: 0,
     readable: true,
     isTTY: false,
+    get readableEnded() {
+      return ended;
+    },
+    get readableEncoding() {
+      return encoding ?? null;
+    },
+    get readableFlowing() {
+      return readableFlowing;
+    },
+    get readableLength() {
+      return Math.max(0, bytes.byteLength - offset);
+    },
     setEncoding: (nextEncoding: string) => {
       encoding = nextEncoding;
       return stream;
@@ -426,8 +447,15 @@ function createReadableStdinDevice(input: string) {
     get destroyed() {
       return destroyed;
     },
-    resume: () => stream,
-    pause: () => stream,
+    resume: () => {
+      readableFlowing = true;
+      scheduleFlow();
+      return stream;
+    },
+    pause: () => {
+      readableFlowing = false;
+      return stream;
+    },
     [Symbol.asyncIterator]: async function* () {
       const chunk = read();
       if (chunk !== null) yield chunk;

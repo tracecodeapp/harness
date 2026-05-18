@@ -2538,6 +2538,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node process.stdin should expose request stdin as a readable device: ${JSON.stringify(processStdinResult)}`
   );
 
+  const processStdinStateResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"process.stdin.setEncoding(\\"utf8\\"); console.log(process.stdin.readable + \\":\\" + process.stdin.readableEnded + \\":\\" + process.stdin.readableEncoding + \\":\\" + process.stdin.readableLength + \\":\\" + String(process.stdin.readableFlowing)); const first = process.stdin.read(4); console.log(first + \\":\\" + process.stdin.readableLength + \\":\\" + process.stdin.readableEnded); process.stdin.pause(); const events = []; process.stdin.on(\\"data\\", (chunk) => events.push(\\"data:\\" + chunk)); process.stdin.on(\\"end\\", () => events.push(\\"end\\")); await new Promise((resolve) => queueMicrotask(resolve)); console.log(String(process.stdin.readableFlowing) + \\":\\" + events.join(\\"|\\")); process.stdin.resume(); await new Promise((resolve) => queueMicrotask(resolve)); console.log(String(process.stdin.readableFlowing) + \\":\\" + events.join(\\"|\\")); console.log(process.stdin.readableEnded + \\":\\" + process.stdin.readableLength);"',
+  ].join(' '), { stdin: 'stdin-state\n' });
+  assertCondition(processStdinStateResult.exitCode === 0, `browser node process.stdin state workflow should succeed: ${processStdinStateResult.stderr}`);
+  assertCondition(
+    processStdinStateResult.stdout === 'true:false:utf8:12:null\nstdi:8:false\nfalse:\ntrue:data:n-state\n|end\ntrue:0\n',
+    `browser node process.stdin should expose readable state and pause/resume flow: ${JSON.stringify(processStdinStateResult)}`
+  );
+
   const processStdinAliasResult = await workspace.runCommand([
     'node',
     '-e',
