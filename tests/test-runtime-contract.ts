@@ -36,6 +36,7 @@ import {
   runtimeKernelStatTarget,
   runtimeKernelSymlinkTarget,
   runtimeKernelTruncateTarget,
+  runtimeKernelVirtualDevices,
   runtimeKernelWriteTarget,
 } from '../packages/harness-core/src/runtime-kernel';
 import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
@@ -129,6 +130,27 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     stableStringify(runtimeKernelFileReadTarget('/dev/stdin', devices)) ===
       '{"kind":"device-file","path":"/dev/stdin"}',
     'kernel read target should allow high-level reads on readable devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelOpenTarget('/dev/null', { readable: true, writable: true })) ===
+      '{"device":"/dev/null","kind":"device","readable":true,"writable":true}',
+    'kernel open target should expose /dev/null as readable and writable'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelWriteTarget('/dev/null')) ===
+      '{"device":"/dev/null","kind":"device","outputDevice":"/dev/null"}' &&
+      stableStringify(runtimeKernelFileReadTarget('/dev/null')) === '{"kind":"device-file","path":"/dev/null"}',
+    'kernel policy should route /dev/null through device read/write semantics'
+  );
+  assertCondition(
+    runtimeKernelVirtualDevices().some((device) =>
+      device.path === '/dev/null' &&
+      device.readable === true &&
+      device.writable === true &&
+      device.inputDevice === '/dev/null' &&
+      device.outputDevice === '/dev/null'
+    ),
+    'kernel device manifest should include /dev/null'
   );
   assertCondition(
     stableStringify(runtimeKernelMutationTarget('/dev/log', [

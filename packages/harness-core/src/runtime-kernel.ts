@@ -135,7 +135,7 @@ export type RuntimeKernelVirtualPath =
   | { kind: 'device'; path: RuntimeKernelDevicePath }
   | { kind: 'device-directory'; path: '/dev' }
   | { kind: 'device-namespace'; path: string };
-export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['stderr', 'stdin', 'stdout', 'tty'] as const;
+export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['null', 'stderr', 'stdin', 'stdout', 'tty'] as const;
 
 function normalizeRuntimeAbsolutePath(path: string): string | null {
   const raw = path.replace(/\\/g, '/');
@@ -167,6 +167,7 @@ export function normalizeRuntimeDevicePath(path: string): '/dev' | RuntimeKernel
     normalized === '/dev/stdin' ||
     normalized === '/dev/stdout' ||
     normalized === '/dev/stderr' ||
+    normalized === '/dev/null' ||
     normalized === '/dev/tty'
   ) {
     return normalized;
@@ -206,19 +207,21 @@ export function runtimeProcCanMutate(path: string): boolean {
 }
 
 export function runtimeDeviceCanRead(device: RuntimeKernelDevicePath): boolean {
-  return device === '/dev/stdin' || device === '/dev/tty';
+  return device === '/dev/stdin' || device === '/dev/tty' || device === '/dev/null';
 }
 
 export function runtimeDeviceCanWrite(device: RuntimeKernelDevicePath): boolean {
-  return device === '/dev/stdout' || device === '/dev/stderr' || device === '/dev/tty';
+  return device === '/dev/stdout' || device === '/dev/stderr' || device === '/dev/tty' || device === '/dev/null';
 }
 
 export function runtimeDeviceInputSource(device: RuntimeKernelDevicePath): RuntimeKernelDevicePath | null {
-  return runtimeDeviceCanRead(device) ? '/dev/stdin' : null;
+  if (!runtimeDeviceCanRead(device)) return null;
+  return device === '/dev/null' ? '/dev/null' : '/dev/stdin';
 }
 
 export function runtimeDeviceOutputTarget(device: RuntimeKernelDevicePath): RuntimeKernelDevicePath | null {
   if (!runtimeDeviceCanWrite(device)) return null;
+  if (device === '/dev/null') return '/dev/null';
   return device === '/dev/tty' ? '/dev/stdout' : device;
 }
 

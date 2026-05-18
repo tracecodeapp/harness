@@ -1062,6 +1062,7 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   const readProjectStdinByte = (device = '/dev/stdin') => {
     const deviceInfo = devices[String(device)] || {};
     if (!deviceInfo.readable) return -1;
+    if (String(deviceInfo.inputDevice || device) === '/dev/null') return -1;
     if (stdinOffset >= stdinBytes.byteLength) return -1;
     const value = stdinBytes[stdinOffset];
     stdinOffset += 1;
@@ -1095,6 +1096,7 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
     const text = textDecoder ? textDecoder.decode(bytes) : String.fromCharCode(...bytes);
     const deviceInfo = devices[defaultDevice] || {};
     const outputDevice = String(deviceInfo.outputDevice || defaultDevice);
+    if (outputDevice === '/dev/null') return bytes.byteLength;
     emitProviderOutput(outputDevice === '/dev/stderr' ? 'stderr' : stream, outputDevice, text, defaultDevice !== outputDevice ? defaultDevice : '');
     return bytes.byteLength;
   };
@@ -1443,6 +1445,8 @@ class _TraceDeviceFile:
         if not self.writable():
             raise OSError("Kernel device is not writable: " + self._device)
         _output_device = str(_kernel_devices.get(self._device, {}).get("outputDevice") or self._device)
+        if _output_device == "/dev/null":
+            return len(_value) if self._binary and isinstance(_value, (bytes, bytearray)) else len(str(_value))
         _target = _stderr if _output_device == "/dev/stderr" else _stdout
         _data = _value if isinstance(_value, (bytes, bytearray)) else str(_value).encode("utf-8")
         _target.write(bytes(_data).decode("utf-8", "replace"), self._device, _output_device)

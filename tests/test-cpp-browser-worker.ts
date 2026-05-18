@@ -71,6 +71,7 @@ async function main(): Promise<void> {
       ];
       const traceKernelDevices = [
         { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' },
         { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stderr' },
@@ -301,11 +302,12 @@ async function main(): Promise<void> {
             '  std::cout << (utimensat(AT_FDCWD, "/tracekernel/custom", blocked_times, 0) == 0 ? "custom-kernel-utime:ok" : "custom-kernel-utime:blocked") << "\\\\n";',
             '  DIR* dev_dir = opendir("/dev");',
             '  bool saw_stdin = false;',
+            '  bool saw_null = false;',
             '  bool saw_stdout = false;',
             '  bool saw_log = false;',
             '  bool saw_custom_in = false;',
-            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "stdin") saw_stdin = true; if (name == "stdout") saw_stdout = true; if (name == "log") saw_log = true; if (name == "custom-in") saw_custom_in = true; } closedir(dev_dir); }',
-            '  std::cout << (saw_stdin && saw_stdout && saw_log && saw_custom_in ? "dev-list:ok" : "dev-list:missing") << "\\\\n";',
+            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "stdin") saw_stdin = true; if (name == "null") saw_null = true; if (name == "stdout") saw_stdout = true; if (name == "log") saw_log = true; if (name == "custom-in") saw_custom_in = true; } closedir(dev_dir); }',
+            '  std::cout << (saw_stdin && saw_null && saw_stdout && saw_log && saw_custom_in ? "dev-list:ok" : "dev-list:missing") << "\\\\n";',
             '  struct stat dev_stat = {};',
             '  struct stat stdout_stat = {};',
             '  bool dev_stat_ok = stat("/dev", &dev_stat) == 0 && stat("/dev/stdout", &stdout_stat) == 0;',
@@ -324,6 +326,9 @@ async function main(): Promise<void> {
             '  std::cout << (stdout_fd_stat_ok && !S_ISDIR(stdout_fd_stat.st_mode) ? "dev-fstat:ok" : "dev-fstat:bad") << "\\\\n";',
             '  std::ifstream stdout_read("/dev/stdout");',
             '  std::cout << (stdout_read ? "dev-stdout-read:ok" : "dev-stdout-read:blocked") << "\\\\n";',
+            '  std::ifstream null_read("/dev/null");',
+            '  std::string null_contents((std::istreambuf_iterator<char>(null_read)), std::istreambuf_iterator<char>());',
+            '  std::cout << "dev-null:" << null_contents.size() << "\\\\n";',
             '  std::cout << (std::remove("/dev/stdout") == 0 ? "dev-unlink:ok" : "dev-unlink:blocked") << "\\\\n";',
             '  std::cout << (utimensat(AT_FDCWD, "/dev/stdout", blocked_times, 0) == 0 ? "dev-utime:ok" : "dev-utime:blocked") << "\\\\n";',
             '  std::ofstream("rename-device-source.txt") << "blocked\\\\n";',
@@ -340,6 +345,8 @@ async function main(): Promise<void> {
             '  if (tty_device) { std::fputs("tty-device\\\\n", tty_device); std::fclose(tty_device); }',
             '  FILE* log_device = std::fopen("/dev/log", "w");',
             '  if (log_device) { std::fputs("log-device\\\\n", log_device); std::fclose(log_device); }',
+            '  FILE* null_device = std::fopen("/dev/null", "w");',
+            '  if (null_device) { std::fputs("null-device\\\\n", null_device); std::fclose(null_device); }',
             '  FILE* capture_device = std::fopen("/dev/capture", "w");',
             '  if (capture_device) { std::fputs("capture-device\\\\n", capture_device); std::fclose(capture_device); }',
             '  FILE* tee_device = std::fopen("/dev/tee", "w");',
@@ -1341,7 +1348,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\ncustom-kernel-mkdir:blocked\ncustom-kernel-create:blocked\n') === true &&
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
-        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-null:0\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\ncapture-device\ntee-device\n') === true,
@@ -1350,6 +1357,10 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.stderr === 'device-err\ntty-device\nlog-device\n',
       `C++ browser project run should route /dev/stderr writes: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => event.type === 'output' && event.device === '/dev/null') !== true,
+      `C++ browser project run should discard /dev/null writes without output events: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events

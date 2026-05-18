@@ -117,6 +117,7 @@ async function main(): Promise<void> {
 
       const traceKernelDevices = [
         { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' },
         { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
@@ -209,6 +210,9 @@ async function main(): Promise<void> {
             '    print("dev-file-tty-rw-read=" + tty_rw.readline().strip())',
             '    print("dev-file-tty-rw-eof=" + str(tty_rw.read() == ""))',
             '    tty_rw.write("dev-file-tty-rw-write\\\\n")',
+            'with open("/dev/null", "r+", encoding="utf-8") as null_file:',
+            '    print("dev-null=" + str(len(null_file.read())))',
+            '    null_file.write("discarded\\\\n")',
             'sys.__stdout__.write("provider-hook-out\\\\n")',
             'sys.__stdout__.writelines(["provider-hook-lines", "\\\\n"])',
             'sys.__stdout__.flush()',
@@ -773,7 +777,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=\ndev-fdopen-stdin=\ndev-fd-custom-in=\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=\ndev-file-custom-in-write-open:blocked\ndev-file-custom-in-chunks=||True\ndev-file-custom-in-binary=\ndev-file-custom-in-binary-chunks=||True\ndev-file-log-read-open:blocked\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nstdout-buffer\nafter-live-file\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=\ndev-fdopen-stdin=\ndev-fd-custom-in=\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=\ndev-file-custom-in-write-open:blocked\ndev-file-custom-in-chunks=||True\ndev-file-custom-in-binary=\ndev-file-custom-in-binary-chunks=||True\ndev-file-log-read-open:blocked\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\ndev-null=0\nprovider-hook-out\nprovider-hook-lines\nstdout-buffer\nafter-live-file\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
@@ -1321,7 +1325,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-fchmod:blocked\nproc-fchown:blocked\ntracekernel test\nproc-fdopen-write:blocked\nproc-os-write:blocked\nTrue\nFalse\ncapture,custom-in,log,stderr,stdin,stdout,tee,tty\nTrue\nTrue\nTrue\nFalse\n0\ncapture:True:False,custom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tee:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-fchmod:blocked\nproc-fchown:blocked\ntracekernel test\nproc-fdopen-write:blocked\nproc-os-write:blocked\nTrue\nFalse\ncapture,custom-in,log,null,stderr,stdin,stdout,tee,tty\nTrue\nTrue\nTrue\nFalse\n0\ncapture:True:False,custom-in:True:False,log:True:False,null:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tee:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(

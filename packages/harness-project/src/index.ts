@@ -2508,13 +2508,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private readDevice(device: RuntimeKernelDevicePath): string {
-    if (runtimeDeviceInputSource(device)) return this.activeCommandStdin;
+    const inputDevice = runtimeDeviceInputSource(device);
+    if (inputDevice && inputDevice !== '/dev/null') return this.activeCommandStdin;
     return '';
   }
 
   private writeDevice(device: RuntimeKernelDevicePath, data: string, actor?: RuntimeWorkspaceActor): void {
     const outputDevice = runtimeDeviceOutputTarget(device);
     if (!outputDevice) throw new Error(`Kernel device is read-only: ${device}`);
+    if (outputDevice === '/dev/null') return;
     if (this.activeCommandActor) {
       if (outputDevice === '/dev/stdout') this.activeDeviceStdout += data;
       if (outputDevice === '/dev/stderr') this.activeDeviceStderr += data;

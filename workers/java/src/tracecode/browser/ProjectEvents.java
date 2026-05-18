@@ -94,7 +94,7 @@ public final class ProjectEvents {
   }
 
   public static InputStream inputStream() {
-    return new ProjectInputStream();
+    return new ProjectInputStream(null);
   }
 
   public static OutputStream streamingOutput(ByteArrayOutputStream capture, String stream) {
@@ -850,7 +850,7 @@ public final class ProjectEvents {
     @Override
     public int read() throws IOException {
       if (device == null) return super.read();
-      return readKernelStdinByte();
+      return readKernelDeviceByte(device);
     }
 
     @Override
@@ -861,22 +861,20 @@ public final class ProjectEvents {
     @Override
     public int read(byte[] bytes, int offset, int length) throws IOException {
       if (device == null) return super.read(bytes, offset, length);
-      return readKernelStdinBytes(bytes, offset, length);
+      return readKernelDeviceBytes(device, bytes, offset, length);
     }
 
     @Override
     public long skip(long count) throws IOException {
       if (device == null) return super.skip(count);
       if (count <= 0) return 0;
-      int skipped = Math.min((int) Math.min(count, Integer.MAX_VALUE), kernelStdinAvailable());
-      KERNEL_STDIN_OFFSET.set(KERNEL_STDIN_OFFSET.get() + skipped);
-      return skipped;
+      return skipKernelDeviceBytes(device, count);
     }
 
     @Override
     public int available() throws IOException {
       if (device == null) return super.available();
-      return kernelStdinAvailable();
+      return kernelDeviceAvailable(device);
     }
   }
 
@@ -1780,11 +1778,38 @@ public final class ProjectEvents {
 
   private static byte[] readKernelDevice(KernelDevice device) {
     if (!device.readable) return new byte[0];
+    if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return new byte[0];
     byte[] stdin = KERNEL_STDIN.get();
     int offset = Math.max(0, Math.min(KERNEL_STDIN_OFFSET.get(), stdin.length));
     byte[] bytes = java.util.Arrays.copyOfRange(stdin, offset, stdin.length);
     KERNEL_STDIN_OFFSET.set(stdin.length);
     return bytes;
+  }
+
+  private static int readKernelDeviceByte(KernelDevice device) {
+    if (!device.readable) return -1;
+    if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return -1;
+    return readKernelStdinByte();
+  }
+
+  private static int readKernelDeviceBytes(KernelDevice device, byte[] bytes, int offset, int length) {
+    if (!device.readable) return -1;
+    if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return length == 0 ? 0 : -1;
+    return readKernelStdinBytes(bytes, offset, length);
+  }
+
+  private static long skipKernelDeviceBytes(KernelDevice device, long count) {
+    if (!device.readable || count <= 0) return 0;
+    if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return 0;
+    int skipped = Math.min((int) Math.min(count, Integer.MAX_VALUE), kernelStdinAvailable());
+    KERNEL_STDIN_OFFSET.set(KERNEL_STDIN_OFFSET.get() + skipped);
+    return skipped;
+  }
+
+  private static int kernelDeviceAvailable(KernelDevice device) {
+    if (!device.readable) return 0;
+    if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return 0;
+    return kernelStdinAvailable();
   }
 
   private static int readKernelStdinByte() {
@@ -1813,19 +1838,28 @@ public final class ProjectEvents {
   }
 
   private static final class ProjectInputStream extends InputStream {
+    private final KernelDevice device;
+
+    ProjectInputStream(KernelDevice device) {
+      this.device = device;
+    }
+
     @Override
     public int read() {
+      if (device != null) return readKernelDeviceByte(device);
       return readKernelStdinByte();
     }
 
     @Override
     public int read(byte[] bytes, int offset, int length) {
+      if (device != null) return readKernelDeviceBytes(device, bytes, offset, length);
       return readKernelStdinBytes(bytes, offset, length);
     }
 
     @Override
     public long skip(long count) {
       if (count <= 0) return 0;
+      if (device != null) return skipKernelDeviceBytes(device, count);
       int skipped = Math.min((int) Math.min(count, Integer.MAX_VALUE), kernelStdinAvailable());
       KERNEL_STDIN_OFFSET.set(KERNEL_STDIN_OFFSET.get() + skipped);
       return skipped;
@@ -1833,12 +1867,14 @@ public final class ProjectEvents {
 
     @Override
     public int available() {
+      if (device != null) return kernelDeviceAvailable(device);
       return kernelStdinAvailable();
     }
   }
 
   private static void writeKernelDevice(KernelDevice device, byte[] bytes) {
     String outputDevice = device.outputDevice.isEmpty() ? device.path : device.outputDevice;
+    if ("/dev/null".equals(outputDevice)) return;
     String stream = "/dev/stderr".equals(outputDevice) ? "stderr" : "stdout";
     ByteArrayOutputStream capture = "stderr".equals(stream) ? STDERR_CAPTURE.get() : STDOUT_CAPTURE.get();
     if (capture != null) {
@@ -2138,13 +2174,13 @@ public final class ProjectEvents {
   private static Reader kernelInputReader(Path path, Charset charset) throws IOException {
     KernelDevice device = readableKernelDevice(path);
     if (device == null) return null;
-    return new InputStreamReader(inputStream(), charset == null ? Charset.defaultCharset() : charset);
+    return new InputStreamReader(new ProjectInputStream(device), charset == null ? Charset.defaultCharset() : charset);
   }
 
   private static Reader kernelInputReader(FileDescriptor fdObj, Charset charset) {
     KernelDevice device = readableKernelDevice(fdObj);
     if (device == null) return null;
-    return new InputStreamReader(inputStream(), charset == null ? Charset.defaultCharset() : charset);
+    return new InputStreamReader(new ProjectInputStream(device), charset == null ? Charset.defaultCharset() : charset);
   }
 
   private static OutputStream printStreamOutput(Path path) throws IOException {

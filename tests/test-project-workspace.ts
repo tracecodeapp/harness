@@ -2066,8 +2066,10 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       'fs.chmodSync("/dev/log", 0o600);',
       'process.stdout.write("chmod-log:ok\\n");',
       'try { fs.rmSync("/dev/missing"); } catch (error) { process.stdout.write("rm-missing:" + error.code + "\\n"); }',
+      'process.stdout.write("null-read:" + fs.readFileSync("/dev/null").length + "\\n");',
       'fs.copyFileSync("/dev/custom-in", "custom-copy.txt");',
       'process.stdout.write(fs.readFileSync("custom-copy.txt", "utf8").trim() + "\\n");',
+      'fs.writeFileSync("/dev/null", "discarded\\n");',
       'fs.writeFileSync("/dev/tty", "tty-device\\n");',
       'fs.copyFileSync("message.txt", "/dev/tty");',
       'fs.writeFileSync("/dev/log", "log-device\\n");',
@@ -2083,6 +2085,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       files: [{ path: 'message.txt', contents: 'copy-device\n' }],
       kernelDevices: [
         { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' },
         { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stderr' },
@@ -2095,7 +2098,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
 
   assertCondition(result.exitCode === 0, `browser node custom kernel device inventory should succeed: ${result.stderr}`);
   assertCondition(
-    result.stdout === 'from-tty\n\ntrue\ntrue:false\nrm-log:EROFS\nchmod-log:ok\nrm-missing:ENOENT\n\n',
+    result.stdout === 'from-tty\n\ntrue\ntrue:false\nrm-log:EROFS\nchmod-log:ok\nrm-missing:ENOENT\nnull-read:0\n\n',
     `browser node should read manifest devices and list them in /dev: ${JSON.stringify(result)}`
   );
   assertCondition(
@@ -3177,7 +3180,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   ].join(' '));
   assertCondition(devFsResult.exitCode === 0, `browser node /dev fs workflow should succeed: ${devFsResult.stderr}`);
   assertCondition(
-    devFsResult.stdout === 'stderr,stdin,stdout,tty\nstderr:true:false:true:false:false:false|stdin:true:false:true:false:false:false|stdout:true:false:true:false:false:false|tty:true:false:true:false:false:false\ntrue:true:false\ntrue:false\ntrue:false\nENOTDIR\n',
+    devFsResult.stdout === 'null,stderr,stdin,stdout,tty\nnull:true:false:true:false:false:false|stderr:true:false:true:false:false:false|stdin:true:false:true:false:false:false|stdout:true:false:true:false:false:false|tty:true:false:true:false:false:false\ntrue:true:false\ntrue:false\ntrue:false\nENOTDIR\n',
     `browser node fs should expose tracekernel /dev namespace: ${devFsResult.stdout}`
   );
 
@@ -6830,6 +6833,10 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   assertCondition(ttyResult.stdout === 'tty-out\n', `/dev/tty writes should route to command stdout: ${JSON.stringify(ttyResult)}`);
   const stderrResult = await deviceWorkspace.runCommand('printf "device-err\\n" > /dev/stderr');
   assertCondition(stderrResult.stderr === 'device-err\n', `/dev/stderr writes should be command stderr: ${JSON.stringify(stderrResult)}`);
+  const nullResult = await deviceWorkspace.runCommand('cat /dev/null && printf "discarded\\n" > /dev/null', {
+    onEvent: (event) => deviceCommandEvents.push(event),
+  });
+  assertCondition(nullResult.stdout === '' && nullResult.stderr === '', `/dev/null should read EOF and discard writes: ${JSON.stringify(nullResult)}`);
   const shellCopyVirtualResult = await deviceWorkspace.runCommand(
     'cp /proc/kernel/info shell-proc-info.json && cp shell-proc-info.json /dev/stdout',
     { onEvent: (event) => deviceCommandEvents.push(event) }
@@ -6862,12 +6869,14 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     ),
     `runCommand onEvent should preserve /dev/tty source device: ${JSON.stringify(deviceCommandEvents)}`
   );
-  assertCondition((await deviceWorkspace.readDir('/dev')).join(',') === 'stderr,stdin,stdout,tty', '/dev should list kernel devices');
+  assertCondition((await deviceWorkspace.readDir('/dev')).join(',') === 'null,stderr,stdin,stdout,tty', '/dev should list kernel devices');
   const stdoutStat = await deviceWorkspace.stat('/dev/stdout');
   assertCondition(stdoutStat.isFile && !stdoutStat.isDirectory, '/dev/stdout should stat as a file device');
+  assertCondition(await deviceWorkspace.readFile('/dev/null') === '', '/dev/null reads should return EOF');
   await assertRejectsAsync(() => deviceWorkspace.readFile('/dev/stdout'), 'readFile should reject unreadable /dev/stdout');
   await assertRejectsAsync(() => deviceWorkspace.writeFile('/dev/stdin', 'blocked\n'), '/dev/stdin should be read-only');
   await deviceWorkspace.writeFile('/dev/stdout', 'principal-out\n');
+  await deviceWorkspace.writeFile('/dev/null', 'discarded-principal\n');
   await deviceWorkspace.writeFile('/dev/tty', 'principal-tty\n');
   await deviceWorkspace.writeFile('copy-device.txt', 'copy-device-out\n');
   await deviceWorkspace.copyFile('copy-device.txt', '/dev/stdout');

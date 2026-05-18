@@ -1544,13 +1544,15 @@ async function runBrowserJavaScriptProjectRequest(
       if (!outputDevice) {
         throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       }
+      if (outputDevice === '/dev/null') return;
       emitOutput(outputDevice === '/dev/stderr' ? 'stderr' : 'stdout', data, outputDevice, device !== outputDevice ? device : undefined);
     };
 
     const stdinBytes = utf8Bytes(request.stdin);
     let stdinOffset = 0;
     const readDeviceBytes = (device: RuntimeKernelDevicePath, size?: number): Uint8Array => {
-      if (!runtimeKernelDeviceInputSource(kernelDevices, device)) return new Uint8Array();
+      const inputDevice = runtimeKernelDeviceInputSource(kernelDevices, device);
+      if (!inputDevice || inputDevice === '/dev/null') return new Uint8Array();
       const remaining = Math.max(0, stdinBytes.byteLength - stdinOffset);
       const count = typeof size === 'number' && size >= 0 ? Math.min(Math.floor(size), remaining) : remaining;
       const bytes = stdinBytes.slice(stdinOffset, stdinOffset + count);
@@ -1558,7 +1560,7 @@ async function runBrowserJavaScriptProjectRequest(
       return bytes;
     };
     const remainingDeviceBytes = (device: RuntimeKernelDevicePath): number => (
-      runtimeKernelDeviceInputSource(kernelDevices, device)
+      ![null, '/dev/null'].includes(runtimeKernelDeviceInputSource(kernelDevices, device))
         ? Math.max(0, stdinBytes.byteLength - stdinOffset)
         : 0
     );

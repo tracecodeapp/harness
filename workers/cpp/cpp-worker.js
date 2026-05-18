@@ -940,6 +940,10 @@ class WasiProcess {
     }
 
     if (entry.kind === 'stdio' && entry.outputDevice) {
+      if (entry.outputDevice === '/dev/null') {
+        this.mem.writeU32(nwrittenOut, total);
+        return ESUCCESS;
+      }
       const stream = entry.outputDevice === '/dev/stderr' ? 'stderr' : 'stdout';
       if (stream === 'stdout') this.stdoutChunks.push(...chunks);
       if (stream === 'stderr') this.stderrChunks.push(...chunks);
@@ -965,7 +969,7 @@ class WasiProcess {
   fd_read(fd, iovs, iovsLen, nreadOut) {
     const entry = this.fds.get(fd);
     if (!entry || !entry.readable) return EBADF;
-    const source = entry.kind === 'stdio' && entry.inputDevice
+    const source = entry.kind === 'stdio' && entry.inputDevice && entry.inputDevice !== '/dev/null'
       ? this.stdin
       : entry.kind === 'file'
         ? this.fs.readFile(entry.path)
@@ -4414,6 +4418,7 @@ function projectKernelDevices(project) {
 
 function standaloneKernelDevices() {
   return new Map([
+    ['/dev/null', { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' }],
     ['/dev/stdin', { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin', outputDevice: '' }],
     ['/dev/stdout', { path: '/dev/stdout', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stdout' }],
     ['/dev/stderr', { path: '/dev/stderr', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stderr' }],

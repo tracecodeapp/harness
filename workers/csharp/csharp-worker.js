@@ -609,6 +609,7 @@ function writeProjectDeviceByte(device, value, options = {}) {
   if (!context || typeof value !== 'number' || value < 0) return;
   const outputDevice = kernelDeviceOutputTarget(device, context.request);
   if (!outputDevice) return;
+  if (outputDevice === '/dev/null') return;
   const stream = kernelDeviceStream(outputDevice);
   const buffer = stream === 'stdout' ? context.stdoutBytes : context.stderrBytes;
   const currentDevice = stream === 'stdout' ? context.stdoutDevice : context.stderrDevice;
@@ -633,7 +634,8 @@ function writeProjectDeviceByte(device, value, options = {}) {
 function readProjectInputByte(devicePath = '/dev/stdin') {
   const context = activeProjectIo;
   if (!context) return null;
-  if (!kernelDeviceInputSource(devicePath, context.request)) return null;
+  const inputDevice = kernelDeviceInputSource(devicePath, context.request);
+  if (!inputDevice || inputDevice === '/dev/null') return null;
   if (context.stdinIndex >= context.stdinBytes.length) return null;
   return context.stdinBytes[context.stdinIndex++];
 }

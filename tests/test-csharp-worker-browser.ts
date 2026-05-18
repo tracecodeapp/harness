@@ -97,6 +97,7 @@ const TRACE_KERNEL_PROC_FILES = [
 ];
 const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['kernelDevices']> = [
   { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+  { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' },
   { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
   { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
   { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
@@ -2759,6 +2760,7 @@ async function main(): Promise<void> {
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/log", "dev-log\\n"); Console.WriteLine("dev-log-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-log-write:" + ex.GetType().Name); }',
+                'try { Console.WriteLine("dev-null=" + File.ReadAllText("/dev/null").Length); File.WriteAllText("/dev/null", "discarded\\n"); } catch (Exception ex) { Console.WriteLine("dev-null:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/capture", "capture-device"); File.WriteAllText("/dev/stdout", "stdout-after-capture\\n"); Console.WriteLine("dev-capture-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-capture-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tee", "tee-device"); File.WriteAllText("/dev/stdout", "stdout-after-tee\\n"); Console.WriteLine("dev-tee-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tee-write:" + ex.GetType().Name); }',
                 'try { File.ReadAllText("/dev/stdout"); Console.WriteLine("dev-stdout-read:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-read:" + ex.GetType().Name); }',
@@ -2820,6 +2822,7 @@ async function main(): Promise<void> {
       projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\ncustom-kernel-file\n') &&
         projectRun.stdout.includes('dev-stdout\n') &&
         projectRun.stdout.includes('dev-tty\n') &&
+        projectRun.stdout.includes('dev-null=0\n') &&
         projectRun.stdout.includes('capture-devicestdout-after-capture\n') &&
         projectRun.stdout.includes('tee-devicestdout-after-tee\n'),
       `C# project worker should preserve stdout/stdin/env/args/proc reads: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, events: projectRun.events })}`
@@ -2845,6 +2848,10 @@ async function main(): Promise<void> {
           event.sourceDevice === undefined
       ) === true,
       `C# project worker should not report redundant sourceDevice for direct /dev/stdout writes: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => event.type === 'output' && event.device === '/dev/null') !== true,
+      `C# project worker should discard /dev/null writes without output events: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some(
