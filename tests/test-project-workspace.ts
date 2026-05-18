@@ -2496,7 +2496,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const inspectResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"tree/nested/value.txt\\", \\"nested\\\\n\\"); console.log(fs.statSync(\\"lib/math.js\\").isFile()); console.log(fs.statSync(\\"tree\\").isDirectory()); console.log(fs.readdirSync(\\"/workspace\\").includes(\\"tree\\")); console.log(fs.readdirSync(\\"tree/nested\\").join(\\"\\,\\")); fs.rmSync(\\"tree\\", { recursive: true }); console.log(fs.existsSync(\\"tree/nested/value.txt\\"));"',
+    '"const fs = require(\\"node:fs\\"); fs.mkdirSync(\\"tree/nested\\", { recursive: true }); fs.writeFileSync(\\"tree/nested/value.txt\\", \\"nested\\\\n\\"); console.log(fs.statSync(\\"lib/math.js\\").isFile()); console.log(fs.statSync(\\"tree\\").isDirectory()); console.log(fs.readdirSync(\\"/workspace\\").includes(\\"tree\\")); console.log(fs.readdirSync(\\"tree/nested\\").join(\\"\\,\\")); fs.rmSync(\\"tree\\", { recursive: true }); console.log(fs.existsSync(\\"tree/nested/value.txt\\"));"',
   ].join(' '));
   assertCondition(inspectResult.exitCode === 0, `browser node fs inspection should succeed: ${inspectResult.stderr}`);
   assertCondition(
@@ -3188,6 +3188,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   assertCondition(
     mkdirConflictResult.stdout === 'EEXIST\nEEXIST\nENOTDIR\nENOTDIR\nEEXIST\nok\ntrue\nfile\n\ntrue\n',
     `browser node mkdir conflicts should match desktop semantics without corrupting entries: ${mkdirConflictResult.stdout}`
+  );
+
+  const fileCreationConflictResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; fs.writeFileSync(\\"parent-source.txt\\", \\"source\\\\n\\"); fs.writeFileSync(\\"parent-file.txt\\", \\"file\\\\n\\"); fs.writeFileSync(\\"rename-source.txt\\", \\"rename\\\\n\\"); fs.writeFileSync(\\"rename-existing.txt\\", \\"old\\\\n\\"); fs.mkdirSync(\\"parent-dir\\"); fs.mkdirSync(\\"rename-dir-src\\"); fs.writeFileSync(\\"rename-dir-src/value.txt\\", \\"dir\\\\n\\"); console.log(code(() => fs.writeFileSync(\\"missing-write/value.txt\\", \\"x\\"))); console.log(code(() => fs.writeFileSync(\\"parent-file.txt/value.txt\\", \\"x\\"))); console.log(code(() => fs.appendFileSync(\\"missing-append/value.txt\\", \\"x\\"))); console.log(code(() => { const fd = fs.openSync(\\"missing-open/value.txt\\", \\"w\\"); fs.closeSync(fd); })); console.log(code(() => fs.copyFileSync(\\"parent-source.txt\\", \\"missing-copy/value.txt\\"))); console.log(code(() => fs.copyFileSync(\\"parent-source.txt\\", \\"parent-dir\\"))); console.log(code(() => fs.linkSync(\\"parent-source.txt\\", \\"missing-link/value.txt\\"))); console.log(code(() => fs.renameSync(\\"rename-source.txt\\", \\"missing-rename/value.txt\\"))); console.log(code(() => fs.renameSync(\\"rename-source.txt\\", \\"parent-dir\\"))); console.log(code(() => fs.renameSync(\\"rename-dir-src\\", \\"missing-dir-rename/value.txt\\"))); console.log(code(() => fs.renameSync(\\"rename-dir-src\\", \\"parent-file.txt\\"))); console.log(code(() => fs.renameSync(\\"rename-source.txt\\", \\"rename-existing.txt\\"))); console.log(fs.readFileSync(\\"rename-existing.txt\\", \\"utf8\\")); console.log(fs.existsSync(\\"missing-write\\")); console.log(fs.existsSync(\\"missing-open\\")); console.log(fs.existsSync(\\"missing-rename\\")); console.log(fs.existsSync(\\"rename-dir-src/value.txt\\"));"',
+  ].join(' '));
+  assertCondition(fileCreationConflictResult.exitCode === 0, `browser node file creation conflict workflow should succeed: ${fileCreationConflictResult.stderr}`);
+  assertCondition(
+    fileCreationConflictResult.stdout === 'ENOENT\nENOTDIR\nENOENT\nENOENT\nENOENT\nEISDIR\nENOENT\nENOENT\nEISDIR\nENOENT\nENOTDIR\nok\nrename\n\nfalse\nfalse\nfalse\ntrue\n',
+    `browser node file creation conflicts should match desktop semantics without corrupting entries: ${fileCreationConflictResult.stdout}`
   );
 
   const directoryMutationResult = await workspace.runCommand([
