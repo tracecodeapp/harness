@@ -370,6 +370,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('emitProjectFileSnapshot(stream.path)'),
         '@tracecode/harness-csharp worker should ship live empty-open file mutation hooks'
       );
+      assertCondition(
+        worker.includes('emitProjectDirectoryCreate(path)') &&
+          worker.includes('emitProjectDirectoryDelete(path)') &&
+          worker.includes('fs.mkdir = function mkdirWithProjectEvents') &&
+          worker.includes('fs.rmdir = function rmdirWithProjectEvents') &&
+          worker.includes('emitProjectPathSnapshot(newPath)'),
+        '@tracecode/harness-csharp worker should ship provider-level live directory mutation hooks'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
       const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');

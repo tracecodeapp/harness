@@ -471,6 +471,47 @@ function emitProjectFileDelete(path) {
   emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relativePath, deleted: true } });
 }
 
+function emitProjectDirectoryCreate(path) {
+  const relativePath = normalizeProjectFsPath(path);
+  if (!relativePath) return;
+  emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relativePath, directory: true } });
+}
+
+function emitProjectDirectoryDelete(path) {
+  const relativePath = normalizeProjectFsPath(path);
+  if (!relativePath) return;
+  emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relativePath, directory: true, deleted: true } });
+}
+
+function runtimeFsIsDirectory(fs, path) {
+  try {
+    const stat = fs.stat(path);
+    return Boolean(stat && fs.isDir(stat.mode));
+  } catch {
+    return false;
+  }
+}
+
+function emitProjectPathSnapshot(path) {
+  const fs = runtimeModule?.FS;
+  if (!activeProjectIo || !fs) return;
+  try {
+    const stat = fs.stat(path);
+    if (stat && fs.isFile(stat.mode)) {
+      emitProjectFileSnapshot(path);
+      return;
+    }
+    if (!stat || !fs.isDir(stat.mode)) return;
+    emitProjectDirectoryCreate(path);
+    for (const entry of fs.readdir(path)) {
+      if (entry === '.' || entry === '..') continue;
+      emitProjectPathSnapshot(`${String(path).replace(/\/+$/, '')}/${entry}`);
+    }
+  } catch {
+    // The path may have been deleted or may be a special device.
+  }
+}
+
 function installRuntimeFsHooks(runtime) {
   const module = runtime?.Module;
   const fs = module?.FS;
@@ -544,11 +585,21 @@ function installRuntimeFsHooks(runtime) {
     };
   }
 
+  const originalMkdir = fs.mkdir;
+  if (typeof originalMkdir === 'function') {
+    fs.mkdir = function mkdirWithProjectEvents(path) {
+      const result = originalMkdir.apply(this, arguments);
+      if (activeProjectIo) emitProjectDirectoryCreate(path);
+      return result;
+    };
+  }
+
   const originalRmdir = fs.rmdir;
   if (typeof originalRmdir === 'function') {
     fs.rmdir = function rmdirWithProjectEvents(path) {
+      const wasDirectory = activeProjectIo && runtimeFsIsDirectory(fs, path);
       const result = originalRmdir.apply(this, arguments);
-      if (activeProjectIo) emitProjectFileDelete(path);
+      if (wasDirectory) emitProjectDirectoryDelete(path);
       return result;
     };
   }
@@ -556,10 +607,16 @@ function installRuntimeFsHooks(runtime) {
   const originalRename = fs.rename;
   if (typeof originalRename === 'function') {
     fs.rename = function renameWithProjectEvents(oldPath, newPath) {
+      const wasDirectory = activeProjectIo && runtimeFsIsDirectory(fs, oldPath);
       const result = originalRename.apply(this, arguments);
       if (activeProjectIo) {
-        emitProjectFileDelete(oldPath);
-        emitProjectFileSnapshot(newPath);
+        if (wasDirectory) {
+          emitProjectDirectoryDelete(oldPath);
+          emitProjectPathSnapshot(newPath);
+        } else {
+          emitProjectFileDelete(oldPath);
+          emitProjectFileSnapshot(newPath);
+        }
       }
       return result;
     };
