@@ -509,6 +509,46 @@ async function main(): Promise<void> {
         },
       });
 
+      const vectoredFdRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import os',
+          'read_fd = os.open("/dev/custom-in", os.O_RDONLY)',
+          'try:',
+          '    first = bytearray(5)',
+          '    second = bytearray(64)',
+          '    count = os.readv(read_fd, [first, second])',
+          '    print("readv=" + bytes(first + second)[:count].decode("utf-8").replace("\\\\n", "<lf>"))',
+          'finally:',
+          '    os.close(read_fd)',
+          'file_fd = os.open("/workspace/writev-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
+          'try:',
+          '    os.writev(file_fd, [b"writev-", memoryview(b"file\\\\n")])',
+          'finally:',
+          '    os.close(file_fd)',
+          'stdout_fd = os.open("/dev/stdout", os.O_WRONLY)',
+          'try:',
+          '    os.writev(stdout_fd, [b"writev-", b"stdout\\\\n"])',
+          'finally:',
+          '    os.close(stdout_fd)',
+          'log_fd = os.open("/dev/log", os.O_WRONLY)',
+          'try:',
+          '    os.writev(log_fd, [b"writev-", b"log\\\\n"])',
+          'finally:',
+          '    os.close(log_fd)',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: 'readv-one\\nreadv-two\\n',
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelDevices: traceKernelDevices,
+        },
+      });
+
       const directoryRun = await send('execute-project-python', {
         source: 'argument',
         scriptPath: '<string>',
@@ -757,7 +797,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -769,6 +809,7 @@ async function main(): Promise<void> {
       manifestCustomDeviceRun: PythonProjectWorkerResponse;
       sharedStdinCursorRun: PythonProjectWorkerResponse;
       fdReadlineRun: PythonProjectWorkerResponse;
+      vectoredFdRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       linkApiRun: PythonProjectWorkerResponse;
       statvfsRun: PythonProjectWorkerResponse;
@@ -1258,6 +1299,47 @@ async function main(): Promise<void> {
     assertCondition(
       results.fdReadlineRun.stdout === 'dev-line-1=dev-one\ndev-line-2=dev-two\ndev-rest=dev-three\nproc-line-1=proc-one\nproc-line-2=proc-two\nproc-rest=proc-three\n',
       `Python project fd readline should preserve unread virtual fd data: ${JSON.stringify(results.fdReadlineRun.stdout)}`
+    );
+    assertCondition(results.vectoredFdRun.exitCode === 0, `Python project vectored fd run should succeed: ${results.vectoredFdRun.stderr}`);
+    assertCondition(
+      results.vectoredFdRun.stdout === 'readv=readv-one<lf>readv-two<lf>\nwritev-stdout\n',
+      `Python project os.readv/os.writev stdout should match: ${JSON.stringify(results.vectoredFdRun.stdout)}`
+    );
+    assertCondition(
+      results.vectoredFdRun.stderr === 'writev-log\n',
+      `Python project os.writev stderr routing should match: ${JSON.stringify(results.vectoredFdRun.stderr)}`
+    );
+    assertCondition(
+      findFile(results.vectoredFdRun, 'writev-live.txt')?.contents === 'writev-file\n',
+      'Python project os.writev run should report final file contents'
+    );
+    assertCondition(
+      results.vectoredFdRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'writev-live.txt' &&
+        event.change.contents === 'writev-file\n'
+      )) === true,
+      `Python project worker should stream live os.writev mutations: ${JSON.stringify(results.vectoredFdRun.events)}`
+    );
+    assertCondition(
+      results.vectoredFdRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.device === '/dev/stdout' &&
+        event.data === 'writev-stdout\n'
+      )) === true,
+      `Python project worker should route os.writev stdout events: ${JSON.stringify(results.vectoredFdRun.events)}`
+    );
+    assertCondition(
+      results.vectoredFdRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stderr' &&
+        event.device === '/dev/stderr' &&
+        event.sourceDevice === '/dev/log' &&
+        event.data === 'writev-log\n'
+      )) === true,
+      `Python project worker should route os.writev custom stderr events: ${JSON.stringify(results.vectoredFdRun.events)}`
     );
     assertCondition(results.directoryRun.exitCode === 0, `Python project directory source should succeed: ${results.directoryRun.stderr}`);
     assertCondition(

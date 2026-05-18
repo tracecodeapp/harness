@@ -2127,7 +2127,9 @@ def _install_virtual_workspace_paths():
     _original_chdir = os.chdir
     _original_os_open = os.open
     _original_os_read = os.read
+    _original_os_readv = getattr(os, "readv", None)
     _original_os_write = os.write
+    _original_os_writev = getattr(os, "writev", None)
     _original_os_close = os.close
     _original_os_truncate = getattr(os, "truncate", None)
     _original_os_ftruncate = getattr(os, "ftruncate", None)
@@ -2250,6 +2252,28 @@ def _install_virtual_workspace_paths():
             return _proc_handle.get("handle").read(_length)
         return _original_os_read(_fd, _length)
 
+    def _patched_os_readv(_fd, _buffers):
+        _device_descriptor = _device_file_descriptors.get(_fd)
+        _proc_handle = _proc_file_descriptors.get(_fd)
+        if _device_descriptor is None and _proc_handle is None:
+            return _original_os_readv(_fd, _buffers)
+        _total_length = sum(len(_buffer) for _buffer in _buffers)
+        if _device_descriptor is not None:
+            _device = str(_device_descriptor.get("device", ""))
+            if not bool(_kernel_devices.get(_device, {}).get("readable")):
+                raise OSError("Kernel device is not readable: " + str(_device_descriptor.get("device", "")))
+            _data = _read_project_input(_device, _total_length)
+        else:
+            _data = _proc_handle.get("handle").read(_total_length)
+        _offset = 0
+        for _buffer in _buffers:
+            if _offset >= len(_data):
+                break
+            _chunk = _data[_offset:_offset + len(_buffer)]
+            _buffer[:len(_chunk)] = _chunk
+            _offset += len(_chunk)
+        return len(_data)
+
     def _patched_os_write(_fd, _data):
         _device_descriptor = _device_file_descriptors.get(_fd)
         if _device_descriptor is not None:
@@ -2265,6 +2289,18 @@ def _install_virtual_workspace_paths():
         if _fd in _proc_file_descriptors:
             raise OSError("Kernel proc path is read-only")
         _result = _original_os_write(_fd, _data)
+        _absolute_path = _open_file_descriptors.get(_fd)
+        if _absolute_path:
+            _emit_file_change_for_absolute(_absolute_path)
+        return _result
+
+    def _patched_os_writev(_fd, _buffers):
+        _device_descriptor = _device_file_descriptors.get(_fd)
+        if _device_descriptor is not None:
+            return _patched_os_write(_fd, b"".join(bytes(_buffer) for _buffer in _buffers))
+        if _fd in _proc_file_descriptors:
+            raise OSError("Kernel proc path is read-only")
+        _result = _original_os_writev(_fd, _buffers)
         _absolute_path = _open_file_descriptors.get(_fd)
         if _absolute_path:
             _emit_file_change_for_absolute(_absolute_path)
@@ -2360,7 +2396,11 @@ def _install_virtual_workspace_paths():
     os.chdir = _patched_chdir
     os.open = _patched_os_open
     os.read = _patched_os_read
+    if _original_os_readv is not None:
+        os.readv = _patched_os_readv
     os.write = _patched_os_write
+    if _original_os_writev is not None:
+        os.writev = _patched_os_writev
     os.close = _patched_os_close
     if _original_os_truncate is not None:
         os.truncate = _patched_os_truncate
@@ -2546,7 +2586,11 @@ def _install_virtual_workspace_paths():
         os.chdir = _original_chdir
         os.open = _original_os_open
         os.read = _original_os_read
+        if _original_os_readv is not None:
+            os.readv = _original_os_readv
         os.write = _original_os_write
+        if _original_os_writev is not None:
+            os.writev = _original_os_writev
         os.close = _original_os_close
         if _original_os_truncate is not None:
             os.truncate = _original_os_truncate
