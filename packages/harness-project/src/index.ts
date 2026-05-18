@@ -6,8 +6,6 @@ import {
 import {
   applyRuntimeCommandResultFiles,
   createRuntimeProjectIoBridge,
-  filterRuntimeCommandResultFiles,
-  runtimeFileChangePath,
   RuntimeProjectLiveIoController,
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
@@ -2416,21 +2414,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       runner: RuntimeProjectCommandRunner<Request>
     ): RuntimeProjectCommandRunner<Request> => (
       async (request) => {
-        const emittedFinalDiffPaths = new Set<string>();
         const result = await runner({
           ...request,
           onEvent: (event) => {
-            if (event.type === 'file-change' && (event.phase ?? 'live') === 'final-diff') {
-              emittedFinalDiffPaths.add(runtimeFileChangePath(event.change));
-            }
             this.handleRuntimeCommandEvent(event);
           },
         } as Request);
         await this.flushRuntimeEventQueue();
-        return filterRuntimeCommandResultFiles(
-          result,
-          (change) => emittedFinalDiffPaths.has(runtimeFileChangePath(change))
-        );
+        return this.activeRuntimeIo.filterAppliedResultFiles(result);
       }
     );
     const observeFileChange: RuntimeFileChangeObserver = (change, phase) => {
@@ -2860,7 +2851,6 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, cwd, executable, this.kernelInfo.workspaceAlias));
     if (!this.cppExecutablePaths.has(executablePath)) return null;
 
-    const emittedFinalDiffPaths = new Set<string>();
     const result = await this.cppRunner({
       code: '',
       source: 'run',
@@ -2871,19 +2861,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       stdin: options.stdin ?? '',
       project: await this.snapshot(),
       onEvent: (event) => {
-        if (event.type === 'file-change' && (event.phase ?? 'live') === 'final-diff') {
-          emittedFinalDiffPaths.add(runtimeFileChangePath(event.change));
-        }
         this.handleRuntimeCommandEvent(event);
       },
     });
     await this.flushRuntimeEventQueue();
     return applyWorkspaceCommandResultFiles(
       this,
-      filterRuntimeCommandResultFiles(
-        result,
-        (change) => emittedFinalDiffPaths.has(runtimeFileChangePath(change))
-      )
+      this.activeRuntimeIo.filterAppliedResultFiles(result)
     );
   }
 
