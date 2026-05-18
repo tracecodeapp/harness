@@ -236,6 +236,10 @@ export function filterRuntimeCommandResultFiles(
   return rest;
 }
 
+function runtimeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export class RuntimeProjectOutputTracker {
   private stdoutStreamed = false;
   private stderrStreamed = false;
@@ -349,8 +353,21 @@ export async function runRuntimeProjectWorkerBridge<
   };
   io.status(options.startPhase, options.startMessage, options.startDetail);
   const { onEvent: _onEvent, ...workerRequest } = options.request;
-  const result = await options.run(workerRequest, forwardWorkerEvent);
-  await eventQueue?.flush();
+  let result: Result;
+  try {
+    result = await options.run(workerRequest, forwardWorkerEvent);
+    await eventQueue?.flush();
+  } catch (error) {
+    const message = runtimeErrorMessage(error);
+    const failedResult = {
+      stdout: '',
+      stderr: message ? `${message}\n` : 'Runtime project worker failed.\n',
+      exitCode: 1,
+    } as Result;
+    io.status(options.finishPhase, options.finishMessage, { exitCode: failedResult.exitCode, error: message });
+    outputTracker.emitMissingFinalOutput(failedResult, (stream, data) => io.output(stream, data));
+    return failedResult;
+  }
   const commandResult =
     appliedFinalDiffPaths.size > 0
       ? (filterRuntimeCommandResultFiles(result, (change) =>

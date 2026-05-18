@@ -4989,6 +4989,73 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     createPyodidePythonProjectRunner(client) !== runner,
     'pyodide python project runner alias should remain available'
   );
+
+  const rejectedEvents: RuntimeCommandEvent[] = [];
+  const rejectedRunner = createBrowserPythonProjectRunner({
+    async executeProjectPython() {
+      throw new Error('py-worker-disconnected');
+    },
+  }, {
+    applyFileChange: async () => undefined,
+  });
+  const rejectedResult = await rejectedRunner({
+    code: 'print("hello")',
+    source: 'file',
+    scriptPath: 'main.py',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      files: [{ path: 'main.py', contents: 'print("hello")\n' }],
+    },
+    onEvent: (event) => rejectedEvents.push(event),
+  });
+  assertCondition(
+    rejectedResult.exitCode === 1 && rejectedResult.stderr.includes('py-worker-disconnected'),
+    `pyodide runner should return command-shaped worker failures: ${JSON.stringify(rejectedResult)}`
+  );
+  assertCondition(
+    rejectedEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      rejectedEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 1) &&
+      rejectedEvents.some((event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('py-worker-disconnected')),
+    `pyodide runner should emit terminal status and stderr for worker failures: ${JSON.stringify(rejectedEvents)}`
+  );
+
+  const failedApplyEvents: RuntimeCommandEvent[] = [];
+  const failedApplyRunner = createBrowserPythonProjectRunner({
+    async executeProjectPython(_request, _timeoutMs, onEvent) {
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'bad-live.txt', contents: 'bad\n' } });
+      return { stdout: 'after-bad-live\n', stderr: '', exitCode: 0 };
+    },
+  }, {
+    applyFileChange: async (change) => {
+      throw new Error(`reject-live:${change.path}`);
+    },
+  });
+  const failedApplyResult = await failedApplyRunner({
+    code: 'print("hello")',
+    source: 'file',
+    scriptPath: 'main.py',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      files: [{ path: 'main.py', contents: 'print("hello")\n' }],
+    },
+    onEvent: (event) => failedApplyEvents.push(event),
+  });
+  assertCondition(
+    failedApplyResult.exitCode === 1 && failedApplyResult.stderr.includes('reject-live:bad-live.txt'),
+    `pyodide runner should return command-shaped live apply failures: ${JSON.stringify(failedApplyResult)}`
+  );
+  assertCondition(
+    failedApplyEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 1) &&
+      failedApplyEvents.some((event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('reject-live:bad-live.txt')) &&
+      !failedApplyEvents.some((event) => event.type === 'output' && event.data.includes('after-bad-live')),
+    `pyodide runner should stop later output after live apply failures: ${JSON.stringify(failedApplyEvents)}`
+  );
 }
 
 async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
