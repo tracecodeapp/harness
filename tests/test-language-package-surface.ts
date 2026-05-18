@@ -285,6 +285,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('emitFileChange(streamPath(stream))'),
         '@tracecode/harness-python worker should ship live empty-open file mutation hooks'
       );
+      assertCondition(
+        worker.includes("patch('mkdir'") &&
+          worker.includes("patch('rmdir'") &&
+          worker.includes('emitDirectoryCreate(path)') &&
+          worker.includes('emitDirectoryDelete(path)'),
+        '@tracecode/harness-python worker should ship live directory mutation hooks'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-javascript') {
       const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');

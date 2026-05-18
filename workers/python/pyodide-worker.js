@@ -781,6 +781,29 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     }
   };
 
+  const emitDirectoryCreate = (path) => {
+    const relative = relativePath(path);
+    if (relative) {
+      emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relative, directory: true } });
+    }
+  };
+
+  const emitDirectoryDelete = (path) => {
+    const relative = relativePath(path);
+    if (relative) {
+      emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relative, directory: true, deleted: true } });
+    }
+  };
+
+  const isDirectoryPath = (path) => {
+    if (!path || typeof fs.stat !== 'function' || typeof fs.isDir !== 'function') return false;
+    try {
+      return fs.isDir(fs.stat(path).mode);
+    } catch {
+      return false;
+    }
+  };
+
   const streamPath = (stream) => {
     if (!stream) return null;
     if (typeof stream.path === 'string') return stream.path;
@@ -855,10 +878,28 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     return result;
   });
 
+  patch('mkdir', (original) => function patchedMkdir(path, ...args) {
+    const result = original.call(this, path, ...args);
+    emitDirectoryCreate(path);
+    return result;
+  });
+
+  patch('rmdir', (original) => function patchedRmdir(path, ...args) {
+    const result = original.call(this, path, ...args);
+    emitDirectoryDelete(path);
+    return result;
+  });
+
   patch('rename', (original) => function patchedRename(oldPath, newPath, ...args) {
+    const oldIsDirectory = isDirectoryPath(oldPath);
     const result = original.call(this, oldPath, newPath, ...args);
-    emitFileDelete(oldPath);
-    emitFileChange(newPath);
+    if (oldIsDirectory) {
+      emitDirectoryDelete(oldPath);
+      emitDirectoryCreate(newPath);
+    } else {
+      emitFileDelete(oldPath);
+      emitFileChange(newPath);
+    }
     return result;
   });
 

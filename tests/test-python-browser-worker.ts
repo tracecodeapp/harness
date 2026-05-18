@@ -174,6 +174,7 @@ async function main(): Promise<void> {
             '    handle.write(bytes([0, 255]))',
             'js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-live.txt", "provider-live\\\\\\\\n", { encoding: "utf8" })\\')',
             'js.eval(\\'const providerEmpty = pyodide.FS.open("/tracecode_project/provider-empty.txt", "w"); pyodide.FS.close(providerEmpty)\\')',
+            'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-dir"); pyodide.FS.rename("/tracecode_project/provider-dir", "/tracecode_project/provider-renamed-dir"); pyodide.FS.rmdir("/tracecode_project/provider-renamed-dir")\\')',
             'fd = os.open("/workspace/fd-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
             'try:',
             '    os.write(fd, b"fd-one\\\\n")',
@@ -186,6 +187,10 @@ async function main(): Promise<void> {
             '    handle.write("abcdef")',
             '    handle.truncate(3)',
             'os.rename("/workspace/truncated.txt", "/workspace/renamed-truncated.txt")',
+            'os.makedirs("/workspace/live-dir/child")',
+            'os.rename("/workspace/live-dir/child", "/workspace/live-dir/renamed-child")',
+            'os.rmdir("/workspace/live-dir/renamed-child")',
+            'os.rmdir("/workspace/live-dir")',
             'with open("/workspace/os-truncate.txt", "w", encoding="utf-8") as handle:',
             '    handle.write("abcdef")',
             'os.truncate("/workspace/os-truncate.txt", 4)',
@@ -560,6 +565,35 @@ async function main(): Promise<void> {
       results.fileRun.events?.some((event) => (
         event.type === 'file-change' &&
         event.phase === 'live' &&
+        event.change?.path === 'provider-dir' &&
+        event.change.directory === true
+      )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-dir' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-renamed-dir' &&
+          event.change.directory === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-renamed-dir' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true,
+      `Python project worker should stream provider-level directory mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
         event.change?.path === 'fd-live.txt' &&
         event.change.contents === 'fd-one\nfd-two\n'
       )) === true,
@@ -615,6 +649,48 @@ async function main(): Promise<void> {
           event.change.contents === 'abc'
         )) === true,
       `Python project worker should stream live rename mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'live-dir' &&
+        event.change.directory === true
+      )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'live-dir/child' &&
+          event.change.directory === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'live-dir/child' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'live-dir/renamed-child' &&
+          event.change.directory === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'live-dir/renamed-child' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'live-dir' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true,
+      `Python project worker should stream live directory mutations: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (
