@@ -1931,6 +1931,9 @@ async function runBrowserJavaScriptProjectRequest(
       let writableFinished = false;
       let writableCorked = 0;
       const writeBytes = (value: unknown, writeEncoding?: string): number => {
+        if (writableEnded) {
+          throw Object.assign(new Error('ERR_STREAM_WRITE_AFTER_END: write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' });
+        }
         if (closed || destroyed) {
           throw Object.assign(new Error('ERR_STREAM_DESTROYED: Cannot call write after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
         }

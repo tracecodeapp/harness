@@ -2447,6 +2447,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node writable file streams should expose cork/drain state helpers: ${streamWritableStateResult.stdout}`
   );
 
+  const streamWriteAfterEndResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const events = []; await new Promise((resolve) => { const out = fs.createWriteStream(\\"stream-after-end.txt\\"); out.on(\\"error\\", (error) => events.push(\\"error:\\" + error.code)); out.on(\\"close\\", resolve); out.end(\\"one\\", () => events.push(\\"end-callback\\")); const accepted = out.write(\\"two\\", (error) => events.push(\\"write-callback:\\" + error.code)); events.push(\\"accepted:\\" + accepted); }); console.log(events.join(\\"|\\")); console.log(fs.readFileSync(\\"stream-after-end.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(streamWriteAfterEndResult.exitCode === 0, `browser node write-after-end stream workflow should succeed: ${streamWriteAfterEndResult.stderr}`);
+  assertCondition(
+    streamWriteAfterEndResult.stdout === 'write-callback:ERR_STREAM_WRITE_AFTER_END|error:ERR_STREAM_WRITE_AFTER_END|accepted:false|end-callback\none\n',
+    `browser node writable streams should reject writes after end without mutating files: ${streamWriteAfterEndResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('stream-after-end.txt') === 'one', 'browser node write-after-end should not append after stream end');
+
   const streamReadResult = await workspace.runCommand([
     'node',
     '-e',
