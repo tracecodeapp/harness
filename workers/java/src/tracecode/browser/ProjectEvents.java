@@ -20,14 +20,20 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.CopyOption;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileAttribute;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 public final class ProjectEvents {
   private static final ThreadLocal<Boolean> PROJECT_EVENT_BRIDGE_ENABLED =
@@ -87,6 +93,49 @@ public final class ProjectEvents {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return readKernelDevice(device);
     return Files.readAllBytes(path);
+  }
+
+  public static Stream<Path> list(Path path) throws IOException {
+    String normalized = normalizeVirtualPath(path);
+    if ("/dev".equals(normalized)) {
+      ArrayList<String> devices = new ArrayList<>(KERNEL_DEVICES.get().keySet());
+      Collections.sort(devices);
+      return devices.stream().map(Path::of);
+    }
+    if (normalized != null && normalized.startsWith("/dev/")) {
+      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
+      throw new NoSuchFileException(normalized);
+    }
+    return Files.list(path);
+  }
+
+  public static boolean exists(Path path, LinkOption... options) {
+    String normalized = normalizeVirtualPath(path);
+    if ("/dev".equals(normalized)) return true;
+    if (normalized != null && normalized.startsWith("/dev/")) return KERNEL_DEVICES.get().containsKey(normalized);
+    return Files.exists(path, options);
+  }
+
+  public static boolean notExists(Path path, LinkOption... options) {
+    String normalized = normalizeVirtualPath(path);
+    if (normalized != null && ("/dev".equals(normalized) || normalized.startsWith("/dev/"))) {
+      return !exists(path, options);
+    }
+    return Files.notExists(path, options);
+  }
+
+  public static boolean isDirectory(Path path, LinkOption... options) {
+    String normalized = normalizeVirtualPath(path);
+    if ("/dev".equals(normalized)) return true;
+    if (normalized != null && normalized.startsWith("/dev/")) return false;
+    return Files.isDirectory(path, options);
+  }
+
+  public static boolean isRegularFile(Path path, LinkOption... options) {
+    String normalized = normalizeVirtualPath(path);
+    if ("/dev".equals(normalized)) return false;
+    if (normalized != null && normalized.startsWith("/dev/")) return KERNEL_DEVICES.get().containsKey(normalized);
+    return Files.isRegularFile(path, options);
   }
 
   public static Path writeString(Path path, CharSequence contents, OpenOption... options) throws IOException {
@@ -780,10 +829,19 @@ public final class ProjectEvents {
   }
 
   private static KernelDevice kernelDevice(Path path) {
-    if (path == null) return null;
-    String normalized = path.toString().replace('\\', '/');
+    String normalized = normalizeVirtualPath(path);
+    if (normalized == null) return null;
     if (!normalized.startsWith("/dev/")) return null;
     return KERNEL_DEVICES.get().get(normalized);
+  }
+
+  private static String normalizeVirtualPath(Path path) {
+    if (path == null) return null;
+    String normalized = path.toString().replace('\\', '/');
+    while (normalized.endsWith("/") && normalized.length() > 1) {
+      normalized = normalized.substring(0, normalized.length() - 1);
+    }
+    return normalized.isEmpty() ? "/" : normalized;
   }
 
   private static byte[] readKernelDevice(KernelDevice device) {
@@ -964,9 +1022,12 @@ public final class ProjectEvents {
   }
 
   private static boolean isKernelReadOnlyPath(Path path) {
-    if (path == null) return false;
-    String normalized = path.toString().replace('\\', '/');
-    return normalized.equals("/proc") || normalized.startsWith("/proc/");
+    String normalized = normalizeVirtualPath(path);
+    if (normalized == null) return false;
+    return normalized.equals("/proc") ||
+        normalized.startsWith("/proc/") ||
+        normalized.equals("/dev") ||
+        normalized.startsWith("/dev/");
   }
 
   private static void emitFileSnapshot(Path path) {

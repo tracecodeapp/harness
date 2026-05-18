@@ -759,7 +759,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 .join('\n');
               const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
                 decodedSourceManifest.includes('/dev/stdout');
-              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\n' : ''}${hasKernelDevices ? 'dev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
+              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? 'dev-list=stderr,stdin,stdout,tty\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? 'dev_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
@@ -792,8 +792,28 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   'stdout',
                   'proc-write:IOException\n'
                 );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'proc-list=info,version\n'
+                );
               }
               if (hasKernelDevices) {
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev-list=stderr,stdin,stdout,tty\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev-stat=true:true:true:false\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev-delete:IOException\n'
+                );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
@@ -1380,6 +1400,7 @@ async function main(): Promise<void> {
               'import java.nio.charset.StandardCharsets;',
               'import java.nio.file.*;',
               'import java.util.EnumSet;',
+              'import java.util.stream.Collectors;',
               'class Main {',
               '  public static void main(String[] args) throws Exception {',
               '    Files.writeString(Path.of("generated.txt"), "created\\n");',
@@ -1401,6 +1422,10 @@ async function main(): Promise<void> {
               '    System.out.println(Files.readString(Path.of("/proc/kernel/info")).contains("tracekernel") ? "proc-info" : "proc-missing");',
               '    try (var stream = new FileInputStream("/proc/kernel/version")) { System.out.println("proc-stream=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    try { Files.writeString(Path.of("/proc/kernel/info"), "{}\\\\n"); System.out.println("proc-write:ok"); } catch (IOException ex) { System.out.println("proc-write:" + ex.getClass().getSimpleName()); }',
+              '    try (var paths = Files.list(Path.of("/proc/kernel"))) { System.out.println("proc-list=" + paths.map(path -> path.getFileName().toString()).sorted().collect(Collectors.joining(","))); }',
+              '    try (var paths = Files.list(Path.of("/dev"))) { System.out.println("dev-list=" + paths.map(path -> path.getFileName().toString()).sorted().collect(Collectors.joining(","))); }',
+              '    System.out.println("dev-stat=" + Files.isDirectory(Path.of("/dev")) + ":" + Files.isRegularFile(Path.of("/dev/stdout")) + ":" + Files.exists(Path.of("/dev/stdin")) + ":" + Files.exists(Path.of("/dev/missing")));',
+              '    try { Files.deleteIfExists(Path.of("/dev/stdout")); System.out.println("dev-delete:ok"); } catch (IOException ex) { System.out.println("dev-delete:" + ex.getClass().getSimpleName()); }',
               '    System.out.println("dev_stdin=" + Files.readString(Path.of("/dev/stdin")).trim());',
               '    try (var stream = new FileInputStream("/dev/stdin")) { System.out.println("dev_stream_stdin=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    Files.writeString(Path.of("/dev/stdout"), "dev_stdout\\\\n");',
@@ -1430,7 +1455,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
+      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=stderr,stdin,stdout,tty\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -1749,6 +1774,10 @@ async function main(): Promise<void> {
     assertCondition(
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("generated.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.readString(Path.of("/dev/stdin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.list(Path.of("/dev")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.isDirectory(Path.of("/dev")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.isRegularFile(Path.of("/dev/stdout")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.exists(Path.of("/dev/stdin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("writer.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("printed.txt")') === true &&
