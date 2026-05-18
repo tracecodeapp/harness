@@ -415,8 +415,10 @@ function runtimeWriteFileBytes(data) {
 
 function kernelErrno(code) {
   if (code === 'EBADF') return 8;
+  if (code === 'EINVAL') return 28;
   if (code === 'EISDIR') return 31;
   if (code === 'ENOENT') return 44;
+  if (code === 'ENOTSUP') return 58;
   if (code === 'EROFS') return 69;
   return 29;
 }
@@ -757,6 +759,27 @@ function installRuntimeFsHooks(runtime) {
         }
       }
       return result;
+    };
+  }
+
+  const originalSymlink = fs.symlink;
+  if (typeof originalSymlink === 'function') {
+    fs.symlink = function symlinkWithProjectEvents(oldPath, newPath) {
+      if (activeProjectIo) {
+        throwKernelVirtualMutationError(newPath, 'symlink');
+        throwKernelFsError(newPath, 'symlink', 'ENOTSUP', 'symbolic links are not supported by the project file manifest');
+      }
+      return originalSymlink.apply(this, arguments);
+    };
+  }
+
+  const originalReadlink = fs.readlink;
+  if (typeof originalReadlink === 'function') {
+    fs.readlink = function readlinkWithProjectEvents(path) {
+      if (activeProjectIo) {
+        throwKernelFsError(path, 'readlink', 'EINVAL', 'invalid argument');
+      }
+      return originalReadlink.apply(this, arguments);
     };
   }
 }

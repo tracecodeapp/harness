@@ -2774,6 +2774,9 @@ async function main(): Promise<void> {
                 'await File.AppendAllBytesAsync("async-bytes.bin", new byte[] { 251 });',
                 'await File.WriteAllLinesAsync("async-lines.txt", new[] { "async-a", "async-b" });',
                 'await File.AppendAllLinesAsync("async-lines.txt", new[] { "async-c" });',
+                'try { File.CreateSymbolicLink("link-symlink.txt", "generated.txt"); Console.WriteLine("symlink:ok"); } catch (Exception ex) { Console.WriteLine("symlink:" + ex.GetType().Name); }',
+                'try { File.CreateSymbolicLink("/dev/stdout", "generated.txt"); Console.WriteLine("symlink-dev:ok"); } catch (Exception ex) { Console.WriteLine("symlink-dev:" + ex.GetType().Name); }',
+                'try { var linkTarget = File.ResolveLinkTarget("generated.txt", returnFinalTarget: false); Console.WriteLine(linkTarget is null ? "readlink:blocked" : "readlink:ok"); } catch (Exception ex) { Console.WriteLine("readlink:" + ex.GetType().Name); }',
                 'File.Copy("generated.txt", "copied.txt");',
                 'File.Move("copied.txt", "moved.txt");',
                 'File.Delete("stale.txt");',
@@ -2878,6 +2881,12 @@ async function main(): Promise<void> {
         projectRun.stdout.includes('dev-rename-dest:') && !projectRun.stdout.includes('dev-rename-dest:ok') &&
         projectRun.stdout.includes('dev-rename-source:') && !projectRun.stdout.includes('dev-rename-source:ok'),
       `C# project worker should reject /dev namespace mutations, received ${projectRun.stdout}`
+    );
+    assertCondition(
+      projectRun.stdout.includes('symlink:') && !projectRun.stdout.includes('symlink:ok') &&
+        projectRun.stdout.includes('symlink-dev:') && !projectRun.stdout.includes('symlink-dev:ok') &&
+        projectRun.stdout.includes('readlink:') && !projectRun.stdout.includes('readlink:ok'),
+      `C# project worker should reject unmodeled symlink/readlink project operations, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stderr === 'dev-stderr\ndev-log\nstderr-line\n',
@@ -3108,6 +3117,10 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/stale.txt' && file.deleted === true) === true,
       `C# project worker should return deleted files, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/link-symlink.txt') !== true,
+      `C# project worker should not return rejected symbolic links: ${JSON.stringify(projectRun.files)}`
     );
     assertCondition(
       projectRun.events?.some(
