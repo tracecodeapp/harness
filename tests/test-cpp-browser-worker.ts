@@ -72,6 +72,8 @@ async function main(): Promise<void> {
         { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stderr' },
+        { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
       ];
 
       const compileInFrame = (payload) =>
@@ -259,6 +261,12 @@ async function main(): Promise<void> {
             '  std::cout << (std::getenv("MODE") ? std::getenv("MODE") : "") << "\\\\n";',
             '  std::cout << (argc > 2 ? std::string(argv[1]) + "," + argv[2] : "") << "\\\\n";',
             '  std::cout << line << "\\\\n";',
+            '  FILE* custom_in_device = std::fopen("/dev/custom-in", "r");',
+            '  char custom_device_line[64] = {0};',
+            '  if (custom_in_device) { std::fgets(custom_device_line, sizeof(custom_device_line), custom_in_device); std::fclose(custom_in_device); }',
+            '  std::string custom_line(custom_device_line);',
+            '  if (!custom_line.empty() && custom_line.back() == 10) custom_line.pop_back();',
+            '  std::cout << custom_line << "\\\\n";',
             '  std::ifstream proc_info("/proc/kernel/info");',
             '  std::string proc_text((std::istreambuf_iterator<char>(proc_info)), std::istreambuf_iterator<char>());',
             '  std::cout << (proc_text.find("\\\\"name\\\\": \\\\"tracekernel\\\\"") != std::string::npos ? "proc-info" : "proc-missing") << "\\\\n";',
@@ -271,8 +279,10 @@ async function main(): Promise<void> {
             '  DIR* dev_dir = opendir("/dev");',
             '  bool saw_stdin = false;',
             '  bool saw_stdout = false;',
-            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "stdin") saw_stdin = true; if (name == "stdout") saw_stdout = true; } closedir(dev_dir); }',
-            '  std::cout << (saw_stdin && saw_stdout ? "dev-list:ok" : "dev-list:missing") << "\\\\n";',
+            '  bool saw_log = false;',
+            '  bool saw_custom_in = false;',
+            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "stdin") saw_stdin = true; if (name == "stdout") saw_stdout = true; if (name == "log") saw_log = true; if (name == "custom-in") saw_custom_in = true; } closedir(dev_dir); }',
+            '  std::cout << (saw_stdin && saw_stdout && saw_log && saw_custom_in ? "dev-list:ok" : "dev-list:missing") << "\\\\n";',
             '  struct stat dev_stat = {};',
             '  struct stat stdout_stat = {};',
             '  bool dev_stat_ok = stat("/dev", &dev_stat) == 0 && stat("/dev/stdout", &stdout_stat) == 0;',
@@ -289,6 +299,8 @@ async function main(): Promise<void> {
             '  if (stderr_device) { std::fputs("device-err\\\\n", stderr_device); std::fclose(stderr_device); }',
             '  FILE* tty_device = std::fopen("/dev/tty", "w");',
             '  if (tty_device) { std::fputs("tty-device\\\\n", tty_device); std::fclose(tty_device); }',
+            '  FILE* log_device = std::fopen("/dev/log", "w");',
+            '  if (log_device) { std::fputs("log-device\\\\n", log_device); std::fclose(log_device); }',
             '  std::ofstream("generated.txt") << helper_value() << "\\\\n";',
             '  std::ofstream bytes("bytes.bin", std::ios::binary);',
             '  char raw[2] = {0, static_cast<char>(255)};',
@@ -1107,14 +1119,14 @@ async function main(): Promise<void> {
     assertCondition(projectRun.exitCode === 0, `C++ browser project run should exit successfully: ${JSON.stringify(projectRun)}`);
     assertCondition(
         projectRun.stdout?.includes('42\n') === true &&
-        projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\n') === true &&
+        projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
-      projectRun.stderr === 'device-err\ntty-device\n',
+      projectRun.stderr === 'device-err\ntty-device\nlog-device\n',
       `C++ browser project run should route /dev/stderr writes: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
@@ -1140,6 +1152,16 @@ async function main(): Promise<void> {
         event.data === 'tty-device\n'
       )) === true,
       `C++ browser project run should preserve output source device: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stderr' &&
+        event.device === '/dev/stderr' &&
+        event.sourceDevice === '/dev/log' &&
+        event.data === 'log-device\n'
+      )) === true,
+      `C++ browser project run should support manifest-provided custom output devices: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,

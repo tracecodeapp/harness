@@ -759,8 +759,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 .join('\n');
               const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
                 decodedSourceManifest.includes('/dev/stdout');
-              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
-              const stderr = hasKernelDevices ? 'dev_stderr\nps_stderr\n' : '';
+              const hasCustomKernelDevices = hasKernelDevices &&
+                decodedSourceManifest.includes('/dev/log') &&
+                decodedSourceManifest.includes('/dev/custom-in');
+              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
+              const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\ndev_stderr\nps_stderr\n' : 'dev_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
                 'writer-before-output.txt',
@@ -812,12 +815,12 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
-                  'dev-list=stderr,stdin,stdout,tty\n'
+                  hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\n' : 'dev-list=stderr,stdin,stdout,tty\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
-                  'dev-stream=stderr,stdin,stdout,tty\n'
+                  hasCustomKernelDevices ? 'dev-stream=custom-in,log,stderr,stdin,stdout,tty\n' : 'dev-stream=stderr,stdin,stdout,tty\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
@@ -834,6 +837,13 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   'stdout',
                   'dev-stat=true:true:true:false\n'
                 );
+                if (hasCustomKernelDevices) {
+                  cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                    null,
+                    'stdout',
+                    'dev-custom=from-stdin:true\n'
+                  );
+                }
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
@@ -849,6 +859,13 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   'stdout',
                   'dev_stream_stdin=from-stdin\n'
                 );
+                if (hasCustomKernelDevices) {
+                  cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                    null,
+                    'stdout',
+                    'dev_stream_custom=from-stdin\n'
+                  );
+                }
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
@@ -880,6 +897,14 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   'stdout',
                   'stdout-stream-read:IOException\n'
                 );
+                if (hasCustomKernelDevices) {
+                  cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                    null,
+                    'stderr',
+                    'dev_log\n',
+                    '/dev/log'
+                  );
+                }
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stderr',
@@ -1555,12 +1580,15 @@ async function main(): Promise<void> {
               '    try (var paths = Files.newDirectoryStream(Path.of("/dev"), "std*")) { var names = new java.util.ArrayList<String>(); for (var path : paths) names.add(path.getFileName().toString()); java.util.Collections.sort(names); System.out.println("dev-glob=" + String.join(",", names)); }',
               '    try (var paths = Files.newDirectoryStream(Path.of("/dev"), path -> path.getFileName().toString().contains("out") || path.getFileName().toString().contains("err"))) { var names = new java.util.ArrayList<String>(); for (var path : paths) names.add(path.getFileName().toString()); java.util.Collections.sort(names); System.out.println("dev-filter=" + String.join(",", names)); }',
               '    System.out.println("dev-stat=" + Files.isDirectory(Path.of("/dev")) + ":" + Files.isRegularFile(Path.of("/dev/stdout")) + ":" + Files.exists(Path.of("/dev/stdin")) + ":" + Files.exists(Path.of("/dev/missing")));',
+              '    System.out.println("dev-custom=" + Files.readString(Path.of("/dev/custom-in")).trim() + ":" + Files.exists(Path.of("/dev/log")));',
               '    try { Files.deleteIfExists(Path.of("/dev/stdout")); System.out.println("dev-delete:ok"); } catch (IOException ex) { System.out.println("dev-delete:" + ex.getClass().getSimpleName()); }',
               '    System.out.println("dev_stdin=" + Files.readString(Path.of("/dev/stdin")).trim());',
               '    try (var stream = new FileInputStream("/dev/stdin")) { System.out.println("dev_stream_stdin=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
+              '    try (var stream = new FileInputStream("/dev/custom-in")) { System.out.println("dev_stream_custom=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    Files.writeString(Path.of("/dev/stdout"), "dev_stdout\\\\n");',
               '    try (var stream = new FileOutputStream("/dev/stdout")) { stream.write("fos_stdout\\\\n".getBytes(StandardCharsets.UTF_8)); }',
               '    Files.writeString(Path.of("/dev/tty"), "dev_tty\\\\n");',
+              '    Files.writeString(Path.of("/dev/log"), "dev_log\\\\n");',
               '    Files.writeString(Path.of("/dev/stderr"), "dev_stderr\\\\n");',
               '    try (var stream = new PrintStream("/dev/stderr", "UTF-8")) { stream.print("ps_stderr\\\\n"); }',
               '    try { Files.readString(Path.of("/dev/stdout")); System.out.println("stdout-read:ok"); } catch (IOException ex) { System.out.println("stdout-read:" + ex.getClass().getSimpleName()); }',
@@ -1581,15 +1609,17 @@ async function main(): Promise<void> {
           { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
           { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
           { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+          { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+          { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
         ],
       },
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
+      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
-    assertCondition(projectExecute.stderr === 'dev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
+    assertCondition(projectExecute.stderr === 'dev_log\ndev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
     assertCondition(
       projectExecute.events?.some(
         (event) =>
@@ -1643,6 +1673,12 @@ async function main(): Promise<void> {
           (event) =>
             event.type === 'output' &&
             event.stream === 'stdout' &&
+            event.data === 'dev_stream_custom=from-stdin\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
             event.data === 'dev_stdout\n'
         ) === true &&
         projectExecute.events?.some(
@@ -1670,6 +1706,14 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stdout' &&
             event.data === 'stdout-read:IOException\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stderr' &&
+            event.device === '/dev/stderr' &&
+            event.sourceDevice === '/dev/log' &&
+            event.data === 'dev_log\n'
         ) === true &&
         projectExecute.events?.some(
           (event) =>

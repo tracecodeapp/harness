@@ -67,11 +67,11 @@ function postMessageResponse(message) {
 function emitLiveJavaProjectOutput(stream, data, sourceDevice) {
   if (!activeJavaProjectIo?.messageId || typeof data !== 'string' || data.length === 0) return;
   const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
-  const normalizedSourceDevice = sourceDevice === '/dev/stdin' ||
-    sourceDevice === '/dev/stdout' ||
-    sourceDevice === '/dev/stderr' ||
-    sourceDevice === '/dev/tty'
-    ? sourceDevice
+  const normalizedSourceDevice = typeof sourceDevice === 'string'
+    ? sourceDevice.replace(/\\/g, '/')
+    : '';
+  const sourceDevicePath = activeJavaProjectIo.kernelDevicePaths?.has(normalizedSourceDevice)
+    ? normalizedSourceDevice
     : '';
   if (normalizedStream === 'stderr') {
     activeJavaProjectIo.stderrEmitted = true;
@@ -82,7 +82,7 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice) {
     type: 'output',
     stream: normalizedStream,
     device: normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
-    ...(normalizedSourceDevice ? { sourceDevice: normalizedSourceDevice } : {}),
+    ...(sourceDevicePath ? { sourceDevice: sourceDevicePath } : {}),
     data,
   });
 }
@@ -4224,7 +4224,16 @@ async function runJavaProjectRequest(payload, requestId) {
   }
 
   const libraryCallStart = performance.now();
-  const projectIo = { messageId: requestId, stdoutEmitted: false, stderrEmitted: false };
+  const projectIo = {
+    messageId: requestId,
+    stdoutEmitted: false,
+    stderrEmitted: false,
+    kernelDevicePaths: new Set(
+      (Array.isArray(payload?.project?.kernelDevices) ? payload.project.kernelDevices : [])
+        .map((device) => String(device?.path ?? '').replace(/\\/g, '/'))
+        .filter((path) => path.startsWith('/dev/'))
+    ),
+  };
   let reportText;
   try {
     activeJavaProjectIo = projectIo;

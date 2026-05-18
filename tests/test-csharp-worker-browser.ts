@@ -101,6 +101,7 @@ const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['k
   { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
   { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
   { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+  { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
 ];
 
 function assertCondition(condition: boolean, message: string): void {
@@ -3098,6 +3099,54 @@ async function main(): Promise<void> {
         liveManagedDirectoryMovedFileIndex > liveManagedDirectoryMoveCreateIndex &&
         liveManagedDirectoryDeleteIndex > liveManagedDirectoryMovedFileIndex,
       `C# project worker should stream managed Directory.CreateDirectory/Move/Delete live events, received ${JSON.stringify(projectRun.events)}`
+    );
+
+    const manifestCustomDeviceRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: 'manifest-stdin\n',
+        project: {
+          kernelDevices: TRACE_KERNEL_DEVICES,
+          files: [
+            {
+              path: 'src/Program.cs',
+              contents: [
+                'Console.Write(File.ReadAllText("/dev/custom-in"));',
+                'File.WriteAllText("/dev/log", "manifest-log\\n");',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      manifestCustomDeviceRun.exitCode === 0,
+      `C# project worker should run manifest custom device case: ${manifestCustomDeviceRun.stderr}`
+    );
+    assertCondition(
+      manifestCustomDeviceRun.stdout === 'manifest-stdin\n',
+      `C# project worker should read manifest custom input devices from stdin, received ${JSON.stringify(manifestCustomDeviceRun)}`
+    );
+    assertCondition(
+      manifestCustomDeviceRun.stderr === 'manifest-log\n',
+      `C# project worker should route manifest /dev/log writes to stderr, received ${JSON.stringify(manifestCustomDeviceRun)}`
+    );
+    assertCondition(
+      manifestCustomDeviceRun.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stderr' &&
+          event.device === '/dev/stderr' &&
+          event.sourceDevice === '/dev/log' &&
+          event.data === 'manifest-log\n'
+      ) === true,
+      `C# project worker should preserve sourceDevice for manifest /dev/log writes, received ${JSON.stringify(manifestCustomDeviceRun.events)}`
     );
 
     const restrictedDeviceRun = await runProjectWorkerCase(

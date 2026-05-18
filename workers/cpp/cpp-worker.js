@@ -651,7 +651,6 @@ class WasiProcess {
     this.cwd = normalizePath(options.cwd || '/');
     this.fs.addDirectory(this.cwd);
     this.stdin = encodeUtf8(options.stdin || '');
-    this.stdinOffset = 0;
     this.stdoutChunks = [];
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
@@ -898,7 +897,7 @@ class WasiProcess {
       : entry.kind === 'file'
         ? this.fs.readFile(entry.path)
         : new Uint8Array();
-    let sourceOffset = entry.kind === 'stdio' && entry.inputDevice ? this.stdinOffset : entry.offset;
+    let sourceOffset = entry.offset;
     let total = 0;
     for (let index = 0; index < iovsLen; index += 1) {
       const ptr = this.mem.readU32(iovs + index * 8);
@@ -909,8 +908,7 @@ class WasiProcess {
       total += chunk.length;
       if (chunk.length < len) break;
     }
-    if (entry.kind === 'stdio' && entry.inputDevice) this.stdinOffset = sourceOffset;
-    else entry.offset = sourceOffset;
+    entry.offset = sourceOffset;
     this.mem.writeU32(nreadOut, total);
     return ESUCCESS;
   }

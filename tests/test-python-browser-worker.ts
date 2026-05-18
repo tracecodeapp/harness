@@ -332,6 +332,40 @@ async function main(): Promise<void> {
         project: { cwd: '/workspace', files: [] },
       });
 
+      const manifestCustomDeviceRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import os',
+          'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in:',
+          '    print("custom-file=" + custom_in.read().strip())',
+          'custom_fd = os.open("/dev/custom-in", os.O_RDONLY)',
+          'try:',
+          '    print("custom-fd=" + os.read(custom_fd, 64).decode("utf-8").strip())',
+          'finally:',
+          '    os.close(custom_fd)',
+          'with open("/dev/log", "w", encoding="utf-8") as log:',
+          '    log.write("log-file\\\\n")',
+          'log_fd = os.open("/dev/log", os.O_WRONLY)',
+          'try:',
+          '    os.write(log_fd, b"log-fd\\\\n")',
+          'finally:',
+          '    os.close(log_fd)',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: 'manifest-stdin\\n',
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelDevices: [
+            { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+            { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+          ],
+        },
+      });
+
       const directoryRun = await send('execute-project-python', {
         source: 'argument',
         scriptPath: '<string>',
@@ -448,7 +482,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, directoryRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, directoryRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -457,6 +491,7 @@ async function main(): Promise<void> {
       stdinRun: PythonProjectWorkerResponse;
       argumentRun: PythonProjectWorkerResponse;
       noDeviceManifestRun: PythonProjectWorkerResponse;
+      manifestCustomDeviceRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
@@ -774,6 +809,27 @@ async function main(): Promise<void> {
     assertCondition(
       results.noDeviceManifestRun.stdout === '\nFalse\ndev-stdout:blocked\n',
       `Python project worker should not invent /dev devices without kernelDevices: ${JSON.stringify(results.noDeviceManifestRun.stdout)}`
+    );
+    assertCondition(results.manifestCustomDeviceRun.exitCode === 0, `Python project manifest custom device run should succeed: ${results.manifestCustomDeviceRun.stderr}`);
+    assertCondition(
+      results.manifestCustomDeviceRun.stdout === 'custom-file=manifest-stdin\ncustom-fd=manifest-stdin\n',
+      `Python project custom input device should read from stdin: ${JSON.stringify(results.manifestCustomDeviceRun.stdout)}`
+    );
+    assertCondition(
+      results.manifestCustomDeviceRun.stderr === 'log-file\nlog-fd\n',
+      `Python project custom log device should write to stderr: ${JSON.stringify(results.manifestCustomDeviceRun.stderr)}`
+    );
+    assertCondition(
+      results.manifestCustomDeviceRun.events
+        ?.filter((event) =>
+          event.type === 'output' &&
+          event.stream === 'stderr' &&
+          event.device === '/dev/stderr' &&
+          event.sourceDevice === '/dev/log'
+        )
+        .map((event) => event.data)
+        .join('') === 'log-file\nlog-fd\n',
+      `Python project custom log device should preserve sourceDevice: ${JSON.stringify(results.manifestCustomDeviceRun.events)}`
     );
     assertCondition(results.directoryRun.exitCode === 0, `Python project directory source should succeed: ${results.directoryRun.stderr}`);
     assertCondition(
