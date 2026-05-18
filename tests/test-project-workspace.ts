@@ -2401,6 +2401,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node empty directory workflow should match desktop semantics: ${directoryResult.stdout}`
   );
 
+  const directoryMutationResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.mkdirSync(\\"watch-parent\\"); const watchEvents = []; const statEvents = []; const watcher = fs.watch(\\"watch-parent\\", (type, name) => watchEvents.push(type + \\":\\" + name)); fs.watchFile(\\"appearing-dir\\", (curr, prev) => statEvents.push(prev.isDirectory() + \\"->\\" + curr.isDirectory())); fs.mkdirSync(\\"appearing-dir\\"); await flush(); fs.rmdirSync(\\"appearing-dir\\"); await flush(); fs.unwatchFile(\\"appearing-dir\\"); const syncDir = fs.mkdtempSync(\\"watch-parent/temp\\"); const callbackDir = await new Promise((resolve, reject) => fs.mkdtemp(\\"watch-parent/cb\\", (error, dir) => error ? reject(error) : resolve(dir))); const promiseDir = await fsp.mkdtemp(\\"watch-parent/pr\\"); await flush(); watcher.close(); console.log(/^watch-parent\\\\/temp[0-9a-z]{6}$/.test(syncDir)); console.log(/^watch-parent\\\\/cb[0-9a-z]{6}$/.test(callbackDir)); console.log(/^watch-parent\\\\/pr[0-9a-z]{6}$/.test(promiseDir)); console.log(watchEvents.some((event) => event === \\"rename:\\" + syncDir.split(\\"/\\").pop())); console.log(watchEvents.some((event) => event === \\"rename:\\" + callbackDir.split(\\"/\\").pop())); console.log(watchEvents.some((event) => event === \\"rename:\\" + promiseDir.split(\\"/\\").pop())); console.log(statEvents.join(\\"|\\"));"',
+  ].join(' '));
+  assertCondition(directoryMutationResult.exitCode === 0, `browser node directory mutation workflow should succeed: ${directoryMutationResult.stderr}`);
+  assertCondition(
+    directoryMutationResult.stdout === 'true\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse->true|true->false\n',
+    `browser node directory mutations should notify watchers and support mkdtemp APIs: ${directoryMutationResult.stdout}`
+  );
+
   const direntResult = await workspace.runCommand([
     'node',
     '-e',

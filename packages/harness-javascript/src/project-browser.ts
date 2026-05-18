@@ -1258,6 +1258,10 @@ async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => watcher.listener(current, previous));
       }
     };
+    const notifyDirectoryMutation = (path: string): void => {
+      notifyFsWatchers('rename', path);
+      notifyWatchFileWatchers(path);
+    };
     const setFileBytes = (path: string, bytes: Uint8Array): void => {
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index += 1) {
@@ -1408,6 +1412,7 @@ async function runBrowserJavaScriptProjectRequest(
       W_OK: 2,
       X_OK: 1,
     } as const;
+    let mkdtempCounter = 0;
     const fileSystemEntryExists = (path: unknown): boolean => {
       const device = normalizeRuntimeDevicePath(path);
       if (device) return true;
@@ -2151,6 +2156,7 @@ async function runBrowserJavaScriptProjectRequest(
               if (directoryPath === normalized || directoryPath.startsWith(prefix)) {
                 directoryStore.delete(directoryPath);
                 deleteEntryMetadata(directoryPath);
+                notifyDirectoryMutation(directoryPath);
               }
             }
             return;
@@ -2158,6 +2164,7 @@ async function runBrowserJavaScriptProjectRequest(
           if (directoryStore.has(normalized)) {
             directoryStore.delete(normalized);
             deleteEntryMetadata(normalized);
+            notifyDirectoryMutation(normalized);
             return;
           }
           if (!options?.force) {
@@ -2344,8 +2351,10 @@ async function runBrowserJavaScriptProjectRequest(
         const start = options?.recursive ? 1 : parts.length;
         for (let index = start; index <= parts.length; index += 1) {
           const directoryPath = parts.slice(0, index).join('/');
+          const existed = directoryStore.has(directoryPath);
           directoryStore.add(directoryPath);
           if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
+          if (!existed) notifyDirectoryMutation(directoryPath);
         }
         return undefined;
       },
@@ -2354,6 +2363,34 @@ async function runBrowserJavaScriptProjectRequest(
         try {
           fsApi.mkdirSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
           queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
+      mkdtempSync: (prefix: unknown, options?: string | { encoding?: string | null } | null) => {
+        const rawPrefix = workspacePathInputToString(prefix);
+        for (let attempt = 0; attempt < 1000; attempt += 1) {
+          mkdtempCounter += 1;
+          const suffix = mkdtempCounter.toString(36).padStart(6, '0').slice(-6);
+          const candidate = `${rawPrefix}${suffix}`;
+          const normalized = normalizeWorkspaceEntryPath(candidate, cwdPath, false, workspacePathContext);
+          if (fileStore.has(normalized) || directoryStore.has(normalized)) continue;
+          fsApi.mkdirSync(candidate);
+          const encoding = typeof options === 'string' ? options : options?.encoding;
+          const result = rawPrefix.startsWith('/') ? workspaceFilename(normalized, workspaceRoot) : candidate;
+          return encoding === 'buffer' ? BrowserBuffer.from(result) : result;
+        }
+        throw Object.assign(new Error(`EEXIST: file already exists, mkdtemp '${prefix}'`), { code: 'EEXIST' });
+      },
+      mkdtemp: (
+        prefix: unknown,
+        optionsOrCallback?: string | { encoding?: string | null } | null | ((error: Error | null, directory?: unknown) => void),
+        callback?: (error: Error | null, directory?: unknown) => void
+      ) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          const directory = fsApi.mkdtempSync(prefix, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null, directory));
         } catch (error) {
           queueMicrotask(() => done?.(error as Error));
         }
@@ -2370,6 +2407,7 @@ async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, rmdir '${path}'`), { code: 'ENOENT' });
         }
         deleteEntryMetadata(normalized);
+        notifyDirectoryMutation(normalized);
       },
       rmdir: (path: unknown, callback?: (error?: Error | null) => void) => {
         try {
@@ -2498,6 +2536,7 @@ async function runBrowserJavaScriptProjectRequest(
       lstat: async (path: unknown) => fsApi.lstatSync(path),
       realpath: async (path: unknown, options?: string | { encoding?: string | null } | null) => fsApi.realpathSync(path, options),
       mkdir: async (path: unknown, options?: { recursive?: boolean }) => fsApi.mkdirSync(path, options),
+      mkdtemp: async (prefix: unknown, options?: string | { encoding?: string | null } | null) => fsApi.mkdtempSync(prefix, options),
       rmdir: async (path: unknown) => {
         fsApi.rmdirSync(path);
       },
