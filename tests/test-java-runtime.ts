@@ -216,7 +216,7 @@ public class ProjectWorkspaceDirectorySmoke {
     collectChangedProjectFilesJson.setAccessible(true);
     System.out.println(Files.isDirectory(root.resolve("empty/child")));
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, manifest));
-    String kernelManifest = "/proc/kernel/info\\t" + java.util.Base64.getEncoder().encodeToString("kernel".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    String kernelManifest = "/proc/kernel/version\\t" + java.util.Base64.getEncoder().encodeToString("kernel".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, kernelManifest));
   }
 }
@@ -1306,6 +1306,7 @@ async function main(): Promise<void> {
         ],
         kernelFiles: [
           { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
+          { path: '/proc/kernel/version', contents: 'tracekernel test\n' },
           { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
         ],
       },
@@ -1522,6 +1523,7 @@ async function main(): Promise<void> {
         defaultWorkspaceManifest.includes('Helper.java') &&
         defaultWorkspaceManifest.includes('Main.java') &&
         defaultWorkspaceManifest.includes('/proc/kernel/info\t') &&
+        defaultWorkspaceManifest.includes('/proc/kernel/version\t') &&
         defaultWorkspaceManifest.includes('/proc/self/mountinfo\t') &&
         defaultWorkspaceManifest.includes('\tdir\tempty/child') &&
         harness.projectCompileCalls.at(-1)?.workspaceRoot?.endsWith('/workspace') &&
