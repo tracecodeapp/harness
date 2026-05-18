@@ -247,6 +247,46 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(fileStat.isFile(), `${packageCheck.name} extracted file should exist at ${relativePath}`);
     }
 
+    if (packageCheck.name === '@tracecode/harness-python') {
+      const worker = await readFile(join(packageDir, 'workers/pyodide-worker.js'), 'utf8');
+      assertCondition(
+        !worker.includes('"/dev/stdout": {"readable": False, "writable": True'),
+        '@tracecode/harness-python worker should not ship fallback /dev/stdout device semantics'
+      );
+    }
+    if (packageCheck.name === '@tracecode/harness-java') {
+      const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
+      assertCondition(
+        worker.includes('new tracecode.browser.ProjectEvents.ProjectFile('),
+        '@tracecode/harness-java worker should ship java.io.File live-mutation rewrites'
+      );
+      const helperJarListing = spawnSync('jar', ['tf', join(packageDir, 'workers/vendor/java-browser-helper.jar')], {
+        encoding: 'utf8',
+      });
+      if (helperJarListing.status !== 0) {
+        throw new Error(helperJarListing.stderr || helperJarListing.stdout || '@tracecode/harness-java helper jar listing failed');
+      }
+      assertCondition(
+        helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectFile.class'),
+        '@tracecode/harness-java helper jar should include ProjectEvents.ProjectFile'
+      );
+    }
+    if (packageCheck.name === '@tracecode/harness-csharp') {
+      const worker = await readFile(join(packageDir, 'workers/csharp-worker.js'), 'utf8');
+      assertCondition(
+        !worker.includes('FALLBACK_KERNEL_DEVICES'),
+        '@tracecode/harness-csharp worker should not ship fallback kernel device inventory'
+      );
+    }
+    if (packageCheck.name === '@tracecode/harness-cpp') {
+      const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');
+      assertCondition(
+        worker.includes('function standaloneKernelDevices()') &&
+          !worker.includes('options.kernelDevices instanceof Map ? options.kernelDevices : projectKernelDevices()'),
+        '@tracecode/harness-cpp worker should keep standalone stdio separate from project kernel devices'
+      );
+    }
+
     const packedPackageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, string>;
     };
