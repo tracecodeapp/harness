@@ -8,6 +8,8 @@ export type RuntimeMaturity = 'experimental' | 'beta' | 'stable';
 
 export type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live';
 
+export type RuntimeProjectIoEnvironment = 'browser' | 'node';
+
 export interface RuntimeProjectIoSupport {
   tier: RuntimeProjectIoTier;
   supported: boolean;
@@ -17,6 +19,14 @@ export interface RuntimeProjectIoSupport {
   providerLiveInterception: boolean;
   streamingStdio: boolean;
   deviceFiles: boolean;
+}
+
+export interface RuntimeProjectIoCapabilityRow {
+  language: Language;
+  browser: RuntimeProjectIoSupport;
+  node: RuntimeProjectIoSupport;
+  notes: readonly string[];
+  limitations: readonly string[];
 }
 
 export interface RuntimeCapabilities {

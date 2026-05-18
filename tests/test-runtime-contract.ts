@@ -8,6 +8,8 @@ import {
   SUPPORTED_LANGUAGES,
   getLanguageRuntimeInfo,
   getLanguageRuntimeProfile,
+  getRuntimeProjectIoCapability,
+  getRuntimeProjectIoCapabilityMatrix,
   getRuntimeProjectIoSupport,
   getSupportedLanguageRuntimeInfos,
   getSupportedLanguageProfiles,
@@ -1440,6 +1442,40 @@ async function main(): Promise<void> {
   assertCondition(
     getRuntimeProjectIoSupport(cppProfile).tier === 'bridged-live',
     'C++ should expose a bridged-live project I/O support tier'
+  );
+
+  const projectIoMatrix = getRuntimeProjectIoCapabilityMatrix();
+  assertCondition(
+    projectIoMatrix.length === SUPPORTED_LANGUAGES.length,
+    'Project I/O capability matrix should expose one row per supported language'
+  );
+  for (const language of SUPPORTED_LANGUAGES) {
+    const row = getRuntimeProjectIoCapability(language);
+    const matrixRow = projectIoMatrix.find((candidate) => candidate.language === language);
+    assertCondition(Boolean(matrixRow), `Project I/O capability matrix should include ${language}`);
+    assertCondition(
+      stableStringify(row.browser) === stableStringify(getRuntimeProjectIoSupport(language)),
+      `${language} browser project I/O matrix row should match runtime profile support`
+    );
+    assertCondition(
+      stableStringify(matrixRow) === stableStringify(row),
+      `${language} direct project I/O capability row should match matrix row`
+    );
+  }
+  assertCondition(
+    getRuntimeProjectIoCapability('javascript').browser.tier === 'native-live' &&
+      getRuntimeProjectIoCapability('javascript').node.tier === 'final-diff',
+    'JavaScript should advertise browser-native live project I/O and node final-diff project I/O'
+  );
+  assertCondition(
+    getRuntimeProjectIoCapability('typescript').browser.tier === 'unsupported' &&
+      getRuntimeProjectIoCapability('typescript').node.tier === 'unsupported',
+    'TypeScript should advertise unsupported project I/O in both browser and node environments'
+  );
+  assertCondition(
+    getRuntimeProjectIoCapability('java').browser.tier === 'bridged-live' &&
+      getRuntimeProjectIoCapability('java').node.tier === 'final-diff',
+    'Java should advertise browser bridged-live project I/O and node final-diff project I/O'
   );
   console.log('PASS: runtime capability profile matrix');
 

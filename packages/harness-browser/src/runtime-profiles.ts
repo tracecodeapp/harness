@@ -1,6 +1,7 @@
 import type {
   Language,
   LanguageRuntimeProfile,
+  RuntimeProjectIoCapabilityRow,
   RuntimeProjectIoSupport,
   RuntimeProjectIoTier,
 } from '../../harness-core/src/runtime-types';
@@ -67,6 +68,28 @@ const NO_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['projec
     deviceFiles: false,
   },
 };
+
+const UNSUPPORTED_PROJECT_IO_SUPPORT: RuntimeProjectIoSupport = Object.freeze({
+  tier: 'unsupported',
+  supported: false,
+  kernelFs: false,
+  liveMutationEvents: false,
+  finalDiff: false,
+  providerLiveInterception: false,
+  streamingStdio: false,
+  deviceFiles: false,
+});
+
+const NODE_FINAL_DIFF_PROJECT_IO_SUPPORT: RuntimeProjectIoSupport = Object.freeze({
+  tier: 'final-diff',
+  supported: true,
+  kernelFs: false,
+  liveMutationEvents: false,
+  finalDiff: true,
+  providerLiveInterception: false,
+  streamingStdio: true,
+  deviceFiles: false,
+});
 
 const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   language: 'python',
@@ -500,6 +523,52 @@ export function getRuntimeProjectIoSupport(profileOrLanguage: LanguageRuntimePro
     streamingStdio,
     deviceFiles,
   };
+}
+
+function getNodeRuntimeProjectIoSupport(language: Language): RuntimeProjectIoSupport {
+  if (language === 'typescript') {
+    return UNSUPPORTED_PROJECT_IO_SUPPORT;
+  }
+  return NODE_FINAL_DIFF_PROJECT_IO_SUPPORT;
+}
+
+const PROJECT_IO_LIMITATIONS: Record<Language, readonly string[]> = {
+  python: [
+    'Browser project mode advertises Pyodide-level live interception; node project mode uses host filesystem execution with final-diff reconciliation.',
+  ],
+  javascript: [
+    'Browser project mode is the reference live tracekernel path; node project mode uses host filesystem execution with final-diff reconciliation.',
+  ],
+  typescript: [
+    'Project mode is not advertised until a TypeScript project command runner exists.',
+  ],
+  java: [
+    'Browser project mode emits bridged live events through TraceCode-owned runtime instrumentation, not provider-native filesystem hooks.',
+    'Node project mode uses host filesystem execution with final-diff reconciliation.',
+  ],
+  csharp: [
+    'Browser project mode emits bridged live events through TraceCode-owned runtime instrumentation, not provider-native filesystem hooks.',
+    'Node project mode uses host filesystem execution with final-diff reconciliation.',
+  ],
+  cpp: [
+    'Browser project mode emits bridged live events through TraceCode-owned runtime instrumentation, not provider-native filesystem hooks.',
+    'Node project mode uses host filesystem execution with final-diff reconciliation.',
+  ],
+};
+
+export function getRuntimeProjectIoCapability(language: Language): RuntimeProjectIoCapabilityRow {
+  const profile = getLanguageRuntimeProfile(language);
+  return {
+    language,
+    browser: getRuntimeProjectIoSupport(profile),
+    node: getNodeRuntimeProjectIoSupport(language),
+    notes: profile.notes ?? [],
+    limitations: PROJECT_IO_LIMITATIONS[language],
+  };
+}
+
+export function getRuntimeProjectIoCapabilityMatrix(): readonly RuntimeProjectIoCapabilityRow[] {
+  return SUPPORTED_LANGUAGES.map((language) => getRuntimeProjectIoCapability(language));
 }
 
 export function isLanguageSupported(language: Language): boolean {

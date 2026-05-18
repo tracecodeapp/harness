@@ -93,13 +93,17 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
 
   const rootTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
   assertCondition(
-    rootTypes.includes('getRuntimeProjectIoSupport') && rootTypes.includes('RuntimeProjectIoSupport'),
-    'Root declarations should expose the stable project I/O support helper and type'
+    rootTypes.includes('getRuntimeProjectIoSupport') &&
+      rootTypes.includes('getRuntimeProjectIoCapabilityMatrix') &&
+      rootTypes.includes('RuntimeProjectIoCapabilityRow'),
+    'Root declarations should expose the stable project I/O support helpers and matrix type'
   );
   const browserTypes = await readFile(join(packageDir, 'dist/browser.d.ts'), 'utf8');
   assertCondition(
-    browserTypes.includes('getRuntimeProjectIoSupport') && browserTypes.includes('RuntimeProjectIoSupport'),
-    'Browser declarations should expose the stable project I/O support helper and type'
+    browserTypes.includes('getRuntimeProjectIoSupport') &&
+      browserTypes.includes('getRuntimeProjectIoCapabilityMatrix') &&
+      browserTypes.includes('RuntimeProjectIoCapabilityRow'),
+    'Browser declarations should expose the stable project I/O support helpers and matrix type'
   );
 
   const appDir = join(tempRoot, 'app');
@@ -291,6 +295,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       const tsProjectIo = browser.getRuntimeProjectIoSupport('typescript');
       if (jsProjectIo.tier !== 'native-live' || tsProjectIo.tier !== 'unsupported') {
         throw new Error('Project I/O support helper returned unexpected tiers');
+      }
+      const projectIoMatrix = root.getRuntimeProjectIoCapabilityMatrix();
+      const javaProjectIo = browser.getRuntimeProjectIoCapability('java');
+      if (!Array.isArray(projectIoMatrix) || projectIoMatrix.length < 6) {
+        throw new Error('Project I/O capability matrix should include supported language rows');
+      }
+      if (javaProjectIo.browser.tier !== 'bridged-live' || javaProjectIo.node.tier !== 'final-diff') {
+        throw new Error('Project I/O capability row returned unexpected Java tiers');
       }
       for (const exportName of ['createRuntimeWorkspace', 'createNativeProjectWorkspace', 'createBrowserProjectWorkspace']) {
         if (exportName in root) {
