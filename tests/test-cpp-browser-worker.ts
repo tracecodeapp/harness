@@ -237,6 +237,7 @@ async function main(): Promise<void> {
             '#include <fstream>',
             '#include <iostream>',
             '#include <string>',
+            '#include <sys/stat.h>',
             '#include <unistd.h>',
             'int main(int argc, char** argv) {',
             '  FILE* stdin_device = std::fopen("/dev/stdin", "r");',
@@ -272,6 +273,22 @@ async function main(): Promise<void> {
             '  if (patch_fd >= 0) { write(patch_fd, "abcd", 4); pwrite(patch_fd, "XY", 2, 1); close(patch_fd); }',
             '  int truncate_fd = open("truncated.txt", O_CREAT | O_WRONLY, 0644);',
             '  if (truncate_fd >= 0) { write(truncate_fd, "abcdef", 6); ftruncate(truncate_fd, 3); close(truncate_fd); }',
+            '  std::cout << "before-live\\\\n" << std::flush;',
+            '  std::ofstream multi("multi.txt");',
+            '  multi << "one";',
+            '  multi.flush();',
+            '  std::cout << "after-multi-one\\\\n" << std::flush;',
+            '  multi << "two\\\\n";',
+            '  multi.close();',
+            '  int zero_fd = open("zero.txt", O_CREAT | O_WRONLY, 0644);',
+            '  if (zero_fd >= 0) { write(zero_fd, "nonzero", 7); ftruncate(zero_fd, 0); close(zero_fd); }',
+            '  mkdir("scratch", 0777);',
+            '  std::ofstream("scratch/transient.txt") << "gone\\\\n";',
+            '  std::remove("scratch/transient.txt");',
+            '  int rmdir_result = rmdir("scratch");',
+            '  DIR* scratch_dir = opendir("scratch");',
+            '  std::cout << (rmdir_result == 0 && !scratch_dir ? "rmdir:gone" : "rmdir:still") << "\\\\n";',
+            '  if (scratch_dir) closedir(scratch_dir);',
             '  std::ofstream("rename-source.txt") << "moved\\\\n";',
             '  std::rename("rename-source.txt", "renamed.txt");',
             '  std::remove("stale.txt");',
@@ -1099,6 +1116,18 @@ async function main(): Promise<void> {
       `C++ browser project run should return ftruncate mutations: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/multi.txt' && file.contents === 'onetwo\n') === true,
+      `C++ browser project run should return final multi-write contents: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/zero.txt' && file.contents === '') === true,
+      `C++ browser project run should return zero-length ftruncate contents: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.stdout?.includes('rmdir:gone\n') === true,
+      `C++ browser project run should remove directories through WASI rmdir: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
       projectRun.files?.some((file) => file.path === 'src/renamed.txt' && file.contents === 'moved\n') === true &&
         projectRun.files?.some((file) => file.path === 'src/rename-source.txt' && file.deleted === true) !== true,
       `C++ browser project run should return renamed file contents without reporting transient creates: ${JSON.stringify(projectRun)}`
@@ -1144,6 +1173,47 @@ async function main(): Promise<void> {
       )) === true,
       `C++ browser project run should stream live ftruncate mutations: ${JSON.stringify(projectRun.events)}`
     );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/multi.txt' &&
+        event.change.contents === 'one'
+      )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/multi.txt' &&
+          event.change.contents === 'onetwo\n'
+        )) === true,
+      `C++ browser project run should stream multiple writes as live mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/zero.txt' &&
+        event.change.contents === ''
+      )) === true,
+      `C++ browser project run should stream zero-length ftruncate mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    {
+      const events = projectRun.events || [];
+      const beforeLiveOutput = events.findIndex((event) => event.type === 'output' && event.stream === 'stdout' && event.data?.includes('before-live\n'));
+      const firstMultiWrite = events.findIndex((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/multi.txt' &&
+        event.change.contents === 'one'
+      ));
+      const afterLiveOutput = events.findIndex((event) => event.type === 'output' && event.stream === 'stdout' && event.data?.includes('after-multi-one\n'));
+      assertCondition(
+        beforeLiveOutput >= 0 &&
+          firstMultiWrite > beforeLiveOutput &&
+          afterLiveOutput > firstMultiWrite,
+        `C++ browser project run should preserve stdout/file-change event ordering: ${JSON.stringify(events)}`
+      );
+    }
     assertCondition(
       projectRun.events?.some((event) => (
         event.type === 'file-change' &&

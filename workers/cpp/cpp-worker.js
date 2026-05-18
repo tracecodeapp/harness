@@ -26,6 +26,7 @@ const EINVAL = 28;
 const EIO = 29;
 const ENOENT = 44;
 const ENOTDIR = 54;
+const ENOTEMPTY = 55;
 const ENOTSUP = 58;
 const EROFS = 69;
 const FILETYPE_UNKNOWN = 0;
@@ -476,6 +477,20 @@ class InMemoryFileSystem {
     this.files.delete(normalized);
     this.readOnlyFiles.delete(normalized);
     this.fileChangeObserver?.({ path: normalized, deleted: true });
+  }
+
+  removeDirectory(pathname) {
+    const normalized = normalizePath(pathname);
+    if (normalized === '/' || !this.dirs.has(normalized)) return ENOENT;
+    const prefix = `${normalized}/`;
+    for (const dir of this.dirs) {
+      if (dir.startsWith(prefix)) return ENOTEMPTY;
+    }
+    for (const file of this.files.keys()) {
+      if (file.startsWith(prefix)) return ENOTEMPTY;
+    }
+    this.dirs.delete(normalized);
+    return ESUCCESS;
   }
 
   listDirectory(pathname) {
@@ -984,8 +999,12 @@ class WasiProcess {
     return ESUCCESS;
   }
 
-  path_remove_directory() {
-    return ESUCCESS;
+  path_remove_directory(dirfd, pathPtr, pathLen) {
+    const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
+    if (!pathname) return EBADF;
+    if (isRuntimeProcPath(pathname)) return EROFS;
+    if (this.fs.isFile(pathname)) return ENOTDIR;
+    return this.fs.removeDirectory(pathname);
   }
 
   path_rename(oldFd, oldPathPtr, oldPathLen, newFd, newPathPtr, newPathLen) {
