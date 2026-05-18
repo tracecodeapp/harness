@@ -449,8 +449,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-csharp worker should not ship fallback kernel device inventory'
       );
       assertCondition(
-        worker.includes('sourceDevice') && worker.includes('context.stdoutSourceDevice = device !== outputDevice ? device : undefined'),
-        '@tracecode/harness-csharp worker should ship routed source device events'
+        worker.includes('sourceDevice') &&
+          worker.includes('const currentSourceDevice = stream === \'stdout\' ? context.stdoutSourceDevice : context.stderrSourceDevice') &&
+          worker.includes('flushProjectOutput(stream)') &&
+          worker.includes('context.stdoutSourceDevice = nextSourceDevice'),
+        '@tracecode/harness-csharp worker should ship routed source device events and flush on device changes'
       );
       assertCondition(
         worker.includes('function isCreateOrTruncateOpenFlags(') &&
@@ -499,8 +502,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-cpp worker should keep standalone stdio separate from project kernel devices'
       );
       assertCondition(
-        worker.includes('sourceDevice') && worker.includes('this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device)'),
-        '@tracecode/harness-cpp worker should ship stdio source device events'
+        worker.includes('sourceDevice') &&
+          worker.includes('this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device, entry.outputDevice)') &&
+          worker.includes('const resolvedOutputDevice = outputDevice || (stream === \'stderr\' ? \'/dev/stderr\' : \'/dev/stdout\')'),
+        '@tracecode/harness-cpp worker should ship stdio source and resolved output device events'
       );
       assertCondition(
         worker.includes('directory: true') &&
