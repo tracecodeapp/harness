@@ -27,6 +27,7 @@ const EIO = 29;
 const ENOENT = 44;
 const ENOTDIR = 54;
 const ENOTSUP = 58;
+const EROFS = 69;
 const FILETYPE_UNKNOWN = 0;
 const FILETYPE_CHARACTER_DEVICE = 2;
 const FILETYPE_DIRECTORY = 3;
@@ -36,6 +37,7 @@ const OFLAGS_DIRECTORY = 2;
 const OFLAGS_EXCL = 4;
 const OFLAGS_TRUNC = 8;
 const FDFLAGS_APPEND = 1;
+const RIGHTS_FD_WRITE = 1n << 6n;
 const WHENCE_SET = 0;
 const WHENCE_CUR = 1;
 const WHENCE_END = 2;
@@ -263,6 +265,19 @@ function resolveAt(base, child) {
   return normalizePath(`${base || '/'}/${child}`);
 }
 
+function isRuntimeProcPath(pathname) {
+  const normalized = normalizePath(pathname);
+  return normalized === '/proc' || normalized.startsWith('/proc/');
+}
+
+function wasiRights(value) {
+  try {
+    return BigInt(value ?? 0);
+  } catch {
+    return 0n;
+  }
+}
+
 function inodeForPath(pathname) {
   let hash = 2166136261;
   for (const ch of normalizePath(pathname)) {
@@ -376,6 +391,7 @@ class InMemoryFileSystem {
   constructor() {
     this.files = new Map();
     this.dirs = new Set(['/']);
+    this.readOnlyFiles = new Set();
     this.fileChangeObserver = null;
   }
 
@@ -387,6 +403,7 @@ class InMemoryFileSystem {
     const next = new InMemoryFileSystem();
     next.dirs = new Set(this.dirs);
     next.files = new Map([...this.files.entries()].map(([key, value]) => [key, cloneBytes(value)]));
+    next.readOnlyFiles = new Set(this.readOnlyFiles);
     return next;
   }
 
@@ -404,6 +421,17 @@ class InMemoryFileSystem {
     const normalized = normalizePath(pathname);
     this.addDirectory(dirname(normalized));
     this.files.set(normalized, contents instanceof Uint8Array ? cloneBytes(contents) : encodeUtf8(String(contents)));
+  }
+
+  addReadOnlyFile(pathname, contents) {
+    const normalized = normalizePath(pathname);
+    this.addFile(normalized, contents);
+    this.readOnlyFiles.add(normalized);
+  }
+
+  isReadOnly(pathname) {
+    const normalized = normalizePath(pathname);
+    return this.readOnlyFiles.has(normalized) || isRuntimeProcPath(normalized);
   }
 
   exists(pathname) {
@@ -428,6 +456,7 @@ class InMemoryFileSystem {
 
   writeFile(pathname, contents) {
     const normalized = normalizePath(pathname);
+    if (this.isReadOnly(normalized)) throw Object.assign(new Error(`Read-only file system: ${normalized}`), { code: 'EROFS' });
     const bytes = contents instanceof Uint8Array ? cloneBytes(contents) : encodeUtf8(String(contents));
     this.addDirectory(dirname(normalized));
     this.files.set(normalized, bytes);
@@ -443,7 +472,9 @@ class InMemoryFileSystem {
 
   unlink(pathname) {
     const normalized = normalizePath(pathname);
+    if (this.isReadOnly(normalized)) throw Object.assign(new Error(`Read-only file system: ${normalized}`), { code: 'EROFS' });
     this.files.delete(normalized);
+    this.readOnlyFiles.delete(normalized);
     this.fileChangeObserver?.({ path: normalized, deleted: true });
   }
 
@@ -593,6 +624,9 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return null;
     const path = this.mem.readString(pathPtr, pathLen);
+    if (path === 'proc' || path.startsWith('proc/') || path.startsWith('/proc') || path === 'dev' || path.startsWith('dev/') || path.startsWith('/dev')) {
+      return normalizePath(path);
+    }
     const base = entry.kind === 'dir' ? entry.path : dirname(entry.path || '/');
     return resolveAt(base, path);
   }
@@ -619,6 +653,9 @@ class WasiProcess {
     if (stdioEntry) {
       return this.allocateFd(stdioEntry);
     }
+    if (this.fs.isReadOnly(normalized) && (options.create || options.truncate || options.append || options.write)) {
+      return -EROFS;
+    }
     if (options.directory) {
       if (!this.fs.isDirectory(normalized)) return -ENOENT;
       return this.allocateFd({ kind: 'dir', path: normalized, offset: 0, readable: true, writable: false });
@@ -640,7 +677,7 @@ class WasiProcess {
     }
 
     const offset = options.append ? this.fs.readFile(normalized).length : 0;
-    return this.allocateFd({ kind: 'file', path: normalized, offset, readable: true, writable: true, append: Boolean(options.append) });
+    return this.allocateFd({ kind: 'file', path: normalized, offset, readable: true, writable: !this.fs.isReadOnly(normalized) && options.write !== false, append: Boolean(options.append) });
   }
 
   allocateFd(entry) {
@@ -708,6 +745,7 @@ class WasiProcess {
 
   fd_write(fd, iovs, iovsLen, nwrittenOut) {
     const entry = this.fds.get(fd);
+    if (entry?.kind === 'file' && this.fs.isReadOnly(entry.path)) return EROFS;
     if (!entry || !entry.writable) return EBADF;
     const chunks = [];
     let total = 0;
@@ -769,6 +807,7 @@ class WasiProcess {
   fd_pwrite(fd, iovs, iovsLen, offset, nwrittenOut) {
     const entry = this.fds.get(fd);
     if (!entry || entry.kind !== 'file') return EBADF;
+    if (this.fs.isReadOnly(entry.path)) return EROFS;
     const oldOffset = entry.offset;
     entry.offset = Number(offset);
     const result = this.fd_write(fd, iovs, iovsLen, nwrittenOut);
@@ -850,6 +889,7 @@ class WasiProcess {
   fd_filestat_set_size(fd, size) {
     const entry = this.fds.get(fd);
     if (!entry || entry.kind !== 'file') return EBADF;
+    if (this.fs.isReadOnly(entry.path)) return EROFS;
     this.fs.resizeFile(entry.path, Number(size));
     return ESUCCESS;
   }
@@ -893,7 +933,7 @@ class WasiProcess {
     return ESUCCESS;
   }
 
-  path_open(dirfd, _dirflags, pathPtr, pathLen, oflags, _rightsBase, _rightsInheriting, fdflags, openedFdOut) {
+  path_open(dirfd, _dirflags, pathPtr, pathLen, oflags, rightsBase, _rightsInheriting, fdflags, openedFdOut) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
     const fd = this.openFile(pathname, {
@@ -902,6 +942,7 @@ class WasiProcess {
       exclusive: Boolean(oflags & OFLAGS_EXCL),
       truncate: Boolean(oflags & OFLAGS_TRUNC),
       append: Boolean(fdflags & FDFLAGS_APPEND),
+      write: (wasiRights(rightsBase) & RIGHTS_FD_WRITE) !== 0n,
     });
     if (fd < 0) return -fd;
     this.mem.writeU32(openedFdOut, fd);
@@ -921,6 +962,7 @@ class WasiProcess {
   path_create_directory(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
+    if (isRuntimeProcPath(pathname)) return EROFS;
     this.fs.addDirectory(pathname);
     return ESUCCESS;
   }
@@ -928,6 +970,7 @@ class WasiProcess {
   path_unlink_file(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
+    if (this.fs.isReadOnly(pathname)) return EROFS;
     this.fs.unlink(pathname);
     return ESUCCESS;
   }
@@ -940,6 +983,7 @@ class WasiProcess {
     const oldPath = this.resolveFdPath(oldFd, oldPathPtr, oldPathLen);
     const newPath = this.resolveFdPath(newFd, newPathPtr, newPathLen);
     if (!oldPath || !newPath) return EBADF;
+    if (this.fs.isReadOnly(oldPath) || isRuntimeProcPath(newPath)) return EROFS;
     if (!this.fs.isFile(oldPath)) return ENOENT;
     this.fs.writeFile(newPath, this.fs.readFile(oldPath));
     this.fs.unlink(oldPath);
@@ -4081,6 +4125,16 @@ function projectPathBytes(file) {
     : encodeUtf8(String(file?.contents || ''));
 }
 
+function projectKernelVirtualFiles(project) {
+  const files = Array.isArray(project?.kernelFiles) ? project.kernelFiles : [];
+  return files
+    .filter((file) => file && typeof file.path === 'string' && isRuntimeProcPath(file.path))
+    .map((file) => ({
+      path: normalizePath(file.path),
+      contents: projectPathBytes(file),
+    }));
+}
+
 function projectFromContext(context) {
   return context?.project && typeof context.project === 'object' ? context.project : context;
 }
@@ -4385,12 +4439,16 @@ function createProjectRuntimeFs(project) {
     const path = relativeProjectPath(file.path, project);
     if (path) fs.addFile(`/${path}`, projectPathBytes(file));
   }
+  for (const file of projectKernelVirtualFiles(project)) {
+    fs.addReadOnlyFile(file.path, file.contents);
+  }
   return fs;
 }
 
 function snapshotProjectFs(fs) {
   const snapshot = new Map();
   for (const [path, bytes] of fs.files.entries()) {
+    if (isRuntimeProcPath(path)) continue;
     const relativePath = relativeProjectPath(path);
     if (relativePath) snapshot.set(relativePath, cloneBytes(bytes));
   }

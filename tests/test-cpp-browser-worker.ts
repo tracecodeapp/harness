@@ -62,6 +62,10 @@ async function main(): Promise<void> {
       const worker = new Worker('/workers/cpp-worker.js', { type: 'module' });
       let nextId = 0;
       const pending = new Map();
+      const traceKernelProcFiles = [
+        { path: '/proc/kernel/info', contents: '{\\n  "name": "tracekernel"\\n}\\n' },
+        { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\\n' },
+      ];
 
       const compileInFrame = (payload) =>
         new Promise((resolve, reject) => {
@@ -222,6 +226,7 @@ async function main(): Promise<void> {
             '#include "helper.hpp"',
             '#include <cstdlib>',
             '#include <cstdio>',
+            '#include <dirent.h>',
             '#include <fstream>',
             '#include <iostream>',
             '#include <string>',
@@ -236,6 +241,15 @@ async function main(): Promise<void> {
             '  std::cout << (std::getenv("MODE") ? std::getenv("MODE") : "") << "\\\\n";',
             '  std::cout << (argc > 2 ? std::string(argv[1]) + "," + argv[2] : "") << "\\\\n";',
             '  std::cout << line << "\\\\n";',
+            '  std::ifstream proc_info("/proc/kernel/info");',
+            '  std::string proc_text((std::istreambuf_iterator<char>(proc_info)), std::istreambuf_iterator<char>());',
+            '  std::cout << (proc_text.find("\\\\"name\\\\": \\\\"tracekernel\\\\"") != std::string::npos ? "proc-info" : "proc-missing") << "\\\\n";',
+            '  DIR* proc_kernel = opendir("/proc/kernel");',
+            '  bool saw_info = false;',
+            '  if (proc_kernel) { while (dirent* entry = readdir(proc_kernel)) { if (std::string(entry->d_name) == "info") saw_info = true; } closedir(proc_kernel); }',
+            '  std::cout << (saw_info ? "info" : "missing") << "\\\\n";',
+            '  std::ofstream proc_write("/proc/kernel/info");',
+            '  std::cout << (proc_write ? "proc-write:ok" : "proc-write:blocked") << "\\\\n";',
             '  FILE* stdout_device = std::fopen("/dev/stdout", "w");',
             '  if (stdout_device) { std::fputs("device-out\\\\n", stdout_device); std::fclose(stdout_device); }',
             '  FILE* stderr_device = std::fopen("/dev/stderr", "w");',
@@ -315,7 +329,7 @@ async function main(): Promise<void> {
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-project' },
         stdin: 'from-stdin\\n',
-        project: { files: [...projectFiles, ...(projectCompile.files || [])] },
+        project: { files: [...projectFiles, ...(projectCompile.files || [])], kernelFiles: traceKernelProcFiles },
       });
       const absoluteProjectCompile = await send('execute-project-cpp', {
         source: 'compile',
@@ -1026,9 +1040,13 @@ async function main(): Promise<void> {
       projectCompile.exitCode === 0 && projectCompile.files?.some((file) => file.path === 'src/a.out' && file.encoding === 'base64'),
       `C++ browser project compile should emit a.out: ${JSON.stringify(projectCompile)}`
     );
+    assertCondition(projectRun.exitCode === 0, `C++ browser project run should exit successfully: ${JSON.stringify(projectRun)}`);
     assertCondition(
-      projectRun.exitCode === 0 && projectRun.stdout === '42\ndevice-out\nfrom-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\n',
-      `C++ browser project run should preserve stdout/stdin/env/argv: ${JSON.stringify(projectRun)}`
+      projectRun.stdout?.includes('42\n') === true &&
+        projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\n') === true &&
+        projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
+        projectRun.stdout?.includes('device-out\n') === true,
+      `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.stderr === 'device-err\n',
