@@ -605,12 +605,18 @@ function writeProjectDeviceByte(device, value, options = {}) {
   if (!outputDevice) return;
   const stream = kernelDeviceStream(outputDevice);
   const buffer = stream === 'stdout' ? context.stdoutBytes : context.stderrBytes;
+  const currentDevice = stream === 'stdout' ? context.stdoutDevice : context.stderrDevice;
+  const currentSourceDevice = stream === 'stdout' ? context.stdoutSourceDevice : context.stderrSourceDevice;
+  const nextSourceDevice = device !== outputDevice ? device : undefined;
+  if (buffer.length > 0 && (currentDevice !== outputDevice || currentSourceDevice !== nextSourceDevice)) {
+    flushProjectOutput(stream);
+  }
   if (stream === 'stdout') {
     context.stdoutDevice = outputDevice;
-    context.stdoutSourceDevice = device !== outputDevice ? device : undefined;
+    context.stdoutSourceDevice = nextSourceDevice;
   } else {
     context.stderrDevice = outputDevice;
-    context.stderrSourceDevice = device !== outputDevice ? device : undefined;
+    context.stderrSourceDevice = nextSourceDevice;
   }
   const byte = value & 0xff;
   buffer.push(byte);

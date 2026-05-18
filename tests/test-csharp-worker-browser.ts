@@ -101,6 +101,8 @@ const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['k
   { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
   { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
   { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+  { path: '/dev/capture', readable: false, writable: true, outputDevice: '/dev/capture' },
+  { path: '/dev/tee', readable: false, writable: true, outputDevice: '/dev/capture' },
   { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
 ];
 
@@ -2757,6 +2759,8 @@ async function main(): Promise<void> {
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/log", "dev-log\\n"); Console.WriteLine("dev-log-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-log-write:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/dev/capture", "capture-device"); File.WriteAllText("/dev/stdout", "stdout-after-capture\\n"); Console.WriteLine("dev-capture-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-capture-write:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/dev/tee", "tee-device"); File.WriteAllText("/dev/stdout", "stdout-after-tee\\n"); Console.WriteLine("dev-tee-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tee-write:" + ex.GetType().Name); }',
                 'try { File.ReadAllText("/dev/stdout"); Console.WriteLine("dev-stdout-read:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-read:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stdin", "bad\\n"); Console.WriteLine("dev-stdin-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdin-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev", "bad\\n"); Console.WriteLine("dev-dir-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-dir-write:" + ex.GetType().Name); }',
@@ -2815,7 +2819,9 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\ncustom-kernel-file\n') &&
         projectRun.stdout.includes('dev-stdout\n') &&
-        projectRun.stdout.includes('dev-tty\n'),
+        projectRun.stdout.includes('dev-tty\n') &&
+        projectRun.stdout.includes('capture-devicestdout-after-capture\n') &&
+        projectRun.stdout.includes('tee-devicestdout-after-tee\n'),
       `C# project worker should preserve stdout/stdin/env/args/proc reads: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, events: projectRun.events })}`
     );
     assertCondition(
@@ -2861,6 +2867,41 @@ async function main(): Promise<void> {
           event.sourceDevice === undefined
       ) === true,
       `C# project worker should not report redundant sourceDevice for direct /dev/stderr writes: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/capture' &&
+          event.sourceDevice === undefined &&
+          event.data === 'capture-device'
+      ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.device === '/dev/stdout' &&
+            event.sourceDevice === undefined &&
+            event.data === 'stdout-after-capture\n'
+        ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.device === '/dev/capture' &&
+            event.sourceDevice === '/dev/tee' &&
+            event.data === 'tee-device'
+        ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.device === '/dev/stdout' &&
+            event.sourceDevice === undefined &&
+            event.data === 'stdout-after-tee\n'
+        ) === true,
+      `C# project worker should preserve output event device metadata when stdout devices switch before newline: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.stdout.includes('proc-write:') && !projectRun.stdout.includes('proc-write:ok'),
