@@ -2905,11 +2905,11 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const stdioDeviceStreamResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const chunks = []; await new Promise((resolve, reject) => fs.createReadStream(null, { fd: 0, encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve)); console.log(chunks.join(\\"\\").trim()); const handle = await fsp.open(\\"/dev/stdin\\", \\"r\\"); console.log(\\"handle:\\" + (await handle.readFile(\\"utf8\\")).trim()); await handle.close(); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stdout\\").on(\\"error\\", reject).end(\\"device-stream-out\\\\n\\", resolve)); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stderr\\").on(\\"error\\", reject).end(\\"device-stream-err\\\\n\\", resolve));"',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const chunks = []; await new Promise((resolve, reject) => fs.createReadStream(null, { fd: 0, encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve)); console.log(chunks.join(\\"\\").trim()); const handle = await fsp.open(\\"/dev/stdin\\", \\"r\\"); console.log(\\"handle:\\" + (await handle.readFile(\\"utf8\\")).trim()); console.log(\\"handle-second:\\" + (await handle.readFile(\\"utf8\\")).length); await handle.close(); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stdout\\").on(\\"error\\", reject).end(\\"device-stream-out\\\\n\\", resolve)); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stderr\\").on(\\"error\\", reject).end(\\"device-stream-err\\\\n\\", resolve));"',
   ].join(' '), { stdin: 'from-stream\n' });
   assertCondition(stdioDeviceStreamResult.exitCode === 0, `browser node stdio device stream workflow should succeed: ${stdioDeviceStreamResult.stderr}`);
   assertCondition(
-    stdioDeviceStreamResult.stdout === 'from-stream\nhandle:from-stream\ndevice-stream-out\n' &&
+    stdioDeviceStreamResult.stdout === 'from-stream\nhandle:from-stream\nhandle-second:0\ndevice-stream-out\n' &&
       stdioDeviceStreamResult.stderr === 'device-stream-err\n',
     `browser node fd/device streams should consume stdin and stream stdout/stderr live: ${JSON.stringify(stdioDeviceStreamResult)}`
   );

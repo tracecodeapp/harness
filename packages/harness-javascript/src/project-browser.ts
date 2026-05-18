@@ -3647,9 +3647,9 @@ async function runBrowserJavaScriptProjectRequest(
           const entry = fileDescriptor(fd);
           if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, readFile'), { code: 'EBADF' });
           const source = descriptorBytes(entry);
-          const start = entry.kind === 'device' ? 0 : entry.offset;
+          const start = entry.offset;
           const bytes = BrowserBuffer.from(source.slice(start));
-          if (entry.kind !== 'device') entry.offset = source.byteLength;
+          entry.offset = source.byteLength;
           const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         };
