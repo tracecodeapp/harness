@@ -455,18 +455,18 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #1e1f22;
+  background: #17191d;
   color: var(--text-main);
 }
 
 .dev-menubar {
-  height: 30px;
+  height: 34px;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 8px;
-  background: #2b2d30;
-  border-bottom: 1px solid var(--border-color);
+  padding: 0 10px;
+  background: #24272d;
+  border-bottom: 1px solid #343841;
   flex-shrink: 0;
   user-select: none;
 }
@@ -479,10 +479,10 @@ body {
 }
 
 .dev-menu-trigger {
-  height: 24px;
+  height: 26px;
   border: 0;
   background: transparent;
-  color: #cfd3dc;
+  color: #d2d7df;
   padding: 0 10px;
   font-family: var(--font-ui);
   font-size: 12px;
@@ -492,19 +492,19 @@ body {
 .dev-menu-trigger:hover,
 .dev-menu-group:focus-within .dev-menu-trigger,
 .dev-menu-group:hover .dev-menu-trigger {
-  background: #3a3d42;
+  background: #343941;
 }
 
 .dev-menu-popover {
   position: absolute;
   left: 0;
-  top: 28px;
+  top: 31px;
   z-index: 20;
   min-width: 170px;
   padding: 5px;
   display: none;
-  background: #2b2d30;
-  border: 1px solid #4b4e55;
+  background: #252930;
+  border: 1px solid #444a55;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.36);
 }
 
@@ -535,7 +535,7 @@ body {
 }
 
 .dev-workspace-name {
-  color: var(--text-muted);
+  color: #9ca6b5;
   font-family: var(--font-mono);
   font-size: 11px;
 }
@@ -545,52 +545,17 @@ body {
   min-height: 0;
   min-width: 0;
   display: grid;
-  grid-template-columns: 42px 280px minmax(0, 1fr) 330px;
-  background: #1e1f22;
+  grid-template-columns: 304px minmax(0, 1fr);
+  background: #17191d;
 }
 
-.dev-activitybar {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 0;
-  background: #252629;
-  border-right: 1px solid var(--border-color);
-}
-
-.dev-activitybar button {
-  width: 30px;
-  height: 30px;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.dev-activitybar button.active,
-.dev-activitybar button:hover {
-  color: var(--text-main);
-  background: #36393f;
-}
-
-.dev-explorer,
-.dev-inspector {
+.dev-explorer {
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #202124;
-}
-
-.dev-explorer {
-  border-right: 1px solid var(--border-color);
-}
-
-.dev-inspector {
-  border-left: 1px solid var(--border-color);
+  background: #1d2026;
+  border-right: 1px solid #343841;
 }
 
 .dev-editor-shell {
@@ -598,14 +563,14 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: #1e1f22;
+  background: #17191d;
 }
 
 .dev-editor-tabs {
-  height: 34px;
+  height: 36px;
   display: flex;
-  background: #252629;
-  border-bottom: 1px solid var(--border-color);
+  background: #20242a;
+  border-bottom: 1px solid #343841;
 }
 
 .dev-editor-tab {
@@ -615,8 +580,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 0 12px;
-  background: #1e1f22;
-  border-right: 1px solid var(--border-color);
+  background: #17191d;
+  border-right: 1px solid #343841;
   color: #dfe1e5;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -635,28 +600,28 @@ body {
 }
 
 .dev-bottom-panel {
-  height: 260px;
-  min-height: 180px;
+  height: 246px;
+  min-height: 168px;
   display: flex;
   flex-direction: column;
-  background: #1e1f22;
-  border-top: 1px solid var(--border-color);
+  background: #15171a;
+  border-top: 1px solid #343841;
   flex-shrink: 0;
 }
 
 .dev-bottom-tabs {
-  height: 31px;
+  height: 30px;
   display: flex;
-  background: #252629;
-  border-bottom: 1px solid var(--border-color);
+  background: #20242a;
+  border-bottom: 1px solid #343841;
 }
 
 .dev-bottom-tabs button {
-  min-width: 86px;
+  min-width: 102px;
   border: 0;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid #343841;
   background: transparent;
-  color: var(--text-muted);
+  color: #d9dee7;
   font-family: var(--font-ui);
   font-size: 12px;
   cursor: pointer;
@@ -665,7 +630,7 @@ body {
 .dev-bottom-tabs button.active,
 .dev-bottom-tabs button:hover {
   color: var(--text-main);
-  background: #1e1f22;
+  background: #15171a;
 }
 
 /* === Dev Terminal === */
@@ -713,6 +678,63 @@ body {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.dev-explorer-header {
+  height: 36px;
+  padding: 0 8px 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #d7dce5;
+  background: #24272d;
+  border-bottom: 1px solid #343841;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.dev-explorer-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dev-explorer-actions button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #9ca6b5;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dev-explorer-actions button:hover {
+  color: #ffffff;
+  background: #343941;
+  border-color: #46505d;
+}
+
+.dev-explorer-root-label {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: #8f98a8;
+  background: #1a1d22;
+  border-bottom: 1px solid #2d323a;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   flex-shrink: 0;
 }
 
@@ -814,21 +836,21 @@ body {
 }
 
 .dev-file-tree {
-  padding: 6px 0;
+  padding: 8px 0 14px;
 }
 
 .dev-file-entry {
   width: 100%;
-  height: 24px;
+  height: 26px;
   display: block;
   border: 0;
   background: transparent;
-  color: #c6cad2;
+  color: #cbd2dd;
   text-align: left;
-  padding: 0 8px 0 calc(10px + var(--depth, 0) * 14px);
+  padding: 0 10px 0 calc(12px + var(--depth, 0) * 16px);
   font-family: var(--font-mono);
   font-size: 12px;
-  line-height: 24px;
+  line-height: 26px;
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -836,14 +858,19 @@ body {
 }
 
 .dev-file-entry.directory {
-  color: #aeb4bf;
-  cursor: default;
+  color: #d9dee7;
+  font-weight: 600;
 }
 
+.dev-file-entry.directory:hover,
 .dev-file-entry.file:hover,
 .dev-file-entry.active {
-  background: #31343a;
+  background: #29313b;
   color: #ffffff;
+}
+
+.dev-file-entry.active {
+  box-shadow: inset 3px 0 0 #6ea1ff;
 }
 
 .dev-file-empty {
@@ -903,7 +930,7 @@ body {
 }
 
 .dev-terminal-status {
-  color: var(--text-muted);
+  color: #7ed88d;
   font-family: var(--font-mono);
   font-size: 12px;
 }
@@ -912,7 +939,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 14px;
+  padding: 12px 14px;
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.55;
@@ -939,14 +966,14 @@ body {
 }
 
 .dev-terminal-form {
-  height: 38px;
+  height: 40px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 14px;
-  background: #191a1d;
-  border-top: 1px solid var(--border-color);
+  background: #111316;
+  border-top: 1px solid #343841;
   font-family: var(--font-mono);
 }
 
@@ -985,19 +1012,15 @@ body {
 }
 
 @media (max-width: 860px) {
-  .dev-terminal-root {
-    flex-direction: column;
+  .dev-workbench {
+    grid-template-columns: 220px minmax(0, 1fr);
   }
 
-  .dev-sidebar {
-    width: 100%;
-    max-width: none;
-    height: 46vh;
-    border-right: 0;
-    border-bottom: 1px solid var(--border-color);
+  .dev-explorer {
+    width: 220px;
   }
 
-  .dev-capability-list {
-    max-height: 160px;
+  .dev-bottom-panel {
+    height: 220px;
   }
 }

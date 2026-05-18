@@ -189,45 +189,47 @@ async function bootDevTerminal(): Promise<void> {
         <div class="dev-menu-group">
           <button class="dev-menu-trigger" type="button">File</button>
           <div class="dev-menu-popover">
-            <button id="dev-new-file" type="button">New File</button>
-            <button id="dev-save-file" type="button">Save</button>
-            <button id="dev-refresh-files" type="button">Refresh Explorer</button>
+            <button id="dev-menu-new-file" type="button">New File</button>
+            <button id="dev-menu-save-file" type="button">Save</button>
+            <button id="dev-menu-refresh-files" type="button">Refresh Explorer</button>
           </div>
         </div>
         <div class="dev-menu-group">
           <button class="dev-menu-trigger" type="button">Edit</button>
           <div class="dev-menu-popover">
-            <button id="dev-format-file" type="button">Format Document</button>
-            <button id="dev-clear-terminal" type="button">Clear Terminal</button>
+            <button id="dev-menu-format-file" type="button">Format Document</button>
+            <button id="dev-menu-clear-terminal" type="button">Clear Terminal</button>
           </div>
         </div>
         <div class="dev-menu-group">
           <button class="dev-menu-trigger" type="button">View</button>
           <div class="dev-menu-popover">
-            <button id="dev-focus-terminal" type="button">Terminal</button>
-            <button id="dev-focus-explorer" type="button">Explorer</button>
+            <button id="dev-menu-focus-terminal" type="button">Terminal</button>
+            <button id="dev-menu-focus-explorer" type="button">Explorer</button>
           </div>
         </div>
         <div class="dev-menu-group">
           <button class="dev-menu-trigger" type="button">Run</button>
           <div class="dev-menu-popover">
-            <button id="dev-run-current" type="button">Run Current File</button>
-            <button id="dev-run-mvp" type="button">Run MVP Checks</button>
+            <button id="dev-menu-run-current" type="button">Run Current File</button>
+            <button id="dev-menu-run-mvp" type="button">Run MVP Checks</button>
           </div>
         </div>
         <div class="dev-menu-spacer"></div>
         <span class="dev-workspace-name">tracekernel / weather-api</span>
-        <span class="dev-terminal-status" id="dev-terminal-status">booting</span>
+        <span class="dev-terminal-status" id="dev-terminal-status">tracekernel booting</span>
       </header>
       <section class="dev-workbench">
-        <nav class="dev-activitybar" aria-label="Dev workspace views">
-          <button class="active" type="button" title="Explorer">F</button>
-          <button type="button" title="Search">S</button>
-          <button type="button" title="Run">R</button>
-          <button type="button" title="Kernel">K</button>
-        </nav>
         <aside class="dev-explorer">
-          <div class="dev-panel-header">Explorer</div>
+          <div class="dev-explorer-header">
+            <span>Explorer</span>
+            <div class="dev-explorer-actions">
+              <button id="dev-new-file" type="button" title="New file">+</button>
+              <button id="dev-new-folder" type="button" title="New folder">/</button>
+              <button id="dev-refresh-files" type="button" title="Refresh explorer">R</button>
+            </div>
+          </div>
+          <div class="dev-explorer-root-label">/home/user/weather-api</div>
           <div class="dev-file-tree" id="dev-file-tree"></div>
         </aside>
         <section class="dev-editor-shell">
@@ -239,26 +241,10 @@ async function bootDevTerminal(): Promise<void> {
           </div>
           <div id="dev-editor-root" class="dev-monaco-root"></div>
         </section>
-        <aside class="dev-inspector">
-          <section class="dev-panel">
-            <div class="dev-panel-header">Project I/O</div>
-            <div class="dev-capability-list" id="dev-capability-list"></div>
-          </section>
-          <section class="dev-panel">
-            <div class="dev-panel-header">MVP Checks</div>
-            <div class="dev-command-list" id="dev-command-list"></div>
-          </section>
-          <section class="dev-panel dev-panel-grow">
-            <div class="dev-panel-header">Events</div>
-            <div class="dev-event-log" id="dev-event-log"></div>
-          </section>
-        </aside>
       </section>
       <footer class="dev-bottom-panel">
         <div class="dev-bottom-tabs">
           <button class="active" type="button">Terminal</button>
-          <button type="button">Problems</button>
-          <button type="button">Output</button>
         </div>
         <section class="dev-terminal">
           <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite"></div>
@@ -282,22 +268,22 @@ async function bootDevTerminal(): Promise<void> {
   const form = document.querySelector<HTMLFormElement>('#dev-terminal-form')!;
   const input = document.querySelector<HTMLInputElement>('#dev-terminal-input')!;
   const prompt = document.querySelector<HTMLSpanElement>('#dev-terminal-prompt')!;
-  const capabilityList = document.querySelector<HTMLDivElement>('#dev-capability-list')!;
-  const commandList = document.querySelector<HTMLDivElement>('#dev-command-list')!;
   const fileTree = document.querySelector<HTMLDivElement>('#dev-file-tree')!;
-  const eventLog = document.querySelector<HTMLDivElement>('#dev-event-log')!;
   const editorRoot = document.querySelector<HTMLDivElement>('#dev-editor-root')!;
   const currentFileLabel = document.querySelector<HTMLSpanElement>('#dev-current-file')!;
   const dirtyIndicator = document.querySelector<HTMLSpanElement>('#dev-dirty-indicator')!;
   const newFileButton = document.querySelector<HTMLButtonElement>('#dev-new-file')!;
-  const saveFileButton = document.querySelector<HTMLButtonElement>('#dev-save-file')!;
+  const menuNewFileButton = document.querySelector<HTMLButtonElement>('#dev-menu-new-file')!;
+  const newFolderButton = document.querySelector<HTMLButtonElement>('#dev-new-folder')!;
+  const saveFileButton = document.querySelector<HTMLButtonElement>('#dev-menu-save-file')!;
   const refreshFilesButton = document.querySelector<HTMLButtonElement>('#dev-refresh-files')!;
-  const formatFileButton = document.querySelector<HTMLButtonElement>('#dev-format-file')!;
-  const clearTerminalButton = document.querySelector<HTMLButtonElement>('#dev-clear-terminal')!;
-  const focusTerminalButton = document.querySelector<HTMLButtonElement>('#dev-focus-terminal')!;
-  const focusExplorerButton = document.querySelector<HTMLButtonElement>('#dev-focus-explorer')!;
-  const runCurrentButton = document.querySelector<HTMLButtonElement>('#dev-run-current')!;
-  const runMvpButton = document.querySelector<HTMLButtonElement>('#dev-run-mvp')!;
+  const menuRefreshFilesButton = document.querySelector<HTMLButtonElement>('#dev-menu-refresh-files')!;
+  const formatFileButton = document.querySelector<HTMLButtonElement>('#dev-menu-format-file')!;
+  const clearTerminalButton = document.querySelector<HTMLButtonElement>('#dev-menu-clear-terminal')!;
+  const focusTerminalButton = document.querySelector<HTMLButtonElement>('#dev-menu-focus-terminal')!;
+  const focusExplorerButton = document.querySelector<HTMLButtonElement>('#dev-menu-focus-explorer')!;
+  const runCurrentButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-current')!;
+  const runMvpButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-mvp')!;
 
   const appendLine = (text: string, className = ''): void => {
     const line = document.createElement('div');
@@ -312,46 +298,6 @@ async function bootDevTerminal(): Promise<void> {
     for (const line of text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')) {
       appendLine(line, className);
     }
-  };
-
-  const appendEvent = (text: string, className = ''): void => {
-    const line = document.createElement('div');
-    line.className = `dev-event-line ${className}`.trim();
-    line.textContent = text;
-    eventLog.append(line);
-    while (eventLog.childElementCount > 80) {
-      eventLog.firstElementChild?.remove();
-    }
-    eventLog.scrollTop = eventLog.scrollHeight;
-  };
-
-  const renderCapabilities = (): void => {
-    capabilityList.replaceChildren(
-      ...getRuntimeProjectIoCapabilityMatrix().map((row) => {
-        const item = document.createElement('div');
-        item.className = `dev-capability-row tier-${row.browser.tier}`;
-        const label = row.language === 'csharp' ? 'C#' : row.language === 'cpp' ? 'C++' : row.language;
-        item.innerHTML = `
-          <div class="dev-capability-top">
-            <span class="dev-capability-language"></span>
-            <span class="dev-capability-tier"></span>
-          </div>
-          <div class="dev-capability-flags"></div>
-          <div class="dev-capability-note"></div>
-        `;
-        item.querySelector<HTMLSpanElement>('.dev-capability-language')!.textContent = label;
-        item.querySelector<HTMLSpanElement>('.dev-capability-tier')!.textContent = row.browser.tier;
-        item.querySelector<HTMLDivElement>('.dev-capability-flags')!.textContent = [
-          row.browser.liveMutationEvents ? 'live fs' : 'no live fs',
-          row.browser.streamingStdio ? 'stdio' : 'no stdio',
-          row.browser.deviceFiles ? 'devices' : 'no devices',
-          row.browser.finalDiff ? 'final-diff' : 'no final-diff',
-        ].join(' · ');
-        item.querySelector<HTMLDivElement>('.dev-capability-note')!.textContent =
-          row.limitations[0] ?? 'No limitations declared.';
-        return item;
-      })
-    );
   };
 
   appendLine('Loading project workspace...');
@@ -750,6 +696,7 @@ int main(int argc, char** argv) {
   };
 
   let activeFilePath = 'main.py';
+  const collapsedDirectories = new Set<string>();
   let suppressEditorChange = false;
   let saveTimer: number | undefined;
 
@@ -779,7 +726,7 @@ int main(int argc, char** argv) {
 
   const markClean = (): void => {
     dirtyIndicator.textContent = '';
-    status.textContent = 'ready';
+    status.textContent = 'tracekernel ready';
   };
 
   const saveActiveFile = async (): Promise<void> => {
@@ -823,7 +770,7 @@ int main(int argc, char** argv) {
       } catch {
         return;
       }
-      for (const entry of entries) {
+      const rows = await Promise.all(entries.map(async (entry) => {
         const path = dir === '.' ? entry : `${dir}/${entry}`;
         let isDirectory = false;
         try {
@@ -832,17 +779,34 @@ int main(int argc, char** argv) {
         } catch {
           isDirectory = false;
         }
+        return { entry, path, isDirectory };
+      }));
+      rows.sort((left, right) => {
+        if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+        return left.entry.localeCompare(right.entry);
+      });
+      for (const { entry, path, isDirectory } of rows) {
+        const collapsed = collapsedDirectories.has(path);
         const row = document.createElement('button');
         row.type = 'button';
-        row.className = `dev-file-entry ${isDirectory ? 'directory' : 'file'} ${path === activeFilePath ? 'active' : ''}`;
+        row.className = `dev-file-entry ${isDirectory ? 'directory' : 'file'} ${path === activeFilePath ? 'active' : ''}`.trim();
         row.dataset.devFile = path;
         row.style.setProperty('--depth', String(depth));
-        row.textContent = `${isDirectory ? '▸ ' : ''}${entry}${isDirectory ? '/' : ''}`;
+        row.textContent = `${isDirectory ? `${collapsed ? '▸' : '▾'} ` : ''}${entry}${isDirectory ? '/' : ''}`;
         row.addEventListener('click', () => {
-          if (!isDirectory) void openFile(path);
+          if (isDirectory) {
+            if (collapsed) {
+              collapsedDirectories.delete(path);
+            } else {
+              collapsedDirectories.add(path);
+            }
+            void renderFileTree();
+            return;
+          }
+          void openFile(path);
         });
         fileTree.append(row);
-        if (isDirectory) {
+        if (isDirectory && !collapsed) {
           await visit(path, depth + 1);
         }
       }
@@ -938,7 +902,7 @@ int main(int argc, char** argv) {
   const runTerminalCommand = async (command: string): Promise<void> => {
     input.value = '';
     input.disabled = true;
-    status.textContent = 'running';
+    status.textContent = 'tracekernel running';
     appendLine(`$ ${command}`, 'command');
 
     try {
@@ -970,17 +934,14 @@ int main(int argc, char** argv) {
         onEvent: (event: RuntimeCommandEvent) => {
           if (event.type === 'status') {
             appendLine(`[${event.phase}] ${event.message}`, 'status');
-            appendEvent(`status ${event.phase}: ${event.message}`, 'status');
             return;
           }
           if (event.type === 'output') {
             streamedOutput[event.stream] += event.data;
             appendBlock(event.data, event.stream);
-            appendEvent(`${event.stream} ${event.device ?? ''}: ${JSON.stringify(event.data)}`, event.stream);
             return;
           }
           if (event.type === 'file-change') {
-            appendEvent(`${event.phase ?? 'change'} ${event.change.path}`, 'file');
             void renderFileTree();
           }
         },
@@ -1003,33 +964,11 @@ int main(int argc, char** argv) {
     } finally {
       await renderFileTree();
       updatePrompt();
-      status.textContent = 'ready';
+      status.textContent = 'tracekernel ready';
       input.disabled = false;
       input.focus();
     }
   };
-
-  commandList.replaceChildren(
-    ...[
-      ['mvp', 'Run all'],
-      ['mvp js', 'JS'],
-      ['mvp python', 'Python'],
-      ['mvp java', 'Java'],
-      ['mvp csharp', 'C#'],
-      ['mvp cpp', 'C++'],
-      ['capabilities', 'Matrix'],
-    ].map(([command, label]) => {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'dev-command-button';
-      button.textContent = label;
-      button.title = command;
-      button.addEventListener('click', () => {
-        void runTerminalCommand(command);
-      });
-      return button;
-    })
-  );
 
   const commandForActiveFile = (): string => {
     const path = activeFilePath;
@@ -1045,18 +984,33 @@ int main(int argc, char** argv) {
     return `cat ${JSON.stringify(absolutePath)}`;
   };
 
-  newFileButton.addEventListener('click', () => {
+  const createNewFile = (): void => {
     const path = window.prompt('New project file path', 'src/new-file.txt')?.trim();
     if (!path) return;
     void workspace.writeFile(path, '').then(async () => {
       await renderFileTree();
       await openFile(path);
     });
+  };
+  newFileButton.addEventListener('click', createNewFile);
+  menuNewFileButton.addEventListener('click', createNewFile);
+  newFolderButton.addEventListener('click', () => {
+    const path = window.prompt('New project folder path', 'src/new-folder')?.trim();
+    if (!path) return;
+    void workspace.mkdir(path).then(async () => {
+      collapsedDirectories.delete(path);
+      await renderFileTree();
+    }).catch((error) => {
+      appendLine(error instanceof Error ? error.message : String(error), 'stderr');
+    });
   });
   saveFileButton.addEventListener('click', () => {
     void saveActiveFile().then(renderFileTree);
   });
   refreshFilesButton.addEventListener('click', () => {
+    void renderFileTree();
+  });
+  menuRefreshFilesButton.addEventListener('click', () => {
     void renderFileTree();
   });
   formatFileButton.addEventListener('click', () => {
@@ -1093,26 +1047,12 @@ int main(int argc, char** argv) {
     import.meta.hot.dispose(disposeTerminal);
   }
 
-  status.textContent = 'ready';
+  status.textContent = 'tracekernel ready';
   updatePrompt();
-  renderCapabilities();
   await renderFileTree();
   await openFile(activeFilePath);
-  appendLine('Ready. Try: python3 main.py alpha beta');
-  appendLine('Ready. Try: python3 globpy/*.py data/*.txt');
-  appendLine('Ready. Try: node index.js alpha beta');
-  appendLine('Ready. Try: node globjs/*.js data/*.txt');
-  appendLine('Ready. Try: java Main alpha beta');
-  appendLine('Ready. Try: javac -d out src/app/PackageMain.java src/app/PackageHelper.java');
-  appendLine('Ready. Try: java --class-path out app.PackageMain alpha beta');
-  appendLine('Ready. Try: java app.PackageMain alpha beta');
-  appendLine('Ready. Try: java right.Main');
-  appendLine('Ready. Try: dotnet run -- alpha beta');
-  appendLine('Ready. Try: dotnet run -- data/*.txt');
-  appendLine('Ready. Try: clang++ -std=c++17 main.cpp helper.cpp');
-  appendLine('Ready. Try: ./a.out alpha beta');
-  appendLine('Ready. Try: ./glob-app data/*.txt');
-  appendLine('Ready. Try: capabilities, mvp js, or mvp');
+  appendLine('Project workspace ready.');
+  appendLine('Try: python3 main.py, node index.js, javac Main.java && java Main, or mvp js');
   input.disabled = false;
   input.focus();
 
