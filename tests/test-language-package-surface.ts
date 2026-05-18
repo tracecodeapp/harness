@@ -253,6 +253,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         !worker.includes('"/dev/stdout": {"readable": False, "writable": True'),
         '@tracecode/harness-python worker should not ship fallback /dev/stdout device semantics'
       );
+      assertCondition(
+        worker.includes('function installPyodideProjectStdioBridge(') &&
+          worker.includes('pyodide.setStdout({ write: writeHandler(') &&
+          worker.includes('pyodide.setStderr({ write: writeHandler('),
+        '@tracecode/harness-python worker should ship Pyodide project stdio bridge hooks'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-java') {
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
@@ -284,6 +290,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         worker.includes('function standaloneKernelDevices()') &&
           !worker.includes('options.kernelDevices instanceof Map ? options.kernelDevices : projectKernelDevices()'),
         '@tracecode/harness-cpp worker should keep standalone stdio separate from project kernel devices'
+      );
+      assertCondition(
+        worker.includes('sourceDevice') && worker.includes('this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device)'),
+        '@tracecode/harness-cpp worker should ship stdio source device events'
       );
     }
 
