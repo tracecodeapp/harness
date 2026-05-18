@@ -2147,6 +2147,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
   );
 
+  const openConstantsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const constants = fs.constants; console.log(fs.O_CREAT === constants.O_CREAT, fs.O_APPEND === constants.O_APPEND, fsp.constants.O_TRUNC === constants.O_TRUNC); const fd = fs.openSync(\\"numeric-open.txt\\", constants.O_CREAT | constants.O_WRONLY | constants.O_TRUNC); fs.writeSync(fd, \\"one\\"); fs.closeSync(fd); const appendFd = fs.openSync(\\"numeric-open.txt\\", fs.O_WRONLY | fs.O_APPEND); fs.writeSync(appendFd, \\"two\\"); fs.closeSync(appendFd); try { fs.openSync(\\"numeric-open.txt\\", fs.O_CREAT | fs.O_EXCL | fs.O_WRONLY); } catch (error) { console.log(error.code); } const readFd = fs.openSync(\\"numeric-open.txt\\", fs.O_RDONLY); console.log(fs.readFileSync(readFd, \\"utf8\\")); fs.closeSync(readFd); console.log((fs.statSync(\\"numeric-open.txt\\").mode & fs.S_IFMT) === fs.S_IFREG); console.log(Boolean(fs.S_IFDIR && fs.S_IFLNK));"',
+  ].join(' '));
+  assertCondition(openConstantsResult.exitCode === 0, `browser node numeric open constants workflow should succeed: ${openConstantsResult.stderr}`);
+  assertCondition(
+    openConstantsResult.stdout === 'true true true\nEEXIST\nonetwo\ntrue\ntrue\n',
+    `browser node fs should expose and honor common numeric open/mode constants: ${openConstantsResult.stdout}`
+  );
+
   const accessModeResult = await workspace.runCommand([
     'node',
     '-e',

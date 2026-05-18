@@ -1931,6 +1931,17 @@ async function runBrowserJavaScriptProjectRequest(
       R_OK: 4,
       W_OK: 2,
       X_OK: 1,
+      O_RDONLY: 0,
+      O_WRONLY: 1,
+      O_RDWR: 2,
+      O_CREAT: 0o100,
+      O_EXCL: 0o200,
+      O_TRUNC: 0o1000,
+      O_APPEND: 0o2000,
+      S_IFMT: 0o170000,
+      S_IFREG: 0o100000,
+      S_IFDIR: 0o040000,
+      S_IFLNK: 0o120000,
       COPYFILE_EXCL: 1,
       COPYFILE_FICLONE: 2,
       COPYFILE_FICLONE_FORCE: 4,
@@ -2008,13 +2019,25 @@ async function runBrowserJavaScriptProjectRequest(
     ]);
     let nextFd = 3;
     const parseOpenFlags = (flags: unknown = 'r') => {
-      const text = typeof flags === 'number' ? (flags === 0 ? 'r' : flags === 1 ? 'w' : flags === 2 ? 'r+' : 'r') : String(flags);
+      if (typeof flags === 'number') {
+        const access = flags & 3;
+        return {
+          readable: access === 0 || access === 2,
+          writable: access === 1 || access === 2,
+          append: (flags & 0o2000) !== 0,
+          truncate: (flags & 0o1000) !== 0,
+          create: (flags & 0o100) !== 0,
+          exclusive: (flags & 0o200) !== 0,
+        };
+      }
+      const text = String(flags);
       return {
         readable: text.includes('+') || text.startsWith('r'),
         writable: text.includes('+') || text.startsWith('w') || text.startsWith('a'),
         append: text.startsWith('a'),
         truncate: text.startsWith('w'),
         create: text.startsWith('w') || text.startsWith('a'),
+        exclusive: text.includes('x'),
       };
     };
     const fileDescriptor = (fd: number): BrowserFileDescriptor => {
@@ -2142,6 +2165,17 @@ async function runBrowserJavaScriptProjectRequest(
       R_OK: fsConstants.R_OK,
       W_OK: fsConstants.W_OK,
       X_OK: fsConstants.X_OK,
+      O_RDONLY: fsConstants.O_RDONLY,
+      O_WRONLY: fsConstants.O_WRONLY,
+      O_RDWR: fsConstants.O_RDWR,
+      O_CREAT: fsConstants.O_CREAT,
+      O_EXCL: fsConstants.O_EXCL,
+      O_TRUNC: fsConstants.O_TRUNC,
+      O_APPEND: fsConstants.O_APPEND,
+      S_IFMT: fsConstants.S_IFMT,
+      S_IFREG: fsConstants.S_IFREG,
+      S_IFDIR: fsConstants.S_IFDIR,
+      S_IFLNK: fsConstants.S_IFLNK,
       COPYFILE_EXCL: fsConstants.COPYFILE_EXCL,
       COPYFILE_FICLONE: fsConstants.COPYFILE_FICLONE,
       COPYFILE_FICLONE_FORCE: fsConstants.COPYFILE_FICLONE_FORCE,
@@ -2317,6 +2351,8 @@ async function runBrowserJavaScriptProjectRequest(
             throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
           }
           setFileBytes(normalized, new Uint8Array());
+        } else if (parsed.exclusive) {
+          throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST' });
         } else if (parsed.truncate) {
           setFileBytes(normalized, new Uint8Array());
         }
