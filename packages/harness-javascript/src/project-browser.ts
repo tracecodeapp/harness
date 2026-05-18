@@ -354,6 +354,7 @@ function createReadableStdinDevice(input: string) {
   let offset = 0;
   let encoding: string | undefined;
   let flowScheduled = false;
+  let destroyed = false;
   const dataListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
   const endListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
 
@@ -372,6 +373,7 @@ function createReadableStdinDevice(input: string) {
     if (flowScheduled) return;
     flowScheduled = true;
     queueMicrotask(() => {
+      if (destroyed) return;
       const chunk = read();
       if (chunk !== null) {
         for (const listener of dataListeners) listener(chunk);
@@ -416,6 +418,13 @@ function createReadableStdinDevice(input: string) {
         listener(chunk);
       };
       return stream.on(event, wrapped);
+    },
+    destroy: () => {
+      destroyed = true;
+      return stream;
+    },
+    get destroyed() {
+      return destroyed;
     },
     resume: () => stream,
     pause: () => stream,
@@ -1180,6 +1189,7 @@ async function runBrowserJavaScriptProjectRequest(
 
     const createWritableDevice = (device: RuntimeKernelDevicePath, fd: number) => {
       const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+      let destroyed = false;
       const on = (event: string, listener: (...args: unknown[]) => void): void => {
         const next = listeners.get(event) ?? [];
         next.push(listener);
@@ -1235,6 +1245,22 @@ async function runBrowserJavaScriptProjectRequest(
           return stream;
         },
         emit,
+        destroy: (error?: Error) => {
+          if (destroyed) return stream;
+          destroyed = true;
+          queueMicrotask(() => {
+            if (error) emit('error', error);
+            emit('close');
+          });
+          return stream;
+        },
+        close: (callback?: () => void) => {
+          if (callback) stream.once('close', callback);
+          return stream.destroy();
+        },
+        get destroyed() {
+          return destroyed;
+        },
         once: (event: string, listener: (...args: unknown[]) => void) => {
           const wrapped = (...args: unknown[]) => {
             removeListener(event, wrapped);
@@ -1466,7 +1492,8 @@ async function runBrowserJavaScriptProjectRequest(
       const events = createEventTarget();
       let started = false;
       let closed = false;
-      const close = (): void => {
+      let destroyed = false;
+      const closeStream = (): void => {
         if (closed) return;
         closed = true;
         onClose?.();
@@ -1480,13 +1507,20 @@ async function runBrowserJavaScriptProjectRequest(
         if (started) return;
         started = true;
         queueMicrotask(() => {
+          if (closed || destroyed) return;
           if (bytes.byteLength > 0) events.emit('data', formatChunk(bytes));
           events.emit('end');
-          close();
+          closeStream();
         });
       };
       const stream = {
         readable: true,
+        get closed() {
+          return closed;
+        },
+        get destroyed() {
+          return destroyed;
+        },
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
           if (event === 'data' || event === 'end') scheduleRead();
@@ -1508,6 +1542,18 @@ async function runBrowserJavaScriptProjectRequest(
         once: (event: string, listener: (...args: unknown[]) => void) => {
           events.once(event, listener);
           if (event === 'data' || event === 'end') scheduleRead();
+          return stream;
+        },
+        destroy: (error?: Error) => {
+          if (destroyed) return stream;
+          destroyed = true;
+          if (error) events.emit('error', error);
+          closeStream();
+          return stream;
+        },
+        close: (callback?: () => void) => {
+          if (callback) stream.once('close', callback);
+          closeStream();
           return stream;
         },
         pipe: (destination: { write?: (chunk: BrowserBuffer | string) => unknown; end?: () => unknown }) => {
@@ -1532,7 +1578,12 @@ async function runBrowserJavaScriptProjectRequest(
       if (normalized !== null && !flags.includes('a')) {
         setFileBytes(normalized, new Uint8Array());
       }
+      let closed = false;
+      let destroyed = false;
       const writeBytes = (value: unknown, writeEncoding?: string): void => {
+        if (closed || destroyed) {
+          throw Object.assign(new Error('ERR_STREAM_DESTROYED: Cannot call write after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
+        }
         const bytes = bytesFromFsWriteValue(value, writeEncoding ?? encoding);
         if (optionFd !== null) {
           writeDescriptorFileBytes(optionFd, bytes, flags.includes('a'));
@@ -1548,9 +1599,25 @@ async function runBrowserJavaScriptProjectRequest(
         combined.set(bytes, previous.byteLength);
         setFileBytes(normalized ?? '', combined);
       };
-      let closed = false;
+      const closeStream = (emitFinish: boolean, done?: () => void, error?: Error): void => {
+        if (closed) return;
+        closed = true;
+        queueMicrotask(() => {
+          if (error) events.emit('error', error);
+          done?.();
+          if (autoClose && optionFd !== null) fsApi.closeSync(optionFd);
+          if (emitFinish) events.emit('finish');
+          events.emit('close');
+        });
+      };
       const stream = {
         writable: true,
+        get closed() {
+          return closed;
+        },
+        get destroyed() {
+          return destroyed;
+        },
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
           return stream;
@@ -1573,25 +1640,35 @@ async function runBrowserJavaScriptProjectRequest(
           return stream;
         },
         write: (value: unknown, writeEncoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
-          writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
           const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
-          done?.(null);
-          return true;
+          try {
+            writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
+            done?.(null);
+            return true;
+          } catch (error) {
+            const streamError = error as Error;
+            done?.(streamError);
+            events.emit('error', streamError);
+            return false;
+          }
         },
         end: (value?: unknown, writeEncoding?: string | (() => void), callback?: () => void) => {
           if (value !== undefined && value !== null) {
             writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
           }
           const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
-          if (!closed) {
-            closed = true;
-            queueMicrotask(() => {
-              done?.();
-              if (autoClose && optionFd !== null) fsApi.closeSync(optionFd);
-              events.emit('finish');
-              events.emit('close');
-            });
-          }
+          closeStream(true, done);
+          return stream;
+        },
+        destroy: (error?: Error) => {
+          if (destroyed) return stream;
+          destroyed = true;
+          closeStream(false, undefined, error);
+          return stream;
+        },
+        close: (callback?: () => void) => {
+          if (callback) stream.once('close', callback);
+          closeStream(false);
           return stream;
         },
       };

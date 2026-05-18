@@ -2414,6 +2414,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node file streams should support EventEmitter listener aliases: ${streamListenerAliasResult.stdout}`
   );
 
+  const streamLifecycleResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"destroy-read.txt\\", \\"abcdef\\"); const readEvents = []; await new Promise((resolve) => { const input = fs.createReadStream(\\"destroy-read.txt\\", { encoding: \\"utf8\\" }); input.on(\\"data\\", () => readEvents.push(\\"data\\")); input.on(\\"end\\", () => readEvents.push(\\"end\\")); input.on(\\"close\\", () => { readEvents.push(\\"close:\\" + input.destroyed); resolve(); }); input.destroy(); }); const writeEvents = []; await new Promise((resolve) => { const out = fs.createWriteStream(\\"destroy-write.txt\\"); out.on(\\"error\\", (error) => writeEvents.push(\\"error:\\" + error.message)); out.on(\\"finish\\", () => writeEvents.push(\\"finish\\")); out.on(\\"close\\", () => { writeEvents.push(\\"close:\\" + out.destroyed); resolve(); }); out.write(\\"before\\\\n\\"); out.destroy(new Error(\\"stop\\")); }); console.log(readEvents.join(\\"|\\")); console.log(writeEvents.join(\\"|\\")); console.log(fs.readFileSync(\\"destroy-write.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(streamLifecycleResult.exitCode === 0, `browser node stream lifecycle workflow should succeed: ${streamLifecycleResult.stderr}`);
+  assertCondition(
+    streamLifecycleResult.stdout === 'close:true\nerror:stop|close:true\nbefore\n\n',
+    `browser node file streams should support destroy/close lifecycle events: ${streamLifecycleResult.stdout}`
+  );
+
   const fdStreamResult = await workspace.runCommand([
     'node',
     '-e',
