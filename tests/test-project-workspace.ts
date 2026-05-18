@@ -2302,6 +2302,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node createWriteStream should emit live file mutations: ${JSON.stringify(streamEvents)}`
   );
 
+  const watchFileResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.writeFileSync(\\"watched-file.txt\\", \\"one\\"); const records = []; const listener = (curr, prev) => records.push(prev.size + \\"->\\" + curr.size + \\":\\" + curr.isFile()); fs.watchFile(\\"watched-file.txt\\", listener); fs.appendFileSync(\\"watched-file.txt\\", \\"two\\"); await flush(); fs.renameSync(\\"watched-file.txt\\", \\"watched-file-renamed.txt\\"); await flush(); fs.unwatchFile(\\"watched-file.txt\\", listener); fs.writeFileSync(\\"watched-file.txt\\", \\"new\\"); await flush(); console.log(records.join(\\"|\\")); console.log(fs.statSync(\\"watched-file-renamed.txt\\").mtimeMs > 0);"',
+  ].join(' '));
+  assertCondition(watchFileResult.exitCode === 0, `browser node watchFile workflow should succeed: ${watchFileResult.stderr}`);
+  assertCondition(
+    watchFileResult.stdout === '3->6:true|6->0:false\ntrue\n',
+    `browser node watchFile should receive live stat transitions and unwatch cleanly: ${watchFileResult.stdout}`
+  );
+
   const stdioFdResult = await workspace.runCommand([
     'node',
     '-e',

@@ -1066,6 +1066,28 @@ async function runBrowserJavaScriptProjectRequest(
         directoryStore.add(parts.slice(0, index).join('/'));
       }
     }
+    let fsTimestampMs = 1;
+    const entryMetadata = new Map<string, { birthtimeMs: number; ctimeMs: number; mtimeMs: number }>(
+      Array.from(fileStore.keys()).map((filePath) => [filePath, { birthtimeMs: fsTimestampMs, ctimeMs: fsTimestampMs, mtimeMs: fsTimestampMs }])
+    );
+    for (const directoryPath of directoryStore) {
+      if (!entryMetadata.has(directoryPath)) {
+        entryMetadata.set(directoryPath, { birthtimeMs: fsTimestampMs, ctimeMs: fsTimestampMs, mtimeMs: fsTimestampMs });
+      }
+    }
+    const touchEntryMetadata = (path: string): void => {
+      fsTimestampMs += 1;
+      const previous = entryMetadata.get(path);
+      entryMetadata.set(path, {
+        birthtimeMs: previous?.birthtimeMs ?? fsTimestampMs,
+        ctimeMs: fsTimestampMs,
+        mtimeMs: fsTimestampMs,
+      });
+    };
+    const deleteEntryMetadata = (path: string): void => {
+      fsTimestampMs += 1;
+      entryMetadata.delete(path);
+    };
     const originalFiles = new Map(fileStore);
     const modules = new Map(
       request.project.files
@@ -1150,7 +1172,65 @@ async function runBrowserJavaScriptProjectRequest(
       closed: boolean;
       listeners: Map<string, Array<(...args: unknown[]) => void>>;
     };
+    type BrowserFileStat = {
+      size: number;
+      mtimeMs: number;
+      ctimeMs: number;
+      birthtimeMs: number;
+      atimeMs: number;
+      mtime: Date;
+      ctime: Date;
+      birthtime: Date;
+      atime: Date;
+      isFile: () => boolean;
+      isDirectory: () => boolean;
+      isSymbolicLink: () => boolean;
+    };
+    type BrowserFileWatcher = {
+      path: string;
+      listener: (curr: BrowserFileStat, prev: BrowserFileStat) => void;
+      previous: BrowserFileStat;
+    };
     const fsWatchers = new Set<BrowserFsWatcher>();
+    const fsFileWatchers = new Set<BrowserFileWatcher>();
+    const statForNormalizedPath = (normalized: string): BrowserFileStat | null => {
+      const isFile = fileStore.has(normalized);
+      const prefix = normalized ? `${normalized}/` : '';
+      const isDirectory = !isFile && (
+        directoryStore.has(normalized) ||
+        Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
+      );
+      if (!isFile && !isDirectory) return null;
+      const metadata = entryMetadata.get(normalized) ?? { birthtimeMs: 0, ctimeMs: 0, mtimeMs: 0 };
+      return {
+        size: isFile ? fileStore.get(normalized)?.byteLength ?? 0 : 0,
+        mtimeMs: metadata.mtimeMs,
+        ctimeMs: metadata.ctimeMs,
+        birthtimeMs: metadata.birthtimeMs,
+        atimeMs: metadata.mtimeMs,
+        mtime: new Date(metadata.mtimeMs),
+        ctime: new Date(metadata.ctimeMs),
+        birthtime: new Date(metadata.birthtimeMs),
+        atime: new Date(metadata.mtimeMs),
+        isFile: () => isFile,
+        isDirectory: () => isDirectory,
+        isSymbolicLink: () => false,
+      };
+    };
+    const missingFileStat = (): BrowserFileStat => ({
+      size: 0,
+      mtimeMs: 0,
+      ctimeMs: 0,
+      birthtimeMs: 0,
+      atimeMs: 0,
+      mtime: new Date(0),
+      ctime: new Date(0),
+      birthtime: new Date(0),
+      atime: new Date(0),
+      isFile: () => false,
+      isDirectory: () => false,
+      isSymbolicLink: () => false,
+    });
     const watchedFilename = (watcher: BrowserFsWatcher, changedPath: string): string | null => {
       if (changedPath === watcher.path) return changedPath.split('/').pop() ?? changedPath;
       const prefix = watcher.path ? `${watcher.path}/` : '';
@@ -1169,16 +1249,29 @@ async function runBrowserJavaScriptProjectRequest(
         if (filename !== null) queueMicrotask(() => emitFsWatch(watcher, eventType, filename));
       }
     };
+    const notifyWatchFileWatchers = (path: string): void => {
+      for (const watcher of fsFileWatchers) {
+        if (watcher.path !== path) continue;
+        const previous = watcher.previous;
+        const current = statForNormalizedPath(path) ?? missingFileStat();
+        watcher.previous = current;
+        queueMicrotask(() => watcher.listener(current, previous));
+      }
+    };
     const setFileBytes = (path: string, bytes: Uint8Array): void => {
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index += 1) {
-        directoryStore.add(parts.slice(0, index).join('/'));
+        const directoryPath = parts.slice(0, index).join('/');
+        directoryStore.add(directoryPath);
+        if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
       }
       fileStore.set(path, bytes);
+      touchEntryMetadata(path);
       syncTextModule(path, bytes);
       cache.delete(path);
       io.fileChange(bytesToRuntimeFile(path, bytes), 'live');
       notifyFsWatchers('change', path);
+      notifyWatchFileWatchers(path);
     };
     const createEventTarget = () => {
       const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
@@ -1304,8 +1397,10 @@ async function runBrowserJavaScriptProjectRequest(
       }
       modules.delete(normalized);
       cache.delete(normalized);
+      deleteEntryMetadata(normalized);
       io.fileChange({ path: normalized, deleted: true }, 'live');
       notifyFsWatchers('rename', normalized);
+      notifyWatchFileWatchers(normalized);
     };
     const fsConstants = {
       F_OK: 0,
@@ -1553,6 +1648,51 @@ async function runBrowserJavaScriptProjectRequest(
           },
         };
         return api;
+      },
+      watchFile: (
+        path: unknown,
+        optionsOrListener?: { interval?: number; persistent?: boolean } | ((curr: BrowserFileStat, prev: BrowserFileStat) => void),
+        listener?: (curr: BrowserFileStat, prev: BrowserFileStat) => void
+      ) => {
+        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        const changeListener = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
+        if (!changeListener) {
+          throw new TypeError('The "listener" argument must be of type function');
+        }
+        const watcher: BrowserFileWatcher = {
+          path: normalized,
+          listener: changeListener,
+          previous: statForNormalizedPath(normalized) ?? missingFileStat(),
+        };
+        fsFileWatchers.add(watcher);
+        const api = {
+          ref: () => api,
+          unref: () => api,
+          close: () => {
+            fsFileWatchers.delete(watcher);
+          },
+          on: (_event: string, nextListener: (curr: BrowserFileStat, prev: BrowserFileStat) => void) => {
+            if (typeof nextListener === 'function') watcher.listener = nextListener;
+            return api;
+          },
+          addListener: (_event: string, nextListener: (curr: BrowserFileStat, prev: BrowserFileStat) => void) => {
+            if (typeof nextListener === 'function') watcher.listener = nextListener;
+            return api;
+          },
+          removeListener: () => api,
+        };
+        return api;
+      },
+      unwatchFile: (
+        path: unknown,
+        listener?: (curr: BrowserFileStat, prev: BrowserFileStat) => void
+      ) => {
+        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        for (const watcher of Array.from(fsFileWatchers)) {
+          if (watcher.path === normalized && (!listener || watcher.listener === listener)) {
+            fsFileWatchers.delete(watcher);
+          }
+        }
       },
       openSync: (path: unknown, flags: unknown = 'r') => {
         const device = normalizeRuntimeDevicePath(path);
@@ -1961,8 +2101,10 @@ async function runBrowserJavaScriptProjectRequest(
         fileStore.delete(normalizedOldPath);
         modules.delete(normalizedOldPath);
         cache.delete(normalizedOldPath);
+        deleteEntryMetadata(normalizedOldPath);
         io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
         notifyFsWatchers('rename', normalizedOldPath);
+        notifyWatchFileWatchers(normalizedOldPath);
         setFileBytes(normalizedNewPath, bytes);
         notifyFsWatchers('rename', normalizedNewPath);
       },
@@ -2000,18 +2142,22 @@ async function runBrowserJavaScriptProjectRequest(
               fileStore.delete(filePath);
               modules.delete(filePath);
               cache.delete(filePath);
+              deleteEntryMetadata(filePath);
               io.fileChange({ path: filePath, deleted: true }, 'live');
               notifyFsWatchers('rename', filePath);
+              notifyWatchFileWatchers(filePath);
             }
             for (const directoryPath of Array.from(directoryStore)) {
               if (directoryPath === normalized || directoryPath.startsWith(prefix)) {
                 directoryStore.delete(directoryPath);
+                deleteEntryMetadata(directoryPath);
               }
             }
             return;
           }
           if (directoryStore.has(normalized)) {
             directoryStore.delete(normalized);
+            deleteEntryMetadata(normalized);
             return;
           }
           if (!options?.force) {
@@ -2140,22 +2286,11 @@ async function runBrowserJavaScriptProjectRequest(
       },
       statSync: (path: unknown) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
-        const isFile = fileStore.has(normalized);
-        const prefix = normalized ? `${normalized}/` : '';
-        const isDirectory = !isFile && (
-          directoryStore.has(normalized) ||
-          Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
-        );
-        if (!isFile && !isDirectory) {
+        const stats = statForNormalizedPath(normalized);
+        if (!stats) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
         }
-        const size = isFile ? fileStore.get(normalized)?.byteLength ?? 0 : 0;
-        return {
-          size,
-          isFile: () => isFile,
-          isDirectory: () => isDirectory,
-          isSymbolicLink: () => false,
-        };
+        return stats;
       },
       lstatSync: (path: unknown) => fsApi.statSync(path),
       stat: (path: unknown, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
@@ -2208,7 +2343,9 @@ async function runBrowserJavaScriptProjectRequest(
         const parts = normalized.split('/');
         const start = options?.recursive ? 1 : parts.length;
         for (let index = start; index <= parts.length; index += 1) {
-          directoryStore.add(parts.slice(0, index).join('/'));
+          const directoryPath = parts.slice(0, index).join('/');
+          directoryStore.add(directoryPath);
+          if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
         }
         return undefined;
       },
@@ -2232,6 +2369,7 @@ async function runBrowserJavaScriptProjectRequest(
         if (!directoryStore.delete(normalized)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, rmdir '${path}'`), { code: 'ENOENT' });
         }
+        deleteEntryMetadata(normalized);
       },
       rmdir: (path: unknown, callback?: (error?: Error | null) => void) => {
         try {
