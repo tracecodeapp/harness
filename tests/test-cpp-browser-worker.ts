@@ -384,6 +384,7 @@ async function main(): Promise<void> {
             '  int readlink_result = readlink("link-source.txt", readlink_buffer, sizeof(readlink_buffer));',
             '  int symlink_result = symlink("link-source.txt", "link-symlink.txt");',
             '  int link_proc_result = link("/proc/kernel/info", "link-proc.txt");',
+            '  int link_missing_parent_result = link("link-source.txt", "missing-link/child.txt");',
             '  int symlink_dev_result = symlink("link-source.txt", "/dev/stdout");',
             '  std::ifstream link_hard("link-hard.txt");',
             '  std::string link_hard_text((std::istreambuf_iterator<char>(link_hard)), std::istreambuf_iterator<char>());',
@@ -391,6 +392,7 @@ async function main(): Promise<void> {
             '  std::cout << (readlink_result < 0 ? "readlink:blocked" : "readlink:ok") << "\\\\n";',
             '  std::cout << (symlink_result < 0 ? "symlink:blocked" : "symlink:ok") << "\\\\n";',
             '  std::cout << (link_proc_result < 0 ? "link-proc:blocked" : "link-proc:ok") << "\\\\n";',
+            '  std::cout << (link_missing_parent_result < 0 ? "link-missing-parent:blocked" : "link-missing-parent:ok") << "\\\\n";',
             '  std::cout << (symlink_dev_result < 0 ? "symlink-dev:blocked" : "symlink-dev:ok") << "\\\\n";',
             '  std::ofstream("dev/local.txt") << "local-dev\\\\n";',
             '  std::ifstream local_dev_file("dev/local.txt");',
@@ -477,6 +479,28 @@ async function main(): Promise<void> {
             '  if (stdout_device) { std::fputs("invented\\\\n", stdout_device); std::fclose(stdout_device); }',
             '  std::ifstream stdout_read("/dev/stdout");',
             '  std::cout << (stdout_read ? "dev-stdout-read:ok" : "dev-stdout-read:blocked") << "\\\\n";',
+            '  return 0;',
+            '}',
+            '',
+          ].join('\\n'),
+        },
+        {
+          path: 'src/custom_input_only_main.cpp',
+          contents: [
+            '#include <cstdio>',
+            '#include <dirent.h>',
+            '#include <iostream>',
+            '#include <string>',
+            'int main() {',
+            '  FILE* custom_in = std::fopen("/dev/custom-in", "r");',
+            '  char custom_line[64] = {0};',
+            '  if (custom_in) { std::fgets(custom_line, sizeof(custom_line), custom_in); std::fclose(custom_in); }',
+            '  DIR* dev_dir = opendir("/dev");',
+            '  bool saw_custom = false;',
+            '  bool saw_stdin = false;',
+            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "custom-in") saw_custom = true; if (name == "stdin") saw_stdin = true; } closedir(dev_dir); }',
+            '  std::cout << custom_line;',
+            '  std::cout << (saw_custom && !saw_stdin ? "custom-only:ok" : "custom-only:bad") << "\\\\n";',
             '  return 0;',
             '}',
             '',
@@ -725,6 +749,29 @@ async function main(): Promise<void> {
         env: {},
         stdin: '',
         project: { files: [...projectFiles, ...(noDeviceManifestCompile.files || [])], noKernelDevicesForTest: true },
+      });
+      const customInputOnlyCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/custom_input_only_main.cpp',
+        args: ['/workspace/src/custom_input_only_main.cpp', '-o', '/workspace/out/custom-input-only-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const customInputOnlyRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/custom-input-only-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: 'only-stdin\\n',
+        project: {
+          files: [...projectFiles, ...(customInputOnlyCompile.files || [])],
+          kernelDevices: [
+            { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+          ],
+        },
       });
       const objectCompile = await send('execute-project-cpp', {
         source: 'compile',
@@ -984,6 +1031,8 @@ async function main(): Promise<void> {
         emptyDirectoryRun,
         noDeviceManifestCompile,
         noDeviceManifestRun,
+        customInputOnlyCompile,
+        customInputOnlyRun,
         objectCompile,
         linkProjectCompile,
         linkProjectRun,
@@ -1103,6 +1152,13 @@ async function main(): Promise<void> {
       files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
     };
     const noDeviceManifestRun = results.noDeviceManifestRun as CppProjectWorkerResponse;
+    const customInputOnlyCompile = results.customInputOnlyCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const customInputOnlyRun = results.customInputOnlyRun as CppProjectWorkerResponse;
     const objectCompile = results.objectCompile as {
       stdout?: string;
       stderr?: string;
@@ -1271,7 +1327,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
-        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
@@ -1503,14 +1559,15 @@ async function main(): Promise<void> {
       `C++ browser project run should not stream failed unlink mutations: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
-      projectRun.files?.some((file) => file.path.startsWith('src/missing-parent/') || file.path.startsWith('src/missing-open/') || file.path.startsWith('src/missing-rename/')) !== true &&
+      projectRun.files?.some((file) => file.path.startsWith('src/missing-parent/') || file.path.startsWith('src/missing-open/') || file.path.startsWith('src/missing-rename/') || file.path.startsWith('src/missing-link/')) !== true &&
         projectRun.events?.some((event) => (
           event.type === 'file-change' &&
           event.phase === 'live' &&
           (
             event.change?.path.startsWith('src/missing-parent/') ||
             event.change?.path.startsWith('src/missing-open/') ||
-            event.change?.path.startsWith('src/missing-rename/')
+            event.change?.path.startsWith('src/missing-rename/') ||
+            event.change?.path.startsWith('src/missing-link/')
           )
         )) !== true,
       `C++ browser project run should not create or stream mutations below missing parents: ${JSON.stringify(projectRun)}`
@@ -1688,6 +1745,14 @@ async function main(): Promise<void> {
           ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
           .every((event) => event.sourceDevice === undefined) === true,
       `C++ browser project direct stdio events should not report a redundant sourceDevice: ${JSON.stringify(noDeviceManifestRun.events)}`
+    );
+    assertCondition(
+      customInputOnlyCompile.exitCode === 0 && customInputOnlyCompile.files?.some((file) => file.path === 'out/custom-input-only-app' && file.encoding === 'base64'),
+      `C++ browser project compile should emit custom-input-only smoke binary: ${JSON.stringify(customInputOnlyCompile)}`
+    );
+    assertCondition(
+      customInputOnlyRun.exitCode === 0 && customInputOnlyRun.stdout === 'only-stdin\ncustom-only:ok\n',
+      `C++ browser project run should read custom input devices without exposing /dev/stdin: ${JSON.stringify(customInputOnlyRun)}`
     );
     assertCondition(
       objectCompile.exitCode === 0 && objectCompile.files?.some((file) => file.path === 'lib/linked.o' && file.encoding === 'base64'),

@@ -1241,6 +1241,8 @@ class WasiProcess {
     if (oldDeviceErrno !== null) return oldDeviceErrno;
     const newDeviceErrno = this.deviceNamespaceMutationErrno(newPath);
     if (newDeviceErrno !== null) return newDeviceErrno;
+    const parentErrno = this.parentDirectoryErrno(newPath);
+    if (parentErrno !== null) return parentErrno;
     return this.fs.link(oldPath, newPath);
   }
 
