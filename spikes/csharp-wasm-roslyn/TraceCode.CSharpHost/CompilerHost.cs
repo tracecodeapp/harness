@@ -1171,6 +1171,9 @@ public static partial class CompilerHost
             return method is
                 "WriteAllText" or
                 "WriteAllBytes" or
+                "WriteAllLines" or
+                "AppendAllLines" or
+                "AppendAllBytes" or
                 "AppendAllText" or
                 "CreateText" or
                 "AppendText" or
@@ -1227,6 +1230,36 @@ public static class ProjectFile
     public static void WriteAllBytes(string path, byte[] bytes)
     {
         System.IO.File.WriteAllBytes(path, bytes);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void WriteAllLines(string path, System.Collections.Generic.IEnumerable<string> contents)
+    {
+        System.IO.File.WriteAllLines(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void WriteAllLines(string path, System.Collections.Generic.IEnumerable<string> contents, System.Text.Encoding encoding)
+    {
+        System.IO.File.WriteAllLines(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void AppendAllLines(string path, System.Collections.Generic.IEnumerable<string> contents)
+    {
+        System.IO.File.AppendAllLines(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void AppendAllLines(string path, System.Collections.Generic.IEnumerable<string> contents, System.Text.Encoding encoding)
+    {
+        System.IO.File.AppendAllLines(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static void AppendAllBytes(string path, byte[] bytes)
+    {
+        System.IO.File.AppendAllBytes(path, bytes);
         TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 

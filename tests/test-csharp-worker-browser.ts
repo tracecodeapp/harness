@@ -2758,6 +2758,9 @@ async function main(): Promise<void> {
                 'using (var stream = new FileStream("truncated.txt", FileMode.Create, FileAccess.ReadWrite)) { stream.Write(System.Text.Encoding.UTF8.GetBytes("abcdef")); stream.SetLength(3); stream.Flush(); }',
                 'using (var writer = new BinaryWriter(File.Create("binary-writer.bin"))) { writer.Write(new byte[] { 0, 252 }); }',
                 'using (File.Create("empty-created.bin")) { }',
+                'File.WriteAllLines("lines.txt", new[] { "one", "two" });',
+                'File.AppendAllLines("lines.txt", new[] { "three" });',
+                'File.AppendAllBytes("append-bytes.bin", new byte[] { 0, 251 });',
                 'File.Copy("generated.txt", "copied.txt");',
                 'File.Move("copied.txt", "moved.txt");',
                 'File.Delete("stale.txt");',
@@ -2990,6 +2993,29 @@ async function main(): Promise<void> {
           event.change.contents === ''
       ) === true,
       `C# project worker should stream zero-byte create events, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/lines.txt' && file.contents === 'one\ntwo\nthree\n') === true &&
+        projectRun.files?.some((file) => file.path === 'src/append-bytes.bin' && file.encoding === 'base64' && file.contents === 'APs=') === true,
+      `C# project worker should return line and byte append changes, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/lines.txt' &&
+          event.change.contents === 'one\ntwo\nthree\n'
+      ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/append-bytes.bin' &&
+            event.change.encoding === 'base64' &&
+            event.change.contents === 'APs='
+        ) === true,
+      `C# project worker should stream line and byte append changes, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some(
