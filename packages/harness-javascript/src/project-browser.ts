@@ -22,6 +22,7 @@ import {
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
   runtimeKernelAccessTarget,
+  runtimeKernelCopyTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
@@ -183,6 +184,13 @@ function runtimeReadTarget(path: unknown): ReturnType<typeof runtimeKernelReadTa
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelReadTarget(raw);
+}
+
+function runtimeCopyTarget(source: unknown, destination: unknown): ReturnType<typeof runtimeKernelCopyTarget> | null {
+  if (typeof source === 'number' || typeof destination === 'number') return null;
+  const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelCopyTarget(sourceRaw, destinationRaw);
 }
 
 function throwRuntimeWriteTargetError(
@@ -2336,11 +2344,16 @@ async function runBrowserJavaScriptProjectRequest(
       destination: unknown,
       options: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean } = {}
     ): void => {
-      const sourceDevice = normalizeRuntimeDevicePath(source);
-      const destinationDevice = normalizeRuntimeDevicePath(destination);
-      if (sourceDevice || destinationDevice) {
+      const copyTarget = runtimeCopyTarget(source, destination);
+      if (copyTarget?.kind === 'file-copy') {
         fsApi.copyFileSync(source, destination);
         return;
+      }
+      if (copyTarget?.kind === 'error' && copyTarget.reason === 'source-directory') {
+        throw Object.assign(new Error(`EISDIR: illegal operation on a directory, cp '${source}'`), { code: 'EISDIR' });
+      }
+      if (copyTarget?.kind === 'error' && copyTarget.reason === 'source-not-found') {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, cp '${source}' -> '${destination}'`), { code: 'ENOENT' });
       }
 
       const normalizedSource = normalizeWorkspaceEntryPath(source, cwdPath, true, workspacePathContext);

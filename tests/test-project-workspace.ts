@@ -2090,6 +2090,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node cp APIs should copy files, directories, filters, and force=false semantics: ${cpResult.stdout}`
   );
   assertCondition(await workspace.readFile('cp-sync/nested/value.txt') === 'nested\n', 'browser node cpSync should persist recursive copied files');
+
+  const cpVirtualResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.cpSync(\\"/proc/kernel/info\\", \\"cp-proc-info.json\\"); console.log(JSON.parse(fs.readFileSync(\\"cp-proc-info.json\\", \\"utf8\\")).name); fs.cpSync(\\"cp-proc-info.json\\", \\"/dev/stdout\\"); try { fs.cpSync(\\"/proc\\", \\"cp-proc-dir\\"); } catch (error) { console.log(error.code); }"'
+  ].join(' '));
+  assertCondition(cpVirtualResult.exitCode === 0, `browser node cp virtual workflow should succeed: ${cpVirtualResult.stderr}`);
+  assertCondition(
+    cpVirtualResult.stdout === 'tracekernel\n' + (await workspace.readFile('cp-proc-info.json')) + 'EISDIR\n',
+    `browser node cp should route virtual source/destination through tracekernel: ${cpVirtualResult.stdout}`
+  );
   assertCondition(await workspace.readFile('cp-callback.txt') === 'root\n', 'browser node cp callback should persist copied files');
   assertCondition(
     cpEvents.some((event) =>

@@ -36,6 +36,10 @@ export type RuntimeKernelReadTarget =
   | { kind: 'device-file'; path: RuntimeKernelDevicePath }
   | { kind: 'device-directory'; path: '/dev' }
   | { kind: 'error'; reason: 'not-found'; path: string };
+export type RuntimeKernelCopyTarget =
+  | { kind: 'workspace' }
+  | { kind: 'file-copy' }
+  | { kind: 'error'; reason: 'source-directory' | 'source-not-found'; path: string };
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -218,6 +222,26 @@ export function runtimeKernelReadTarget(path: string): RuntimeKernelReadTarget {
   if (kind === 'file') return { kind: 'proc-file', path: virtualPath.path };
   if (kind === 'directory') return { kind: 'proc-directory', path: virtualPath.path };
   return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+}
+
+export function runtimeKernelCopyTarget(source: string, destination: string): RuntimeKernelCopyTarget {
+  const sourceTarget = runtimeKernelReadTarget(source);
+  const writeTarget = runtimeKernelWriteTarget(destination);
+  if (
+    sourceTarget.kind === 'device-file' ||
+    sourceTarget.kind === 'proc-file' ||
+    writeTarget.kind === 'device' ||
+    writeTarget.kind === 'error'
+  ) {
+    return { kind: 'file-copy' };
+  }
+  if (sourceTarget.kind === 'device-directory' || sourceTarget.kind === 'proc-directory') {
+    return { kind: 'error', reason: 'source-directory', path: sourceTarget.path };
+  }
+  if (sourceTarget.kind === 'error') {
+    return { kind: 'error', reason: 'source-not-found', path: sourceTarget.path };
+  }
+  return { kind: 'workspace' };
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {
