@@ -944,12 +944,14 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
-                  'dev_writer\n'
+                  'dev_writer\n',
+                  '/dev/stdout'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
-                  'pw_stdout\n'
+                  'pw_stdout\n',
+                  '/dev/stdout'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
@@ -1797,13 +1799,17 @@ async function main(): Promise<void> {
           (event) =>
             event.type === 'output' &&
             event.stream === 'stdout' &&
-            event.data === 'dev_writer\n'
+            event.device === '/dev/stdout' &&
+            event.data === 'dev_writer\n' &&
+            event.sourceDevice === undefined
         ) === true &&
         projectExecute.events?.some(
           (event) =>
             event.type === 'output' &&
             event.stream === 'stdout' &&
-            event.data === 'pw_stdout\n'
+            event.device === '/dev/stdout' &&
+            event.data === 'pw_stdout\n' &&
+            event.sourceDevice === undefined
         ) === true &&
         projectExecute.events?.some(
           (event) =>

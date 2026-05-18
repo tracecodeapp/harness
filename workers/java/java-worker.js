@@ -73,6 +73,7 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice) {
   const sourceDevicePath = activeJavaProjectIo.kernelDevicePaths?.has(normalizedSourceDevice)
     ? normalizedSourceDevice
     : '';
+  const outputDevice = normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout';
   if (normalizedStream === 'stderr') {
     activeJavaProjectIo.stderrEmitted = true;
   } else {
@@ -81,8 +82,8 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice) {
   postProjectEvent(activeJavaProjectIo.messageId, {
     type: 'output',
     stream: normalizedStream,
-    device: normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
-    ...(sourceDevicePath ? { sourceDevice: sourceDevicePath } : {}),
+    device: outputDevice,
+    ...(sourceDevicePath && sourceDevicePath !== outputDevice ? { sourceDevice: sourceDevicePath } : {}),
     data,
   });
 }
