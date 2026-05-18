@@ -7,6 +7,12 @@ import {
   createRuntimeProjectIoBridge,
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
+import {
+  normalizeRuntimeProcPath,
+  readRuntimeProcFile,
+  runtimeProcDirEntries,
+  runtimeProcEntryKind,
+} from '../../harness-core/src/runtime-kernel';
 import type {
   CommandContext,
   FileContent,
@@ -223,10 +229,7 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
 
 function normalizeProcPath(path: string): string | null {
   assertNoNul(path, 'Kernel path');
-  const raw = path.replace(/\\/g, '/');
-  if (!raw.startsWith('/')) return null;
-  const normalized = normalizeWorkspaceCwd(raw);
-  return normalized === '/proc' || normalized.startsWith('/proc/') ? normalized : null;
+  return normalizeRuntimeProcPath(path);
 }
 
 function normalizeDevPath(path: string): '/dev' | RuntimeKernelDevicePath | null {
@@ -256,28 +259,6 @@ function isDevNamespacePath(path: string): boolean {
 
 function isKernelVirtualPath(path: string): boolean {
   return normalizeProcPath(path) !== null || isDevNamespacePath(path);
-}
-
-function procInfoJson(info: RuntimeKernelInfo): string {
-  return `${JSON.stringify(info, null, 2)}\n`;
-}
-
-function mountInfoField(value: string): string {
-  return value.replace(/\\/g, '\\134').replace(/ /g, '\\040').replace(/\t/g, '\\011').replace(/\n/g, '\\012');
-}
-
-function procMountInfo(info: RuntimeKernelInfo): string {
-  const workspaceRoot = mountInfoField(info.workspaceRoot);
-  const workspaceName = mountInfoField(info.workspace.name);
-  const aliasLine = info.workspaceAlias
-    ? `27 24 0:1 / ${mountInfoField(info.workspaceAlias)} rw,relatime alias=${workspaceRoot} - tracefs tracekernel:workspace rw,name=${workspaceName}`
-    : null;
-  return [
-    `24 0 0:1 / ${workspaceRoot} rw,relatime - tracefs tracekernel:workspace rw,name=${workspaceName}`,
-    aliasLine,
-    '25 0 0:2 / /dev rw,nosuid - tracefs tracekernel:dev rw,mode=755',
-    '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw',
-  ].filter((line): line is string => Boolean(line)).join('\n') + '\n';
 }
 
 function mapWorkspaceAlias(workspaceRoot: string, workspaceAlias: string | undefined, absolutePath: string): string {
@@ -2248,20 +2229,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (encoding === 'base64') {
       throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
     }
-    if (procPath === '/proc/kernel/info') {
-      return procInfoJson(this.kernelInfo);
+    try {
+      return readRuntimeProcFile(procPath, this.kernelInfo);
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 'ENOENT') throw new Error(`Kernel proc path not found: ${path}`);
+      throw error;
     }
-    if (procPath === '/proc/self/mountinfo') return procMountInfo(this.kernelInfo);
-    throw new Error(`Kernel proc path not found: ${path}`);
   }
 
   private procStat(path: string): RuntimeWorkspaceStat | null {
     const procPath = normalizeProcPath(path);
     if (procPath === null) return null;
-    if (procPath === '/proc' || procPath === '/proc/kernel' || procPath === '/proc/self') {
+    const kind = runtimeProcEntryKind(procPath);
+    if (kind === 'directory') {
       return { isFile: false, isDirectory: true };
     }
-    if (procPath === '/proc/kernel/info' || procPath === '/proc/self/mountinfo') {
+    if (kind === 'file') {
       return { isFile: true, isDirectory: false };
     }
     throw new Error(`Kernel proc path not found: ${path}`);
@@ -2270,9 +2253,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private procReadDir(path: string): string[] | null {
     const procPath = normalizeProcPath(path);
     if (procPath === null) return null;
-    if (procPath === '/proc') return ['kernel', 'self'];
-    if (procPath === '/proc/kernel') return ['info'];
-    if (procPath === '/proc/self') return ['mountinfo'];
+    const entries = runtimeProcDirEntries(procPath);
+    if (entries) return entries;
     throw new Error(`Kernel proc path is not a directory: ${path}`);
   }
 

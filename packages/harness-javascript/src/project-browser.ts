@@ -10,6 +10,12 @@ import type {
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
 import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
+import {
+  normalizeRuntimeProcPath as normalizeRuntimeProcPathString,
+  readRuntimeProcFile as readProcFile,
+  runtimeProcDirEntries as procDirEntries,
+  runtimeProcEntryKind as procEntryKind,
+} from '../../harness-core/src/runtime-kernel';
 import * as fflateModule from 'fflate/browser';
 import packageJson from '../package.json' with { type: 'json' };
 
@@ -125,7 +131,7 @@ function normalizeRuntimeDeviceNamespacePath(path: unknown): '/dev' | RuntimeKer
 function normalizeRuntimeProcPath(path: unknown): string | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return raw === '/proc' || raw.startsWith('/proc/') ? raw : null;
+  return normalizeRuntimeProcPathString(raw);
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
@@ -138,28 +144,6 @@ function createWorkspacePathContext(project: RuntimeProjectSnapshot): WorkspaceP
     root: normalizeAbsoluteWorkspaceRoot(project.workspaceRoot ?? project.cwd ?? '/workspace'),
     ...(project.workspaceAlias ? { alias: normalizeAbsoluteWorkspaceRoot(project.workspaceAlias) } : {}),
   };
-}
-
-function mountInfoField(value: string): string {
-  return value.replace(/\\/g, '\\134').replace(/ /g, '\\040').replace(/\t/g, '\\011').replace(/\n/g, '\\012');
-}
-
-function procInfoJson(info: RuntimeKernelInfo): string {
-  return `${JSON.stringify(info, null, 2)}\n`;
-}
-
-function procMountInfo(info: RuntimeKernelInfo): string {
-  const workspaceRoot = mountInfoField(info.workspaceRoot);
-  const workspaceName = mountInfoField(info.workspace.name);
-  const aliasLine = info.workspaceAlias
-    ? `27 24 0:1 / ${mountInfoField(info.workspaceAlias)} rw,relatime alias=${workspaceRoot} - tracefs tracekernel:workspace rw,name=${workspaceName}`
-    : null;
-  return [
-    `24 0 0:1 / ${workspaceRoot} rw,relatime - tracefs tracekernel:workspace rw,name=${workspaceName}`,
-    aliasLine,
-    '25 0 0:2 / /dev rw,nosuid - tracefs tracekernel:dev rw,mode=755',
-    '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw',
-  ].filter((line): line is string => Boolean(line)).join('\n') + '\n';
 }
 
 function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: WorkspacePathContext): RuntimeKernelInfo {
@@ -192,28 +176,6 @@ function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: Workspac
     workspaceRoot: root,
     ...(workspace.alias ? { workspaceAlias: workspace.alias } : {}),
   };
-}
-
-function readProcFile(path: string, info: RuntimeKernelInfo): string {
-  if (path === '/proc/kernel/info') return procInfoJson(info);
-  if (path === '/proc/self/mountinfo') return procMountInfo(info);
-  if (path === '/proc' || path === '/proc/kernel' || path === '/proc/self') {
-    throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: 'EISDIR' });
-  }
-  throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
-}
-
-function procDirEntries(path: string): string[] | null {
-  if (path === '/proc') return ['kernel', 'self'];
-  if (path === '/proc/kernel') return ['info'];
-  if (path === '/proc/self') return ['mountinfo'];
-  return null;
-}
-
-function procEntryKind(path: string): 'file' | 'directory' | null {
-  if (procDirEntries(path)) return 'directory';
-  if (path === '/proc/kernel/info' || path === '/proc/self/mountinfo') return 'file';
-  return null;
 }
 
 function workspaceRelativeFromAbsolutePath(rawPath: string, workspace: WorkspacePathContext): string | null {
