@@ -866,26 +866,53 @@ function installRuntimeFsHooks(runtime) {
 
   const originalChmod = fs.chmod;
   if (typeof originalChmod === 'function') {
-    fs.chmod = function chmodWithProjectKernelGuards(path) {
+    fs.chmod = function chmodWithProjectEvents(path) {
       if (activeProjectIo) throwKernelVirtualMutationErrorForRuntimePath(path, 'chmod');
-      return originalChmod.apply(this, arguments);
+      const result = originalChmod.apply(this, arguments);
+      if (activeProjectIo) emitProjectPathSnapshot(runtimeFsPath(path) || path);
+      return result;
     };
   }
 
   const originalFchmod = fs.fchmod;
   if (typeof originalFchmod === 'function') {
-    fs.fchmod = function fchmodWithProjectKernelGuards(fd) {
+    fs.fchmod = function fchmodWithProjectEvents(fd) {
       const stream = typeof fs.getStream === 'function' ? fs.getStream(fd) : null;
       if (activeProjectIo && stream) throwKernelVirtualMutationErrorForRuntimePath(stream, 'fchmod');
-      return originalFchmod.apply(this, arguments);
+      const result = originalFchmod.apply(this, arguments);
+      if (activeProjectIo && stream?.path) emitProjectPathSnapshot(stream.path);
+      return result;
+    };
+  }
+
+  const originalChown = fs.chown;
+  if (typeof originalChown === 'function') {
+    fs.chown = function chownWithProjectEvents(path) {
+      if (activeProjectIo) throwKernelVirtualMutationErrorForRuntimePath(path, 'chown');
+      const result = originalChown.apply(this, arguments);
+      if (activeProjectIo) emitProjectPathSnapshot(runtimeFsPath(path) || path);
+      return result;
+    };
+  }
+
+  const originalFchown = fs.fchown;
+  if (typeof originalFchown === 'function') {
+    fs.fchown = function fchownWithProjectEvents(fd) {
+      const stream = typeof fs.getStream === 'function' ? fs.getStream(fd) : null;
+      if (activeProjectIo && stream) throwKernelVirtualMutationErrorForRuntimePath(stream, 'fchown');
+      const result = originalFchown.apply(this, arguments);
+      if (activeProjectIo && stream?.path) emitProjectPathSnapshot(stream.path);
+      return result;
     };
   }
 
   const originalUtime = fs.utime;
   if (typeof originalUtime === 'function') {
-    fs.utime = function utimeWithProjectKernelGuards(path) {
+    fs.utime = function utimeWithProjectEvents(path) {
       if (activeProjectIo) throwKernelVirtualMutationErrorForRuntimePath(path, 'utime');
-      return originalUtime.apply(this, arguments);
+      const result = originalUtime.apply(this, arguments);
+      if (activeProjectIo) emitProjectPathSnapshot(runtimeFsPath(path) || path);
+      return result;
     };
   }
 

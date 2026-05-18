@@ -2793,6 +2793,9 @@ async function main(): Promise<void> {
                 'await File.AppendAllBytesAsync("async-bytes.bin", new byte[] { 251 });',
                 'await File.WriteAllLinesAsync("async-lines.txt", new[] { "async-a", "async-b" });',
                 'await File.AppendAllLinesAsync("async-lines.txt", new[] { "async-c" });',
+                'File.WriteAllText("metadata-only.txt", "metadata\\n");',
+                'File.SetLastWriteTimeUtc("metadata-only.txt", DateTime.UnixEpoch);',
+                'File.SetAttributes("metadata-only.txt", FileAttributes.ReadOnly);',
                 'try { File.CreateSymbolicLink("link-symlink.txt", "generated.txt"); Console.WriteLine("symlink:ok"); } catch (Exception ex) { Console.WriteLine("symlink:" + ex.GetType().Name); }',
                 'try { File.CreateSymbolicLink("/dev/stdout", "generated.txt"); Console.WriteLine("symlink-dev:ok"); } catch (Exception ex) { Console.WriteLine("symlink-dev:" + ex.GetType().Name); }',
                 'try { var linkTarget = File.ResolveLinkTarget("generated.txt", returnFinalTarget: false); Console.WriteLine(linkTarget is null ? "readlink:blocked" : "readlink:ok"); } catch (Exception ex) { Console.WriteLine("readlink:" + ex.GetType().Name); }',
@@ -3157,6 +3160,16 @@ async function main(): Promise<void> {
             event.change.contents === 'async-a\nasync-b\nasync-c\n'
         ) === true,
       `C# project worker should stream async file API changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      (projectRun.events || []).filter(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/metadata-only.txt' &&
+          event.change.contents === 'metadata\n'
+      ).length >= 3,
+      `C# project worker should stream live metadata-only mutations, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some(

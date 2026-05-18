@@ -1470,42 +1470,49 @@ public static class ProjectFile
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "chmod");
         System.IO.File.SetAttributes(path, fileAttributes);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 
     public static void SetCreationTime(string path, System.DateTime creationTime)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.File.SetCreationTime(path, creationTime);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 
     public static void SetCreationTimeUtc(string path, System.DateTime creationTimeUtc)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.File.SetCreationTimeUtc(path, creationTimeUtc);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 
     public static void SetLastAccessTime(string path, System.DateTime lastAccessTime)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.File.SetLastAccessTime(path, lastAccessTime);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 
     public static void SetLastAccessTimeUtc(string path, System.DateTime lastAccessTimeUtc)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.File.SetLastAccessTimeUtc(path, lastAccessTimeUtc);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 
     public static void SetLastWriteTime(string path, System.DateTime lastWriteTime)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.File.SetLastWriteTime(path, lastWriteTime);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 
     public static void SetLastWriteTimeUtc(string path, System.DateTime lastWriteTimeUtc)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.File.SetLastWriteTimeUtc(path, lastWriteTimeUtc);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
     }
 }
 
@@ -1548,36 +1555,42 @@ public static class ProjectDirectory
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.Directory.SetCreationTime(path, creationTime);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectPathSnapshot(path);
     }
 
     public static void SetCreationTimeUtc(string path, System.DateTime creationTimeUtc)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.Directory.SetCreationTimeUtc(path, creationTimeUtc);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectPathSnapshot(path);
     }
 
     public static void SetLastAccessTime(string path, System.DateTime lastAccessTime)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.Directory.SetLastAccessTime(path, lastAccessTime);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectPathSnapshot(path);
     }
 
     public static void SetLastAccessTimeUtc(string path, System.DateTime lastAccessTimeUtc)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.Directory.SetLastAccessTimeUtc(path, lastAccessTimeUtc);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectPathSnapshot(path);
     }
 
     public static void SetLastWriteTime(string path, System.DateTime lastWriteTime)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.Directory.SetLastWriteTime(path, lastWriteTime);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectPathSnapshot(path);
     }
 
     public static void SetLastWriteTimeUtc(string path, System.DateTime lastWriteTimeUtc)
     {
         TraceCode.CSharpHost.CompilerHost.ThrowIfProjectKernelVirtualMutation(path, "utime");
         System.IO.Directory.SetLastWriteTimeUtc(path, lastWriteTimeUtc);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectPathSnapshot(path);
     }
 }
 
