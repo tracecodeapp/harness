@@ -33,6 +33,7 @@ import {
   runtimeKernelFileCopyTarget,
   runtimeKernelFileCopyErrorCode,
   runtimeKernelFileCopyErrorMessage,
+  runtimeKernelFileReadFsErrorMessage,
   runtimeKernelFileReadErrorMessage,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
@@ -52,6 +53,7 @@ import {
   runtimeKernelTruncateTarget,
   runtimeKernelVirtualDevices,
   runtimeKernelWriteErrorMessage,
+  runtimeKernelWriteFsErrorMessage,
   runtimeKernelWriteTarget,
   normalizeRuntimeKernelManifestDevicePath,
 } from '../packages/harness-core/src/runtime-kernel';
@@ -157,13 +159,17 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   const procWriteTarget = runtimeKernelWriteTarget('/proc/kernel/info', devices);
   assertCondition(
     procWriteTarget.kind === 'error' &&
-      runtimeKernelWriteErrorMessage('/proc/kernel/info', procWriteTarget) === 'Kernel proc path is read-only: /proc/kernel/info',
+      runtimeKernelWriteErrorMessage('/proc/kernel/info', procWriteTarget) === 'Kernel proc path is read-only: /proc/kernel/info' &&
+      runtimeKernelWriteFsErrorMessage('/proc/kernel/info', procWriteTarget) ===
+        "EROFS: read-only file system, open '/proc/kernel/info'",
     `kernel write error message should be shared: ${stableStringify(procWriteTarget)}`
   );
   const stdoutReadTarget = runtimeKernelFileReadTarget('/dev/stdout', devices);
   assertCondition(
     stdoutReadTarget.kind === 'error' &&
-      runtimeKernelFileReadErrorMessage('/dev/stdout', stdoutReadTarget) === 'Kernel device is not readable: /dev/stdout',
+      runtimeKernelFileReadErrorMessage('/dev/stdout', stdoutReadTarget) === 'Kernel device is not readable: /dev/stdout' &&
+      runtimeKernelFileReadFsErrorMessage('/dev/stdout', stdoutReadTarget) ===
+        "EBADF: bad file descriptor, open '/dev/stdout'",
     `kernel file-read error message should be shared: ${stableStringify(stdoutReadTarget)}`
   );
   const missingMutationTarget = runtimeKernelMutationTarget('/dev/missing', devices);

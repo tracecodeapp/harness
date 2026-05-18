@@ -27,6 +27,7 @@ import {
   runtimeKernelFileCopyErrorMessage,
   runtimeKernelFileCopyTarget,
   runtimeKernelFileCopyErrorCode,
+  runtimeKernelFileReadFsErrorMessage,
   runtimeKernelFileReadTarget,
   runtimeKernelFileReadErrorCode,
   runtimeKernelLinkErrorCode,
@@ -51,6 +52,7 @@ import {
   runtimeKernelTruncateErrorCode,
   runtimeKernelTruncateTarget,
   runtimeKernelWriteErrorCode,
+  runtimeKernelWriteFsErrorMessage,
   runtimeKernelWriteTarget,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
@@ -3466,11 +3468,7 @@ async function runBrowserJavaScriptProjectRequest(
         if (readTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(readTarget.path));
         else if (readTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(readTarget.path, kernelInfo));
         else if (readTarget?.kind === 'error') {
-          throwRuntimeReadTargetError(readTarget, readTarget.reason === 'is-directory'
-            ? `EISDIR: illegal operation on a directory, open '${path}'`
-            : readTarget.reason === 'permission-denied'
-              ? `EBADF: bad file descriptor, open '${path}'`
-              : `ENOENT: no such file or directory, open '${path}'`);
+          throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
         } else if (optionFd !== null) {
           const entry = fileDescriptor(optionFd);
           if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
@@ -3525,11 +3523,7 @@ async function runBrowserJavaScriptProjectRequest(
           return BrowserBuffer.from(contents);
         }
         if (readTarget?.kind === 'error') {
-          throwRuntimeReadTargetError(readTarget, readTarget.reason === 'is-directory'
-            ? `EISDIR: illegal operation on a directory, open '${path}'`
-            : readTarget.reason === 'permission-denied'
-              ? `EBADF: bad file descriptor, open '${path}'`
-              : `ENOENT: no such file or directory, open '${path}'`);
+          throwRuntimeReadTargetError(readTarget, runtimeKernelFileReadFsErrorMessage(String(path), readTarget));
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         if (workspaceFileAncestor(normalized) !== null) {
@@ -3563,14 +3557,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
         const writeTarget = runtimeWriteTarget(path, kernelDevices);
         if (writeTarget?.kind === 'error') {
-          const message = writeTarget.reason === 'proc-read-only'
-            ? `EROFS: read-only file system, open '${path}'`
-            : writeTarget.reason === 'device-read-only'
-              ? 'EBADF: bad file descriptor, write'
-              : writeTarget.reason === 'device-directory'
-                ? `EISDIR: illegal operation on a directory, open '${path}'`
-                : `ENOENT: no such file or directory, open '${path}'`;
-          throwRuntimeWriteTargetError(writeTarget, message);
+          throwRuntimeWriteTargetError(writeTarget, runtimeKernelWriteFsErrorMessage(String(path), writeTarget));
         }
         if (writeTarget?.kind === 'device') {
           writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));
@@ -3596,14 +3583,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
         const writeTarget = runtimeWriteTarget(path, kernelDevices);
         if (writeTarget?.kind === 'error') {
-          const message = writeTarget.reason === 'proc-read-only'
-            ? `EROFS: read-only file system, open '${path}'`
-            : writeTarget.reason === 'device-read-only'
-              ? 'EBADF: bad file descriptor, write'
-              : writeTarget.reason === 'device-directory'
-                ? `EISDIR: illegal operation on a directory, open '${path}'`
-                : `ENOENT: no such file or directory, open '${path}'`;
-          throwRuntimeWriteTargetError(writeTarget, message);
+          throwRuntimeWriteTargetError(writeTarget, runtimeKernelWriteFsErrorMessage(String(path), writeTarget));
         }
         if (writeTarget?.kind === 'device') {
           writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));

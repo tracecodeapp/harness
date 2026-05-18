@@ -406,6 +406,18 @@ export function runtimeKernelWriteErrorMessage(
   return `Kernel device path not found: ${path}`;
 }
 
+export function runtimeKernelWriteFsErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelWriteTarget, { kind: 'error' }>,
+  operation = 'open'
+): string {
+  const code = runtimeKernelWriteErrorCode(target.reason);
+  if (code === 'EROFS') return `EROFS: read-only file system, ${operation} '${path}'`;
+  if (code === 'EBADF') return `EBADF: bad file descriptor, write`;
+  if (code === 'EISDIR') return `EISDIR: illegal operation on a directory, ${operation} '${path}'`;
+  return `ENOENT: no such file or directory, ${operation} '${path}'`;
+}
+
 export function runtimeKernelMutationTarget(
   path: string,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -663,6 +675,17 @@ export function runtimeKernelFileReadErrorMessage(
   if (target.reason === 'is-directory') return `Kernel virtual path is a directory: ${path}`;
   if (target.reason === 'permission-denied') return `Kernel device is not readable: ${target.path}`;
   return `Kernel virtual path not found: ${path}`;
+}
+
+export function runtimeKernelFileReadFsErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelFileReadTarget, { kind: 'error' }>,
+  operation = 'open'
+): string {
+  const code = runtimeKernelFileReadErrorCode(target.reason);
+  if (code === 'EBADF') return `EBADF: bad file descriptor, ${operation} '${path}'`;
+  if (code === 'EISDIR') return `EISDIR: illegal operation on a directory, ${operation} '${path}'`;
+  return `ENOENT: no such file or directory, ${operation} '${path}'`;
 }
 
 export function runtimeKernelStatTarget(
