@@ -598,6 +598,20 @@ function runtimeFsIsDirectory(fs, path) {
   }
 }
 
+function runtimeFsPath(value) {
+  if (typeof value === 'string') return value;
+  if (typeof value?.path === 'string') return value.path;
+  const fs = runtimeModule?.FS;
+  if (fs && typeof fs.getPath === 'function' && value && typeof value === 'object') {
+    try {
+      return fs.getPath(value);
+    } catch {
+      // Some provider FS calls pass detached node-like values.
+    }
+  }
+  return null;
+}
+
 function emitProjectPathSnapshot(path) {
   const fs = runtimeModule?.FS;
   if (!activeProjectIo || !fs) return;
@@ -706,6 +720,33 @@ function installRuntimeFsHooks(runtime) {
       const result = originalFtruncate.apply(this, arguments);
       if (activeProjectIo && stream?.path) emitProjectFileSnapshot(stream.path);
       return result;
+    };
+  }
+
+  const originalChmod = fs.chmod;
+  if (typeof originalChmod === 'function') {
+    fs.chmod = function chmodWithProjectKernelGuards(path) {
+      const resolvedPath = runtimeFsPath(path);
+      if (activeProjectIo && resolvedPath) throwKernelVirtualMutationError(resolvedPath, 'chmod');
+      return originalChmod.apply(this, arguments);
+    };
+  }
+
+  const originalFchmod = fs.fchmod;
+  if (typeof originalFchmod === 'function') {
+    fs.fchmod = function fchmodWithProjectKernelGuards(fd) {
+      const stream = typeof fs.getStream === 'function' ? fs.getStream(fd) : null;
+      if (activeProjectIo && stream?.path) throwKernelVirtualMutationError(stream.path, 'fchmod');
+      return originalFchmod.apply(this, arguments);
+    };
+  }
+
+  const originalUtime = fs.utime;
+  if (typeof originalUtime === 'function') {
+    fs.utime = function utimeWithProjectKernelGuards(path) {
+      const resolvedPath = runtimeFsPath(path);
+      if (activeProjectIo && resolvedPath) throwKernelVirtualMutationError(resolvedPath, 'utime');
+      return originalUtime.apply(this, arguments);
     };
   }
 

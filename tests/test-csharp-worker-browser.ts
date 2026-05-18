@@ -2739,10 +2739,14 @@ async function main(): Promise<void> {
                 'try { File.Delete("/proc/kernel/info"); Console.WriteLine("proc-delete:ok"); } catch (Exception ex) { Console.WriteLine("proc-delete:" + ex.GetType().Name); }',
                 'try { using var procWrite = File.Open("/proc/kernel/info", FileMode.Open, FileAccess.ReadWrite); Console.WriteLine("proc-open-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-open-write:" + ex.GetType().Name); }',
                 'try { using var procTruncate = new FileStream("/proc/kernel/info", FileMode.Truncate, FileAccess.Write); Console.WriteLine("proc-truncate:ok"); } catch (Exception ex) { Console.WriteLine("proc-truncate:" + ex.GetType().Name); }',
+                'try { File.SetAttributes("/proc/kernel/info", FileAttributes.Normal); Console.WriteLine("proc-chmod:ok"); } catch (Exception ex) { Console.WriteLine("proc-chmod:" + ex.GetType().Name); }',
+                'try { File.SetLastWriteTimeUtc("/proc/kernel/info", DateTime.UnixEpoch); Console.WriteLine("proc-utime:ok"); } catch (Exception ex) { Console.WriteLine("proc-utime:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/tracekernel/custom", "bad\\n"); Console.WriteLine("custom-kernel-write:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-write:" + ex.GetType().Name); }',
                 'try { Directory.CreateDirectory("/tracekernel/new"); Console.WriteLine("custom-kernel-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-mkdir:" + ex.GetType().Name); }',
                 'try { using var customWrite = File.Open("/tracekernel/custom", FileMode.Open, FileAccess.ReadWrite); Console.WriteLine("custom-kernel-open-write:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-open-write:" + ex.GetType().Name); }',
                 'try { using var customTruncate = new FileStream("/tracekernel/custom", FileMode.Truncate, FileAccess.Write); Console.WriteLine("custom-kernel-truncate:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-truncate:" + ex.GetType().Name); }',
+                'try { File.SetAttributes("/tracekernel/custom", FileAttributes.Normal); Console.WriteLine("custom-kernel-chmod:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-chmod:" + ex.GetType().Name); }',
+                'try { File.SetLastWriteTimeUtc("/tracekernel/custom", DateTime.UnixEpoch); Console.WriteLine("custom-kernel-utime:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-utime:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stdout", "dev-stdout\\n"); Console.WriteLine("dev-stdout-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
@@ -2750,6 +2754,7 @@ async function main(): Promise<void> {
                 'try { File.ReadAllText("/dev/stdout"); Console.WriteLine("dev-stdout-read:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-read:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stdin", "bad\\n"); Console.WriteLine("dev-stdin-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdin-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev", "bad\\n"); Console.WriteLine("dev-dir-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-dir-write:" + ex.GetType().Name); }',
+                'try { File.SetLastWriteTimeUtc("/dev/stdout", DateTime.UnixEpoch); Console.WriteLine("dev-utime:ok"); } catch (Exception ex) { Console.WriteLine("dev-utime:" + ex.GetType().Name); }',
                 'try { Directory.CreateDirectory("/dev/new"); Console.WriteLine("dev-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("dev-mkdir:" + ex.GetType().Name); }',
                 'try { File.Move("stale.txt", "/dev/log"); Console.WriteLine("dev-rename-dest:ok"); } catch (Exception ex) { Console.WriteLine("dev-rename-dest:" + ex.GetType().Name); }',
                 'try { File.Move("/dev/log", "dev-log-copy"); Console.WriteLine("dev-rename-source:ok"); } catch (Exception ex) { Console.WriteLine("dev-rename-source:" + ex.GetType().Name); }',
@@ -2857,14 +2862,18 @@ async function main(): Promise<void> {
       projectRun.stdout.includes('proc-mkdir:') && !projectRun.stdout.includes('proc-mkdir:ok') &&
         projectRun.stdout.includes('proc-delete:') && !projectRun.stdout.includes('proc-delete:ok') &&
         projectRun.stdout.includes('proc-open-write:') && !projectRun.stdout.includes('proc-open-write:ok') &&
-        projectRun.stdout.includes('proc-truncate:') && !projectRun.stdout.includes('proc-truncate:ok'),
-      `C# project worker should reject /proc mkdir/delete mutations, received ${projectRun.stdout}`
+        projectRun.stdout.includes('proc-truncate:') && !projectRun.stdout.includes('proc-truncate:ok') &&
+        projectRun.stdout.includes('proc-chmod:') && !projectRun.stdout.includes('proc-chmod:ok') &&
+        projectRun.stdout.includes('proc-utime:') && !projectRun.stdout.includes('proc-utime:ok'),
+      `C# project worker should reject /proc mkdir/delete/metadata mutations, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stdout.includes('custom-kernel-write:') && !projectRun.stdout.includes('custom-kernel-write:ok') &&
         projectRun.stdout.includes('custom-kernel-mkdir:') && !projectRun.stdout.includes('custom-kernel-mkdir:ok') &&
         projectRun.stdout.includes('custom-kernel-open-write:') && !projectRun.stdout.includes('custom-kernel-open-write:ok') &&
-        projectRun.stdout.includes('custom-kernel-truncate:') && !projectRun.stdout.includes('custom-kernel-truncate:ok'),
+        projectRun.stdout.includes('custom-kernel-truncate:') && !projectRun.stdout.includes('custom-kernel-truncate:ok') &&
+        projectRun.stdout.includes('custom-kernel-chmod:') && !projectRun.stdout.includes('custom-kernel-chmod:ok') &&
+        projectRun.stdout.includes('custom-kernel-utime:') && !projectRun.stdout.includes('custom-kernel-utime:ok'),
       `C# project worker should reject manifest-provided kernel virtual mutations outside /proc, received ${projectRun.stdout}`
     );
     assertCondition(
@@ -2877,10 +2886,11 @@ async function main(): Promise<void> {
       `C# project worker should reject /dev directory writes, received ${projectRun.stdout}`
     );
     assertCondition(
-      projectRun.stdout.includes('dev-mkdir:') && !projectRun.stdout.includes('dev-mkdir:ok') &&
+      projectRun.stdout.includes('dev-utime:') && !projectRun.stdout.includes('dev-utime:ok') &&
+        projectRun.stdout.includes('dev-mkdir:') && !projectRun.stdout.includes('dev-mkdir:ok') &&
         projectRun.stdout.includes('dev-rename-dest:') && !projectRun.stdout.includes('dev-rename-dest:ok') &&
         projectRun.stdout.includes('dev-rename-source:') && !projectRun.stdout.includes('dev-rename-source:ok'),
-      `C# project worker should reject /dev namespace mutations, received ${projectRun.stdout}`
+      `C# project worker should reject /dev namespace metadata and path mutations, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stdout.includes('symlink:') && !projectRun.stdout.includes('symlink:ok') &&
