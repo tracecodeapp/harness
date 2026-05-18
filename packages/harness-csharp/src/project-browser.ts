@@ -9,7 +9,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
-import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
+import { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
 import type { CSharpWorkerClient } from '../../harness-browser/src/csharp-worker-client';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;
@@ -26,6 +26,25 @@ export interface BrowserCSharpProjectRunnerOptions {
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
+const NO_BUILD_UNSUPPORTED_STDERR = 'dotnet: --no-build is not supported in the browser project environment\n';
+
+function unsupportedBrowserCSharpRunResult(request: CSharpProjectCommandRequest): CSharpProjectCommandResult {
+  const result: CSharpProjectCommandResult = {
+    stdout: '',
+    stderr: NO_BUILD_UNSUPPORTED_STDERR,
+    exitCode: 2,
+  };
+  const io = createRuntimeProjectIoBridge(request.onEvent);
+  io.status('process-start', 'Starting C# browser run', {
+    source: request.source,
+    scriptPath: request.scriptPath,
+    args: request.args,
+    cwd: request.cwd,
+  });
+  io.status('process-exit', 'Finished C# browser run', { exitCode: result.exitCode });
+  io.output('stderr', result.stderr);
+  return result;
+}
 
 export function createBrowserCSharpProjectRunner(
   workerClient: Pick<CSharpWorkerClient, 'executeProjectCSharp'> & {
@@ -40,11 +59,7 @@ export function createBrowserCSharpProjectRunner(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
     if (request.source === 'run' && request.options?.noBuild === true) {
-      return Promise.resolve({
-        stdout: '',
-        stderr: 'dotnet: --no-build is not supported in the browser project environment\n',
-        exitCode: 2,
-      });
+      return Promise.resolve(unsupportedBrowserCSharpRunResult(request));
     }
     return runRuntimeProjectWorkerBridge({
       request,

@@ -174,6 +174,52 @@ async function testBrowserCSharpProjectBridgeFinalDiffApplication(): Promise<voi
   );
 }
 
+async function testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents(): Promise<void> {
+  let invokedWorker = false;
+  const observed: RuntimeCommandEvent[] = [];
+  const runner = createBrowserCSharpProjectRunner({
+    async executeProjectCSharp() {
+      invokedWorker = true;
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      };
+    },
+  });
+
+  const result = await runner({
+    code: '',
+    source: 'run',
+    scriptPath: '<project>',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: { files: [] },
+    options: { noBuild: true },
+    onEvent: (event) => observed.push(event),
+  });
+
+  assertCondition(!invokedWorker, 'C# browser no-build rejection should not invoke the worker');
+  assertCondition(
+    result.exitCode === 2 && result.stderr.includes('--no-build is not supported in the browser project environment'),
+    `C# browser no-build rejection should preserve stderr result, received ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    observed.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      observed.some((event) => event.type === 'status' && event.phase === 'process-exit') &&
+      observed.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stderr' &&
+          event.device === '/dev/stderr' &&
+          event.data === result.stderr
+      ),
+    `C# browser no-build rejection should stream status and stderr events, received ${JSON.stringify(observed)}`
+  );
+}
+
 function createExternalCSharpDllBase64(): string {
   const root = mkdtempSync(join(tmpdir(), 'tracecode-csharp-ref-fixture-'));
   try {
@@ -489,6 +535,7 @@ function fixture(name: string): string {
 
 async function main(): Promise<void> {
   await testBrowserCSharpProjectBridgeFinalDiffApplication();
+  await testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents();
 
   const csharpDotnetJs = join(ROOT, 'workers', 'vendor', 'csharp', '_framework', 'dotnet.js');
   assertCondition(existsSync(csharpDotnetJs), 'Expected vendored C# AppBundle at workers/vendor/csharp');
