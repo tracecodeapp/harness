@@ -489,6 +489,12 @@ async function main(): Promise<void> {
 
   const csharpDotnetJs = join(ROOT, 'workers', 'vendor', 'csharp', '_framework', 'dotnet.js');
   assertCondition(existsSync(csharpDotnetJs), 'Expected vendored C# AppBundle at workers/vendor/csharp');
+  const csharpWorkerSource = readFileSync(join(ROOT, 'workers', 'csharp', 'csharp-worker.js'), 'utf8');
+  assertCondition(
+    csharpWorkerSource.includes('fs.link = function linkWithProjectEvents') &&
+      csharpWorkerSource.includes('hard links are not supported by the project file manifest'),
+    'C# worker should guard Emscripten FS.link hard-link mutations while project I/O is active'
+  );
 
   const server = await startStaticServer(ROOT);
   let browser: Browser | null = null;

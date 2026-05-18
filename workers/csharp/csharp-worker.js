@@ -939,6 +939,18 @@ function installRuntimeFsHooks(runtime) {
     };
   }
 
+  const originalLink = fs.link;
+  if (typeof originalLink === 'function') {
+    fs.link = function linkWithProjectEvents(oldPath, newPath) {
+      if (activeProjectIo) {
+        throwKernelVirtualMutationError(oldPath, 'link');
+        throwKernelVirtualMutationError(newPath, 'link');
+        throwKernelFsError(newPath, 'link', 'ENOTSUP', 'hard links are not supported by the project file manifest');
+      }
+      return originalLink.apply(this, arguments);
+    };
+  }
+
   const originalReadlink = fs.readlink;
   if (typeof originalReadlink === 'function') {
     fs.readlink = function readlinkWithProjectEvents(path) {
