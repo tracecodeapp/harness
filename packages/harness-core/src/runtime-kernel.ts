@@ -41,6 +41,23 @@ export function isRuntimeDeviceNamespacePath(path: string): boolean {
   return normalized === '/dev' || normalized?.startsWith('/dev/') === true;
 }
 
+export function runtimeDeviceCanRead(device: RuntimeKernelDevicePath): boolean {
+  return device === '/dev/stdin' || device === '/dev/tty';
+}
+
+export function runtimeDeviceCanWrite(device: RuntimeKernelDevicePath): boolean {
+  return device === '/dev/stdout' || device === '/dev/stderr' || device === '/dev/tty';
+}
+
+export function runtimeDeviceInputSource(device: RuntimeKernelDevicePath): RuntimeKernelDevicePath | null {
+  return runtimeDeviceCanRead(device) ? '/dev/stdin' : null;
+}
+
+export function runtimeDeviceOutputTarget(device: RuntimeKernelDevicePath): RuntimeKernelDevicePath | null {
+  if (!runtimeDeviceCanWrite(device)) return null;
+  return device === '/dev/tty' ? '/dev/stdout' : device;
+}
+
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {
   return `${JSON.stringify(info, null, 2)}\n`;
 }

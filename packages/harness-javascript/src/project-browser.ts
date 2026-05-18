@@ -15,6 +15,10 @@ import {
   normalizeRuntimeProcPath as normalizeRuntimeProcPathString,
   normalizeRuntimeDevicePath as normalizeRuntimeDevicePathString,
   RUNTIME_KERNEL_DEVICE_ENTRIES,
+  runtimeDeviceCanRead,
+  runtimeDeviceCanWrite,
+  runtimeDeviceInputSource,
+  runtimeDeviceOutputTarget,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
   runtimeProcEntryKind as procEntryKind,
@@ -1249,15 +1253,15 @@ async function runBrowserJavaScriptProjectRequest(
     };
 
     const writeDevice = (device: RuntimeKernelDevicePath, data: string): void => {
-      if (device === '/dev/stdin') {
+      const outputDevice = runtimeDeviceOutputTarget(device);
+      if (!outputDevice) {
         throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       }
-      const outputDevice = device === '/dev/tty' ? '/dev/stdout' : device;
       emitOutput(outputDevice === '/dev/stderr' ? 'stderr' : 'stdout', data, outputDevice);
     };
 
     const readDevice = (device: RuntimeKernelDevicePath): string => {
-      if (device === '/dev/stdin' || device === '/dev/tty') return request.stdin;
+      if (runtimeDeviceInputSource(device)) return request.stdin;
       return '';
     };
 
@@ -2090,8 +2094,8 @@ async function runBrowserJavaScriptProjectRequest(
       const device = normalizeRuntimeDevicePath(path);
       if (device) {
         const requested = Number(mode) || fsConstants.F_OK;
-        const readable = device === '/dev/stdin' || device === '/dev/tty';
-        const writable = device === '/dev/stdout' || device === '/dev/stderr' || device === '/dev/tty';
+        const readable = runtimeDeviceCanRead(device);
+        const writable = runtimeDeviceCanWrite(device);
         if (((requested & fsConstants.R_OK) !== 0 && !readable) || ((requested & fsConstants.W_OK) !== 0 && !writable)) {
           throw Object.assign(new Error(`EACCES: permission denied, access '${path}'`), { code: 'EACCES' });
         }
@@ -2495,8 +2499,8 @@ async function runBrowserJavaScriptProjectRequest(
             kind: 'device',
             device,
             offset: 0,
-            readable: device === '/dev/stdin' || device === '/dev/tty' || parsed.readable,
-            writable: device !== '/dev/stdin' && parsed.writable,
+            readable: runtimeDeviceCanRead(device) || parsed.readable,
+            writable: runtimeDeviceCanWrite(device) && parsed.writable,
             append: true,
           });
           return fd;

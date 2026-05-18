@@ -12,6 +12,8 @@ import {
   normalizeRuntimeProcPath,
   normalizeRuntimeDevicePath,
   RUNTIME_KERNEL_DEVICE_ENTRIES,
+  runtimeDeviceInputSource,
+  runtimeDeviceOutputTarget,
   readRuntimeProcFile,
   runtimeProcDirEntries,
   runtimeProcEntryKind,
@@ -796,15 +798,17 @@ class KernelObservedFileSystem implements IFileSystem {
 
   private readDeviceFile(device: '/dev' | RuntimeKernelDevicePath, options?: FsReadFileOptions): string {
     if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
-    if (device === '/dev/stdin' || device === '/dev/tty') return this.readDevice('/dev/stdin');
+    const inputDevice = runtimeDeviceInputSource(device);
+    if (inputDevice) return this.readDevice(inputDevice);
     if (options === 'base64' || (typeof options === 'object' && options?.encoding === 'base64')) return '';
     return '';
   }
 
   private writeDeviceFile(device: '/dev' | RuntimeKernelDevicePath, content: FileContent): void {
     if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
-    if (device === '/dev/stdin') throw new Error('Kernel device is read-only: /dev/stdin');
-    this.writeDevice(device === '/dev/tty' ? '/dev/stdout' : device, contentToText(content));
+    const outputDevice = runtimeDeviceOutputTarget(device);
+    if (!outputDevice) throw new Error(`Kernel device is read-only: ${device}`);
+    this.writeDevice(outputDevice, contentToText(content));
   }
 
   private deviceStat(device: '/dev' | RuntimeKernelDevicePath): Awaited<ReturnType<IFileSystem['stat']>> {
@@ -2281,15 +2285,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private readDevice(device: RuntimeKernelDevicePath): string {
-    if (device === '/dev/stdin' || device === '/dev/tty') return this.activeCommandStdin;
+    if (runtimeDeviceInputSource(device)) return this.activeCommandStdin;
     return '';
   }
 
   private writeDevice(device: RuntimeKernelDevicePath, data: string, actor?: RuntimeWorkspaceActor): void {
-    if (device === '/dev/stdin') {
-      throw new Error('Kernel device is read-only: /dev/stdin');
-    }
-    const outputDevice = device === '/dev/tty' ? '/dev/stdout' : device;
+    const outputDevice = runtimeDeviceOutputTarget(device);
+    if (!outputDevice) throw new Error(`Kernel device is read-only: ${device}`);
     if (this.activeCommandActor) {
       if (outputDevice === '/dev/stdout') this.activeDeviceStdout += data;
       if (outputDevice === '/dev/stderr') this.activeDeviceStderr += data;
