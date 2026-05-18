@@ -2180,6 +2180,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs.watch should observe live kernel mutations and close cleanly: ${watchResult.stdout}`
   );
 
+  const promisesWatchResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.mkdirSync(\\"promise-watch/nested\\", { recursive: true }); const watcher = fsp.watch(\\"promise-watch\\", { recursive: true }); const first = watcher.next(); fs.writeFileSync(\\"promise-watch/nested/value.txt\\", \\"one\\\\n\\"); const firstEvent = await first; const second = watcher.next(); fs.renameSync(\\"promise-watch/nested/value.txt\\", \\"promise-watch/nested/moved.txt\\"); const secondEvent = await second; await watcher.return(); const done = await watcher.next(); console.log(firstEvent.value.eventType + \\":\\" + firstEvent.value.filename); console.log(secondEvent.value.eventType + \\":\\" + secondEvent.value.filename); console.log(done.done);"',
+  ].join(' '));
+  assertCondition(promisesWatchResult.exitCode === 0, `browser node fs.promises.watch workflow should succeed: ${promisesWatchResult.stderr}`);
+  assertCondition(
+    promisesWatchResult.stdout === 'change:nested/value.txt\nrename:nested/value.txt\ntrue\n',
+    `browser node fs.promises.watch should stream live kernel mutation events: ${promisesWatchResult.stdout}`
+  );
+
   const realpathSyncResult = await workspace.runCommand([
     'node',
     '-e',

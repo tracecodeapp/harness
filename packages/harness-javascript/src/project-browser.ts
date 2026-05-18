@@ -2695,6 +2695,54 @@ async function runBrowserJavaScriptProjectRequest(
       },
       readdir: async (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => fsApi.readdirSync(path, options),
       opendir: async (path: unknown) => fsApi.opendirSync(path),
+      watch: (path: unknown, options?: { recursive?: boolean; signal?: AbortSignal } | string | null) => {
+        type WatchEntry = { eventType: string; filename: string };
+        const entries: WatchEntry[] = [];
+        const waiters: Array<(result: IteratorResult<WatchEntry>) => void> = [];
+        let closed = false;
+        const close = (): void => {
+          if (closed) return;
+          closed = true;
+          watcher.close();
+          entries.length = 0;
+          while (waiters.length > 0) {
+            waiters.shift()?.({ done: true, value: undefined });
+          }
+        };
+        const watcher = fsApi.watch(path, typeof options === 'string' ? undefined : options ?? undefined, (eventType, filename) => {
+          const entry = { eventType, filename };
+          const waiter = waiters.shift();
+          if (waiter) {
+            waiter({ done: false, value: entry });
+            return;
+          }
+          entries.push(entry);
+        });
+        if (typeof options === 'object' && options?.signal) {
+          if (options.signal.aborted) {
+            close();
+          } else {
+            options.signal.addEventListener('abort', close, { once: true });
+          }
+        }
+        const iterator = {
+          [Symbol.asyncIterator]() {
+            return iterator;
+          },
+          next: (): Promise<IteratorResult<WatchEntry>> => {
+            if (entries.length > 0) return Promise.resolve({ done: false, value: entries.shift() as WatchEntry });
+            if (closed) return Promise.resolve({ done: true, value: undefined });
+            return new Promise((resolve) => {
+              waiters.push(resolve);
+            });
+          },
+          return: (): Promise<IteratorResult<WatchEntry>> => {
+            close();
+            return Promise.resolve({ done: true, value: undefined });
+          },
+        };
+        return iterator;
+      },
       stat: async (path: unknown) => fsApi.statSync(path),
       lstat: async (path: unknown) => fsApi.lstatSync(path),
       realpath: async (path: unknown, options?: string | { encoding?: string | null } | null) => fsApi.realpathSync(path, options),
