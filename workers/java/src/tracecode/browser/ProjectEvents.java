@@ -388,6 +388,49 @@ public final class ProjectEvents {
       this.path = file.toPath();
     }
 
+    private void emitAfterWrite() throws IOException {
+      super.flush();
+      emitFileSnapshot(path);
+    }
+
+    @Override
+    public void write(int value) throws IOException {
+      super.write(value);
+      emitAfterWrite();
+    }
+
+    @Override
+    public void write(char[] chars, int offset, int length) throws IOException {
+      super.write(chars, offset, length);
+      emitAfterWrite();
+    }
+
+    @Override
+    public void write(String text, int offset, int length) throws IOException {
+      super.write(text, offset, length);
+      emitAfterWrite();
+    }
+
+    @Override
+    public Writer append(CharSequence value) throws IOException {
+      String text = String.valueOf(value);
+      write(text, 0, text.length());
+      return this;
+    }
+
+    @Override
+    public Writer append(CharSequence value, int start, int end) throws IOException {
+      String text = String.valueOf(value).subSequence(start, end).toString();
+      write(text, 0, text.length());
+      return this;
+    }
+
+    @Override
+    public Writer append(char value) throws IOException {
+      write(value);
+      return this;
+    }
+
     @Override
     public void flush() throws IOException {
       super.flush();

@@ -759,8 +759,18 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 .join('\n');
               const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
                 decodedSourceManifest.includes('/dev/stdout');
-              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
+              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? 'dev_stderr\nps_stderr\n' : '';
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'writer-before-output.txt',
+                Buffer.from('before-output\n', 'utf8').toString('base64')
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                'after-filewriter-live\n'
+              );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
                 'stdout',
@@ -987,6 +997,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   { path: 'classic-created.txt', contents: '', encoding: 'base64' },
                   { path: 'classic-renamed.txt', contents: Buffer.from('classic\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'stdin-copy.txt', contents: Buffer.from('from-stdin\n', 'utf8').toString('base64'), encoding: 'base64' },
+                  { path: 'writer-before-output.txt', contents: Buffer.from('before-output\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'bytes.bin', contents: Buffer.from([0, 255]).toString('base64'), encoding: 'base64' },
                   { path: 'classic-delete.txt', deleted: true },
                   { path: 'stale.txt', deleted: true },
@@ -1472,6 +1483,10 @@ async function main(): Promise<void> {
               '    Files.copy(Path.of("/dev/stdin"), Path.of("stdin-copy.txt"), StandardCopyOption.REPLACE_EXISTING);',
               '    Files.copy(Path.of("stdin-copy.txt"), Path.of("/dev/stdout"), StandardCopyOption.REPLACE_EXISTING);',
               '    Files.deleteIfExists(Path.of("stale.txt"));',
+              '    var liveWriter = new FileWriter("writer-before-output.txt");',
+              '    liveWriter.write("before-output\\\\n");',
+              '    System.out.println("after-filewriter-live");',
+              '    liveWriter.close();',
               '    System.out.println(Helper.add(2, 3));',
               '    System.out.println("java_args=" + String.join(",", args));',
               '    System.out.println("java_stdin=" + new BufferedReader(new InputStreamReader(System.in)).readLine());',
@@ -1515,7 +1530,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
+      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -1771,6 +1786,25 @@ async function main(): Promise<void> {
       ) === true,
       `Java execute-project-java should emit live virtual-device copy file-change project events: ${JSON.stringify(projectExecute.events)}`
     );
+    {
+      const events = projectExecute.events ?? [];
+      const writerLiveIndex = events.findIndex((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'writer-before-output.txt' &&
+        event.change.encoding === 'base64' &&
+        Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'before-output\n'
+      );
+      const afterWriterOutputIndex = events.findIndex((event) =>
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.data === 'after-filewriter-live\n'
+      );
+      assertCondition(
+        writerLiveIndex >= 0 && afterWriterOutputIndex > writerLiveIndex,
+        `Java FileWriter writes should emit live file-change before later stdout: ${JSON.stringify(events)}`
+      );
+    }
     assertCondition(
       projectExecute.files?.some((file) =>
         file.path === 'generated.txt' &&
@@ -1831,6 +1865,11 @@ async function main(): Promise<void> {
           file.path === 'stdin-copy.txt' &&
             file.encoding === 'base64' &&
             Buffer.from(file.contents, 'base64').toString('utf8') === 'from-stdin\n'
+        ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'writer-before-output.txt' &&
+            file.encoding === 'base64' &&
+            Buffer.from(file.contents, 'base64').toString('utf8') === 'before-output\n'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'bytes.bin' &&
