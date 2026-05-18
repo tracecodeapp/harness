@@ -180,6 +180,25 @@ export function createRuntimeProjectIoBridge(onEvent: RuntimeCommandEventHandler
   };
 }
 
+export class RuntimeProjectOutputTracker {
+  private stdoutStreamed = false;
+  private stderrStreamed = false;
+
+  observe(event: RuntimeCommandEvent): void {
+    if (event.type !== 'output') return;
+    if (event.stream === 'stdout') this.stdoutStreamed = true;
+    if (event.stream === 'stderr') this.stderrStreamed = true;
+  }
+
+  emitMissingFinalOutput(
+    result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>,
+    output: (stream: RuntimeCommandEventStream, data: string) => void
+  ): void {
+    if (result.stdout && !this.stdoutStreamed) output('stdout', result.stdout);
+    if (result.stderr && !this.stderrStreamed) output('stderr', result.stderr);
+  }
+}
+
 export interface RuntimeProjectWorkerBridgeOptions<
   Request extends RuntimeProjectCommandRequest<string>,
   Result extends RuntimeCommandResult = RuntimeCommandResult
@@ -201,16 +220,13 @@ export async function runRuntimeProjectWorkerBridge<
   Request extends RuntimeProjectCommandRequest<string>,
   Result extends RuntimeCommandResult = RuntimeCommandResult
 >(options: RuntimeProjectWorkerBridgeOptions<Request, Result>): Promise<Result> {
-  let stdoutStreamed = false;
-  let stderrStreamed = false;
+  const outputTracker = new RuntimeProjectOutputTracker();
   const io = createRuntimeProjectIoBridge((event) => {
-    if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
-    if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
+    outputTracker.observe(event);
     options.request.onEvent?.(event);
   });
   const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
-    if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
-    if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
+    outputTracker.observe(event);
     options.request.onEvent?.(event);
   };
   io.status(options.startPhase, options.startMessage, options.startDetail);
@@ -221,8 +237,7 @@ export async function runRuntimeProjectWorkerBridge<
     options.finishMessage,
     options.finishDetail ? options.finishDetail(result) : { exitCode: result.exitCode }
   );
-  if (result.stdout && !stdoutStreamed) io.output('stdout', result.stdout);
-  if (result.stderr && !stderrStreamed) io.output('stderr', result.stderr);
+  outputTracker.emitMissingFinalOutput(result, (stream, data) => io.output(stream, data));
   return result;
 }
 

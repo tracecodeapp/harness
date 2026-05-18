@@ -5,6 +5,7 @@ import {
 } from 'just-bash/browser';
 import {
   createRuntimeProjectIoBridge,
+  RuntimeProjectOutputTracker,
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
@@ -2285,8 +2286,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private activeCommandStdin = '';
   private activeDeviceStdout = '';
   private activeDeviceStderr = '';
-  private activeCommandStdoutEvent = false;
-  private activeCommandStderrEvent = false;
+  private activeOutputTracker = new RuntimeProjectOutputTracker();
   private activeRuntimeEventQueue: Promise<void> = Promise.resolve();
   private nextCommandId = 1;
 
@@ -2667,16 +2667,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const previousStdin = this.activeCommandStdin;
     const previousDeviceStdout = this.activeDeviceStdout;
     const previousDeviceStderr = this.activeDeviceStderr;
-    const previousStdoutEvent = this.activeCommandStdoutEvent;
-    const previousStderrEvent = this.activeCommandStderrEvent;
+    const previousOutputTracker = this.activeOutputTracker;
     const previousRuntimeEventQueue = this.activeRuntimeEventQueue;
     this.activeCommandEventHandler = options.onEvent;
     this.activeCommandActor = this.createRuntimeActor();
     this.activeCommandStdin = options.stdin ?? '';
     this.activeDeviceStdout = '';
     this.activeDeviceStderr = '';
-    this.activeCommandStdoutEvent = false;
-    this.activeCommandStderrEvent = false;
+    this.activeOutputTracker = new RuntimeProjectOutputTracker();
     this.activeRuntimeEventQueue = Promise.resolve();
     try {
       const directCppResult = await this.tryRunCppExecutable(command, options);
@@ -2703,8 +2701,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.activeCommandStdin = previousStdin;
       this.activeDeviceStdout = previousDeviceStdout;
       this.activeDeviceStderr = previousDeviceStderr;
-      this.activeCommandStdoutEvent = previousStdoutEvent;
-      this.activeCommandStderrEvent = previousStderrEvent;
+      this.activeOutputTracker = previousOutputTracker;
       this.activeRuntimeEventQueue = previousRuntimeEventQueue;
     }
     return {
@@ -2894,10 +2891,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private emitRuntimeEvent(event: RuntimeCommandEvent): void {
-    if (event.type === 'output') {
-      if (event.stream === 'stdout') this.activeCommandStdoutEvent = true;
-      if (event.stream === 'stderr') this.activeCommandStderrEvent = true;
-    }
+    this.activeOutputTracker.observe(event);
     const actor = 'actor' in event && event.actor ? event.actor : this.activeCommandActor;
     const enriched = this.enrichRuntimeEvent(event, actor);
     this.activeCommandEventHandler?.(enriched);
@@ -2907,22 +2901,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private emitReturnedOutputEvents(result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>): void {
-    if (result.stdout && !this.activeCommandStdoutEvent) {
+    this.activeOutputTracker.emitMissingFinalOutput(result, (stream, data) => {
       this.emitRuntimeEvent({
         type: 'output',
-        stream: 'stdout',
-        device: '/dev/stdout',
-        data: result.stdout,
+        stream,
+        device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
+        data,
       });
-    }
-    if (result.stderr && !this.activeCommandStderrEvent) {
-      this.emitRuntimeEvent({
-        type: 'output',
-        stream: 'stderr',
-        device: '/dev/stderr',
-        data: result.stderr,
-      });
-    }
+    });
   }
 
   private enrichRuntimeEvent(event: RuntimeCommandEvent, actor?: RuntimeWorkspaceActor): RuntimeWorkspaceEvent {
