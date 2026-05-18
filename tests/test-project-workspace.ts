@@ -5520,7 +5520,7 @@ async function testNativeProjectWorkspaceFactory(): Promise<void> {
 async function testProjectWorkspaceCommandEvents(): Promise<void> {
   const events: RuntimeCommandEvent[] = [];
   const workspace = await createNativeProjectWorkspace({
-    files: [{ path: 'events.py', contents: 'import sys\nprint("event-out")\nprint("event-err", file=sys.stderr)\n' }],
+    files: [{ path: 'events.py', contents: 'import sys\nprint("event-out")\nprint("event-err", file=sys.stderr)\nopen("event-generated.txt", "w", encoding="utf-8").write("generated\\n")\n' }],
   });
   const result = await workspace.runCommand('python3 events.py', {
     onEvent: (event) => events.push(event),
@@ -5554,11 +5554,19 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
     ),
     `project command should emit stderr chunks: ${JSON.stringify(events)}`
   );
+  assertCondition(
+    events.filter((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'event-generated.txt'
+    ).length === 1,
+    `project command should emit one final-diff event for native runner files: ${JSON.stringify(events)}`
+  );
   workspace.dispose();
 
   const directEvents: RuntimeCommandEvent[] = [];
   const direct = await createNativePythonProjectRunner()({
-    code: 'import sys\nprint("direct-out")\nprint("direct-err", file=sys.stderr)\n',
+    code: 'import sys\nprint("direct-out")\nprint("direct-err", file=sys.stderr)\nopen("direct-generated.txt", "w", encoding="utf-8").write("generated\\n")\n',
     source: 'argument',
     scriptPath: '-c',
     args: [],
@@ -5589,6 +5597,14 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
       event.data.includes('direct-err')
     ),
     `direct native project runner should emit stderr device metadata: ${JSON.stringify(directEvents)}`
+  );
+  assertCondition(
+    directEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'direct-generated.txt'
+    ),
+    `direct native project runner should emit final-diff file changes: ${JSON.stringify(directEvents)}`
   );
 }
 

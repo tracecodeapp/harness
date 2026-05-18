@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
-import { emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -608,7 +608,9 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        return { ...run, files: await changedProjectFiles(root, baseline) };
+        const files = await changedProjectFiles(root, baseline);
+        emitRuntimeCommandFileChanges(request.onEvent, files);
+        return { ...run, files };
       }
       const mainClass = request.source === 'run' ? assertSafeMainClass(request.scriptPath) : null;
       const runClasspath = request.source === 'run' ? classpathEntriesForRequest(request, root, cwd).join(delimiter) : '';
@@ -622,7 +624,9 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        return { ...run, files: await changedProjectFiles(root, baseline) };
+        const files = await changedProjectFiles(root, baseline);
+        emitRuntimeCommandFileChanges(request.onEvent, files);
+        return { ...run, files };
       }
 
       const compile = await runProcess(javacCommand, javacArgsForRequest(request, root, cwd), {
@@ -634,9 +638,10 @@ export function createNativeJavaProjectRunner(
         onEvent: request.onEvent,
       });
       if (request.source === 'compile') {
-        return compile.exitCode === 0
-          ? { ...compile, files: await generatedProjectFiles(root, request.project) }
-          : compile;
+        if (compile.exitCode !== 0) return compile;
+        const files = await generatedProjectFiles(root, request.project);
+        emitRuntimeCommandFileChanges(request.onEvent, files);
+        return { ...compile, files };
       }
       if (compile.exitCode !== 0) {
         return compile;
@@ -651,11 +656,13 @@ export function createNativeJavaProjectRunner(
         timeoutLabel: 'java',
         onEvent: request.onEvent,
       });
+      const files = await changedProjectFiles(root, baseline);
+      emitRuntimeCommandFileChanges(request.onEvent, files);
       return {
         stdout: `${compile.stdout}${run.stdout}`,
         stderr: `${compile.stderr}${run.stderr}`,
         exitCode: run.exitCode,
-        files: await changedProjectFiles(root, baseline),
+        files,
       };
     } finally {
       if (!options.keepTempDir) {

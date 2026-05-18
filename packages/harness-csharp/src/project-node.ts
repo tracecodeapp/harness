@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
-import { emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -519,9 +519,10 @@ export function createNativeCSharpProjectRunner(
           timeoutLabel: 'dotnet build',
           onEvent: request.onEvent,
         });
-        return result.exitCode === 0
-          ? { ...result, files: await changedProjectFiles(root, baseline) }
-          : result;
+        if (result.exitCode !== 0) return result;
+        const files = await changedProjectFiles(root, baseline);
+        emitRuntimeCommandFileChanges(request.onEvent, files);
+        return { ...result, files };
       }
 
       if (!shouldSkipBuildForRequest(request)) {
@@ -545,7 +546,9 @@ export function createNativeCSharpProjectRunner(
         timeoutLabel: 'dotnet run',
         onEvent: request.onEvent,
       });
-      return { ...run, files: await changedProjectFiles(root, baseline) };
+      const files = await changedProjectFiles(root, baseline);
+      emitRuntimeCommandFileChanges(request.onEvent, files);
+      return { ...run, files };
     } finally {
       if (!options.keepTempDir) {
         await rm(root, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -444,9 +444,10 @@ export function createNativeCppProjectRunner(
           timeoutLabel: compilerCommand,
           onEvent: request.onEvent,
         });
-        return result.exitCode === 0
-          ? { ...result, files: await changedProjectFiles(root, request.project) }
-          : result;
+        if (result.exitCode !== 0) return result;
+        const files = await changedProjectFiles(root, request.project);
+        emitRuntimeCommandFileChanges(request.onEvent, files);
+        return { ...result, files };
       }
 
       const executablePath = executablePathForRequest(request, root, cwd);
@@ -459,7 +460,9 @@ export function createNativeCppProjectRunner(
         timeoutLabel: request.scriptPath || './a.out',
         onEvent: request.onEvent,
       });
-      return { ...result, files: await changedProjectFiles(root, request.project) };
+      const files = await changedProjectFiles(root, request.project);
+      emitRuntimeCommandFileChanges(request.onEvent, files);
+      return { ...result, files };
     } finally {
       if (!options.keepTempDir) {
         await rm(root, { recursive: true, force: true });

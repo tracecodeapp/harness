@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
-import { emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -452,7 +452,9 @@ export function createNativeJavaScriptProjectRunner(
         child.stdin.end(request.source === 'stdin' ? request.code : request.stdin);
       });
 
-      return { ...result, files: await changedProjectFiles(root, request.project) };
+      const files = await changedProjectFiles(root, request.project);
+      emitRuntimeCommandFileChanges(request.onEvent, files);
+      return { ...result, files };
     } finally {
       if (!options.keepTempDir) {
         await Promise.all([

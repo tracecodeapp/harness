@@ -199,6 +199,34 @@ export function emitRuntimeCommandOutput(
   createRuntimeProjectIoBridge(onEvent).output(stream, data, device);
 }
 
+export function runtimeFileChangePath(change: RuntimeFileChange): string {
+  return change.path;
+}
+
+export function emitRuntimeCommandFileChanges(
+  onEvent: RuntimeCommandEventHandler | undefined,
+  changes: readonly RuntimeFileChange[] | undefined,
+  phase: RuntimeFileMutationPhase = 'final-diff'
+): void {
+  if (!changes) return;
+  const io = createRuntimeProjectIoBridge(onEvent);
+  for (const change of changes) {
+    io.fileChange(change, phase);
+  }
+}
+
+export function filterRuntimeCommandResultFiles(
+  result: RuntimeCommandResult,
+  shouldFilter: (change: RuntimeFileChange) => boolean
+): RuntimeCommandResult {
+  if (!result.files?.length) return result;
+  const files = result.files.filter((change) => !shouldFilter(change));
+  if (files.length === result.files.length) return result;
+  if (files.length > 0) return { ...result, files };
+  const { files: _files, ...rest } = result;
+  return rest;
+}
+
 export class RuntimeProjectOutputTracker {
   private stdoutStreamed = false;
   private stderrStreamed = false;
