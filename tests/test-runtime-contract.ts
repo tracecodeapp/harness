@@ -27,6 +27,7 @@ import {
 import {
   runtimeKernelCopyTarget,
   runtimeKernelDirectoryTarget,
+  runtimeKernelDeviceInputRoute,
   runtimeKernelDeviceOutputRoute,
   runtimeKernelDeviceOutputTarget,
   runtimeKernelFileCopyTarget,
@@ -134,6 +135,12 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
       '{"outputDevice":"/dev/capture","sourceDevice":"/dev/tee","stream":"stdout"}' &&
       stableStringify(runtimeKernelDeviceOutputRoute(undefined, '/dev/null')) === 'null',
     'kernel output route should map device writes to command streams and discard /dev/null'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelDeviceInputRoute(devices, '/dev/tty')) ===
+      '{"inputDevice":"/dev/stdin","sourceDevice":"/dev/tty"}' &&
+      stableStringify(runtimeKernelDeviceInputRoute(undefined, '/dev/null')) === 'null',
+    'kernel input route should map device reads to command stdin and EOF /dev/null'
   );
   assertCondition(
     stableStringify(runtimeKernelWriteTarget('/dev/capture', devices)) ===

@@ -146,6 +146,10 @@ export interface RuntimeKernelDeviceOutputRoute {
   stream: RuntimeCommandEventStream;
   sourceDevice?: RuntimeKernelDevicePath;
 }
+export interface RuntimeKernelDeviceInputRoute {
+  inputDevice: RuntimeKernelDevicePath;
+  sourceDevice?: RuntimeKernelDevicePath;
+}
 export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['null', 'stderr', 'stdin', 'stdout', 'tty'] as const;
 
 function normalizeRuntimeAbsolutePath(path: string): string | null {
@@ -262,6 +266,20 @@ export function runtimeKernelDeviceInputSource(
   const info = runtimeKernelDeviceInfo(devices, device);
   if (!info?.readable) return null;
   return normalizeDeviceReference(info.inputDevice) ?? device;
+}
+
+export function runtimeKernelDeviceInputRoute(
+  devices: readonly RuntimeKernelDeviceInfo[] | undefined,
+  device: RuntimeKernelDevicePath
+): RuntimeKernelDeviceInputRoute | null {
+  const inputDevice = devices
+    ? runtimeKernelDeviceInputSource(devices, device)
+    : runtimeDeviceInputSource(device);
+  if (!inputDevice || inputDevice === '/dev/null') return null;
+  return {
+    inputDevice,
+    ...(device !== inputDevice ? { sourceDevice: device } : {}),
+  };
 }
 
 export function runtimeKernelDeviceOutputTarget(

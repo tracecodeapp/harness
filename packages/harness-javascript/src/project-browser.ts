@@ -18,6 +18,7 @@ import {
   runtimeDeviceEntryKind,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
+  runtimeKernelDeviceInputRoute,
   runtimeKernelDeviceInputSource,
   runtimeKernelDeviceOutputRoute,
   runtimeKernelDeviceOutputTarget,
@@ -1637,8 +1638,8 @@ async function runBrowserJavaScriptProjectRequest(
     const stdinBytes = utf8Bytes(request.stdin);
     let stdinOffset = 0;
     const readDeviceBytes = (device: RuntimeKernelDevicePath, size?: number): Uint8Array => {
-      const inputDevice = runtimeKernelDeviceInputSource(kernelDevices, device);
-      if (!inputDevice || inputDevice === '/dev/null') return new Uint8Array();
+      const inputRoute = runtimeKernelDeviceInputRoute(kernelDevices, device);
+      if (!inputRoute) return new Uint8Array();
       const remaining = Math.max(0, stdinBytes.byteLength - stdinOffset);
       const count = typeof size === 'number' && size >= 0 ? Math.min(Math.floor(size), remaining) : remaining;
       const bytes = stdinBytes.slice(stdinOffset, stdinOffset + count);
@@ -1646,7 +1647,7 @@ async function runBrowserJavaScriptProjectRequest(
       return bytes;
     };
     const remainingDeviceBytes = (device: RuntimeKernelDevicePath): number => (
-      ![null, '/dev/null'].includes(runtimeKernelDeviceInputSource(kernelDevices, device))
+      runtimeKernelDeviceInputRoute(kernelDevices, device)
         ? Math.max(0, stdinBytes.byteLength - stdinOffset)
         : 0
     );

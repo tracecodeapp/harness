@@ -17,6 +17,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeKernelAccessTarget,
+  runtimeKernelDeviceInputRoute,
   runtimeKernelDeviceOutputRoute,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileCopyTarget,
@@ -2501,9 +2502,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private readDevice(device: RuntimeKernelDevicePath): string {
-    const inputDevice = runtimeDeviceInputSource(device);
-    if (inputDevice && inputDevice !== '/dev/null') return this.activeCommandStdin;
-    return '';
+    return runtimeKernelDeviceInputRoute(undefined, device) ? this.activeCommandStdin : '';
   }
 
   private writeDevice(device: RuntimeKernelDevicePath, data: string, actor?: RuntimeWorkspaceActor): void {
