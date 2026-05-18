@@ -2742,6 +2742,7 @@ async function main(): Promise<void> {
                 'using (var stream = File.OpenWrite("open-write.bin")) { stream.Write(new byte[] { 0, 253 }); }',
                 'using (var stream = new FileStream("truncated.txt", FileMode.Create, FileAccess.ReadWrite)) { stream.Write(System.Text.Encoding.UTF8.GetBytes("abcdef")); stream.SetLength(3); stream.Flush(); }',
                 'using (var writer = new BinaryWriter(File.Create("binary-writer.bin"))) { writer.Write(new byte[] { 0, 252 }); }',
+                'using (File.Create("empty-created.bin")) { }',
                 'File.Copy("generated.txt", "copied.txt");',
                 'File.Move("copied.txt", "moved.txt");',
                 'File.Delete("stale.txt");',
@@ -2914,6 +2915,20 @@ async function main(): Promise<void> {
             event.change.contents === 'APw='
         ) === true,
       `C# project worker should stream file-stream changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/empty-created.bin' && file.contents === '') === true,
+      `C# project worker should return zero-byte created files, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/empty-created.bin' &&
+          event.change.contents === ''
+      ) === true,
+      `C# project worker should stream zero-byte create events, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some(

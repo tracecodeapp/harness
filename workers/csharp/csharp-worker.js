@@ -143,6 +143,15 @@ function isKernelVirtualFsPath(path, request = activeProjectIo?.request) {
   return false;
 }
 
+function isCreateOrTruncateOpenFlags(flags) {
+  if (typeof flags === 'string') {
+    return flags.includes('w') || flags.includes('a');
+  }
+  const numericFlags = Number(flags);
+  if (!Number.isFinite(numericFlags)) return false;
+  return Boolean(numericFlags & 64) || Boolean(numericFlags & 512);
+}
+
 function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
   if (typeof path !== 'string' || !path) return null;
   const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
@@ -494,6 +503,16 @@ function installRuntimeFsHooks(runtime) {
       const result = originalWriteFile.apply(this, arguments);
       if (activeProjectIo) emitProjectFileSnapshot(path);
       return result;
+    };
+  }
+
+  const originalOpen = fs.open;
+  if (typeof originalOpen === 'function') {
+    fs.open = function openWithProjectEvents(path, flags) {
+      const shouldEmitCreateSnapshot = Boolean(activeProjectIo) && isCreateOrTruncateOpenFlags(flags);
+      const stream = originalOpen.apply(this, arguments);
+      if (shouldEmitCreateSnapshot && stream?.path) emitProjectFileSnapshot(stream.path);
+      return stream;
     };
   }
 
