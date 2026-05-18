@@ -1,4 +1,9 @@
-import type { Language, LanguageRuntimeProfile } from '../../harness-core/src/runtime-types';
+import type {
+  Language,
+  LanguageRuntimeProfile,
+  RuntimeProjectIoSupport,
+  RuntimeProjectIoTier,
+} from '../../harness-core/src/runtime-types';
 
 const LIVE_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
   workspace: {
@@ -459,6 +464,42 @@ export function getLanguageRuntimeProfile(language: Language): LanguageRuntimePr
 
 export function getSupportedLanguageProfiles(): readonly LanguageRuntimeProfile[] {
   return SUPPORTED_LANGUAGES.map((language) => LANGUAGE_RUNTIME_PROFILES[language]);
+}
+
+export function getRuntimeProjectIoSupport(profileOrLanguage: LanguageRuntimeProfile | Language): RuntimeProjectIoSupport {
+  const profile = typeof profileOrLanguage === 'string'
+    ? getLanguageRuntimeProfile(profileOrLanguage)
+    : profileOrLanguage;
+  const project = profile.capabilities.project;
+  const supported = project.workspace.supported;
+  const kernelFs = project.workspace.kernelFs && project.workspace.virtualDevices && project.workspace.virtualProc;
+  const liveMutationEvents = project.filesystem.liveMutationEvents;
+  const finalDiff = project.filesystem.finalDiff;
+  const providerLiveInterception = project.filesystem.providerLiveInterception;
+  const streamingStdio = project.stdio.stdin && project.stdio.outputEvents;
+  const deviceFiles = project.stdio.deviceFiles;
+  let tier: RuntimeProjectIoTier = 'unsupported';
+
+  if (supported) {
+    if (providerLiveInterception && liveMutationEvents && streamingStdio) {
+      tier = 'native-live';
+    } else if (liveMutationEvents && streamingStdio) {
+      tier = 'bridged-live';
+    } else if (finalDiff) {
+      tier = 'final-diff';
+    }
+  }
+
+  return {
+    tier,
+    supported,
+    kernelFs,
+    liveMutationEvents,
+    finalDiff,
+    providerLiveInterception,
+    streamingStdio,
+    deviceFiles,
+  };
 }
 
 export function isLanguageSupported(language: Language): boolean {

@@ -6,6 +6,19 @@ export type RuntimeExecutionStyle = 'function' | 'solution-method' | 'ops-class'
 
 export type RuntimeMaturity = 'experimental' | 'beta' | 'stable';
 
+export type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live';
+
+export interface RuntimeProjectIoSupport {
+  tier: RuntimeProjectIoTier;
+  supported: boolean;
+  kernelFs: boolean;
+  liveMutationEvents: boolean;
+  finalDiff: boolean;
+  providerLiveInterception: boolean;
+  streamingStdio: boolean;
+  deviceFiles: boolean;
+}
+
 export interface RuntimeCapabilities {
   execution: {
     styles: {

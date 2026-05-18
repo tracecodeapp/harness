@@ -8,6 +8,7 @@ import {
   SUPPORTED_LANGUAGES,
   getLanguageRuntimeInfo,
   getLanguageRuntimeProfile,
+  getRuntimeProjectIoSupport,
   getSupportedLanguageRuntimeInfos,
   getSupportedLanguageProfiles,
   isLanguageSupported,
@@ -1155,6 +1156,11 @@ async function main(): Promise<void> {
       javascriptProfile.capabilities.project.workspace.kernelFs,
     'JavaScript should advertise live provider interception through tracekernel project I/O'
   );
+  assertCondition(
+    getRuntimeProjectIoSupport('javascript').tier === 'native-live' &&
+      getRuntimeProjectIoSupport(pythonProfile).tier === 'native-live',
+    'JavaScript and Python should expose native-live project I/O support tiers'
+  );
   assertCondition(typescriptProfile.capabilities.diagnostics.compileErrors, 'TypeScript should support compile errors');
   assertCondition(
     typescriptProfile.capabilities.diagnostics.mappedErrorLines,
@@ -1165,6 +1171,10 @@ async function main(): Promise<void> {
       !typescriptProfile.capabilities.project.filesystem.liveMutationEvents &&
       !typescriptProfile.capabilities.project.stdio.outputEvents,
     'TypeScript should not advertise project I/O until a TypeScript project command runner exists'
+  );
+  assertCondition(
+    getRuntimeProjectIoSupport('typescript').tier === 'unsupported',
+    'TypeScript should expose an unsupported project I/O support tier'
   );
   assertCondition(
     pythonProfile.capabilities.project.filesystem.providerLiveInterception &&
@@ -1180,6 +1190,10 @@ async function main(): Promise<void> {
       javaProfile.capabilities.project.filesystem.finalDiff &&
       !javaProfile.capabilities.project.filesystem.providerLiveInterception,
     'Java should advertise bridged project I/O without provider-native live interception'
+  );
+  assertCondition(
+    getRuntimeProjectIoSupport(javaProfile).tier === 'bridged-live',
+    'Java should expose a bridged-live project I/O support tier'
   );
   assertCondition(csharpProfile.capabilities.execution.styles.solutionMethod, 'C# should support solution-method execution');
   assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
@@ -1198,6 +1212,10 @@ async function main(): Promise<void> {
       !csharpProfile.capabilities.project.filesystem.providerLiveInterception,
     'C# should advertise bridged project I/O without provider-native live interception'
   );
+  assertCondition(
+    getRuntimeProjectIoSupport(csharpProfile).tier === 'bridged-live',
+    'C# should expose a bridged-live project I/O support tier'
+  );
   assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ should support function execution');
   assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ should support solution-method execution');
   assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ should support ops-class execution');
@@ -1210,6 +1228,10 @@ async function main(): Promise<void> {
       cppProfile.capabilities.project.filesystem.finalDiff &&
       !cppProfile.capabilities.project.filesystem.providerLiveInterception,
     'C++ should advertise bridged project I/O without provider-native live interception'
+  );
+  assertCondition(
+    getRuntimeProjectIoSupport(cppProfile).tier === 'bridged-live',
+    'C++ should expose a bridged-live project I/O support tier'
   );
   console.log('PASS: runtime capability profile matrix');
 

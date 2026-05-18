@@ -278,6 +278,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('normalizeRuntimeDevicePath'),
         '@tracecode/harness-core declarations should export shared tracekernel helpers'
       );
+      assertCondition(
+        declarations.includes("type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live'") &&
+          declarations.includes('interface RuntimeProjectIoSupport'),
+        '@tracecode/harness-core declarations should export project I/O support tier types'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-project') {
       const projectDist = await readFile(join(packageDir, 'dist/index.js'), 'utf8');
@@ -638,6 +643,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         !Object.prototype.hasOwnProperty.call(packedPackageJson.dependencies ?? {}, 'just-bash'),
         '@tracecode/harness-browser should not install just-bash unless consumers opt into project workspace primitives'
+      );
+      const browserDeclarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      assertCondition(
+        browserDeclarations.includes('getRuntimeProjectIoSupport') &&
+          browserDeclarations.includes('RuntimeProjectIoSupport'),
+        '@tracecode/harness-browser declarations should export the derived project I/O support helper'
       );
       const browserOnlyAppDir = join(tempRoot, 'browser-only-app');
       const browserOnlyPackageDir = packageNodeModulesDir(browserOnlyAppDir, packageCheck.name);
