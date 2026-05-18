@@ -19,7 +19,6 @@ import {
   runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
-  runtimeDeviceStat,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
   runtimeKernelDirectoryTarget,
@@ -27,13 +26,13 @@ import {
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
+  runtimeKernelStatTarget,
   runtimeKernelVirtualDevices,
   runtimeKernelVirtualFiles,
   runtimeKernelVirtualPaths,
   runtimeKernelWriteTarget,
-  runtimeProcStat,
   readRuntimeProcFile,
-  runtimeProcDirEntries,
+  type RuntimeKernelVirtualStat,
 } from '../../harness-core/src/runtime-kernel';
 import type {
   CommandContext,
@@ -300,6 +299,11 @@ function kernelReadTarget(path: string): ReturnType<typeof runtimeKernelReadTarg
 function kernelFileReadTarget(path: string): ReturnType<typeof runtimeKernelFileReadTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelFileReadTarget(path);
+}
+
+function kernelStatTarget(path: string, info: RuntimeKernelInfo): ReturnType<typeof runtimeKernelStatTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelStatTarget(path, info);
 }
 
 function throwKernelReadTargetError(
@@ -730,9 +734,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
-    const accessTarget = kernelAccessTarget(path);
-    if (accessTarget.kind === 'allowed') return Promise.resolve(this.virtualStat(accessTarget.path));
-    if (accessTarget.kind === 'denied') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
+    const statTarget = kernelStatTarget(path, this.kernelInfo());
+    if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
+    if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     return this.base.stat(this.mapPath(path));
   }
 
@@ -910,9 +914,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
-    const accessTarget = kernelAccessTarget(path);
-    if (accessTarget.kind === 'allowed') return Promise.resolve(this.virtualStat(accessTarget.path));
-    if (accessTarget.kind === 'denied') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
+    const statTarget = kernelStatTarget(path, this.kernelInfo());
+    if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
+    if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     return this.base.lstat(this.mapPath(path));
   }
 
@@ -1036,28 +1040,7 @@ class KernelObservedFileSystem implements IFileSystem {
     this.writeDevice(device, contentToText(content));
   }
 
-  private virtualStat(path: string): Awaited<ReturnType<IFileSystem['stat']>> {
-    if (path === '/dev' || path.startsWith('/dev/')) {
-      return this.deviceStat(path as '/dev' | RuntimeKernelDevicePath);
-    }
-    return this.procStat(path);
-  }
-
-  private deviceStat(device: '/dev' | RuntimeKernelDevicePath): Awaited<ReturnType<IFileSystem['stat']>> {
-    const stat = runtimeDeviceStat(device);
-    return {
-      isFile: stat.isFile,
-      isDirectory: stat.isDirectory,
-      isSymbolicLink: false,
-      mode: stat.mode,
-      size: stat.size,
-      mtime: new Date(0),
-    };
-  }
-
-  private procStat(path: string): Awaited<ReturnType<IFileSystem['stat']>> {
-    const stat = runtimeProcStat(path, this.kernelInfo());
-    if (!stat) throw new Error(`Kernel proc path not found: ${path}`);
+  private virtualStat(stat: RuntimeKernelVirtualStat): Awaited<ReturnType<IFileSystem['stat']>> {
     return {
       isFile: stat.isFile,
       isDirectory: stat.isDirectory,
@@ -2630,22 +2613,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
-    const accessTarget = kernelAccessTarget(path);
-    if (accessTarget.kind === 'allowed') {
-      if (accessTarget.path === '/dev' || accessTarget.path.startsWith('/dev/')) {
-        return { isFile: accessTarget.path !== '/dev', isDirectory: accessTarget.path === '/dev' };
-      }
-      if (accessTarget.path === '/proc' || accessTarget.path.startsWith('/proc/')) {
-        return { isFile: !runtimeProcDirEntries(accessTarget.path), isDirectory: Boolean(runtimeProcDirEntries(accessTarget.path)) };
-      }
-    }
-    if (accessTarget.kind === 'denied') throw new Error(`Kernel virtual path not found: ${path}`);
-    const readTarget = kernelReadTarget(path);
-    if (readTarget.kind === 'proc-file') return { isFile: true, isDirectory: false };
-    if (readTarget.kind === 'proc-directory') return { isFile: false, isDirectory: true };
-    if (readTarget.kind === 'device-file') return { isFile: true, isDirectory: false };
-    if (readTarget.kind === 'device-directory') return { isFile: false, isDirectory: true };
-    if (readTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
+    const statTarget = kernelStatTarget(path, this.kernelInfo);
+    if (statTarget.kind === 'stat') return { isFile: statTarget.stat.isFile, isDirectory: statTarget.stat.isDirectory };
+    if (statTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
     const stat = await this.bash.fs.stat(this.toWorkspaceEntryPath(path));
     return {
       isFile: stat.isFile,

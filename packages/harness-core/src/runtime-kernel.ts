@@ -53,6 +53,10 @@ export type RuntimeKernelFileReadTarget =
   | { kind: 'proc-file'; path: string }
   | { kind: 'device-file'; path: RuntimeKernelDevicePath }
   | { kind: 'error'; reason: 'is-directory' | 'not-found' | 'permission-denied'; path: string };
+export type RuntimeKernelStatTarget =
+  | { kind: 'workspace' }
+  | { kind: 'stat'; path: string; stat: RuntimeKernelVirtualStat }
+  | { kind: 'error'; reason: 'not-found'; path: string };
 export interface RuntimeKernelDirectoryEntry {
   name: string;
   kind: RuntimeKernelProcEntryKind | RuntimeKernelDeviceEntryKind;
@@ -449,6 +453,41 @@ export function runtimeKernelFileReadErrorCode(
 ): RuntimeKernelErrorCode {
   if (reason === 'permission-denied') return 'EBADF';
   return reason === 'is-directory' ? 'EISDIR' : 'ENOENT';
+}
+
+export function runtimeKernelStatTarget(
+  path: string,
+  info: RuntimeKernelInfo,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelStatTarget {
+  const virtualPath = classifyRuntimeKernelVirtualPath(path);
+  if (virtualPath === null) return { kind: 'workspace' };
+  if (virtualPath.kind === 'device-directory') {
+    return { kind: 'stat', path: virtualPath.path, stat: runtimeDeviceStat(virtualPath.path) };
+  }
+  if (virtualPath.kind === 'device-namespace') {
+    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    if (!device || !runtimeKernelDeviceInfo(devices, device)) {
+      return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+    }
+    return { kind: 'stat', path: device, stat: runtimeDeviceStat(device) };
+  }
+  if (virtualPath.kind === 'device') {
+    if (devices && !runtimeKernelDeviceInfo(devices, virtualPath.path)) {
+      return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+    }
+    return { kind: 'stat', path: virtualPath.path, stat: runtimeDeviceStat(virtualPath.path) };
+  }
+  const stat = runtimeProcStat(virtualPath.path, info);
+  return stat
+    ? { kind: 'stat', path: virtualPath.path, stat }
+    : { kind: 'error', reason: 'not-found', path: virtualPath.path };
+}
+
+export function runtimeKernelStatErrorCode(
+  _reason: Extract<RuntimeKernelStatTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return 'ENOENT';
 }
 
 export function runtimeKernelDirectoryTarget(

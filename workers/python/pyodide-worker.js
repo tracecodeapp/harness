@@ -1848,6 +1848,14 @@ def _is_mutating_file_mode(_mode):
     _mode_text = str(_mode or "r")
     return any(_marker in _mode_text for _marker in ("w", "a", "x", "+"))
 
+def _file_mode_wants_read(_mode):
+    _mode_text = str(_mode or "r")
+    return "r" in _mode_text or "+" in _mode_text or not any(_marker in _mode_text for _marker in ("w", "a", "x"))
+
+def _file_mode_wants_write(_mode):
+    _mode_text = str(_mode or "r")
+    return any(_marker in _mode_text for _marker in ("w", "a", "x", "+"))
+
 def _is_mutating_fd_flags(_flags):
     try:
         _flag_value = int(_flags)
@@ -1924,6 +1932,11 @@ def _install_virtual_workspace_paths():
             return _TraceProjectFile(_handle, _open_file_descriptors.get(_file), _is_mutating_file_mode(_mode))
         _device = _normalize_device_path(_file)
         if _device:
+            _device_info = _kernel_devices.get(_device, {})
+            if _file_mode_wants_read(_mode) and not bool(_device_info.get("readable")):
+                raise OSError("Kernel device is not readable: " + _device)
+            if _file_mode_wants_write(_mode) and not bool(_device_info.get("writable")):
+                raise OSError("Kernel device is not writable: " + _device)
             return _TraceDeviceFile(_device, _mode)
         _device_path = _normalize_device_namespace_path(_file)
         if _device_path:

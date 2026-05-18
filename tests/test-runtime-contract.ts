@@ -15,12 +15,13 @@ import { createJavaRuntimeClient } from '../packages/harness-browser/src/java-ru
 import type { JavaWorkerClient } from '../packages/harness-browser/src/java-worker-client';
 import { executeJavaScriptCode, executeTypeScriptCode } from '../packages/harness-javascript/src/javascript-executor';
 import { generateSolutionScript } from '../packages/harness-python/src/python-harness';
+import type { RuntimeKernelInfo } from '../packages/harness-core/src/runtime-project';
 import type { Language, LanguageRuntimeProfile, RuntimeCapabilities } from '../packages/harness-core/src/runtime-types';
 import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
-import { runtimeKernelFileReadTarget, runtimeKernelOpenTarget } from '../packages/harness-core/src/runtime-kernel';
+import { runtimeKernelFileReadTarget, runtimeKernelOpenTarget, runtimeKernelStatTarget } from '../packages/harness-core/src/runtime-kernel';
 import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -87,6 +88,54 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     stableStringify(runtimeKernelFileReadTarget('/dev/stdin', devices)) ===
       '{"kind":"device-file","path":"/dev/stdin"}',
     'kernel read target should allow high-level reads on readable devices'
+  );
+}
+
+function assertRuntimeKernelStatTarget(): void {
+  const info: RuntimeKernelInfo = {
+    name: 'tracekernel',
+    version: 'test',
+    user: { id: 'test-user', username: 'user', home: '/home/user' },
+    host: { hostname: 'tracevm', osName: 'tracekernel' },
+    workspace: {
+      id: 'test-workspace',
+      name: 'weather-api',
+      root: '/home/user/weather-api',
+      startedAt: '2026-05-18T00:00:00.000Z',
+    },
+    home: '/home/user',
+    cwd: '/home/user/weather-api',
+    workspaceRoot: '/home/user/weather-api',
+  };
+  const devices = [
+    { path: '/dev/stdin' as const, readable: true, writable: false, inputDevice: '/dev/stdin' as const },
+    { path: '/dev/stdout' as const, readable: false, writable: true, outputDevice: '/dev/stdout' as const },
+  ];
+
+  assertCondition(
+    stableStringify(runtimeKernelStatTarget('/dev/stdout', info, devices)) ===
+      '{"kind":"stat","path":"/dev/stdout","stat":{"isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"size":0}}',
+    'kernel stat target should stat write-only devices without requiring read permission'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelStatTarget('/dev/stdin', info, devices)) ===
+      '{"kind":"stat","path":"/dev/stdin","stat":{"isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"size":0}}',
+    'kernel stat target should stat read-only devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelStatTarget('/dev/missing', info, devices)) ===
+      '{"kind":"error","path":"/dev/missing","reason":"not-found"}',
+    'kernel stat target should reject unknown device namespace paths'
+  );
+  const procInfoStat = runtimeKernelStatTarget('/proc/kernel/info', info);
+  assertCondition(
+    procInfoStat.kind === 'stat' && procInfoStat.stat.isFile && procInfoStat.stat.size > 0,
+    'kernel stat target should stat proc files with content size'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelStatTarget('/proc/missing', info)) ===
+      '{"kind":"error","path":"/proc/missing","reason":"not-found"}',
+    'kernel stat target should reject unknown proc paths'
   );
 }
 
@@ -441,6 +490,8 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
 async function main(): Promise<void> {
   assertRuntimeKernelOpenDevicePermissions();
   console.log('PASS: runtime kernel open device permissions');
+  assertRuntimeKernelStatTarget();
+  console.log('PASS: runtime kernel virtual stat target');
   assertRuntimeProjectIoBridgeOutputDevices();
   console.log('PASS: runtime project bridge output device metadata');
 

@@ -156,6 +156,11 @@ async function main(): Promise<void> {
             'print("dev-custom-access=" + str(os.access("/dev/log", os.W_OK)) + ":" + str(os.access("/dev/custom-in", os.R_OK)))',
             'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in:',
             '    print("dev-file-custom-in=" + custom_in.read().strip())',
+            'try:',
+            '    open("/dev/custom-in", "w", encoding="utf-8")',
+            '    print("dev-file-custom-in-write-open:ok")',
+            'except OSError:',
+            '    print("dev-file-custom-in-write-open:blocked")',
             'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in_chunks:',
             '    print("dev-file-custom-in-chunks=" + custom_in_chunks.read(4) + "|" + custom_in_chunks.read().strip() + "|" + str(custom_in_chunks.read() == ""))',
             'with open("/dev/custom-in", "rb") as custom_in_binary:',
@@ -164,6 +169,11 @@ async function main(): Promise<void> {
             '    print("dev-file-custom-in-binary-chunks=" + custom_in_binary_chunks.read(4).decode("utf-8") + "|" + custom_in_binary_chunks.read().decode("utf-8").strip() + "|" + str(custom_in_binary_chunks.read() == b""))',
             'with open("/dev/log", "w", encoding="utf-8") as log:',
             '    log.write("dev-file-log\\\\n")',
+            'try:',
+            '    open("/dev/log", "r", encoding="utf-8")',
+            '    print("dev-file-log-read-open:ok")',
+            'except OSError:',
+            '    print("dev-file-log-read-open:blocked")',
             'with open("/dev/log", "wb") as log_binary:',
             '    log_binary.write(b"dev-file-log-binary\\\\n")',
             'log_fd = os.open("/dev/log", os.O_WRONLY)',
@@ -585,7 +595,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nafter-live-file\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-write-open:blocked\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-file-log-read-open:blocked\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nafter-live-file\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
