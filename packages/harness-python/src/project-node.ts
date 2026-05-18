@@ -409,6 +409,7 @@ export function createNativePythonProjectRunner(
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
+          emitCommandStatus(request.onEvent, 'process-error', `${pythonCommand} failed to start`, { command: pythonCommand, error: error.message });
           resolve({
             stdout,
             stderr: `${stderr}${error.message}\n`,

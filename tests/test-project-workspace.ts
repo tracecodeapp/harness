@@ -1236,6 +1236,21 @@ async function testNativePythonProjectRunner(): Promise<void> {
     `native Python timeout should emit terminal process status without late output: ${JSON.stringify(timeoutEvents)}`
   );
   timeoutWorkspace.dispose();
+
+  const startErrorEvents: RuntimeCommandEvent[] = [];
+  const startErrorWorkspace = await createRuntimeWorkspace({
+    pythonRunner: createNativePythonProjectRunner({ pythonCommand: 'tracecode-missing-python-command' }),
+  });
+  const startErrorResult = await startErrorWorkspace.runCommand('python3 -c "print(1)"', {
+    onEvent: (event) => startErrorEvents.push(event),
+  });
+  assertCondition(startErrorResult.exitCode === 1, `native Python start error should return failure: ${JSON.stringify(startErrorResult)}`);
+  assertCondition(
+    startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-python-command'),
+    `native Python start error should emit process-error status: ${JSON.stringify(startErrorEvents)}`
+  );
+  startErrorWorkspace.dispose();
 }
 
 async function testNativeNestedPythonProjectRunner(): Promise<void> {
@@ -1815,6 +1830,21 @@ async function testNativeJavaScriptProjectRunnerCwd(): Promise<void> {
     `native node timeout should emit terminal process status without late output: ${JSON.stringify(timeoutEvents)}`
   );
   timeoutWorkspace.dispose();
+
+  const startErrorEvents: RuntimeCommandEvent[] = [];
+  const startErrorWorkspace = await createRuntimeWorkspace({
+    nodeRunner: createNativeJavaScriptProjectRunner({ nodeCommand: 'tracecode-missing-node-command' }),
+  });
+  const startErrorResult = await startErrorWorkspace.runCommand('node -e "console.log(1)"', {
+    onEvent: (event) => startErrorEvents.push(event),
+  });
+  assertCondition(startErrorResult.exitCode === 1, `native node start error should return failure: ${JSON.stringify(startErrorResult)}`);
+  assertCondition(
+    startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-node-command'),
+    `native node start error should emit process-error status: ${JSON.stringify(startErrorEvents)}`
+  );
+  startErrorWorkspace.dispose();
 
 }
 

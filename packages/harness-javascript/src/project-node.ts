@@ -465,6 +465,7 @@ export function createNativeJavaScriptProjectRunner(
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
+          emitCommandStatus(request.onEvent, 'process-error', `${nodeCommand} failed to start`, { command: nodeCommand, error: error.message });
           resolve({
             stdout,
             stderr: `${stderr}${error.message}\n`,
