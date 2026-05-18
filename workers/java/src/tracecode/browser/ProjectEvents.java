@@ -1143,6 +1143,86 @@ public final class ProjectEvents {
       }
       return renamed;
     }
+
+    @Override
+    public boolean setLastModified(long time) {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setLastModified(time);
+    }
+
+    @Override
+    public boolean setReadOnly() {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setReadOnly();
+    }
+
+    @Override
+    public boolean setWritable(boolean writable) {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setWritable(writable);
+    }
+
+    @Override
+    public boolean setWritable(boolean writable, boolean ownerOnly) {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setWritable(writable, ownerOnly);
+    }
+
+    @Override
+    public boolean setReadable(boolean readable) {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setReadable(readable);
+    }
+
+    @Override
+    public boolean setReadable(boolean readable, boolean ownerOnly) {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setReadable(readable, ownerOnly);
+    }
+
+    @Override
+    public boolean setExecutable(boolean executable) {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setExecutable(executable);
+    }
+
+    @Override
+    public boolean setExecutable(boolean executable, boolean ownerOnly) {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.setExecutable(executable, ownerOnly);
+    }
   }
 
   private static final class ProjectOutputStream extends OutputStream {

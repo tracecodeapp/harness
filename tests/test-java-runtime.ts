@@ -262,6 +262,9 @@ public class ProjectWorkspaceDirectorySmoke {
       var stdoutDevice = new ProjectEvents.ProjectFile("/dev/stdout");
       var stdinDevice = new ProjectEvents.ProjectFile("/dev/stdin");
       var missingDevice = new ProjectEvents.ProjectFile("/dev/missing");
+      boolean stdoutSetLastModified = stdoutDevice.setLastModified(1L);
+      boolean stdoutSetWritable = stdoutDevice.setWritable(true);
+      boolean devDirSetReadable = devDir.setReadable(false);
       var listedDevices = devDir.list();
       java.util.Arrays.sort(listedDevices);
       var filteredDevices = devDir.list((dir, name) -> name.contains("out") || name.contains("err"));
@@ -275,6 +278,7 @@ public class ProjectWorkspaceDirectorySmoke {
         + ":" + stdoutDevice.exists() + ":" + stdoutDevice.isFile() + ":" + stdoutDevice.canRead() + ":" + stdoutDevice.canWrite()
         + ":" + stdinDevice.canRead() + ":" + stdinDevice.canWrite()
         + ":" + missingDevice.exists() + ":" + missingDevice.isFile() + ":" + stdoutDevice.length()
+        + ":" + stdoutSetLastModified + ":" + stdoutSetWritable + ":" + devDirSetReadable
         + ":" + String.join(",", listedDevices)
         + ":" + String.join(",", filteredDevices)
         + ":" + String.join(",", writableFileNames));
@@ -291,6 +295,9 @@ public class ProjectWorkspaceDirectorySmoke {
         + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel/missing")));
       var customKernelFile = new ProjectEvents.ProjectFile("/tracekernel/custom");
       var customKernelDir = new ProjectEvents.ProjectFile("/tracekernel");
+      boolean customKernelSetLastModified = customKernelFile.setLastModified(1L);
+      boolean customKernelSetWritable = customKernelFile.setWritable(true);
+      boolean customKernelDirSetReadable = customKernelDir.setReadable(false);
       var customKernelRootEntries = customKernelDir.list();
       java.util.Arrays.sort(customKernelRootEntries);
       String customKernelReadString = ProjectEvents.readString(Paths.get("/tracekernel/custom"));
@@ -335,7 +342,8 @@ public class ProjectWorkspaceDirectorySmoke {
       System.out.println("kernel-file-api="
         + customKernelDir.exists() + ":" + customKernelDir.isDirectory() + ":" + customKernelDir.canRead() + ":" + customKernelDir.canWrite()
         + ":" + customKernelFile.exists() + ":" + customKernelFile.isFile() + ":" + customKernelFile.canRead() + ":" + customKernelFile.canWrite()
-        + ":" + customKernelFile.length() + ":" + String.join(",", customKernelRootEntries)
+        + ":" + customKernelFile.length() + ":" + customKernelSetLastModified + ":" + customKernelSetWritable + ":" + customKernelDirSetReadable
+        + ":" + String.join(",", customKernelRootEntries)
         + ":" + customKernelReadString.replace("\\n", "|")
         + ":" + customKernelReadBytes.replace("\\n", "|")
         + ":" + customKernelReader.replace("\\n", "|")
@@ -395,7 +403,7 @@ public class ProjectWorkspaceDirectorySmoke {
       `Java browser helper should route FileWriter and PrintWriter through kernel devices: ${output}`
     );
     assertCondition(
-      fileApiOutput === 'file-api=true:true:true:false:true:true:false:true:true:false:false:false:0:log,stdin,stdout,tty:stdout:log,stdout,tty',
+      fileApiOutput === 'file-api=true:true:true:false:true:true:false:true:true:false:false:false:0:false:false:false:log,stdin,stdout,tty:stdout:log,stdout,tty',
       `Java browser helper should route java.io.File metadata/listing through kernel devices: ${output}`
     );
     assertCondition(
@@ -407,7 +415,7 @@ public class ProjectWorkspaceDirectorySmoke {
       `Java browser helper should create temp files/directories through ProjectEvents: ${output}`
     );
     assertCondition(
-      kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:19:custom:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:/tracekernel/custom:IOException:IOException',
+      kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:19:false:false:false:custom:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:/tracekernel/custom:IOException:IOException',
       `Java browser helper should expose manifest kernel files as read-only File API paths: ${output}`
     );
     const projectEventsSource = readFileSync(
