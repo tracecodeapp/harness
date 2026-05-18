@@ -1936,6 +1936,7 @@ def _install_virtual_workspace_paths():
     _original_os_ftruncate = getattr(os, "ftruncate", None)
     _original_os_fchmod = getattr(os, "fchmod", None)
     _original_os_fchown = getattr(os, "fchown", None)
+    _original_os_statvfs = getattr(os, "statvfs", None)
     _open_file_descriptors = {}
     _device_file_descriptors = {}
     _proc_file_descriptors = {}
@@ -2127,6 +2128,28 @@ def _install_virtual_workspace_paths():
             raise OSError("Kernel proc path is read-only")
         return _original_os_fchown(_fd, _uid, _gid)
 
+    def _virtual_statvfs_result(_read_only=False):
+        _block_size = 4096
+        _blocks = 1048576
+        _free = 1048000
+        _files = 1000000
+        _file_free = 999000
+        _flag = getattr(os, "ST_RDONLY", 1) if _read_only else 0
+        return os.statvfs_result((_block_size, _block_size, _blocks, _free, _free, _files, _file_free, _file_free, _flag, 255))
+
+    def _patched_os_statvfs(_path):
+        _device_path = _normalize_device_namespace_path(_path)
+        if _device_path:
+            if _device_entry_kind(_device_path) is None:
+                raise FileNotFoundError(_device_path)
+            return _virtual_statvfs_result(False)
+        _proc_path = _normalize_proc_path(_path)
+        if _proc_path:
+            if _proc_entry_kind(_proc_path) is None:
+                raise FileNotFoundError(_proc_path)
+            return _virtual_statvfs_result(True)
+        return _original_os_statvfs(_map_workspace_path(_path))
+
     builtins.open = _patched_open
     io.open = _patched_open
     os.getcwd = _patched_getcwd
@@ -2143,6 +2166,8 @@ def _install_virtual_workspace_paths():
         os.fchmod = _patched_os_fchmod
     if _original_os_fchown is not None:
         os.fchown = _patched_os_fchown
+    if _original_os_statvfs is not None:
+        os.statvfs = _patched_os_statvfs
 
     def _patch_one(_target, _name):
         _original = getattr(_target, _name, None)
@@ -2325,6 +2350,8 @@ def _install_virtual_workspace_paths():
             os.fchmod = _original_os_fchmod
         if _original_os_fchown is not None:
             os.fchown = _original_os_fchown
+        if _original_os_statvfs is not None:
+            os.statvfs = _original_os_statvfs
         for _target, _name, _original in reversed(_patched):
             setattr(_target, _name, _original)
 

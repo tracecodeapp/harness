@@ -480,6 +480,40 @@ async function main(): Promise<void> {
         project: { cwd: '/workspace', files: [] },
       });
 
+      const statvfsRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import os',
+          'workspace = os.statvfs("/workspace")',
+          'dev = os.statvfs("/dev/stdout")',
+          'proc = os.statvfs("/proc/kernel/info")',
+          'relative = os.statvfs(".")',
+          'print(workspace.f_bsize > 0 and workspace.f_blocks > 0)',
+          'print(dev.f_bsize == 4096 and dev.f_blocks == 1048576 and dev.f_bavail <= dev.f_bfree)',
+          'print(proc.f_bsize == 4096 and proc.f_flag != 0)',
+          'print(relative.f_bsize == workspace.f_bsize)',
+          'for path in ["/dev/missing", "/proc/missing"]:',
+          '    try:',
+          '        os.statvfs(path)',
+          '        print(path + ":ok")',
+          '    except FileNotFoundError:',
+          '        print(path + ":missing")',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: '',
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelFiles: [
+            { path: '/proc/kernel/info', contents: 'tracekernel\\n' },
+          ],
+          kernelDevices: traceKernelDevices,
+        },
+      });
+
       const canonicalRootRun = await send('execute-project-python', {
         source: 'file',
         scriptPath: '/home/ada/weather-api/app.py',
@@ -611,7 +645,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, linkApiRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, linkApiRun, statvfsRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -624,6 +658,7 @@ async function main(): Promise<void> {
       fdReadlineRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       linkApiRun: PythonProjectWorkerResponse;
+      statvfsRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
     };
@@ -1077,6 +1112,11 @@ async function main(): Promise<void> {
         (event.change?.path === 'link-symlink.txt' || event.change?.path === 'provider-symlink.txt')
       )) !== true,
       `Python project rejected symlinks should not stream file mutations: ${JSON.stringify(results.linkApiRun.events)}`
+    );
+    assertCondition(results.statvfsRun.exitCode === 0, `Python project statvfs run should succeed: ${results.statvfsRun.stderr}`);
+    assertCondition(
+      results.statvfsRun.stdout === 'True\nTrue\nTrue\nTrue\n/dev/missing:missing\n/proc/missing:missing\n',
+      `Python project statvfs should route through workspace and kernel paths: ${JSON.stringify(results.statvfsRun.stdout)}`
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
