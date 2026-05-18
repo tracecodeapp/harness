@@ -3211,6 +3211,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node file creation conflicts should match desktop semantics without corrupting entries: ${fileCreationConflictResult.stdout}`
   );
 
+  const rmConflictResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; fs.writeFileSync(\\"rm-file.txt\\", \\"file\\\\n\\"); fs.writeFileSync(\\"rm-parent-file.txt\\", \\"file\\\\n\\"); fs.mkdirSync(\\"rm-empty-dir\\"); fs.mkdirSync(\\"rm-nested-empty/child\\", { recursive: true }); fs.mkdirSync(\\"rm-nonempty\\"); fs.writeFileSync(\\"rm-nonempty/value.txt\\", \\"value\\\\n\\"); console.log(code(() => fs.rmSync(\\"rm-empty-dir\\"))); console.log(code(() => fs.rmSync(\\"rm-nested-empty\\"))); console.log(code(() => fs.rmSync(\\"rm-nonempty\\"))); console.log(code(() => fs.rmSync(\\"rm-parent-file.txt/value.txt\\", { force: true }))); console.log(code(() => fs.rmSync(\\"missing-rm/value.txt\\", { force: true }))); console.log(code(() => fs.rmdirSync(\\"rm-file.txt\\"))); console.log(code(() => fs.rmdirSync(\\"rm-parent-file.txt/value.txt\\"))); console.log(code(() => fs.rmSync(\\"rm-empty-dir\\", { recursive: true }))); console.log(code(() => fs.rmSync(\\"rm-nested-empty\\", { recursive: true }))); console.log(code(() => fs.rmSync(\\"rm-nonempty\\", { recursive: true }))); console.log(fs.existsSync(\\"rm-empty-dir\\")); console.log(fs.existsSync(\\"rm-nested-empty/child\\")); console.log(fs.existsSync(\\"rm-nonempty/value.txt\\")); console.log(fs.statSync(\\"rm-parent-file.txt\\").isFile());"',
+  ].join(' '));
+  assertCondition(rmConflictResult.exitCode === 0, `browser node rm conflict workflow should succeed: ${rmConflictResult.stderr}`);
+  assertCondition(
+    rmConflictResult.stdout === 'ERR_FS_EISDIR\nERR_FS_EISDIR\nERR_FS_EISDIR\nENOTDIR\nok\nENOTDIR\nENOTDIR\nok\nok\nok\nfalse\nfalse\nfalse\ntrue\n',
+    `browser node rm/rmdir conflicts should match desktop semantics without corrupting entries: ${rmConflictResult.stdout}`
+  );
+
   const directoryMutationResult = await workspace.runCommand([
     'node',
     '-e',

@@ -3563,12 +3563,14 @@ async function runBrowserJavaScriptProjectRequest(
             return;
           }
           const prefix = normalized ? `${normalized}/` : '';
-          const descendants = Array.from(fileStore.keys()).filter((filePath) => filePath.startsWith(prefix));
-          if (descendants.length > 0) {
+          assertWorkspaceParentDirectoryPath(normalized, path, 'rm');
+          const descendantFiles = Array.from(fileStore.keys()).filter((filePath) => filePath.startsWith(prefix));
+          const descendantDirectories = Array.from(directoryStore).filter((directoryPath) => directoryPath !== normalized && directoryPath.startsWith(prefix));
+          if (directoryStore.has(normalized) || descendantFiles.length > 0 || descendantDirectories.length > 0) {
             if (!options?.recursive) {
-              throw Object.assign(new Error(`EISDIR: illegal operation on a directory, rm '${path}'`), { code: 'EISDIR' });
+              throw Object.assign(new Error(`ERR_FS_EISDIR: path is a directory, rm '${path}'`), { code: 'ERR_FS_EISDIR' });
             }
-            for (const filePath of descendants) {
+            for (const filePath of descendantFiles) {
               fileStore.delete(filePath);
               modules.delete(filePath);
               cache.delete(filePath);
@@ -3587,18 +3589,11 @@ async function runBrowserJavaScriptProjectRequest(
             }
             return;
           }
-          if (directoryStore.has(normalized)) {
-            directoryStore.delete(normalized);
-            deleteEntryMetadata(normalized);
-            emitDirectoryDelete(normalized);
-            notifyDirectoryMutation(normalized);
-            return;
-          }
           if (!options?.force) {
             throw Object.assign(new Error(`ENOENT: no such file or directory, rm '${path}'`), { code: 'ENOENT' });
           }
         } catch (error) {
-          if (options?.force) return;
+          if (options?.force && (error as { code?: unknown }).code === 'ENOENT') return;
           throw error;
         }
       },
@@ -3962,6 +3957,10 @@ async function runBrowserJavaScriptProjectRequest(
           throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, rmdir '${path}'`);
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        assertWorkspaceParentDirectoryPath(normalized, path, 'rmdir');
+        if (fileStore.has(normalized)) {
+          throw Object.assign(new Error(`ENOTDIR: not a directory, rmdir '${path}'`), { code: 'ENOTDIR' });
+        }
         const prefix = normalized ? `${normalized}/` : '';
         const hasChildren = Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
           || Array.from(directoryStore).some((directoryPath) => directoryPath !== normalized && directoryPath.startsWith(prefix));
