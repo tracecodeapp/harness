@@ -25,6 +25,7 @@ import {
 } from '../packages/harness-core/src/trace-adapters/java';
 import {
   runtimeKernelCopyTarget,
+  runtimeKernelDirectoryTarget,
   runtimeKernelDeviceOutputTarget,
   runtimeKernelFileCopyTarget,
   runtimeKernelFileReadTarget,
@@ -40,6 +41,7 @@ import {
   runtimeKernelTruncateTarget,
   runtimeKernelVirtualDevices,
   runtimeKernelWriteTarget,
+  normalizeRuntimeKernelManifestDevicePath,
 } from '../packages/harness-core/src/runtime-kernel';
 import {
   createRuntimeProjectIoBridge,
@@ -102,12 +104,14 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
 
   assertCondition(
     normalizeWorkerKernelDeviceReference('/dev/pts/0') === '' &&
-      normalizeWorkerKernelManifestDevicePath('/dev/pts/0') === '/dev/pts/0',
-    'shared worker kernel policy should keep single-device references distinct from nested manifest devices'
+      normalizeWorkerKernelManifestDevicePath('/dev/pts/0') === '/dev/pts/0' &&
+      normalizeRuntimeKernelManifestDevicePath('/dev/pts/0') === '/dev/pts/0',
+    'shared kernel policies should keep single-device references distinct from nested manifest devices'
   );
   assertCondition(
-    workerRuntimeKernelDeviceOutputTarget(devices, '/dev/pts/0') === '/dev/stdout',
-    'shared worker kernel policy should resolve nested manifest device output aliases'
+    workerRuntimeKernelDeviceOutputTarget(devices, '/dev/pts/0') === '/dev/stdout' &&
+      runtimeKernelDeviceOutputTarget(devices, '/dev/pts/0') === '/dev/stdout',
+    'shared kernel policies should resolve nested manifest device output aliases'
   );
   assertCondition(
     runtimeKernelDeviceOutputTarget(devices, '/dev/tee') === '/dev/capture',
@@ -286,6 +290,7 @@ function assertRuntimeKernelStatTarget(): void {
   const devices = [
     { path: '/dev/stdin' as const, readable: true, writable: false, inputDevice: '/dev/stdin' as const },
     { path: '/dev/stdout' as const, readable: false, writable: true, outputDevice: '/dev/stdout' as const },
+    { path: '/dev/pts/0' as const, readable: false, writable: true, outputDevice: '/dev/stdout' as const },
   ];
 
   assertCondition(
@@ -302,6 +307,20 @@ function assertRuntimeKernelStatTarget(): void {
     stableStringify(runtimeKernelStatTarget('/dev/missing', info, devices)) ===
       '{"kind":"error","path":"/dev/missing","reason":"not-found"}',
     'kernel stat target should reject unknown device namespace paths'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelStatTarget('/dev/pts', info, devices)) ===
+      '{"kind":"stat","path":"/dev/pts","stat":{"isCharacterDevice":false,"isDirectory":true,"isFile":false,"mode":493,"size":0}}' &&
+      stableStringify(runtimeKernelStatTarget('/dev/pts/0', info, devices)) ===
+        '{"kind":"stat","path":"/dev/pts/0","stat":{"isCharacterDevice":true,"isDirectory":false,"isFile":true,"mode":438,"size":0}}',
+    'kernel stat target should expose nested manifest device directories and files'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelDirectoryTarget('/dev', devices)) ===
+      '{"entries":[{"kind":"directory","name":"pts"},{"kind":"file","name":"stdin"},{"kind":"file","name":"stdout"}],"kind":"directory","path":"/dev"}' &&
+      stableStringify(runtimeKernelDirectoryTarget('/dev/pts', devices)) ===
+        '{"entries":[{"kind":"file","name":"0"}],"kind":"directory","path":"/dev/pts"}',
+    'kernel directory target should list nested manifest device directories'
   );
   const procInfoStat = runtimeKernelStatTarget('/proc/kernel/info', info);
   assertCondition(

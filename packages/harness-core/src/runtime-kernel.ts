@@ -46,7 +46,7 @@ export type RuntimeKernelReadTarget =
   | { kind: 'proc-file'; path: string }
   | { kind: 'proc-directory'; path: string }
   | { kind: 'device-file'; path: RuntimeKernelDevicePath }
-  | { kind: 'device-directory'; path: '/dev' }
+  | { kind: 'device-directory'; path: '/dev' | RuntimeKernelDevicePath }
   | { kind: 'error'; reason: 'not-found' | 'permission-denied'; path: string };
 export type RuntimeKernelFileReadTarget =
   | { kind: 'workspace' }
@@ -182,6 +182,12 @@ export function normalizeRuntimeKernelDeviceReference(path: string): RuntimeKern
   return deviceName.length > 0 && !deviceName.includes('/') ? normalized as RuntimeKernelDevicePath : null;
 }
 
+export function normalizeRuntimeKernelManifestDevicePath(path: string): RuntimeKernelDevicePath | null {
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  if (normalized === null || normalized === '/dev' || !normalized.startsWith('/dev/')) return null;
+  return normalized.slice('/dev/'.length).length > 0 ? normalized as RuntimeKernelDevicePath : null;
+}
+
 export function isRuntimeDeviceNamespacePath(path: string): boolean {
   const normalized = normalizeRuntimeAbsolutePath(path);
   return normalized === '/dev' || normalized?.startsWith('/dev/') === true;
@@ -230,12 +236,12 @@ export function runtimeKernelDeviceInfo(
   device: RuntimeKernelDevicePath
 ): RuntimeKernelDeviceInfo | null {
   const entries = devices ?? runtimeKernelVirtualDevices();
-  return entries.find((entry) => normalizeRuntimeKernelDeviceReference(entry.path) === device) ?? null;
+  return entries.find((entry) => normalizeRuntimeKernelManifestDevicePath(entry.path) === device) ?? null;
 }
 
 function normalizeDeviceReference(value: RuntimeKernelDevicePath | undefined): RuntimeKernelDevicePath | null {
   if (!value) return null;
-  return normalizeRuntimeKernelDeviceReference(value);
+  return normalizeRuntimeKernelManifestDevicePath(value);
 }
 
 export function runtimeKernelDeviceInputSource(
@@ -260,21 +266,38 @@ export function runtimeDeviceDirEntries(
   path: '/dev' | RuntimeKernelDevicePath,
   devices?: readonly RuntimeKernelDeviceInfo[]
 ): string[] | null {
-  if (path !== '/dev') return null;
+  const directoryPath = path === '/dev' ? '/dev' : normalizeRuntimeKernelManifestDevicePath(path);
+  if (!directoryPath) return null;
   const entries = devices ?? runtimeKernelVirtualDevices();
-  return Array.from(new Set(entries
-    .map((entry) => normalizeRuntimeKernelDeviceReference(entry.path))
-    .filter((entry): entry is RuntimeKernelDevicePath => entry !== null)
-    .map((entry) => entry.slice('/dev/'.length))))
-    .sort();
+  const prefix = directoryPath === '/dev' ? '/dev/' : `${directoryPath}/`;
+  const names = new Set<string>();
+  for (const entry of entries) {
+    const devicePath = normalizeRuntimeKernelManifestDevicePath(entry.path);
+    if (!devicePath?.startsWith(prefix)) continue;
+    const remainder = devicePath.slice(prefix.length);
+    const [name] = remainder.split('/');
+    if (name) names.add(name);
+  }
+  if (directoryPath !== '/dev' && names.size === 0) return null;
+  return Array.from(names).sort();
 }
 
-export function runtimeDeviceEntryKind(path: '/dev' | RuntimeKernelDevicePath): RuntimeKernelDeviceEntryKind {
-  return path === '/dev' ? 'directory' : 'file';
+export function runtimeDeviceEntryKind(
+  path: '/dev' | RuntimeKernelDevicePath,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelDeviceEntryKind {
+  if (path === '/dev') return 'directory';
+  const devicePath = normalizeRuntimeKernelManifestDevicePath(path);
+  if (devicePath && devices && runtimeKernelDeviceInfo(devices, devicePath)) return 'file';
+  if (devicePath && runtimeDeviceDirEntries(devicePath, devices)) return 'directory';
+  return 'file';
 }
 
-export function runtimeDeviceStat(path: '/dev' | RuntimeKernelDevicePath): RuntimeKernelVirtualStat {
-  const kind = runtimeDeviceEntryKind(path);
+export function runtimeDeviceStat(
+  path: '/dev' | RuntimeKernelDevicePath,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelVirtualStat {
+  const kind = runtimeDeviceEntryKind(path, devices);
   const isDirectory = kind === 'directory';
   return {
     isFile: !isDirectory,
@@ -298,7 +321,10 @@ export function runtimeKernelWriteTarget(
     return { kind: 'error', reason: 'device-directory', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-namespace') {
-    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    const device = normalizeRuntimeKernelManifestDevicePath(virtualPath.path);
+    if (device && !runtimeKernelDeviceInfo(devices, device) && runtimeDeviceDirEntries(device, devices)) {
+      return { kind: 'error', reason: 'device-directory', path: device };
+    }
     if (!device || !runtimeKernelDeviceInfo(devices, device)) {
       return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
     }
@@ -336,7 +362,10 @@ export function runtimeKernelMutationTarget(
     return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-namespace') {
-    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    const device = normalizeRuntimeKernelManifestDevicePath(virtualPath.path);
+    if (device && !runtimeKernelDeviceInfo(devices, device) && runtimeDeviceDirEntries(device, devices)) {
+      return { kind: 'error', reason: 'device-read-only', path: device };
+    }
     if (!device || !runtimeKernelDeviceInfo(devices, device)) {
       return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
     }
@@ -364,7 +393,10 @@ export function runtimeKernelMetadataTarget(
     return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-namespace') {
-    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    const device = normalizeRuntimeKernelManifestDevicePath(virtualPath.path);
+    if (device && !runtimeKernelDeviceInfo(devices, device) && runtimeDeviceDirEntries(device, devices)) {
+      return { kind: 'ignored-device', path: device };
+    }
     if (!device || !runtimeKernelDeviceInfo(devices, device)) {
       return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
     }
@@ -390,8 +422,13 @@ export function runtimeKernelAccessTarget(
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
   if (virtualPath.kind === 'device-namespace') {
-    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    const device = normalizeRuntimeKernelManifestDevicePath(virtualPath.path);
     const info = device ? runtimeKernelDeviceInfo(devices, device) : null;
+    if (device && !info && runtimeDeviceDirEntries(device, devices)) {
+      return request.write || request.execute
+        ? { kind: 'denied', reason: 'permission-denied', path: device }
+        : { kind: 'allowed', path: device };
+    }
     if (!device || !info) return { kind: 'denied', reason: 'not-found', path: virtualPath.path };
     return (request.read && !info.readable) || (request.write && !info.writable) || request.execute
       ? { kind: 'denied', reason: 'permission-denied', path: device }
@@ -427,8 +464,11 @@ export function runtimeKernelOpenTarget(
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
   if (virtualPath.kind === 'device-namespace') {
-    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    const device = normalizeRuntimeKernelManifestDevicePath(virtualPath.path);
     const info = device ? runtimeKernelDeviceInfo(devices, device) : null;
+    if (device && !info && runtimeDeviceDirEntries(device, devices)) {
+      return { kind: 'error', reason: 'is-directory', path: device };
+    }
     if (!device || !info) return { kind: 'error', reason: 'not-found', path: virtualPath.path };
     return {
       kind: 'device',
@@ -479,8 +519,11 @@ export function runtimeKernelReadTarget(
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
   if (virtualPath.kind === 'device-namespace') {
-    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    const device = normalizeRuntimeKernelManifestDevicePath(virtualPath.path);
     const info = device ? runtimeKernelDeviceInfo(devices, device) : null;
+    if (device && !info && runtimeDeviceDirEntries(device, devices)) {
+      return { kind: 'device-directory', path: device };
+    }
     if (!device || !info) return { kind: 'error', reason: 'not-found', path: virtualPath.path };
     return info.readable
       ? { kind: 'device-file', path: device }
@@ -530,20 +573,23 @@ export function runtimeKernelStatTarget(
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
   if (virtualPath.kind === 'device-directory') {
-    return { kind: 'stat', path: virtualPath.path, stat: runtimeDeviceStat(virtualPath.path) };
+    return { kind: 'stat', path: virtualPath.path, stat: runtimeDeviceStat(virtualPath.path, devices) };
   }
   if (virtualPath.kind === 'device-namespace') {
-    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    const device = normalizeRuntimeKernelManifestDevicePath(virtualPath.path);
     if (!device || !runtimeKernelDeviceInfo(devices, device)) {
+      if (device && runtimeDeviceDirEntries(device, devices)) {
+        return { kind: 'stat', path: device, stat: runtimeDeviceStat(device, devices) };
+      }
       return { kind: 'error', reason: 'not-found', path: virtualPath.path };
     }
-    return { kind: 'stat', path: device, stat: runtimeDeviceStat(device) };
+    return { kind: 'stat', path: device, stat: runtimeDeviceStat(device, devices) };
   }
   if (virtualPath.kind === 'device') {
     if (devices && !runtimeKernelDeviceInfo(devices, virtualPath.path)) {
       return { kind: 'error', reason: 'not-found', path: virtualPath.path };
     }
-    return { kind: 'stat', path: virtualPath.path, stat: runtimeDeviceStat(virtualPath.path) };
+    return { kind: 'stat', path: virtualPath.path, stat: runtimeDeviceStat(virtualPath.path, devices) };
   }
   const stat = runtimeProcStat(virtualPath.path, info);
   return stat
@@ -569,7 +615,7 @@ export function runtimeKernelDirectoryTarget(
       path: readTarget.path,
       entries: (runtimeDeviceDirEntries(readTarget.path, devices) ?? []).map((name) => ({
         name,
-        kind: runtimeDeviceEntryKind(`/dev/${name}` as RuntimeKernelDevicePath),
+        kind: runtimeDeviceEntryKind(`${readTarget.path === '/dev' ? '/dev' : readTarget.path}/${name}` as RuntimeKernelDevicePath, devices),
       })),
     };
   }
