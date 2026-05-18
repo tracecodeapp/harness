@@ -1235,6 +1235,16 @@ async function testNativePythonProjectRunner(): Promise<void> {
       !timeoutEvents.some((event) => event.type === 'output' && event.data.includes('late')),
     `native Python timeout should emit terminal process status without late output: ${JSON.stringify(timeoutEvents)}`
   );
+  const nativePythonTimeoutStderrIndex = timeoutEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('python3: execution timed out after 5ms')
+  );
+  const nativePythonTimeoutExitIndex = timeoutEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124
+  );
+  assertCondition(
+    nativePythonTimeoutStderrIndex >= 0 && nativePythonTimeoutExitIndex > nativePythonTimeoutStderrIndex,
+    `native Python timeout should stream timeout stderr before process-exit: ${JSON.stringify(timeoutEvents)}`
+  );
   timeoutWorkspace.dispose();
 
   const startErrorEvents: RuntimeCommandEvent[] = [];
@@ -1249,6 +1259,16 @@ async function testNativePythonProjectRunner(): Promise<void> {
     startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
       startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-python-command'),
     `native Python start error should emit process-error status: ${JSON.stringify(startErrorEvents)}`
+  );
+  const nativePythonStartErrorStderrIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('tracecode-missing-python-command')
+  );
+  const nativePythonStartErrorStatusIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-python-command'
+  );
+  assertCondition(
+    nativePythonStartErrorStderrIndex >= 0 && nativePythonStartErrorStatusIndex > nativePythonStartErrorStderrIndex,
+    `native Python start error should stream stderr before process-error: ${JSON.stringify(startErrorEvents)}`
   );
   startErrorWorkspace.dispose();
 }

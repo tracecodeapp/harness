@@ -387,10 +387,12 @@ export function createNativePythonProjectRunner(
           if (settled) return;
           settled = true;
           child.kill('SIGKILL');
+          const timeoutStderr = `python3: execution timed out after ${timeoutMs}ms\n`;
+          emitRuntimeCommandOutput(request.onEvent, 'stderr', timeoutStderr);
           emitCommandStatus(request.onEvent, 'process-exit', `${pythonCommand} timed out`, { command: pythonCommand, exitCode: 124, timeoutMs });
           resolve({
             stdout,
-            stderr: `${stderr}python3: execution timed out after ${timeoutMs}ms\n`,
+            stderr: `${stderr}${timeoutStderr}`,
             exitCode: 124,
           });
         }, timeoutMs);
@@ -409,6 +411,7 @@ export function createNativePythonProjectRunner(
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
+          emitRuntimeCommandOutput(request.onEvent, 'stderr', `${error.message}\n`);
           emitCommandStatus(request.onEvent, 'process-error', `${pythonCommand} failed to start`, { command: pythonCommand, error: error.message });
           resolve({
             stdout,
