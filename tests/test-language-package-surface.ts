@@ -385,9 +385,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-java worker should ship live directory mutation bridge hooks'
       );
       assertCondition(
-        worker.includes('emitLiveJavaProjectOutput(String(stream ?? \'stdout\'), String(data ?? \'\'), String(sourceDevice ?? \'\'))') &&
-          worker.includes('sourceDevice'),
-        '@tracecode/harness-java worker should ship routed source device output events'
+        worker.includes('emitLiveJavaProjectOutput(String(stream ?? \'stdout\'), String(data ?? \'\'), String(sourceDevice ?? \'\'), String(outputDevice ?? \'\'))') &&
+          worker.includes('sourceDevice') &&
+          worker.includes('outputDevicePath'),
+        '@tracecode/harness-java worker should ship routed source and output device events'
       );
       assertCondition(
         worker.includes('projectKernelFileManifest') &&
@@ -419,8 +420,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         throw new Error(helperApi.stderr || helperApi.stdout || '@tracecode/harness-java helper jar API listing failed');
       }
       assertCondition(
-        helperApi.stdout.includes('emitOutputNative(java.lang.String, java.lang.String, java.lang.String)'),
-        '@tracecode/harness-java helper jar should expose source-device output native bridge'
+        helperApi.stdout.includes('emitOutputNative(java.lang.String, java.lang.String, java.lang.String, java.lang.String)'),
+        '@tracecode/harness-java helper jar should expose source/output-device native bridge'
       );
       assertCondition(
         helperApi.stdout.includes('emitDirectoryCreateNative(java.lang.String)') &&

@@ -1547,19 +1547,27 @@ public final class ProjectEvents {
   }
 
   private static void emitOutput(String stream, String data) {
-    emitOutput(stream, data, "");
+    emitOutput(stream, data, "", "");
   }
 
   private static void emitOutput(String stream, String data, String sourceDevice) {
+    emitOutput(stream, data, sourceDevice, "");
+  }
+
+  private static void emitOutput(String stream, String data, String sourceDevice, String outputDevice) {
     if (!PROJECT_EVENT_BRIDGE_ENABLED.get() || data.isEmpty()) return;
     try {
-      emitOutputNative(stream, data, sourceDevice == null ? "" : sourceDevice);
+      emitOutputNative(
+          stream,
+          data,
+          sourceDevice == null ? "" : sourceDevice,
+          outputDevice == null ? "" : outputDevice);
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
       // Host JVM tests and older browser runtimes may not expose the CheerpJ native bridge.
     }
   }
 
-  private static native void emitOutputNative(String stream, String data, String sourceDevice);
+  private static native void emitOutputNative(String stream, String data, String sourceDevice, String outputDevice);
   private static native void emitFileSnapshotNative(String path, String contents);
   private static native void emitFileDeleteNative(String path);
   private static native void emitDirectoryCreateNative(String path);
@@ -1781,7 +1789,7 @@ public final class ProjectEvents {
     if (capture != null) {
       capture.write(bytes, 0, bytes.length);
     }
-    emitOutput(stream, new String(bytes, StandardCharsets.UTF_8), device.path.equals(outputDevice) ? "" : device.path);
+    emitOutput(stream, new String(bytes, StandardCharsets.UTF_8), device.path.equals(outputDevice) ? "" : device.path, outputDevice);
   }
 
   private static final class KernelDevice {

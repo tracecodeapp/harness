@@ -64,7 +64,7 @@ function postMessageResponse(message) {
   self.postMessage(message);
 }
 
-function emitLiveJavaProjectOutput(stream, data, sourceDevice) {
+function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
   if (!activeJavaProjectIo?.messageId || typeof data !== 'string' || data.length === 0) return;
   const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
   const normalizedSourceDevice = typeof sourceDevice === 'string'
@@ -73,17 +73,23 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice) {
   const sourceDevicePath = activeJavaProjectIo.kernelDevicePaths?.has(normalizedSourceDevice)
     ? normalizedSourceDevice
     : '';
-  const outputDevice = normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout';
-  if (normalizedStream === 'stderr') {
+  const normalizedOutputDevice = typeof outputDevice === 'string'
+    ? outputDevice.replace(/\\/g, '/')
+    : '';
+  const outputDevicePath = activeJavaProjectIo.kernelDevicePaths?.has(normalizedOutputDevice)
+    ? normalizedOutputDevice
+    : normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout';
+  const eventStream = outputDevicePath === '/dev/stderr' ? 'stderr' : normalizedStream;
+  if (eventStream === 'stderr') {
     activeJavaProjectIo.stderrEmitted = true;
   } else {
     activeJavaProjectIo.stdoutEmitted = true;
   }
   postProjectEvent(activeJavaProjectIo.messageId, {
     type: 'output',
-    stream: normalizedStream,
-    device: outputDevice,
-    ...(sourceDevicePath && sourceDevicePath !== outputDevice ? { sourceDevice: sourceDevicePath } : {}),
+    stream: eventStream,
+    device: outputDevicePath,
+    ...(sourceDevicePath && sourceDevicePath !== outputDevicePath ? { sourceDevice: sourceDevicePath } : {}),
     data,
   });
 }
@@ -142,8 +148,8 @@ function emitLiveJavaProjectDirectoryDelete(path) {
 
 function javaProjectNativeBridge() {
   return {
-    Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data, sourceDevice) => {
-      emitLiveJavaProjectOutput(String(stream ?? 'stdout'), String(data ?? ''), String(sourceDevice ?? ''));
+    Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data, sourceDevice, outputDevice) => {
+      emitLiveJavaProjectOutput(String(stream ?? 'stdout'), String(data ?? ''), String(sourceDevice ?? ''), String(outputDevice ?? ''));
     },
     Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative: (_library, path, contents) => {
       emitLiveJavaProjectFileSnapshot(String(path ?? ''), String(contents ?? ''));

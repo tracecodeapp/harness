@@ -52,6 +52,7 @@ async function main(): Promise<void> {
     'cheerpjRunLibrary',
     'Java_tracecode_browser_ProjectEvents_emitOutputNative',
     'sourceDevice',
+    'outputDevice',
     'Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative',
     'tracecode.browser.BrowserCompileAndTraceLibrary',
     'harness.browser.JavaRewriteLibrary',
