@@ -263,6 +263,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         worker.includes('sourceDevice') && worker.includes('_target.write(_value, self._device if self._device != _output_device else None)'),
         '@tracecode/harness-python worker should ship routed source device output events'
       );
+      assertCondition(
+        worker.includes("patch('open'") &&
+          worker.includes('isCreateOrTruncateOpenFlags') &&
+          worker.includes('emitFileChange(streamPath(stream))'),
+        '@tracecode/harness-python worker should ship live empty-open file mutation hooks'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-javascript') {
       const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
@@ -316,6 +322,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         worker.includes('sourceDevice') && worker.includes('context.stdoutSourceDevice = device !== outputDevice ? device : undefined'),
         '@tracecode/harness-csharp worker should ship routed source device events'
+      );
+      assertCondition(
+        worker.includes('function isCreateOrTruncateOpenFlags(') &&
+          worker.includes('fs.open = function openWithProjectEvents') &&
+          worker.includes('emitProjectFileSnapshot(stream.path)'),
+        '@tracecode/harness-csharp worker should ship live empty-open file mutation hooks'
       );
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
