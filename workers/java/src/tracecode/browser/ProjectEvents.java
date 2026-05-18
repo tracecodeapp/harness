@@ -557,6 +557,13 @@ public final class ProjectEvents {
       this.charset = charset == null ? Charset.defaultCharset() : charset;
     }
 
+    public ProjectFileWriter(FileDescriptor fdObj) {
+      super(fdObj);
+      this.path = null;
+      this.device = writableKernelDevice(fdObj);
+      this.charset = Charset.defaultCharset();
+    }
+
     private void emitAfterWrite() throws IOException {
       if (device != null) return;
       super.flush();
@@ -670,7 +677,7 @@ public final class ProjectEvents {
     public ProjectFileOutputStream(FileDescriptor fdObj) {
       super(fdObj);
       this.path = null;
-      this.device = null;
+      this.device = writableKernelDevice(fdObj);
     }
 
     @Override
@@ -743,7 +750,7 @@ public final class ProjectEvents {
     public ProjectFileInputStream(FileDescriptor fdObj) {
       super(fdObj);
       this.path = null;
-      this.deviceBytes = null;
+      this.deviceBytes = kernelInputBytes(fdObj);
     }
 
     @Override
@@ -1406,10 +1413,27 @@ public final class ProjectEvents {
     return device;
   }
 
+  private static KernelDevice readableKernelDevice(FileDescriptor fdObj) {
+    KernelDevice device = kernelDevice(fdObj);
+    return device != null && device.readable ? device : null;
+  }
+
+  private static KernelDevice writableKernelDevice(FileDescriptor fdObj) {
+    KernelDevice device = kernelDevice(fdObj);
+    return device != null && device.writable ? device : null;
+  }
+
   private static KernelDevice kernelDevice(Path path) {
     String normalized = normalizeVirtualPath(path);
     if (!isVirtualDevicePath(normalized)) return null;
     return KERNEL_DEVICES.get().get(normalized);
+  }
+
+  private static KernelDevice kernelDevice(FileDescriptor fdObj) {
+    if (fdObj == FileDescriptor.in) return KERNEL_DEVICES.get().get("/dev/stdin");
+    if (fdObj == FileDescriptor.out) return KERNEL_DEVICES.get().get("/dev/stdout");
+    if (fdObj == FileDescriptor.err) return KERNEL_DEVICES.get().get("/dev/stderr");
+    return null;
   }
 
   private static ArrayList<Path> kernelDevicePaths() {
@@ -1830,6 +1854,11 @@ public final class ProjectEvents {
 
   private static byte[] kernelInputBytes(Path path) throws IOException {
     KernelDevice device = readableKernelDevice(path);
+    return device == null ? null : readKernelDevice(device);
+  }
+
+  private static byte[] kernelInputBytes(FileDescriptor fdObj) {
+    KernelDevice device = readableKernelDevice(fdObj);
     return device == null ? null : readKernelDevice(device);
   }
 
