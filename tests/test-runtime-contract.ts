@@ -39,7 +39,12 @@ import {
   runtimeKernelVirtualDevices,
   runtimeKernelWriteTarget,
 } from '../packages/harness-core/src/runtime-kernel';
-import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
+import {
+  createRuntimeProjectIoBridge,
+  runRuntimeProjectWorkerBridge,
+  type RuntimeCommandEvent,
+  type RuntimeProjectCommandRequest,
+} from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -306,6 +311,138 @@ function assertRuntimeProjectIoBridgeOutputDevices(): void {
       { type: 'output', stream: 'stderr', device: '/dev/stderr', sourceDevice: '/dev/log', data: 'log\n' },
     ]),
     `runtime project bridge should suppress redundant sourceDevice values: ${stableStringify(events)}`
+  );
+}
+
+async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
+  const events: RuntimeCommandEvent[] = [];
+  const appliedChanges: string[] = [];
+  const request: RuntimeProjectCommandRequest<'run'> = {
+    code: '',
+    source: 'run',
+    scriptPath: 'main',
+    args: ['alpha'],
+    cwd: '/workspace',
+    env: {},
+    stdin: 'input\n',
+    project: {
+      files: [{ path: 'main.txt', contents: 'main\n' }],
+    },
+    onEvent: (event) => events.push(event),
+  };
+
+  const result = await runRuntimeProjectWorkerBridge({
+    request,
+    startPhase: 'process-start',
+    startMessage: 'Starting contract worker',
+    startDetail: { cwd: request.cwd },
+    finishPhase: 'process-exit',
+    finishMessage: 'Finished contract worker',
+    finishDetail: (commandResult) => ({ exitCode: commandResult.exitCode, returnedFiles: commandResult.files?.length ?? 0 }),
+    applyFileChange: async (change, phase) => {
+      appliedChanges.push(`${phase}:${change.path}`);
+      return change.path !== 'hidden-live.txt';
+    },
+    run: async (workerRequest, onEvent) => {
+      assertCondition(
+        !('onEvent' in workerRequest) &&
+          workerRequest.stdin === 'input\n' &&
+          workerRequest.project.files.length === 1,
+        `runtime worker bridge should pass a serializable project request: ${stableStringify(workerRequest)}`
+      );
+      onEvent({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'streamed\n' });
+      onEvent({ type: 'file-change', phase: 'live', change: { path: 'live.txt', contents: 'live\n' } });
+      onEvent({ type: 'file-change', phase: 'live', change: { path: 'hidden-live.txt', contents: 'hidden\n' } });
+      onEvent({ type: 'output', stream: 'stderr', device: '/dev/stderr', data: 'streamed-err\n' });
+      return {
+        stdout: 'streamed\n',
+        stderr: 'streamed-err\n',
+        exitCode: 0,
+        files: [
+          { path: 'live.txt', contents: 'final-live\n' },
+          { path: 'hidden-live.txt', contents: 'final-hidden\n' },
+          { path: 'returned.txt', contents: 'returned\n' },
+        ],
+      };
+    },
+  });
+
+  assertCondition(
+    stableStringify(appliedChanges) === stableStringify(['live:live.txt', 'live:hidden-live.txt']),
+    `runtime worker bridge should apply live file changes in worker order: ${stableStringify(appliedChanges)}`
+  );
+  assertCondition(
+    result.stdout === 'streamed\n' &&
+      result.stderr === 'streamed-err\n' &&
+      result.exitCode === 0 &&
+      stableStringify(result.files) === stableStringify([{ path: 'returned.txt', contents: 'returned\n' }]),
+    `runtime worker bridge should return stdout/stderr and filter already-applied file changes: ${stableStringify(result)}`
+  );
+  assertCondition(
+    events[0]?.type === 'status' &&
+      events[0].phase === 'process-start' &&
+      events[events.length - 1]?.type === 'status' &&
+      events[events.length - 1].phase === 'process-exit',
+    `runtime worker bridge should wrap worker events in start/finish status events: ${stableStringify(events)}`
+  );
+  assertCondition(
+    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1 &&
+      events.filter((event) => event.type === 'output' && event.stream === 'stderr').length === 1,
+    `runtime worker bridge should not duplicate final stdout/stderr after streamed output: ${stableStringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'live.txt'
+    ) &&
+      !events.some((event) => event.type === 'file-change' && event.change.path === 'hidden-live.txt'),
+    `runtime worker bridge should apply live changes before forwarding and honor suppressed events: ${stableStringify(events)}`
+  );
+  const liveEventIndex = events.findIndex((event) => event.type === 'file-change' && event.change.path === 'live.txt');
+  const stderrEventIndex = events.findIndex((event) => event.type === 'output' && event.stream === 'stderr');
+  assertCondition(
+    liveEventIndex >= 0 && stderrEventIndex > liveEventIndex,
+    `runtime worker bridge should preserve file-change before later output ordering: ${stableStringify(events)}`
+  );
+
+  const failedEvents: RuntimeCommandEvent[] = [];
+  const failedResult = await runRuntimeProjectWorkerBridge({
+    request: { ...request, onEvent: (event) => failedEvents.push(event) },
+    startPhase: 'process-start',
+    startMessage: 'Starting failing contract worker',
+    finishPhase: 'process-exit',
+    finishMessage: 'Finished failing contract worker',
+    applyFileChange: async (change) => {
+      throw new Error(`apply-failed:${change.path}`);
+    },
+    run: async (_workerRequest, onEvent) => {
+      onEvent({ type: 'file-change', phase: 'live', change: { path: 'bad-live.txt', contents: 'bad\n' } });
+      onEvent({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'after-bad\n' });
+      return { stdout: 'final-after-bad\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  assertCondition(
+    failedResult.exitCode === 1 &&
+      failedResult.stderr === 'apply-failed:bad-live.txt\n' &&
+      failedResult.stdout === '',
+    `runtime worker bridge should return command-shaped live apply failures: ${stableStringify(failedResult)}`
+  );
+  assertCondition(
+    failedEvents.some((event) =>
+      event.type === 'status' &&
+        event.phase === 'process-exit' &&
+        event.detail?.exitCode === 1 &&
+        event.detail.error === 'apply-failed:bad-live.txt'
+    ) &&
+      failedEvents.some((event) =>
+        event.type === 'output' &&
+          event.stream === 'stderr' &&
+          event.data === 'apply-failed:bad-live.txt\n'
+      ) &&
+      !failedEvents.some((event) => event.type === 'output' && event.data.includes('after-bad')),
+    `runtime worker bridge should stop later output after live apply failures: ${stableStringify(failedEvents)}`
   );
 }
 
@@ -644,6 +781,8 @@ async function main(): Promise<void> {
   console.log('PASS: runtime kernel virtual stat target');
   assertRuntimeProjectIoBridgeOutputDevices();
   console.log('PASS: runtime project bridge output device metadata');
+  await assertRuntimeProjectWorkerBridgeContract();
+  console.log('PASS: runtime project worker bridge live I/O contract');
 
   await testJavaSerializedResultNormalization();
   const profiles = getSupportedLanguageProfiles();
