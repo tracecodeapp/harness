@@ -1938,6 +1938,7 @@ def _install_virtual_workspace_paths():
     _original_os_fchown = getattr(os, "fchown", None)
     _original_os_statvfs = getattr(os, "statvfs", None)
     _open_file_descriptors = {}
+    _workspace_file_descriptors = {}
     _device_file_descriptors = {}
     _proc_file_descriptors = {}
     _next_virtual_fd = 1000000
@@ -2035,9 +2036,11 @@ def _install_virtual_workspace_paths():
         _mapped_path = _map_workspace_path(_path)
         _absolute_path = _absolute_mapped_path(_mapped_path)
         _fd = _original_os_open(_mapped_path, _flags, *args, **kwargs)
-        if _absolute_path and _is_mutating_fd_flags(_flags):
-            _open_file_descriptors[_fd] = _absolute_path
-            _emit_file_change_for_absolute(_absolute_path)
+        if _absolute_path:
+            _workspace_file_descriptors[_fd] = _absolute_path
+            if _is_mutating_fd_flags(_flags):
+                _open_file_descriptors[_fd] = _absolute_path
+                _emit_file_change_for_absolute(_absolute_path)
         return _fd
 
     def _patched_os_read(_fd, _length):
@@ -2084,6 +2087,7 @@ def _install_virtual_workspace_paths():
             _proc_handle.get("handle").close()
             return None
         _absolute_path = _open_file_descriptors.pop(_fd, None)
+        _workspace_file_descriptors.pop(_fd, None)
         try:
             return _original_os_close(_fd)
         finally:
@@ -2119,14 +2123,22 @@ def _install_virtual_workspace_paths():
             return None
         if _fd in _proc_file_descriptors:
             raise OSError("Kernel proc path is read-only")
-        return _original_os_fchmod(_fd, _mode)
+        _result = _original_os_fchmod(_fd, _mode)
+        _absolute_path = _workspace_file_descriptors.get(_fd)
+        if _absolute_path:
+            _emit_path_snapshot_for_absolute(_absolute_path)
+        return _result
 
     def _patched_os_fchown(_fd, _uid, _gid):
         if _fd in _device_file_descriptors:
             return None
         if _fd in _proc_file_descriptors:
             raise OSError("Kernel proc path is read-only")
-        return _original_os_fchown(_fd, _uid, _gid)
+        _result = _original_os_fchown(_fd, _uid, _gid)
+        _absolute_path = _workspace_file_descriptors.get(_fd)
+        if _absolute_path:
+            _emit_path_snapshot_for_absolute(_absolute_path)
+        return _result
 
     def _virtual_statvfs_result(_read_only=False):
         _block_size = 4096
@@ -2262,6 +2274,8 @@ def _install_virtual_workspace_paths():
             _result = _original(_mapped_path, *args, **kwargs)
             if _name in ("remove", "unlink"):
                 _emit_file_delete_for_absolute(_absolute_path)
+            elif _name in ("chmod", "chown", "utime"):
+                _emit_path_snapshot_for_absolute(_absolute_path)
             return _result
         setattr(_target, _name, _patched_one)
         _patched.append((_target, _name, _original))

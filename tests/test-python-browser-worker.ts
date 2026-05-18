@@ -261,6 +261,17 @@ async function main(): Promise<void> {
             '    os.ftruncate(fd, 2)',
             'finally:',
             '    os.close(fd)',
+            'with open("/workspace/metadata-path.txt", "w", encoding="utf-8") as handle:',
+            '    handle.write("metadata-path\\\\n")',
+            'os.chmod("/workspace/metadata-path.txt", 0o600)',
+            'os.utime("/workspace/metadata-path.txt", (1, 1))',
+            'with open("/workspace/metadata-fd.txt", "w", encoding="utf-8") as handle:',
+            '    handle.write("metadata-fd\\\\n")',
+            'fd = os.open("/workspace/metadata-fd.txt", os.O_RDONLY)',
+            'try:',
+            '    os.fchmod(fd, 0o600)',
+            'finally:',
+            '    os.close(fd)',
             'os.remove("/workspace/stale.txt")',
             '',
           ].join('\\n'),
@@ -936,6 +947,24 @@ async function main(): Promise<void> {
         event.change.contents === 'ab'
       )) === true,
       `Python project worker should stream live os.ftruncate mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'metadata-path.txt' &&
+        event.change.contents === 'metadata-path\n'
+      )) === true,
+      `Python project worker should stream live path metadata mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'metadata-fd.txt' &&
+        event.change.contents === 'metadata-fd\n'
+      )) === true,
+      `Python project worker should stream live descriptor metadata mutations: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (
