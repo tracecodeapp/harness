@@ -2207,11 +2207,17 @@ async function runBrowserJavaScriptProjectRequest(
           }
         },
         end: (value?: unknown, writeEncoding?: string | (() => void), callback?: () => void) => {
+          const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
           if (value !== undefined && value !== null) {
-            writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
+            try {
+              writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
+            } catch (error) {
+              writableEnded = true;
+              closeStream(false, undefined, error as Error);
+              return stream;
+            }
           }
           writableEnded = true;
-          const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
           closeStream(true, done);
           return stream;
         },

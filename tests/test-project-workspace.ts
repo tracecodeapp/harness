@@ -2843,6 +2843,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('fd-streamed.txt') === 'fd-one\nfd-two\n', 'browser node fd createWriteStream should persist through kernel FS');
 
+  const readOnlyFdStreamResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"readonly-fd-stream.txt\\", \\"original\\\\n\\"); const fd = fs.openSync(\\"readonly-fd-stream.txt\\", \\"r\\"); const events = []; await new Promise((resolve) => { const out = fs.createWriteStream(null, { fd }); out.on(\\"error\\", (error) => events.push(\\"error:\\" + error.code)); out.on(\\"finish\\", () => events.push(\\"finish\\")); out.on(\\"close\\", resolve); out.end(\\"bad\\\\n\\"); }); let closeError = \\"none\\"; try { fs.fstatSync(fd); } catch (error) { closeError = error.code; } console.log(events.join(\\"|\\")); console.log(closeError); console.log(fs.readFileSync(\\"readonly-fd-stream.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(readOnlyFdStreamResult.exitCode === 0, `browser node read-only fd stream should report an error event: ${readOnlyFdStreamResult.stderr}`);
+  assertCondition(
+    readOnlyFdStreamResult.stdout === 'error:EBADF\nEBADF\noriginal\n\n',
+    `browser node read-only fd createWriteStream should not mutate or finish: ${readOnlyFdStreamResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('readonly-fd-stream.txt') === 'original\n', 'browser node read-only fd stream should not persist failed writes');
+
   const fileHandleLifecycleResult = await workspace.runCommand([
     'node',
     '-e',
