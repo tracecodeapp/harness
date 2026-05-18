@@ -4699,6 +4699,70 @@ async function testNativeCppProjectRunner(): Promise<void> {
     'native C++ executable should persist generated binary files'
   );
   await assertRejectsAsync(() => workspace.readFile('src/stale.txt'), 'native C++ executable should persist deleted files');
+
+  const timeoutEvents: RuntimeCommandEvent[] = [];
+  const timeoutScript = '#!/bin/sh\nsleep 0.025\n';
+  const timeoutRunner = createNativeCppProjectRunner({ timeoutMs: 5 });
+  const timeoutRun = await timeoutRunner({
+    code: '',
+    source: 'run',
+    scriptPath: 'src/app',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      files: [
+        {
+          path: 'src/app',
+          contents: Buffer.from(timeoutScript).toString('base64'),
+          encoding: 'base64',
+        },
+      ],
+    },
+    onEvent: (event) => timeoutEvents.push(event),
+  });
+  assertCondition(
+    timeoutRun.exitCode === 124 && timeoutRun.stderr.includes('src/app: execution timed out after 5ms'),
+    `native C++ timeout should return a timeout result: ${JSON.stringify(timeoutRun)}`
+  );
+  const cppTimeoutStderrIndex = timeoutEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('src/app: execution timed out after 5ms')
+  );
+  const cppTimeoutExitIndex = timeoutEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124
+  );
+  assertCondition(
+    cppTimeoutStderrIndex >= 0 && cppTimeoutExitIndex > cppTimeoutStderrIndex,
+    `native C++ timeout should stream timeout stderr before process-exit: ${JSON.stringify(timeoutEvents)}`
+  );
+
+  const startErrorEvents: RuntimeCommandEvent[] = [];
+  const startErrorRunner = createNativeCppProjectRunner({ compilerCommand: 'tracecode-missing-cpp-command' });
+  const startErrorResult = await startErrorRunner({
+    code: '',
+    source: 'compile',
+    scriptPath: 'src/main.cpp',
+    args: ['src/main.cpp', '-o', 'src/app'],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      files: [{ path: 'src/main.cpp', contents: 'int main() { return 0; }\n' }],
+    },
+    onEvent: (event) => startErrorEvents.push(event),
+  });
+  assertCondition(startErrorResult.exitCode === 1, `native C++ start error should return failure: ${JSON.stringify(startErrorResult)}`);
+  const cppStartErrorStderrIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('tracecode-missing-cpp-command')
+  );
+  const cppStartErrorStatusIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-cpp-command'
+  );
+  assertCondition(
+    cppStartErrorStderrIndex >= 0 && cppStartErrorStatusIndex > cppStartErrorStderrIndex,
+    `native C++ start error should stream stderr before process-error: ${JSON.stringify(startErrorEvents)}`
+  );
 }
 
 async function testNativeCppProjectRunnerAbsoluteWorkspacePaths(): Promise<void> {
