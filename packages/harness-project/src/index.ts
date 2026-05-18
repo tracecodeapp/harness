@@ -13,10 +13,8 @@ import {
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
-  isRuntimeDeviceNamespacePath,
   isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
-  normalizeRuntimeDevicePath,
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
@@ -255,16 +253,6 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
 function normalizeProcPath(path: string): string | null {
   assertNoNul(path, 'Kernel path');
   return normalizeRuntimeProcPath(path);
-}
-
-function normalizeDevPath(path: string): '/dev' | RuntimeKernelDevicePath | null {
-  assertNoNul(path, 'Kernel path');
-  return normalizeRuntimeDevicePath(path);
-}
-
-function isDevNamespacePath(path: string): boolean {
-  assertNoNul(path, 'Kernel path');
-  return isRuntimeDeviceNamespacePath(path);
 }
 
 function kernelWriteTarget(path: string): ReturnType<typeof runtimeKernelWriteTarget> {
@@ -742,11 +730,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) return Promise.resolve(this.deviceStat(devicePath));
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
-    const procPath = normalizeProcPath(path);
-    if (procPath !== null) return Promise.resolve(this.procStat(procPath));
+    const accessTarget = kernelAccessTarget(path);
+    if (accessTarget.kind === 'allowed') return Promise.resolve(this.virtualStat(accessTarget.path));
+    if (accessTarget.kind === 'denied') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     return this.base.stat(this.mapPath(path));
   }
 
@@ -924,16 +910,15 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) return Promise.resolve(this.deviceStat(devicePath));
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
-    const procPath = normalizeProcPath(path);
-    if (procPath !== null) return Promise.resolve(this.procStat(procPath));
+    const accessTarget = kernelAccessTarget(path);
+    if (accessTarget.kind === 'allowed') return Promise.resolve(this.virtualStat(accessTarget.path));
+    if (accessTarget.kind === 'denied') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
     return this.base.lstat(this.mapPath(path));
   }
 
   realpath(path: string): Promise<string> {
-    if (isDevNamespacePath(path) || normalizeProcPath(path) !== null) return Promise.resolve(path);
+    assertNoNul(path, 'Kernel path');
+    if (isRuntimeKernelVirtualNamespacePath(path)) return Promise.resolve(path);
     return this.base.realpath(this.mapPath(path));
   }
 
@@ -1049,6 +1034,13 @@ class KernelObservedFileSystem implements IFileSystem {
     const outputDevice = runtimeDeviceOutputTarget(device);
     if (!outputDevice) throw new Error(`Kernel device is read-only: ${device}`);
     this.writeDevice(device, contentToText(content));
+  }
+
+  private virtualStat(path: string): Awaited<ReturnType<IFileSystem['stat']>> {
+    if (path === '/dev' || path.startsWith('/dev/')) {
+      return this.deviceStat(path as '/dev' | RuntimeKernelDevicePath);
+    }
+    return this.procStat(path);
   }
 
   private deviceStat(device: '/dev' | RuntimeKernelDevicePath): Awaited<ReturnType<IFileSystem['stat']>> {

@@ -6563,11 +6563,37 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     (await deviceWorkspace.readFile('copied-proc-version.txt')).startsWith('tracekernel '),
     'copyFile should read /proc/kernel/version through kernel read target'
   );
-  const observedFs = (deviceWorkspace as unknown as { fs: { readFileBytes?: (path: string) => Promise<unknown> } }).fs;
+  const observedFs = (deviceWorkspace as unknown as {
+    fs: {
+      readFileBytes?: (path: string) => Promise<unknown>;
+      stat?: (path: string) => Promise<RuntimeWorkspaceStat>;
+      lstat?: (path: string) => Promise<RuntimeWorkspaceStat>;
+      realpath?: (path: string) => Promise<string>;
+    };
+  }).fs;
   const procVersionBytes = await observedFs.readFileBytes?.('/proc/kernel/version');
   assertCondition(
     typeof procVersionBytes === 'string' && procVersionBytes.startsWith('tracekernel '),
     `observed filesystem readFileBytes should return byte strings for /proc files: ${String(procVersionBytes)}`
+  );
+  const observedProcInfoStat = await observedFs.stat?.('/proc/kernel/info');
+  const observedDevStdoutStat = await observedFs.lstat?.('/dev/stdout');
+  const observedProcRealpath = await observedFs.realpath?.('/proc/kernel/info');
+  assertCondition(
+    observedProcInfoStat?.isFile === true && observedProcInfoStat.isDirectory === false,
+    `observed filesystem stat should use kernel read targets for /proc files: ${JSON.stringify(observedProcInfoStat)}`
+  );
+  assertCondition(
+    observedDevStdoutStat?.isFile === true && observedDevStdoutStat.isDirectory === false,
+    `observed filesystem lstat should use kernel read targets for /dev files: ${JSON.stringify(observedDevStdoutStat)}`
+  );
+  assertCondition(
+    observedProcRealpath === '/proc/kernel/info',
+    `observed filesystem realpath should preserve virtual kernel paths: ${String(observedProcRealpath)}`
+  );
+  await assertRejectsAsync(
+    () => observedFs.stat?.('/dev/missing') ?? Promise.reject(new Error('stat missing')),
+    'observed filesystem stat should reject unknown /dev paths through the kernel read target'
   );
   const observedVirtualFs = observedFs as {
     symlink?: (target: string, linkPath: string) => Promise<void>;

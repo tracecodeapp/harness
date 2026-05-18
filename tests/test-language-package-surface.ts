@@ -273,8 +273,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectDist.includes('const mutationTarget = kernelMutationTarget(linkPath)') &&
           projectDist.includes('link(existingPath, newPath)') &&
           projectDist.includes('const sourceMutationTarget = kernelMutationTarget(existingPath)') &&
-          projectDist.includes('Kernel virtual path is not a symbolic link'),
-        '@tracecode/harness-project should ship shared-kernel virtual link guards'
+          projectDist.includes('Kernel virtual path is not a symbolic link') &&
+          projectDist.includes('const accessTarget = kernelAccessTarget(path') &&
+          projectDist.includes('virtualStat(path') &&
+          projectDist.includes('if (isRuntimeKernelVirtualNamespacePath(path'),
+        '@tracecode/harness-project should ship shared-kernel virtual stat/link guards'
       );
     }
     if (packageCheck.name === '@tracecode/harness-python') {
