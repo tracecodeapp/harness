@@ -2851,6 +2851,16 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     ),
     `browser node truncate should emit live zero-filled file changes: ${JSON.stringify(truncateEvents)}`
   );
+  const truncateConflictResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; fs.writeFileSync(\\"truncate-parent-file.txt\\", \\"file\\\\n\\"); fs.mkdirSync(\\"truncate-dir\\"); console.log(code(() => fs.truncateSync(\\"missing-truncate.txt\\", 1))); console.log(code(() => fs.truncateSync(\\"missing-truncate-parent/value.txt\\", 1))); console.log(code(() => fs.truncateSync(\\"truncate-parent-file.txt/value.txt\\", 1))); console.log(code(() => fs.truncateSync(\\"truncate-dir\\", 1))); console.log(fs.existsSync(\\"missing-truncate-parent\\")); console.log(fs.statSync(\\"truncate-parent-file.txt\\").isFile()); console.log(fs.statSync(\\"truncate-dir\\").isDirectory());"',
+  ].join(' '));
+  assertCondition(truncateConflictResult.exitCode === 0, `browser node truncate conflict workflow should succeed: ${truncateConflictResult.stderr}`);
+  assertCondition(
+    truncateConflictResult.stdout === 'ENOENT\nENOENT\nENOTDIR\nEISDIR\nfalse\ntrue\ntrue\n',
+    `browser node truncate conflicts should match desktop semantics without corrupting entries: ${truncateConflictResult.stdout}`
+  );
 
   const bufferResult = await workspace.runCommand([
     'node',

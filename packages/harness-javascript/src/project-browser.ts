@@ -3865,6 +3865,7 @@ async function runBrowserJavaScriptProjectRequest(
           throwRuntimeMutationTargetError(mutationTarget, message);
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        assertWorkspaceFileWritePath(normalized, path, 'truncate');
         truncateFileBytes(normalized, length);
         return undefined;
       },
