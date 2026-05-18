@@ -3017,8 +3017,6 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
-        const sourceDevice = normalizeRuntimeDevicePath(source);
-        const sourceProc = normalizeRuntimeProcPath(source);
         const writeTarget = runtimeWriteTarget(destination);
         if (writeTarget?.kind === 'error') {
           const message = writeTarget.reason === 'proc-read-only'
@@ -3030,11 +3028,15 @@ async function runBrowserJavaScriptProjectRequest(
                 : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`;
           throwRuntimeWriteTargetError(writeTarget, message);
         }
-        const sourceBytes = sourceDevice
-          ? utf8Bytes(readDevice(sourceDevice))
-          : sourceProc
-            ? utf8Bytes(readProcFile(sourceProc, kernelInfo))
-            : fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
+        const sourceTarget = runtimeReadTarget(source);
+        let sourceBytes: Uint8Array | undefined;
+        if (sourceTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(sourceTarget.path));
+        else if (sourceTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(sourceTarget.path, kernelInfo));
+        else if (sourceTarget?.kind === 'device-directory' || sourceTarget?.kind === 'proc-directory') {
+          throw Object.assign(new Error(`EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`), { code: 'EISDIR' });
+        } else if (sourceTarget?.kind === 'error') {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
+        } else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }

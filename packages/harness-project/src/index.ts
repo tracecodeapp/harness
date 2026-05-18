@@ -722,23 +722,26 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
-    const sourceDevice = normalizeDevPath(src);
+    const sourceTarget = kernelReadTarget(src);
     const writeTarget = kernelWriteTarget(dest);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
     if (writeTarget.kind === 'device') {
-      const bytes = sourceDevice !== null
-        ? new TextEncoder().encode(this.readDeviceFile(sourceDevice))
+      if (sourceTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${src}`);
+      if (sourceTarget.kind === 'error') throw new Error('Kernel device path not found.');
+      const bytes = sourceTarget.kind === 'device-file'
+        ? new TextEncoder().encode(this.readDeviceFile(sourceTarget.path))
         : await this.base.readFileBuffer(this.mapPath(src));
       this.writeDevice(writeTarget.outputDevice, contentToText(bytes));
       return;
     }
-    if (sourceDevice !== null) {
+    if (sourceTarget.kind === 'device-file') {
       const mappedDestination = this.mapPath(dest);
-      await this.base.writeFile(mappedDestination, this.readDeviceFile(sourceDevice));
+      await this.base.writeFile(mappedDestination, this.readDeviceFile(sourceTarget.path));
       await this.emitFileWrite(mappedDestination);
       return;
     }
-    if (isDevNamespacePath(src)) throw new Error('Kernel device path not found.');
+    if (sourceTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${src}`);
+    if (sourceTarget.kind === 'error') throw new Error('Kernel device path not found.');
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     await this.base.cp(mappedSource, mappedDestination, options);
@@ -2476,23 +2479,26 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
-    const procFile = this.readProcFile(sourcePath);
-    const deviceSource = this.readDeviceFile(sourcePath);
+    const sourceTarget = kernelReadTarget(sourcePath);
     const writeTarget = kernelWriteTarget(destinationPath);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(destinationPath, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.outputDevice, procFile ?? deviceSource ?? await this.readFile(sourcePath), PRINCIPAL_ACTOR);
+      this.writeDevice(writeTarget.outputDevice, await this.readFile(sourcePath), PRINCIPAL_ACTOR);
       return;
     }
-    if (deviceSource !== null) {
-      await this.writeFileAs(destinationPath, deviceSource, PRINCIPAL_ACTOR, 'utf8', 'live');
+    if (sourceTarget.kind === 'device-file') {
+      await this.writeFileAs(destinationPath, this.readDevice(sourceTarget.path), PRINCIPAL_ACTOR, 'utf8', 'live');
       return;
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
-    if (procFile !== null) {
-      await this.writeFileAs(destinationPath, procFile, PRINCIPAL_ACTOR, 'utf8', 'live');
+    if (sourceTarget.kind === 'proc-file') {
+      await this.writeFileAs(destinationPath, readRuntimeProcFile(sourceTarget.path, this.kernelInfo), PRINCIPAL_ACTOR, 'utf8', 'live');
       return;
     }
+    if (sourceTarget.kind === 'device-directory' || sourceTarget.kind === 'proc-directory') {
+      throw new Error(`Kernel virtual path is a directory: ${sourcePath}`);
+    }
+    if (sourceTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${sourcePath}`);
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
     const sourceBytes = await this.bash.fs.readFileBuffer(absoluteSourcePath);
     await this.bash.fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });

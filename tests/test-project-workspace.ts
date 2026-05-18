@@ -4979,6 +4979,8 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'fs.writeFileSync("copy-device.txt", "copy-device\\n");',
           'fs.copyFileSync("copy-device.txt", "/dev/stdout");',
           'try { fs.copyFileSync("copy-device.txt", "/proc/kernel/info"); } catch (error) { console.log(error.code); }',
+          'fs.copyFileSync("/proc/kernel/info", "copied-proc-info.json");',
+          'console.log(JSON.parse(fs.readFileSync("copied-proc-info.json", "utf8")).name);',
           'try { fs.mkdirSync("/proc/new"); } catch (error) { console.log(error.code); }',
           'try { fs.rmSync("/dev/stdout"); } catch (error) { console.log(error.code); }',
           'try { fs.renameSync("copy-device.txt", "/dev/stdout"); } catch (error) { console.log(error.code); }',
@@ -5101,6 +5103,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         'EROFS',
         'copy-device',
         'EROFS',
+        'tracekernel',
         'EROFS',
         'EROFS',
         'EROFS',
@@ -5670,6 +5673,11 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   await deviceWorkspace.writeFile('copy-device.txt', 'copy-device-out\n');
   await deviceWorkspace.copyFile('copy-device.txt', '/dev/stdout');
   await assertRejectsAsync(() => deviceWorkspace.copyFile('copy-device.txt', '/proc/kernel/info'), 'copyFile should reject /proc destinations');
+  await deviceWorkspace.copyFile('/proc/kernel/info', 'copied-proc-info.json');
+  assertCondition(
+    JSON.parse(await deviceWorkspace.readFile('copied-proc-info.json')).name === 'tracekernel',
+    'copyFile should read /proc sources through kernel read target'
+  );
   await assertRejectsAsync(() => deviceWorkspace.mkdir('/proc/new'), 'mkdir should reject /proc paths');
   await assertRejectsAsync(() => deviceWorkspace.remove('/dev/stdout'), 'remove should reject /dev paths');
   await assertRejectsAsync(() => deviceWorkspace.deleteFile('/dev/stdout'), 'deleteFile should reject /dev paths');
