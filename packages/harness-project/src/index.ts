@@ -689,9 +689,13 @@ class KernelObservedFileSystem implements IFileSystem {
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
     const sourceDevice = normalizeDevPath(src);
-    const destinationDevice = normalizeDevPath(dest);
-    if (sourceDevice !== null && destinationDevice !== null) {
-      this.writeDeviceFile(destinationDevice, this.readDeviceFile(sourceDevice));
+    const writeTarget = kernelWriteTarget(dest);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
+    if (writeTarget.kind === 'device') {
+      const bytes = sourceDevice !== null
+        ? new TextEncoder().encode(this.readDeviceFile(sourceDevice))
+        : await this.base.readFileBuffer(this.mapPath(src));
+      this.writeDevice(writeTarget.outputDevice, contentToText(bytes));
       return;
     }
     if (sourceDevice !== null) {
@@ -700,12 +704,7 @@ class KernelObservedFileSystem implements IFileSystem {
       await this.emitFileWrite(mappedDestination);
       return;
     }
-    if (destinationDevice !== null) {
-      if (destinationDevice === '/dev') throw new Error(`Kernel device path is a directory: ${dest}`);
-      this.writeDevice(destinationDevice, contentToText(await this.base.readFileBuffer(this.mapPath(src))));
-      return;
-    }
-    if (isDevNamespacePath(src) || isDevNamespacePath(dest)) throw new Error('Kernel device path not found.');
+    if (isDevNamespacePath(src)) throw new Error('Kernel device path not found.');
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     await this.base.cp(mappedSource, mappedDestination, options);
@@ -2482,16 +2481,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
     const procFile = this.readProcFile(sourcePath);
-    assertProcMutablePath(destinationPath);
     const deviceSource = this.readDeviceFile(sourcePath);
-    const deviceDestination = normalizeDevPath(destinationPath);
-    if (deviceDestination !== null) {
-      if (deviceDestination === '/dev') throw new Error(`Kernel device path is a directory: ${destinationPath}`);
-      this.writeDevice(deviceDestination, procFile ?? deviceSource ?? await this.readFile(sourcePath), PRINCIPAL_ACTOR);
+    const writeTarget = kernelWriteTarget(destinationPath);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(destinationPath, writeTarget);
+    if (writeTarget.kind === 'device') {
+      this.writeDevice(writeTarget.outputDevice, procFile ?? deviceSource ?? await this.readFile(sourcePath), PRINCIPAL_ACTOR);
       return;
-    }
-    if (isDevNamespacePath(destinationPath)) {
-      throw new Error(`Kernel device path not found: ${destinationPath}`);
     }
     if (deviceSource !== null) {
       await this.writeFileAs(destinationPath, deviceSource, PRINCIPAL_ACTOR, 'utf8', 'live');

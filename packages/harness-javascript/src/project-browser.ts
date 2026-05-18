@@ -2966,9 +2966,18 @@ async function runBrowserJavaScriptProjectRequest(
       },
       copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
         const sourceDevice = normalizeRuntimeDevicePath(source);
-        const destinationDevice = normalizeRuntimeDevicePath(destination);
         const sourceProc = normalizeRuntimeProcPath(source);
-        assertRuntimeProcMutablePath(destination, `EROFS: read-only file system, copyfile '${source}' -> '${destination}'`);
+        const writeTarget = runtimeWriteTarget(destination);
+        if (writeTarget?.kind === 'error') {
+          const message = writeTarget.reason === 'proc-read-only'
+            ? `EROFS: read-only file system, copyfile '${source}' -> '${destination}'`
+            : writeTarget.reason === 'device-read-only'
+              ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
+              : writeTarget.reason === 'device-directory'
+                ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
+                : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`;
+          throwRuntimeWriteTargetError(writeTarget, message);
+        }
         const sourceBytes = sourceDevice
           ? utf8Bytes(readDevice(sourceDevice))
           : sourceProc
@@ -2977,8 +2986,8 @@ async function runBrowserJavaScriptProjectRequest(
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
-        if (destinationDevice) {
-          writeDevice(destinationDevice, textFromBytes(sourceBytes));
+        if (writeTarget?.kind === 'device') {
+          writeDevice(writeTarget.outputDevice, textFromBytes(sourceBytes));
           return;
         }
         const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);

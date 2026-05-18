@@ -4975,6 +4975,9 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'console.log(fs.fstatSync(procFd).isFile());',
           'fs.closeSync(procFd);',
           'try { fs.writeFileSync("/proc/kernel/info", "{}\\n"); } catch (error) { console.log(error.code); }',
+          'fs.writeFileSync("copy-device.txt", "copy-device\\n");',
+          'fs.copyFileSync("copy-device.txt", "/dev/stdout");',
+          'try { fs.copyFileSync("copy-device.txt", "/proc/kernel/info"); } catch (error) { console.log(error.code); }',
           'fs.writeFileSync("/home/ada/weather-api/node-canonical.txt", "node-canonical\\n");',
           'fs.appendFileSync("/workspace/node-alias.txt", "node-alias\\n");',
           '',
@@ -5086,6 +5089,8 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         'true',
         '/home/ada/weather-api',
         'true',
+        'EROFS',
+        'copy-device',
         'EROFS',
         '',
       ].join('\n'),
@@ -5647,6 +5652,9 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   assertCondition(stdoutStat.isFile && !stdoutStat.isDirectory, '/dev/stdout should stat as a file device');
   await assertRejectsAsync(() => deviceWorkspace.writeFile('/dev/stdin', 'blocked\n'), '/dev/stdin should be read-only');
   await deviceWorkspace.writeFile('/dev/stdout', 'principal-out\n');
+  await deviceWorkspace.writeFile('copy-device.txt', 'copy-device-out\n');
+  await deviceWorkspace.copyFile('copy-device.txt', '/dev/stdout');
+  await assertRejectsAsync(() => deviceWorkspace.copyFile('copy-device.txt', '/proc/kernel/info'), 'copyFile should reject /proc destinations');
   assertCondition(
     deviceWatchEvents.some((event) =>
       event.type === 'output' &&
@@ -5655,6 +5663,15 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       event.data === 'principal-out\n'
     ),
     `workspace writeFile should emit /dev/stdout output events: ${JSON.stringify(deviceWatchEvents)}`
+  );
+  assertCondition(
+    deviceWatchEvents.some((event) =>
+      event.type === 'output' &&
+      event.actor?.kind === 'principal' &&
+      event.device === '/dev/stdout' &&
+      event.data === 'copy-device-out\n'
+    ),
+    `workspace copyFile should route /dev/stdout through kernel write target: ${JSON.stringify(deviceWatchEvents)}`
   );
   deviceWorkspace.dispose();
 }
