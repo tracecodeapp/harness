@@ -186,6 +186,7 @@
     isRuntimeKernelDeviceNamespacePath,
     isRuntimeKernelDeviceDirectory,
     normalizeRuntimeKernelDeviceReference,
+    normalizeRuntimeKernelManifestDevicePath,
     runtimeKernelDeviceInfo,
     runtimeKernelDeviceInputSource,
     runtimeKernelDeviceOutputTarget,

@@ -48,6 +48,7 @@ import {
   type RuntimeProjectCommandRequest,
 } from '../packages/harness-core/src/runtime-project';
 import {
+  normalizeRuntimeKernelManifestDevicePath as normalizeWorkerKernelManifestDevicePath,
   normalizeRuntimeKernelDeviceReference as normalizeWorkerKernelDeviceReference,
   runtimeKernelDeviceInputSource as workerRuntimeKernelDeviceInputSource,
   runtimeKernelDeviceOutputTarget as workerRuntimeKernelDeviceOutputTarget,
@@ -96,8 +97,18 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     { path: '/dev/tty' as const, readable: true, writable: true, inputDevice: '/dev/stdin' as const, outputDevice: '/dev/stdout' as const },
     { path: '/dev/capture' as const, readable: false, writable: true, outputDevice: '/dev/capture' as const },
     { path: '/dev/tee' as const, readable: false, writable: true, outputDevice: '/dev/capture' as const },
+    { path: '/dev/pts/0' as const, readable: false, writable: true, outputDevice: '/dev/stdout' as const },
   ];
 
+  assertCondition(
+    normalizeWorkerKernelDeviceReference('/dev/pts/0') === '' &&
+      normalizeWorkerKernelManifestDevicePath('/dev/pts/0') === '/dev/pts/0',
+    'shared worker kernel policy should keep single-device references distinct from nested manifest devices'
+  );
+  assertCondition(
+    workerRuntimeKernelDeviceOutputTarget(devices, '/dev/pts/0') === '/dev/stdout',
+    'shared worker kernel policy should resolve nested manifest device output aliases'
+  );
   assertCondition(
     runtimeKernelDeviceOutputTarget(devices, '/dev/tee') === '/dev/capture',
     'kernel output target should resolve manifest device aliases'
@@ -410,6 +421,7 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
     classicPolicy !== undefined &&
       stableStringify(classicPolicy.runtimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) ===
         stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) &&
+      classicPolicy.normalizeRuntimeKernelManifestDevicePath('/dev/pts/0') === normalizeWorkerKernelManifestDevicePath('/dev/pts/0') &&
       stableStringify(classicPolicy.runtimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
         stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) &&
       classicPolicy.runtimeKernelDeviceOutputTarget(devices, '/dev/log') === workerRuntimeKernelDeviceOutputTarget(devices, '/dev/log') &&

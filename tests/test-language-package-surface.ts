@@ -117,6 +117,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.d.ts',
       'workers/java-worker.js',
       'workers/java-source-augmentations.js',
+      'workers/shared/runtime-kernel-policy-classic.js',
       'workers/vendor/java-browser-helper.jar',
       'workers/vendor/java-rewriter.jar',
       'workers/vendor/javaparser-core-3.25.10.jar',
@@ -424,9 +425,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes('emitLiveJavaProjectOutput(String(stream ?? \'stdout\'), String(data ?? \'\'), String(sourceDevice ?? \'\'), String(outputDevice ?? \'\'))') &&
+          worker.includes('shared-kernel-policy-loaded') &&
+          worker.includes('self.TraceRuntimeKernelPolicy') &&
+          worker.includes('runtimeKernelDeviceOutputTarget') &&
+          worker.includes('normalizeRuntimeKernelManifestDevicePath') &&
           worker.includes('sourceDevice') &&
           worker.includes('outputDevicePath'),
-        '@tracecode/harness-java worker should ship routed source and output device events'
+        '@tracecode/harness-java worker should load shared worker kernel policy for routed source and output device events'
       );
       assertCondition(
         worker.includes('projectKernelFileManifest') &&

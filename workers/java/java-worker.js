@@ -15,6 +15,10 @@ const DEFAULT_MAX_STORED_EVENTS = 50_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
 const SCRIPT_METHOD_NAME = '__tracecodeScript';
 const DYNAMIC_INPUT_PREFIX = '/str/tracecode-java-input';
+const SHARED_KERNEL_POLICY_PATHS = [
+  '../shared/runtime-kernel-policy-classic.js',
+  './shared/runtime-kernel-policy-classic.js',
+];
 const JAVA_DEFAULT_IMPORTS = [
   'import java.util.*;',
   'import java.io.*;',
@@ -45,6 +49,19 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
 }
 
 if (typeof self.importScripts === 'function') {
+  for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
+    try {
+      self.importScripts(scriptPath);
+      emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitRuntimeDiagnostic('warn', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
+        scriptPath,
+        message,
+      });
+    }
+  }
   self.importScripts('java-source-augmentations.js');
 }
 
@@ -67,18 +84,10 @@ function postMessageResponse(message) {
 function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
   if (!activeJavaProjectIo?.messageId || typeof data !== 'string' || data.length === 0) return;
   const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
-  const normalizedSourceDevice = typeof sourceDevice === 'string'
-    ? sourceDevice.replace(/\\/g, '/')
-    : '';
-  const sourceDevicePath = activeJavaProjectIo.kernelDevicePaths?.has(normalizedSourceDevice)
-    ? normalizedSourceDevice
-    : '';
-  const normalizedOutputDevice = typeof outputDevice === 'string'
-    ? outputDevice.replace(/\\/g, '/')
-    : '';
-  const outputDevicePath = activeJavaProjectIo.kernelDevicePaths?.has(normalizedOutputDevice)
-    ? normalizedOutputDevice
-    : normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout';
+  const sourceDevicePath = normalizeKernelManifestDevicePath(sourceDevice);
+  const requestedOutputDevice = normalizeKernelManifestDevicePath(outputDevice) || (normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
+  const outputDevicePath = kernelDeviceOutputTarget(requestedOutputDevice, activeJavaProjectIo.request)
+    || (normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
   const eventStream = outputDevicePath === '/dev/stderr' ? 'stderr' : normalizedStream;
   if (eventStream === 'stderr') {
     activeJavaProjectIo.stderrEmitted = true;
@@ -89,7 +98,9 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
     type: 'output',
     stream: eventStream,
     device: outputDevicePath,
-    ...(sourceDevicePath && sourceDevicePath !== outputDevicePath ? { sourceDevice: sourceDevicePath } : {}),
+    ...(sourceDevicePath && sourceDevicePath !== outputDevicePath && kernelDeviceOutputTarget(sourceDevicePath, activeJavaProjectIo.request) === outputDevicePath
+      ? { sourceDevice: sourceDevicePath }
+      : {}),
     data,
   });
 }
@@ -3161,11 +3172,31 @@ function normalizeKernelAbsolutePath(path) {
   return `/${parts.join('/')}`.replace(/\/+$/, '') || '/';
 }
 
-function normalizeKernelDeviceReference(path) {
+function normalizeKernelManifestDevicePath(path) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.normalizeRuntimeKernelManifestDevicePath === 'function') {
+    return policy.normalizeRuntimeKernelManifestDevicePath(path) || null;
+  }
   const normalized = normalizeKernelAbsolutePath(path);
-  if (normalized === null || normalized === '/dev' || !normalized.startsWith('/dev/')) return null;
-  const deviceName = normalized.slice('/dev/'.length);
-  return deviceName.length > 0 && !deviceName.includes('/') ? normalized : null;
+  return normalized !== null && normalized !== '/dev' && normalized.startsWith('/dev/') ? normalized : null;
+}
+
+function normalizeKernelDeviceReference(path) {
+  return normalizeKernelManifestDevicePath(path);
+}
+
+function kernelDeviceOutputTarget(path, request) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelDeviceOutputTarget === 'function') {
+    return policy.runtimeKernelDeviceOutputTarget(Array.isArray(request?.project?.kernelDevices) ? request.project.kernelDevices : [], path) || null;
+  }
+  const normalized = normalizeKernelDeviceReference(path);
+  const devices = Array.isArray(request?.project?.kernelDevices) ? request.project.kernelDevices : [];
+  for (const device of devices) {
+    if (normalizeKernelDeviceReference(device?.path) !== normalized || device?.writable !== true) continue;
+    return normalizeKernelDeviceReference(device?.outputDevice) || normalized;
+  }
+  return null;
 }
 
 function normalizeKernelVirtualFilePath(path) {
@@ -4269,6 +4300,7 @@ async function runJavaProjectRequest(payload, requestId) {
   const libraryCallStart = performance.now();
   const projectIo = {
     messageId: requestId,
+    request: payload,
     stdoutEmitted: false,
     stderrEmitted: false,
     kernelDevicePaths: new Set(

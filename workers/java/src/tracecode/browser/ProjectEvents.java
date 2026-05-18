@@ -200,7 +200,7 @@ public final class ProjectEvents {
   public static Stream<Path> list(Path path) throws IOException {
     String normalized = normalizeVirtualPath(path);
     if (isVirtualDeviceDirectory(normalized)) {
-      return kernelDevicePaths().stream();
+      return kernelDeviceDirectoryPaths(normalized).stream();
     }
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     if (isKernelVirtualDirectory(normalized)) return kernelVirtualDirectoryPaths(normalized).stream();
@@ -210,7 +210,7 @@ public final class ProjectEvents {
 
   public static DirectoryStream<Path> newDirectoryStream(Path dir) throws IOException {
     String normalized = normalizeVirtualPath(dir);
-    if (isVirtualDeviceDirectory(normalized)) return new KernelDirectoryStream(kernelDevicePaths());
+    if (isVirtualDeviceDirectory(normalized)) return new KernelDirectoryStream(kernelDeviceDirectoryPaths(normalized));
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     if (isKernelVirtualDirectory(normalized)) return new KernelDirectoryStream(kernelVirtualDirectoryPaths(normalized));
     if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
@@ -241,7 +241,7 @@ public final class ProjectEvents {
     String normalized = normalizeVirtualPath(dir);
     if (isVirtualDeviceDirectory(normalized)) {
       ArrayList<Path> entries = new ArrayList<>();
-      for (Path entry : kernelDevicePaths()) {
+      for (Path entry : kernelDeviceDirectoryPaths(normalized)) {
         if (filter == null || filter.accept(entry)) entries.add(entry);
       }
       return new KernelDirectoryStream(entries);
@@ -1113,7 +1113,7 @@ public final class ProjectEvents {
     @Override
     public String[] list() {
       String normalized = normalizeVirtualPath(toPath());
-      if (isVirtualDeviceDirectory(normalized)) return kernelDeviceNames();
+      if (isVirtualDeviceDirectory(normalized)) return kernelDeviceDirectoryNames(normalized);
       if (isVirtualDevicePath(normalized)) return null;
       if (isKernelVirtualDirectory(normalized)) return kernelVirtualDirectoryNames(normalized);
       if (isKernelVirtualFile(normalized)) return null;
@@ -1125,7 +1125,7 @@ public final class ProjectEvents {
       String normalized = normalizeVirtualPath(toPath());
       if (isVirtualDeviceDirectory(normalized)) {
         ArrayList<String> names = new ArrayList<>();
-        for (String name : kernelDeviceNames()) {
+        for (String name : kernelDeviceDirectoryNames(normalized)) {
           if (filter == null || filter.accept(this, name)) names.add(name);
         }
         return names.toArray(new String[0]);
@@ -1765,10 +1765,28 @@ public final class ProjectEvents {
     return paths;
   }
 
+  private static ArrayList<Path> kernelDeviceDirectoryPaths(String normalized) {
+    ArrayList<Path> paths = new ArrayList<>();
+    for (String name : kernelDeviceDirectoryNames(normalized)) {
+      paths.add(Path.of(("/".equals(normalized) ? "" : normalized) + "/" + name));
+    }
+    return paths;
+  }
+
   private static String[] kernelDeviceNames() {
+    return kernelDeviceDirectoryNames("/dev");
+  }
+
+  private static String[] kernelDeviceDirectoryNames(String normalized) {
+    String prefix = normalized.endsWith("/") ? normalized : normalized + "/";
     ArrayList<String> names = new ArrayList<>();
     for (String device : KERNEL_DEVICES.get().keySet()) {
-      if (device.startsWith("/dev/")) names.add(device.substring("/dev/".length()));
+      if (!device.startsWith(prefix)) continue;
+      String remaining = device.substring(prefix.length());
+      if (remaining.isEmpty()) continue;
+      int slash = remaining.indexOf('/');
+      String name = slash < 0 ? remaining : remaining.substring(0, slash);
+      if (!names.contains(name)) names.add(name);
     }
     Collections.sort(names);
     return names.toArray(new String[0]);
@@ -1807,12 +1825,17 @@ public final class ProjectEvents {
   private static String normalizeKernelDeviceReference(String value) {
     String normalized = normalizeKernelAbsoluteString(value);
     if (normalized == null || "/dev".equals(normalized) || !normalized.startsWith("/dev/")) return null;
-    String deviceName = normalized.substring("/dev/".length());
-    return !deviceName.isEmpty() && deviceName.indexOf('/') < 0 ? normalized : null;
+    return normalized.length() > "/dev/".length() ? normalized : null;
   }
 
   private static boolean isVirtualDeviceDirectory(String normalized) {
-    return "/dev".equals(normalized);
+    if ("/dev".equals(normalized)) return true;
+    if (normalized == null || !normalized.startsWith("/dev/")) return false;
+    String prefix = normalized.endsWith("/") ? normalized : normalized + "/";
+    for (String device : KERNEL_DEVICES.get().keySet()) {
+      if (device.startsWith(prefix)) return true;
+    }
+    return false;
   }
 
   private static boolean isVirtualDevicePath(String normalized) {

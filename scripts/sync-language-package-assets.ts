@@ -84,6 +84,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'java-source-augmentations.js'],
       },
       {
+        source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
+        target: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
+      },
+      {
         source: ['workers', 'vendor', 'java-browser-helper.jar'],
         target: ['workers', 'vendor', 'java-browser-helper.jar'],
       },

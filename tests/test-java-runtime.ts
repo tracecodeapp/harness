@@ -2441,9 +2441,8 @@ async function main(): Promise<void> {
             event.stream === 'stdout' &&
             event.device === '/dev/stdout' &&
             event.data === 'bad_nested_device\n' &&
-            event.sourceDevice === undefined
+            event.sourceDevice === '/dev/nested/path'
         ) === true &&
-        !projectExecute.events?.some((event) => event.type === 'output' && event.sourceDevice === '/dev/nested/path') &&
         projectExecute.events?.some(
           (event) =>
             event.type === 'output' &&
@@ -2982,8 +2981,8 @@ async function main(): Promise<void> {
       'Java execute-project-java adapter should pass project kernelDevices into ProjectEvents'
     );
     assertCondition(
-      !defaultAdapterSource.includes(Buffer.from('/dev/nested/path').toString('base64')),
-      'Java execute-project-java adapter should ignore kernelDevices outside runtime-kernel device references'
+      defaultAdapterSource.includes(Buffer.from('/dev/nested/path').toString('base64')),
+      'Java execute-project-java adapter should preserve nested runtime-kernel manifest devices'
     );
     assertCondition(
       defaultAdapterSource.includes('ProjectEvents.setKernelFiles("'),

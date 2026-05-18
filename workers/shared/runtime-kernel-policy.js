@@ -34,7 +34,7 @@ export function normalizeRuntimeKernelDeviceReference(value) {
   return deviceName.length > 0 && !deviceName.includes('/') ? normalized : '';
 }
 
-function normalizeRuntimeKernelManifestDevicePath(value) {
+export function normalizeRuntimeKernelManifestDevicePath(value) {
   const normalized = normalizeRuntimeKernelPath(value);
   return normalized !== '/dev' && normalized.startsWith('/dev/') ? normalized : '';
 }
