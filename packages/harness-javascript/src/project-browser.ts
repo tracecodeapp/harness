@@ -2790,6 +2790,11 @@ async function runBrowserJavaScriptProjectRequest(
       if (!options.recursive) {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, cp '${source}'`), { code: 'EISDIR' });
       }
+      if (fileStore.has(normalizedDestination)) {
+        throw Object.assign(new Error(`Cannot overwrite non-directory ${destination} with directory ${source}`), {
+          code: 'ERR_FS_CP_DIR_TO_NON_DIR',
+        });
+      }
 
       const destinationDirectoryExisted = directoryStore.has(normalizedDestination);
       directoryStore.add(normalizedDestination);
