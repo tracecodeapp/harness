@@ -2125,6 +2125,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
   );
 
+  const metadataResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error) => error ? reject(error) : resolve())); fs.writeFileSync(\\"metadata.txt\\", \\"meta\\\\n\\"); fs.chmodSync(\\"metadata.txt\\", 0o755); fs.chownSync(\\"metadata.txt\\", 1, 1); fs.utimesSync(\\"metadata.txt\\", new Date(0), new Date(0)); await call((done) => fs.chmod(\\"metadata.txt\\", 0o644, done)); await call((done) => fs.chown(\\"metadata.txt\\", 2, 2, done)); await call((done) => fs.utimes(\\"metadata.txt\\", 1, 1, done)); const fd = fs.openSync(\\"metadata.txt\\", \\"r+\\"); fs.fchmodSync(fd, 0o600); fs.fchownSync(fd, 3, 3); fs.futimesSync(fd, 2, 2); await call((done) => fs.fchmod(fd, 0o600, done)); await call((done) => fs.fchown(fd, 4, 4, done)); await call((done) => fs.futimes(fd, 3, 3, done)); fs.closeSync(fd); await fsp.chmod(\\"metadata.txt\\", 0o644); await fsp.chown(\\"metadata.txt\\", 5, 5); await fsp.utimes(\\"metadata.txt\\", 4, 4); const handle = await fsp.open(\\"metadata.txt\\", \\"r+\\"); await handle.chmod(0o644); await handle.chown(6, 6); await handle.utimes(5, 5); await handle.close(); console.log(fs.readFileSync(\\"metadata.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(metadataResult.exitCode === 0, `browser node metadata no-op workflow should succeed: ${metadataResult.stderr}`);
+  assertCondition(
+    metadataResult.stdout === 'meta\n\n',
+    `browser node metadata APIs should validate and preserve file contents: ${metadataResult.stdout}`
+  );
+
   const watchResult = await workspace.runCommand([
     'node',
     '-e',

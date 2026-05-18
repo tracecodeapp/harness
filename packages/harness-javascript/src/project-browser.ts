@@ -1474,6 +1474,42 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
+      chmodSync: (path: unknown, _mode: unknown) => {
+        assertFileSystemAccess(path);
+        return undefined;
+      },
+      chmod: (path: unknown, mode: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.chmodSync(path, mode);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
+      chownSync: (path: unknown, _uid: unknown, _gid: unknown) => {
+        assertFileSystemAccess(path);
+        return undefined;
+      },
+      chown: (path: unknown, uid: unknown, gid: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.chownSync(path, uid, gid);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
+      utimesSync: (path: unknown, _atime: unknown, _mtime: unknown) => {
+        assertFileSystemAccess(path);
+        return undefined;
+      },
+      utimes: (path: unknown, atime: unknown, mtime: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.utimesSync(path, atime, mtime);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
       watch: (
         path: unknown,
         optionsOrListener?: { recursive?: boolean } | string | ((eventType: string, filename: string) => void),
@@ -1664,6 +1700,42 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback(null, stats));
         } catch (error) {
           queueMicrotask(() => callback(error as Error));
+        }
+      },
+      fchmodSync: (fd: number, _mode: unknown) => {
+        fileDescriptor(fd);
+        return undefined;
+      },
+      fchmod: (fd: number, mode: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.fchmodSync(fd, mode);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
+      fchownSync: (fd: number, _uid: unknown, _gid: unknown) => {
+        fileDescriptor(fd);
+        return undefined;
+      },
+      fchown: (fd: number, uid: unknown, gid: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.fchownSync(fd, uid, gid);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
+      futimesSync: (fd: number, _atime: unknown, _mtime: unknown) => {
+        fileDescriptor(fd);
+        return undefined;
+      },
+      futimes: (fd: number, atime: unknown, mtime: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.futimesSync(fd, atime, mtime);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
         }
       },
       ftruncateSync: (fd: number, length = 0) => {
@@ -2088,6 +2160,15 @@ async function runBrowserJavaScriptProjectRequest(
             };
           },
           stat: async () => fsApi.fstatSync(fd),
+          chmod: async (mode: unknown) => {
+            fsApi.fchmodSync(fd, mode);
+          },
+          chown: async (uid: unknown, gid: unknown) => {
+            fsApi.fchownSync(fd, uid, gid);
+          },
+          utimes: async (atime: unknown, mtime: unknown) => {
+            fsApi.futimesSync(fd, atime, mtime);
+          },
           truncate: async (length = 0) => {
             fsApi.ftruncateSync(fd, length);
           },
@@ -2114,6 +2195,15 @@ async function runBrowserJavaScriptProjectRequest(
       },
       cp: async (source: unknown, destination: unknown, options?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean }) => {
         fsApi.cpSync(source, destination, options);
+      },
+      chmod: async (path: unknown, mode: unknown) => {
+        fsApi.chmodSync(path, mode);
+      },
+      chown: async (path: unknown, uid: unknown, gid: unknown) => {
+        fsApi.chownSync(path, uid, gid);
+      },
+      utimes: async (path: unknown, atime: unknown, mtime: unknown) => {
+        fsApi.utimesSync(path, atime, mtime);
       },
       rename: async (oldPath: unknown, newPath: unknown) => {
         fsApi.renameSync(oldPath, newPath);
