@@ -4122,6 +4122,7 @@ async function runBrowserJavaScriptProjectRequest(
         if (mkdirTarget?.kind === 'error') {
           throwRuntimeMkdirTargetError(mkdirTarget, `EROFS: read-only file system, mkdir '${path}'`);
         }
+        const rawPath = workspacePathInputToString(path).replace(/\\/g, '/');
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
         const parent = dirname(normalized);
@@ -4146,23 +4147,30 @@ async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, mkdir '${path}'`), { code: 'ENOENT' });
         }
         const start = options?.recursive ? 1 : parts.length;
+        let firstCreated: string | undefined;
         for (let index = start; index <= parts.length; index += 1) {
           const directoryPath = parts.slice(0, index).join('/');
           const existed = directoryStore.has(directoryPath);
           directoryStore.add(directoryPath);
           if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
           if (!existed) {
+            firstCreated ??= directoryPath;
             emitDirectoryCreate(directoryPath);
             notifyDirectoryMutation(directoryPath);
           }
         }
-        return undefined;
+        if (!options?.recursive || firstCreated === undefined) return undefined;
+        return rawPath.startsWith('/') ? workspaceFilename(firstCreated, workspaceRoot) : firstCreated;
       },
-      mkdir: (path: unknown, optionsOrCallback?: { recursive?: boolean } | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+      mkdir: (
+        path: unknown,
+        optionsOrCallback?: { recursive?: boolean } | ((error?: Error | null, path?: string) => void),
+        callback?: (error?: Error | null, path?: string) => void
+      ) => {
         const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
         try {
-          fsApi.mkdirSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
-          queueMicrotask(() => done?.(null));
+          const created = fsApi.mkdirSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null, created));
         } catch (error) {
           queueMicrotask(() => done?.(error as Error));
         }

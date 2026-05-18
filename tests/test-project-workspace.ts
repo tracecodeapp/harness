@@ -2404,6 +2404,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   await assertRejectsAsync(() => workspace.readFile('copy-target.txt'), 'browser node renameSync should remove the old target path');
   await assertRejectsAsync(() => workspace.readFile('async-copy-target.txt'), 'browser node async rename should remove the old target path');
 
+  const mkdirReturnResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"(async () => { const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, value) => error ? reject(error) : resolve(value))); console.log(fs.mkdirSync(\\"mkdir-return-sync/a\\", { recursive: true })); console.log(String(fs.mkdirSync(\\"mkdir-return-sync/a\\", { recursive: true }))); console.log(await call((done) => fs.mkdir(\\"mkdir-return-callback/a\\", { recursive: true }, done))); console.log(await fsp.mkdir(\\"mkdir-return-promise/a\\", { recursive: true })); console.log(fs.mkdirSync(\\"/workspace/mkdir-return-absolute/a\\", { recursive: true })); })();"',
+  ].join(' '));
+  assertCondition(mkdirReturnResult.exitCode === 0, `browser node mkdir return workflow should succeed: ${mkdirReturnResult.stderr}`);
+  assertCondition(
+    mkdirReturnResult.stdout === 'mkdir-return-sync\nundefined\nmkdir-return-callback\nmkdir-return-promise\n/workspace/mkdir-return-absolute\n',
+    `browser node recursive mkdir should return the first created directory like Node: ${JSON.stringify(mkdirReturnResult)}`
+  );
+
   const renameDirectoryEvents: RuntimeCommandEvent[] = [];
   const renameDirectoryResult = await workspace.runCommand([
     'node',
