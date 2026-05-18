@@ -156,8 +156,12 @@ async function main(): Promise<void> {
             'print("dev-custom-access=" + str(os.access("/dev/log", os.W_OK)) + ":" + str(os.access("/dev/custom-in", os.R_OK)))',
             'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in:',
             '    print("dev-file-custom-in=" + custom_in.read().strip())',
+            'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in_chunks:',
+            '    print("dev-file-custom-in-chunks=" + custom_in_chunks.read(4) + "|" + custom_in_chunks.read().strip() + "|" + str(custom_in_chunks.read() == ""))',
             'with open("/dev/custom-in", "rb") as custom_in_binary:',
             '    print("dev-file-custom-in-binary=" + custom_in_binary.read().decode("utf-8").strip())',
+            'with open("/dev/custom-in", "rb") as custom_in_binary_chunks:',
+            '    print("dev-file-custom-in-binary-chunks=" + custom_in_binary_chunks.read(4).decode("utf-8") + "|" + custom_in_binary_chunks.read().decode("utf-8").strip() + "|" + str(custom_in_binary_chunks.read() == b""))',
             'with open("/dev/log", "w", encoding="utf-8") as log:',
             '    log.write("dev-file-log\\\\n")',
             'with open("/dev/log", "wb") as log_binary:',
@@ -191,6 +195,7 @@ async function main(): Promise<void> {
             '    tty.writelines(["dev-file-tty-lines", "\\\\n"])',
             'with open("/dev/tty", "r+", encoding="utf-8") as tty_rw:',
             '    print("dev-file-tty-rw-read=" + tty_rw.readline().strip())',
+            '    print("dev-file-tty-rw-eof=" + str(tty_rw.read() == ""))',
             '    tty_rw.write("dev-file-tty-rw-write\\\\n")',
             'sys.__stdout__.write("provider-hook-out\\\\n")',
             'sys.__stdout__.writelines(["provider-hook-lines", "\\\\n"])',
@@ -526,7 +531,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-binary=from-stdin\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(

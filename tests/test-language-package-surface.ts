@@ -282,7 +282,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-python worker should ship Pyodide project stdio bridge hooks'
       );
       assertCondition(
-        worker.includes('sourceDevice') && worker.includes('_target.write(_value, self._device if self._device != _output_device else None)'),
+        worker.includes('sourceDevice') &&
+          worker.includes('_target.write(bytes(_data).decode("utf-8", "replace"), self._device if self._device != _output_device else None)'),
         '@tracecode/harness-python worker should ship routed source device output events'
       );
       assertCondition(

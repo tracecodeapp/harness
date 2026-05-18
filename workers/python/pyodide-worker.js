@@ -1213,6 +1213,8 @@ class _TraceDeviceFile:
         self._device = _device
         self._mode = str(_mode or "r")
         self._binary = "b" in self._mode
+        self._contents = str(_request.get("stdin", "")).encode("utf-8")
+        self._offset = 0
         self.closed = False
 
     def readable(self):
@@ -1225,17 +1227,29 @@ class _TraceDeviceFile:
             _marker in self._mode for _marker in ("w", "a", "x", "+")
         )
 
-    def read(self, *args):
+    def read(self, _size=-1):
         if not self.readable():
             raise OSError("Kernel device is not readable: " + self._device)
-        _data = str(_request.get("stdin", "")).encode("utf-8")
+        _length = len(self._contents) - self._offset if _size is None or int(_size) < 0 else int(_size)
+        _data = self._contents[self._offset:self._offset + _length]
+        self._offset += len(_data)
         return _data if self._binary else _data.decode("utf-8", "replace")
 
-    def readline(self, *args):
-        _data = self.read(*args)
+    def readline(self, _size=-1):
+        if not self.readable():
+            raise OSError("Kernel device is not readable: " + self._device)
+        _remaining = self._contents[self._offset:]
+        if not _remaining:
+            return b"" if self._binary else ""
+        _newline_index = _remaining.find(b"\\n")
+        _line_length = len(_remaining) if _newline_index < 0 else _newline_index + 1
+        if _size is not None and int(_size) >= 0:
+            _line_length = min(_line_length, int(_size))
+        _data = _remaining[:_line_length]
+        self._offset += len(_data)
         if self._binary:
-            return _data.splitlines(True)[0] if _data else b""
-        return _data.splitlines(True)[0] if _data else ""
+            return _data
+        return _data.decode("utf-8", "replace")
 
     def write(self, _value):
         if not self.writable():
