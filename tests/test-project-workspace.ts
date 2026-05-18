@@ -2310,6 +2310,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node FileHandle writes should emit live file changes: ${JSON.stringify(fileHandleEvents)}`
   );
 
+  const fileHandleStreamResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fsp = require(\\"node:fs/promises\\"); const writer = await fsp.open(\\"handle-stream.txt\\", \\"w+\\"); await new Promise((resolve, reject) => { const stream = writer.createWriteStream(); stream.on(\\"error\\", reject); stream.on(\\"finish\\", resolve); stream.write(\\"handle-one\\\\n\\"); stream.end(\\"handle-two\\\\n\\"); }); const reader = await fsp.open(\\"handle-stream.txt\\", \\"r\\"); const chunks = []; await new Promise((resolve, reject) => { reader.createReadStream({ encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve); }); console.log(chunks.join(\\"\\").trim());"',
+  ].join(' '));
+  assertCondition(fileHandleStreamResult.exitCode === 0, `browser node FileHandle stream workflow should succeed: ${fileHandleStreamResult.stderr}`);
+  assertCondition(
+    fileHandleStreamResult.stdout === 'handle-one\nhandle-two\n',
+    `browser node FileHandle streams should read/write descriptor-backed files: ${fileHandleStreamResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('handle-stream.txt') === 'handle-one\nhandle-two\n', 'browser node FileHandle streams should persist through kernel FS');
+
   const vectorEvents: RuntimeCommandEvent[] = [];
   const vectorResult = await workspace.runCommand([
     'node',

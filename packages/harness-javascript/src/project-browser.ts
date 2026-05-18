@@ -2741,6 +2741,10 @@ async function runBrowserJavaScriptProjectRequest(
           writeFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
             writeFileToHandle(value, options);
           },
+          createReadStream: (options?: string | { autoClose?: boolean; encoding?: string; end?: number; start?: number } | null) =>
+            fsApi.createReadStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd }),
+          createWriteStream: (options?: string | { autoClose?: boolean; encoding?: string | null; flags?: string } | null) =>
+            fsApi.createWriteStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd }),
           appendFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
             appendFileToHandle(value, options);
           },
