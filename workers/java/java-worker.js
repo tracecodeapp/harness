@@ -2999,8 +2999,20 @@ function javaReportConsoleOutput(report) {
   );
 }
 
-function javaProjectFailureStderr(report) {
-  const compilerOutput = javaReportConsoleOutput(report).join('\n').trim();
+function javaNormalizeProjectCompilerOutput(output, sourceRoot) {
+  const root = String(sourceRoot ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!root) return output;
+  const escapedRoot = escapeRegExp(root);
+  return String(output ?? '')
+    .replace(new RegExp(`${escapedRoot}/`, 'g'), '')
+    .replace(new RegExp(escapedRoot, 'g'), '.');
+}
+
+function javaProjectFailureStderr(report, sourceRoot) {
+  const compilerOutput = javaNormalizeProjectCompilerOutput(
+    javaReportConsoleOutput(report).join('\n').trim(),
+    sourceRoot
+  );
   const runtimeError = typeof report?.runtimeError === 'string' ? report.runtimeError.trim() : '';
   if (compilerOutput.length > 0) {
     if (!runtimeError || runtimeError === 'Java compilation failed' || compilerOutput.includes(runtimeError)) {
@@ -3957,8 +3969,8 @@ function emitJavaProjectResultEvents(id, result, options = {}) {
   }
 }
 
-function commandResultFromJavaProjectReport(report, totalEnd, totalStart, libraryCallEnd, libraryCallStart, outputDir, payload) {
-  let compilerOutput = javaReportConsoleOutput(report).join('\n');
+function commandResultFromJavaProjectReport(report, totalEnd, totalStart, libraryCallEnd, libraryCallStart, outputDir, payload, sourceRoot) {
+  let compilerOutput = javaNormalizeProjectCompilerOutput(javaReportConsoleOutput(report).join('\n'), sourceRoot);
   if (
     report.success === true &&
     payload?.source === 'compile' &&
@@ -3975,7 +3987,7 @@ function commandResultFromJavaProjectReport(report, totalEnd, totalStart, librar
   if (report.success !== true) {
     return {
       stdout: '',
-      stderr: javaProjectFailureStderr(report),
+      stderr: javaProjectFailureStderr(report, sourceRoot),
       exitCode: 1,
       timings: {
         hostCallMs: libraryCallEnd - libraryCallStart,
@@ -4494,7 +4506,8 @@ async function runJavaProjectRequest(payload, requestId) {
           projectVirtualRoot(payload?.project)
         )
       : null,
-    payload
+    payload,
+    runnableSource.sourceRoot
   );
   emitJavaProjectResultEvents(requestId, result, {
     skipStdout: projectIo.stdoutEmitted,
