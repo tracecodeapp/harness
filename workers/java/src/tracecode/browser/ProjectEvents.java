@@ -1837,6 +1837,10 @@ public final class ProjectEvents {
 
   private static File randomAccessFileTarget(Path path, String mode) throws IOException {
     if (randomAccessFileCanWrite(mode)) assertWritableProjectPath(path);
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) return temporaryFileWithContents(readKernelDevice(device));
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) return temporaryFileWithContents(kernelFile);
     return path.toFile();
   }
 
