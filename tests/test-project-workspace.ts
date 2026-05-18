@@ -3179,6 +3179,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node empty directory workflow should match desktop semantics: ${directoryResult.stdout}`
   );
 
+  const mkdirConflictResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"mkdir-file.txt\\", \\"file\\\\n\\"); fs.mkdirSync(\\"mkdir-existing-dir\\"); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; console.log(code(() => fs.mkdirSync(\\"mkdir-file.txt\\"))); console.log(code(() => fs.mkdirSync(\\"mkdir-file.txt\\", { recursive: true }))); console.log(code(() => fs.mkdirSync(\\"mkdir-file.txt/child\\", { recursive: true }))); console.log(code(() => fs.mkdirSync(\\"mkdir-file.txt/child\\"))); console.log(code(() => fs.mkdirSync(\\"mkdir-existing-dir\\"))); console.log(code(() => fs.mkdirSync(\\"mkdir-existing-dir\\", { recursive: true }))); console.log(fs.statSync(\\"mkdir-file.txt\\").isFile()); console.log(fs.readFileSync(\\"mkdir-file.txt\\", \\"utf8\\")); console.log(fs.statSync(\\"mkdir-existing-dir\\").isDirectory());"',
+  ].join(' '));
+  assertCondition(mkdirConflictResult.exitCode === 0, `browser node mkdir conflict workflow should succeed: ${mkdirConflictResult.stderr}`);
+  assertCondition(
+    mkdirConflictResult.stdout === 'EEXIST\nEEXIST\nENOTDIR\nENOTDIR\nEEXIST\nok\ntrue\nfile\n\ntrue\n',
+    `browser node mkdir conflicts should match desktop semantics without corrupting entries: ${mkdirConflictResult.stdout}`
+  );
+
   const directoryMutationResult = await workspace.runCommand([
     'node',
     '-e',

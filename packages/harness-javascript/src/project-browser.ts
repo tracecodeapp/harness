@@ -3845,10 +3845,25 @@ async function runBrowserJavaScriptProjectRequest(
         if (!normalized) return undefined;
         const parent = dirname(normalized);
         const parentPath = parent === '' ? '' : parent;
+        const parts = normalized.split('/');
+        for (let index = 1; index < parts.length; index += 1) {
+          const directoryPath = parts.slice(0, index).join('/');
+          if (fileStore.has(directoryPath)) {
+            throw Object.assign(new Error(`ENOTDIR: not a directory, mkdir '${path}'`), { code: 'ENOTDIR' });
+          }
+        }
+        if (fileStore.has(normalized)) {
+          throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: 'EEXIST' });
+        }
+        if (directoryStore.has(normalized)) {
+          if (!options?.recursive) {
+            throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: 'EEXIST' });
+          }
+          return undefined;
+        }
         if (!options?.recursive && parentPath && !directoryStore.has(parentPath)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, mkdir '${path}'`), { code: 'ENOENT' });
         }
-        const parts = normalized.split('/');
         const start = options?.recursive ? 1 : parts.length;
         for (let index = start; index <= parts.length; index += 1) {
           const directoryPath = parts.slice(0, index).join('/');
