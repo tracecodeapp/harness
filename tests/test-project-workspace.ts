@@ -4707,17 +4707,26 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   let received: JavaProjectCommandRequest | null = null;
   let callCount = 0;
   const events: RuntimeCommandEvent[] = [];
+  const appliedChanges: string[] = [];
+  let fileChangeObservedAfterApply = false;
+  let directoryChangeObservedAfterApply = false;
   const runner = createBrowserJavaProjectRunner({
     async executeProjectJava(request, _timeoutMs, onEvent) {
       callCount += 1;
       received = request;
       onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'java-streamed\n' });
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'java-live.txt', contents: 'live\n' } });
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'java-live-dir', directory: true } });
       onEvent?.({ type: 'file-change', phase: 'final-diff', change: { path: 'java-generated.txt', contents: 'generated\n' } });
       return {
         stdout: `java-streamed\n${request.source}:${request.scriptPath}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
       };
+    },
+  }, {
+    applyFileChange: async (change) => {
+      appliedChanges.push(change.path);
     },
   });
 
@@ -4732,7 +4741,15 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     },
-    onEvent: (event) => events.push(event),
+    onEvent: (event) => {
+      if (event.type === 'file-change' && event.change.path === 'java-live.txt') {
+        fileChangeObservedAfterApply = appliedChanges.includes('java-live.txt');
+      }
+      if (event.type === 'file-change' && event.change.path === 'java-live-dir') {
+        directoryChangeObservedAfterApply = appliedChanges.includes('java-live-dir');
+      }
+      events.push(event);
+    },
   });
 
   assertCondition(result.stdout === 'java-streamed\nrun:Main:1', 'browser java runner should delegate to worker client');
@@ -4740,6 +4757,27 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   assertCondition(
     events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
     `browser java runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'java-live.txt'
+    ),
+    `browser java runner should forward worker live file-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'java-live-dir' &&
+      event.change.directory === true
+    ),
+    `browser java runner should forward worker live directory-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    fileChangeObservedAfterApply && directoryChangeObservedAfterApply,
+    `browser java runner should apply live changes before forwarding them: ${JSON.stringify({ appliedChanges, events })}`
   );
   assertCondition(
     events.some((event) =>
@@ -4866,16 +4904,25 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
 async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
   let received: CSharpProjectCommandRequest | null = null;
   const events: RuntimeCommandEvent[] = [];
+  const appliedChanges: string[] = [];
+  let fileChangeObservedAfterApply = false;
+  let directoryChangeObservedAfterApply = false;
   const runner = createBrowserCSharpProjectRunner({
     async executeProjectCSharp(request, _timeoutMs, onEvent) {
       received = request;
       onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'csharp-streamed\n' });
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'csharp-live.txt', contents: 'live\n' } });
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'csharp-live-dir', directory: true } });
       onEvent?.({ type: 'file-change', phase: 'final-diff', change: { path: 'csharp-generated.txt', contents: 'generated\n' } });
       return {
         stdout: `csharp-streamed\n${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
       };
+    },
+  }, {
+    applyFileChange: async (change) => {
+      appliedChanges.push(change.path);
     },
   });
 
@@ -4890,7 +4937,15 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'Program.cs', contents: 'Console.WriteLine("hello");\n' }],
     },
-    onEvent: (event) => events.push(event),
+    onEvent: (event) => {
+      if (event.type === 'file-change' && event.change.path === 'csharp-live.txt') {
+        fileChangeObservedAfterApply = appliedChanges.includes('csharp-live.txt');
+      }
+      if (event.type === 'file-change' && event.change.path === 'csharp-live-dir') {
+        directoryChangeObservedAfterApply = appliedChanges.includes('csharp-live-dir');
+      }
+      events.push(event);
+    },
   });
 
   assertCondition(result.stdout === 'csharp-streamed\nrun:<project>:alpha,beta:1', 'browser C# runner should delegate to worker client');
@@ -4898,6 +4953,27 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
   assertCondition(
     events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
     `browser C# runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'csharp-live.txt'
+    ),
+    `browser C# runner should forward worker live file-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'csharp-live-dir' &&
+      event.change.directory === true
+    ),
+    `browser C# runner should forward worker live directory-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    fileChangeObservedAfterApply && directoryChangeObservedAfterApply,
+    `browser C# runner should apply live changes before forwarding them: ${JSON.stringify({ appliedChanges, events })}`
   );
   assertCondition(
     events.some((event) =>
@@ -4931,16 +5007,24 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
 async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
   let received: CppProjectCommandRequest | null = null;
   const events: RuntimeCommandEvent[] = [];
+  const appliedChanges: string[] = [];
+  let fileChangeObservedAfterApply = false;
+  let directoryChangeObservedAfterApply = false;
   const runner = createBrowserCppProjectRunner({
     async executeProjectCpp(request, _timeoutMs, onEvent) {
       received = request;
       onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'cpp-streamed\n' });
       onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'cpp-live.txt', contents: 'live\n' } });
+      onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'cpp-live-dir', directory: true } });
       return {
         stdout: `cpp-streamed\n${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
       };
+    },
+  }, {
+    applyFileChange: async (change) => {
+      appliedChanges.push(change.path);
     },
   });
 
@@ -4955,7 +5039,15 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
     },
-    onEvent: (event) => events.push(event),
+    onEvent: (event) => {
+      if (event.type === 'file-change' && event.change.path === 'cpp-live.txt') {
+        fileChangeObservedAfterApply = appliedChanges.includes('cpp-live.txt');
+      }
+      if (event.type === 'file-change' && event.change.path === 'cpp-live-dir') {
+        directoryChangeObservedAfterApply = appliedChanges.includes('cpp-live-dir');
+      }
+      events.push(event);
+    },
   });
 
   assertCondition(result.stdout === 'cpp-streamed\ncompile:main.cpp:main.cpp,-o,a.out:1', 'browser C++ runner should delegate to worker client');
@@ -4971,6 +5063,19 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
       event.change.path === 'cpp-live.txt'
     ),
     `browser C++ runner should forward worker live file-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'cpp-live-dir' &&
+      event.change.directory === true
+    ),
+    `browser C++ runner should forward worker live directory-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    fileChangeObservedAfterApply && directoryChangeObservedAfterApply,
+    `browser C++ runner should apply live changes before forwarding them: ${JSON.stringify({ appliedChanges, events })}`
   );
 }
 
