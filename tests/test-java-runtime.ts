@@ -354,9 +354,12 @@ public class ProjectWorkspaceDirectorySmoke {
       ProjectEvents.createDirectories(tempRoot);
       Path tempFile = ProjectEvents.createTempFile(tempRoot, "case", ".txt");
       ProjectEvents.writeString(tempFile, "temp-created\\n");
+      java.io.File fileApiTempFile = ProjectEvents.createTempFile("iot", ".tmp", tempRoot.toFile());
+      ProjectEvents.writeString(fileApiTempFile.toPath(), "file-temp-created\\n");
       Path tempDir = ProjectEvents.createTempDirectory(tempRoot, "child");
       System.out.println("temp-api="
         + tempFile.getParent().equals(tempRoot) + ":" + Files.exists(tempFile) + ":" + Files.readString(tempFile).replace("\\n", "|")
+        + ":" + fileApiTempFile.getParentFile().toPath().equals(tempRoot) + ":" + fileApiTempFile.isFile() + ":" + Files.readString(fileApiTempFile.toPath()).replace("\\n", "|")
         + ":" + tempDir.getParent().equals(tempRoot) + ":" + Files.isDirectory(tempDir));
       System.out.println("kernel-file-api="
         + customKernelDir.exists() + ":" + customKernelDir.isDirectory() + ":" + customKernelDir.canRead() + ":" + customKernelDir.canWrite()
@@ -435,7 +438,7 @@ public class ProjectWorkspaceDirectorySmoke {
       `Java browser helper should route NIO metadata probes through kernel virtual paths: ${output}`
     );
     assertCondition(
-      tempApiOutput === 'temp-api=true:true:temp-created|:true:true',
+      tempApiOutput === 'temp-api=true:true:temp-created|:true:true:file-temp-created|:true:true',
       `Java browser helper should create temp files/directories through ProjectEvents: ${output}`
     );
     assertCondition(
@@ -452,6 +455,7 @@ public class ProjectWorkspaceDirectorySmoke {
         /ProjectOutputStream[\s\S]*delegate\.write\(bytes, offset, length\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
         /ProjectPrintWriter[\s\S]*super\.write\(text, offset, length\);\s*emitAfterWrite\(\);/.test(projectEventsSource) &&
         /createTempFile[\s\S]*emitFileSnapshot\(result\);/.test(projectEventsSource) &&
+        /File createTempFile\(String prefix, String suffix, File directory\)[\s\S]*emitFileSnapshot\(result\.toPath\(\)\);/.test(projectEventsSource) &&
         /createTempDirectory[\s\S]*emitDirectoryCreate\(result\);/.test(projectEventsSource),
       'Java browser helper should emit live file snapshots from unbuffered file and PrintWriter writes'
     );

@@ -426,6 +426,19 @@ public final class ProjectEvents {
     return result;
   }
 
+  public static File createTempFile(String prefix, String suffix) throws IOException {
+    File result = File.createTempFile(prefix, suffix);
+    emitFileSnapshot(result.toPath());
+    return result;
+  }
+
+  public static File createTempFile(String prefix, String suffix, File directory) throws IOException {
+    if (directory != null) assertWritableProjectPath(directory.toPath());
+    File result = File.createTempFile(prefix, suffix, directory);
+    emitFileSnapshot(result.toPath());
+    return result;
+  }
+
   public static Path createTempDirectory(Path dir, String prefix, FileAttribute<?>... attrs) throws IOException {
     assertWritableProjectPath(dir);
     Path result = Files.createTempDirectory(dir, prefix, attrs);
