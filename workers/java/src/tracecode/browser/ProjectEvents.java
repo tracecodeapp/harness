@@ -16,13 +16,18 @@ import java.io.RandomAccessFile;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.Charset;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.CopyOption;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 public final class ProjectEvents {
   private static final ThreadLocal<Boolean> PROJECT_EVENT_BRIDGE_ENABLED =
@@ -219,6 +224,26 @@ public final class ProjectEvents {
     }
     assertWritableProjectPath(path);
     return new ProjectBufferedWriter(Files.newBufferedWriter(path, charset, options), path);
+  }
+
+  public static SeekableByteChannel newByteChannel(Path path, OpenOption... options) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) return new KernelDeviceByteChannel(device);
+    boolean writable = byteChannelCanWrite(options);
+    if (writable) assertWritableProjectPath(path);
+    return new ProjectSeekableByteChannel(Files.newByteChannel(path, options), path, writable);
+  }
+
+  public static SeekableByteChannel newByteChannel(
+      Path path,
+      Set<? extends OpenOption> options,
+      FileAttribute<?>... attrs
+  ) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) return new KernelDeviceByteChannel(device);
+    boolean writable = byteChannelCanWrite(options == null ? null : options.toArray(new OpenOption[0]));
+    if (writable) assertWritableProjectPath(path);
+    return new ProjectSeekableByteChannel(Files.newByteChannel(path, options, attrs), path, writable);
   }
 
   public static final class ProjectFileWriter extends FileWriter {
@@ -510,6 +535,64 @@ public final class ProjectEvents {
     }
   }
 
+  private static final class ProjectSeekableByteChannel implements SeekableByteChannel {
+    private final SeekableByteChannel delegate;
+    private final Path path;
+    private final boolean writable;
+
+    ProjectSeekableByteChannel(SeekableByteChannel delegate, Path path, boolean writable) {
+      this.delegate = delegate;
+      this.path = path;
+      this.writable = writable;
+    }
+
+    @Override
+    public int read(ByteBuffer dst) throws IOException {
+      return delegate.read(dst);
+    }
+
+    @Override
+    public int write(ByteBuffer src) throws IOException {
+      int written = delegate.write(src);
+      if (writable && written > 0) emitFileSnapshot(path);
+      return written;
+    }
+
+    @Override
+    public long position() throws IOException {
+      return delegate.position();
+    }
+
+    @Override
+    public SeekableByteChannel position(long newPosition) throws IOException {
+      delegate.position(newPosition);
+      return this;
+    }
+
+    @Override
+    public long size() throws IOException {
+      return delegate.size();
+    }
+
+    @Override
+    public SeekableByteChannel truncate(long size) throws IOException {
+      delegate.truncate(size);
+      if (writable) emitFileSnapshot(path);
+      return this;
+    }
+
+    @Override
+    public boolean isOpen() {
+      return delegate.isOpen();
+    }
+
+    @Override
+    public void close() throws IOException {
+      delegate.close();
+      if (writable) emitFileSnapshot(path);
+    }
+  }
+
   private static final class ProjectBufferedWriter extends BufferedWriter {
     private final Path path;
 
@@ -755,6 +838,59 @@ public final class ProjectEvents {
     }
   }
 
+  private static final class KernelDeviceByteChannel implements SeekableByteChannel {
+    private final KernelDevice device;
+    private boolean open = true;
+
+    KernelDeviceByteChannel(KernelDevice device) {
+      this.device = device;
+    }
+
+    @Override
+    public int read(ByteBuffer dst) throws IOException {
+      throw new IOException("Kernel device is not readable: " + device.path);
+    }
+
+    @Override
+    public int write(ByteBuffer src) {
+      int length = src.remaining();
+      byte[] bytes = new byte[length];
+      src.get(bytes);
+      writeKernelDevice(device, bytes);
+      return length;
+    }
+
+    @Override
+    public long position() {
+      return 0;
+    }
+
+    @Override
+    public SeekableByteChannel position(long newPosition) {
+      return this;
+    }
+
+    @Override
+    public long size() {
+      return 0;
+    }
+
+    @Override
+    public SeekableByteChannel truncate(long size) {
+      return this;
+    }
+
+    @Override
+    public boolean isOpen() {
+      return open;
+    }
+
+    @Override
+    public void close() {
+      open = false;
+    }
+  }
+
   private static String writableFileName(String fileName) throws IOException {
     assertWritableProjectPath(Path.of(fileName));
     return fileName;
@@ -785,6 +921,22 @@ public final class ProjectEvents {
 
   private static boolean randomAccessFileCanWrite(String mode) {
     return mode != null && mode.indexOf('w') >= 0;
+  }
+
+  private static boolean byteChannelCanWrite(OpenOption... options) {
+    if (options == null) return false;
+    for (OpenOption option : options) {
+      if (
+          option == StandardOpenOption.WRITE ||
+          option == StandardOpenOption.APPEND ||
+          option == StandardOpenOption.CREATE ||
+          option == StandardOpenOption.CREATE_NEW ||
+          option == StandardOpenOption.TRUNCATE_EXISTING
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static byte[] kernelInputBytes(Path path) throws IOException {

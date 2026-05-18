@@ -882,6 +882,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
+                'byte-channel.bin',
+                Buffer.from([0, 7, 6]).toString('base64')
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
                 'random.bin',
                 Buffer.from([0, 9, 8]).toString('base64')
               );
@@ -912,6 +917,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   { path: 'data.bin', contents: Buffer.from([0, 253]).toString('base64'), encoding: 'base64' },
                   { path: 'nio-stream.bin', contents: Buffer.from([0, 252]).toString('base64'), encoding: 'base64' },
                   { path: 'nio-writer.txt', contents: Buffer.from('nio-writer\n', 'utf8').toString('base64'), encoding: 'base64' },
+                  { path: 'byte-channel.bin', contents: Buffer.from([0, 7, 6]).toString('base64'), encoding: 'base64' },
                   { path: 'random.bin', contents: Buffer.from([0, 9, 8]).toString('base64'), encoding: 'base64' },
                   { path: 'stdin-copy.txt', contents: Buffer.from('from-stdin\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'bytes.bin', contents: Buffer.from([0, 255]).toString('base64'), encoding: 'base64' },
@@ -1370,8 +1376,10 @@ async function main(): Promise<void> {
             path: 'Main.java',
             contents: [
               'import java.io.*;',
+              'import java.nio.ByteBuffer;',
               'import java.nio.charset.StandardCharsets;',
               'import java.nio.file.*;',
+              'import java.util.EnumSet;',
               'class Main {',
               '  public static void main(String[] args) throws Exception {',
               '    Files.writeString(Path.of("generated.txt"), "created\\n");',
@@ -1382,6 +1390,7 @@ async function main(): Promise<void> {
               '    try (var stream = new PrintStream("ps-file.txt")) { stream.println("ps-file"); }',
               '    try (var stream = Files.newOutputStream(Path.of("nio-stream.bin"))) { stream.write(new byte[] { 0, (byte)252 }); }',
               '    try (var writer = Files.newBufferedWriter(Path.of("nio-writer.txt"))) { writer.write("nio-writer\\n"); }',
+              '    try (var channel = Files.newByteChannel(Path.of("byte-channel.bin"), EnumSet.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))) { channel.write(ByteBuffer.wrap(new byte[] { 0, 7, 6, 5 })); channel.truncate(3); }',
               '    try (var raf = new RandomAccessFile("random.bin", "rw")) { raf.write(new byte[] { 0, 1, 2, 3 }); raf.seek(1); raf.write(new byte[] { 9, 8 }); raf.setLength(3); }',
               '    Files.copy(Path.of("/dev/stdin"), Path.of("stdin-copy.txt"), StandardCopyOption.REPLACE_EXISTING);',
               '    Files.copy(Path.of("stdin-copy.txt"), Path.of("/dev/stdout"), StandardCopyOption.REPLACE_EXISTING);',
@@ -1600,6 +1609,17 @@ async function main(): Promise<void> {
         (event) =>
           event.type === 'file-change' &&
           event.phase === 'live' &&
+          event.change?.path === 'byte-channel.bin' &&
+          event.change.encoding === 'base64' &&
+          event.change.contents === 'AAcG'
+      ) === true,
+      `Java execute-project-java should emit live byte-channel file-change project events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
           event.change?.path === 'random.bin' &&
           event.change.encoding === 'base64' &&
           event.change.contents === 'AAkI'
@@ -1657,6 +1677,11 @@ async function main(): Promise<void> {
           file.path === 'nio-writer.txt' &&
             file.encoding === 'base64' &&
             Buffer.from(file.contents, 'base64').toString('utf8') === 'nio-writer\n'
+        ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'byte-channel.bin' &&
+            file.encoding === 'base64' &&
+            file.contents === 'AAcG'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'random.bin' &&
@@ -1732,6 +1757,7 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileOutputStream("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintStream("/dev/stderr"') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new DataOutputStream(new tracecode.browser.ProjectEvents.ProjectFileOutputStream("data.bin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newByteChannel(Path.of("byte-channel.bin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectRandomAccessFile("random.bin", "rw")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.copy(Path.of("/dev/stdin"), Path.of("stdin-copy.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.copy(Path.of("stdin-copy.txt"), Path.of("/dev/stdout")') === true &&
