@@ -91,6 +91,7 @@ const TRACE_KERNEL_PROC_FILES = [
   { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
   { path: '/proc/kernel/version', contents: 'tracekernel test\n' },
   { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
+  { path: '/tracekernel/custom', contents: 'custom-kernel-file\n' },
 ];
 const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['kernelDevices']> = [
   { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
@@ -2721,9 +2722,12 @@ async function main(): Promise<void> {
                 'Console.WriteLine(File.ReadAllText("/proc/kernel/info").Contains("\\"name\\": \\"tracekernel\\"") ? "proc-info" : "proc-missing");',
                 'Console.WriteLine(File.ReadAllText("/proc/kernel/version").Trim());',
                 'Console.WriteLine(string.Join(",", Directory.GetFiles("/proc/kernel").Select(Path.GetFileName).OrderBy(name => name)));',
+                'Console.WriteLine(File.ReadAllText("/tracekernel/custom").Trim());',
                 'try { File.WriteAllText("/proc/kernel/info", "{}\\n"); Console.WriteLine("proc-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-write:" + ex.GetType().Name); }',
                 'try { Directory.CreateDirectory("/proc/kernel/new"); Console.WriteLine("proc-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("proc-mkdir:" + ex.GetType().Name); }',
                 'try { File.Delete("/proc/kernel/info"); Console.WriteLine("proc-delete:ok"); } catch (Exception ex) { Console.WriteLine("proc-delete:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/tracekernel/custom", "bad\\n"); Console.WriteLine("custom-kernel-write:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-write:" + ex.GetType().Name); }',
+                'try { Directory.CreateDirectory("/tracekernel/new"); Console.WriteLine("custom-kernel-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-mkdir:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stdout", "dev-stdout\\n"); Console.WriteLine("dev-stdout-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
@@ -2754,7 +2758,7 @@ async function main(): Promise<void> {
     );
     assertCondition(projectRun.exitCode === 0, `C# project worker should run multifile project: ${projectRun.stderr}`);
     assertCondition(
-      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\n') &&
+      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\ncustom-kernel-file\n') &&
         projectRun.stdout.includes('dev-stdout\n') &&
         projectRun.stdout.includes('dev-tty\n'),
       `C# project worker should preserve stdout/stdin/env/args/proc reads: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, events: projectRun.events })}`
@@ -2778,6 +2782,11 @@ async function main(): Promise<void> {
       projectRun.stdout.includes('proc-mkdir:') && !projectRun.stdout.includes('proc-mkdir:ok') &&
         projectRun.stdout.includes('proc-delete:') && !projectRun.stdout.includes('proc-delete:ok'),
       `C# project worker should reject /proc mkdir/delete mutations, received ${projectRun.stdout}`
+    );
+    assertCondition(
+      projectRun.stdout.includes('custom-kernel-write:') && !projectRun.stdout.includes('custom-kernel-write:ok') &&
+        projectRun.stdout.includes('custom-kernel-mkdir:') && !projectRun.stdout.includes('custom-kernel-mkdir:ok'),
+      `C# project worker should reject manifest-provided kernel virtual mutations outside /proc, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stderr === 'dev-stderr\nstderr-line\n',

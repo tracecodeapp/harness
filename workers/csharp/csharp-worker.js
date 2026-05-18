@@ -115,10 +115,38 @@ function kernelDeviceStream(path) {
   return normalizeKernelDevicePath(path) === '/dev/stderr' ? 'stderr' : 'stdout';
 }
 
+function normalizeKernelVirtualManifestPath(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+  return normalized.startsWith('/') && normalized !== '/dev' && !normalized.startsWith('/dev/')
+    ? normalized
+    : null;
+}
+
+function kernelVirtualManifestPaths(request = activeProjectIo?.request) {
+  const files = request?.project?.kernelFiles;
+  if (!Array.isArray(files)) return [];
+  return files
+    .map((file) => normalizeKernelVirtualManifestPath(file?.path))
+    .filter(Boolean);
+}
+
+function isKernelVirtualFsPath(path, request = activeProjectIo?.request) {
+  const normalized = normalizeKernelVirtualManifestPath(path);
+  if (!normalized) return false;
+  for (const filePath of kernelVirtualManifestPaths(request)) {
+    if (normalized === filePath) return true;
+    for (const directory of runtimeAncestorDirectories(filePath)) {
+      if (normalized === directory) return true;
+    }
+  }
+  return false;
+}
+
 function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
   if (typeof path !== 'string' || !path) return null;
   const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
-  if (normalized === '/dev/stdout' || normalized === '/dev/stderr' || normalized.startsWith('/proc/')) return null;
+  if (normalized === '/dev/stdout' || normalized === '/dev/stderr' || isKernelVirtualFsPath(normalized, request)) return null;
 
   const roots = ['/workspace'];
   const project = request?.project;
@@ -211,11 +239,12 @@ function materializeKernelVirtualFiles(request) {
   const fs = runtimeModule?.FS;
   const files = request?.project?.kernelFiles;
   if (!fs || !Array.isArray(files)) return;
-  const procDirectories = new Set();
+  const kernelDirectories = new Set();
   for (const file of files) {
-    if (!file || typeof file.path !== 'string' || !file.path.startsWith('/proc/')) continue;
-    ensureRuntimeDirectory(fs, runtimeDirectoryName(file.path));
-    const ancestors = runtimeAncestorDirectories(file.path).filter((directory) => directory.startsWith('/proc'));
+    const filePath = normalizeKernelVirtualManifestPath(file?.path);
+    if (!filePath) continue;
+    ensureRuntimeDirectory(fs, runtimeDirectoryName(filePath));
+    const ancestors = runtimeAncestorDirectories(filePath);
     if (typeof fs.chmod === 'function') {
       for (const directory of ancestors) {
         try {
@@ -226,23 +255,23 @@ function materializeKernelVirtualFiles(request) {
       }
     }
     for (const directory of ancestors) {
-      if (directory.startsWith('/proc')) procDirectories.add(directory);
+      kernelDirectories.add(directory);
     }
     try {
-      fs.unlink(file.path);
+      fs.unlink(filePath);
     } catch {
-      // The proc file may not exist yet.
+      // The kernel virtual file may not exist yet.
     }
     const contents = file.encoding === 'base64'
       ? Uint8Array.from(atob(String(file.contents || '')), (char) => char.charCodeAt(0))
       : String(file.contents ?? '');
-    fs.writeFile(file.path, contents);
+    fs.writeFile(filePath, contents);
     if (typeof fs.chmod === 'function') {
-      fs.chmod(file.path, 0o444);
+      fs.chmod(filePath, 0o444);
     }
   }
   if (typeof fs.chmod === 'function') {
-    for (const directory of Array.from(procDirectories).sort((left, right) => right.length - left.length)) {
+    for (const directory of Array.from(kernelDirectories).sort((left, right) => right.length - left.length)) {
       fs.chmod(directory, 0o555);
     }
   }
@@ -459,7 +488,7 @@ function installRuntimeFsHooks(runtime) {
   const originalWriteFile = fs.writeFile;
   if (typeof originalWriteFile === 'function') {
     fs.writeFile = function writeFileWithProjectEvents(path) {
-      if (activeProjectIo && typeof path === 'string' && path.replace(/\\/g, '/').startsWith('/proc/')) {
+      if (activeProjectIo && isKernelVirtualFsPath(path)) {
         throw Object.assign(new Error(`EROFS: read-only file system, write '${path}'`), { code: 'EROFS' });
       }
       const result = originalWriteFile.apply(this, arguments);
