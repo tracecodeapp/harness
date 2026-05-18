@@ -17,6 +17,7 @@ interface CppProjectWorkerFile {
   path: string;
   contents?: string;
   encoding?: string;
+  directory?: true;
   deleted?: true;
 }
 
@@ -402,6 +403,8 @@ async function main(): Promise<void> {
             '  DIR* scratch_dir = opendir("scratch");',
             '  std::cout << (rmdir_result == 0 && !scratch_dir ? "rmdir:gone" : "rmdir:still") << "\\\\n";',
             '  if (scratch_dir) closedir(scratch_dir);',
+            '  mkdir("persist-dir", 0777);',
+            '  rmdir("stale-dir");',
             '  mkdir("rename-dir", 0777);',
             '  std::rename("rename-dir", "renamed-dir");',
             '  rmdir("renamed-dir");',
@@ -498,7 +501,7 @@ async function main(): Promise<void> {
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-project' },
         stdin: 'from-stdin\\n',
-        project: { files: [...projectFiles, ...(projectCompile.files || [])], kernelFiles: traceKernelProcFiles, kernelDevices: traceKernelDevices },
+        project: { files: [...projectFiles, ...(projectCompile.files || [])], directories: ['src/stale-dir'], kernelFiles: traceKernelProcFiles, kernelDevices: traceKernelDevices },
       });
       const projectDeviceLeakRun = await send('execute-project-cpp', {
         source: 'run',
@@ -1367,6 +1370,11 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.stdout?.includes('rmdir:gone\n') === true,
       `C++ browser project run should remove directories through WASI rmdir: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/persist-dir' && file.directory === true) === true &&
+        projectRun.files?.some((file) => file.path === 'src/stale-dir' && file.directory === true && file.deleted === true) === true,
+      `C++ browser project run should return final directory mutations: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/renamed.txt' && file.contents === 'moved\n') === true &&

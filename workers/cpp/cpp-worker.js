@@ -4724,13 +4724,19 @@ function createProjectRuntimeFs(project) {
 }
 
 function snapshotProjectFs(fs) {
-  const snapshot = new Map();
+  const files = new Map();
   for (const [path, bytes] of fs.files.entries()) {
     if (isRuntimeProcPath(path)) continue;
     const relativePath = relativeProjectPath(path);
-    if (relativePath) snapshot.set(relativePath, cloneBytes(bytes));
+    if (relativePath) files.set(relativePath, cloneBytes(bytes));
   }
-  return snapshot;
+  const directories = new Set();
+  for (const path of fs.dirs) {
+    if (path === '/' || isRuntimeProcPath(path)) continue;
+    const relativePath = relativeProjectPath(path);
+    if (relativePath) directories.add(relativePath);
+  }
+  return { files, directories };
 }
 
 function encodeProjectFileChange(path, bytes) {
@@ -4752,14 +4758,24 @@ function arraysEqual(left, right) {
 function diffProjectFs(before, fs) {
   const after = snapshotProjectFs(fs);
   const changes = [];
-  for (const [path, bytes] of [...after.entries()].sort(([left], [right]) => left.localeCompare(right))) {
-    const oldBytes = before.get(path);
-    before.delete(path);
+  for (const path of [...after.directories].sort()) {
+    if (before.directories.has(path)) {
+      before.directories.delete(path);
+      continue;
+    }
+    changes.push({ path, directory: true });
+  }
+  for (const [path, bytes] of [...after.files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const oldBytes = before.files.get(path);
+    before.files.delete(path);
     if (oldBytes && arraysEqual(oldBytes, bytes)) continue;
     changes.push(encodeProjectFileChange(path, bytes));
   }
-  for (const path of [...before.keys()].sort()) {
+  for (const path of [...before.files.keys()].sort()) {
     changes.push({ path, deleted: true });
+  }
+  for (const path of [...before.directories].sort((left, right) => right.length - left.length || left.localeCompare(right))) {
+    changes.push({ path, directory: true, deleted: true });
   }
   return changes;
 }
