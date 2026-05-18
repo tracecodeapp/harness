@@ -2944,32 +2944,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
-    const mutationTarget = kernelMutationTarget(change.path);
-    if (mutationTarget.kind === 'error') {
-      throwKernelMutationTargetError(change.path, mutationTarget, `Kernel device namespace is not a file-change target: ${change.path}`);
-    }
-    if (isRuntimeDirectoryChange(change)) {
-      const relativePath = this.toWorkspaceRelativePath(change.path);
-      const absolutePath = this.toWorkspaceEntryPath(change.path);
-      if (change.deleted === true) {
-        await this.bash.fs.rm(absolutePath, { force: true, recursive: true });
-      } else {
-        await this.bash.fs.mkdir(absolutePath, { recursive: true });
-      }
-      this.emitLocalRuntimeEvent({
-        type: 'file-change',
-        change: { path: relativePath, directory: true, ...(change.deleted === true ? { deleted: true } : {}) },
-        phase,
-        actor,
-      });
-      return;
-    }
-    if ((change as RuntimeFileDeletion).deleted === true) {
-      await this.deleteFileAs(change.path, actor, phase);
-      return;
-    }
-    const changedFile = change as RuntimeFile;
-    await this.writeFileAs(changedFile.path, changedFile.contents, actor, changedFile.encoding, phase);
+    await this.applyFileChangeToWorkspace(change, actor, phase, true);
   }
 
   private async deleteFileAs(
@@ -3005,7 +2980,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private createRuntimeLiveIoController(): RuntimeProjectLiveIoController {
     return new RuntimeProjectLiveIoController({
       actor: this.activeCommandActor ?? SYSTEM_ACTOR,
-      applyFileChange: (change) => this.applyRuntimeFileChangeSilently(change),
+      applyFileChange: (change, phase) => this.applyRuntimeFileChangeSilently(change, phase),
       onEvent: (event) => this.emitRuntimeEvent(event),
     });
   }
@@ -3018,34 +2993,73 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     await this.activeRuntimeIo.flush();
   }
 
-  private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {
+  private async applyRuntimeFileChangeSilently(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): Promise<void> {
     await withSuspendedFsNotifications(this.bash.fs, async () => {
-      const mutationTarget = kernelMutationTarget(change.path);
-      if (mutationTarget.kind === 'error') {
-        throwKernelMutationTargetError(change.path, mutationTarget, `Kernel device namespace is not a file-change target: ${change.path}`);
-      }
-      const absolutePath = this.toWorkspaceEntryPath(change.path);
-      if (isRuntimeDirectoryChange(change)) {
-        if (change.deleted === true) {
-          await this.bash.fs.rm(absolutePath, { force: true, recursive: true });
-          return;
-        }
-        await this.bash.fs.mkdir(absolutePath, { recursive: true });
-        return;
-      }
-      if ((change as RuntimeFileDeletion).deleted === true) {
-        await this.bash.fs.rm(absolutePath, { force: true });
-        return;
-      }
-
-      const changedFile = change as RuntimeFile;
-      await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
-      if ((changedFile.encoding ?? 'utf8') === 'base64') {
-        await this.bash.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
-        return;
-      }
-      await this.bash.fs.writeFile(absolutePath, changedFile.contents);
+      await this.applyFileChangeToWorkspace(change, this.activeCommandActor ?? SYSTEM_ACTOR, phase, false);
     });
+  }
+
+  private async applyFileChangeToWorkspace(
+    change: RuntimeFileChange,
+    actor: RuntimeWorkspaceActor,
+    phase: RuntimeFileMutationPhase,
+    emit: boolean
+  ): Promise<void> {
+    const mutationTarget = kernelMutationTarget(change.path);
+    if (mutationTarget.kind === 'error') {
+      throwKernelMutationTargetError(change.path, mutationTarget, `Kernel device namespace is not a file-change target: ${change.path}`);
+    }
+
+    const relativePath = this.toWorkspaceRelativePath(change.path);
+    if (isRuntimeDirectoryChange(change)) {
+      const absolutePath = this.toWorkspaceEntryPath(change.path);
+      if (change.deleted === true) {
+        await this.bash.fs.rm(absolutePath, { force: true, recursive: true });
+      } else {
+        await this.bash.fs.mkdir(absolutePath, { recursive: true });
+      }
+      if (emit) {
+        this.emitLocalRuntimeEvent({
+          type: 'file-change',
+          change: { path: relativePath, directory: true, ...(change.deleted === true ? { deleted: true } : {}) },
+          phase,
+          actor,
+        });
+      }
+      return;
+    }
+
+    if ((change as RuntimeFileDeletion).deleted === true) {
+      const absolutePath = this.toWorkspacePath(change.path);
+      await this.bash.fs.rm(absolutePath, { force: true });
+      if (emit) {
+        this.emitLocalRuntimeEvent({
+          type: 'file-change',
+          change: { path: relativePath, deleted: true },
+          phase,
+          actor,
+        });
+      }
+      return;
+    }
+
+    const changedFile = change as RuntimeFile;
+    const normalizedEncoding = assertSupportedEncoding(changedFile.encoding);
+    const absolutePath = this.toWorkspacePath(changedFile.path);
+    await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
+    if (normalizedEncoding === 'base64') {
+      await this.bash.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
+    } else {
+      await this.bash.fs.writeFile(absolutePath, changedFile.contents);
+    }
+    if (emit) {
+      this.emitLocalRuntimeEvent({
+        type: 'file-change',
+        change: { path: relativePath, contents: changedFile.contents, ...(normalizedEncoding === 'base64' ? { encoding: 'base64' as const } : {}) },
+        phase,
+        actor,
+      });
+    }
   }
 
   private emitLocalRuntimeEvent(event: RuntimeCommandEvent): void {
