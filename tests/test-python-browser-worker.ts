@@ -258,6 +258,11 @@ async function main(): Promise<void> {
             user: { id: 'ada', username: 'ada' },
             host: { hostname: 'tracevm-browser' },
           },
+          kernelFiles: [
+            { path: '/proc/kernel/info', contents: '{\\n  "name": "tracekernel"\\n}\\n' },
+            { path: '/proc/kernel/version', contents: 'tracekernel test\\n' },
+            { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\\n' },
+          ],
           files: [
             {
               path: 'app.py',
@@ -271,6 +276,7 @@ async function main(): Promise<void> {
                 'proc_info = json.load(open("/proc/kernel/info", "r", encoding="utf-8"))',
                 'print(proc_info["name"])',
                 'print(os.listdir("/proc/kernel"))',
+                'print(open("/proc/kernel/version", "r", encoding="utf-8").read().strip())',
                 'print(os.path.isfile("/proc/kernel/info"))',
                 'print(os.access("/proc/kernel/info", os.W_OK))',
                 'with open("/home/ada/weather-api/canonical.txt", "w", encoding="utf-8") as handle:',
@@ -428,7 +434,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info']\nTrue\nFalse\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\nTrue\nFalse\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(

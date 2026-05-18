@@ -1091,6 +1091,16 @@ def _normalize_proc_path(_value):
             return _original
     return None
 
+def _decode_kernel_file_text(_file):
+    if not isinstance(_file, dict):
+        return None
+    _path = str(_file.get("path", "")).replace("\\\\", "/").rstrip("/")
+    if not _path.startswith("/proc/"):
+        return None
+    if _file.get("encoding") == "base64":
+        return base64.b64decode(str(_file.get("contents", ""))).decode("utf-8", "replace")
+    return str(_file.get("contents", ""))
+
 def _proc_mountinfo():
     _workspace_name = str((_kernel_info.get("workspace") or {}).get("name") or "workspace")
     _lines = [
@@ -1102,27 +1112,55 @@ def _proc_mountinfo():
         _lines.insert(1, f"27 24 0:1 / {_workspace_alias} rw,relatime alias={_workspace_root} - tracefs tracekernel:workspace rw,name={_workspace_name}")
     return "\\n".join(_lines) + "\\n"
 
+_proc_files = {}
+_kernel_files = _project_info.get("kernelFiles", [])
+if not isinstance(_kernel_files, list):
+    _kernel_files = []
+for _kernel_file in _kernel_files:
+    _decoded_text = _decode_kernel_file_text(_kernel_file)
+    if _decoded_text is not None:
+        _proc_files[str(_kernel_file.get("path", "")).replace("\\\\", "/").rstrip("/")] = _decoded_text
+if not _proc_files:
+    _proc_files["/proc/kernel/info"] = json.dumps(_kernel_info, indent=2) + "\\n"
+    _proc_files["/proc/self/mountinfo"] = _proc_mountinfo()
+
+_proc_directories = {"/proc"}
+for _proc_file_path in _proc_files:
+    _parts = [part for part in _proc_file_path.split("/") if part]
+    _current = ""
+    for _part in _parts[:-1]:
+        _current += "/" + _part
+        _proc_directories.add(_current)
+
 def _proc_entry_kind(_path):
-    if _path in ("/proc", "/proc/kernel", "/proc/self"):
+    if _path in _proc_directories:
         return "directory"
-    if _path in ("/proc/kernel/info", "/proc/self/mountinfo"):
+    if _path in _proc_files:
         return "file"
     return None
 
 def _proc_dir_entries(_path):
-    if _path == "/proc":
-        return ["kernel", "self"]
-    if _path == "/proc/kernel":
-        return ["info"]
-    if _path == "/proc/self":
-        return ["mountinfo"]
-    return None
+    if _path not in _proc_directories:
+        return None
+    _prefix = _path.rstrip("/") + "/"
+    _names = set()
+    for _directory in _proc_directories:
+        if not _directory.startswith(_prefix) or _directory == _path:
+            continue
+        _rest = _directory[len(_prefix):]
+        if _rest and "/" not in _rest:
+            _names.add(_rest)
+    for _file_path in _proc_files:
+        if not _file_path.startswith(_prefix):
+            continue
+        _rest = _file_path[len(_prefix):]
+        if _rest and "/" not in _rest:
+            _names.add(_rest)
+    return sorted(_names)
 
 def _proc_read_text(_path):
-    if _path == "/proc/kernel/info":
-        return json.dumps(_kernel_info, indent=2) + "\\n"
-    if _path == "/proc/self/mountinfo":
-        return _proc_mountinfo()
+    if _path in _proc_files:
+        return _proc_files[_path]
     if _proc_entry_kind(_path) == "directory":
         raise IsADirectoryError(_path)
     raise FileNotFoundError(_path)
