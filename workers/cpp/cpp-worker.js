@@ -672,6 +672,7 @@ class WasiProcess {
     this.cwd = normalizePath(options.cwd || '/');
     this.fs.addDirectory(this.cwd);
     this.stdin = encodeUtf8(options.stdin || '');
+    this.inputDeviceOffsets = new Map();
     this.stdoutChunks = [];
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
@@ -969,7 +970,9 @@ class WasiProcess {
       : entry.kind === 'file'
         ? this.fs.readFile(entry.path)
         : new Uint8Array();
-    let sourceOffset = entry.offset;
+    let sourceOffset = entry.kind === 'stdio' && entry.inputDevice
+      ? this.inputDeviceOffsets.get(entry.inputDevice) ?? 0
+      : entry.offset;
     let total = 0;
     for (let index = 0; index < iovsLen; index += 1) {
       const ptr = this.mem.readU32(iovs + index * 8);
@@ -981,6 +984,9 @@ class WasiProcess {
       if (chunk.length < len) break;
     }
     entry.offset = sourceOffset;
+    if (entry.kind === 'stdio' && entry.inputDevice) {
+      this.inputDeviceOffsets.set(entry.inputDevice, sourceOffset);
+    }
     this.mem.writeU32(nreadOut, total);
     return ESUCCESS;
   }
@@ -1011,12 +1017,18 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
     const fileSize = entry.kind === 'file' && this.fs.exists(entry.path) ? this.fs.readFile(entry.path).length : 0;
+    const currentOffset = entry.kind === 'stdio' && entry.inputDevice
+      ? this.inputDeviceOffsets.get(entry.inputDevice) ?? entry.offset ?? 0
+      : entry.offset;
     const rawOffset = Number(offset);
     if (whence === WHENCE_SET) entry.offset = rawOffset;
-    else if (whence === WHENCE_CUR) entry.offset += rawOffset;
+    else if (whence === WHENCE_CUR) entry.offset = currentOffset + rawOffset;
     else if (whence === WHENCE_END) entry.offset = fileSize + rawOffset;
     else return EINVAL;
     if (entry.offset < 0) entry.offset = 0;
+    if (entry.kind === 'stdio' && entry.inputDevice) {
+      this.inputDeviceOffsets.set(entry.inputDevice, entry.offset);
+    }
     this.mem.writeU64(newOffsetOut, BigInt(entry.offset));
     return ESUCCESS;
   }
@@ -1024,7 +1036,10 @@ class WasiProcess {
   fd_tell(fd, offsetOut) {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
-    this.mem.writeU64(offsetOut, BigInt(entry.offset || 0));
+    const offset = entry.kind === 'stdio' && entry.inputDevice
+      ? this.inputDeviceOffsets.get(entry.inputDevice) ?? entry.offset ?? 0
+      : entry.offset || 0;
+    this.mem.writeU64(offsetOut, BigInt(offset));
     return ESUCCESS;
   }
 

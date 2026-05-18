@@ -265,6 +265,9 @@ async function main(): Promise<void> {
             '  if (!line.empty() && line.back() == 10) line.pop_back();',
             '  std::cout << helper_value() << "\\\\n";',
             '  std::cout << line << "\\\\n";',
+            '  std::string stdio_line;',
+            '  std::getline(std::cin, stdio_line);',
+            '  std::cout << stdio_line << "\\\\n";',
             '  std::cout << (std::getenv("MODE") ? std::getenv("MODE") : "") << "\\\\n";',
             '  std::cout << (argc > 2 ? std::string(argv[1]) + "," + argv[2] : "") << "\\\\n";',
             '  std::cout << line << "\\\\n";',
@@ -534,7 +537,7 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-project' },
-        stdin: 'from-stdin\\n',
+        stdin: 'from-dev\\nfrom-stdio\\nfrom-custom\\n',
         project: { files: [...projectFiles, ...(projectCompile.files || [])], directories: ['src/stale-dir'], kernelFiles: traceKernelProcFiles, kernelDevices: traceKernelDevices },
       });
       const projectDeviceLeakRun = await send('execute-project-cpp', {
@@ -543,7 +546,7 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-project' },
-        stdin: 'from-stdin\\n',
+        stdin: 'from-dev\\nfrom-stdio\\nfrom-custom\\n',
         project: {
           files: [...projectFiles, ...(projectCompile.files || [])],
           kernelFiles: traceKernelProcFiles,
@@ -1332,7 +1335,9 @@ async function main(): Promise<void> {
     assertCondition(projectRun.exitCode === 0, `C++ browser project run should exit successfully: ${JSON.stringify(projectRun)}`);
     assertCondition(
         projectRun.stdout?.includes('42\n') === true &&
-        projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\nfrom-stdin\n') === true &&
+        projectRun.stdout?.includes('from-dev\n') === true &&
+        projectRun.stdout?.includes('from-stdio\nbrowser-cpp-project\nalpha,beta\nfrom-dev\n\nproc-info\n') === true &&
+        projectRun.stdout?.includes('from-custom') !== true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\ncustom-kernel-mkdir:blocked\ncustom-kernel-create:blocked\n') === true &&
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
