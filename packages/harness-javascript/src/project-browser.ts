@@ -2144,6 +2144,7 @@ async function runBrowserJavaScriptProjectRequest(
       let writeOffset = typeof options === 'object' && typeof options?.start === 'number'
         ? Math.max(0, options.start)
         : 0;
+      const hasExplicitWriteStart = typeof options === 'object' && typeof options?.start === 'number';
       const writeBytes = (value: unknown, writeEncoding?: string): number => {
         if (writableEnded) {
           throw Object.assign(new Error('ERR_STREAM_WRITE_AFTER_END: write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' });
@@ -2153,7 +2154,19 @@ async function runBrowserJavaScriptProjectRequest(
         }
         const bytes = bytesFromFsWriteValue(value, writeEncoding ?? encoding);
         if (optionFd !== null) {
-          writeDescriptorFileBytes(optionFd, bytes, flags.includes('a'));
+          if (hasExplicitWriteStart) {
+            const entry = fileDescriptor(optionFd);
+            const previousAppend = entry.append;
+            entry.append = false;
+            try {
+              writeDescriptorBytes(entry, bytes, writeOffset);
+            } finally {
+              entry.append = previousAppend;
+            }
+            writeOffset += bytes.byteLength;
+          } else {
+            writeDescriptorFileBytes(optionFd, bytes, flags.includes('a'));
+          }
           bytesWritten += bytes.byteLength;
           return bytes.byteLength;
         }
