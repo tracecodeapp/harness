@@ -2113,8 +2113,8 @@ async function runBrowserJavaScriptProjectRequest(
       const openTarget = optionFd === null
         ? runtimeOpenTarget(path, {
             ...parsed,
-            writable: true,
-            create: true,
+            writable: parsed.writable,
+            create: parsed.create,
             truncate: parsed.truncate,
           }, kernelDevices)
         : null;
@@ -2131,6 +2131,9 @@ async function runBrowserJavaScriptProjectRequest(
       const normalized = device || optionFd !== null ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (normalized !== null) {
         assertWorkspaceFileWritePath(normalized, path, 'open');
+        if (!parsed.create && !fileStore.has(normalized)) {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+        }
       }
       if (normalized !== null && parsed.truncate) {
         setFileBytes(normalized, new Uint8Array());
@@ -2174,6 +2177,9 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(device, textFromBytes(bytes));
           bytesWritten += bytes.byteLength;
           return bytes.byteLength;
+        }
+        if (!parsed.writable) {
+          throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
         }
         const previous = fileStore.get(normalized ?? '') ?? new Uint8Array();
         const start = parsed.append ? previous.byteLength : writeOffset;

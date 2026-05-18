@@ -2907,6 +2907,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node write streams should respect overwrite, start, and append cursors: ${streamOverwriteResult.stdout}`
   );
 
+  const streamFlagResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const streamStatus = (path, options) => new Promise((resolve) => { let out; try { out = fs.createWriteStream(path, options); } catch (error) { resolve(\\"throw:\\" + error.code + \\":\\" + fs.existsSync(path)); return; } const events = []; out.on(\\"error\\", (error) => events.push(\\"error:\\" + error.code)); out.on(\\"finish\\", () => events.push(\\"finish\\")); out.on(\\"close\\", () => resolve(events.join(\\"|\\") + \\":\\" + fs.existsSync(path))); out.end(\\"XY\\"); }); console.log(await streamStatus(\\"missing-rplus-stream.txt\\", { flags: \\"r+\\" })); console.log(await streamStatus(\\"missing-w-stream.txt\\", { flags: \\"w\\" })); fs.writeFileSync(\\"readonly-stream.txt\\", \\"abcdef\\"); console.log(await streamStatus(\\"readonly-stream.txt\\", { flags: \\"r\\" })); console.log(fs.readFileSync(\\"readonly-stream.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(streamFlagResult.exitCode === 0, `browser node stream flag workflow should succeed: ${streamFlagResult.stderr}`);
+  assertCondition(
+    streamFlagResult.stdout === 'throw:ENOENT:false\nfinish:true\nerror:EBADF:true\nabcdef\n',
+    `browser node write streams should honor create/write flags: ${streamFlagResult.stdout}`
+  );
+
   const streamSetEncodingResult = await workspace.runCommand([
     'node',
     '-e',
