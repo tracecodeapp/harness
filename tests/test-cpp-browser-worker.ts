@@ -409,6 +409,9 @@ async function main(): Promise<void> {
             '  int open_dir_truncate_fd = open("open-dir", O_TRUNC | O_WRONLY);',
             '  std::cout << (open_dir_truncate_fd >= 0 ? "open-dir-truncate:ok" : "open-dir-truncate:blocked") << "\\\\n";',
             '  if (open_dir_truncate_fd >= 0) close(open_dir_truncate_fd);',
+            '  mkdir("rename-dir-onto-file", 0777);',
+            '  std::ofstream("rename-dir-target.txt") << "target\\\\n";',
+            '  std::cout << (std::rename("rename-dir-onto-file", "rename-dir-target.txt") == 0 ? "rename-dir-onto-file:ok" : "rename-dir-onto-file:blocked") << "\\\\n";',
             '  mkdir("unlink-dir", 0777);',
             '  int unlink_dir_result = unlink("unlink-dir");',
             '  std::cout << (unlink_dir_result == 0 ? "unlink-dir:ok" : "unlink-dir:blocked") << "\\\\n";',
@@ -1366,7 +1369,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-null:0\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
-        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nrename-file-onto-dir:blocked\nopen-dir-write:blocked\nopen-dir-truncate:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nrename-file-onto-dir:blocked\nopen-dir-write:blocked\nopen-dir-truncate:blocked\nrename-dir-onto-file:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\ncapture-device\ntee-device\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );

@@ -552,6 +552,7 @@ class InMemoryFileSystem {
       return ESUCCESS;
     }
     if (!this.dirs.has(oldPath)) return ENOENT;
+    if (this.files.has(newPath)) return ENOTDIR;
     const oldPrefix = `${oldPath}/`;
     const newPrefix = `${newPath}/`;
     const directories = [...this.dirs]
