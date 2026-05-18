@@ -43,6 +43,8 @@ import {
   runtimeKernelStatTarget,
   runtimeKernelSymlinkErrorCode,
   runtimeKernelSymlinkTarget,
+  runtimeKernelTruncateErrorCode,
+  runtimeKernelTruncateTarget,
   runtimeKernelWriteErrorCode,
   runtimeKernelWriteTarget,
   readRuntimeProcFile as readProcFile,
@@ -286,6 +288,15 @@ function runtimeMkdirTarget(
   return runtimeKernelMkdirTarget(raw, devices);
 }
 
+function runtimeTruncateTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelTruncateTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelTruncateTarget(raw, devices);
+}
+
 function runtimeDirectoryTarget(
   path: unknown,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -366,6 +377,13 @@ function throwRuntimeMkdirTargetError(
   message: string
 ): never {
   throw Object.assign(new Error(message), { code: runtimeKernelMkdirErrorCode(target.reason) });
+}
+
+function throwRuntimeTruncateTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelTruncateTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: runtimeKernelTruncateErrorCode(target.reason) });
 }
 
 function throwRuntimeDirectoryTargetError(
@@ -4027,14 +4045,14 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       truncateSync: (path: unknown, length = 0) => {
-        const mutationTarget = runtimeMutationTarget(path, kernelDevices);
-        if (mutationTarget?.kind === 'error') {
-          const message = mutationTarget.reason === 'device-not-found'
+        const truncateTarget = runtimeTruncateTarget(path, kernelDevices);
+        if (truncateTarget?.kind === 'error') {
+          const message = truncateTarget.reason === 'device-not-found'
             ? `ENOENT: no such file or directory, truncate '${path}'`
-            : mutationTarget.reason === 'proc-read-only'
+            : truncateTarget.reason === 'proc-read-only'
               ? `EROFS: read-only file system, truncate '${path}'`
               : `EROFS: read-only file system, truncate '${path}'`;
-          throwRuntimeMutationTargetError(mutationTarget, message);
+          throwRuntimeTruncateTargetError(truncateTarget, message);
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         assertWorkspaceFileWritePath(normalized, path, 'truncate');

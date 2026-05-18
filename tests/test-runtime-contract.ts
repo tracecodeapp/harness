@@ -32,6 +32,7 @@ import {
   runtimeKernelRemoveTarget,
   runtimeKernelStatTarget,
   runtimeKernelSymlinkTarget,
+  runtimeKernelTruncateTarget,
 } from '../packages/harness-core/src/runtime-kernel';
 import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
@@ -177,6 +178,15 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     stableStringify(runtimeKernelMkdirTarget('new-dir', devices)) === '{"kind":"workspace"}',
     'kernel mkdir target should allow workspace directories'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelTruncateTarget('/dev/missing', devices)) ===
+      '{"kind":"error","path":"/dev/missing","reason":"device-not-found"}',
+    'kernel truncate target should reject missing manifest devices through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelTruncateTarget('cache.txt', devices)) === '{"kind":"workspace"}',
+    'kernel truncate target should allow workspace files'
   );
 }
 

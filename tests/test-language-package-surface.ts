@@ -269,6 +269,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('type RuntimeKernelRemoveTarget') &&
           declarations.includes('runtimeKernelMkdirTarget') &&
           declarations.includes('type RuntimeKernelMkdirTarget') &&
+          declarations.includes('runtimeKernelTruncateTarget') &&
+          declarations.includes('type RuntimeKernelTruncateTarget') &&
           declarations.includes('normalizeRuntimeDevicePath'),
         '@tracecode/harness-core declarations should export shared tracekernel helpers'
       );
