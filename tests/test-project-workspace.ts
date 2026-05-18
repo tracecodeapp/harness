@@ -4198,8 +4198,9 @@ async function testNativeJavaProjectRunner(): Promise<void> {
     javaRunner: createNativeJavaProjectRunner(),
   });
 
-  const compile = await workspace.runCommand('javac Main.java Helper.java');
-  assertCondition(compile.exitCode === 0, `native javac should succeed: ${compile.stderr}`);
+  const compile = await workspace.runCommand('javac Main.java');
+  assertCondition(compile.exitCode === 0, `native javac should compile transitive project sources: ${compile.stderr}`);
+  assertCondition((await workspace.readFile('Helper.class', 'base64')).length > 0, 'native javac should compile referenced helper sources');
 
   const run = await workspace.runCommand('java Main alpha beta');
   assertCondition(run.exitCode === 0, `native java should succeed: ${run.stderr}`);

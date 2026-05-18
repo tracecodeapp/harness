@@ -3059,6 +3059,38 @@ async function main(): Promise<void> {
     );
     console.log('PASS: java worker executes project requests through a multifile compile path');
 
+    const transitiveJavacProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'Main.java',
+      args: ['Main.java'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'Main.java',
+            contents: 'class Main { public static void main(String[] args) { System.out.println(Helper.value()); } }\n',
+          },
+          {
+            path: 'Helper.java',
+            contents: 'class Helper { static int value() { return 5; } }\n',
+          },
+        ],
+      },
+    });
+    assertCondition(
+      transitiveJavacProjectExecute.exitCode === 0,
+      `Java execute-project-java should compile javac Main.java with referenced project sources: ${transitiveJavacProjectExecute.stderr}`
+    );
+    const transitiveJavacManifest = harness.projectCompileCalls.at(-1)?.sourcePaths ?? '';
+    assertCondition(
+      transitiveJavacManifest.includes('Main.java') && transitiveJavacManifest.includes('Helper.java'),
+      `Java execute-project-java should include transitive helper sources for javac Main.java: ${transitiveJavacManifest}`
+    );
+    console.log('PASS: java worker includes referenced project sources for javac Main.java');
+
     await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
       code: '',
       source: 'run',
