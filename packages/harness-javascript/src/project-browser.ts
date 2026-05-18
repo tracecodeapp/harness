@@ -1642,6 +1642,7 @@ async function runBrowserJavaScriptProjectRequest(
     };
     type BrowserStatOptions = {
       bigint?: boolean;
+      throwIfNoEntry?: boolean;
     };
     type BrowserFileWatcher = {
       path: string;
@@ -1728,10 +1729,11 @@ async function runBrowserJavaScriptProjectRequest(
         isSymbolicLink: () => false,
       };
     };
-    const statForKernelTarget = (path: unknown): BrowserFileStat | null => {
+    const statForKernelTarget = (path: unknown, options?: BrowserStatOptions): BrowserFileStat | null | undefined => {
       const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices);
       if (!statTarget || statTarget.kind === 'workspace') return null;
       if (statTarget.kind === 'error') {
+        if (options?.throwIfNoEntry === false) return undefined;
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
       }
       return statForKernelPath(statTarget.path, statTarget.stat);
@@ -3692,9 +3694,11 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       statSync: (path: unknown, options?: BrowserStatOptions) => {
-        const kernelStats = statForKernelTarget(path);
+        const kernelStats = statForKernelTarget(path, options);
+        if (kernelStats === undefined) return undefined;
         const stats = kernelStats ?? statForNormalizedPath(normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
         if (!stats) {
+          if (options?.throwIfNoEntry === false) return undefined;
           throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
         }
         return browserStatsResult(stats, options);

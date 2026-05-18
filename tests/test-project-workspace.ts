@@ -2594,6 +2594,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node stat/lstat/fstat APIs should honor { bigint: true }: ${bigintStatsResult.stdout}`
   );
 
+  const throwIfNoEntryStatsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (path) => new Promise((resolve, reject) => fs.stat(path, { throwIfNoEntry: false }, (error, stats) => error ? reject(error) : resolve(stats))); console.log(fs.statSync(\\"missing-stat.txt\\", { throwIfNoEntry: false }) === undefined); console.log(fs.lstatSync(\\"missing-lstat.txt\\", { throwIfNoEntry: false }) === undefined); console.log(fs.statSync(\\"/proc/missing\\", { throwIfNoEntry: false }) === undefined); console.log(fs.lstatSync(\\"/dev/missing\\", { throwIfNoEntry: false }) === undefined); console.log(await fsp.stat(\\"missing-promise.txt\\", { throwIfNoEntry: false }) === undefined); console.log(await call(\\"missing-callback.txt\\") === undefined); try { fs.statfsSync(\\"missing-statfs.txt\\", { throwIfNoEntry: false }); } catch (error) { console.log(error.code); }"',
+  ].join(' '));
+  assertCondition(throwIfNoEntryStatsResult.exitCode === 0, `browser node throwIfNoEntry Stats workflow should succeed: ${throwIfNoEntryStatsResult.stderr}`);
+  assertCondition(
+    throwIfNoEntryStatsResult.stdout === 'true\ntrue\ntrue\ntrue\ntrue\ntrue\nENOENT\n',
+    `browser node stat/lstat should honor throwIfNoEntry without changing statfs: ${throwIfNoEntryStatsResult.stdout}`
+  );
+
   const statfsResult = await workspace.runCommand([
     'node',
     '-e',
