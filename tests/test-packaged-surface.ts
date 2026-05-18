@@ -42,8 +42,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   const requiredPackagedFiles = [
     'dist/index.js',
     'dist/index.cjs',
+    'dist/index.d.ts',
     'dist/browser.js',
     'dist/browser.cjs',
+    'dist/browser.d.ts',
     'dist/browser/project.js',
     'dist/browser/project.cjs',
     'dist/project.js',
@@ -89,6 +91,17 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     assertCondition(fileStat.isFile(), `Packed tarball should include ${relativePath}`);
   }
 
+  const rootTypes = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+  assertCondition(
+    rootTypes.includes('getRuntimeProjectIoSupport') && rootTypes.includes('RuntimeProjectIoSupport'),
+    'Root declarations should expose the stable project I/O support helper and type'
+  );
+  const browserTypes = await readFile(join(packageDir, 'dist/browser.d.ts'), 'utf8');
+  assertCondition(
+    browserTypes.includes('getRuntimeProjectIoSupport') && browserTypes.includes('RuntimeProjectIoSupport'),
+    'Browser declarations should expose the stable project I/O support helper and type'
+  );
+
   const appDir = join(tempRoot, 'app');
   const evalScript = `
     (async () => {
@@ -119,6 +132,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
 
       if (typeof browser.createBrowserHarness !== 'function') throw new Error('Missing createBrowserHarness export');
       if (typeof browser.getLanguageRuntimeInfo !== 'function') throw new Error('Missing browser runtime info export');
+      if (typeof browser.getRuntimeProjectIoSupport !== 'function') {
+        throw new Error('Missing browser project I/O support helper export');
+      }
       if (typeof browserProject.createBrowserProjectWorkspace !== 'function') {
         throw new Error('Missing browser project workspace export');
       }
@@ -265,6 +281,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (typeof csharp.createCSharpRuntimeClient !== 'function') throw new Error('Missing csharp export');
       if (typeof cpp.createCppRuntimeClient !== 'function') throw new Error('Missing cpp export');
       if (typeof root.createBrowserHarness !== 'function') throw new Error('Root export should expose createBrowserHarness');
+      if (typeof root.getRuntimeProjectIoSupport !== 'function') {
+        throw new Error('Root export should expose project I/O support helper');
+      }
+      const jsProjectIo = root.getRuntimeProjectIoSupport('javascript');
+      const tsProjectIo = browser.getRuntimeProjectIoSupport('typescript');
+      if (jsProjectIo.tier !== 'native-live' || tsProjectIo.tier !== 'unsupported') {
+        throw new Error('Project I/O support helper returned unexpected tiers');
+      }
       for (const exportName of ['createRuntimeWorkspace', 'createNativeProjectWorkspace', 'createBrowserProjectWorkspace']) {
         if (exportName in root) {
           throw new Error('Root default surface should not include project-mode just-bash API: ' + exportName);
