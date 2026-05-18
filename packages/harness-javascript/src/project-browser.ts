@@ -3542,17 +3542,32 @@ async function runBrowserJavaScriptProjectRequest(
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => {
         const directoryTarget = runtimeDirectoryTarget(path, kernelDevices);
         const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
+        const makeDirent = (
+          name: string,
+          type: 'file' | 'directory',
+          parentPath: string,
+          characterDevice = false
+        ) => ({
+          name,
+          path: parentPath,
+          parentPath,
+          isBlockDevice: () => false,
+          isCharacterDevice: () => characterDevice,
+          isDirectory: () => type === 'directory',
+          isFIFO: () => false,
+          isFile: () => type === 'file',
+          isSocket: () => false,
+          isSymbolicLink: () => false,
+        });
         if (directoryTarget?.kind === 'directory') {
           const names = directoryTarget.entries.map((entry) => entry.name);
           if (!withFileTypes) return names;
-          return directoryTarget.entries.map((entry) => ({
-            name: entry.name,
-            path: directoryTarget.path,
-            parentPath: directoryTarget.path,
-            isFile: () => entry.kind === 'file',
-            isDirectory: () => entry.kind === 'directory',
-            isSymbolicLink: () => false,
-          }));
+          return directoryTarget.entries.map((entry) => makeDirent(
+            entry.name,
+            entry.kind === 'directory' ? 'directory' : 'file',
+            directoryTarget.path,
+            directoryTarget.path === '/dev' && entry.kind === 'file'
+          ));
         }
         if (directoryTarget?.kind === 'error') {
           throwRuntimeDirectoryTargetError(directoryTarget, directoryTarget.reason === 'not-directory'
@@ -3562,14 +3577,8 @@ async function runBrowserJavaScriptProjectRequest(
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
         const recursive = typeof options === 'object' && options?.recursive === true;
-        const makeDirent = (name: string, type: 'file' | 'directory', parentPath = normalized) => ({
-          name,
-          path: workspaceFilename(parentPath, workspaceRoot),
-          parentPath: workspaceFilename(parentPath, workspaceRoot),
-          isFile: () => type === 'file',
-          isDirectory: () => type === 'directory',
-          isSymbolicLink: () => false,
-        });
+        const makeWorkspaceDirent = (name: string, type: 'file' | 'directory', parentPath = normalized) =>
+          makeDirent(name, type, workspaceFilename(parentPath, workspaceRoot));
         if (recursive) {
           const entries = new Map<string, 'file' | 'directory'>();
           for (const directoryPath of directoryStore) {
@@ -3595,7 +3604,7 @@ async function runBrowserJavaScriptProjectRequest(
               : normalized
                 ? `${normalized}/${parts.join('/')}`
                 : parts.join('/');
-            return makeDirent(name, type, parentPath);
+            return makeWorkspaceDirent(name, type, parentPath);
           });
         }
         const entries = new Map<string, 'file' | 'directory'>();
@@ -3619,7 +3628,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
         const sortedEntries = Array.from(entries.entries()).sort(([left], [right]) => left.localeCompare(right));
         if (!withFileTypes) return sortedEntries.map(([name]) => name);
-        return sortedEntries.map(([name, type]) => makeDirent(name, type));
+        return sortedEntries.map(([name, type]) => makeWorkspaceDirent(name, type));
       },
       readdir: (path: unknown, optionsOrCallback?: { withFileTypes?: boolean; recursive?: boolean } | string | null | ((error: Error | null, files?: unknown) => void), callback?: (error: Error | null, files?: unknown) => void) => {
         const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;

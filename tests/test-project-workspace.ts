@@ -1739,11 +1739,11 @@ async function testNativeJavaScriptProjectRunner(): Promise<void> {
   const direntResult = await workspace.runCommand([
     'node',
     '-e',
-    '"(async () => { const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.mkdirSync(\\"dirent/sub\\", { recursive: true }); fs.writeFileSync(\\"dirent/file.txt\\", \\"x\\"); const label = (entry) => entry.name + \\":\\" + entry.isFile() + \\":\\" + entry.isDirectory() + \\":\\" + entry.isSymbolicLink(); const syncEntries = fs.readdirSync(\\"dirent\\", { withFileTypes: true }).map(label).sort(); console.log(syncEntries.join(\\"|\\")); const asyncEntries = (await fsp.readdir(\\"dirent\\", { withFileTypes: true })).map(label).sort(); console.log(asyncEntries.join(\\"|\\")); })();"',
+    '"(async () => { const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.mkdirSync(\\"dirent/sub\\", { recursive: true }); fs.writeFileSync(\\"dirent/file.txt\\", \\"x\\"); const label = (entry) => entry.name + \\":\\" + entry.isFile() + \\":\\" + entry.isDirectory() + \\":\\" + entry.isSymbolicLink() + \\":\\" + entry.isBlockDevice() + \\":\\" + entry.isCharacterDevice() + \\":\\" + entry.isFIFO() + \\":\\" + entry.isSocket(); const syncEntries = fs.readdirSync(\\"dirent\\", { withFileTypes: true }).map(label).sort(); console.log(syncEntries.join(\\"|\\")); const asyncEntries = (await fsp.readdir(\\"dirent\\", { withFileTypes: true })).map(label).sort(); console.log(asyncEntries.join(\\"|\\")); })();"',
   ].join(' '));
   assertCondition(direntResult.exitCode === 0, `native node readdir Dirent workflow should succeed: ${direntResult.stderr}`);
   assertCondition(
-    direntResult.stdout === 'file.txt:true:false:false|sub:false:true:false\nfile.txt:true:false:false|sub:false:true:false\n',
+    direntResult.stdout === 'file.txt:true:false:false:false:false:false:false|sub:false:true:false:false:false:false:false\nfile.txt:true:false:false:false:false:false:false|sub:false:true:false:false:false:false:false\n',
     `native node readdir withFileTypes should return Dirent-like entries: ${direntResult.stdout}`
   );
 
@@ -3025,11 +3025,11 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const devFsResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const names = fs.readdirSync(\\"/dev\\"); console.log(names.join(\\"\\,\\")); const entries = fs.readdirSync(\\"/dev\\", { withFileTypes: true }).map((entry) => entry.name + \\":\\" + entry.isFile() + \\":\\" + entry.isDirectory()).join(\\"|\\"); console.log(entries); const stdoutStat = fs.statSync(\\"/dev/stdout\\"); const devStat = fs.statSync(\\"/dev\\"); console.log(stdoutStat.isFile() + \\":\\" + stdoutStat.isCharacterDevice() + \\":\\" + stdoutStat.isDirectory()); console.log(devStat.isDirectory() + \\":\\" + devStat.isFile()); console.log(fs.existsSync(\\"/dev/stdin\\") + \\":\\" + fs.existsSync(\\"/dev/missing\\")); try { fs.readdirSync(\\"/dev/stdout\\"); } catch (error) { console.log(error.code); }"',
+    '"const fs = require(\\"node:fs\\"); const names = fs.readdirSync(\\"/dev\\"); console.log(names.join(\\"\\,\\")); const entries = fs.readdirSync(\\"/dev\\", { withFileTypes: true }).map((entry) => entry.name + \\":\\" + entry.isFile() + \\":\\" + entry.isDirectory() + \\":\\" + entry.isCharacterDevice() + \\":\\" + entry.isBlockDevice() + \\":\\" + entry.isFIFO() + \\":\\" + entry.isSocket()).join(\\"|\\"); console.log(entries); const stdoutStat = fs.statSync(\\"/dev/stdout\\"); const devStat = fs.statSync(\\"/dev\\"); console.log(stdoutStat.isFile() + \\":\\" + stdoutStat.isCharacterDevice() + \\":\\" + stdoutStat.isDirectory()); console.log(devStat.isDirectory() + \\":\\" + devStat.isFile()); console.log(fs.existsSync(\\"/dev/stdin\\") + \\":\\" + fs.existsSync(\\"/dev/missing\\")); try { fs.readdirSync(\\"/dev/stdout\\"); } catch (error) { console.log(error.code); }"',
   ].join(' '));
   assertCondition(devFsResult.exitCode === 0, `browser node /dev fs workflow should succeed: ${devFsResult.stderr}`);
   assertCondition(
-    devFsResult.stdout === 'stderr,stdin,stdout,tty\nstderr:true:false|stdin:true:false|stdout:true:false|tty:true:false\ntrue:true:false\ntrue:false\ntrue:false\nENOTDIR\n',
+    devFsResult.stdout === 'stderr,stdin,stdout,tty\nstderr:true:false:true:false:false:false|stdin:true:false:true:false:false:false|stdout:true:false:true:false:false:false|tty:true:false:true:false:false:false\ntrue:true:false\ntrue:false\ntrue:false\nENOTDIR\n',
     `browser node fs should expose tracekernel /dev namespace: ${devFsResult.stdout}`
   );
 
