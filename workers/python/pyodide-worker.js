@@ -1250,6 +1250,16 @@ async function executeProjectPython(request, messageId) {
       : { kind: 'workspace', path: parsed?.path };
     return JSON.stringify(openTarget);
   };
+  self.__tracecodeRuntimeKernelMutationTarget = (payload) => {
+    const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+    const policy = self.TraceRuntimeKernelPolicy;
+    const mutationTarget = policy && typeof policy.runtimeKernelVirtualMutationTarget === 'function'
+      ? policy.runtimeKernelVirtualMutationTarget(parsed?.path, {
+          devices: normalizeProjectKernelDevices(request?.project?.kernelDevices),
+        })
+      : { kind: 'workspace', path: parsed?.path };
+    return JSON.stringify(mutationTarget);
+  };
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
@@ -2261,6 +2271,40 @@ def _kernel_open_target(_path, _request):
     except Exception:
         return _fallback_kernel_open_target(_virtual_path, _request)
 
+def _fallback_kernel_mutation_target(_path):
+    _device_path = _normalize_device_namespace_path(_path)
+    if _device_path:
+        if _device_entry_kind(_device_path) is None:
+            return {"kind": "error", "reason": "device-not-found", "path": _device_path}
+        return {"kind": "error", "reason": "device-read-only", "path": _device_path}
+    _proc_path = _normalize_proc_path(_path)
+    if _proc_path:
+        return {"kind": "error", "reason": "proc-read-only", "path": _proc_path}
+    return {"kind": "workspace", "path": os.fspath(_path) if isinstance(_path, (str, bytes, os.PathLike)) else str(_path)}
+
+def _kernel_mutation_target(_path):
+    _device_path = _normalize_device_namespace_path(_path)
+    _proc_path = _normalize_proc_path(_path)
+    _virtual_path = _device_path or _proc_path
+    if not _virtual_path:
+        return {"kind": "workspace", "path": os.fspath(_path) if isinstance(_path, (str, bytes, os.PathLike)) else str(_path)}
+    try:
+        return json.loads(_js_self.__tracecodeRuntimeKernelMutationTarget(json.dumps({"path": _virtual_path})))
+    except Exception:
+        return _fallback_kernel_mutation_target(_virtual_path)
+
+def _reject_kernel_mutation(_path, _operation):
+    _target = _kernel_mutation_target(_path)
+    if _target.get("kind") != "error":
+        return
+    _reason = str(_target.get("reason", ""))
+    _target_path = str(_target.get("path", os.fspath(_path) if isinstance(_path, (str, bytes, os.PathLike)) else _path))
+    if _reason in ("device-not-found", "not-found"):
+        raise FileNotFoundError(_target_path)
+    if _reason in ("proc-read-only", "kernel-read-only"):
+        raise OSError("Kernel proc path is read-only: " + _target_path)
+    raise OSError("Kernel device namespace is read-only: " + _target_path)
+
 def _virtual_workspace_path(_value):
     if isinstance(_value, str):
         _relative = os.path.relpath(_value, _root)
@@ -2535,12 +2579,7 @@ def _install_virtual_workspace_paths():
         return _new_fd
 
     def _patched_os_truncate(_path, _length):
-        _proc_path = _normalize_proc_path(_path)
-        if _proc_path:
-            raise OSError("Kernel proc path is read-only: " + _proc_path)
-        _device = _normalize_device_path(_path)
-        if _device:
-            raise OSError("Kernel device is not truncateable: " + _device)
+        _reject_kernel_mutation(_path, "truncate")
         _mapped_path = _map_workspace_path(_path)
         _absolute_path = _absolute_mapped_path(_mapped_path)
         _result = _original_os_truncate(_mapped_path, _length)
@@ -2638,9 +2677,7 @@ def _install_virtual_workspace_paths():
             if _device_path:
                 _kind = _device_entry_kind(_device_path)
                 if _name in ("chmod", "chown", "mkdir", "makedirs", "remove", "removedirs", "rmdir", "unlink", "utime"):
-                    if _kind is None:
-                        raise FileNotFoundError(_device_path)
-                    raise OSError("Kernel device namespace is read-only: " + _device_path)
+                    _reject_kernel_mutation(_path, _name)
                 if _name in ("exists", "lexists"):
                     return _kind is not None
                 if _name == "isfile":
@@ -2688,7 +2725,7 @@ def _install_virtual_workspace_paths():
             if _proc_path:
                 _kind = _proc_entry_kind(_proc_path)
                 if _name in ("chmod", "chown", "mkdir", "makedirs", "remove", "removedirs", "rmdir", "unlink", "utime"):
-                    raise OSError("Kernel proc path is read-only: " + _proc_path)
+                    _reject_kernel_mutation(_path, _name)
                 if _name in ("exists", "lexists"):
                     return _kind is not None
                 if _name == "isfile":
@@ -2743,17 +2780,8 @@ def _install_virtual_workspace_paths():
                         _destination_handle.write(_source_handle.read())
                 return None
         def _patched_two(_src, _dst, *args, **kwargs):
-            _device_src = _normalize_device_namespace_path(_src)
-            _device_dst = _normalize_device_namespace_path(_dst)
-            if _device_src or _device_dst:
-                _device_path = _device_src or _device_dst
-                if _device_entry_kind(_device_path) is None:
-                    raise FileNotFoundError(_device_path)
-                raise OSError("Kernel device namespace is read-only: " + _device_path)
-            _proc_src = _normalize_proc_path(_src)
-            _proc_dst = _normalize_proc_path(_dst)
-            if _proc_src or _proc_dst:
-                raise OSError("Kernel proc path is read-only: " + (_proc_src or _proc_dst))
+            _reject_kernel_mutation(_src, _name)
+            _reject_kernel_mutation(_dst, _name)
             if _name == "symlink":
                 raise OSError(
                     getattr(__import__("errno"), "ENOSYS", 38),
@@ -2926,6 +2954,7 @@ json.dumps({
     restoreProviderStdioBridge();
     delete self.__tracecodeProjectEvent;
     delete self.__tracecodeRuntimeKernelOpenTarget;
+    delete self.__tracecodeRuntimeKernelMutationTarget;
     delete self.__tracecodeInstallProjectFsMutationEvents;
   }
 }

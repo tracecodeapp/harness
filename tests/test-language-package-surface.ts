@@ -338,11 +338,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         worker.includes('shared-kernel-policy-loaded') &&
           worker.includes('self.TraceRuntimeKernelPolicy') &&
           worker.includes('__tracecodeRuntimeKernelOpenTarget') &&
+          worker.includes('__tracecodeRuntimeKernelMutationTarget') &&
           worker.includes('runtimeKernelVirtualOpenTarget') &&
+          worker.includes('runtimeKernelVirtualMutationTarget') &&
           worker.includes('runtimeKernelVirtualPathTarget(path, { devices })') &&
           worker.includes('runtimeKernelDeviceOutputTarget(devices, target.path)') &&
           worker.includes('runtimeKernelDeviceInputSource(devices, device)'),
-        '@tracecode/harness-python worker should load shared worker kernel policy for virtual path, open, and device routing decisions'
+        '@tracecode/harness-python worker should load shared worker kernel policy for virtual path, open, mutation, and device routing decisions'
       );
       assertCondition(
         worker.includes("patch('mkdir'") &&
