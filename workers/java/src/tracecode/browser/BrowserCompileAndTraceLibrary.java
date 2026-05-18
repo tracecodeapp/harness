@@ -855,7 +855,7 @@ public final class BrowserCompileAndTraceLibrary {
   }
 
   private static boolean isKernelVirtualManifestPath(String path) {
-    return path != null && path.startsWith("/proc/");
+    return path != null && path.startsWith("/") && !path.equals("/dev") && !path.startsWith("/dev/");
   }
 
   private static boolean compileWithBundledJavac(String[] args, PrintWriter compilerStderr) throws Exception {

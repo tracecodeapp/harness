@@ -3103,7 +3103,7 @@ function projectJavaWorkspaceFiles(project) {
 
 function normalizeKernelVirtualFilePath(path) {
   const normalized = String(path ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
-  if (normalized.startsWith('/proc/')) return normalized;
+  if (normalized.startsWith('/') && normalized !== '/dev' && !normalized.startsWith('/dev/')) return normalized;
   throw new Error(`Unsupported Java kernel virtual file path: ${path}`);
 }
 
