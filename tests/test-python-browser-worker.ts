@@ -144,6 +144,9 @@ async function main(): Promise<void> {
             '    print("dev-fd-stdin=" + os.read(stdin_fd, 64).decode("utf-8").strip())',
             'finally:',
             '    os.close(stdin_fd)',
+            'stdin_fdopen_fd = os.open("/dev/stdin", os.O_RDONLY)',
+            'with os.fdopen(stdin_fdopen_fd, "r", encoding="utf-8") as stdin_fdopen:',
+            '    print("dev-fdopen-stdin=" + stdin_fdopen.read().strip())',
             'custom_fd = os.open("/dev/custom-in", os.O_RDONLY)',
             'try:',
             '    print("dev-fd-custom-in=" + os.read(custom_fd, 64).decode("utf-8").strip())',
@@ -165,6 +168,9 @@ async function main(): Promise<void> {
             '    os.write(stdout_fd, b"dev-fd-out\\\\n")',
             'finally:',
             '    os.close(stdout_fd)',
+            'stdout_fdopen_fd = os.open("/dev/stdout", os.O_WRONLY)',
+            'with os.fdopen(stdout_fdopen_fd, "w", encoding="utf-8") as stdout_fdopen:',
+            '    stdout_fdopen.write("dev-fdopen-out\\\\n")',
             'tty_fd = os.open("/dev/tty", os.O_WRONLY)',
             'try:',
             '    os.write(tty_fd, b"dev-fd-tty\\\\n")',
@@ -206,6 +212,9 @@ async function main(): Promise<void> {
             '    os.write(fd, b"fd-two\\\\n")',
             'finally:',
             '    os.close(fd)',
+            'fd = os.open("/workspace/fdopen-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
+            'with os.fdopen(fd, "w", encoding="utf-8") as handle:',
+            '    handle.write("fdopen-one\\\\n")',
             'fd = os.open("/workspace/fd-empty.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
             'os.close(fd)',
             'with open("/workspace/truncated.txt", "w+", encoding="utf-8") as handle:',
@@ -425,6 +434,16 @@ async function main(): Promise<void> {
                 '    print(os.read(proc_fd, 64).decode("utf-8").strip())',
                 'finally:',
                 '    os.close(proc_fd)',
+                'proc_fdopen_fd = os.open("/proc/kernel/version", os.O_RDONLY)',
+                'with os.fdopen(proc_fdopen_fd, "r", encoding="utf-8") as proc_fdopen:',
+                '    print(proc_fdopen.read().strip())',
+                'proc_fdopen_write_fd = os.open("/proc/kernel/version", os.O_RDONLY)',
+                'try:',
+                '    os.fdopen(proc_fdopen_write_fd, "w", encoding="utf-8")',
+                '    print("proc-fdopen-write:ok")',
+                'except OSError:',
+                '    os.close(proc_fdopen_write_fd)',
+                '    print("proc-fdopen-write:blocked")',
                 'try:',
                 '    os.open("/proc/kernel/version", os.O_WRONLY)',
                 '    print("proc-os-write:ok")',
@@ -500,7 +519,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\nprovider-hook-out\nprovider-hook-lines\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\nprovider-hook-out\nprovider-hook-lines\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
@@ -573,6 +592,10 @@ async function main(): Promise<void> {
     assertCondition(
       findFile(results.fileRun, 'fd-live.txt')?.contents === 'fd-one\nfd-two\n',
       'Python project file run should report low-level fd side effects'
+    );
+    assertCondition(
+      findFile(results.fileRun, 'fdopen-live.txt')?.contents === 'fdopen-one\n',
+      'Python project file run should report os.fdopen side effects'
     );
     assertCondition(
       findFile(results.fileRun, 'fd-empty.txt')?.contents === '',
@@ -702,6 +725,15 @@ async function main(): Promise<void> {
         event.change.contents === 'fd-one\nfd-two\n'
       )) === true,
       `Python project worker should stream live os.write mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'fdopen-live.txt' &&
+        event.change.contents === 'fdopen-one\n'
+      )) === true,
+      `Python project worker should stream live os.fdopen mutations: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (
@@ -871,7 +903,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-os-write:blocked\nTrue\nFalse\ncustom-in,log,stderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\ncustom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\ntracekernel test\nproc-fdopen-write:blocked\nproc-os-write:blocked\nTrue\nFalse\ncustom-in,log,stderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\ncustom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(

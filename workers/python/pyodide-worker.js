@@ -1253,6 +1253,59 @@ class _TraceDeviceFile:
         self.close()
         return False
 
+class _TraceDeviceFdFile:
+    def __init__(self, _fd, _mode="r"):
+        self._fd = _fd
+        self._mode = str(_mode or "r")
+        self._binary = "b" in self._mode
+        self.closed = False
+
+    def readable(self):
+        return "r" in self._mode or "+" in self._mode
+
+    def writable(self):
+        return "w" in self._mode or "a" in self._mode or "+" in self._mode
+
+    def read(self, _size=-1):
+        if not self.readable():
+            raise OSError("Kernel device is not readable")
+        _length = 1024 * 1024 if _size is None or int(_size) < 0 else int(_size)
+        _data = os.read(self._fd, _length)
+        return _data if self._binary else _data.decode("utf-8", "replace")
+
+    def readline(self, _size=-1):
+        _text = self.read(_size)
+        if self._binary:
+            return _text.splitlines(True)[0] if _text else b""
+        return _text.splitlines(True)[0] if _text else ""
+
+    def write(self, _value):
+        if not self.writable():
+            raise OSError("Kernel device is not writable")
+        _data = _value if isinstance(_value, (bytes, bytearray)) else str(_value).encode("utf-8")
+        _written = os.write(self._fd, _data)
+        return _written if self._binary else len(str(_value))
+
+    def writelines(self, _lines):
+        for _line in _lines:
+            self.write(_line)
+        return None
+
+    def flush(self):
+        return None
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            os.close(self._fd)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
 class _TraceProjectFile:
     def __init__(self, _handle, _absolute_path, _mutates):
         self._handle = _handle
@@ -1666,6 +1719,48 @@ class _TraceProcFile:
     def __getattr__(self, _name):
         return getattr(self._handle, _name)
 
+class _TraceProcFdFile:
+    def __init__(self, _fd, _mode="r"):
+        self._fd = _fd
+        self._mode = str(_mode or "r")
+        self._binary = "b" in self._mode
+        self.closed = False
+
+    def readable(self):
+        return True
+
+    def writable(self):
+        return False
+
+    def read(self, _size=-1):
+        _length = 1024 * 1024 if _size is None or int(_size) < 0 else int(_size)
+        _data = os.read(self._fd, _length)
+        return _data if self._binary else _data.decode("utf-8", "replace")
+
+    def readline(self, _size=-1):
+        _text = self.read(_size)
+        if self._binary:
+            return _text.splitlines(True)[0] if _text else b""
+        return _text.splitlines(True)[0] if _text else ""
+
+    def write(self, *_args, **_kwargs):
+        raise OSError("Kernel proc path is read-only")
+
+    def flush(self):
+        return None
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            os.close(self._fd)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
 def _is_mutating_file_mode(_mode):
     _mode_text = str(_mode or "r")
     return any(_marker in _mode_text for _marker in ("w", "a", "x", "+"))
@@ -1732,8 +1827,17 @@ def _install_virtual_workspace_paths():
         return os.path.abspath(os.path.join(_original_getcwd(), _file_path))
 
     def _patched_open(_file, *args, **kwargs):
-        _device = _normalize_device_path(_file)
         _mode = args[0] if args else kwargs.get("mode", "r")
+        if isinstance(_file, int):
+            if _file in _device_file_descriptors:
+                return _TraceDeviceFdFile(_file, _mode)
+            if _file in _proc_file_descriptors:
+                if _is_mutating_file_mode(_mode):
+                    raise OSError("Kernel proc path is read-only")
+                return _TraceProcFdFile(_file, _mode)
+            _handle = _original_open(_file, *args, **kwargs)
+            return _TraceProjectFile(_handle, _open_file_descriptors.get(_file), _is_mutating_file_mode(_mode))
+        _device = _normalize_device_path(_file)
         if _device:
             return _TraceDeviceFile(_device, _mode)
         _device_path = _normalize_device_namespace_path(_file)
@@ -1793,7 +1897,10 @@ def _install_virtual_workspace_paths():
                 raise IsADirectoryError(_proc_path)
             _fd = _next_virtual_fd
             _next_virtual_fd += 1
-            _proc_file_descriptors[_fd] = io.BytesIO(_proc_read_text(_proc_path).encode("utf-8"))
+            _proc_file_descriptors[_fd] = {
+                "path": _proc_path,
+                "handle": io.BytesIO(_proc_read_text(_proc_path).encode("utf-8")),
+            }
             return _fd
         _mapped_path = _map_workspace_path(_path)
         _absolute_path = _absolute_mapped_path(_mapped_path)
@@ -1815,7 +1922,7 @@ def _install_virtual_workspace_paths():
             return _chunk
         _proc_handle = _proc_file_descriptors.get(_fd)
         if _proc_handle is not None:
-            return _proc_handle.read(_length)
+            return _proc_handle.get("handle").read(_length)
         return _original_os_read(_fd, _length)
 
     def _patched_os_write(_fd, _data):
@@ -1844,7 +1951,7 @@ def _install_virtual_workspace_paths():
             return None
         _proc_handle = _proc_file_descriptors.pop(_fd, None)
         if _proc_handle is not None:
-            _proc_handle.close()
+            _proc_handle.get("handle").close()
             return None
         _absolute_path = _open_file_descriptors.pop(_fd, None)
         try:
