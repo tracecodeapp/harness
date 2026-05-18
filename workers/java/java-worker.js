@@ -3199,8 +3199,8 @@ function javaProjectSourcePath(file) {
 
 function augmentJavaProjectFileMutations(source) {
   return String(source ?? '')
-    .replace(/\bjava\.nio\.file\.Files\.(writeString|write|newOutputStream|newBufferedWriter|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
-    .replace(/(?<![\w.])Files\.(writeString|write|newOutputStream|newBufferedWriter|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/\bjava\.nio\.file\.Files\.(readString|readAllBytes|writeString|write|newOutputStream|newBufferedWriter|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/(?<![\w.])Files\.(readString|readAllBytes|writeString|write|newOutputStream|newBufferedWriter|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
     .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/\bnew\s+java\.io\.FileOutputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileOutputStream(')
@@ -3231,9 +3231,27 @@ function javaProjectEffectiveClasspath(payload) {
     : javaProjectEnvClasspath(payload);
 }
 
-function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = []) {
+function projectKernelDeviceManifest(project) {
+  const devices = Array.isArray(project?.kernelDevices) ? project.kernelDevices : [];
+  return devices
+    .map((device) => {
+      const path = String(device?.path ?? '').replace(/\\/g, '/');
+      if (!path.startsWith('/dev/')) return null;
+      const readable = device?.readable === true ? '1' : '0';
+      const writable = device?.writable === true ? '1' : '0';
+      const inputDevice = typeof device?.inputDevice === 'string' ? device.inputDevice.replace(/\\/g, '/') : '';
+      const outputDevice = typeof device?.outputDevice === 'string' ? device.outputDevice.replace(/\\/g, '/') : '';
+      return [path, readable, writable, inputDevice, outputDevice].map((part) => base64Utf8(part)).join('\t');
+    })
+    .filter(Boolean)
+    .sort()
+    .join('\n');
+}
+
+function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '') {
   const argsSource = args.map((arg) => javaStringLiteral(arg)).join(', ');
   const stdinSource = javaStringLiteral(stdin);
+  const kernelDeviceManifestSource = javaStringLiteral(kernelDeviceManifest);
   const propertyKeysSource = systemProperties.map(([key]) => javaStringLiteral(key)).join(', ');
   const propertyValuesSource = systemProperties.map(([, value]) => javaStringLiteral(value)).join(', ');
   const invocation = compileOnly
@@ -3301,6 +3319,7 @@ public class ${exportsClassName} {
       }
       ProjectEvents.setProjectEventBridgeEnabled(true);
       ProjectEvents.setProjectWorkspaceRoot(java.nio.file.Paths.get(System.getProperty("user.dir", ".")));
+      ProjectEvents.setKernelDevices(${kernelDeviceManifestSource}, ${stdinSource});
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
       System.setErr(new java.io.PrintStream(ProjectEvents.streamingOutput(stderrBytes, "stderr"), true, "UTF-8"));
       System.setIn(new java.io.ByteArrayInputStream(${stdinSource}.getBytes("UTF-8")));
@@ -3315,6 +3334,7 @@ ${invocation}
       System.setErr(previousErr);
       System.setIn(previousIn);
       ProjectEvents.setProjectWorkspaceRoot(null);
+      ProjectEvents.clearKernelDevices();
       ProjectEvents.setProjectEventBridgeEnabled(false);
       for (String key : propertyKeys) {
         if (previousProperties.containsKey(key)) {
@@ -3369,7 +3389,8 @@ function buildProjectJavaRunnableSource(payload, compileId) {
           Array.isArray(payload.args) ? payload.args : [],
           false,
           String(payload.stdin ?? ''),
-          javaProjectSystemProperties(payload)
+          javaProjectSystemProperties(payload),
+          projectKernelDeviceManifest(payload.project)
         ).trim(),
       };
 
@@ -3424,7 +3445,8 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
       Array.isArray(payload.args) ? payload.args : [],
       false,
       String(payload.stdin ?? ''),
-      javaProjectSystemProperties(payload)
+      javaProjectSystemProperties(payload),
+      projectKernelDeviceManifest(payload.project)
     ).trim(),
   };
 

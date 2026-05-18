@@ -8,6 +8,7 @@ import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -17,11 +18,19 @@ import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class ProjectEvents {
   private static final ThreadLocal<Boolean> PROJECT_EVENT_BRIDGE_ENABLED =
       ThreadLocal.withInitial(() -> Boolean.FALSE);
   private static final ThreadLocal<Path> PROJECT_WORKSPACE_ROOT = new ThreadLocal<>();
+  private static final ThreadLocal<Map<String, KernelDevice>> KERNEL_DEVICES =
+      ThreadLocal.withInitial(HashMap::new);
+  private static final ThreadLocal<byte[]> KERNEL_STDIN =
+      ThreadLocal.withInitial(() -> new byte[0]);
+  private static final ThreadLocal<ByteArrayOutputStream> STDOUT_CAPTURE = new ThreadLocal<>();
+  private static final ThreadLocal<ByteArrayOutputStream> STDERR_CAPTURE = new ThreadLocal<>();
 
   private ProjectEvents() {}
 
@@ -33,11 +42,51 @@ public final class ProjectEvents {
     PROJECT_WORKSPACE_ROOT.set(root == null ? null : root.toAbsolutePath().normalize());
   }
 
+  public static void setKernelDevices(String manifest, String stdin) {
+    KERNEL_DEVICES.set(parseKernelDevices(manifest));
+    KERNEL_STDIN.set(stdin == null ? new byte[0] : stdin.getBytes(StandardCharsets.UTF_8));
+  }
+
+  public static void clearKernelDevices() {
+    KERNEL_DEVICES.remove();
+    KERNEL_STDIN.remove();
+    STDOUT_CAPTURE.remove();
+    STDERR_CAPTURE.remove();
+  }
+
   public static OutputStream streamingOutput(ByteArrayOutputStream capture, String stream) {
+    if ("stderr".equals(stream)) {
+      STDERR_CAPTURE.set(capture);
+    } else {
+      STDOUT_CAPTURE.set(capture);
+    }
     return new StreamingProjectOutputStream(capture, stream);
   }
 
+  public static String readString(Path path) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) return new String(readKernelDevice(device), StandardCharsets.UTF_8);
+    return Files.readString(path);
+  }
+
+  public static String readString(Path path, Charset charset) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) return new String(readKernelDevice(device), charset);
+    return Files.readString(path, charset);
+  }
+
+  public static byte[] readAllBytes(Path path) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) return readKernelDevice(device);
+    return Files.readAllBytes(path);
+  }
+
   public static Path writeString(Path path, CharSequence contents, OpenOption... options) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) {
+      writeKernelDevice(device, String.valueOf(contents).getBytes(StandardCharsets.UTF_8));
+      return path;
+    }
     assertWritableProjectPath(path);
     Path result = Files.writeString(path, contents, options);
     emitFileSnapshot(path);
@@ -46,6 +95,11 @@ public final class ProjectEvents {
 
   public static Path writeString(Path path, CharSequence contents, java.nio.charset.Charset charset, OpenOption... options)
       throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) {
+      writeKernelDevice(device, String.valueOf(contents).getBytes(charset));
+      return path;
+    }
     assertWritableProjectPath(path);
     Path result = Files.writeString(path, contents, charset, options);
     emitFileSnapshot(path);
@@ -53,6 +107,11 @@ public final class ProjectEvents {
   }
 
   public static Path write(Path path, byte[] bytes, OpenOption... options) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) {
+      writeKernelDevice(device, bytes);
+      return path;
+    }
     assertWritableProjectPath(path);
     Path result = Files.write(path, bytes, options);
     emitFileSnapshot(path);
@@ -61,6 +120,13 @@ public final class ProjectEvents {
 
   public static Path write(Path path, Iterable<? extends CharSequence> lines, OpenOption... options)
       throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) {
+      StringBuilder contents = new StringBuilder();
+      for (CharSequence line : lines) contents.append(line).append(System.lineSeparator());
+      writeKernelDevice(device, contents.toString().getBytes(StandardCharsets.UTF_8));
+      return path;
+    }
     assertWritableProjectPath(path);
     Path result = Files.write(path, lines, options);
     emitFileSnapshot(path);
@@ -73,6 +139,13 @@ public final class ProjectEvents {
       java.nio.charset.Charset charset,
       OpenOption... options
   ) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) {
+      StringBuilder contents = new StringBuilder();
+      for (CharSequence line : lines) contents.append(line).append(System.lineSeparator());
+      writeKernelDevice(device, contents.toString().getBytes(charset));
+      return path;
+    }
     assertWritableProjectPath(path);
     Path result = Files.write(path, lines, charset, options);
     emitFileSnapshot(path);
@@ -109,16 +182,26 @@ public final class ProjectEvents {
   }
 
   public static OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) return new KernelDeviceOutputStream(device);
     assertWritableProjectPath(path);
     return new ProjectOutputStream(Files.newOutputStream(path, options), path);
   }
 
   public static BufferedWriter newBufferedWriter(Path path, OpenOption... options) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) {
+      return new BufferedWriter(new OutputStreamWriter(new KernelDeviceOutputStream(device), StandardCharsets.UTF_8));
+    }
     assertWritableProjectPath(path);
     return new ProjectBufferedWriter(Files.newBufferedWriter(path, options), path);
   }
 
   public static BufferedWriter newBufferedWriter(Path path, Charset charset, OpenOption... options) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) {
+      return new BufferedWriter(new OutputStreamWriter(new KernelDeviceOutputStream(device), charset));
+    }
     assertWritableProjectPath(path);
     return new ProjectBufferedWriter(Files.newBufferedWriter(path, charset, options), path);
   }
@@ -361,6 +444,103 @@ public final class ProjectEvents {
   private static native void emitOutputNative(String stream, String data);
   private static native void emitFileSnapshotNative(String path, String contents);
   private static native void emitFileDeleteNative(String path);
+
+  private static Map<String, KernelDevice> parseKernelDevices(String manifest) {
+    Map<String, KernelDevice> devices = new HashMap<>();
+    if (manifest == null || manifest.isEmpty()) return devices;
+    String[] lines = manifest.split("\\n");
+    for (String line : lines) {
+      if (line.isEmpty()) continue;
+      String[] fields = line.split("\\t", -1);
+      if (fields.length < 5) continue;
+      String path = decodeManifestField(fields[0]);
+      if (!path.startsWith("/dev/")) continue;
+      devices.put(path, new KernelDevice(
+          path,
+          "1".equals(decodeManifestField(fields[1])),
+          "1".equals(decodeManifestField(fields[2])),
+          decodeManifestField(fields[3]),
+          decodeManifestField(fields[4])));
+    }
+    return devices;
+  }
+
+  private static String decodeManifestField(String field) {
+    return new String(Base64.getDecoder().decode(field), StandardCharsets.UTF_8);
+  }
+
+  private static KernelDevice readableKernelDevice(Path path) throws IOException {
+    KernelDevice device = kernelDevice(path);
+    if (device == null) return null;
+    if (!device.readable) throw new IOException("Kernel device is not readable: " + device.path);
+    return device;
+  }
+
+  private static KernelDevice writableKernelDevice(Path path) throws IOException {
+    KernelDevice device = kernelDevice(path);
+    if (device == null) return null;
+    if (!device.writable) throw new IOException("Kernel device is not writable: " + device.path);
+    return device;
+  }
+
+  private static KernelDevice kernelDevice(Path path) {
+    if (path == null) return null;
+    String normalized = path.toString().replace('\\', '/');
+    if (!normalized.startsWith("/dev/")) return null;
+    return KERNEL_DEVICES.get().get(normalized);
+  }
+
+  private static byte[] readKernelDevice(KernelDevice device) {
+    String inputDevice = device.inputDevice.isEmpty() ? device.path : device.inputDevice;
+    if (!"/dev/stdin".equals(inputDevice) && !"/dev/tty".equals(device.path)) return new byte[0];
+    return KERNEL_STDIN.get();
+  }
+
+  private static void writeKernelDevice(KernelDevice device, byte[] bytes) {
+    String outputDevice = device.outputDevice.isEmpty() ? device.path : device.outputDevice;
+    String stream = "/dev/stderr".equals(outputDevice) ? "stderr" : "stdout";
+    ByteArrayOutputStream capture = "stderr".equals(stream) ? STDERR_CAPTURE.get() : STDOUT_CAPTURE.get();
+    if (capture != null) {
+      capture.write(bytes, 0, bytes.length);
+    }
+    emitOutput(stream, new String(bytes, StandardCharsets.UTF_8));
+  }
+
+  private static final class KernelDevice {
+    final String path;
+    final boolean readable;
+    final boolean writable;
+    final String inputDevice;
+    final String outputDevice;
+
+    KernelDevice(String path, boolean readable, boolean writable, String inputDevice, String outputDevice) {
+      this.path = path;
+      this.readable = readable;
+      this.writable = writable;
+      this.inputDevice = inputDevice == null ? "" : inputDevice;
+      this.outputDevice = outputDevice == null ? "" : outputDevice;
+    }
+  }
+
+  private static final class KernelDeviceOutputStream extends OutputStream {
+    private final KernelDevice device;
+
+    KernelDeviceOutputStream(KernelDevice device) {
+      this.device = device;
+    }
+
+    @Override
+    public void write(int value) {
+      writeKernelDevice(device, new byte[] { (byte) value });
+    }
+
+    @Override
+    public void write(byte[] bytes, int offset, int length) {
+      byte[] chunk = new byte[length];
+      System.arraycopy(bytes, offset, chunk, 0, length);
+      writeKernelDevice(device, chunk);
+    }
+  }
 
   private static String writableFileName(String fileName) throws IOException {
     assertWritableProjectPath(Path.of(fileName));

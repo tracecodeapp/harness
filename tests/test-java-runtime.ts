@@ -742,7 +742,15 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
             ) => {
               projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName, resourceManifest, compileClasspath, workspaceManifest, workspaceRoot, workspaceCwd });
               const hasKernelProc = workspaceManifest.includes('/proc/kernel/info\t');
-              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-write:IOException\n' : ''}`;
+              const decodedSourceManifest = sourceManifest
+                .split('\n')
+                .filter(Boolean)
+                .map((entry) => Buffer.from(entry.split('\t')[1] ?? '', 'base64').toString('utf8'))
+                .join('\n');
+              const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
+                decodedSourceManifest.includes('/dev/stdout');
+              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-write:IOException\n' : ''}${hasKernelDevices ? 'dev_stdin=from-stdin\ndev_stdout\nstdout-read:IOException\n' : ''}`;
+              const stderr = hasKernelDevices ? 'dev_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
                 'stdout',
@@ -768,6 +776,28 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   null,
                   'stdout',
                   'proc-write:IOException\n'
+                );
+              }
+              if (hasKernelDevices) {
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev_stdin=from-stdin\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev_stdout\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'stdout-read:IOException\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stderr',
+                  'dev_stderr\n'
                 );
               }
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
@@ -813,7 +843,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 success: true,
                 output: JSON.stringify(JSON.stringify({
                   stdout,
-                  stderr: '',
+                  stderr,
                   exitCode: 0,
                 })),
                 compilerStdout: '',
@@ -1298,6 +1328,10 @@ async function main(): Promise<void> {
               '    System.out.println("java_stdin=" + new BufferedReader(new InputStreamReader(System.in)).readLine());',
               '    System.out.println(Files.readString(Path.of("/proc/kernel/info")).contains("tracekernel") ? "proc-info" : "proc-missing");',
               '    try { Files.writeString(Path.of("/proc/kernel/info"), "{}\\\\n"); System.out.println("proc-write:ok"); } catch (IOException ex) { System.out.println("proc-write:" + ex.getClass().getSimpleName()); }',
+              '    System.out.println("dev_stdin=" + Files.readString(Path.of("/dev/stdin")).trim());',
+              '    Files.writeString(Path.of("/dev/stdout"), "dev_stdout\\\\n");',
+              '    Files.writeString(Path.of("/dev/stderr"), "dev_stderr\\\\n");',
+              '    try { Files.readString(Path.of("/dev/stdout")); System.out.println("stdout-read:ok"); } catch (IOException ex) { System.out.println("stdout-read:" + ex.getClass().getSimpleName()); }',
               '  }',
               '}',
               '',
@@ -1309,13 +1343,20 @@ async function main(): Promise<void> {
           { path: '/proc/kernel/version', contents: 'tracekernel test\n' },
           { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
         ],
+        kernelDevices: [
+          { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+          { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+          { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+          { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+        ],
       },
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-write:IOException\n',
+      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-write:IOException\ndev_stdin=from-stdin\ndev_stdout\nstdout-read:IOException\n',
       'Java execute-project-java should return captured stdout'
     );
+    assertCondition(projectExecute.stderr === 'dev_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
     assertCondition(
       projectExecute.events?.some(
         (event) =>
@@ -1346,6 +1387,30 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stdout' &&
             event.data === 'proc-write:IOException\n'
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'dev_stdin=from-stdin\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'dev_stdout\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'stdout-read:IOException\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stderr' &&
+            event.data === 'dev_stderr\n'
       ) === true,
       `Java execute-project-java should emit live stdout project events: ${JSON.stringify(projectExecute.events)}`
     );
@@ -1509,7 +1574,14 @@ async function main(): Promise<void> {
       'Java execute-project-java adapter should wire request stdin into System.in'
     );
     assertCondition(
+      defaultAdapterSource.includes('ProjectEvents.setKernelDevices("') &&
+        defaultAdapterSource.includes('L2Rldi9zdGRvdXQ='),
+      'Java execute-project-java adapter should pass project kernelDevices into ProjectEvents'
+    );
+    assertCondition(
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("generated.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.readString(Path.of("/dev/stdin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("writer.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("printed.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileOutputStream("stream.bin")') === true &&
