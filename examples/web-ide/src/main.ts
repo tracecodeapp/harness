@@ -5,8 +5,12 @@ import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
-import { createBrowserHarness, SUPPORTED_LANGUAGES } from '@tracecode/harness/browser';
-import type { Language } from '@tracecode/harness/core';
+import {
+  createBrowserHarness,
+  getRuntimeProjectIoCapabilityMatrix,
+  SUPPORTED_LANGUAGES,
+} from '@tracecode/harness/browser';
+import type { Language, RuntimeCommandEvent } from '@tracecode/harness/core';
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup
@@ -181,6 +185,24 @@ const getEditorLanguage = (lang: Language): string => {
 async function bootDevTerminal(): Promise<void> {
   document.body.innerHTML = `
     <main class="dev-terminal-root">
+      <aside class="dev-sidebar">
+        <section class="dev-panel">
+          <div class="dev-panel-header">Project I/O</div>
+          <div class="dev-capability-list" id="dev-capability-list"></div>
+        </section>
+        <section class="dev-panel">
+          <div class="dev-panel-header">MVP Checks</div>
+          <div class="dev-command-list" id="dev-command-list"></div>
+        </section>
+        <section class="dev-panel dev-panel-grow">
+          <div class="dev-panel-header">Files</div>
+          <div class="dev-file-tree" id="dev-file-tree"></div>
+        </section>
+        <section class="dev-panel dev-panel-grow">
+          <div class="dev-panel-header">Events</div>
+          <div class="dev-event-log" id="dev-event-log"></div>
+        </section>
+      </aside>
       <section class="dev-terminal">
         <div class="dev-terminal-header">
           <span class="dev-terminal-title">/dev</span>
@@ -205,6 +227,10 @@ async function bootDevTerminal(): Promise<void> {
   const status = document.querySelector<HTMLSpanElement>('#dev-terminal-status')!;
   const form = document.querySelector<HTMLFormElement>('#dev-terminal-form')!;
   const input = document.querySelector<HTMLInputElement>('#dev-terminal-input')!;
+  const capabilityList = document.querySelector<HTMLDivElement>('#dev-capability-list')!;
+  const commandList = document.querySelector<HTMLDivElement>('#dev-command-list')!;
+  const fileTree = document.querySelector<HTMLDivElement>('#dev-file-tree')!;
+  const eventLog = document.querySelector<HTMLDivElement>('#dev-event-log')!;
 
   const appendLine = (text: string, className = ''): void => {
     const line = document.createElement('div');
@@ -219,6 +245,46 @@ async function bootDevTerminal(): Promise<void> {
     for (const line of text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')) {
       appendLine(line, className);
     }
+  };
+
+  const appendEvent = (text: string, className = ''): void => {
+    const line = document.createElement('div');
+    line.className = `dev-event-line ${className}`.trim();
+    line.textContent = text;
+    eventLog.append(line);
+    while (eventLog.childElementCount > 80) {
+      eventLog.firstElementChild?.remove();
+    }
+    eventLog.scrollTop = eventLog.scrollHeight;
+  };
+
+  const renderCapabilities = (): void => {
+    capabilityList.replaceChildren(
+      ...getRuntimeProjectIoCapabilityMatrix().map((row) => {
+        const item = document.createElement('div');
+        item.className = `dev-capability-row tier-${row.browser.tier}`;
+        const label = row.language === 'csharp' ? 'C#' : row.language === 'cpp' ? 'C++' : row.language;
+        item.innerHTML = `
+          <div class="dev-capability-top">
+            <span class="dev-capability-language"></span>
+            <span class="dev-capability-tier"></span>
+          </div>
+          <div class="dev-capability-flags"></div>
+          <div class="dev-capability-note"></div>
+        `;
+        item.querySelector<HTMLSpanElement>('.dev-capability-language')!.textContent = label;
+        item.querySelector<HTMLSpanElement>('.dev-capability-tier')!.textContent = row.browser.tier;
+        item.querySelector<HTMLDivElement>('.dev-capability-flags')!.textContent = [
+          row.browser.liveMutationEvents ? 'live fs' : 'no live fs',
+          row.browser.streamingStdio ? 'stdio' : 'no stdio',
+          row.browser.deviceFiles ? 'devices' : 'no devices',
+          row.browser.finalDiff ? 'final-diff' : 'no final-diff',
+        ].join(' · ');
+        item.querySelector<HTMLDivElement>('.dev-capability-note')!.textContent =
+          row.limitations[0] ?? 'No limitations declared.';
+        return item;
+      })
+    );
   };
 
   appendLine('Loading project workspace...');
@@ -605,60 +671,161 @@ int main(int argc, char** argv) {
     ],
   });
 
-  const disposeTerminal = (): void => {
-    workspace.dispose();
+  const renderFileTree = async (): Promise<void> => {
+    const rows: string[] = [];
+    const visit = async (dir: string, depth: number): Promise<void> => {
+      if (depth > 4 || rows.length > 160) return;
+      let entries: string[] = [];
+      try {
+        entries = await workspace.readDir(dir);
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const path = dir === '.' ? entry : `${dir}/${entry}`;
+        let marker = '';
+        try {
+          const stat = await workspace.stat(path);
+          marker = stat.isDirectory ? '/' : '';
+        } catch {
+          marker = '';
+        }
+        rows.push(`${'  '.repeat(depth)}${entry}${marker}`);
+        if (marker) {
+          await visit(path, depth + 1);
+        }
+      }
+    };
+    await visit('.', 0);
+    fileTree.textContent = rows.join('\n') || '(empty)';
   };
 
-  (
-    window as Window & {
-      __tracecodeProjectWorkspace?: typeof workspace;
-    }
-  ).__tracecodeProjectWorkspace = workspace;
+  const mvpCommands: Record<string, { label: string; command: string; setup?: () => Promise<void> }> = {
+    js: {
+      label: 'JS live FS + stdio',
+      command:
+        'node -e "const fs=require(\\"fs\\"); fs.writeFileSync(\\"mvp-js.txt\\", \\"js-live\\\\n\\"); console.log(fs.readFileSync(\\"mvp-js.txt\\", \\"utf8\\").trim()); fs.writeFileSync(\\"/dev/stdout\\", \\"js-device\\\\n\\");"',
+    },
+    python: {
+      label: 'Python live FS + stdio',
+      command:
+        'python3 -c "from pathlib import Path; Path(\\"mvp-python.txt\\").write_text(\\"python-live\\\\n\\"); print(Path(\\"mvp-python.txt\\").read_text().strip()); open(\\"/dev/stdout\\", \\"w\\").write(\\"python-device\\\\n\\")"',
+    },
+    java: {
+      label: 'Java bridged FS + stdio',
+      command: 'javac MvpJava.java && java MvpJava',
+      setup: async () => {
+        await workspace.writeFile(
+          'MvpJava.java',
+          [
+            'import java.nio.file.Files;',
+            'import java.nio.file.Path;',
+            'class MvpJava {',
+            '  public static void main(String[] args) throws Exception {',
+            '    Files.writeString(Path.of("mvp-java.txt"), "java-live\\n");',
+            '    System.out.print(Files.readString(Path.of("mvp-java.txt")));',
+            '    System.out.print("java-stdio\\n");',
+            '  }',
+            '}',
+            '',
+          ].join('\n')
+        );
+      },
+    },
+    csharp: {
+      label: 'C# bridged FS + stdio',
+      command: 'dotnet run --project mvp-csharp/MvpCSharp.csproj',
+      setup: async () => {
+        await workspace.writeFile(
+          'mvp-csharp/MvpCSharp.csproj',
+          '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n'
+        );
+        await workspace.writeFile(
+          'mvp-csharp/Program.cs',
+          [
+            'using System;',
+            'using System.IO;',
+            'File.WriteAllText("mvp-csharp.txt", "csharp-live\\n");',
+            'Console.Write(File.ReadAllText("mvp-csharp.txt"));',
+            'Console.Write("csharp-stdio\\n");',
+            '',
+          ].join('\n')
+        );
+      },
+    },
+    cpp: {
+      label: 'C++ bridged FS + stdio',
+      command: 'clang++ -std=c++17 mvp.cpp && ./a.out',
+      setup: async () => {
+        await workspace.writeFile(
+          'mvp.cpp',
+          [
+            '#include <fstream>',
+            '#include <iostream>',
+            '#include <string>',
+            'int main() {',
+            '  std::ofstream("mvp-cpp.txt") << "cpp-live\\n";',
+            '  std::ifstream input("mvp-cpp.txt");',
+            '  std::string line;',
+            '  std::getline(input, line);',
+            '  std::cout << line << "\\n";',
+            '  std::cout << "cpp-stdio\\n";',
+            '  return 0;',
+            '}',
+            '',
+          ].join('\n')
+        );
+      },
+    },
+  };
 
-  window.addEventListener('beforeunload', disposeTerminal);
-  if (import.meta.hot) {
-    import.meta.hot.dispose(disposeTerminal);
-  }
-
-  status.textContent = 'ready';
-  appendLine('Ready. Try: python3 main.py alpha beta');
-  appendLine('Ready. Try: python3 globpy/*.py data/*.txt');
-  appendLine('Ready. Try: node index.js alpha beta');
-  appendLine('Ready. Try: node globjs/*.js data/*.txt');
-  appendLine('Ready. Try: java Main alpha beta');
-  appendLine('Ready. Try: javac -d out src/app/PackageMain.java src/app/PackageHelper.java');
-  appendLine('Ready. Try: java --class-path out app.PackageMain alpha beta');
-  appendLine('Ready. Try: java app.PackageMain alpha beta');
-  appendLine('Ready. Try: java right.Main');
-  appendLine('Ready. Try: dotnet run -- alpha beta');
-  appendLine('Ready. Try: dotnet run -- data/*.txt');
-  appendLine('Ready. Try: clang++ -std=c++17 main.cpp helper.cpp');
-  appendLine('Ready. Try: ./a.out alpha beta');
-  appendLine('Ready. Try: ./glob-app data/*.txt');
-  input.disabled = false;
-  input.focus();
-
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const command = input.value.trim();
-    if (!command) return;
-
+  const runTerminalCommand = async (command: string): Promise<void> => {
     input.value = '';
     input.disabled = true;
     status.textContent = 'running';
     appendLine(`$ ${command}`, 'command');
 
     try {
+      if (command === 'capabilities') {
+        for (const row of getRuntimeProjectIoCapabilityMatrix()) {
+          appendLine(`${row.language}: browser=${row.browser.tier} node=${row.node.tier}`, 'status');
+        }
+        return;
+      }
+      const smokeMatch = command.match(/^mvp(?:\s+(.+))?$/);
+      if (smokeMatch) {
+        const target = smokeMatch[1]?.trim();
+        const keys = target ? [target] : Object.keys(mvpCommands);
+        for (const key of keys) {
+          const smoke = mvpCommands[key];
+          if (!smoke) {
+            appendLine(`unknown MVP check: ${key}`, 'stderr');
+            continue;
+          }
+          await smoke.setup?.();
+          appendLine(`# ${smoke.label}`, 'status');
+          await runTerminalCommand(smoke.command);
+        }
+        return;
+      }
+
       const streamedOutput = { stdout: '', stderr: '' };
       const result = await workspace.runCommand(command, {
-        onEvent: (event) => {
+        onEvent: (event: RuntimeCommandEvent) => {
           if (event.type === 'status') {
             appendLine(`[${event.phase}] ${event.message}`, 'status');
+            appendEvent(`status ${event.phase}: ${event.message}`, 'status');
             return;
           }
           if (event.type === 'output') {
             streamedOutput[event.stream] += event.data;
             appendBlock(event.data, event.stream);
+            appendEvent(`${event.stream} ${event.device ?? ''}: ${JSON.stringify(event.data)}`, event.stream);
+            return;
+          }
+          if (event.type === 'file-change') {
+            appendEvent(`${event.phase ?? 'change'} ${event.change.path}`, 'file');
+            void renderFileTree();
           }
         },
       });
@@ -677,10 +844,77 @@ int main(int argc, char** argv) {
     } catch (error) {
       appendLine(error instanceof Error ? error.message : String(error), 'stderr');
     } finally {
+      await renderFileTree();
       status.textContent = 'ready';
       input.disabled = false;
       input.focus();
     }
+  };
+
+  commandList.replaceChildren(
+    ...[
+      ['mvp', 'Run all'],
+      ['mvp js', 'JS'],
+      ['mvp python', 'Python'],
+      ['mvp java', 'Java'],
+      ['mvp csharp', 'C#'],
+      ['mvp cpp', 'C++'],
+      ['capabilities', 'Matrix'],
+    ].map(([command, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'dev-command-button';
+      button.textContent = label;
+      button.title = command;
+      button.addEventListener('click', () => {
+        void runTerminalCommand(command);
+      });
+      return button;
+    })
+  );
+
+  const disposeTerminal = (): void => {
+    workspace.dispose();
+  };
+
+  (
+    window as Window & {
+      __tracecodeProjectWorkspace?: typeof workspace;
+    }
+  ).__tracecodeProjectWorkspace = workspace;
+
+  window.addEventListener('beforeunload', disposeTerminal);
+  if (import.meta.hot) {
+    import.meta.hot.dispose(disposeTerminal);
+  }
+
+  status.textContent = 'ready';
+  renderCapabilities();
+  await renderFileTree();
+  appendLine('Ready. Try: python3 main.py alpha beta');
+  appendLine('Ready. Try: python3 globpy/*.py data/*.txt');
+  appendLine('Ready. Try: node index.js alpha beta');
+  appendLine('Ready. Try: node globjs/*.js data/*.txt');
+  appendLine('Ready. Try: java Main alpha beta');
+  appendLine('Ready. Try: javac -d out src/app/PackageMain.java src/app/PackageHelper.java');
+  appendLine('Ready. Try: java --class-path out app.PackageMain alpha beta');
+  appendLine('Ready. Try: java app.PackageMain alpha beta');
+  appendLine('Ready. Try: java right.Main');
+  appendLine('Ready. Try: dotnet run -- alpha beta');
+  appendLine('Ready. Try: dotnet run -- data/*.txt');
+  appendLine('Ready. Try: clang++ -std=c++17 main.cpp helper.cpp');
+  appendLine('Ready. Try: ./a.out alpha beta');
+  appendLine('Ready. Try: ./glob-app data/*.txt');
+  appendLine('Ready. Try: capabilities, mvp js, or mvp');
+  input.disabled = false;
+  input.focus();
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const command = input.value.trim();
+    if (!command) return;
+
+    void runTerminalCommand(command);
   });
 }
 

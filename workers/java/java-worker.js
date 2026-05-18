@@ -3366,7 +3366,10 @@ function projectKernelDeviceManifest(project) {
 
 function projectKernelFileManifest(project) {
   return projectJavaKernelFiles(project)
-    .map(projectFileManifestEntry)
+    .map((file) => {
+      const contents = file.encoding === 'base64' ? file.contents : base64Utf8(file.contents);
+      return `${base64Utf8(file.path)}\t${contents}`;
+    })
     .join('\n');
 }
 
