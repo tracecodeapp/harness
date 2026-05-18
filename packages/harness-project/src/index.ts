@@ -19,11 +19,15 @@ import {
   runtimeKernelAccessTarget,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileCopyTarget,
+  runtimeKernelFileReadErrorMessage,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
+  runtimeKernelMetadataErrorMessage,
   runtimeKernelMetadataTarget,
+  runtimeKernelMutationErrorMessage,
   runtimeKernelMutationTarget,
+  runtimeKernelReadErrorMessage,
   runtimeKernelReadTarget,
   runtimeKernelRenameTarget,
   runtimeKernelRemoveTarget,
@@ -32,6 +36,7 @@ import {
   runtimeKernelVirtualDevices,
   runtimeKernelVirtualFiles,
   runtimeKernelVirtualPaths,
+  runtimeKernelWriteErrorMessage,
   runtimeKernelWriteTarget,
   readRuntimeProcFile,
   type RuntimeKernelVirtualStat,
@@ -263,10 +268,7 @@ function kernelWriteTarget(path: string): ReturnType<typeof runtimeKernelWriteTa
 }
 
 function throwKernelWriteTargetError(path: string, target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>): never {
-  if (target.reason === 'proc-read-only') throw new Error(`Kernel proc path is read-only: ${path}`);
-  if (target.reason === 'device-directory') throw new Error(`Kernel device path is a directory: ${path}`);
-  if (target.reason === 'device-read-only') throw new Error(`Kernel device is read-only: ${target.path}`);
-  throw new Error(`Kernel device path not found: ${path}`);
+  throw new Error(runtimeKernelWriteErrorMessage(path, target));
 }
 
 function kernelMutationTarget(path: string): ReturnType<typeof runtimeKernelMutationTarget> {
@@ -306,9 +308,7 @@ function throwKernelMutationTargetError(
   target: Extract<ReturnType<typeof runtimeKernelMutationTarget>, { kind: 'error' }>,
   deviceMessage = `Kernel device namespace is read-only: ${path}`
 ): never {
-  if (target.reason === 'proc-read-only') throw new Error(`Kernel proc path is read-only: ${path}`);
-  if (target.reason === 'device-not-found') throw new Error(`Kernel device path not found: ${path}`);
-  throw new Error(deviceMessage);
+  throw new Error(runtimeKernelMutationErrorMessage(path, target, { deviceMessage }));
 }
 
 function kernelMetadataTarget(path: string): ReturnType<typeof runtimeKernelMetadataTarget> {
@@ -346,17 +346,14 @@ function throwKernelReadTargetError(
   path: string,
   target: Extract<ReturnType<typeof runtimeKernelReadTarget>, { kind: 'error' }>
 ): never {
-  if (target.reason === 'permission-denied') throw new Error(`Kernel device is not readable: ${target.path}`);
-  throw new Error(`Kernel virtual path not found: ${path}`);
+  throw new Error(runtimeKernelReadErrorMessage(path, target));
 }
 
 function throwKernelFileReadTargetError(
   path: string,
   target: Extract<ReturnType<typeof runtimeKernelFileReadTarget>, { kind: 'error' }>
 ): never {
-  if (target.reason === 'is-directory') throw new Error(`Kernel virtual path is a directory: ${path}`);
-  if (target.reason === 'permission-denied') throw new Error(`Kernel device is not readable: ${target.path}`);
-  throw new Error(`Kernel virtual path not found: ${path}`);
+  throw new Error(runtimeKernelFileReadErrorMessage(path, target));
 }
 
 function kernelDirectoryTarget(path: string): ReturnType<typeof runtimeKernelDirectoryTarget> {
@@ -368,8 +365,7 @@ function throwKernelMetadataTargetError(
   path: string,
   target: Extract<ReturnType<typeof runtimeKernelMetadataTarget>, { kind: 'error' }>
 ): never {
-  if (target.reason === 'proc-read-only') throw new Error(`Kernel proc path is read-only: ${path}`);
-  throw new Error(`Kernel device path not found: ${path}`);
+  throw new Error(runtimeKernelMetadataErrorMessage(path, target));
 }
 
 function mapWorkspaceAlias(workspaceRoot: string, workspaceAlias: string | undefined, absolutePath: string): string {

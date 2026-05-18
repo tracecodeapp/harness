@@ -352,6 +352,16 @@ export function runtimeKernelWriteErrorCode(
   return 'ENOENT';
 }
 
+export function runtimeKernelWriteErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelWriteTarget, { kind: 'error' }>
+): string {
+  if (target.reason === 'proc-read-only') return `Kernel proc path is read-only: ${path}`;
+  if (target.reason === 'device-directory') return `Kernel device path is a directory: ${path}`;
+  if (target.reason === 'device-read-only') return `Kernel device is read-only: ${target.path}`;
+  return `Kernel device path not found: ${path}`;
+}
+
 export function runtimeKernelMutationTarget(
   path: string,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -383,6 +393,16 @@ export function runtimeKernelMutationErrorCode(
   return reason === 'device-not-found' ? 'ENOENT' : 'EROFS';
 }
 
+export function runtimeKernelMutationErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>,
+  options: { deviceMessage?: string } = {}
+): string {
+  if (target.reason === 'proc-read-only') return `Kernel proc path is read-only: ${path}`;
+  if (target.reason === 'device-not-found') return `Kernel device path not found: ${path}`;
+  return options.deviceMessage ?? `Kernel device namespace is read-only: ${path}`;
+}
+
 export function runtimeKernelMetadataTarget(
   path: string,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -412,6 +432,14 @@ export function runtimeKernelMetadataErrorCode(
   reason: Extract<RuntimeKernelMetadataTarget, { kind: 'error' }>['reason']
 ): RuntimeKernelErrorCode {
   return reason === 'proc-read-only' ? 'EROFS' : 'ENOENT';
+}
+
+export function runtimeKernelMetadataErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelMetadataTarget, { kind: 'error' }>
+): string {
+  if (target.reason === 'proc-read-only') return `Kernel proc path is read-only: ${path}`;
+  return `Kernel device path not found: ${path}`;
 }
 
 export function runtimeKernelAccessTarget(
@@ -563,6 +591,23 @@ export function runtimeKernelFileReadErrorCode(
 ): RuntimeKernelErrorCode {
   if (reason === 'permission-denied') return 'EBADF';
   return reason === 'is-directory' ? 'EISDIR' : 'ENOENT';
+}
+
+export function runtimeKernelReadErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelReadTarget, { kind: 'error' }>
+): string {
+  if (target.reason === 'permission-denied') return `Kernel device is not readable: ${target.path}`;
+  return `Kernel virtual path not found: ${path}`;
+}
+
+export function runtimeKernelFileReadErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelFileReadTarget, { kind: 'error' }>
+): string {
+  if (target.reason === 'is-directory') return `Kernel virtual path is a directory: ${path}`;
+  if (target.reason === 'permission-denied') return `Kernel device is not readable: ${target.path}`;
+  return `Kernel virtual path not found: ${path}`;
 }
 
 export function runtimeKernelStatTarget(

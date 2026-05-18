@@ -30,18 +30,24 @@ import {
   runtimeKernelDeviceOutputTarget,
   runtimeKernelFileCopyTarget,
   runtimeKernelFileCopyErrorCode,
+  runtimeKernelFileReadErrorMessage,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
+  runtimeKernelMutationErrorMessage,
   runtimeKernelMetadataTarget,
+  runtimeKernelMetadataErrorMessage,
   runtimeKernelMutationTarget,
   runtimeKernelOpenTarget,
+  runtimeKernelReadErrorMessage,
+  runtimeKernelReadTarget,
   runtimeKernelRenameTarget,
   runtimeKernelRemoveTarget,
   runtimeKernelStatTarget,
   runtimeKernelSymlinkTarget,
   runtimeKernelTruncateTarget,
   runtimeKernelVirtualDevices,
+  runtimeKernelWriteErrorMessage,
   runtimeKernelWriteTarget,
   normalizeRuntimeKernelManifestDevicePath,
 } from '../packages/harness-core/src/runtime-kernel';
@@ -131,6 +137,36 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     stableStringify(runtimeKernelWriteTarget('/dev/tee', devices)) ===
       '{"device":"/dev/tee","kind":"device","outputDevice":"/dev/capture"}',
     'kernel write target should preserve source and resolved output devices'
+  );
+  const procWriteTarget = runtimeKernelWriteTarget('/proc/kernel/info', devices);
+  assertCondition(
+    procWriteTarget.kind === 'error' &&
+      runtimeKernelWriteErrorMessage('/proc/kernel/info', procWriteTarget) === 'Kernel proc path is read-only: /proc/kernel/info',
+    `kernel write error message should be shared: ${stableStringify(procWriteTarget)}`
+  );
+  const stdoutReadTarget = runtimeKernelFileReadTarget('/dev/stdout', devices);
+  assertCondition(
+    stdoutReadTarget.kind === 'error' &&
+      runtimeKernelFileReadErrorMessage('/dev/stdout', stdoutReadTarget) === 'Kernel device is not readable: /dev/stdout',
+    `kernel file-read error message should be shared: ${stableStringify(stdoutReadTarget)}`
+  );
+  const missingMutationTarget = runtimeKernelMutationTarget('/dev/missing', devices);
+  assertCondition(
+    missingMutationTarget.kind === 'error' &&
+      runtimeKernelMutationErrorMessage('/dev/missing', missingMutationTarget) === 'Kernel device path not found: /dev/missing',
+    `kernel mutation error message should be shared: ${stableStringify(missingMutationTarget)}`
+  );
+  const missingMetadataTarget = runtimeKernelMetadataTarget('/dev/missing', devices);
+  assertCondition(
+    missingMetadataTarget.kind === 'error' &&
+      runtimeKernelMetadataErrorMessage('/dev/missing', missingMetadataTarget) === 'Kernel device path not found: /dev/missing',
+    `kernel metadata error message should be shared: ${stableStringify(missingMetadataTarget)}`
+  );
+  const missingVirtualReadTarget = runtimeKernelReadTarget('/proc/missing', devices);
+  assertCondition(
+    missingVirtualReadTarget.kind === 'error' &&
+      runtimeKernelReadErrorMessage('/proc/missing', missingVirtualReadTarget) === 'Kernel virtual path not found: /proc/missing',
+    `kernel read error message should be shared: ${stableStringify(missingVirtualReadTarget)}`
   );
   assertCondition(
     stableStringify(runtimeKernelCopyTarget('/proc/kernel/info', '/dev/tee', devices)) === '{"kind":"file-copy"}',
