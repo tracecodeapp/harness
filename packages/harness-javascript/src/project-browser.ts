@@ -1358,6 +1358,15 @@ async function runBrowserJavaScriptProjectRequest(
       next.set(previous.slice(0, Math.min(previous.byteLength, size)));
       setFileBytes(path, next);
     };
+    const realpathForEntry = (path: unknown): string => {
+      const device = normalizeRuntimeDevicePath(path);
+      if (device) return device;
+      const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
+      }
+      return workspaceFilename(normalized, workspaceRoot);
+    };
     const fsApi = {
       constants: fsConstants,
       F_OK: fsConstants.F_OK,
@@ -1539,6 +1548,30 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(null));
         } catch (error) {
           queueMicrotask(() => done?.(error as Error));
+        }
+      },
+      fsyncSync: (fd: number) => {
+        fileDescriptor(fd);
+        return undefined;
+      },
+      fsync: (fd: number, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.fsyncSync(fd);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
+      fdatasyncSync: (fd: number) => {
+        fileDescriptor(fd);
+        return undefined;
+      },
+      fdatasync: (fd: number, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.fdatasyncSync(fd);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
         }
       },
       createReadStream: (path: unknown, options?: string | { encoding?: string; start?: number; end?: number } | null) => {
@@ -1812,6 +1845,20 @@ async function runBrowserJavaScriptProjectRequest(
       lstat: (path: unknown, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
         fsApi.stat(path, callback);
       },
+      realpathSync: (path: unknown, options?: string | { encoding?: string | null } | null) => {
+        const resolved = realpathForEntry(path);
+        const encoding = typeof options === 'string' ? options : options?.encoding;
+        return encoding === 'buffer' ? BrowserBuffer.from(resolved) : resolved;
+      },
+      realpath: (path: unknown, optionsOrCallback?: string | { encoding?: string | null } | null | ((error: Error | null, resolvedPath?: unknown) => void), callback?: (error: Error | null, resolvedPath?: unknown) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          const resolved = fsApi.realpathSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null, resolved));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       truncateSync: (path: unknown, length = 0) => {
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         truncateFileBytes(normalized, length);
@@ -1895,6 +1942,12 @@ async function runBrowserJavaScriptProjectRequest(
           truncate: async (length = 0) => {
             fsApi.ftruncateSync(fd, length);
           },
+          sync: async () => {
+            fsApi.fsyncSync(fd);
+          },
+          datasync: async () => {
+            fsApi.fdatasyncSync(fd);
+          },
           close: async () => {
             fsApi.closeSync(fd);
           },
@@ -1925,11 +1978,14 @@ async function runBrowserJavaScriptProjectRequest(
       readdir: async (path: unknown, options?: { withFileTypes?: boolean } | string | null) => fsApi.readdirSync(path, options),
       stat: async (path: unknown) => fsApi.statSync(path),
       lstat: async (path: unknown) => fsApi.lstatSync(path),
+      realpath: async (path: unknown, options?: string | { encoding?: string | null } | null) => fsApi.realpathSync(path, options),
       mkdir: async (path: unknown, options?: { recursive?: boolean }) => fsApi.mkdirSync(path, options),
       rmdir: async (path: unknown) => {
         fsApi.rmdirSync(path);
       },
     };
+    (fsApi.realpath as unknown as { native: typeof fsApi.realpath }).native = fsApi.realpath;
+    (fsApi.realpathSync as unknown as { native: typeof fsApi.realpathSync }).native = fsApi.realpathSync;
     Object.assign(fsApi, { promises: fsPromisesApi });
     const zlibApi = createZlibApi();
     const builtins = new Map<string, unknown>([

@@ -2102,6 +2102,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
   );
 
+  const realpathSyncResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, value) => error ? reject(error) : resolve(value))); fs.writeFileSync(\\"sync-path.txt\\", \\"sync\\\\n\\"); const fd = fs.openSync(\\"sync-path.txt\\", \\"r+\\"); fs.fsyncSync(fd); await call((done) => fs.fdatasync(fd, done)); fs.closeSync(fd); const handle = await fsp.open(\\"sync-path.txt\\", \\"r+\\"); await handle.sync(); await handle.datasync(); await handle.close(); console.log(fs.realpathSync(\\"lib/../sync-path.txt\\")); console.log((await call((done) => fs.realpath(\\"sync-path.txt\\", done)))); console.log(fs.realpathSync.native(\\"/workspace/sync-path.txt\\")); console.log((await fsp.realpath(\\"sync-path.txt\\", { encoding: \\"buffer\\" })).toString()); console.log(fs.realpathSync(\\"/dev/stdout\\"));"',
+  ].join(' '));
+  assertCondition(realpathSyncResult.exitCode === 0, `browser node realpath/fsync workflow should succeed: ${realpathSyncResult.stderr}`);
+  assertCondition(
+    realpathSyncResult.stdout === '/workspace/sync-path.txt\n/workspace/sync-path.txt\n/workspace/sync-path.txt\n/workspace/sync-path.txt\n/dev/stdout\n',
+    `browser node realpath/fsync APIs should match tracekernel paths: ${realpathSyncResult.stdout}`
+  );
+
   const callbackFsEvents: RuntimeCommandEvent[] = [];
   const callbackFsResult = await workspace.runCommand([
     'node',
