@@ -2764,6 +2764,11 @@ async function runBrowserJavaScriptProjectRequest(
       const sourcePath = workspaceFilename(normalizedSource, workspaceRoot);
       const destinationPath = workspaceFilename(normalizedDestination, workspaceRoot);
       if (options.filter && !options.filter(sourcePath, destinationPath)) return;
+      if (normalizedSource === normalizedDestination) {
+        throw Object.assign(new Error(`${source} and dest cannot be the same ${destination}`), {
+          code: 'ERR_FS_CP_EINVAL',
+        });
+      }
 
       const destinationExists = fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination);
       if (destinationExists && options.force === false) {
@@ -2789,6 +2794,11 @@ async function runBrowserJavaScriptProjectRequest(
       }
       if (!options.recursive) {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, cp '${source}'`), { code: 'EISDIR' });
+      }
+      if (normalizedDestination.startsWith(`${normalizedSource}/`)) {
+        throw Object.assign(new Error(`Cannot copy ${source}/ to a subdirectory of self ${destination}`), {
+          code: 'ERR_FS_CP_EINVAL',
+        });
       }
       if (fileStore.has(normalizedDestination)) {
         throw Object.assign(new Error(`Cannot overwrite non-directory ${destination} with directory ${source}`), {
