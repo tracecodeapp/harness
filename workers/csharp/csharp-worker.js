@@ -6,6 +6,10 @@ let configuredAssetBaseUrl = null;
 let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
+let materializedKernelVirtualFilePaths = new Set();
+let materializedKernelVirtualDirectoryPaths = new Set();
+let hiddenKernelVirtualFilePaths = new Set();
+let hiddenKernelVirtualDirectoryPaths = new Set();
 let materializedKernelDevicePaths = new Set();
 const WORKER_DEBUG = (() => {
   try {
@@ -152,6 +156,12 @@ function isKernelVirtualFsPath(path, request = activeProjectIo?.request) {
   return false;
 }
 
+function isHiddenKernelVirtualFsPath(path) {
+  const normalized = normalizeKernelVirtualManifestPath(path);
+  if (!normalized) return false;
+  return hiddenKernelVirtualFilePaths.has(normalized) || hiddenKernelVirtualDirectoryPaths.has(normalized);
+}
+
 function isCreateOrTruncateOpenFlags(flags) {
   if (typeof flags === 'string') {
     return flags.includes('w') || flags.includes('a');
@@ -272,12 +282,70 @@ function runtimeDirectoryName(path) {
   return index <= 0 ? '/' : normalized.slice(0, index);
 }
 
+function removeMaterializedKernelVirtualFile(fs, path) {
+  if (typeof fs.chmod === 'function') {
+    for (const directory of runtimeAncestorDirectories(path)) {
+      try {
+        fs.chmod(directory, 0o755);
+      } catch {
+        // The directory may already be gone.
+      }
+    }
+  }
+  try {
+    fs.unlink(path);
+  } catch {
+    // The runtime may already have removed this virtual file.
+  }
+}
+
+function removeEmptyMaterializedKernelVirtualDirectories(fs, nextDirectories) {
+  for (const directory of Array.from(materializedKernelVirtualDirectoryPaths).sort((left, right) => right.length - left.length)) {
+    if (nextDirectories.has(directory)) continue;
+    try {
+      const entries = fs.readdir(directory).filter((entry) => entry !== '.' && entry !== '..');
+      if (entries.length > 0) continue;
+      if (typeof fs.chmod === 'function') fs.chmod(directory, 0o755);
+      fs.rmdir(directory);
+    } catch {
+      // Leave non-empty or runtime-owned directories alone.
+    }
+  }
+}
+
 function materializeKernelVirtualFiles(request) {
   const fs = runtimeModule?.FS;
   const files = request?.project?.kernelFiles;
-  if (!fs || !Array.isArray(files)) return;
+  if (!fs) return;
+  const manifestFiles = Array.isArray(files) ? files : [];
+  const nextFilePaths = new Set(
+    manifestFiles
+      .map((file) => normalizeKernelVirtualManifestPath(file?.path))
+      .filter(Boolean)
+  );
+  const nextDirectoryPaths = new Set();
+  for (const filePath of nextFilePaths) {
+    for (const directory of runtimeAncestorDirectories(filePath)) {
+      nextDirectoryPaths.add(directory);
+    }
+  }
+  for (const staleFilePath of materializedKernelVirtualFilePaths) {
+    if (nextFilePaths.has(staleFilePath)) continue;
+    hiddenKernelVirtualFilePaths.add(staleFilePath);
+    removeMaterializedKernelVirtualFile(fs, staleFilePath);
+  }
+  removeEmptyMaterializedKernelVirtualDirectories(fs, nextDirectoryPaths);
+  for (const directory of materializedKernelVirtualDirectoryPaths) {
+    if (!nextDirectoryPaths.has(directory)) hiddenKernelVirtualDirectoryPaths.add(directory);
+  }
+  for (const filePath of nextFilePaths) {
+    hiddenKernelVirtualFilePaths.delete(filePath);
+  }
+  for (const directory of nextDirectoryPaths) {
+    hiddenKernelVirtualDirectoryPaths.delete(directory);
+  }
   const kernelDirectories = new Set();
-  for (const file of files) {
+  for (const file of manifestFiles) {
     const filePath = normalizeKernelVirtualManifestPath(file?.path);
     if (!filePath) continue;
     ensureRuntimeDirectory(fs, runtimeDirectoryName(filePath));
@@ -312,6 +380,8 @@ function materializeKernelVirtualFiles(request) {
       fs.chmod(directory, 0o555);
     }
   }
+  materializedKernelVirtualFilePaths = nextFilePaths;
+  materializedKernelVirtualDirectoryPaths = nextDirectoryPaths;
 }
 
 function materializeKernelDevices(request) {
@@ -701,9 +771,42 @@ function installRuntimeFsHooks(runtime) {
     };
   }
 
+  const originalReadFile = fs.readFile;
+  if (typeof originalReadFile === 'function') {
+    fs.readFile = function readFileWithProjectKernelGuards(path) {
+      if (activeProjectIo && isHiddenKernelVirtualFsPath(path)) {
+        throwKernelFsError(path, 'read', 'ENOENT', 'no such file or directory');
+      }
+      return originalReadFile.apply(this, arguments);
+    };
+  }
+
+  const originalStat = fs.stat;
+  if (typeof originalStat === 'function') {
+    fs.stat = function statWithProjectKernelGuards(path) {
+      if (activeProjectIo && isHiddenKernelVirtualFsPath(path)) {
+        throwKernelFsError(path, 'stat', 'ENOENT', 'no such file or directory');
+      }
+      return originalStat.apply(this, arguments);
+    };
+  }
+
+  const originalReaddir = fs.readdir;
+  if (typeof originalReaddir === 'function') {
+    fs.readdir = function readdirWithProjectKernelGuards(path) {
+      if (activeProjectIo && isHiddenKernelVirtualFsPath(path)) {
+        throwKernelFsError(path, 'readdir', 'ENOENT', 'no such file or directory');
+      }
+      return originalReaddir.apply(this, arguments);
+    };
+  }
+
   const originalOpen = fs.open;
   if (typeof originalOpen === 'function') {
     fs.open = function openWithProjectEvents(path, flags) {
+      if (activeProjectIo && isHiddenKernelVirtualFsPath(path)) {
+        throwKernelFsError(path, 'open', 'ENOENT', 'no such file or directory');
+      }
       if (activeProjectIo && isKernelDeviceNamespacePath(path)) {
         const devicePath = normalizeKernelDevicePath(path);
         if (!devicePath || !kernelDeviceInfo(devicePath)) {

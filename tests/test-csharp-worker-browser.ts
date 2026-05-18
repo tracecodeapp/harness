@@ -3252,6 +3252,64 @@ async function main(): Promise<void> {
       `C# project worker should stream managed Directory.CreateDirectory/Move/Delete live events, received ${JSON.stringify(projectRun.events)}`
     );
 
+    const [kernelVirtualFirstRun, kernelVirtualSecondRun] = await runProjectWorkerSequenceCase(
+      page,
+      [
+        {
+          source: 'run',
+          scriptPath: '<project>',
+          args: [],
+          cwd: '/workspace/src',
+          env: {},
+          stdin: '',
+          project: {
+            kernelFiles: TRACE_KERNEL_PROC_FILES,
+            files: [
+              {
+                path: 'src/Program.cs',
+                contents: 'Console.Write(File.ReadAllText("/proc/kernel/version"));\n',
+              },
+            ],
+          },
+        },
+        {
+          source: 'run',
+          scriptPath: '<project>',
+          args: [],
+          cwd: '/workspace/src',
+          env: {},
+          stdin: '',
+          project: {
+            files: [
+              {
+                path: 'src/Program.cs',
+                contents: [
+                  'try {',
+                  '  Console.WriteLine(File.ReadAllText("/proc/kernel/version"));',
+                  '} catch (Exception ex) {',
+                  '  Console.WriteLine("stale-proc:" + ex.GetType().Name);',
+                  '}',
+                  'Console.WriteLine(Directory.Exists("/proc/kernel") ? "proc-dir:leaked" : "proc-dir:missing");',
+                ].join('\n'),
+              },
+            ],
+          },
+        },
+      ],
+      assetBaseUrl
+    );
+    assertCondition(
+      kernelVirtualFirstRun.stdout === 'tracekernel test\n',
+      `C# project worker sequence setup should read manifest /proc files, received ${JSON.stringify(kernelVirtualFirstRun)}`
+    );
+    assertCondition(
+      kernelVirtualSecondRun.exitCode === 0 &&
+        kernelVirtualSecondRun.stdout.includes('stale-proc:') &&
+        !kernelVirtualSecondRun.stdout.includes('tracekernel test') &&
+        kernelVirtualSecondRun.stdout.includes('proc-dir:missing'),
+      `C# project worker should not leak manifest-created kernel virtual files between project runs, received ${JSON.stringify(kernelVirtualSecondRun)}`
+    );
+
     const manifestCustomDeviceRun = await runProjectWorkerCase(
       page,
       {
