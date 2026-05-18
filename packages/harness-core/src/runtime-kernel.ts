@@ -131,6 +131,10 @@ export function isRuntimeDeviceNamespacePath(path: string): boolean {
   return normalized === '/dev' || normalized?.startsWith('/dev/') === true;
 }
 
+export function isRuntimeKernelVirtualNamespacePath(path: string): boolean {
+  return isRuntimeProcNamespacePath(path) || isRuntimeDeviceNamespacePath(path);
+}
+
 export function classifyRuntimeKernelVirtualPath(path: string): RuntimeKernelVirtualPath | null {
   const procPath = normalizeRuntimeProcPath(path);
   if (procPath !== null) return { kind: 'proc', path: procPath };
@@ -453,6 +457,12 @@ export function runtimeProcEntryKind(path: string): RuntimeKernelProcEntryKind |
   if (runtimeProcDirEntries(path)) return 'directory';
   if (path === '/proc/kernel/info' || path === '/proc/self/mountinfo') return 'file';
   return null;
+}
+
+export function runtimeKernelVirtualPaths(): string[] {
+  const devicePaths = ['/dev', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
+  const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/self', '/proc/self/mountinfo'];
+  return [...devicePaths, ...procPaths];
 }
 
 export function readRuntimeProcFile(path: string, info: RuntimeKernelInfo): string {

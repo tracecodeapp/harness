@@ -12,9 +12,9 @@ import {
 } from '../../harness-core/src/runtime-project';
 import {
   isRuntimeDeviceNamespacePath,
+  isRuntimeKernelVirtualNamespacePath,
   normalizeRuntimeProcPath,
   normalizeRuntimeDevicePath,
-  RUNTIME_KERNEL_DEVICE_ENTRIES,
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
@@ -27,6 +27,7 @@ import {
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
+  runtimeKernelVirtualPaths,
   runtimeKernelWriteTarget,
   runtimeProcStat,
   readRuntimeProcFile,
@@ -817,7 +818,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   resolvePath(base: string, path: string): string {
-    if (path.startsWith('/dev') || base.startsWith('/dev') || path.startsWith('/proc') || base.startsWith('/proc')) {
+    if (isRuntimeKernelVirtualNamespacePath(path) || isRuntimeKernelVirtualNamespacePath(base)) {
       return this.base.resolvePath(base, path);
     }
     return this.mapPath(this.base.resolvePath(this.mapPath(base), path));
@@ -834,9 +835,7 @@ class KernelObservedFileSystem implements IFileSystem {
           if (path.startsWith(`${root}/`)) return [path, `${alias}${path.slice(root.length)}`];
           return [path];
         });
-    const devicePaths = ['/dev', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
-    const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/self', '/proc/self/mountinfo'];
-    return Array.from(new Set([...aliasPaths, ...devicePaths, ...procPaths])).sort((left, right) => left.localeCompare(right));
+    return Array.from(new Set([...aliasPaths, ...runtimeKernelVirtualPaths()])).sort((left, right) => left.localeCompare(right));
   }
 
   chmod(path: string, mode: number): Promise<void> {
