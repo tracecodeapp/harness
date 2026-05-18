@@ -11,9 +11,6 @@ import type {
 } from '../../harness-core/src/runtime-project';
 import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import {
-  isRuntimeDeviceNamespacePath,
-  normalizeRuntimeProcPath as normalizeRuntimeProcPathString,
-  normalizeRuntimeDevicePath as normalizeRuntimeDevicePathString,
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
@@ -35,11 +32,9 @@ import {
   runtimeKernelReadTarget,
   runtimeKernelWriteErrorCode,
   runtimeKernelWriteTarget,
-  runtimeProcCanMutate,
   runtimeProcStat,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
-  runtimeProcEntryKind as procEntryKind,
 } from '../../harness-core/src/runtime-kernel';
 import * as fflateModule from 'fflate/browser';
 import packageJson from '../package.json' with { type: 'json' };
@@ -131,34 +126,6 @@ function workspacePathInputToString(path: unknown): string {
     return decodeURIComponent(path.pathname);
   }
   return String(path);
-}
-
-function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | null {
-  if (path === 0) return '/dev/stdin';
-  if (path === 1) return '/dev/stdout';
-  if (path === 2) return '/dev/stderr';
-  const raw = workspacePathInputToString(path).replace(/\\/g, '/');
-  const devicePath = normalizeRuntimeDevicePathString(raw);
-  if (devicePath === '/dev') return null;
-  if (devicePath !== null) return devicePath;
-  if (isRuntimeDeviceNamespacePath(raw)) {
-    throw Object.assign(new Error(`ENOENT: no such file or directory, open '${raw}'`), { code: 'ENOENT' });
-  }
-  return null;
-}
-
-function normalizeRuntimeProcPath(path: unknown): string | null {
-  if (typeof path === 'number') return null;
-  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return normalizeRuntimeProcPathString(raw);
-}
-
-function assertRuntimeProcMutablePath(path: unknown, message: string): void {
-  if (typeof path === 'number') return;
-  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  if (!runtimeProcCanMutate(raw)) {
-    throw Object.assign(new Error(message), { code: 'EROFS' });
-  }
 }
 
 function runtimeWriteTarget(path: unknown): ReturnType<typeof runtimeKernelWriteTarget> | null {
@@ -2005,10 +1972,26 @@ async function runBrowserJavaScriptProjectRequest(
     ) => {
       const events = createEventTarget();
       const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
-      const device = optionFd === null ? normalizeRuntimeDevicePath(path) : null;
-      if (optionFd === null) assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
       const encoding = requestedEncodingFromOptions(options);
       const flags = typeof options === 'object' && typeof options?.flags === 'string' ? options.flags : 'w';
+      const parsed = parseOpenFlags(flags);
+      const openTarget = optionFd === null
+        ? runtimeOpenTarget(path, {
+            ...parsed,
+            writable: true,
+            create: true,
+            truncate: !parsed.append,
+          })
+        : null;
+      if (openTarget?.kind === 'error') {
+        const message = openTarget.reason === 'read-only'
+          ? `EROFS: read-only file system, open '${path}'`
+          : openTarget.reason === 'is-directory'
+            ? `EISDIR: illegal operation on a directory, open '${path}'`
+            : `ENOENT: no such file or directory, open '${path}'`;
+        throw Object.assign(new Error(message), { code: runtimeKernelOpenErrorCode(openTarget.reason) });
+      }
+      const device = openTarget?.kind === 'device' ? openTarget.device : null;
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
       const normalized = device || optionFd !== null ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (normalized !== null && !flags.includes('a')) {
@@ -2206,10 +2189,16 @@ async function runBrowserJavaScriptProjectRequest(
     } as const;
     let mkdtempCounter = 0;
     const fileSystemEntryExists = (path: unknown): boolean => {
-      const device = normalizeRuntimeDevicePath(path);
-      if (device) return true;
-      const procPath = normalizeRuntimeProcPath(path);
-      if (procPath) return procEntryKind(procPath) !== null;
+      const readTarget = runtimeReadTarget(path);
+      if (
+        readTarget?.kind === 'device-file' ||
+        readTarget?.kind === 'device-directory' ||
+        readTarget?.kind === 'proc-file' ||
+        readTarget?.kind === 'proc-directory'
+      ) {
+        return true;
+      }
+      if (readTarget?.kind === 'error') return false;
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       const prefix = normalized ? `${normalized}/` : '';
       return fileStore.has(normalized)
