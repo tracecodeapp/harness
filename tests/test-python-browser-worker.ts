@@ -243,6 +243,7 @@ async function main(): Promise<void> {
             'js.eval(\\'pyodide.FS.chmod("/tracecode_project/provider-metadata.txt", 0o600); if (typeof pyodide.FS.utime === "function") pyodide.FS.utime("/tracecode_project/provider-metadata.txt", 1, 1)\\')',
             'js.eval(\\'const providerEmpty = pyodide.FS.open("/tracecode_project/provider-empty.txt", "w"); pyodide.FS.close(providerEmpty)\\')',
             'js.eval(\\'pyodide.FS.createDataFile("/tracecode_project", "provider-create-data.txt", "provider-create-data\\\\\\\\n", true, true)\\')',
+            'js.eval(\\'pyodide.FS.create("/tracecode_project/provider-create.txt")\\')',
             'js.eval(\\'pyodide.FS.createPath("/tracecode_project", "provider-created-path/nested", true, true); pyodide.FS.createDataFile("/tracecode_project/provider-created-path/nested", "value.txt", "provider-created-path\\\\\\\\n", true, true)\\')',
             'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-tree"); pyodide.FS.mkdir("/tracecode_project/provider-tree/nested"); pyodide.FS.writeFile("/tracecode_project/provider-tree/nested/value.txt", "provider-tree\\\\\\\\n", { encoding: "utf8" }); pyodide.FS.rename("/tracecode_project/provider-tree", "/tracecode_project/provider-tree-moved")\\')',
             'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-dir"); pyodide.FS.rename("/tracecode_project/provider-dir", "/tracecode_project/provider-renamed-dir"); pyodide.FS.rmdir("/tracecode_project/provider-renamed-dir")\\')',
@@ -1008,6 +1009,15 @@ async function main(): Promise<void> {
         event.change.contents === 'provider-create-data\n'
       )) === true,
       `Python project worker should stream provider-level createDataFile writes: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'provider-create.txt' &&
+        event.change.contents === ''
+      )) === true,
+      `Python project worker should stream provider-level create writes: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (

@@ -958,6 +958,13 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     return result;
   });
 
+  patch('create', (original) => function patchedCreate(path, ...args) {
+    rejectKernelVirtualMutation(path, 'create');
+    const result = original.call(this, path, ...args);
+    emitFileChange(path);
+    return result;
+  });
+
   patch('createPath', (original) => function patchedCreatePath(parent, path, ...args) {
     const basePath = normalizePyodideFsProjectPath(parent);
     const targetPath = path === null || path === undefined || String(path) === ''
