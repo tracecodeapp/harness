@@ -2550,6 +2550,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs should expose and honor common numeric open/mode constants: ${openConstantsResult.stdout}`
   );
 
+  const directoryOpenResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.mkdirSync(\\"open-directory/nested\\", { recursive: true }); fs.writeFileSync(\\"open-directory/nested/value.txt\\", \\"dir-file\\\\n\\"); const fd = fs.openSync(\\"open-directory\\", \\"r\\"); console.log(fs.fstatSync(fd).isDirectory()); try { fs.readFileSync(fd); } catch (error) { console.log(error.code); } fs.closeSync(fd); for (const flags of [\\"w\\", \\"a\\", \\"r+\\", \\"w+\\", \\"a+\\"]) { try { fs.openSync(\\"open-directory\\", flags); console.log(flags + \\":ok\\"); } catch (error) { console.log(flags + \\":\\" + error.code); } } console.log(fs.statSync(\\"open-directory\\").isDirectory()); console.log(fs.readFileSync(\\"open-directory/nested/value.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(directoryOpenResult.exitCode === 0, `browser node directory open workflow should succeed: ${directoryOpenResult.stderr}`);
+  assertCondition(
+    directoryOpenResult.stdout === 'true\nEISDIR\nw:EISDIR\na:EISDIR\nr+:EISDIR\nw+:EISDIR\na+:EISDIR\ntrue\ndir-file\n\n',
+    `browser node open should preserve directory paths and reject write-mode directory opens: ${directoryOpenResult.stdout}`
+  );
+
   const accessModeResult = await workspace.runCommand([
     'node',
     '-e',

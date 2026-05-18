@@ -2401,7 +2401,7 @@ async function runBrowserJavaScriptProjectRequest(
       return Number.isFinite(parsed) ? Math.max(0, parsed * 1000) : fsTimestampMs;
     };
     type BrowserFileDescriptor = {
-      kind: 'file' | 'device' | 'proc';
+      kind: 'file' | 'directory' | 'device' | 'proc';
       path?: string;
       device?: RuntimeKernelDevicePath;
       offset: number;
@@ -2466,6 +2466,9 @@ async function runBrowserJavaScriptProjectRequest(
     const descriptorBytes = (entry: BrowserFileDescriptor): Uint8Array => {
       if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
       if (entry.kind === 'proc') return utf8Bytes(readProcFile(entry.path ?? '', kernelInfo));
+      if (entry.kind === 'directory') {
+        throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${entry.path ?? ''}'`), { code: 'EISDIR' });
+      }
       return fileStore.get(entry.path ?? '') ?? new Uint8Array();
     };
     const readDescriptorFileBytes = (fd: number): Uint8Array => {
@@ -2807,6 +2810,22 @@ async function runBrowserJavaScriptProjectRequest(
           return fd;
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        const directoryPrefix = normalized ? `${normalized}/` : '';
+        const isDirectory = directoryStore.has(normalized) || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(directoryPrefix));
+        if (isDirectory) {
+          if (parsed.writable || parsed.create || parsed.truncate) {
+            throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
+          }
+          fileDescriptors.set(fd, {
+            kind: 'directory',
+            path: normalized,
+            offset: 0,
+            readable: true,
+            writable: false,
+            append: false,
+          });
+          return fd;
+        }
         if (!fileStore.has(normalized)) {
           if (!parsed.create) {
             throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
@@ -3007,6 +3026,8 @@ async function runBrowserJavaScriptProjectRequest(
           stats = statTarget.kind === 'stat' ? statForKernelPath(statTarget.path, statTarget.stat) : missingFileStat();
         } else if (entry.kind === 'proc') {
           stats = statForKernelTarget(entry.path ?? '') ?? missingFileStat();
+        } else if (entry.kind === 'directory') {
+          stats = statForNormalizedPath(entry.path ?? '') ?? missingFileStat();
         } else {
           stats = statForNormalizedPath(entry.path ?? '') ?? missingFileStat();
         }
