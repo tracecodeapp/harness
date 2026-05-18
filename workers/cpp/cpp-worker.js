@@ -1111,6 +1111,16 @@ class WasiProcess {
     return ESUCCESS;
   }
 
+  fd_filestat_set_times(fd) {
+    const entry = this.fds.get(fd);
+    if (!entry) return EBADF;
+    if (entry.kind === 'stdio') return EROFS;
+    if (isRuntimeProcPath(entry.path) || this.fs.isReadOnly(entry.path) || this.isKernelVirtualNamespacePath(entry.path)) return EROFS;
+    if (!this.fs.exists(entry.path)) return ENOENT;
+    this.fs.emitPathSnapshot(entry.path);
+    return ESUCCESS;
+  }
+
   fd_allocate(fd, offset, length) {
     const entry = this.fds.get(fd);
     if (!entry || entry.kind !== 'file') return EBADF;
@@ -1329,6 +1339,7 @@ async function instantiateWasi(module, process) {
     'fd_allocate',
     'fd_filestat_get',
     'fd_filestat_set_size',
+    'fd_filestat_set_times',
     'fd_pread',
     'fd_prestat_dir_name',
     'fd_prestat_get',

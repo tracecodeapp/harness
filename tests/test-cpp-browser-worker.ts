@@ -388,6 +388,10 @@ async function main(): Promise<void> {
             '  metadata_times[0].tv_nsec = UTIME_NOW;',
             '  metadata_times[1].tv_nsec = UTIME_NOW;',
             '  std::cout << (utimensat(AT_FDCWD, "metadata-only.txt", metadata_times, 0) == 0 ? "metadata-utime:ok" : "metadata-utime:blocked") << "\\\\n";',
+            '  int metadata_fd = open("metadata-only.txt", O_RDONLY);',
+            '  int metadata_futimens_result = -1;',
+            '  if (metadata_fd >= 0) { metadata_futimens_result = futimens(metadata_fd, metadata_times); close(metadata_fd); }',
+            '  std::cout << (metadata_futimens_result == 0 ? "metadata-futimens:ok" : "metadata-futimens:blocked") << "\\\\n";',
             '  int missing_remove_result = std::remove("missing-delete.txt");',
             '  std::cout << (missing_remove_result == 0 ? "missing-remove:ok" : "missing-remove:blocked") << "\\\\n";',
             '  int mkdir_missing_parent_result = mkdir("missing-parent/child", 0777);',
@@ -1528,8 +1532,8 @@ async function main(): Promise<void> {
       `C++ browser project run should not emit final or live mutations for self-renames: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
-      projectRun.stdout?.includes('metadata-utime:ok\n') === true,
-      `C++ browser project run should allow metadata-only mutations on workspace files: ${JSON.stringify(projectRun)}`
+      projectRun.stdout?.includes('metadata-utime:ok\nmetadata-futimens:ok\n') === true,
+      `C++ browser project run should allow path and fd metadata-only mutations on workspace files: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/persist-dir' && file.directory === true) === true &&
@@ -1619,8 +1623,8 @@ async function main(): Promise<void> {
         event.phase === 'live' &&
         event.change?.path === 'src/metadata-only.txt' &&
         event.change.contents === 'metadata\n'
-      )).length >= 2,
-      `C++ browser project run should stream live metadata-only mutations: ${JSON.stringify(projectRun.events)}`
+      )).length >= 3,
+      `C++ browser project run should stream live path and fd metadata-only mutations: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some((event) => (
