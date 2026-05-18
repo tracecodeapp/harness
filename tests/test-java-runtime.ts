@@ -251,6 +251,11 @@ public class ProjectWorkspaceDirectorySmoke {
       var stderrCapture = new java.io.ByteArrayOutputStream();
       ProjectEvents.streamingOutput(stdoutCapture, "stdout");
       ProjectEvents.streamingOutput(stderrCapture, "stderr");
+      String fileDescriptorReaderInput;
+      try (var reader = new ProjectEvents.ProjectFileReader(java.io.FileDescriptor.in)) {
+        char[] buffer = new char[64];
+        fileDescriptorReaderInput = new String(buffer, 0, reader.read(buffer)).trim();
+      }
       try (var writer = new ProjectEvents.ProjectFileWriter("/dev/stdout", StandardCharsets.UTF_8)) {
         writer.write("file-writer-out\\n");
       }
@@ -264,6 +269,7 @@ public class ProjectWorkspaceDirectorySmoke {
         writer.print("print-writer-err\\n");
       }
       System.out.println(stdoutCapture.toString("UTF-8").replace("\\n", "|") + stderrCapture.toString("UTF-8").replace("\\n", "|"));
+      System.out.println("fd-reader=" + fileDescriptorReaderInput);
       var devDir = new ProjectEvents.ProjectFile("/dev");
       var stdoutDevice = new ProjectEvents.ProjectFile("/dev/stdout");
       var stdinDevice = new ProjectEvents.ProjectFile("/dev/stdin");
@@ -403,6 +409,7 @@ public class ProjectWorkspaceDirectorySmoke {
       deviceChannelInput,
       customDeviceInput,
       deviceWriterOutput,
+      fileDescriptorReaderOutput,
       fileApiOutput,
       nioStatApiOutput,
       tempApiOutput,
@@ -428,6 +435,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       deviceWriterOutput === 'file-writer-out|print-writer-out|tty-writer-out|print-writer-err|',
       `Java browser helper should route FileWriter and PrintWriter through kernel devices: ${output}`
+    );
+    assertCondition(
+      fileDescriptorReaderOutput === 'fd-reader=from-device',
+      `Java browser helper should route FileReader(FileDescriptor.in) through kernel stdin: ${output}`
     );
     assertCondition(
       fileApiOutput === 'file-api=true:true:true:false:true:true:false:true:true:false:false:false:0:false:false:false:log,stdin,stdout,tty:stdout:log,stdout,tty',
@@ -1208,6 +1219,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   null,
                   'stdout',
                   'fd_stdin=from-stdin\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'fd_reader_stdin=from-stdin\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
@@ -1993,6 +2009,7 @@ async function main(): Promise<void> {
               '    try (var stream = new FileOutputStream(FileDescriptor.out)) { stream.write("fd_stdout\\\\n".getBytes(StandardCharsets.UTF_8)); }',
               '    try (var writer = new FileWriter(FileDescriptor.out)) { writer.write("fd_writer_stdout\\\\n"); }',
               '    try (var stream = new FileInputStream(FileDescriptor.in)) { System.out.println("fd_stdin=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
+              '    try (var reader = new FileReader(FileDescriptor.in)) { char[] buffer = new char[64]; System.out.println("fd_reader_stdin=" + new String(buffer, 0, reader.read(buffer)).trim()); }',
               '    try (var writer = new FileWriter("/dev/stdout", StandardCharsets.UTF_8)) { writer.write("dev_writer\\\\n"); }',
               '    try (var writer = new PrintWriter("/dev/stdout", StandardCharsets.UTF_8)) { writer.print("pw_stdout\\\\n"); }',
               '    try (var writer = new FileWriter("/dev/tty", StandardCharsets.UTF_8)) { writer.write("fw_tty\\\\n"); }',
@@ -2153,6 +2170,12 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stdout' &&
             event.data === 'fd_stdin=from-stdin\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'fd_reader_stdin=from-stdin\n'
         ) === true &&
         projectExecute.events?.some(
           (event) =>
@@ -2658,6 +2681,7 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileOutputStream(FileDescriptor.out)') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter(FileDescriptor.out)') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileInputStream(FileDescriptor.in)') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileReader(FileDescriptor.in)') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileOutputStream(FileDescriptor.err)') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintStream("/dev/stderr"') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFile("classic-created.txt")') === true &&

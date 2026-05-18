@@ -879,24 +879,66 @@ public final class ProjectEvents {
   }
 
   public static final class ProjectFileReader extends FileReader {
+    private final char[] deviceChars;
+    private int deviceOffset = 0;
+
     public ProjectFileReader(String fileName) throws IOException {
       super(inputReaderTarget(Path.of(fileName)));
+      this.deviceChars = null;
     }
 
     public ProjectFileReader(String fileName, Charset charset) throws IOException {
       super(inputReaderTarget(Path.of(fileName)), charset);
+      this.deviceChars = null;
     }
 
     public ProjectFileReader(File file) throws IOException {
       super(inputReaderTarget(file == null ? null : file.toPath()));
+      this.deviceChars = null;
     }
 
     public ProjectFileReader(File file, Charset charset) throws IOException {
       super(inputReaderTarget(file == null ? null : file.toPath()), charset);
+      this.deviceChars = null;
     }
 
     public ProjectFileReader(FileDescriptor fdObj) {
       super(fdObj);
+      byte[] bytes = kernelInputBytes(fdObj);
+      this.deviceChars = bytes == null ? null : new String(bytes, Charset.defaultCharset()).toCharArray();
+    }
+
+    @Override
+    public int read() throws IOException {
+      if (deviceChars == null) return super.read();
+      if (deviceOffset >= deviceChars.length) return -1;
+      return deviceChars[deviceOffset++];
+    }
+
+    @Override
+    public int read(char[] buffer, int offset, int length) throws IOException {
+      if (deviceChars == null) return super.read(buffer, offset, length);
+      if (length == 0) return 0;
+      if (deviceOffset >= deviceChars.length) return -1;
+      int count = Math.min(length, deviceChars.length - deviceOffset);
+      System.arraycopy(deviceChars, deviceOffset, buffer, offset, count);
+      deviceOffset += count;
+      return count;
+    }
+
+    @Override
+    public long skip(long count) throws IOException {
+      if (deviceChars == null) return super.skip(count);
+      if (count <= 0) return 0;
+      long skipped = Math.min(count, deviceChars.length - deviceOffset);
+      deviceOffset += (int) skipped;
+      return skipped;
+    }
+
+    @Override
+    public boolean ready() throws IOException {
+      if (deviceChars == null) return super.ready();
+      return deviceOffset < deviceChars.length;
     }
   }
 
