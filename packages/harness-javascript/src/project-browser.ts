@@ -1400,12 +1400,34 @@ async function runBrowserJavaScriptProjectRequest(
         });
         return fd;
       },
+      open: (path: unknown, flags?: unknown, modeOrCallback?: unknown, callback?: (error: Error | null, fd?: number) => void) => {
+        const done = typeof flags === 'function'
+          ? flags as (error: Error | null, fd?: number) => void
+          : typeof modeOrCallback === 'function'
+            ? modeOrCallback as (error: Error | null, fd?: number) => void
+            : callback;
+        const openFlags = typeof flags === 'function' || flags === undefined ? 'r' : flags;
+        try {
+          const fd = fsApi.openSync(path, openFlags);
+          queueMicrotask(() => done?.(null, fd));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       closeSync: (fd: number) => {
         if (Number(fd) < 3) return undefined;
         if (!fileDescriptors.delete(Number(fd))) {
           throw Object.assign(new Error(`EBADF: bad file descriptor, close`), { code: 'EBADF' });
         }
         return undefined;
+      },
+      close: (fd: number, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.closeSync(fd);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
       },
       readSync: (fd: number, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
         const entry = fileDescriptor(fd);
@@ -1416,6 +1438,14 @@ async function runBrowserJavaScriptProjectRequest(
         buffer.set(source.slice(start, start + count), offset);
         if (position === undefined || position === null) entry.offset = start + count;
         return count;
+      },
+      read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, callback: (error: Error | null, bytesRead?: number, buffer?: Uint8Array) => void) => {
+        try {
+          const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
+          queueMicrotask(() => callback(null, bytesRead, buffer));
+        } catch (error) {
+          queueMicrotask(() => callback(error as Error, undefined, buffer));
+        }
       },
       writeSync: (fd: number, value: unknown, offsetOrPosition?: number, lengthOrEncoding?: number | string, position?: number | null) => {
         let bytes: Uint8Array;
@@ -1432,6 +1462,40 @@ async function runBrowserJavaScriptProjectRequest(
         writeDescriptorBytes(fileDescriptor(fd), bytes, writePosition);
         return bytes.byteLength;
       },
+      write: (
+        fd: number,
+        value: unknown,
+        offsetOrPosition?: number | ((error: Error | null, written?: number, value?: unknown) => void),
+        lengthOrEncoding?: number | string | ((error: Error | null, written?: number, value?: unknown) => void),
+        positionOrCallback?: number | null | ((error: Error | null, written?: number, value?: unknown) => void),
+        callback?: (error: Error | null, written?: number, value?: unknown) => void
+      ) => {
+        const done = typeof offsetOrPosition === 'function'
+          ? offsetOrPosition
+          : typeof lengthOrEncoding === 'function'
+            ? lengthOrEncoding
+            : typeof positionOrCallback === 'function'
+              ? positionOrCallback
+              : callback;
+        let writePosition: number | null | undefined;
+        if (typeof positionOrCallback === 'number') {
+          writePosition = positionOrCallback;
+        } else if (positionOrCallback === null) {
+          writePosition = null;
+        }
+        try {
+          const written = fsApi.writeSync(
+            fd,
+            value,
+            typeof offsetOrPosition === 'number' ? offsetOrPosition : undefined,
+            typeof lengthOrEncoding === 'number' || typeof lengthOrEncoding === 'string' ? lengthOrEncoding : undefined,
+            writePosition
+          );
+          queueMicrotask(() => done?.(null, written, value));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error, undefined, value));
+        }
+      },
       fstatSync: (fd: number) => {
         const entry = fileDescriptor(fd);
         const size = entry.kind === 'device' ? 0 : fileStore.get(entry.path ?? '')?.byteLength ?? 0;
@@ -1441,6 +1505,14 @@ async function runBrowserJavaScriptProjectRequest(
           isDirectory: () => false,
           isSymbolicLink: () => false,
         };
+      },
+      fstat: (fd: number, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
+        try {
+          const stats = fsApi.fstatSync(fd);
+          queueMicrotask(() => callback(null, stats));
+        } catch (error) {
+          queueMicrotask(() => callback(error as Error));
+        }
       },
       createReadStream: (path: unknown, options?: string | { encoding?: string; start?: number; end?: number } | null) => {
         const device = normalizeRuntimeDevicePath(path);
@@ -1660,6 +1732,27 @@ async function runBrowserJavaScriptProjectRequest(
       constants: fsConstants,
       access: async (path: unknown, mode = fsConstants.F_OK) => {
         fsApi.accessSync(path, mode);
+      },
+      open: async (path: unknown, flags: unknown = 'r') => {
+        const fd = fsApi.openSync(path, flags);
+        return {
+          fd,
+          read: async (buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
+            const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
+            return { bytesRead, buffer };
+          },
+          write: async (value: unknown, offsetOrPosition?: number, lengthOrEncoding?: number | string, position?: number | null) => {
+            const bytesWritten = fsApi.writeSync(fd, value, offsetOrPosition, lengthOrEncoding, position);
+            return {
+              bytesWritten,
+              buffer: value,
+            };
+          },
+          stat: async () => fsApi.fstatSync(fd),
+          close: async () => {
+            fsApi.closeSync(fd);
+          },
+        };
       },
       readFile: async (path: unknown, encoding?: string | { encoding?: string }) => fsApi.readFileSync(path, encoding),
       writeFile: async (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {

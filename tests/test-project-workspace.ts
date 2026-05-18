@@ -2121,6 +2121,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fd writes should emit live file changes: ${JSON.stringify(fdEvents)}`
   );
 
+  const asyncFdResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const fd = await new Promise((resolve, reject) => fs.open(\\"async-fd.txt\\", \\"w+\\", (error, value) => error ? reject(error) : resolve(value))); await new Promise((resolve, reject) => fs.write(fd, Buffer.from(\\"callback\\\\n\\"), 0, 9, null, (error) => error ? reject(error) : resolve())); const stats = await new Promise((resolve, reject) => fs.fstat(fd, (error, value) => error ? reject(error) : resolve(value))); const readBuffer = Buffer.alloc(stats.size); await new Promise((resolve, reject) => fs.read(fd, readBuffer, 0, readBuffer.length, 0, (error) => error ? reject(error) : resolve())); await new Promise((resolve, reject) => fs.close(fd, (error) => error ? reject(error) : resolve())); const handle = await fsp.open(\\"async-fd.txt\\", \\"a+\\"); await handle.write(\\"promise\\\\n\\"); const stat = await handle.stat(); await handle.close(); console.log(readBuffer.toString().trim()); console.log(stat.size);"',
+  ].join(' '));
+  assertCondition(asyncFdResult.exitCode === 0, `browser node async fd workflow should succeed: ${asyncFdResult.stderr}`);
+  assertCondition(
+    asyncFdResult.stdout === 'callback\n17\n',
+    `browser node async fd workflow stdout should match: ${asyncFdResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('async-fd.txt') === 'callback\npromise\n', 'browser node async fd writes should persist through kernel FS');
+
   const bufferResult = await workspace.runCommand([
     'node',
     '-e',
