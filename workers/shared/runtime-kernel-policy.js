@@ -49,21 +49,39 @@ function isRuntimeKernelReadOnlyPath(value, readOnlyPaths) {
   return false;
 }
 
-export function runtimeKernelVirtualMutationTarget(value, options = {}) {
+export function runtimeKernelVirtualPathTarget(value, options = {}) {
   const path = normalizeRuntimeKernelPath(value);
   if (isRuntimeKernelProcPath(path)) {
-    return { kind: 'error', reason: 'proc-read-only', path };
+    return { kind: 'proc', path };
   }
   if (isRuntimeKernelReadOnlyPath(path, options.readOnlyPaths)) {
-    return { kind: 'error', reason: 'kernel-read-only', path };
+    return { kind: 'read-only-file', path };
+  }
+  if (isRuntimeKernelDeviceDirectory(path)) {
+    return { kind: 'device-directory', path };
   }
   if (isRuntimeKernelDeviceNamespacePath(path)) {
     const knownDevices = normalizedSet(options.knownDevices);
     const device = normalizeRuntimeKernelDeviceReference(path);
     if (!device || !knownDevices.has(device)) {
-      return { kind: 'error', reason: 'device-not-found', path };
+      return { kind: 'device-not-found', path };
     }
-    return { kind: 'error', reason: 'device-read-only', path };
+    return { kind: 'device-file', path: device };
   }
   return { kind: 'workspace', path };
+}
+
+export function runtimeKernelVirtualMutationTarget(value, options = {}) {
+  const target = runtimeKernelVirtualPathTarget(value, options);
+  if (target.kind === 'workspace') return target;
+  if (target.kind === 'device-not-found') {
+    return { kind: 'error', reason: 'device-not-found', path: target.path };
+  }
+  if (target.kind === 'proc') {
+    return { kind: 'error', reason: 'proc-read-only', path: target.path };
+  }
+  if (target.kind === 'read-only-file') {
+    return { kind: 'error', reason: 'kernel-read-only', path: target.path };
+  }
+  return { kind: 'error', reason: 'device-read-only', path: target.path };
 }

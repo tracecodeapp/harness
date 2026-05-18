@@ -592,9 +592,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes("from './shared/runtime-kernel-policy.js'") &&
+          worker.includes('runtimeKernelVirtualPathTarget(pathname') &&
           worker.includes('runtimeKernelVirtualMutationTarget(pathname') &&
           worker.includes('knownDevices: this.kernelDevices.keys()'),
-        '@tracecode/harness-cpp worker should guard manifest kernel namespaces with shared worker kernel policy'
+        '@tracecode/harness-cpp worker should classify and guard manifest kernel namespaces with shared worker kernel policy'
       );
       assertCondition(
         worker.includes('emitPathSnapshot(pathname)') &&

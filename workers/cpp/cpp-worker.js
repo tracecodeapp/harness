@@ -4,6 +4,7 @@ import {
   isRuntimeKernelProcPath as isRuntimeProcPath,
   normalizeRuntimeKernelDeviceReference,
   runtimeKernelVirtualMutationTarget,
+  runtimeKernelVirtualPathTarget,
 } from './shared/runtime-kernel-policy.js';
 
 const RESULT_MARKER = '__TRACECODE_RESULT__';
@@ -757,6 +758,13 @@ class WasiProcess {
     return this.kernelDevices.has(normalizePath(pathname));
   }
 
+  kernelVirtualPathTarget(pathname) {
+    return runtimeKernelVirtualPathTarget(pathname, {
+      knownDevices: this.kernelDevices.keys(),
+      readOnlyPaths: this.fs.readOnlyFiles,
+    });
+  }
+
   isKernelVirtualPathOperand(pathname) {
     const normalized = normalizePath(pathname);
     if (normalized === '/') return false;
@@ -773,17 +781,6 @@ class WasiProcess {
       const slash = path.indexOf('/', 1);
       const root = slash < 0 ? path : path.slice(0, slash);
       if (normalized === root || normalized.startsWith(`${root}/`)) return true;
-    }
-    return false;
-  }
-
-  isKernelVirtualNamespacePath(pathname) {
-    const normalized = normalizePath(pathname);
-    if (normalized === '/') return false;
-    for (const path of this.fs.readOnlyFiles) {
-      const slash = path.indexOf('/', 1);
-      const root = slash < 0 ? path : path.slice(0, slash);
-      if (normalized === path || normalized.startsWith(`${root}/`)) return true;
     }
     return false;
   }
@@ -807,25 +804,30 @@ class WasiProcess {
 
   filetypeForPath(pathname) {
     const normalized = normalizePath(pathname);
-    if (isRuntimeDeviceDirectory(normalized)) return FILETYPE_DIRECTORY;
-    if (this.isKnownDevicePath(normalized)) return FILETYPE_CHARACTER_DEVICE;
+    const target = this.kernelVirtualPathTarget(normalized);
+    if (target.kind === 'device-directory') return FILETYPE_DIRECTORY;
+    if (target.kind === 'device-file') return FILETYPE_CHARACTER_DEVICE;
     if (this.fs.isDirectory(normalized)) return FILETYPE_DIRECTORY;
     return FILETYPE_REGULAR_FILE;
   }
 
   openFile(pathname, options = {}) {
     const normalized = normalizePath(pathname);
-    if (isRuntimeDeviceDirectory(normalized)) {
+    const target = this.kernelVirtualPathTarget(normalized);
+    if (target.kind === 'device-directory') {
       return options.directory ? this.allocateFd({ kind: 'dir', path: normalized, offset: 0, readable: true, writable: false }) : -EISDIR;
     }
     const stdioEntry = this.stdioEntryForPath(normalized, options);
     if (stdioEntry) {
       return this.allocateFd(stdioEntry);
     }
-    if (isRuntimeDeviceNamespacePath(normalized)) {
-      return this.isKnownDevicePath(normalized) ? -EBADF : -ENOENT;
+    if (target.kind === 'device-file') {
+      return -EBADF;
     }
-    if ((this.fs.isReadOnly(normalized) || this.isKernelVirtualNamespacePath(normalized)) && (options.create || options.truncate || options.append || options.write)) {
+    if (target.kind === 'device-not-found') {
+      return -ENOENT;
+    }
+    if ((target.kind === 'proc' || target.kind === 'read-only-file') && (options.create || options.truncate || options.append || options.write)) {
       return -EROFS;
     }
     if (options.directory) {
@@ -863,7 +865,8 @@ class WasiProcess {
 
   writeFilestat(pathname, outPtr) {
     const normalized = normalizePath(pathname);
-    if (isRuntimeDeviceDirectory(normalized) || this.isKnownDevicePath(normalized)) {
+    const target = this.kernelVirtualPathTarget(normalized);
+    if (target.kind === 'device-directory' || target.kind === 'device-file') {
       this.mem.writeU64(outPtr, 1);
       this.mem.writeU64(outPtr + 8, inodeForPath(normalized));
       this.mem.writeU8(outPtr + 16, this.filetypeForPath(normalized));
@@ -874,7 +877,7 @@ class WasiProcess {
       this.mem.writeU64(outPtr + 56, 0);
       return ESUCCESS;
     }
-    if (isRuntimeDeviceNamespacePath(normalized)) return ENOENT;
+    if (target.kind === 'device-not-found') return ENOENT;
     const isDir = this.fs.isDirectory(normalized);
     const isFile = this.fs.isFile(normalized);
     if (!isDir && !isFile) return ENOENT;

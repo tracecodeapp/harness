@@ -48,6 +48,7 @@ import {
 import {
   normalizeRuntimeKernelDeviceReference as normalizeWorkerKernelDeviceReference,
   runtimeKernelVirtualMutationTarget as workerRuntimeKernelVirtualMutationTarget,
+  runtimeKernelVirtualPathTarget as workerRuntimeKernelVirtualPathTarget,
 } from '../workers/shared/runtime-kernel-policy.js';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -331,6 +332,21 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
     stableStringify(workerRuntimeKernelVirtualMutationTarget('/proc/kernel/info', { knownDevices, readOnlyPaths })) ===
       stableStringify({ kind: 'error', reason: 'proc-read-only', path: '/proc/kernel/info' }),
     'shared worker kernel policy should reject proc mutations as read-only'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualPathTarget('/proc/kernel/info', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'proc', path: '/proc/kernel/info' }),
+    'shared worker kernel policy should classify proc paths before materialized read-only files'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualPathTarget('/dev', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'device-directory', path: '/dev' }),
+    'shared worker kernel policy should classify the device directory'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) ===
+      stableStringify({ kind: 'device-file', path: '/dev/log' }),
+    'shared worker kernel policy should classify manifest devices'
   );
   assertCondition(
     stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
