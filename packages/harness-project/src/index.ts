@@ -2864,6 +2864,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       cwd: this.cwd,
       workspaceRoot: this.cwd,
       ...(this.kernelInfo.workspaceAlias ? { workspaceAlias: this.kernelInfo.workspaceAlias } : {}),
+      kernel: this.kernelInfo,
+      kernelDevices: runtimeKernelVirtualDevices(),
+      kernelFiles: runtimeKernelVirtualFiles(this.kernelInfo),
       files,
       ...(directories.length > 0 ? { directories } : {}),
       ...(options.entrypoint || this.entrypoint

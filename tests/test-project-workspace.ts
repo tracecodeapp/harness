@@ -6410,6 +6410,17 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   const snapshot = await workspace.snapshot();
   assertCondition(snapshot.cwd === '/home/obi/weather-api', `snapshot cwd should use canonical workspace root: ${snapshot.cwd}`);
   assertCondition(snapshot.files.some((file) => file.path === 'src/main.py'), 'snapshot should still use project-relative file paths');
+  assertCondition(snapshot.kernel?.name === 'tracekernel', `snapshot should expose kernel info: ${JSON.stringify(snapshot.kernel)}`);
+  assertCondition(
+    snapshot.kernelDevices?.some((device) => device.path === '/dev/stdin') === true &&
+      snapshot.kernelDevices?.some((device) => device.path === '/dev/stdout') === true,
+    `snapshot should expose kernel device inventory: ${JSON.stringify(snapshot.kernelDevices)}`
+  );
+  assertCondition(
+    snapshot.kernelFiles?.some((file) => file.path === '/proc/kernel/info' && JSON.parse(file.contents).workspace.root === '/home/obi/weather-api') === true &&
+      snapshot.kernelFiles?.some((file) => file.path === '/proc/self/mountinfo' && file.contents.includes('tracekernel:workspace')) === true,
+    `snapshot should expose kernel proc files: ${JSON.stringify(snapshot.kernelFiles)}`
+  );
   workspace.dispose();
 }
 
@@ -6450,6 +6461,12 @@ async function testConfiguredKernelNativePythonAndNodeRunners(): Promise<void> {
   const snapshot = await workspace.snapshot();
   assertCondition(snapshot.workspaceRoot === '/home/obi/weather-api', `snapshot should expose canonical workspace root: ${JSON.stringify(snapshot)}`);
   assertCondition(snapshot.workspaceAlias === '/workspace', `snapshot should expose workspace alias: ${JSON.stringify(snapshot)}`);
+  assertCondition(snapshot.kernel?.workspaceRoot === '/home/obi/weather-api', `snapshot should expose kernel info for runner handoff: ${JSON.stringify(snapshot.kernel)}`);
+  assertCondition(
+    snapshot.kernelDevices?.some((device) => device.path === '/dev/tty') === true &&
+      snapshot.kernelFiles?.some((file) => file.path === '/proc/kernel/version') === true,
+    `snapshot should expose kernel devices and proc files for runner handoff: ${JSON.stringify(snapshot)}`
+  );
 
   const python = await workspace.runCommand('python3 /workspace/py_main.py', { cwd: '/workspace' });
   assertCondition(python.exitCode === 0, `configured native Python should run through /workspace alias: ${python.stderr}`);
