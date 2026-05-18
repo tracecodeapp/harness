@@ -1013,7 +1013,7 @@ class WasiProcess {
   fd_filestat_get(fd, outPtr) {
     const entry = this.fds.get(fd);
     if (!entry) return EBADF;
-    if (entry.kind === 'stdio') return EINVAL;
+    if (entry.kind === 'stdio') return this.writeFilestat(entry.device, outPtr);
     return this.writeFilestat(entry.path, outPtr);
   }
 

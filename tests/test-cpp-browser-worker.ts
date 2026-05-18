@@ -299,6 +299,11 @@ async function main(): Promise<void> {
             '  struct stat stdout_stat = {};',
             '  bool dev_stat_ok = stat("/dev", &dev_stat) == 0 && stat("/dev/stdout", &stdout_stat) == 0;',
             '  std::cout << (dev_stat_ok && S_ISDIR(dev_stat.st_mode) && !S_ISDIR(stdout_stat.st_mode) ? "dev-stat:ok" : "dev-stat:bad") << "\\\\n";',
+            '  int stdout_stat_fd = open("/dev/stdout", O_WRONLY);',
+            '  struct stat stdout_fd_stat = {};',
+            '  bool stdout_fd_stat_ok = stdout_stat_fd >= 0 && fstat(stdout_stat_fd, &stdout_fd_stat) == 0;',
+            '  if (stdout_stat_fd >= 0) close(stdout_stat_fd);',
+            '  std::cout << (stdout_fd_stat_ok && !S_ISDIR(stdout_fd_stat.st_mode) ? "dev-fstat:ok" : "dev-fstat:bad") << "\\\\n";',
             '  std::ifstream stdout_read("/dev/stdout");',
             '  std::cout << (stdout_read ? "dev-stdout-read:ok" : "dev-stdout-read:blocked") << "\\\\n";',
             '  std::cout << (std::remove("/dev/stdout") == 0 ? "dev-unlink:ok" : "dev-unlink:blocked") << "\\\\n";',
@@ -1197,7 +1202,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\n') === true &&
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
-        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
