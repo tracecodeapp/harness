@@ -2035,6 +2035,58 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
+      opendirSync: (path: unknown) => {
+        const entries = fsApi.readdirSync(path, { withFileTypes: true }) as Array<{
+          name: string;
+          isFile: () => boolean;
+          isDirectory: () => boolean;
+          isSymbolicLink: () => boolean;
+        }>;
+        let index = 0;
+        let closed = false;
+        const assertOpen = (): void => {
+          if (closed) throw Object.assign(new Error('ERR_DIR_CLOSED: Directory handle was closed'), { code: 'ERR_DIR_CLOSED' });
+        };
+        const dir = {
+          path: fsApi.realpathSync(path),
+          readSync: () => {
+            assertOpen();
+            return entries[index++] ?? null;
+          },
+          read: (callback?: (error: Error | null, dirent?: unknown) => void) => {
+            try {
+              const entry = dir.readSync();
+              queueMicrotask(() => callback?.(null, entry));
+            } catch (error) {
+              queueMicrotask(() => callback?.(error as Error));
+            }
+          },
+          closeSync: () => {
+            closed = true;
+          },
+          close: (callback?: (error?: Error | null) => void) => {
+            closed = true;
+            queueMicrotask(() => callback?.(null));
+          },
+          async *[Symbol.asyncIterator]() {
+            while (true) {
+              const entry = dir.readSync();
+              if (entry === null) break;
+              yield entry;
+            }
+          },
+        };
+        return dir;
+      },
+      opendir: (path: unknown, optionsOrCallback?: unknown, callback?: (error: Error | null, dir?: unknown) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback as (error: Error | null, dir?: unknown) => void : callback;
+        try {
+          const dir = fsApi.opendirSync(path);
+          queueMicrotask(() => done?.(null, dir));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       statSync: (path: unknown) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const isFile = fileStore.has(normalized);
@@ -2218,6 +2270,7 @@ async function runBrowserJavaScriptProjectRequest(
         fsApi.rmSync(path, options);
       },
       readdir: async (path: unknown, options?: { withFileTypes?: boolean } | string | null) => fsApi.readdirSync(path, options),
+      opendir: async (path: unknown) => fsApi.opendirSync(path),
       stat: async (path: unknown) => fsApi.statSync(path),
       lstat: async (path: unknown) => fsApi.lstatSync(path),
       realpath: async (path: unknown, options?: string | { encoding?: string | null } | null) => fsApi.realpathSync(path, options),
