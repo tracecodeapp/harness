@@ -25,6 +25,7 @@ import {
   runtimeKernelCopyTarget,
   runtimeKernelDirectoryErrorCode,
   runtimeKernelDirectoryTarget,
+  runtimeKernelFileCopyTarget,
   runtimeKernelFileReadTarget,
   runtimeKernelFileReadErrorCode,
   runtimeKernelMetadataErrorCode,
@@ -205,6 +206,13 @@ function runtimeCopyTarget(source: unknown, destination: unknown): ReturnType<ty
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelCopyTarget(sourceRaw, destinationRaw);
+}
+
+function runtimeFileCopyTarget(source: unknown, destination: unknown): ReturnType<typeof runtimeKernelFileCopyTarget> | null {
+  if (typeof source === 'number' || typeof destination === 'number') return null;
+  const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelFileCopyTarget(sourceRaw, destinationRaw);
 }
 
 function runtimeDirectoryTarget(path: unknown): ReturnType<typeof runtimeKernelDirectoryTarget> | null {
@@ -3044,22 +3052,30 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
-        const writeTarget = runtimeWriteTarget(destination);
-        if (writeTarget?.kind === 'error') {
-          const message = writeTarget.reason === 'proc-read-only'
+        const copyTarget = runtimeFileCopyTarget(source, destination);
+        if (copyTarget?.kind === 'error' && copyTarget.side === 'destination') {
+          const message = copyTarget.reason === 'proc-read-only'
             ? `EROFS: read-only file system, copyfile '${source}' -> '${destination}'`
-            : writeTarget.reason === 'device-read-only'
+            : copyTarget.reason === 'device-read-only'
               ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
-              : writeTarget.reason === 'device-directory'
+              : copyTarget.reason === 'device-directory'
                 ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
                 : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`;
-          throwRuntimeWriteTargetError(writeTarget, message);
+          throw Object.assign(new Error(message), { code: runtimeKernelWriteErrorCode(copyTarget.reason) });
         }
-        const sourceTarget = runtimeFileReadTarget(source);
         let sourceBytes: Uint8Array | undefined;
+        const sourceTarget = copyTarget?.kind === 'virtual-source' || copyTarget?.kind === 'device-destination'
+          ? copyTarget.source
+          : runtimeFileReadTarget(source);
         if (sourceTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(sourceTarget.path));
         else if (sourceTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(sourceTarget.path, kernelInfo));
-        else if (sourceTarget?.kind === 'error') {
+        else if (copyTarget?.kind === 'error' && copyTarget.side === 'source') {
+          throw Object.assign(new Error(copyTarget.reason === 'is-directory'
+            ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
+            : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), {
+            code: runtimeKernelFileReadErrorCode(copyTarget.reason),
+          });
+        } else if (sourceTarget?.kind === 'error') {
           throwRuntimeReadTargetError(sourceTarget, sourceTarget.reason === 'is-directory'
             ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
             : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`);
@@ -3067,8 +3083,8 @@ async function runBrowserJavaScriptProjectRequest(
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
-        if (writeTarget?.kind === 'device') {
-          writeDevice(writeTarget.outputDevice, textFromBytes(sourceBytes));
+        if (copyTarget?.kind === 'device-destination') {
+          writeDevice(copyTarget.outputDevice, textFromBytes(sourceBytes));
           return;
         }
         const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);

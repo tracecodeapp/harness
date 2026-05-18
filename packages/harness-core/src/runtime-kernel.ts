@@ -53,6 +53,22 @@ export type RuntimeKernelCopyTarget =
   | { kind: 'workspace' }
   | { kind: 'file-copy' }
   | { kind: 'error'; reason: 'source-directory' | 'source-not-found'; path: string };
+export type RuntimeKernelFileCopyTarget =
+  | { kind: 'workspace' }
+  | { kind: 'virtual-source'; source: Extract<RuntimeKernelFileReadTarget, { kind: 'device-file' | 'proc-file' }> }
+  | { kind: 'device-destination'; outputDevice: RuntimeKernelDevicePath; source: RuntimeKernelFileReadTarget }
+  | {
+      kind: 'error';
+      side: 'source';
+      reason: Extract<RuntimeKernelFileReadTarget, { kind: 'error' }>['reason'];
+      path: string;
+    }
+  | {
+      kind: 'error';
+      side: 'destination';
+      reason: Extract<RuntimeKernelWriteTarget, { kind: 'error' }>['reason'];
+      path: string;
+    };
 export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'ENOTDIR' | 'EROFS';
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
@@ -328,6 +344,28 @@ export function runtimeKernelCopyTarget(source: string, destination: string): Ru
   if (sourceTarget.kind === 'error') {
     return { kind: 'error', reason: 'source-not-found', path: sourceTarget.path };
   }
+  return { kind: 'workspace' };
+}
+
+export function runtimeKernelFileCopyTarget(source: string, destination: string): RuntimeKernelFileCopyTarget {
+  const writeTarget = runtimeKernelWriteTarget(destination);
+  if (writeTarget.kind === 'error') {
+    return { kind: 'error', side: 'destination', reason: writeTarget.reason, path: writeTarget.path };
+  }
+
+  const sourceTarget = runtimeKernelFileReadTarget(source);
+  if (sourceTarget.kind === 'error') {
+    return { kind: 'error', side: 'source', reason: sourceTarget.reason, path: sourceTarget.path };
+  }
+
+  if (writeTarget.kind === 'device') {
+    return { kind: 'device-destination', outputDevice: writeTarget.outputDevice, source: sourceTarget };
+  }
+
+  if (sourceTarget.kind === 'device-file' || sourceTarget.kind === 'proc-file') {
+    return { kind: 'virtual-source', source: sourceTarget };
+  }
+
   return { kind: 'workspace' };
 }
 
