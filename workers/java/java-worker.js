@@ -3207,6 +3207,8 @@ function augmentJavaProjectFileMutations(source) {
     .replace(/(?<![\w.])new\s+FileInputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileInputStream(')
     .replace(/\bnew\s+java\.io\.FileOutputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileOutputStream(')
     .replace(/(?<![\w.])new\s+FileOutputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileOutputStream(')
+    .replace(/\bnew\s+java\.io\.File\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFile(')
+    .replace(/(?<![\w.])new\s+File\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFile(')
     .replace(/\bnew\s+java\.io\.RandomAccessFile\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectRandomAccessFile(')
     .replace(/(?<![\w.])new\s+RandomAccessFile\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectRandomAccessFile(')
     .replace(/\bnew\s+java\.io\.PrintStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectPrintStream(')

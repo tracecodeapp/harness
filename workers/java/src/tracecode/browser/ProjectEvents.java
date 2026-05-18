@@ -14,6 +14,7 @@ import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.RandomAccessFile;
 import java.io.Writer;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.Charset;
 import java.nio.ByteBuffer;
@@ -583,6 +584,80 @@ public final class ProjectEvents {
     public void close() throws IOException {
       super.close();
       if (writable) emitFileSnapshot(path);
+    }
+  }
+
+  public static final class ProjectFile extends File {
+    public ProjectFile(String pathname) {
+      super(pathname);
+    }
+
+    public ProjectFile(String parent, String child) {
+      super(parent, child);
+    }
+
+    public ProjectFile(File parent, String child) {
+      super(parent, child);
+    }
+
+    public ProjectFile(URI uri) {
+      super(uri);
+    }
+
+    @Override
+    public boolean createNewFile() throws IOException {
+      assertWritableProjectPath(toPath());
+      boolean created = super.createNewFile();
+      if (created) emitFileSnapshot(toPath());
+      return created;
+    }
+
+    @Override
+    public boolean delete() {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      boolean deleted = super.delete();
+      if (deleted) emitFileDelete(toPath());
+      return deleted;
+    }
+
+    @Override
+    public boolean mkdir() {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.mkdir();
+    }
+
+    @Override
+    public boolean mkdirs() {
+      try {
+        assertWritableProjectPath(toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      return super.mkdirs();
+    }
+
+    @Override
+    public boolean renameTo(File dest) {
+      try {
+        assertWritableProjectPath(toPath());
+        assertWritableProjectPath(dest == null ? null : dest.toPath());
+      } catch (IOException error) {
+        return false;
+      }
+      boolean renamed = super.renameTo(dest);
+      if (renamed) {
+        emitFileDelete(toPath());
+        if (dest != null) emitFileSnapshot(dest.toPath());
+      }
+      return renamed;
     }
   }
 
