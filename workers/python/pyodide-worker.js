@@ -725,6 +725,7 @@ import json
 import os
 import runpy
 import shutil
+import stat
 import sys
 import traceback
 from js import self as _js_self
@@ -1076,6 +1077,107 @@ def _normalize_device_path(_value):
             return _original
     return None
 
+_kernel_info = _project_info.get("kernel") if isinstance(_project_info.get("kernel"), dict) else {
+    "name": "tracekernel",
+    "version": "0.0.0",
+    "workspaceRoot": _workspace_root,
+    "workspace": {"name": _workspace_root.rstrip("/").split("/")[-1] or "workspace", "root": _workspace_root},
+}
+
+def _normalize_proc_path(_value):
+    if isinstance(_value, (str, bytes, os.PathLike)):
+        _original = os.fspath(_value).replace("\\\\", "/").rstrip("/") or "/"
+        if _original == "/proc" or _original.startswith("/proc/"):
+            return _original
+    return None
+
+def _proc_mountinfo():
+    _workspace_name = str((_kernel_info.get("workspace") or {}).get("name") or "workspace")
+    _lines = [
+        f"24 0 0:1 / {_workspace_root} rw,relatime - tracefs tracekernel:workspace rw,name={_workspace_name}",
+        "25 0 0:2 / /dev rw,nosuid - tracefs tracekernel:dev rw,mode=755",
+        "26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw",
+    ]
+    if _workspace_alias:
+        _lines.insert(1, f"27 24 0:1 / {_workspace_alias} rw,relatime alias={_workspace_root} - tracefs tracekernel:workspace rw,name={_workspace_name}")
+    return "\\n".join(_lines) + "\\n"
+
+def _proc_entry_kind(_path):
+    if _path in ("/proc", "/proc/kernel", "/proc/self"):
+        return "directory"
+    if _path in ("/proc/kernel/info", "/proc/self/mountinfo"):
+        return "file"
+    return None
+
+def _proc_dir_entries(_path):
+    if _path == "/proc":
+        return ["kernel", "self"]
+    if _path == "/proc/kernel":
+        return ["info"]
+    if _path == "/proc/self":
+        return ["mountinfo"]
+    return None
+
+def _proc_read_text(_path):
+    if _path == "/proc/kernel/info":
+        return json.dumps(_kernel_info, indent=2) + "\\n"
+    if _path == "/proc/self/mountinfo":
+        return _proc_mountinfo()
+    if _proc_entry_kind(_path) == "directory":
+        raise IsADirectoryError(_path)
+    raise FileNotFoundError(_path)
+
+def _proc_stat(_path):
+    _kind = _proc_entry_kind(_path)
+    if _kind is None:
+        raise FileNotFoundError(_path)
+    _mode = (stat.S_IFDIR | 0o555) if _kind == "directory" else (stat.S_IFREG | 0o444)
+    _size = 0 if _kind == "directory" else len(_proc_read_text(_path).encode("utf-8"))
+    return os.stat_result((_mode, 0, 0, 2 if _kind == "directory" else 1, 0, 0, _size, 0, 0, 0))
+
+class _TraceProcFile:
+    def __init__(self, _path, _mode="r"):
+        self._path = _path
+        self._mode = str(_mode or "r")
+        self._binary = "b" in self._mode
+        self._handle = io.BytesIO(_proc_read_text(_path).encode("utf-8")) if self._binary else io.StringIO(_proc_read_text(_path))
+        self.closed = False
+
+    def readable(self):
+        return True
+
+    def writable(self):
+        return False
+
+    def read(self, *args):
+        return self._handle.read(*args)
+
+    def readline(self, *args):
+        return self._handle.readline(*args)
+
+    def __iter__(self):
+        return iter(self._handle)
+
+    def write(self, *_args, **_kwargs):
+        raise OSError("Kernel proc path is read-only: " + self._path)
+
+    def flush(self):
+        return None
+
+    def close(self):
+        self.closed = True
+        return self._handle.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
+
+    def __getattr__(self, _name):
+        return getattr(self._handle, _name)
+
 def _is_mutating_file_mode(_mode):
     _mode_text = str(_mode or "r")
     return any(_marker in _mode_text for _marker in ("w", "a", "x", "+"))
@@ -1126,6 +1228,13 @@ def _install_virtual_workspace_paths():
         _mode = args[0] if args else kwargs.get("mode", "r")
         if _device:
             return _TraceDeviceFile(_device, _mode)
+        _proc_path = _normalize_proc_path(_file)
+        if _proc_path:
+            if _is_mutating_file_mode(_mode):
+                raise OSError("Kernel proc path is read-only: " + _proc_path)
+            if _proc_entry_kind(_proc_path) == "directory":
+                raise IsADirectoryError(_proc_path)
+            return _TraceProcFile(_proc_path, _mode)
         _mapped_path = _map_workspace_path(_file)
         _handle = _original_open(_mapped_path, *args, **kwargs)
         return _TraceProjectFile(_handle, _absolute_mapped_path(_mapped_path), _is_mutating_file_mode(_mode))
@@ -1173,6 +1282,37 @@ def _install_virtual_workspace_paths():
         if _original is None:
             return
         def _patched_one(_path, *args, **kwargs):
+            _proc_path = _normalize_proc_path(_path)
+            if _proc_path:
+                _kind = _proc_entry_kind(_proc_path)
+                if _name in ("chmod", "chown", "mkdir", "makedirs", "remove", "removedirs", "rmdir", "unlink", "utime"):
+                    raise OSError("Kernel proc path is read-only: " + _proc_path)
+                if _name in ("exists", "lexists"):
+                    return _kind is not None
+                if _name == "isfile":
+                    return _kind == "file"
+                if _name == "isdir":
+                    return _kind == "directory"
+                if _name == "listdir":
+                    _entries = _proc_dir_entries(_proc_path)
+                    if _entries is None:
+                        raise NotADirectoryError(_proc_path)
+                    return _entries
+                if _name in ("stat", "lstat"):
+                    return _proc_stat(_proc_path)
+                if _name == "access":
+                    if _kind is None:
+                        return False
+                    _mode = int(args[0]) if args else int(kwargs.get("mode", os.F_OK))
+                    return (_mode & os.W_OK) == 0 and (_mode & os.X_OK) == 0
+                if _name in ("getsize",):
+                    return _proc_stat(_proc_path).st_size
+                if _name in ("getatime", "getctime", "getmtime"):
+                    return 0
+                if _name == "realpath":
+                    return _proc_path
+                if _name in ("readlink", "scandir"):
+                    raise OSError("Unsupported proc operation: " + _name)
             _mapped_path = _map_workspace_path(_path)
             _absolute_path = _absolute_mapped_path(_mapped_path)
             _result = _original(_mapped_path, *args, **kwargs)
@@ -1187,6 +1327,10 @@ def _install_virtual_workspace_paths():
         if _original is None:
             return
         def _patched_two(_src, _dst, *args, **kwargs):
+            _proc_src = _normalize_proc_path(_src)
+            _proc_dst = _normalize_proc_path(_dst)
+            if _proc_src or _proc_dst:
+                raise OSError("Kernel proc path is read-only: " + (_proc_src or _proc_dst))
             _mapped_src = _map_workspace_path(_src)
             _mapped_dst = _map_workspace_path(_dst)
             _absolute_src = _absolute_mapped_path(_mapped_src)

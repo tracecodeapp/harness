@@ -249,15 +249,30 @@ async function main(): Promise<void> {
           cwd: '/home/ada/weather-api',
           workspaceRoot: '/home/ada/weather-api',
           workspaceAlias: '/workspace',
+          kernel: {
+            name: 'tracekernel',
+            version: '0.7.0-test',
+            workspaceRoot: '/home/ada/weather-api',
+            workspaceAlias: '/workspace',
+            workspace: { id: 'weather-api', name: 'weather-api', root: '/home/ada/weather-api', startedAt: '2026-05-18T00:00:00.000Z' },
+            user: { id: 'ada', username: 'ada' },
+            host: { hostname: 'tracevm-browser' },
+          },
           files: [
             {
               path: 'app.py',
               contents: [
                 'import os',
+                'import json',
                 'from helper import value',
                 'print(os.getcwd())',
                 'print(os.environ.get("HOME", ""))',
                 'print(value())',
+                'proc_info = json.load(open("/proc/kernel/info", "r", encoding="utf-8"))',
+                'print(proc_info["name"])',
+                'print(os.listdir("/proc/kernel"))',
+                'print(os.path.isfile("/proc/kernel/info"))',
+                'print(os.access("/proc/kernel/info", os.W_OK))',
                 'with open("/home/ada/weather-api/canonical.txt", "w", encoding="utf-8") as handle:',
                 '    handle.write("canonical\\\\n")',
                 'with open("/workspace/alias.txt", "w", encoding="utf-8") as handle:',
@@ -413,7 +428,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === '/home/ada/weather-api/src\n/home/ada\nhelper-ok\n',
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info']\nTrue\nFalse\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(
