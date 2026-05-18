@@ -2999,6 +2999,18 @@ function javaReportConsoleOutput(report) {
   );
 }
 
+function javaProjectFailureStderr(report) {
+  const compilerOutput = javaReportConsoleOutput(report).join('\n').trim();
+  const runtimeError = typeof report?.runtimeError === 'string' ? report.runtimeError.trim() : '';
+  if (compilerOutput.length > 0) {
+    if (!runtimeError || runtimeError === 'Java compilation failed' || compilerOutput.includes(runtimeError)) {
+      return compilerOutput;
+    }
+    return `${compilerOutput}\n${runtimeError}`;
+  }
+  return runtimeError || 'Java execution failed';
+}
+
 function parseJavaReportOutput(output) {
   return output ? normalizeJavaSerializedOutput(JSON.parse(output)) : undefined;
 }
@@ -3538,8 +3550,8 @@ function buildProjectJavaRunnableSource(payload, compileId) {
       projectCwd,
       payload.project
     ),
-    compileSourcePaths: javaCompileSourcePaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
-    compileSourceRootPaths: javaCompileSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
+    compileSourcePaths: javaCompileEffectiveSourcePaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
+    compileSourceRootPaths: javaCompileEffectiveSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd).join('\n'),
     workspaceManifest: projectWorkspaceManifest(payload.project),
     workspaceRoot,
     workspaceCwd: projectWorkspaceCwd(payload, workspaceRoot),
@@ -3759,6 +3771,33 @@ function javaCompileSourcePaths(args, project, relativeCwd = '', projectCwd = '/
   return sources;
 }
 
+function javaSourceClassName(path) {
+  return String(path ?? '').split('/').pop()?.replace(/\.java$/i, '') || '';
+}
+
+function javaCompileEffectiveSourcePaths(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  const selected = new Set(javaCompileSourcePaths(args, project, relativeCwd, projectCwd));
+  const files = projectFileMap(project);
+  const javaFiles = projectJavaFiles(project);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const selectedContents = [...selected]
+      .map((path) => files.get(path)?.contents ?? '')
+      .join('\n');
+    for (const file of javaFiles) {
+      if (selected.has(file.path)) continue;
+      const className = javaSourceClassName(file.path);
+      if (!className) continue;
+      if (new RegExp(`\\b${escapeRegExp(className)}\\b`).test(selectedContents)) {
+        selected.add(file.path);
+        changed = true;
+      }
+    }
+  }
+  return [...selected];
+}
+
 function javaCompileSourceRootPaths(args, project, relativeCwd = '', projectCwd = '/workspace') {
   const expandedArgs = javaExpandedCompilerArgs(args, project, relativeCwd, projectCwd);
   const roots = [];
@@ -3785,6 +3824,39 @@ function javaCompileSourceRootPaths(args, project, relativeCwd = '', projectCwd 
     }
   }
   return roots;
+}
+
+function projectPathDirname(path) {
+  const parts = String(path ?? '').split('/').filter(Boolean);
+  parts.pop();
+  return parts.join('/');
+}
+
+function javaPackageRootForSource(sourcePath, contents) {
+  const parent = projectPathDirname(sourcePath);
+  const packageMatch = String(contents ?? '').match(/^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;/m);
+  if (!packageMatch) return parent;
+  const parentParts = parent ? parent.split('/') : [];
+  const packageParts = packageMatch[1].split('.');
+  if (parentParts.length < packageParts.length) return parent;
+  const tail = parentParts.slice(parentParts.length - packageParts.length);
+  if (tail.join('/') !== packageParts.join('/')) return parent;
+  return parentParts.slice(0, parentParts.length - packageParts.length).join('/');
+}
+
+function javaCompileEffectiveSourceRootPaths(args, project, relativeCwd = '', projectCwd = '/workspace') {
+  const explicitRoots = javaCompileSourceRootPaths(args, project, relativeCwd, projectCwd);
+  if (explicitRoots.length > 0) return explicitRoots;
+
+  const files = projectFileMap(project);
+  const roots = new Set(['']);
+  if (relativeCwd) roots.add(relativeCwd);
+  for (const sourcePath of javaCompileEffectiveSourcePaths(args, project, relativeCwd, projectCwd)) {
+    const file = files.get(sourcePath);
+    roots.add(projectPathDirname(sourcePath));
+    if (file) roots.add(javaPackageRootForSource(sourcePath, file.contents));
+  }
+  return [...roots];
 }
 
 function javaProjectClasspath(rawClasspath, classRoot, extraEntry, relativeCwd = '', projectCwd = '/workspace', project) {
@@ -3816,8 +3888,8 @@ function javaJavacVerboseRequested(args, project, relativeCwd = '', projectCwd =
 function javaSyntheticJavacVerboseOutput(payload, outputDir) {
   const relativeCwd = projectRelativeCwd(payload);
   const projectCwd = projectVirtualRoot(payload?.project);
-  const sourcePaths = javaCompileSourcePaths(payload.args, payload.project, relativeCwd, projectCwd);
-  const sourceRoots = javaCompileSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd);
+  const sourcePaths = javaCompileEffectiveSourcePaths(payload.args, payload.project, relativeCwd, projectCwd);
+  const sourceRoots = javaCompileEffectiveSourceRootPaths(payload.args, payload.project, relativeCwd, projectCwd);
   const classpath = javaCompileClasspath(payload.args, payload.project, relativeCwd, projectCwd);
   const classOutputDir = normalizeJavaOutputDir(outputDir);
   const lines = [
@@ -3903,7 +3975,7 @@ function commandResultFromJavaProjectReport(report, totalEnd, totalStart, librar
   if (report.success !== true) {
     return {
       stdout: '',
-      stderr: report.runtimeError || report.compilerStderr || report.compilerStdout || 'Java execution failed',
+      stderr: javaProjectFailureStderr(report),
       exitCode: 1,
       timings: {
         hostCallMs: libraryCallEnd - libraryCallStart,
