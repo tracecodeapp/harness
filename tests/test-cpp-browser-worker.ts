@@ -398,6 +398,10 @@ async function main(): Promise<void> {
             '  std::ofstream("rename-parent-source.txt") << "blocked\\\\n";',
             '  std::cout << (std::rename("rename-parent-source.txt", "missing-rename/child.txt") == 0 ? "rename-missing-parent:ok" : "rename-missing-parent:blocked") << "\\\\n";',
             '  std::remove("rename-parent-source.txt");',
+            '  mkdir("existing-dir", 0777);',
+            '  std::ofstream("rename-file-source.txt") << "blocked\\\\n";',
+            '  std::cout << (std::rename("rename-file-source.txt", "existing-dir") == 0 ? "rename-file-onto-dir:ok" : "rename-file-onto-dir:blocked") << "\\\\n";',
+            '  std::remove("rename-file-source.txt");',
             '  mkdir("unlink-dir", 0777);',
             '  int unlink_dir_result = unlink("unlink-dir");',
             '  std::cout << (unlink_dir_result == 0 ? "unlink-dir:ok" : "unlink-dir:blocked") << "\\\\n";',
@@ -1355,7 +1359,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-null:0\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
-        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nrename-file-onto-dir:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\ncapture-device\ntee-device\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
@@ -1469,6 +1473,11 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/dev/local.txt' && file.contents === 'local-dev\n') === true,
       `C++ browser project run should preserve relative dev/ file mutations as project files: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/existing-dir' && file.directory === true) === true &&
+        projectRun.files?.some((file) => file.path === 'src/existing-dir' && file.contents !== undefined) !== true,
+      `C++ browser project run should not persist a file over an existing directory rename target: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/multi.txt' && file.contents === 'onetwo\n') === true,
@@ -1627,8 +1636,14 @@ async function main(): Promise<void> {
           event.change?.path === 'src/unlink-dir' &&
           event.change.deleted === true &&
           event.change.directory !== true
+        )) !== true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/existing-dir' &&
+          event.change.contents !== undefined
         )) !== true,
-      `C++ browser project run should not stream failed unlink mutations: ${JSON.stringify(projectRun.events)}`
+      `C++ browser project run should not stream failed unlink or file-over-directory rename mutations: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path.startsWith('src/missing-parent/') || file.path.startsWith('src/missing-open/') || file.path.startsWith('src/missing-rename/') || file.path.startsWith('src/missing-link/')) !== true &&

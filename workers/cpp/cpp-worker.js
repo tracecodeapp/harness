@@ -546,6 +546,7 @@ class InMemoryFileSystem {
       throw Object.assign(new Error(`Read-only file system: ${oldPath}`), { code: 'EROFS' });
     }
     if (this.files.has(oldPath)) {
+      if (this.dirs.has(newPath)) return EISDIR;
       this.writeFile(newPath, this.readFile(oldPath));
       this.unlink(oldPath);
       return ESUCCESS;
