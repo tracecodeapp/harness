@@ -4119,6 +4119,71 @@ async function testNativeJavaProjectRunner(): Promise<void> {
   const classpathRun = await workspace.runCommand('java -cp . Main alpha beta');
   assertCondition(classpathRun.exitCode === 0, `native java -cp should succeed: ${classpathRun.stderr}`);
   assertCondition(classpathRun.stdout === '5\nalpha,beta\n', `native java -cp should execute project files: ${classpathRun.stdout}`);
+
+  const timeoutEvents: RuntimeCommandEvent[] = [];
+  const timeoutRoot = await mkdtemp(join(tmpdir(), 'tracecode-java-timeout-command-'));
+  try {
+    const timeoutCommand = join(timeoutRoot, 'javac-timeout');
+    await writeFile(timeoutCommand, '#!/bin/sh\nsleep 1\n', 'utf8');
+    await chmod(timeoutCommand, 0o755);
+    const timeoutRunner = createNativeJavaProjectRunner({ javacCommand: timeoutCommand, timeoutMs: 5 });
+    const timeoutResult = await timeoutRunner({
+      code: '',
+      source: 'compile',
+      scriptPath: 'Main.java',
+      args: ['Main.java'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [{ path: 'Main.java', contents: 'class Main { public static void main(String[] args) {} }\n' }],
+      },
+      onEvent: (event) => timeoutEvents.push(event),
+    });
+    assertCondition(
+      timeoutResult.exitCode === 124 && timeoutResult.stderr.includes('javac: execution timed out after 5ms'),
+      `native java timeout should return a timeout result: ${JSON.stringify(timeoutResult)}`
+    );
+    const javaTimeoutStderrIndex = timeoutEvents.findIndex(
+      (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('javac: execution timed out after 5ms')
+    );
+    const javaTimeoutExitIndex = timeoutEvents.findIndex(
+      (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124
+    );
+    assertCondition(
+      javaTimeoutStderrIndex >= 0 && javaTimeoutExitIndex > javaTimeoutStderrIndex,
+      `native java timeout should stream timeout stderr before process-exit: ${JSON.stringify(timeoutEvents)}`
+    );
+  } finally {
+    await rm(timeoutRoot, { recursive: true, force: true });
+  }
+
+  const startErrorEvents: RuntimeCommandEvent[] = [];
+  const startErrorRunner = createNativeJavaProjectRunner({ javacCommand: 'tracecode-missing-javac-command' });
+  const startErrorResult = await startErrorRunner({
+    code: '',
+    source: 'compile',
+    scriptPath: 'Main.java',
+    args: ['Main.java'],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      files: [{ path: 'Main.java', contents: 'class Main { public static void main(String[] args) {} }\n' }],
+    },
+    onEvent: (event) => startErrorEvents.push(event),
+  });
+  assertCondition(startErrorResult.exitCode === 1, `native javac start error should return failure: ${JSON.stringify(startErrorResult)}`);
+  const javaStartErrorStderrIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('tracecode-missing-javac-command')
+  );
+  const javaStartErrorStatusIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-javac-command'
+  );
+  assertCondition(
+    javaStartErrorStderrIndex >= 0 && javaStartErrorStatusIndex > javaStartErrorStderrIndex,
+    `native javac start error should stream stderr before process-error: ${JSON.stringify(startErrorEvents)}`
+  );
 }
 
 async function testNativeJavaAssertionProjectRunner(): Promise<void> {
