@@ -1182,6 +1182,28 @@ public final class ProjectEvents {
       this.path = null;
     }
 
+    private void emitAfterWrite() {
+      if (path != null) flush();
+    }
+
+    @Override
+    public void write(int value) {
+      super.write(value);
+      emitAfterWrite();
+    }
+
+    @Override
+    public void write(char[] buffer, int offset, int length) {
+      super.write(buffer, offset, length);
+      emitAfterWrite();
+    }
+
+    @Override
+    public void write(String text, int offset, int length) {
+      super.write(text, offset, length);
+      emitAfterWrite();
+    }
+
     @Override
     public void flush() {
       super.flush();

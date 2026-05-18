@@ -355,8 +355,9 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       /ProjectFileOutputStream[\s\S]*super\.write\(value\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
         /ProjectFileOutputStream[\s\S]*super\.write\(bytes\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
-        /ProjectOutputStream[\s\S]*delegate\.write\(bytes, offset, length\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource),
-      'Java browser helper should emit live file snapshots from unbuffered file stream writes'
+        /ProjectOutputStream[\s\S]*delegate\.write\(bytes, offset, length\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
+        /ProjectPrintWriter[\s\S]*super\.write\(text, offset, length\);\s*emitAfterWrite\(\);/.test(projectEventsSource),
+      'Java browser helper should emit live file snapshots from unbuffered file and PrintWriter writes'
     );
     console.log('PASS: Java browser helper materializes workspace directories');
   } finally {
