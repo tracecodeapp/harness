@@ -3480,10 +3480,28 @@ async function runBrowserJavaScriptProjectRequest(
           writeFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
             writeFileToHandle(value, options);
           },
-          createReadStream: (options?: string | { autoClose?: boolean; encoding?: string; end?: number; start?: number } | null) =>
-            (assertFileHandleOpen(), fsApi.createReadStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd })),
-          createWriteStream: (options?: string | { autoClose?: boolean; encoding?: string | null; flags?: string } | null) =>
-            (assertFileHandleOpen(), fsApi.createWriteStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd })),
+          createReadStream: (options?: string | { autoClose?: boolean; encoding?: string; end?: number; start?: number } | null) => {
+            assertFileHandleOpen();
+            const streamOptions = typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd };
+            const stream = fsApi.createReadStream(null, streamOptions);
+            if (typeof options !== 'object' || options?.autoClose !== false) {
+              stream.once('close', () => {
+                closed = true;
+              });
+            }
+            return stream;
+          },
+          createWriteStream: (options?: string | { autoClose?: boolean; encoding?: string | null; flags?: string } | null) => {
+            assertFileHandleOpen();
+            const streamOptions = typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd };
+            const stream = fsApi.createWriteStream(null, streamOptions);
+            if (typeof options !== 'object' || options?.autoClose !== false) {
+              stream.once('close', () => {
+                closed = true;
+              });
+            }
+            return stream;
+          },
           appendFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
             appendFileToHandle(value, options);
           },

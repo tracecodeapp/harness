@@ -2324,12 +2324,12 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const fileHandleStreamResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fsp = require(\\"node:fs/promises\\"); const writer = await fsp.open(\\"handle-stream.txt\\", \\"w+\\"); await new Promise((resolve, reject) => { const stream = writer.createWriteStream(); stream.on(\\"error\\", reject); stream.on(\\"finish\\", resolve); stream.write(\\"handle-one\\\\n\\"); stream.end(\\"handle-two\\\\n\\"); }); const reader = await fsp.open(\\"handle-stream.txt\\", \\"r\\"); const chunks = []; await new Promise((resolve, reject) => { reader.createReadStream({ encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve); }); console.log(chunks.join(\\"\\").trim());"',
+    '"const fsp = require(\\"node:fs/promises\\"); const writer = await fsp.open(\\"handle-stream.txt\\", \\"w+\\"); await new Promise((resolve, reject) => { const stream = writer.createWriteStream(); stream.on(\\"error\\", reject); stream.on(\\"finish\\", resolve); stream.write(\\"handle-one\\\\n\\"); stream.end(\\"handle-two\\\\n\\"); }); try { await writer.stat(); } catch (error) { console.log(\\"writer-stat:\\" + error.code); } await writer.close(); console.log(\\"writer-close-ok\\"); const reader = await fsp.open(\\"handle-stream.txt\\", \\"r\\"); const chunks = []; await new Promise((resolve, reject) => { reader.createReadStream({ encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve); }); try { await reader.readFile(\\"utf8\\"); } catch (error) { console.log(\\"reader-read:\\" + error.code); } await reader.close(); console.log(chunks.join(\\"\\").trim()); const retained = await fsp.open(\\"handle-stream.txt\\", \\"r\\"); const retainedChunks = []; await new Promise((resolve, reject) => { retained.createReadStream({ encoding: \\"utf8\\", autoClose: false }).on(\\"error\\", reject).on(\\"data\\", (chunk) => retainedChunks.push(chunk)).on(\\"end\\", resolve); }); console.log((await retained.stat()).isFile()); await retained.close(); console.log(retainedChunks.join(\\"\\").trim());"',
   ].join(' '));
   assertCondition(fileHandleStreamResult.exitCode === 0, `browser node FileHandle stream workflow should succeed: ${fileHandleStreamResult.stderr}`);
   assertCondition(
-    fileHandleStreamResult.stdout === 'handle-one\nhandle-two\n',
-    `browser node FileHandle streams should read/write descriptor-backed files: ${fileHandleStreamResult.stdout}`
+    fileHandleStreamResult.stdout === 'writer-stat:EBADF\nwriter-close-ok\nreader-read:EBADF\nhandle-one\nhandle-two\ntrue\nhandle-one\nhandle-two\n',
+    `browser node FileHandle streams should auto-close handles unless autoClose is false: ${fileHandleStreamResult.stdout}`
   );
   assertCondition(await workspace.readFile('handle-stream.txt') === 'handle-one\nhandle-two\n', 'browser node FileHandle streams should persist through kernel FS');
 
