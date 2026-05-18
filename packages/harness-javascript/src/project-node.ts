@@ -443,10 +443,12 @@ export function createNativeJavaScriptProjectRunner(
           if (settled) return;
           settled = true;
           child.kill('SIGKILL');
+          const timeoutStderr = `node: execution timed out after ${timeoutMs}ms\n`;
+          emitRuntimeCommandOutput(request.onEvent, 'stderr', timeoutStderr);
           emitCommandStatus(request.onEvent, 'process-exit', `${nodeCommand} timed out`, { command: nodeCommand, exitCode: 124, timeoutMs });
           resolve({
             stdout,
-            stderr: `${stderr}node: execution timed out after ${timeoutMs}ms\n`,
+            stderr: `${stderr}${timeoutStderr}`,
             exitCode: 124,
           });
         }, timeoutMs);
@@ -465,6 +467,7 @@ export function createNativeJavaScriptProjectRunner(
           if (settled) return;
           settled = true;
           clearTimeout(timeout);
+          emitRuntimeCommandOutput(request.onEvent, 'stderr', `${error.message}\n`);
           emitCommandStatus(request.onEvent, 'process-error', `${nodeCommand} failed to start`, { command: nodeCommand, error: error.message });
           resolve({
             stdout,

@@ -1829,6 +1829,16 @@ async function testNativeJavaScriptProjectRunnerCwd(): Promise<void> {
       !timeoutEvents.some((event) => event.type === 'output' && event.data.includes('late')),
     `native node timeout should emit terminal process status without late output: ${JSON.stringify(timeoutEvents)}`
   );
+  const nativeTimeoutStderrIndex = timeoutEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('node: execution timed out after 5ms')
+  );
+  const nativeTimeoutExitIndex = timeoutEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124
+  );
+  assertCondition(
+    nativeTimeoutStderrIndex >= 0 && nativeTimeoutExitIndex > nativeTimeoutStderrIndex,
+    `native node timeout should stream timeout stderr before process-exit: ${JSON.stringify(timeoutEvents)}`
+  );
   timeoutWorkspace.dispose();
 
   const startErrorEvents: RuntimeCommandEvent[] = [];
@@ -1843,6 +1853,16 @@ async function testNativeJavaScriptProjectRunnerCwd(): Promise<void> {
     startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
       startErrorEvents.some((event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-node-command'),
     `native node start error should emit process-error status: ${JSON.stringify(startErrorEvents)}`
+  );
+  const nativeStartErrorStderrIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('tracecode-missing-node-command')
+  );
+  const nativeStartErrorStatusIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-node-command'
+  );
+  assertCondition(
+    nativeStartErrorStderrIndex >= 0 && nativeStartErrorStatusIndex > nativeStartErrorStderrIndex,
+    `native node start error should stream stderr before process-error: ${JSON.stringify(startErrorEvents)}`
   );
   startErrorWorkspace.dispose();
 
