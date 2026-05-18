@@ -1057,6 +1057,17 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   };
   const stdinBytes = encodeUtf8(stdin);
   let stdinOffset = 0;
+  const previousReadProjectStdinByte = self.__tracecodeReadProjectStdinByte;
+
+  const readProjectStdinByte = (device = '/dev/stdin') => {
+    const deviceInfo = devices[String(device)] || {};
+    if (!deviceInfo.readable) return -1;
+    if (stdinOffset >= stdinBytes.byteLength) return -1;
+    const value = stdinBytes[stdinOffset];
+    stdinOffset += 1;
+    return value;
+  };
+  self.__tracecodeReadProjectStdinByte = readProjectStdinByte;
 
   const emitProviderOutput = (stream, device, data, sourceDevice = '') => {
     if (!data) return;
@@ -1092,11 +1103,12 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   if (typeof pyodide.setStdin === 'function' && devices['/dev/stdin']?.readable) {
     pyodide.setStdin({
       read: (buffer) => {
-        const remaining = stdinBytes.byteLength - stdinOffset;
-        const count = Math.max(0, Math.min(buffer.byteLength, remaining));
-        if (count > 0) {
-          buffer.set(stdinBytes.subarray(stdinOffset, stdinOffset + count), 0);
-          stdinOffset += count;
+        let count = 0;
+        while (count < buffer.byteLength) {
+          const value = readProjectStdinByte('/dev/stdin');
+          if (value < 0) break;
+          buffer[count] = value;
+          count += 1;
         }
         return count;
       },
@@ -1114,6 +1126,11 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   }
 
   return () => {
+    if (previousReadProjectStdinByte === undefined) {
+      delete self.__tracecodeReadProjectStdinByte;
+    } else {
+      self.__tracecodeReadProjectStdinByte = previousReadProjectStdinByte;
+    }
     for (const restore of restoreFns.reverse()) {
       try {
         restore();
@@ -1225,11 +1242,24 @@ _restore_workspace_paths = lambda: None
 _active_project_cwd = _root
 _project_original_open = builtins.open
 
-def _project_stdin_text():
-    _stdin_device = _kernel_devices.get("/dev/stdin", {})
-    if isinstance(_stdin_device, dict) and bool(_stdin_device.get("readable")):
-        return str(_request.get("stdin", ""))
-    return ""
+def _read_project_input_byte(_device="/dev/stdin"):
+    try:
+        return int(_js_self.__tracecodeReadProjectStdinByte(str(_device)))
+    except Exception:
+        return -1
+
+def _read_project_input(_device="/dev/stdin", _size=-1):
+    _device_info = _kernel_devices.get(str(_device), {})
+    if not bool(_device_info.get("readable")):
+        raise OSError("Kernel device is not readable: " + str(_device))
+    _limit = None if _size is None or int(_size) < 0 else max(0, int(_size))
+    _data = bytearray()
+    while _limit is None or len(_data) < _limit:
+        _value = _read_project_input_byte(_device)
+        if _value < 0:
+            break
+        _data.append(_value & 0xff)
+    return bytes(_data)
 
 def _emit_project_event(_event):
     try:
@@ -1346,13 +1376,34 @@ class _TraceProjectStream(io.StringIO):
             self.write(_text)
         return None
 
+class _TraceProjectInputStream(io.TextIOBase):
+    def readable(self):
+        return bool(_kernel_devices.get("/dev/stdin", {}).get("readable"))
+
+    def read(self, _size=-1):
+        if not self.readable():
+            return ""
+        return _read_project_input("/dev/stdin", _size).decode("utf-8", "replace")
+
+    def readline(self, _size=-1):
+        if not self.readable():
+            return ""
+        _limit = None if _size is None or int(_size) < 0 else int(_size)
+        _line = bytearray()
+        while _limit is None or len(_line) < _limit:
+            _value = _read_project_input_byte("/dev/stdin")
+            if _value < 0:
+                break
+            _line.append(_value & 0xff)
+            if _value == 10:
+                break
+        return bytes(_line).decode("utf-8", "replace")
+
 class _TraceDeviceFile:
     def __init__(self, _device, _mode="r"):
         self._device = _device
         self._mode = str(_mode or "r")
         self._binary = "b" in self._mode
-        self._contents = str(_request.get("stdin", "")).encode("utf-8")
-        self._offset = 0
         self.closed = False
 
     def readable(self):
@@ -1368,23 +1419,22 @@ class _TraceDeviceFile:
     def read(self, _size=-1):
         if not self.readable():
             raise OSError("Kernel device is not readable: " + self._device)
-        _length = len(self._contents) - self._offset if _size is None or int(_size) < 0 else int(_size)
-        _data = self._contents[self._offset:self._offset + _length]
-        self._offset += len(_data)
+        _data = _read_project_input(self._device, _size)
         return _data if self._binary else _data.decode("utf-8", "replace")
 
     def readline(self, _size=-1):
         if not self.readable():
             raise OSError("Kernel device is not readable: " + self._device)
-        _remaining = self._contents[self._offset:]
-        if not _remaining:
-            return b"" if self._binary else ""
-        _newline_index = _remaining.find(b"\\n")
-        _line_length = len(_remaining) if _newline_index < 0 else _newline_index + 1
-        if _size is not None and int(_size) >= 0:
-            _line_length = min(_line_length, int(_size))
-        _data = _remaining[:_line_length]
-        self._offset += len(_data)
+        _limit = None if _size is None or int(_size) < 0 else int(_size)
+        _line = bytearray()
+        while _limit is None or len(_line) < _limit:
+            _value = _read_project_input_byte(self._device)
+            if _value < 0:
+                break
+            _line.append(_value & 0xff)
+            if _value == 10:
+                break
+        _data = bytes(_line)
         if self._binary:
             return _data
         return _data.decode("utf-8", "replace")
@@ -2144,8 +2194,6 @@ def _install_virtual_workspace_paths():
             if _wants_read:
                 _device_descriptor.update({
                     "inputDevice": str(_device_info.get("inputDevice") or _device),
-                    "contents": str(_request.get("stdin", "")).encode("utf-8"),
-                    "offset": 0,
                 })
             _device_file_descriptors[_fd] = _device_descriptor
             return _fd
@@ -2180,13 +2228,10 @@ def _install_virtual_workspace_paths():
     def _patched_os_read(_fd, _length):
         _device_descriptor = _device_file_descriptors.get(_fd)
         if _device_descriptor is not None:
-            if "contents" not in _device_descriptor:
+            _device = str(_device_descriptor.get("device", ""))
+            if not bool(_kernel_devices.get(_device, {}).get("readable")):
                 raise OSError("Kernel device is not readable: " + str(_device_descriptor.get("device", "")))
-            _offset = int(_device_descriptor.get("offset", 0))
-            _contents = _device_descriptor.get("contents", b"")
-            _chunk = _contents[_offset:_offset + int(_length)]
-            _device_descriptor["offset"] = _offset + len(_chunk)
-            return _chunk
+            return _read_project_input(_device, _length)
         _proc_handle = _proc_file_descriptors.get(_fd)
         if _proc_handle is not None:
             return _proc_handle.get("handle").read(_length)
@@ -2545,7 +2590,7 @@ try:
         if _script_dir and _script_dir not in sys.path:
             sys.path.insert(0, _script_dir)
     sys.argv = _project_argv()
-    sys.stdin = io.StringIO(_project_stdin_text())
+    sys.stdin = _TraceProjectInputStream()
     with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
         try:
             if _source == "file":

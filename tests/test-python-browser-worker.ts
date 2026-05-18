@@ -451,6 +451,26 @@ async function main(): Promise<void> {
         },
       });
 
+      const sharedStdinCursorRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import sys',
+          'print("sys=" + sys.stdin.readline().strip())',
+          'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in:',
+          '    print("custom=" + custom_in.read().replace("\\\\n", "<lf>"))',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: 'one\\ntwo\\nthree\\n',
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelDevices: traceKernelDevices,
+        },
+      });
+
       const fdReadlineRun = await send('execute-project-python', {
         source: 'argument',
         scriptPath: '<string>',
@@ -731,7 +751,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -741,6 +761,7 @@ async function main(): Promise<void> {
       argumentRun: PythonProjectWorkerResponse;
       noDeviceManifestRun: PythonProjectWorkerResponse;
       manifestCustomDeviceRun: PythonProjectWorkerResponse;
+      sharedStdinCursorRun: PythonProjectWorkerResponse;
       fdReadlineRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       linkApiRun: PythonProjectWorkerResponse;
@@ -752,7 +773,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-write-open:blocked\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-file-log-read-open:blocked\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nstdout-buffer\nafter-live-file\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=\ndev-fdopen-stdin=\ndev-fd-custom-in=\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=\ndev-file-custom-in-write-open:blocked\ndev-file-custom-in-chunks=||True\ndev-file-custom-in-binary=\ndev-file-custom-in-binary-chunks=||True\ndev-file-log-read-open:blocked\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nstdout-buffer\nafter-live-file\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
@@ -1158,8 +1179,13 @@ async function main(): Promise<void> {
     );
     assertCondition(results.manifestCustomDeviceRun.exitCode === 0, `Python project manifest custom device run should succeed: ${results.manifestCustomDeviceRun.stderr}`);
     assertCondition(
-      results.manifestCustomDeviceRun.stdout === 'stdin-visible=\ncustom-file=manifest-stdin\ncustom-fd=manifest-stdin\nnested-dev-dir=True:0\npts-file\npts-fd\ncapture-file\ncapture-fd\ntee-file\ntee-fd\n',
+      results.manifestCustomDeviceRun.stdout === 'stdin-visible=\ncustom-file=manifest-stdin\ncustom-fd=\nnested-dev-dir=True:0\npts-file\npts-fd\ncapture-file\ncapture-fd\ntee-file\ntee-fd\n',
       `Python project custom input device should read from stdin: ${JSON.stringify(results.manifestCustomDeviceRun.stdout)}`
+    );
+    assertCondition(results.sharedStdinCursorRun.exitCode === 0, `Python project shared stdin cursor run should succeed: ${results.sharedStdinCursorRun.stderr}`);
+    assertCondition(
+      results.sharedStdinCursorRun.stdout === 'sys=one\ncustom=two<lf>three<lf>\n',
+      `Python project sys.stdin and /dev devices should share one stdin cursor: ${JSON.stringify(results.sharedStdinCursorRun.stdout)}`
     );
     assertCondition(
       results.manifestCustomDeviceRun.stderr === 'log-file\nlog-fd\n',

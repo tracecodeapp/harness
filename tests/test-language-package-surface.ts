@@ -310,6 +310,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-python worker should ship Pyodide project stdio bridge hooks'
       );
       assertCondition(
+        worker.includes('self.__tracecodeReadProjectStdinByte = readProjectStdinByte') &&
+          worker.includes('sys.stdin = _TraceProjectInputStream()') &&
+          worker.includes('return _read_project_input(_device, _length)'),
+        '@tracecode/harness-python worker should route sys.stdin and device reads through one kernel stdin cursor'
+      );
+      assertCondition(
         worker.includes('sourceDevice') &&
           worker.includes('def write(self, _value, _source_device=None, _output_device=None):') &&
           worker.includes('_device = str(_output_device or ("/dev/stderr" if self._stream == "stderr" else "/dev/stdout"))') &&
