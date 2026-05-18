@@ -114,6 +114,12 @@ function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | nu
   return null;
 }
 
+function normalizeRuntimeDeviceNamespacePath(path: unknown): '/dev' | RuntimeKernelDevicePath | null {
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  if (raw === '/dev') return '/dev';
+  return normalizeRuntimeDevicePath(raw);
+}
+
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   return normalized.startsWith('/') ? normalized || '/' : `/${normalized}`;
@@ -1429,6 +1435,37 @@ async function runBrowserJavaScriptProjectRequest(
         isCharacterDevice: () => false,
         isFIFO: () => false,
         isFile: () => isFile,
+        isDirectory: () => isDirectory,
+        isSocket: () => false,
+        isSymbolicLink: () => false,
+      };
+    };
+    const statForDevicePath = (devicePath: '/dev' | RuntimeKernelDevicePath): BrowserFileStat => {
+      const isDirectory = devicePath === '/dev';
+      const mode = isDirectory ? 0o40755 : 0o20666;
+      return {
+        atimeMs: fsTimestampMs,
+        birthtimeMs: fsTimestampMs,
+        blksize: 4096,
+        blocks: 0,
+        ctimeMs: fsTimestampMs,
+        dev: 1,
+        gid: 0,
+        ino: inodeForPath(devicePath),
+        mode,
+        mtimeMs: fsTimestampMs,
+        nlink: isDirectory ? 2 : 1,
+        rdev: 0,
+        size: 0,
+        uid: 0,
+        atime: new Date(fsTimestampMs),
+        birthtime: new Date(fsTimestampMs),
+        ctime: new Date(fsTimestampMs),
+        mtime: new Date(fsTimestampMs),
+        isBlockDevice: () => false,
+        isCharacterDevice: () => !isDirectory,
+        isFIFO: () => false,
+        isFile: () => !isDirectory,
         isDirectory: () => isDirectory,
         isSocket: () => false,
         isSymbolicLink: () => false,
@@ -2855,6 +2892,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       existsSync: (path: unknown) => {
         try {
+          if (normalizeRuntimeDeviceNamespacePath(path)) return true;
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           const prefix = normalized ? `${normalized}/` : '';
           return fileStore.has(normalized)
@@ -2868,9 +2906,25 @@ async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => callback?.(fsApi.existsSync(path)));
       },
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => {
+        const devicePath = normalizeRuntimeDeviceNamespacePath(path);
+        const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
+        if (devicePath) {
+          if (devicePath !== '/dev') {
+            throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
+          }
+          const names = ['stderr', 'stdin', 'stdout', 'tty'];
+          if (!withFileTypes) return names;
+          return names.map((name) => ({
+            name,
+            path: '/dev',
+            parentPath: '/dev',
+            isFile: () => true,
+            isDirectory: () => false,
+            isSymbolicLink: () => false,
+          }));
+        }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
-        const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
         const recursive = typeof options === 'object' && options?.recursive === true;
         const makeDirent = (name: string, type: 'file' | 'directory', parentPath = normalized) => ({
           name,
@@ -2993,6 +3047,8 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       statSync: (path: unknown) => {
+        const devicePath = normalizeRuntimeDeviceNamespacePath(path);
+        if (devicePath) return statForDevicePath(devicePath);
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const stats = statForNormalizedPath(normalized);
         if (!stats) {

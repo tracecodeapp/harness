@@ -2548,6 +2548,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node should map fd 0/1/2 to kernel stdio devices: ${JSON.stringify(stdioFdResult)}`
   );
 
+  const devFsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const names = fs.readdirSync(\\"/dev\\"); console.log(names.join(\\"\\,\\")); const entries = fs.readdirSync(\\"/dev\\", { withFileTypes: true }).map((entry) => entry.name + \\":\\" + entry.isFile() + \\":\\" + entry.isDirectory()).join(\\"|\\"); console.log(entries); const stdoutStat = fs.statSync(\\"/dev/stdout\\"); const devStat = fs.statSync(\\"/dev\\"); console.log(stdoutStat.isFile() + \\":\\" + stdoutStat.isCharacterDevice() + \\":\\" + stdoutStat.isDirectory()); console.log(devStat.isDirectory() + \\":\\" + devStat.isFile()); console.log(fs.existsSync(\\"/dev/stdin\\") + \\":\\" + fs.existsSync(\\"/dev/missing\\")); try { fs.readdirSync(\\"/dev/stdout\\"); } catch (error) { console.log(error.code); }"',
+  ].join(' '));
+  assertCondition(devFsResult.exitCode === 0, `browser node /dev fs workflow should succeed: ${devFsResult.stderr}`);
+  assertCondition(
+    devFsResult.stdout === 'stderr,stdin,stdout,tty\nstderr:true:false|stdin:true:false|stdout:true:false|tty:true:false\ntrue:true:false\ntrue:false\ntrue:false\nENOTDIR\n',
+    `browser node fs should expose tracekernel /dev namespace: ${devFsResult.stdout}`
+  );
+
   const stdioEndResult = await workspace.runCommand([
     'node',
     '-e',
