@@ -43,6 +43,7 @@ import {
   runtimeKernelMutationErrorMessage,
   runtimeKernelMetadataTarget,
   runtimeKernelMetadataErrorMessage,
+  runtimeKernelMutationFsErrorMessage,
   runtimeKernelMutationTarget,
   runtimeKernelOpenErrorMessage,
   runtimeKernelOpenTarget,
@@ -177,8 +178,17 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   const missingMutationTarget = runtimeKernelMutationTarget('/dev/missing', devices);
   assertCondition(
     missingMutationTarget.kind === 'error' &&
-      runtimeKernelMutationErrorMessage('/dev/missing', missingMutationTarget) === 'Kernel device path not found: /dev/missing',
+      runtimeKernelMutationErrorMessage('/dev/missing', missingMutationTarget) === 'Kernel device path not found: /dev/missing' &&
+      runtimeKernelMutationFsErrorMessage('/dev/missing', missingMutationTarget, 'rm') ===
+        "ENOENT: no such file or directory, rm '/dev/missing'",
     `kernel mutation error message should be shared: ${stableStringify(missingMutationTarget)}`
+  );
+  const procMutationTarget = runtimeKernelMutationTarget('/proc/kernel/info', devices);
+  assertCondition(
+    procMutationTarget.kind === 'error' &&
+      runtimeKernelMutationFsErrorMessage('/proc/kernel/info', procMutationTarget, 'rename', 'renamed-info') ===
+        "EROFS: read-only file system, rename '/proc/kernel/info' -> 'renamed-info'",
+    `kernel mutation fs error message should be shared: ${stableStringify(procMutationTarget)}`
   );
   const missingMetadataTarget = runtimeKernelMetadataTarget('/dev/missing', devices);
   assertCondition(

@@ -459,6 +459,18 @@ export function runtimeKernelMutationErrorMessage(
   return options.deviceMessage ?? `Kernel device namespace is read-only: ${path}`;
 }
 
+export function runtimeKernelMutationFsErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>,
+  operation: string,
+  destination?: string
+): string {
+  const suffix = destination === undefined ? `${operation} '${path}'` : `${operation} '${path}' -> '${destination}'`;
+  const code = runtimeKernelMutationErrorCode(target.reason);
+  if (code === 'ENOENT') return `ENOENT: no such file or directory, ${suffix}`;
+  return `EROFS: read-only file system, ${suffix}`;
+}
+
 export function runtimeKernelMetadataTarget(
   path: string,
   devices?: readonly RuntimeKernelDeviceInfo[]

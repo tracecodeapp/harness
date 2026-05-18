@@ -39,6 +39,7 @@ import {
   runtimeKernelMetadataErrorCode,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationErrorCode,
+  runtimeKernelMutationFsErrorMessage,
   runtimeKernelMutationTarget,
   runtimeKernelOpenErrorCode,
   runtimeKernelOpenErrorMessage,
@@ -3658,7 +3659,10 @@ async function runBrowserJavaScriptProjectRequest(
       linkSync: (existingPath: unknown, newPath: unknown) => {
         const linkTarget = runtimeLinkTarget(existingPath, newPath, kernelDevices);
         if (linkTarget?.kind === 'error') {
-          throwRuntimeLinkTargetError(linkTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
+          throwRuntimeLinkTargetError(
+            linkTarget,
+            runtimeKernelMutationFsErrorMessage(String(existingPath), linkTarget, 'link', String(newPath))
+          );
         }
         const normalizedSource = assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext);
         const normalizedDestination = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
@@ -3688,7 +3692,7 @@ async function runBrowserJavaScriptProjectRequest(
       symlinkSync: (_target: unknown, linkPath: unknown) => {
         const symlinkTarget = runtimeSymlinkTarget(linkPath, kernelDevices);
         if (symlinkTarget?.kind === 'error') {
-          throwRuntimeSymlinkTargetError(symlinkTarget, `EROFS: read-only file system, symlink '${linkPath}'`);
+          throwRuntimeSymlinkTargetError(symlinkTarget, runtimeKernelMutationFsErrorMessage(String(linkPath), symlinkTarget, 'symlink'));
         }
         throw Object.assign(new Error(`ENOSYS: function not implemented, symlink '${linkPath}'`), { code: 'ENOSYS' });
       },
@@ -3734,7 +3738,10 @@ async function runBrowserJavaScriptProjectRequest(
       renameSync: (oldPath: unknown, newPath: unknown) => {
         const renameTarget = runtimeRenameTarget(oldPath, newPath, kernelDevices);
         if (renameTarget?.kind === 'error') {
-          throwRuntimeRenameTargetError(renameTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
+          throwRuntimeRenameTargetError(
+            renameTarget,
+            runtimeKernelMutationFsErrorMessage(String(oldPath), renameTarget, 'rename', String(newPath))
+          );
         }
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
@@ -3842,10 +3849,7 @@ async function runBrowserJavaScriptProjectRequest(
         try {
           const removeTarget = runtimeRemoveTarget(path, kernelDevices);
           if (removeTarget?.kind === 'error') {
-            const message = removeTarget.reason === 'device-not-found'
-              ? `ENOENT: no such file or directory, rm '${path}'`
-              : `EROFS: read-only file system, rm '${path}'`;
-            throwRuntimeRemoveTargetError(removeTarget, message);
+            throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rm'));
           }
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           if (fileStore.has(normalized)) {
@@ -4153,12 +4157,7 @@ async function runBrowserJavaScriptProjectRequest(
       truncateSync: (path: unknown, length = 0) => {
         const truncateTarget = runtimeTruncateTarget(path, kernelDevices);
         if (truncateTarget?.kind === 'error') {
-          const message = truncateTarget.reason === 'device-not-found'
-            ? `ENOENT: no such file or directory, truncate '${path}'`
-            : truncateTarget.reason === 'proc-read-only'
-              ? `EROFS: read-only file system, truncate '${path}'`
-              : `EROFS: read-only file system, truncate '${path}'`;
-          throwRuntimeTruncateTargetError(truncateTarget, message);
+          throwRuntimeTruncateTargetError(truncateTarget, runtimeKernelMutationFsErrorMessage(String(path), truncateTarget, 'truncate'));
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         assertWorkspaceFileWritePath(normalized, path, 'truncate');
@@ -4177,7 +4176,7 @@ async function runBrowserJavaScriptProjectRequest(
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
         const mkdirTarget = runtimeMkdirTarget(path, kernelDevices);
         if (mkdirTarget?.kind === 'error') {
-          throwRuntimeMkdirTargetError(mkdirTarget, `EROFS: read-only file system, mkdir '${path}'`);
+          throwRuntimeMkdirTargetError(mkdirTarget, runtimeKernelMutationFsErrorMessage(String(path), mkdirTarget, 'mkdir'));
         }
         const rawPath = workspacePathInputToString(path).replace(/\\/g, '/');
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
@@ -4263,7 +4262,7 @@ async function runBrowserJavaScriptProjectRequest(
       rmdirSync: (path: unknown) => {
         const removeTarget = runtimeRemoveTarget(path, kernelDevices);
         if (removeTarget?.kind === 'error') {
-          throwRuntimeRemoveTargetError(removeTarget, `EROFS: read-only file system, rmdir '${path}'`);
+          throwRuntimeRemoveTargetError(removeTarget, runtimeKernelMutationFsErrorMessage(String(path), removeTarget, 'rmdir'));
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         assertWorkspaceParentDirectoryPath(normalized, path, 'rmdir');
