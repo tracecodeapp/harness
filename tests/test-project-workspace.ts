@@ -2867,6 +2867,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('handle-lifecycle.txt') === 'handle-data', 'browser node FileHandle writes should persist through kernel FS');
 
+  const fileHandlePermissionResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fsp = require(\\"node:fs/promises\\"); await fsp.writeFile(\\"handle-perms.txt\\", \\"original\\\\n\\"); const writeOnly = await fsp.open(\\"handle-perms.txt\\", \\"w\\"); await writeOnly.writeFile(\\"changed\\\\n\\"); try { await writeOnly.readFile(\\"utf8\\"); console.log(\\"write-only-read:ok\\"); } catch (error) { console.log(\\"write-only-read:\\" + error.code); } await writeOnly.close(); const readOnly = await fsp.open(\\"handle-perms.txt\\", \\"r\\"); try { await readOnly.writeFile(\\"bad\\\\n\\"); console.log(\\"read-only-write:ok\\"); } catch (error) { console.log(\\"read-only-write:\\" + error.code); } await readOnly.close(); console.log(await fsp.readFile(\\"handle-perms.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(fileHandlePermissionResult.exitCode === 0, `browser node FileHandle permission workflow should succeed: ${fileHandlePermissionResult.stderr}`);
+  assertCondition(
+    fileHandlePermissionResult.stdout === 'write-only-read:EBADF\nread-only-write:EBADF\nchanged\n\n',
+    `browser node FileHandle readFile/writeFile should honor descriptor permissions: ${fileHandlePermissionResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('handle-perms.txt') === 'changed\n', 'browser node FileHandle failed writes should not mutate files');
+
   const watchFileResult = await workspace.runCommand([
     'node',
     '-e',

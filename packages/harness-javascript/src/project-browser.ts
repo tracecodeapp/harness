@@ -3645,6 +3645,7 @@ async function runBrowserJavaScriptProjectRequest(
         const readFileFromHandle = (encoding?: string | { encoding?: string | null } | null): BrowserBuffer | string => {
           assertFileHandleOpen();
           const entry = fileDescriptor(fd);
+          if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, readFile'), { code: 'EBADF' });
           const source = descriptorBytes(entry);
           const start = entry.kind === 'device' ? 0 : entry.offset;
           const bytes = BrowserBuffer.from(source.slice(start));
