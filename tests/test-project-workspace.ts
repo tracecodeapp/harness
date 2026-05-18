@@ -2102,6 +2102,25 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
   );
 
+  const fdEvents: RuntimeCommandEvent[] = [];
+  const fdResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fd = fs.openSync(\\"fd.txt\\", \\"w+\\"); fs.writeSync(fd, \\"hello\\\\n\\"); fs.writeSync(fd, Buffer.from(\\"bytes\\\\n\\")); const stat = fs.fstatSync(fd); const readBuffer = Buffer.alloc(stat.size); fs.readSync(fd, readBuffer, 0, readBuffer.length, 0); fs.closeSync(fd); const appendFd = fs.openSync(\\"fd.txt\\", \\"a\\"); fs.writeSync(appendFd, \\"append\\\\n\\"); fs.closeSync(appendFd); const stdoutFd = fs.openSync(\\"/dev/stdout\\", \\"w\\"); fs.writeSync(stdoutFd, \\"fd-device\\\\n\\"); fs.closeSync(stdoutFd); console.log(readBuffer.toString().trim());"',
+  ].join(' '), { onEvent: (event) => fdEvents.push(event) });
+  assertCondition(fdResult.exitCode === 0, `browser node fd workflow should succeed: ${fdResult.stderr}`);
+  assertCondition(fdResult.stdout === 'fd-device\nhello\nbytes\n', `browser node fd workflow stdout should match: ${fdResult.stdout}`);
+  assertCondition(await workspace.readFile('fd.txt') === 'hello\nbytes\nappend\n', 'browser node fd writes should persist through kernel FS');
+  assertCondition(
+    fdEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'fd.txt' &&
+      event.change.contents === 'hello\nbytes\nappend\n'
+    ),
+    `browser node fd writes should emit live file changes: ${JSON.stringify(fdEvents)}`
+  );
+
   const bufferResult = await workspace.runCommand([
     'node',
     '-e',

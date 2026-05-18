@@ -1300,6 +1300,54 @@ async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
       }
     };
+    type BrowserFileDescriptor = {
+      kind: 'file' | 'device';
+      path?: string;
+      device?: RuntimeKernelDevicePath;
+      offset: number;
+      readable: boolean;
+      writable: boolean;
+      append: boolean;
+    };
+    const fileDescriptors = new Map<number, BrowserFileDescriptor>([
+      [0, { kind: 'device', device: '/dev/stdin', offset: 0, readable: true, writable: false, append: false }],
+      [1, { kind: 'device', device: '/dev/stdout', offset: 0, readable: false, writable: true, append: true }],
+      [2, { kind: 'device', device: '/dev/stderr', offset: 0, readable: false, writable: true, append: true }],
+    ]);
+    let nextFd = 3;
+    const parseOpenFlags = (flags: unknown = 'r') => {
+      const text = typeof flags === 'number' ? (flags === 0 ? 'r' : flags === 1 ? 'w' : flags === 2 ? 'r+' : 'r') : String(flags);
+      return {
+        readable: text.includes('+') || text.startsWith('r'),
+        writable: text.includes('+') || text.startsWith('w') || text.startsWith('a'),
+        append: text.startsWith('a'),
+        truncate: text.startsWith('w'),
+        create: text.startsWith('w') || text.startsWith('a'),
+      };
+    };
+    const fileDescriptor = (fd: number): BrowserFileDescriptor => {
+      const entry = fileDescriptors.get(Number(fd));
+      if (!entry) throw Object.assign(new Error(`EBADF: bad file descriptor, fd ${fd}`), { code: 'EBADF' });
+      return entry;
+    };
+    const descriptorBytes = (entry: BrowserFileDescriptor): Uint8Array => {
+      if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
+      return fileStore.get(entry.path ?? '') ?? new Uint8Array();
+    };
+    const writeDescriptorBytes = (entry: BrowserFileDescriptor, bytes: Uint8Array, position?: number | null): void => {
+      if (!entry.writable) throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
+      if (entry.kind === 'device') {
+        writeDevice(entry.device ?? '/dev/stdout', textFromBytes(bytes));
+        return;
+      }
+      const previous = fileStore.get(entry.path ?? '') ?? new Uint8Array();
+      const start = entry.append ? previous.byteLength : typeof position === 'number' ? Math.max(0, position) : entry.offset;
+      const next = new Uint8Array(Math.max(previous.byteLength, start + bytes.byteLength));
+      next.set(previous, 0);
+      next.set(bytes, start);
+      setFileBytes(entry.path ?? '', next);
+      if (position === undefined || position === null) entry.offset = start + bytes.byteLength;
+    };
     const fsApi = {
       constants: fsConstants,
       F_OK: fsConstants.F_OK,
@@ -1317,6 +1365,82 @@ async function runBrowserJavaScriptProjectRequest(
         } catch (error) {
           queueMicrotask(() => done?.(error as Error));
         }
+      },
+      openSync: (path: unknown, flags: unknown = 'r') => {
+        const device = normalizeRuntimeDevicePath(path);
+        const parsed = parseOpenFlags(flags);
+        const fd = nextFd++;
+        if (device) {
+          fileDescriptors.set(fd, {
+            kind: 'device',
+            device,
+            offset: 0,
+            readable: device === '/dev/stdin' || device === '/dev/tty' || parsed.readable,
+            writable: device !== '/dev/stdin' && parsed.writable,
+            append: true,
+          });
+          return fd;
+        }
+        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        if (!fileStore.has(normalized)) {
+          if (!parsed.create) {
+            throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+          }
+          setFileBytes(normalized, new Uint8Array());
+        } else if (parsed.truncate) {
+          setFileBytes(normalized, new Uint8Array());
+        }
+        fileDescriptors.set(fd, {
+          kind: 'file',
+          path: normalized,
+          offset: parsed.append ? fileStore.get(normalized)?.byteLength ?? 0 : 0,
+          readable: parsed.readable,
+          writable: parsed.writable,
+          append: parsed.append,
+        });
+        return fd;
+      },
+      closeSync: (fd: number) => {
+        if (Number(fd) < 3) return undefined;
+        if (!fileDescriptors.delete(Number(fd))) {
+          throw Object.assign(new Error(`EBADF: bad file descriptor, close`), { code: 'EBADF' });
+        }
+        return undefined;
+      },
+      readSync: (fd: number, buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
+        const entry = fileDescriptor(fd);
+        if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+        const source = descriptorBytes(entry);
+        const start = typeof position === 'number' ? Math.max(0, position) : entry.offset;
+        const count = Math.max(0, Math.min(length, source.byteLength - start, buffer.byteLength - offset));
+        buffer.set(source.slice(start, start + count), offset);
+        if (position === undefined || position === null) entry.offset = start + count;
+        return count;
+      },
+      writeSync: (fd: number, value: unknown, offsetOrPosition?: number, lengthOrEncoding?: number | string, position?: number | null) => {
+        let bytes: Uint8Array;
+        let writePosition: number | null | undefined = position;
+        if (typeof value === 'string') {
+          bytes = BrowserBuffer.from(value, typeof lengthOrEncoding === 'string' ? lengthOrEncoding : undefined);
+          writePosition = typeof offsetOrPosition === 'number' ? offsetOrPosition : undefined;
+        } else {
+          const source = bytesFromNodeValue(value);
+          const offset = typeof offsetOrPosition === 'number' ? offsetOrPosition : 0;
+          const length = typeof lengthOrEncoding === 'number' ? lengthOrEncoding : source.byteLength - offset;
+          bytes = source.slice(offset, offset + length);
+        }
+        writeDescriptorBytes(fileDescriptor(fd), bytes, writePosition);
+        return bytes.byteLength;
+      },
+      fstatSync: (fd: number) => {
+        const entry = fileDescriptor(fd);
+        const size = entry.kind === 'device' ? 0 : fileStore.get(entry.path ?? '')?.byteLength ?? 0;
+        return {
+          size,
+          isFile: () => true,
+          isDirectory: () => false,
+          isSymbolicLink: () => false,
+        };
       },
       createReadStream: (path: unknown, options?: string | { encoding?: string; start?: number; end?: number } | null) => {
         const device = normalizeRuntimeDevicePath(path);
