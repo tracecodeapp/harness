@@ -264,6 +264,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-python worker should ship routed source device output events'
       );
     }
+    if (packageCheck.name === '@tracecode/harness-javascript') {
+      const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
+      assertCondition(
+        projectBrowser.includes('sourceDevice') &&
+          projectBrowser.includes('io.output(stream, data, device, sourceDevice)') &&
+          projectBrowser.includes('device !== outputDevice ? device :'),
+        '@tracecode/harness-javascript browser project runner should ship routed source device output events'
+      );
+    }
     if (packageCheck.name === '@tracecode/harness-java') {
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
       assertCondition(
