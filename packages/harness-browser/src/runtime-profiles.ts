@@ -1,5 +1,47 @@
 import type { Language, LanguageRuntimeProfile } from '../../harness-core/src/runtime-types';
 
+const LIVE_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
+  workspace: {
+    supported: true,
+    kernelFs: true,
+    virtualDevices: true,
+    virtualProc: true,
+  },
+  filesystem: {
+    finalDiff: true,
+    liveMutationEvents: true,
+    providerLiveInterception: true,
+    binaryFiles: true,
+    directories: true,
+  },
+  stdio: {
+    stdin: true,
+    outputEvents: true,
+    deviceFiles: true,
+  },
+};
+
+const BRIDGED_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
+  workspace: {
+    supported: true,
+    kernelFs: true,
+    virtualDevices: true,
+    virtualProc: true,
+  },
+  filesystem: {
+    finalDiff: true,
+    liveMutationEvents: true,
+    providerLiveInterception: false,
+    binaryFiles: true,
+    directories: true,
+  },
+  stdio: {
+    stdin: true,
+    outputEvents: true,
+    deviceFiles: true,
+  },
+};
+
 const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   language: 'python',
   maturity: 'stable',
@@ -17,6 +59,7 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: true,
       },
     },
+    project: LIVE_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -74,6 +117,7 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: false,
       },
     },
+    project: LIVE_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -131,6 +175,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: false,
       },
     },
+    project: LIVE_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -188,6 +233,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: true,
       },
     },
+    project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -230,6 +276,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'Java currently supports the browser-local Java 17 lane for function, solution-method, ops-class, and script-style execution.',
     'Interview-mode Java reuses the same browser-local execution path and remains experimental.',
     'Script-style Java uses an empty function name with executionStyle="function" and reads the top-level result variable.',
+    'Project-mode Java uses shared tracekernel /dev and /proc policy with final-diff persistence; provider-native live filesystem interception is not yet advertised.',
   ],
 };
 
@@ -250,6 +297,7 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: true,
       },
     },
+    project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -297,6 +345,7 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'ListNode and TreeNode inputs are hydrated from level-order arrays or object-shaped JSON.',
     'Dictionary, HashSet, List, and array return values serialize through the browser-local worker.',
     'Tracing currently supports line, call, return, stdout, and simple local variable write events.',
+    'Project-mode C# uses shared tracekernel /dev and /proc policy with final-diff persistence; provider-native live filesystem interception is not yet advertised.',
     'Structural visualization is added after execution and diagnostics are proven.',
   ],
 };
@@ -318,6 +367,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: true,
       },
     },
+    project: BRIDGED_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -361,6 +411,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
     'Script-style C++ uses an empty function name with executionStyle="function"; the snippet must assign a serializable result variable.',
     'Interview-mode C++ reuses the tracing compiler path with a trace budget and returns a non-trace execution result.',
+    'Project-mode C++ uses shared tracekernel /dev and /proc policy with final-diff persistence; provider-native live filesystem interception is not yet advertised.',
   ],
 };
 

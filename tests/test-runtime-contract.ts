@@ -620,6 +620,17 @@ const COMMON_STABLE_COVERAGE = [
   'execution.styles.script',
   'execution.styles.interviewMode',
   'execution.timeouts.clientTimeouts',
+  'project.workspace.supported',
+  'project.workspace.kernelFs',
+  'project.workspace.virtualDevices',
+  'project.workspace.virtualProc',
+  'project.filesystem.finalDiff',
+  'project.filesystem.liveMutationEvents',
+  'project.filesystem.binaryFiles',
+  'project.filesystem.directories',
+  'project.stdio.stdin',
+  'project.stdio.outputEvents',
+  'project.stdio.deviceFiles',
   'tracing.supported',
   'tracing.events.line',
   'tracing.events.call',
@@ -647,12 +658,14 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
   python: [
     ...COMMON_STABLE_COVERAGE,
     'execution.timeouts.runtimeTimeouts',
+    'project.filesystem.providerLiveInterception',
     'tracing.events.stdout',
     'diagnostics.mappedErrorLines',
   ],
-  javascript: [...COMMON_STABLE_COVERAGE],
+  javascript: [...COMMON_STABLE_COVERAGE, 'project.filesystem.providerLiveInterception'],
   typescript: [
     ...COMMON_STABLE_COVERAGE,
+    'project.filesystem.providerLiveInterception',
     'diagnostics.compileErrors',
     'diagnostics.mappedErrorLines',
   ],
@@ -664,6 +677,17 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.interviewMode',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
+    'project.workspace.supported',
+    'project.workspace.kernelFs',
+    'project.workspace.virtualDevices',
+    'project.workspace.virtualProc',
+    'project.filesystem.finalDiff',
+    'project.filesystem.liveMutationEvents',
+    'project.filesystem.binaryFiles',
+    'project.filesystem.directories',
+    'project.stdio.stdin',
+    'project.stdio.outputEvents',
+    'project.stdio.deviceFiles',
     'tracing.supported',
     'tracing.events.line',
     'tracing.events.call',
@@ -692,6 +716,17 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.interviewMode',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
+    'project.workspace.supported',
+    'project.workspace.kernelFs',
+    'project.workspace.virtualDevices',
+    'project.workspace.virtualProc',
+    'project.filesystem.finalDiff',
+    'project.filesystem.liveMutationEvents',
+    'project.filesystem.binaryFiles',
+    'project.filesystem.directories',
+    'project.stdio.stdin',
+    'project.stdio.outputEvents',
+    'project.stdio.deviceFiles',
     'tracing.supported',
     'tracing.events.line',
     'tracing.events.call',
@@ -725,6 +760,17 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'execution.styles.interviewMode',
     'execution.timeouts.clientTimeouts',
     'execution.timeouts.runtimeTimeouts',
+    'project.workspace.supported',
+    'project.workspace.kernelFs',
+    'project.workspace.virtualDevices',
+    'project.workspace.virtualProc',
+    'project.filesystem.finalDiff',
+    'project.filesystem.liveMutationEvents',
+    'project.filesystem.binaryFiles',
+    'project.filesystem.directories',
+    'project.stdio.stdin',
+    'project.stdio.outputEvents',
+    'project.stdio.deviceFiles',
     'tracing.supported',
     'tracing.events.line',
     'tracing.events.call',
@@ -782,6 +828,26 @@ function createUnsupportedProfile(
         timeouts: {
           clientTimeouts: true,
           runtimeTimeouts: false,
+        },
+      },
+      project: {
+        workspace: {
+          supported: false,
+          kernelFs: false,
+          virtualDevices: false,
+          virtualProc: false,
+        },
+        filesystem: {
+          finalDiff: false,
+          liveMutationEvents: false,
+          providerLiveInterception: false,
+          binaryFiles: false,
+          directories: false,
+        },
+        stdio: {
+          stdin: false,
+          outputEvents: false,
+          deviceFiles: false,
         },
       },
       tracing: {
@@ -1080,14 +1146,32 @@ async function main(): Promise<void> {
     javascriptProfile.capabilities.structures.listNodeRefs,
     'JavaScript should advertise linked-list ref hydration'
   );
+  assertCondition(
+    javascriptProfile.capabilities.project.filesystem.providerLiveInterception &&
+      javascriptProfile.capabilities.project.stdio.outputEvents &&
+      javascriptProfile.capabilities.project.workspace.kernelFs,
+    'JavaScript should advertise live provider interception through tracekernel project I/O'
+  );
   assertCondition(typescriptProfile.capabilities.diagnostics.compileErrors, 'TypeScript should support compile errors');
   assertCondition(
     typescriptProfile.capabilities.diagnostics.mappedErrorLines,
     'TypeScript should preserve mapped compile error lines'
   );
+  assertCondition(
+    pythonProfile.capabilities.project.filesystem.providerLiveInterception &&
+      pythonProfile.capabilities.project.filesystem.finalDiff &&
+      pythonProfile.capabilities.project.stdio.deviceFiles,
+    'Python should advertise Pyodide live project I/O interception plus final-diff reconciliation'
+  );
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function execution');
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
+  assertCondition(
+    javaProfile.capabilities.project.filesystem.liveMutationEvents &&
+      javaProfile.capabilities.project.filesystem.finalDiff &&
+      !javaProfile.capabilities.project.filesystem.providerLiveInterception,
+    'Java should advertise bridged project I/O without provider-native live interception'
+  );
   assertCondition(csharpProfile.capabilities.execution.styles.solutionMethod, 'C# should support solution-method execution');
   assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
   assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# should support interview mode');
@@ -1099,6 +1183,12 @@ async function main(): Promise<void> {
   assertCondition(csharpProfile.capabilities.structures.mapSerialization, 'C# should advertise map serialization');
   assertCondition(csharpProfile.capabilities.structures.setSerialization, 'C# should advertise set serialization');
   assertCondition(csharpProfile.capabilities.structures.cycleReferences, 'C# should preserve cycle references');
+  assertCondition(
+    csharpProfile.capabilities.project.filesystem.liveMutationEvents &&
+      csharpProfile.capabilities.project.filesystem.finalDiff &&
+      !csharpProfile.capabilities.project.filesystem.providerLiveInterception,
+    'C# should advertise bridged project I/O without provider-native live interception'
+  );
   assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ should support function execution');
   assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ should support solution-method execution');
   assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ should support ops-class execution');
@@ -1106,6 +1196,12 @@ async function main(): Promise<void> {
   assertCondition(cppProfile.capabilities.execution.styles.interviewMode, 'C++ should support interview mode');
   assertCondition(cppProfile.capabilities.tracing.supported, 'C++ should support generated-driver v4 trace events');
   assertCondition(cppProfile.capabilities.tracing.events.exception, 'C++ should support lowered exception trace events');
+  assertCondition(
+    cppProfile.capabilities.project.filesystem.liveMutationEvents &&
+      cppProfile.capabilities.project.filesystem.finalDiff &&
+      !cppProfile.capabilities.project.filesystem.providerLiveInterception,
+    'C++ should advertise bridged project I/O without provider-native live interception'
+  );
   console.log('PASS: runtime capability profile matrix');
 
   const unsupportedProfile = createUnsupportedProfile();

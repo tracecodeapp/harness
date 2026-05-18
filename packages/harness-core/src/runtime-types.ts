@@ -20,6 +20,26 @@ export interface RuntimeCapabilities {
       runtimeTimeouts: boolean;
     };
   };
+  project: {
+    workspace: {
+      supported: boolean;
+      kernelFs: boolean;
+      virtualDevices: boolean;
+      virtualProc: boolean;
+    };
+    filesystem: {
+      finalDiff: boolean;
+      liveMutationEvents: boolean;
+      providerLiveInterception: boolean;
+      binaryFiles: boolean;
+      directories: boolean;
+    };
+    stdio: {
+      stdin: boolean;
+      outputEvents: boolean;
+      deviceFiles: boolean;
+    };
+  };
     tracing: {
       supported: boolean;
       events: {
