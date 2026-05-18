@@ -19,6 +19,7 @@ const EXPORTED_POLICY_NAMES = [
   'runtimeKernelDeviceOutputTarget',
   'runtimeKernelVirtualPathTarget',
   'runtimeKernelVirtualMutationTarget',
+  'runtimeKernelVirtualOpenTarget',
 ] as const;
 
 function indentBlock(value: string): string {

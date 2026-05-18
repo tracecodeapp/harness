@@ -1235,6 +1235,21 @@ async function executeProjectPython(request, messageId) {
     }
     self.postMessage({ id: messageId, type: 'project-event', payload });
   };
+  self.__tracecodeRuntimeKernelOpenTarget = (payload) => {
+    const parsed = typeof payload === 'string' ? JSON.parse(payload) : payload;
+    const policy = self.TraceRuntimeKernelPolicy;
+    const openTarget = policy && typeof policy.runtimeKernelVirtualOpenTarget === 'function'
+      ? policy.runtimeKernelVirtualOpenTarget(
+          parsed?.path,
+          parsed?.request ?? {},
+          {
+            devices: normalizeProjectKernelDevices(request?.project?.kernelDevices),
+            procEntryKind: parsed?.procEntryKind,
+          }
+        )
+      : { kind: 'workspace', path: parsed?.path };
+    return JSON.stringify(openTarget);
+  };
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
@@ -2182,6 +2197,70 @@ def _fd_flags_want_read(_flags):
         return True
     return bool(_flag_value & getattr(os, "O_RDWR", 0)) or not bool(_flag_value & getattr(os, "O_WRONLY", 0))
 
+def _kernel_open_request_for_mode(_mode):
+    _mode_text = str(_mode or "r")
+    return {
+        "readable": _file_mode_wants_read(_mode),
+        "writable": _file_mode_wants_write(_mode),
+        "create": any(_marker in _mode_text for _marker in ("w", "a", "x")),
+        "truncate": "w" in _mode_text,
+        "exclusive": "x" in _mode_text,
+    }
+
+def _kernel_open_request_for_flags(_flags):
+    try:
+        _flag_value = int(_flags)
+    except Exception:
+        _flag_value = 0
+    return {
+        "readable": _fd_flags_want_read(_flags),
+        "writable": _fd_flags_want_write(_flags) or _is_mutating_fd_flags(_flags),
+        "create": bool(_flag_value & getattr(os, "O_CREAT", 0)),
+        "truncate": bool(_flag_value & getattr(os, "O_TRUNC", 0)),
+        "exclusive": bool(_flag_value & getattr(os, "O_EXCL", 0)),
+    }
+
+def _fallback_kernel_open_target(_path, _request):
+    _device_path = _normalize_device_namespace_path(_path)
+    if _device_path:
+        if _device_entry_kind(_device_path) == "directory":
+            return {"kind": "error", "reason": "is-directory", "path": _device_path}
+        _device_info = _kernel_devices.get(_device_path)
+        if not _device_info:
+            return {"kind": "error", "reason": "not-found", "path": _device_path}
+        return {
+            "kind": "device",
+            "device": _device_path,
+            "readable": bool(_device_info.get("readable")) and bool(_request.get("readable")),
+            "writable": bool(_device_info.get("writable")) and bool(_request.get("writable")),
+        }
+    _proc_path = _normalize_proc_path(_path)
+    if _proc_path:
+        _entry_kind = _proc_entry_kind(_proc_path)
+        if _entry_kind == "directory":
+            return {"kind": "error", "reason": "is-directory", "path": _proc_path}
+        if _entry_kind != "file":
+            return {"kind": "error", "reason": "not-found", "path": _proc_path}
+        if any(bool(_request.get(_field)) for _field in ("writable", "create", "truncate", "exclusive")):
+            return {"kind": "error", "reason": "read-only", "path": _proc_path}
+        return {"kind": "proc-file", "path": _proc_path, "readable": True, "writable": False}
+    return {"kind": "workspace", "path": os.fspath(_path) if isinstance(_path, (str, bytes, os.PathLike)) else str(_path)}
+
+def _kernel_open_target(_path, _request):
+    _device_path = _normalize_device_namespace_path(_path)
+    _proc_path = _normalize_proc_path(_path)
+    _virtual_path = _device_path or _proc_path
+    if not _virtual_path:
+        return {"kind": "workspace", "path": os.fspath(_path) if isinstance(_path, (str, bytes, os.PathLike)) else str(_path)}
+    try:
+        return json.loads(_js_self.__tracecodeRuntimeKernelOpenTarget(json.dumps({
+            "path": _virtual_path,
+            "request": _request,
+            "procEntryKind": _proc_entry_kind(_proc_path) if _proc_path else None,
+        })))
+    except Exception:
+        return _fallback_kernel_open_target(_virtual_path, _request)
+
 def _virtual_workspace_path(_value):
     if isinstance(_value, str):
         _relative = os.path.relpath(_value, _root)
@@ -2235,26 +2314,24 @@ def _install_virtual_workspace_paths():
                 return _TraceProcFdFile(_file, _mode)
             _handle = _original_open(_file, *args, **kwargs)
             return _TraceProjectFile(_handle, _open_file_descriptors.get(_file), _is_mutating_file_mode(_mode))
-        _device = _normalize_device_path(_file)
-        if _device:
-            _device_info = _kernel_devices.get(_device, {})
-            if _file_mode_wants_read(_mode) and not bool(_device_info.get("readable")):
+        _open_target = _kernel_open_target(_file, _kernel_open_request_for_mode(_mode))
+        if _open_target.get("kind") == "device":
+            _device = str(_open_target.get("device") or "")
+            if _file_mode_wants_read(_mode) and not bool(_open_target.get("readable")):
                 raise OSError("Kernel device is not readable: " + _device)
-            if _file_mode_wants_write(_mode) and not bool(_device_info.get("writable")):
+            if _file_mode_wants_write(_mode) and not bool(_open_target.get("writable")):
                 raise OSError("Kernel device is not writable: " + _device)
             return _TraceDeviceFile(_device, _mode)
-        _device_path = _normalize_device_namespace_path(_file)
-        if _device_path:
-            if _device_entry_kind(_device_path) == "directory":
-                raise IsADirectoryError(_device_path)
-            raise FileNotFoundError(_device_path)
-        _proc_path = _normalize_proc_path(_file)
-        if _proc_path:
-            if _is_mutating_file_mode(_mode):
-                raise OSError("Kernel proc path is read-only: " + _proc_path)
-            if _proc_entry_kind(_proc_path) == "directory":
-                raise IsADirectoryError(_proc_path)
-            return _TraceProcFile(_proc_path, _mode)
+        if _open_target.get("kind") == "proc-file":
+            return _TraceProcFile(str(_open_target.get("path")), _mode)
+        if _open_target.get("kind") == "error":
+            _reason = str(_open_target.get("reason") or "")
+            _path = str(_open_target.get("path") or _file)
+            if _reason == "is-directory":
+                raise IsADirectoryError(_path)
+            if _reason == "read-only":
+                raise OSError("Kernel proc path is read-only: " + _path)
+            raise FileNotFoundError(_path)
         _mapped_path = _map_workspace_path(_file)
         _handle = _original_open(_mapped_path, *args, **kwargs)
         return _TraceProjectFile(_handle, _absolute_mapped_path(_mapped_path), _is_mutating_file_mode(_mode))
@@ -2267,35 +2344,24 @@ def _install_virtual_workspace_paths():
 
     def _patched_os_open(_path, _flags, *args, **kwargs):
         nonlocal _next_virtual_fd
-        _device = _normalize_device_path(_path)
-        if _device:
-            _device_info = _kernel_devices.get(_device, {})
+        _open_target = _kernel_open_target(_path, _kernel_open_request_for_flags(_flags))
+        if _open_target.get("kind") == "device":
+            _device = str(_open_target.get("device") or "")
             _wants_read = _fd_flags_want_read(_flags)
             _wants_write = _fd_flags_want_write(_flags) or _is_mutating_fd_flags(_flags)
-            if _wants_read and not bool(_device_info.get("readable")):
+            if _wants_read and not bool(_open_target.get("readable")):
                 raise OSError("Kernel device is not readable: " + _device)
-            if _wants_write and not bool(_device_info.get("writable")):
+            if _wants_write and not bool(_open_target.get("writable")):
                 raise OSError("Kernel device is not writable: " + _device)
             _fd = _next_virtual_fd
             _next_virtual_fd += 1
             _device_descriptor = {"device": _device}
             if _wants_read:
-                _device_descriptor.update({
-                    "inputDevice": str(_device_info.get("inputDevice") or _device),
-                })
+                _device_descriptor.update({"inputDevice": _device})
             _device_file_descriptors[_fd] = _device_descriptor
             return _fd
-        _device_path = _normalize_device_namespace_path(_path)
-        if _device_path:
-            if _device_entry_kind(_device_path) == "directory":
-                raise IsADirectoryError(_device_path)
-            raise FileNotFoundError(_device_path)
-        _proc_path = _normalize_proc_path(_path)
-        if _proc_path:
-            if _is_mutating_fd_flags(_flags):
-                raise OSError("Kernel proc path is read-only: " + _proc_path)
-            if _proc_entry_kind(_proc_path) == "directory":
-                raise IsADirectoryError(_proc_path)
+        if _open_target.get("kind") == "proc-file":
+            _proc_path = str(_open_target.get("path"))
             _fd = _next_virtual_fd
             _next_virtual_fd += 1
             _proc_file_descriptors[_fd] = {
@@ -2304,6 +2370,14 @@ def _install_virtual_workspace_paths():
                 "refs": 1,
             }
             return _fd
+        if _open_target.get("kind") == "error":
+            _reason = str(_open_target.get("reason") or "")
+            _path_text = str(_open_target.get("path") or _path)
+            if _reason == "is-directory":
+                raise IsADirectoryError(_path_text)
+            if _reason == "read-only":
+                raise OSError("Kernel proc path is read-only: " + _path_text)
+            raise FileNotFoundError(_path_text)
         _mapped_path = _map_workspace_path(_path)
         _absolute_path = _absolute_mapped_path(_mapped_path)
         _fd = _original_os_open(_mapped_path, _flags, *args, **kwargs)
@@ -2851,6 +2925,7 @@ json.dumps({
   } finally {
     restoreProviderStdioBridge();
     delete self.__tracecodeProjectEvent;
+    delete self.__tracecodeRuntimeKernelOpenTarget;
     delete self.__tracecodeInstallProjectFsMutationEvents;
   }
 }

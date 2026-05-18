@@ -52,6 +52,7 @@ import {
   runtimeKernelDeviceInputSource as workerRuntimeKernelDeviceInputSource,
   runtimeKernelDeviceOutputTarget as workerRuntimeKernelDeviceOutputTarget,
   runtimeKernelVirtualMutationTarget as workerRuntimeKernelVirtualMutationTarget,
+  runtimeKernelVirtualOpenTarget as workerRuntimeKernelVirtualOpenTarget,
   runtimeKernelVirtualPathTarget as workerRuntimeKernelVirtualPathTarget,
 } from '../workers/shared/runtime-kernel-policy.js';
 
@@ -329,6 +330,7 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
     { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
     { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
     { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+    { path: '/dev/pts/0', readable: false, writable: true, outputDevice: '/dev/stdout' },
     { path: '/dev/null', readable: true, writable: true, inputDevice: '/dev/null', outputDevice: '/dev/null' },
   ];
   const readOnlyPaths = ['/tracekernel/custom', '/proc/kernel/info'];
@@ -367,8 +369,22 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
       stableStringify({ kind: 'device-file', path: '/dev/log' }) &&
       workerRuntimeKernelDeviceOutputTarget(devices, '/dev/log') === '/dev/stderr' &&
       workerRuntimeKernelDeviceInputSource(devices, '/dev/custom-in') === '/dev/stdin' &&
+      workerRuntimeKernelDeviceOutputTarget(devices, '/dev/pts/0') === '/dev/stdout' &&
       workerRuntimeKernelDeviceOutputTarget(devices, '/dev/null') === '/dev/null',
     'shared worker kernel policy should classify and route manifest devices from device metadata'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualOpenTarget('/dev/log', { writable: true }, { devices })) ===
+      stableStringify({ kind: 'device', device: '/dev/log', readable: false, writable: true }) &&
+      stableStringify(workerRuntimeKernelVirtualOpenTarget('/dev/pts/0', { writable: true }, { devices })) ===
+        stableStringify({ kind: 'device', device: '/dev/pts/0', readable: false, writable: true }) &&
+      stableStringify(workerRuntimeKernelVirtualOpenTarget('/dev/log', { readable: true }, { devices })) ===
+        stableStringify({ kind: 'device', device: '/dev/log', readable: false, writable: false }) &&
+      stableStringify(workerRuntimeKernelVirtualOpenTarget('/proc/kernel/info', { writable: true }, { devices, procEntryKind: 'file' })) ===
+        stableStringify({ kind: 'error', reason: 'read-only', path: '/proc/kernel/info' }) &&
+      stableStringify(workerRuntimeKernelVirtualOpenTarget('/proc/kernel', { readable: true }, { devices, procEntryKind: 'directory' })) ===
+        stableStringify({ kind: 'error', reason: 'is-directory', path: '/proc/kernel' }),
+    'shared worker kernel policy should classify virtual open targets'
   );
   assertCondition(
     stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
@@ -397,7 +413,9 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
       stableStringify(classicPolicy.runtimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
         stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) &&
       classicPolicy.runtimeKernelDeviceOutputTarget(devices, '/dev/log') === workerRuntimeKernelDeviceOutputTarget(devices, '/dev/log') &&
-      classicPolicy.runtimeKernelDeviceInputSource(devices, '/dev/custom-in') === workerRuntimeKernelDeviceInputSource(devices, '/dev/custom-in'),
+      classicPolicy.runtimeKernelDeviceInputSource(devices, '/dev/custom-in') === workerRuntimeKernelDeviceInputSource(devices, '/dev/custom-in') &&
+      stableStringify(classicPolicy.runtimeKernelVirtualOpenTarget('/dev/log', { writable: true }, { devices })) ===
+        stableStringify(workerRuntimeKernelVirtualOpenTarget('/dev/log', { writable: true }, { devices })),
     'classic worker kernel policy should match module worker kernel policy'
   );
 }

@@ -42,6 +42,11 @@
     return deviceName.length > 0 && !deviceName.includes('/') ? normalized : '';
   }
 
+  function normalizeRuntimeKernelManifestDevicePath(value) {
+    const normalized = normalizeRuntimeKernelPath(value);
+    return normalized !== '/dev' && normalized.startsWith('/dev/') ? normalized : '';
+  }
+
   function normalizedSet(values) {
     return new Set(Array.from(values ?? [], (value) => normalizeRuntimeKernelPath(value)).filter(Boolean));
   }
@@ -59,7 +64,7 @@
     const normalized = new Map();
     for (const entry of entries) {
       if (!entry || typeof entry !== 'object') continue;
-      const path = normalizeRuntimeKernelDeviceReference(entry.path);
+      const path = normalizeRuntimeKernelManifestDevicePath(entry.path);
       if (!path) continue;
       normalized.set(path, {
         path,
@@ -78,7 +83,7 @@
   }
 
   function runtimeKernelDeviceInfo(devices, device) {
-    return normalizedDeviceInfos(devices).get(normalizeRuntimeKernelDeviceReference(device)) ?? null;
+    return normalizedDeviceInfos(devices).get(normalizeRuntimeKernelManifestDevicePath(device)) ?? null;
   }
 
   function runtimeKernelDeviceInputSource(devices, device) {
@@ -117,7 +122,7 @@
     }
     if (isRuntimeKernelDeviceNamespacePath(path)) {
       const knownDevices = knownDeviceSet(options);
-      const device = normalizeRuntimeKernelDeviceReference(path);
+      const device = normalizeRuntimeKernelManifestDevicePath(path);
       if (!device || !knownDevices.has(device)) {
         return { kind: 'device-not-found', path };
       }
@@ -141,6 +146,40 @@
     return { kind: 'error', reason: 'device-read-only', path: target.path };
   }
 
+  function runtimeKernelVirtualOpenTarget(value, request = {}, options = {}) {
+    const target = runtimeKernelVirtualPathTarget(value, options);
+    if (target.kind === 'workspace') return target;
+    if (target.kind === 'device-directory') {
+      return { kind: 'error', reason: 'is-directory', path: target.path };
+    }
+    if (target.kind === 'device-not-found') {
+      return { kind: 'error', reason: 'not-found', path: target.path };
+    }
+    if (target.kind === 'device-file') {
+      const info = runtimeKernelDeviceInfo(options.devices, target.path);
+      if (!info) return { kind: 'error', reason: 'not-found', path: target.path };
+      return {
+        kind: 'device',
+        device: target.path,
+        readable: info.readable && request.readable === true,
+        writable: info.writable && request.writable === true,
+      };
+    }
+    if (target.kind === 'proc') {
+      if (options.procEntryKind === 'directory') {
+        return { kind: 'error', reason: 'is-directory', path: target.path };
+      }
+      if (options.procEntryKind !== 'file') {
+        return { kind: 'error', reason: 'not-found', path: target.path };
+      }
+      if (request.writable || request.create || request.truncate || request.exclusive) {
+        return { kind: 'error', reason: 'read-only', path: target.path };
+      }
+      return { kind: 'proc-file', path: target.path, readable: true, writable: false };
+    }
+    return { kind: 'error', reason: 'read-only', path: target.path };
+  }
+
   globalThis.TraceRuntimeKernelPolicy = Object.freeze({
     normalizeRuntimeKernelPath,
     isRuntimeKernelProcPath,
@@ -152,5 +191,6 @@
     runtimeKernelDeviceOutputTarget,
     runtimeKernelVirtualPathTarget,
     runtimeKernelVirtualMutationTarget,
+    runtimeKernelVirtualOpenTarget,
   });
 })(typeof self !== 'undefined' ? self : globalThis);
