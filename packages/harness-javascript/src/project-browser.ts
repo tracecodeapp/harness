@@ -23,6 +23,8 @@ import {
   runtimeDeviceStat,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
+  runtimeKernelDirectoryErrorCode,
+  runtimeKernelDirectoryTarget,
   runtimeKernelFileReadTarget,
   runtimeKernelFileReadErrorCode,
   runtimeKernelMetadataErrorCode,
@@ -205,6 +207,12 @@ function runtimeCopyTarget(source: unknown, destination: unknown): ReturnType<ty
   return runtimeKernelCopyTarget(sourceRaw, destinationRaw);
 }
 
+function runtimeDirectoryTarget(path: unknown): ReturnType<typeof runtimeKernelDirectoryTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelDirectoryTarget(raw);
+}
+
 function throwRuntimeWriteTargetError(
   target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>,
   message: string
@@ -231,6 +239,13 @@ function throwRuntimeReadTargetError(
   message: string
 ): never {
   throw Object.assign(new Error(message), { code: runtimeKernelFileReadErrorCode(target.reason) });
+}
+
+function throwRuntimeDirectoryTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelDirectoryTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: runtimeKernelDirectoryErrorCode(target.reason) });
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
@@ -3205,47 +3220,24 @@ async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => callback?.(fsApi.existsSync(path)));
       },
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => {
-        const readTarget = runtimeReadTarget(path);
+        const directoryTarget = runtimeDirectoryTarget(path);
         const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
-        if (readTarget?.kind === 'device-directory') {
-          const names = runtimeDeviceDirEntries(readTarget.path) ?? [];
+        if (directoryTarget?.kind === 'directory') {
+          const names = directoryTarget.entries.map((entry) => entry.name);
           if (!withFileTypes) return names;
-          return names.map((name) => {
-            const kind = runtimeDeviceEntryKind(`/dev/${name}` as RuntimeKernelDevicePath);
-            return {
-              name,
-              path: '/dev',
-              parentPath: '/dev',
-              isFile: () => kind === 'file',
-              isDirectory: () => kind === 'directory',
-              isSymbolicLink: () => false,
-            };
-          });
+          return directoryTarget.entries.map((entry) => ({
+            name: entry.name,
+            path: directoryTarget.path,
+            parentPath: directoryTarget.path,
+            isFile: () => entry.kind === 'file',
+            isDirectory: () => entry.kind === 'directory',
+            isSymbolicLink: () => false,
+          }));
         }
-        if (readTarget?.kind === 'device-file') {
-          throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
-        }
-        if (readTarget?.kind === 'proc-directory') {
-          const names = procDirEntries(readTarget.path) ?? [];
-          if (!withFileTypes) return names;
-          return names.map((name) => {
-            const childPath = `${readTarget.path}/${name}`;
-            const kind = procEntryKind(childPath) ?? 'file';
-            return {
-              name,
-              path: readTarget.path,
-              parentPath: readTarget.path,
-              isFile: () => kind === 'file',
-              isDirectory: () => kind === 'directory',
-              isSymbolicLink: () => false,
-            };
-          });
-        }
-        if (readTarget?.kind === 'proc-file') {
-          throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
-        }
-        if (readTarget?.kind === 'error') {
-          throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${path}'`), { code: 'ENOENT' });
+        if (directoryTarget?.kind === 'error') {
+          throwRuntimeDirectoryTargetError(directoryTarget, directoryTarget.reason === 'not-directory'
+            ? `ENOTDIR: not a directory, scandir '${path}'`
+            : `ENOENT: no such file or directory, scandir '${path}'`);
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';

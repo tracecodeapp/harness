@@ -41,11 +41,19 @@ export type RuntimeKernelFileReadTarget =
   | { kind: 'proc-file'; path: string }
   | { kind: 'device-file'; path: RuntimeKernelDevicePath }
   | { kind: 'error'; reason: 'is-directory' | 'not-found'; path: string };
+export interface RuntimeKernelDirectoryEntry {
+  name: string;
+  kind: RuntimeKernelProcEntryKind | RuntimeKernelDeviceEntryKind;
+}
+export type RuntimeKernelDirectoryTarget =
+  | { kind: 'workspace' }
+  | { kind: 'directory'; path: string; entries: RuntimeKernelDirectoryEntry[] }
+  | { kind: 'error'; reason: 'not-directory' | 'not-found'; path: string };
 export type RuntimeKernelCopyTarget =
   | { kind: 'workspace' }
   | { kind: 'file-copy' }
   | { kind: 'error'; reason: 'source-directory' | 'source-not-found'; path: string };
-export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'EROFS';
+export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'ENOTDIR' | 'EROFS';
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -266,6 +274,41 @@ export function runtimeKernelFileReadErrorCode(
   reason: Extract<RuntimeKernelFileReadTarget, { kind: 'error' }>['reason']
 ): RuntimeKernelErrorCode {
   return reason === 'is-directory' ? 'EISDIR' : 'ENOENT';
+}
+
+export function runtimeKernelDirectoryTarget(path: string): RuntimeKernelDirectoryTarget {
+  const readTarget = runtimeKernelReadTarget(path);
+  if (readTarget.kind === 'workspace') return readTarget;
+  if (readTarget.kind === 'device-directory') {
+    return {
+      kind: 'directory',
+      path: readTarget.path,
+      entries: (runtimeDeviceDirEntries(readTarget.path) ?? []).map((name) => ({
+        name,
+        kind: runtimeDeviceEntryKind(`/dev/${name}` as RuntimeKernelDevicePath),
+      })),
+    };
+  }
+  if (readTarget.kind === 'proc-directory') {
+    return {
+      kind: 'directory',
+      path: readTarget.path,
+      entries: (runtimeProcDirEntries(readTarget.path) ?? []).map((name) => ({
+        name,
+        kind: runtimeProcEntryKind(`${readTarget.path}/${name}`) ?? 'file',
+      })),
+    };
+  }
+  if (readTarget.kind === 'device-file' || readTarget.kind === 'proc-file') {
+    return { kind: 'error', reason: 'not-directory', path: readTarget.path };
+  }
+  return readTarget;
+}
+
+export function runtimeKernelDirectoryErrorCode(
+  reason: Extract<RuntimeKernelDirectoryTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return reason === 'not-directory' ? 'ENOTDIR' : 'ENOENT';
 }
 
 export function runtimeKernelCopyTarget(source: string, destination: string): RuntimeKernelCopyTarget {

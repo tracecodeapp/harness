@@ -19,6 +19,7 @@ import {
   runtimeDeviceStat,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
+  runtimeKernelDirectoryTarget,
   runtimeKernelFileReadTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
@@ -308,6 +309,11 @@ function kernelCopyTarget(source: string, destination: string): ReturnType<typeo
   assertNoNul(source, 'Kernel path');
   assertNoNul(destination, 'Kernel path');
   return runtimeKernelCopyTarget(source, destination);
+}
+
+function kernelDirectoryTarget(path: string): ReturnType<typeof runtimeKernelDirectoryTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelDirectoryTarget(path);
 }
 
 function throwKernelMetadataTargetError(
@@ -708,48 +714,35 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   readdir(path: string): Promise<string[]> {
-    const devicePath = normalizeDevPath(path);
-    const deviceEntries = devicePath ? runtimeDeviceDirEntries(devicePath) : null;
-    if (deviceEntries) return Promise.resolve(deviceEntries);
-    if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
-    const procPath = normalizeProcPath(path);
-    const procEntries = procPath ? runtimeProcDirEntries(procPath) : null;
-    if (procEntries) return Promise.resolve(procEntries);
-    if (procPath !== null) return Promise.reject(new Error(`Kernel proc path is not a directory: ${path}`));
+    const directoryTarget = kernelDirectoryTarget(path);
+    if (directoryTarget.kind === 'directory') return Promise.resolve(directoryTarget.entries.map((entry) => entry.name));
+    if (directoryTarget.kind === 'error') {
+      return Promise.reject(new Error(
+        directoryTarget.reason === 'not-directory'
+          ? `Kernel virtual path is not a directory: ${path}`
+          : `Kernel virtual path not found: ${path}`
+      ));
+    }
     return this.base.readdir(this.mapPath(path));
   }
 
   readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath === '/dev') {
-      return Promise.resolve((runtimeDeviceDirEntries(devicePath) ?? []).map((name) => {
-        const kind = runtimeDeviceEntryKind(`/dev/${name}` as RuntimeKernelDevicePath);
-        return {
-          name,
-          isFile: kind === 'file',
-          isDirectory: kind === 'directory',
-          isSymbolicLink: false,
-        };
-      }));
+    const directoryTarget = kernelDirectoryTarget(path);
+    if (directoryTarget.kind === 'directory') {
+      return Promise.resolve(directoryTarget.entries.map((entry) => ({
+        name: entry.name,
+        isFile: entry.kind === 'file',
+        isDirectory: entry.kind === 'directory',
+        isSymbolicLink: false,
+      })));
     }
-    if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
-    const procPath = normalizeProcPath(path);
-    const procEntries = procPath ? runtimeProcDirEntries(procPath) : null;
-    if (procEntries) {
-      return Promise.resolve(procEntries.map((name) => {
-        const entryPath = `${procPath}/${name}`;
-        const stat = runtimeProcStat(entryPath, this.kernelInfo());
-        return {
-          name,
-          isFile: stat?.isFile ?? false,
-          isDirectory: stat?.isDirectory ?? false,
-          isSymbolicLink: false,
-        };
-      }));
+    if (directoryTarget.kind === 'error') {
+      return Promise.reject(new Error(
+        directoryTarget.reason === 'not-directory'
+          ? `Kernel virtual path is not a directory: ${path}`
+          : `Kernel virtual path not found: ${path}`
+      ));
     }
-    if (procPath !== null) return Promise.reject(new Error(`Kernel proc path is not a directory: ${path}`));
     if (!this.base.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
     return this.base.readdirWithFileTypes(this.mapPath(path));
   }
@@ -2550,12 +2543,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async readDir(path = '.'): Promise<string[]> {
-    const readTarget = kernelReadTarget(path);
-    if (readTarget.kind === 'proc-directory') return runtimeProcDirEntries(readTarget.path) ?? [];
-    if (readTarget.kind === 'proc-file') throw new Error(`Kernel proc path is not a directory: ${path}`);
-    if (readTarget.kind === 'device-directory') return runtimeDeviceDirEntries(readTarget.path) ?? [];
-    if (readTarget.kind === 'device-file') throw new Error(`Kernel device path is not a directory: ${path}`);
-    if (readTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
+    const directoryTarget = kernelDirectoryTarget(path);
+    if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name);
+    if (directoryTarget.kind === 'error') {
+      throw new Error(
+        directoryTarget.reason === 'not-directory'
+          ? `Kernel virtual path is not a directory: ${path}`
+          : `Kernel virtual path not found: ${path}`
+      );
+    }
     const entries = await this.bash.fs.readdir(this.toWorkspaceEntryPath(path));
     return [...entries].sort((left, right) => left.localeCompare(right));
   }
