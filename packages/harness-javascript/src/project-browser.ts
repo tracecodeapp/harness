@@ -354,8 +354,8 @@ function createReadableStdinDevice(input: string) {
   let offset = 0;
   let encoding: string | undefined;
   let flowScheduled = false;
-  const dataListeners: Array<(chunk: BrowserBuffer | string) => void> = [];
-  const endListeners: Array<() => void> = [];
+  const dataListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
+  const endListeners: Array<(chunk?: BrowserBuffer | string) => void> = [];
 
   const formatChunk = (chunk: BrowserBuffer): BrowserBuffer | string => (
     encoding ? chunk.toString(encoding) : chunk
@@ -379,6 +379,24 @@ function createReadableStdinDevice(input: string) {
       for (const listener of endListeners) listener();
     });
   };
+  const on = (event: string, listener: (chunk?: BrowserBuffer | string) => void) => {
+    if (event === 'data') {
+      dataListeners.push(listener);
+      scheduleFlow();
+    } else if (event === 'end') {
+      endListeners.push(listener);
+      scheduleFlow();
+    }
+    return stream;
+  };
+  const removeListener = (event: string, listener: (chunk?: BrowserBuffer | string) => void) => {
+    const listeners = event === 'data' ? dataListeners : event === 'end' ? endListeners : null;
+    if (listeners) {
+      const index = listeners.indexOf(listener);
+      if (index !== -1) listeners.splice(index, 1);
+    }
+    return stream;
+  };
   const stream = {
     fd: 0,
     readable: true,
@@ -388,17 +406,17 @@ function createReadableStdinDevice(input: string) {
       return stream;
     },
     read,
-    on: (event: string, listener: (chunk?: BrowserBuffer | string) => void) => {
-      if (event === 'data') {
-        dataListeners.push((chunk) => listener(chunk));
-        scheduleFlow();
-      } else if (event === 'end') {
-        endListeners.push(() => listener());
-        scheduleFlow();
-      }
-      return stream;
+    on,
+    addListener: on,
+    removeListener,
+    off: removeListener,
+    once: (event: string, listener: (chunk?: BrowserBuffer | string) => void) => {
+      const wrapped = (chunk?: BrowserBuffer | string) => {
+        removeListener(event, wrapped);
+        listener(chunk);
+      };
+      return stream.on(event, wrapped);
     },
-    once: (event: string, listener: (chunk?: BrowserBuffer | string) => void) => stream.on(event, listener),
     resume: () => stream,
     pause: () => stream,
     [Symbol.asyncIterator]: async function* () {
@@ -1167,8 +1185,15 @@ async function runBrowserJavaScriptProjectRequest(
         next.push(listener);
         listeners.set(event, next);
       };
-      const emit = (event: string, ...args: unknown[]): void => {
-        for (const listener of listeners.get(event) ?? []) listener(...args);
+      const removeListener = (event: string, listener: (...args: unknown[]) => void): void => {
+        const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== listener);
+        if (next.length === 0) listeners.delete(event);
+        else listeners.set(event, next);
+      };
+      const emit = (event: string, ...args: unknown[]): boolean => {
+        const current = listeners.get(event) ?? [];
+        for (const listener of current) listener(...args);
+        return current.length > 0;
       };
       const stream = {
         fd,
@@ -1197,10 +1222,22 @@ async function runBrowserJavaScriptProjectRequest(
           on(event, listener);
           return stream;
         },
+        addListener: (event: string, listener: (...args: unknown[]) => void) => {
+          on(event, listener);
+          return stream;
+        },
+        removeListener: (event: string, listener: (...args: unknown[]) => void) => {
+          removeListener(event, listener);
+          return stream;
+        },
+        off: (event: string, listener: (...args: unknown[]) => void) => {
+          removeListener(event, listener);
+          return stream;
+        },
+        emit,
         once: (event: string, listener: (...args: unknown[]) => void) => {
           const wrapped = (...args: unknown[]) => {
-            const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== wrapped);
-            listeners.set(event, next);
+            removeListener(event, wrapped);
             listener(...args);
           };
           on(event, wrapped);
@@ -1401,15 +1438,24 @@ async function runBrowserJavaScriptProjectRequest(
         next.push(listener);
         listeners.set(event, next);
       };
+      const removeListener = (event: string, listener: (...args: unknown[]) => void): void => {
+        const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== listener);
+        if (next.length === 0) listeners.delete(event);
+        else listeners.set(event, next);
+      };
       return {
         emit: (event: string, ...args: unknown[]) => {
-          for (const listener of listeners.get(event) ?? []) listener(...args);
+          const current = listeners.get(event) ?? [];
+          for (const listener of current) listener(...args);
+          return current.length > 0;
         },
         on,
+        addListener: on,
+        removeListener,
+        off: removeListener,
         once: (event: string, listener: (...args: unknown[]) => void) => {
           const wrapped = (...args: unknown[]) => {
-            const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== wrapped);
-            listeners.set(event, next);
+            removeListener(event, wrapped);
             listener(...args);
           };
           on(event, wrapped);
@@ -1446,6 +1492,19 @@ async function runBrowserJavaScriptProjectRequest(
           if (event === 'data' || event === 'end') scheduleRead();
           return stream;
         },
+        addListener: (event: string, listener: (...args: unknown[]) => void) => {
+          stream.on(event, listener);
+          return stream;
+        },
+        removeListener: (event: string, listener: (...args: unknown[]) => void) => {
+          events.removeListener(event, listener);
+          return stream;
+        },
+        off: (event: string, listener: (...args: unknown[]) => void) => {
+          events.off(event, listener);
+          return stream;
+        },
+        emit: (event: string, ...args: unknown[]) => events.emit(event, ...args),
         once: (event: string, listener: (...args: unknown[]) => void) => {
           events.once(event, listener);
           if (event === 'data' || event === 'end') scheduleRead();
@@ -1496,6 +1555,19 @@ async function runBrowserJavaScriptProjectRequest(
           events.on(event, listener);
           return stream;
         },
+        addListener: (event: string, listener: (...args: unknown[]) => void) => {
+          stream.on(event, listener);
+          return stream;
+        },
+        removeListener: (event: string, listener: (...args: unknown[]) => void) => {
+          events.removeListener(event, listener);
+          return stream;
+        },
+        off: (event: string, listener: (...args: unknown[]) => void) => {
+          events.off(event, listener);
+          return stream;
+        },
+        emit: (event: string, ...args: unknown[]) => events.emit(event, ...args),
         once: (event: string, listener: (...args: unknown[]) => void) => {
           events.once(event, listener);
           return stream;

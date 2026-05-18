@@ -2403,6 +2403,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node createWriteStream should emit live file mutations: ${JSON.stringify(streamEvents)}`
   );
 
+  const streamListenerAliasResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const seen = []; await new Promise((resolve, reject) => { const out = fs.createWriteStream(\\"stream-events.txt\\"); const removed = () => seen.push(\\"removed\\"); out.addListener(\\"finish\\", () => seen.push(\\"finish\\")); out.on(\\"finish\\", removed); out.off(\\"finish\\", removed); out.on(\\"error\\", reject); out.end(\\"ok\\\\n\\", resolve); }); const chunks = []; await new Promise((resolve, reject) => { const input = fs.createReadStream(\\"stream-events.txt\\", { encoding: \\"utf8\\" }); const removedData = () => chunks.push(\\"removed\\"); input.addListener(\\"data\\", removedData); input.removeListener(\\"data\\", removedData); input.addListener(\\"data\\", (chunk) => chunks.push(chunk)); input.addListener(\\"error\\", reject); input.addListener(\\"end\\", resolve); }); console.log(seen.join(\\"|\\")); console.log(chunks.join(\\"\\"));"',
+  ].join(' '));
+  assertCondition(streamListenerAliasResult.exitCode === 0, `browser node stream listener alias workflow should succeed: ${streamListenerAliasResult.stderr}`);
+  assertCondition(
+    streamListenerAliasResult.stdout === 'finish\nok\n\n',
+    `browser node file streams should support EventEmitter listener aliases: ${streamListenerAliasResult.stdout}`
+  );
+
   const fdStreamResult = await workspace.runCommand([
     'node',
     '-e',
@@ -2441,7 +2452,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const stdioEndResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const events = []; await new Promise((resolve) => { process.stdout.once(\\"finish\\", () => events.push(\\"out-finish\\")); process.stdout.end(\\"end-out\\\\n\\", resolve); }); await new Promise((resolve) => { process.stderr.once(\\"finish\\", () => events.push(\\"err-finish\\")); process.stderr.end(\\"end-err\\\\n\\", resolve); }); console.log(events.join(\\"\\,\\"));"',
+    '"const events = []; await new Promise((resolve) => { const removed = () => events.push(\\"removed-out\\"); process.stdout.addListener(\\"finish\\", removed); process.stdout.removeListener(\\"finish\\", removed); process.stdout.once(\\"finish\\", () => events.push(\\"out-finish\\")); process.stdout.end(\\"end-out\\\\n\\", resolve); }); await new Promise((resolve) => { const removed = () => events.push(\\"removed-err\\"); process.stderr.addListener(\\"finish\\", removed); process.stderr.off(\\"finish\\", removed); process.stderr.once(\\"finish\\", () => events.push(\\"err-finish\\")); process.stderr.end(\\"end-err\\\\n\\", resolve); }); console.log(events.join(\\"\\,\\"));"',
   ].join(' '));
   assertCondition(stdioEndResult.exitCode === 0, `browser node stdio end workflow should succeed: ${stdioEndResult.stderr}`);
   assertCondition(
@@ -2458,6 +2469,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   assertCondition(
     processStdinResult.stdout === 'from-process\n',
     `browser node process.stdin should expose request stdin as a readable device: ${JSON.stringify(processStdinResult)}`
+  );
+
+  const processStdinAliasResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"process.stdin.setEncoding(\\"utf8\\"); const chunks = []; const removed = () => chunks.push(\\"removed\\"); process.stdin.addListener(\\"data\\", removed); process.stdin.removeListener(\\"data\\", removed); process.stdin.addListener(\\"data\\", (chunk) => chunks.push(chunk)); process.stdin.once(\\"end\\", () => { chunks.push(\\"end\\"); console.log(chunks.join(\\"|\\")); }); process.stdin.resume();"',
+  ].join(' '), { stdin: 'stdin-alias\n' });
+  assertCondition(processStdinAliasResult.exitCode === 0, `browser node process.stdin listener alias workflow should succeed: ${processStdinAliasResult.stderr}`);
+  assertCondition(
+    processStdinAliasResult.stdout === 'stdin-alias\n|end\n',
+    `browser node process.stdin should support EventEmitter listener aliases: ${JSON.stringify(processStdinAliasResult)}`
   );
 
   const zlibResult = await workspace.runCommand([
