@@ -12,6 +12,7 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintStream;
 import java.io.PrintWriter;
+import java.io.RandomAccessFile;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.Charset;
@@ -410,6 +411,53 @@ public final class ProjectEvents {
     }
   }
 
+  public static final class ProjectRandomAccessFile extends RandomAccessFile {
+    private final Path path;
+    private final boolean writable;
+
+    public ProjectRandomAccessFile(String name, String mode) throws IOException {
+      super(randomAccessFileTarget(Path.of(name), mode), mode);
+      this.path = Path.of(name);
+      this.writable = randomAccessFileCanWrite(mode);
+    }
+
+    public ProjectRandomAccessFile(File file, String mode) throws IOException {
+      super(randomAccessFileTarget(file == null ? null : file.toPath(), mode), mode);
+      this.path = file == null ? null : file.toPath();
+      this.writable = randomAccessFileCanWrite(mode);
+    }
+
+    @Override
+    public void write(int value) throws IOException {
+      super.write(value);
+      if (writable) emitFileSnapshot(path);
+    }
+
+    @Override
+    public void write(byte[] bytes) throws IOException {
+      super.write(bytes);
+      if (writable) emitFileSnapshot(path);
+    }
+
+    @Override
+    public void write(byte[] bytes, int offset, int length) throws IOException {
+      super.write(bytes, offset, length);
+      if (writable) emitFileSnapshot(path);
+    }
+
+    @Override
+    public void setLength(long newLength) throws IOException {
+      super.setLength(newLength);
+      if (writable) emitFileSnapshot(path);
+    }
+
+    @Override
+    public void close() throws IOException {
+      super.close();
+      if (writable) emitFileSnapshot(path);
+    }
+  }
+
   private static final class ProjectOutputStream extends OutputStream {
     private final OutputStream delegate;
     private final Path path;
@@ -716,6 +764,15 @@ public final class ProjectEvents {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return temporaryDeviceFile();
     return path.toFile();
+  }
+
+  private static File randomAccessFileTarget(Path path, String mode) throws IOException {
+    if (randomAccessFileCanWrite(mode)) assertWritableProjectPath(path);
+    return path.toFile();
+  }
+
+  private static boolean randomAccessFileCanWrite(String mode) {
+    return mode != null && mode.indexOf('w') >= 0;
   }
 
   private static byte[] kernelInputBytes(Path path) throws IOException {
