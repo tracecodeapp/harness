@@ -2583,6 +2583,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node Stats metadata should track mode, owner, times, and predicates: ${statsMetadataResult.stdout}`
   );
 
+  const bigintStatsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, stats) => error ? reject(error) : resolve(stats))); fs.writeFileSync(\\"bigint-stats.txt\\", \\"abcdef\\"); const stat = fs.statSync(\\"bigint-stats.txt\\", { bigint: true }); const lstat = await fsp.lstat(\\"bigint-stats.txt\\", { bigint: true }); const callbackStat = await call((done) => fs.stat(\\"bigint-stats.txt\\", { bigint: true }, done)); const fd = fs.openSync(\\"bigint-stats.txt\\", \\"r\\"); const fstat = fs.fstatSync(fd, { bigint: true }); const callbackFstat = await call((done) => fs.fstat(fd, { bigint: true }, done)); fs.closeSync(fd); const proc = await fsp.stat(\\"/proc/kernel/info\\", { bigint: true }); const handle = await fsp.open(\\"bigint-stats.txt\\", \\"r\\"); const handleStat = await handle.stat({ bigint: true }); await handle.close(); console.log(typeof stat.size + \\":\\" + stat.size.toString() + \\":\\" + typeof stat.mode + \\":\\" + stat.isFile()); console.log(typeof lstat.ino + \\":\\" + typeof callbackStat.blocks + \\":\\" + callbackStat.size.toString()); console.log(typeof fstat.size + \\":\\" + fstat.size.toString() + \\":\\" + callbackFstat.size.toString()); console.log(typeof proc.size + \\":\\" + proc.isFile() + \\":\\" + handleStat.size.toString());"',
+  ].join(' '));
+  assertCondition(bigintStatsResult.exitCode === 0, `browser node BigInt Stats workflow should succeed: ${bigintStatsResult.stderr}`);
+  assertCondition(
+    bigintStatsResult.stdout === 'bigint:6:bigint:true\nbigint:bigint:6\nbigint:6:6\nbigint:true:6\n',
+    `browser node stat/lstat/fstat APIs should honor { bigint: true }: ${bigintStatsResult.stdout}`
+  );
+
   const statfsResult = await workspace.runCommand([
     'node',
     '-e',
