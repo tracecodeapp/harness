@@ -5810,7 +5810,13 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   const cppTimeouts: Array<number | undefined> = [];
   const pythonLiveReadPromises: Promise<string>[] = [];
   const nodeLiveReadPromises: Promise<string>[] = [];
+  const javaLiveReadPromises: Promise<string>[] = [];
+  const csharpLiveReadPromises: Promise<string>[] = [];
+  const cppLiveReadPromises: Promise<string>[] = [];
   const nodeEvents: RuntimeCommandEvent[] = [];
+  const javaEvents: RuntimeCommandEvent[] = [];
+  const csharpEvents: RuntimeCommandEvent[] = [];
+  const cppEvents: RuntimeCommandEvent[] = [];
   const workspace = await createBrowserProjectWorkspace({
     files: [
       { path: 'main.py', contents: 'print("python")\n' },
@@ -5838,8 +5844,9 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       terminate() {},
     },
     javaWorkerClient: {
-      async executeProjectJava(request, timeoutMs) {
+      async executeProjectJava(request, timeoutMs, onEvent) {
         javaTimeoutMs = timeoutMs;
+        onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'java-live.txt', contents: 'java-live\n' } });
         return {
           stdout: `${request.source}:${request.scriptPath}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
           stderr: '',
@@ -5850,8 +5857,9 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       terminate() {},
     },
     csharpWorkerClient: {
-      async executeProjectCSharp(request, timeoutMs) {
+      async executeProjectCSharp(request, timeoutMs, onEvent) {
         csharpTimeoutMs = timeoutMs;
+        onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'csharp-live.txt', contents: 'csharp-live\n' } });
         return {
           stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
           stderr: '',
@@ -5862,8 +5870,11 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       terminate() {},
     },
     cppWorkerClient: {
-      async executeProjectCpp(request, timeoutMs) {
+      async executeProjectCpp(request, timeoutMs, onEvent) {
         cppTimeouts.push(timeoutMs);
+        if (request.source === 'compile') {
+          onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'cpp-live.txt', contents: 'cpp-live\n' } });
+        }
         return {
           stdout: `${request.source}:${request.scriptPath}:${request.args.join(',')}:${request.project.files.length}:${request.project.directories?.length ?? 0}\n`,
           stderr: '',
@@ -5923,23 +5934,71 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       `browser project workspace should emit Node process status events: ${JSON.stringify(nodeEvents)}`
     );
 
-    const java = await workspace.runCommand('java Main');
+    const java = await workspace.runCommand('java Main', {
+      onEvent: (event) => {
+        javaEvents.push(event);
+        if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'java-live.txt') {
+          javaLiveReadPromises.push(workspace.readFile('java-live.txt'));
+        }
+      },
+    });
     assertCondition(java.exitCode === 0, `browser project workspace java should succeed: ${java.stderr}`);
     assertCondition(java.stdout === 'run:Main:8:2\n', `browser project workspace should wire Java runner with directories: ${java.stdout}`);
     assertCondition(javaTimeoutMs === 12, 'browser project workspace should pass javaProjectTimeoutMs to the Java runner');
     assertCondition(await workspace.readFile('java.txt') === 'java\n', 'browser project workspace should apply Java file changes');
+    assertCondition(await workspace.readFile('java-live.txt') === 'java-live\n', 'browser project workspace should apply Java live file changes');
+    assertCondition(
+      (await Promise.all(javaLiveReadPromises)).includes('java-live\n'),
+      'browser project workspace should apply Java live file changes before forwarding the event'
+    );
+    assertCondition(
+      javaEvents.filter((event) => event.type === 'file-change' && event.change.path === 'java-live.txt').length === 1,
+      `browser project workspace should not duplicate Java live file-change events: ${JSON.stringify(javaEvents)}`
+    );
 
-    const csharp = await workspace.runCommand('dotnet run alpha beta');
+    const csharp = await workspace.runCommand('dotnet run alpha beta', {
+      onEvent: (event) => {
+        csharpEvents.push(event);
+        if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'csharp-live.txt') {
+          csharpLiveReadPromises.push(workspace.readFile('csharp-live.txt'));
+        }
+      },
+    });
     assertCondition(csharp.exitCode === 0, `browser project workspace C# should succeed: ${csharp.stderr}`);
-    assertCondition(csharp.stdout === 'run:<project>:alpha,beta:9:2\n', `browser project workspace should wire C# runner with directories: ${csharp.stdout}`);
+    assertCondition(csharp.stdout === 'run:<project>:alpha,beta:10:2\n', `browser project workspace should wire C# runner with directories: ${csharp.stdout}`);
     assertCondition(csharpTimeoutMs === 13, 'browser project workspace should pass csharpProjectTimeoutMs to the C# runner');
     assertCondition(await workspace.readFile('csharp.txt') === 'csharp\n', 'browser project workspace should apply C# file changes');
+    assertCondition(await workspace.readFile('csharp-live.txt') === 'csharp-live\n', 'browser project workspace should apply C# live file changes');
+    assertCondition(
+      (await Promise.all(csharpLiveReadPromises)).includes('csharp-live\n'),
+      'browser project workspace should apply C# live file changes before forwarding the event'
+    );
+    assertCondition(
+      csharpEvents.filter((event) => event.type === 'file-change' && event.change.path === 'csharp-live.txt').length === 1,
+      `browser project workspace should not duplicate C# live file-change events: ${JSON.stringify(csharpEvents)}`
+    );
 
-    const cpp = await workspace.runCommand('clang++ main.cpp -o a.out');
+    const cpp = await workspace.runCommand('clang++ main.cpp -o a.out', {
+      onEvent: (event) => {
+        cppEvents.push(event);
+        if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'cpp-live.txt') {
+          cppLiveReadPromises.push(workspace.readFile('cpp-live.txt'));
+        }
+      },
+    });
     assertCondition(cpp.exitCode === 0, `browser project workspace C++ should succeed: ${cpp.stderr}`);
-    assertCondition(cpp.stdout === 'compile:main.cpp:main.cpp,-o,a.out:10:2\n', `browser project workspace should wire C++ runner with directories: ${cpp.stdout}`);
+    assertCondition(cpp.stdout === 'compile:main.cpp:main.cpp,-o,a.out:12:2\n', `browser project workspace should wire C++ runner with directories: ${cpp.stdout}`);
     assertCondition(cppTimeouts[0] === 14, 'browser project workspace should pass cppProjectTimeoutMs to C++ compile runner calls');
     assertCondition(await workspace.readFile('cpp.txt') === 'cpp\n', 'browser project workspace should apply C++ file changes');
+    assertCondition(await workspace.readFile('cpp-live.txt') === 'cpp-live\n', 'browser project workspace should apply C++ live file changes');
+    assertCondition(
+      (await Promise.all(cppLiveReadPromises)).includes('cpp-live\n'),
+      'browser project workspace should apply C++ live file changes before forwarding the event'
+    );
+    assertCondition(
+      cppEvents.filter((event) => event.type === 'file-change' && event.change.path === 'cpp-live.txt').length === 1,
+      `browser project workspace should not duplicate C++ live file-change events: ${JSON.stringify(cppEvents)}`
+    );
 
     const cppRunEvents: RuntimeCommandEvent[] = [];
     const cppRun = await workspace.runCommand('./a.out alpha beta', {
@@ -5947,7 +6006,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     });
     assertCondition(cppRun.exitCode === 0, `browser project workspace C++ executable should run: ${cppRun.stderr}`);
     assertCondition(
-      cppRun.stdout === 'run:a.out:alpha,beta:11:2\n',
+      cppRun.stdout === 'run:a.out:alpha,beta:14:2\n',
       `browser project workspace should route direct C++ executable runs with directories: ${cppRun.stdout}`
     );
     assertCondition(
@@ -5955,7 +6014,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
         event.type === 'output' &&
         event.stream === 'stdout' &&
         event.device === '/dev/stdout' &&
-        event.data === 'run:a.out:alpha,beta:11:2\n'
+        event.data === 'run:a.out:alpha,beta:14:2\n'
       ),
       `browser project workspace should emit final stdout events for direct C++ executable runs: ${JSON.stringify(cppRunEvents)}`
     );
