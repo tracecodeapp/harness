@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
+import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
+import type { RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
 interface CSharpWorkerResponse {
   success: boolean;
@@ -99,6 +101,60 @@ function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+async function testBrowserCSharpProjectBridgeFinalDiffApplication(): Promise<void> {
+  const applied: string[] = [];
+  const observed: RuntimeCommandEvent[] = [];
+  const runner = createBrowserCSharpProjectRunner(
+    {
+      async executeProjectCSharp(request, _timeoutMs, onEvent) {
+        onEvent?.({
+          type: 'file-change',
+          phase: 'final-diff',
+          change: { path: 'generated.txt', contents: `${request.source}:generated\n` },
+        });
+        onEvent?.({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'after-final-diff\n' });
+        return {
+          stdout: 'after-final-diff\n',
+          stderr: '',
+          exitCode: 0,
+          files: [{ path: 'generated.txt', contents: `${request.source}:generated\n` }],
+        };
+      },
+    },
+    {
+      applyFileChange: async (change, phase) => {
+        applied.push(`${phase}:${change.path}`);
+        return false;
+      },
+    }
+  );
+
+  const result = await runner({
+    code: '',
+    source: 'run',
+    scriptPath: '<project>',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: { files: [] },
+    onEvent: (event) => observed.push(event),
+  });
+
+  assertCondition(
+    applied.join(',') === 'final-diff:generated.txt',
+    `C# browser bridge should apply worker final-diff once, received ${JSON.stringify(applied)}`
+  );
+  assertCondition(
+    !result.files?.length,
+    `C# browser bridge should not return already-applied final diffs: ${JSON.stringify(result.files)}`
+  );
+  assertCondition(
+    observed.some((event) => event.type === 'output' && event.data === 'after-final-diff\n'),
+    `C# browser bridge should continue streaming output after applied final diffs: ${JSON.stringify(observed)}`
+  );
 }
 
 function createExternalCSharpDllBase64(): string {
@@ -415,6 +471,8 @@ function fixture(name: string): string {
 }
 
 async function main(): Promise<void> {
+  await testBrowserCSharpProjectBridgeFinalDiffApplication();
+
   const csharpDotnetJs = join(ROOT, 'workers', 'vendor', 'csharp', '_framework', 'dotnet.js');
   assertCondition(existsSync(csharpDotnetJs), 'Expected vendored C# AppBundle at workers/vendor/csharp');
 

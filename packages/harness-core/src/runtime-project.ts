@@ -315,6 +315,7 @@ export async function runRuntimeProjectWorkerBridge<
 >(options: RuntimeProjectWorkerBridgeOptions<Request, Result>): Promise<Result> {
   const outputTracker = new RuntimeProjectOutputTracker();
   const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
+  const appliedFinalDiffPaths = new Set<string>();
   const io = createRuntimeProjectIoBridge((event) => {
     outputTracker.observe(event);
     options.request.onEvent?.(event);
@@ -326,7 +327,11 @@ export async function runRuntimeProjectWorkerBridge<
   const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
     if (eventQueue) {
       eventQueue.enqueue(event, {
-        applyFileChange: options.applyFileChange as (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>,
+        applyFileChange: async (change, phase) => {
+          const shouldEmit = await options.applyFileChange?.(change, phase);
+          if (phase === 'final-diff') appliedFinalDiffPaths.add(runtimeFileChangePath(change));
+          return shouldEmit;
+        },
         emit: emitWorkerEvent,
       });
       return;
@@ -337,13 +342,19 @@ export async function runRuntimeProjectWorkerBridge<
   const { onEvent: _onEvent, ...workerRequest } = options.request;
   const result = await options.run(workerRequest, forwardWorkerEvent);
   await eventQueue?.flush();
+  const commandResult =
+    appliedFinalDiffPaths.size > 0
+      ? (filterRuntimeCommandResultFiles(result, (change) =>
+          appliedFinalDiffPaths.has(runtimeFileChangePath(change))
+        ) as Result)
+      : result;
   io.status(
     options.finishPhase,
     options.finishMessage,
-    options.finishDetail ? options.finishDetail(result) : { exitCode: result.exitCode }
+    options.finishDetail ? options.finishDetail(commandResult) : { exitCode: commandResult.exitCode }
   );
-  outputTracker.emitMissingFinalOutput(result, (stream, data) => io.output(stream, data));
-  return result;
+  outputTracker.emitMissingFinalOutput(commandResult, (stream, data) => io.output(stream, data));
+  return commandResult;
 }
 
 export type RuntimeWorkspaceEvent = RuntimeCommandEvent;
