@@ -5182,6 +5182,8 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   let csharpTimeoutMs: number | undefined;
   const cppTimeouts: Array<number | undefined> = [];
   const pythonLiveReadPromises: Promise<string>[] = [];
+  const nodeLiveReadPromises: Promise<string>[] = [];
+  const nodeEvents: RuntimeCommandEvent[] = [];
   const workspace = await createBrowserProjectWorkspace({
     files: [
       { path: 'main.py', contents: 'print("python")\n' },
@@ -5269,9 +5271,25 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     );
     assertCondition((await workspace.readDir('empty')).join(',') === 'child', 'browser project workspace should preserve empty directories in snapshots');
 
-    const node = await workspace.runCommand('node index.js');
+    const node = await workspace.runCommand('node index.js', {
+      onEvent: (event) => {
+        if (event.type === 'file-change' && event.change.path === 'node.txt') {
+          nodeEvents.push(event);
+          if (event.phase === 'live') nodeLiveReadPromises.push(workspace.readFile('node.txt'));
+        }
+      },
+    });
     assertCondition(node.exitCode === 0, `browser project workspace node should succeed: ${node.stderr}`);
     assertCondition(await workspace.readFile('node.txt') === 'node\n', 'browser project workspace should wire browser Node runner');
+    assertCondition(
+      (await Promise.all(nodeLiveReadPromises)).includes('node\n'),
+      'browser project workspace should apply Node live file changes before forwarding the event'
+    );
+    assertCondition(
+      nodeEvents.filter((event) => event.type === 'file-change' && event.change.path === 'node.txt').length === 1 &&
+        nodeEvents.some((event) => event.type === 'file-change' && event.change.path === 'node.txt' && event.phase === 'live'),
+      `browser project workspace should not re-emit Node live file changes as final-diff: ${JSON.stringify(nodeEvents)}`
+    );
 
     const java = await workspace.runCommand('java Main');
     assertCondition(java.exitCode === 0, `browser project workspace java should succeed: ${java.stderr}`);

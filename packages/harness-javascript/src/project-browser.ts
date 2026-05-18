@@ -12,7 +12,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
-import { RuntimeProjectEventQueue, createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
+import { RuntimeProjectEventQueue, createRuntimeProjectIoBridge, runtimeFileChangePath } from '../../harness-core/src/runtime-project';
 import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
@@ -1278,11 +1278,16 @@ async function runBrowserJavaScriptProjectRequest(
 
     const stdout: string[] = [];
     const stderr: string[] = [];
+    const appliedFileChangePaths = new Set<string>();
     const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
     const emitRuntimeEvent = (event: RuntimeCommandEvent): void => {
       if (eventQueue) {
         eventQueue.enqueue(event, {
-          applyFileChange: options.applyFileChange as (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>,
+          applyFileChange: async (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => {
+            const shouldEmit = await options.applyFileChange?.(change, phase);
+            appliedFileChangePaths.add(runtimeFileChangePath(change));
+            return shouldEmit;
+          },
           emit: (nextEvent) => request.onEvent?.(nextEvent),
         });
         return;
@@ -4036,20 +4041,23 @@ async function runBrowserJavaScriptProjectRequest(
       }
 
       await eventQueue?.flush();
+      const files = [
+        ...Array.from(fileStore.entries())
+        .filter(([path, contents]) => !byteEqual(originalFiles.get(path), contents))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, contents]) => bytesToRuntimeFile(path, contents)),
+        ...Array.from(originalFiles.keys())
+          .filter((path) => !fileStore.has(path))
+          .sort((left, right) => left.localeCompare(right))
+          .map((path): RuntimeFileChange => ({ path, deleted: true })),
+      ]
+        .filter((change) => !appliedFileChangePaths.has(runtimeFileChangePath(change)))
+        .sort((left, right) => left.path.localeCompare(right.path));
       return {
         stdout: stdout.join(''),
         stderr: stderr.join(''),
         exitCode: 0,
-        files: [
-          ...Array.from(fileStore.entries())
-          .filter(([path, contents]) => !byteEqual(originalFiles.get(path), contents))
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([path, contents]) => bytesToRuntimeFile(path, contents)),
-          ...Array.from(originalFiles.keys())
-            .filter((path) => !fileStore.has(path))
-            .sort((left, right) => left.localeCompare(right))
-            .map((path): RuntimeFileChange => ({ path, deleted: true })),
-        ].sort((left, right) => left.path.localeCompare(right.path)),
+        ...(files.length > 0 ? { files } : {}),
       };
     } catch (error) {
       const exitCode = typeof (error as { exitCode?: unknown }).exitCode === 'number'
