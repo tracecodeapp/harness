@@ -122,6 +122,7 @@ export async function createBrowserProjectWorkspace(
     }),
     nodeRunner: createBrowserJavaScriptProjectRunner({
       timeoutMs: nodeProjectTimeoutMs,
+      applyFileChange: applyWorkerFileChange,
       ...nodeProject,
     }),
     javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {

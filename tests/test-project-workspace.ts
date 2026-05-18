@@ -5204,6 +5204,14 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       nodeEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'node-canonical.txt'),
       `browser Node should stream canonical absolute file mutations live: ${JSON.stringify(nodeEvents)}`
     );
+    assertCondition(
+      events.filter((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'node-canonical.txt'
+      ).length === 1,
+      `browser Node workspace file mutations should be applied once through the kernel hook: ${JSON.stringify(events)}`
+    );
 
     const java = await workspace.runCommand('java Main', { cwd: '/workspace' });
     assertCondition(java.exitCode === 0, `browser Java project command should succeed with alias cwd: ${java.stderr}`);
