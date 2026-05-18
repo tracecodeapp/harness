@@ -19,6 +19,7 @@ import {
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
   runtimeKernelDeviceInputSource,
+  runtimeKernelDeviceOutputRoute,
   runtimeKernelDeviceOutputTarget,
   runtimeKernelDirectoryErrorCode,
   runtimeKernelDirectoryTarget,
@@ -1625,12 +1626,12 @@ async function runBrowserJavaScriptProjectRequest(
     };
 
     const writeDevice = (device: RuntimeKernelDevicePath, data: string): void => {
-      const outputDevice = runtimeKernelDeviceOutputTarget(kernelDevices, device);
-      if (!outputDevice) {
+      const route = runtimeKernelDeviceOutputRoute(kernelDevices, device);
+      if (!route) {
+        if (runtimeKernelDeviceOutputTarget(kernelDevices, device) === '/dev/null') return;
         throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       }
-      if (outputDevice === '/dev/null') return;
-      emitOutput(outputDevice === '/dev/stderr' ? 'stderr' : 'stdout', data, outputDevice, device !== outputDevice ? device : undefined);
+      emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
     };
 
     const stdinBytes = utf8Bytes(request.stdin);

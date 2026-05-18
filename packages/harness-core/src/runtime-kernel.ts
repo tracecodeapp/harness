@@ -1,4 +1,10 @@
-import type { RuntimeFile, RuntimeKernelDeviceInfo, RuntimeKernelDevicePath, RuntimeKernelInfo } from './runtime-project';
+import type {
+  RuntimeCommandEventStream,
+  RuntimeFile,
+  RuntimeKernelDeviceInfo,
+  RuntimeKernelDevicePath,
+  RuntimeKernelInfo,
+} from './runtime-project';
 
 export type RuntimeKernelProcEntryKind = 'file' | 'directory';
 export type RuntimeKernelDeviceEntryKind = 'file' | 'directory';
@@ -135,6 +141,11 @@ export type RuntimeKernelVirtualPath =
   | { kind: 'device'; path: RuntimeKernelDevicePath }
   | { kind: 'device-directory'; path: '/dev' }
   | { kind: 'device-namespace'; path: string };
+export interface RuntimeKernelDeviceOutputRoute {
+  outputDevice: RuntimeKernelDevicePath;
+  stream: RuntimeCommandEventStream;
+  sourceDevice?: RuntimeKernelDevicePath;
+}
 export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['null', 'stderr', 'stdin', 'stdout', 'tty'] as const;
 
 function normalizeRuntimeAbsolutePath(path: string): string | null {
@@ -260,6 +271,21 @@ export function runtimeKernelDeviceOutputTarget(
   const info = runtimeKernelDeviceInfo(devices, device);
   if (!info?.writable) return null;
   return normalizeDeviceReference(info.outputDevice) ?? device;
+}
+
+export function runtimeKernelDeviceOutputRoute(
+  devices: readonly RuntimeKernelDeviceInfo[] | undefined,
+  device: RuntimeKernelDevicePath
+): RuntimeKernelDeviceOutputRoute | null {
+  const outputDevice = devices
+    ? runtimeKernelDeviceOutputTarget(devices, device)
+    : runtimeDeviceOutputTarget(device);
+  if (!outputDevice || outputDevice === '/dev/null') return null;
+  return {
+    outputDevice,
+    stream: outputDevice === '/dev/stderr' ? 'stderr' : 'stdout',
+    ...(device !== outputDevice ? { sourceDevice: device } : {}),
+  };
 }
 
 export function runtimeDeviceDirEntries(

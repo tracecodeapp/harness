@@ -27,6 +27,7 @@ import {
 import {
   runtimeKernelCopyTarget,
   runtimeKernelDirectoryTarget,
+  runtimeKernelDeviceOutputRoute,
   runtimeKernelDeviceOutputTarget,
   runtimeKernelFileCopyTarget,
   runtimeKernelFileCopyErrorCode,
@@ -127,6 +128,12 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     runtimeKernelDeviceOutputTarget(devices, '/dev/tee') === '/dev/capture',
     'kernel output target should resolve manifest device aliases'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelDeviceOutputRoute(devices, '/dev/tee')) ===
+      '{"outputDevice":"/dev/capture","sourceDevice":"/dev/tee","stream":"stdout"}' &&
+      stableStringify(runtimeKernelDeviceOutputRoute(undefined, '/dev/null')) === 'null',
+    'kernel output route should map device writes to command streams and discard /dev/null'
   );
   assertCondition(
     stableStringify(runtimeKernelWriteTarget('/dev/capture', devices)) ===

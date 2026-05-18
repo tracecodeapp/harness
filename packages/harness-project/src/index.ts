@@ -17,6 +17,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeKernelAccessTarget,
+  runtimeKernelDeviceOutputRoute,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileCopyTarget,
   runtimeKernelFileReadErrorMessage,
@@ -2506,18 +2507,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private writeDevice(device: RuntimeKernelDevicePath, data: string, actor?: RuntimeWorkspaceActor): void {
-    const outputDevice = runtimeDeviceOutputTarget(device);
-    if (!outputDevice) throw new Error(`Kernel device is read-only: ${device}`);
-    if (outputDevice === '/dev/null') return;
+    const route = runtimeKernelDeviceOutputRoute(undefined, device);
+    if (!route) {
+      if (runtimeDeviceOutputTarget(device) === '/dev/null') return;
+      throw new Error(`Kernel device is read-only: ${device}`);
+    }
     if (this.activeCommandActor) {
-      if (outputDevice === '/dev/stdout') this.activeDeviceStdout += data;
-      if (outputDevice === '/dev/stderr') this.activeDeviceStderr += data;
+      if (route.stream === 'stdout') this.activeDeviceStdout += data;
+      if (route.stream === 'stderr') this.activeDeviceStderr += data;
     }
     this.emitLocalRuntimeEvent({
       type: 'output',
-      stream: outputDevice === '/dev/stderr' ? 'stderr' : 'stdout',
-      device: outputDevice,
-      ...(device !== outputDevice ? { sourceDevice: device } : {}),
+      stream: route.stream,
+      device: route.outputDevice,
+      ...(route.sourceDevice ? { sourceDevice: route.sourceDevice } : {}),
       data,
       ...(actor ? { actor } : {}),
     });
