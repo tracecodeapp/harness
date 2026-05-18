@@ -1063,6 +1063,11 @@ class _TraceProjectFile:
         self._emit()
         return _result
 
+    def truncate(self, *args, **kwargs):
+        _result = self._handle.truncate(*args, **kwargs)
+        self._emit()
+        return _result
+
     def flush(self):
         _result = self._handle.flush()
         self._emit()
@@ -1426,6 +1431,8 @@ def _install_virtual_workspace_paths():
     _original_os_read = os.read
     _original_os_write = os.write
     _original_os_close = os.close
+    _original_os_truncate = getattr(os, "truncate", None)
+    _original_os_ftruncate = getattr(os, "ftruncate", None)
     _open_file_descriptors = {}
     _device_file_descriptors = {}
     _proc_file_descriptors = {}
@@ -1553,6 +1560,30 @@ def _install_virtual_workspace_paths():
             if _absolute_path:
                 _emit_file_change_for_absolute(_absolute_path)
 
+    def _patched_os_truncate(_path, _length):
+        _proc_path = _normalize_proc_path(_path)
+        if _proc_path:
+            raise OSError("Kernel proc path is read-only: " + _proc_path)
+        _device = _normalize_device_path(_path)
+        if _device:
+            raise OSError("Kernel device is not truncateable: " + _device)
+        _mapped_path = _map_workspace_path(_path)
+        _absolute_path = _absolute_mapped_path(_mapped_path)
+        _result = _original_os_truncate(_mapped_path, _length)
+        _emit_file_change_for_absolute(_absolute_path)
+        return _result
+
+    def _patched_os_ftruncate(_fd, _length):
+        if _fd in _device_file_descriptors:
+            raise OSError("Kernel device is not truncateable: " + str(_device_file_descriptors[_fd].get("device", "")))
+        if _fd in _proc_file_descriptors:
+            raise OSError("Kernel proc path is read-only")
+        _result = _original_os_ftruncate(_fd, _length)
+        _absolute_path = _open_file_descriptors.get(_fd)
+        if _absolute_path:
+            _emit_file_change_for_absolute(_absolute_path)
+        return _result
+
     builtins.open = _patched_open
     io.open = _patched_open
     os.getcwd = _patched_getcwd
@@ -1561,6 +1592,10 @@ def _install_virtual_workspace_paths():
     os.read = _patched_os_read
     os.write = _patched_os_write
     os.close = _patched_os_close
+    if _original_os_truncate is not None:
+        os.truncate = _patched_os_truncate
+    if _original_os_ftruncate is not None:
+        os.ftruncate = _patched_os_ftruncate
 
     def _patch_one(_target, _name):
         _original = getattr(_target, _name, None)
@@ -1656,6 +1691,10 @@ def _install_virtual_workspace_paths():
         os.read = _original_os_read
         os.write = _original_os_write
         os.close = _original_os_close
+        if _original_os_truncate is not None:
+            os.truncate = _original_os_truncate
+        if _original_os_ftruncate is not None:
+            os.ftruncate = _original_os_ftruncate
         for _target, _name, _original in reversed(_patched):
             setattr(_target, _name, _original)
 
