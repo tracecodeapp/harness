@@ -463,12 +463,16 @@ public final class ProjectEvents {
 
   public static Path setLastModifiedTime(Path path, FileTime time) throws IOException {
     assertWritableProjectPath(path);
-    return Files.setLastModifiedTime(path, time);
+    Path result = Files.setLastModifiedTime(path, time);
+    emitPathSnapshot(path);
+    return result;
   }
 
   public static Path setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
     assertWritableProjectPath(path);
-    return Files.setAttribute(path, attribute, value, options);
+    Path result = Files.setAttribute(path, attribute, value, options);
+    emitPathSnapshot(path);
+    return result;
   }
 
   public static void delete(Path path) throws IOException {
@@ -1215,7 +1219,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setLastModified(time);
+      boolean result = super.setLastModified(time);
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
 
     @Override
@@ -1225,7 +1231,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setReadOnly();
+      boolean result = super.setReadOnly();
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
 
     @Override
@@ -1235,7 +1243,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setWritable(writable);
+      boolean result = super.setWritable(writable);
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
 
     @Override
@@ -1245,7 +1255,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setWritable(writable, ownerOnly);
+      boolean result = super.setWritable(writable, ownerOnly);
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
 
     @Override
@@ -1255,7 +1267,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setReadable(readable);
+      boolean result = super.setReadable(readable);
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
 
     @Override
@@ -1265,7 +1279,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setReadable(readable, ownerOnly);
+      boolean result = super.setReadable(readable, ownerOnly);
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
 
     @Override
@@ -1275,7 +1291,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setExecutable(executable);
+      boolean result = super.setExecutable(executable);
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
 
     @Override
@@ -1285,7 +1303,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.setExecutable(executable, ownerOnly);
+      boolean result = super.setExecutable(executable, ownerOnly);
+      if (result) emitPathSnapshot(toPath());
+      return result;
     }
   }
 
@@ -2229,6 +2249,15 @@ public final class ProjectEvents {
       emitFileSnapshotNative(relativePath, Base64.getEncoder().encodeToString(Files.readAllBytes(path)));
     } catch (UnsatisfiedLinkError | SecurityException | IOException ignored) {
       // Final-diff persistence still captures writes when live browser bridge emission is unavailable.
+    }
+  }
+
+  private static void emitPathSnapshot(Path path) {
+    if (path == null) return;
+    if (Files.isDirectory(path)) {
+      emitDirectoryCreate(path);
+    } else {
+      emitFileSnapshot(path);
     }
   }
 

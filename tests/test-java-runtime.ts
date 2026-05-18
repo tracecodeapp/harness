@@ -1406,6 +1406,16 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'nio-created.txt',
                 ''
               );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'nio-created.txt',
+                ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'nio-created.txt',
+                ''
+              );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
                 null,
                 'live-dir'
@@ -1453,6 +1463,21 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
                 'classic-created.txt',
+                ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'classic-metadata.txt',
+                ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'classic-metadata.txt',
+                ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'classic-metadata.txt',
                 ''
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
@@ -1523,6 +1548,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   { path: 'byte-channel.bin', contents: Buffer.from([0, 7, 6]).toString('base64'), encoding: 'base64' },
                   { path: 'random.bin', contents: Buffer.from([0, 9, 8]).toString('base64'), encoding: 'base64' },
                   { path: 'classic-created.txt', contents: '', encoding: 'base64' },
+                  { path: 'classic-metadata.txt', contents: '', encoding: 'base64' },
                   { path: 'classic-renamed.txt', contents: Buffer.from('classic\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'stdin-copy.txt', contents: Buffer.from('from-stdin\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'writer-before-output.txt', contents: Buffer.from('before-output\n', 'utf8').toString('base64'), encoding: 'base64' },
@@ -2015,6 +2041,10 @@ async function main(): Promise<void> {
               '    try (var channel = Files.newByteChannel(Path.of("byte-channel.bin"), EnumSet.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))) { channel.write(ByteBuffer.wrap(new byte[] { 0, 7, 6, 5 })); channel.truncate(3); }',
               '    try (var raf = new RandomAccessFile("random.bin", "rw")) { raf.write(new byte[] { 0, 1, 2, 3 }); raf.seek(1); raf.write(new byte[] { 9, 8 }); raf.setLength(3); }',
               '    new File("classic-created.txt").createNewFile();',
+              '    var classicMetadata = new File("classic-metadata.txt");',
+              '    classicMetadata.createNewFile();',
+              '    classicMetadata.setLastModified(1L);',
+              '    classicMetadata.setReadOnly();',
               '    new File("classic-dir/child").mkdirs();',
               '    new File("classic-dir/child").renameTo(new File("classic-dir/renamed-child"));',
               '    new File("classic-dir/renamed-child").delete();',
@@ -2461,6 +2491,16 @@ async function main(): Promise<void> {
       `Java execute-project-java should emit live NIO stream file-change project events: ${JSON.stringify(projectExecute.events)}`
     );
     assertCondition(
+      (projectExecute.events || []).filter(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'nio-created.txt' &&
+          event.change.contents === ''
+      ).length >= 3,
+      `Java execute-project-java should emit live NIO metadata-only file-change events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
       projectExecute.events?.some(
         (event) =>
           event.type === 'file-change' &&
@@ -2554,6 +2594,16 @@ async function main(): Promise<void> {
             event.change.deleted === true
         ) === true,
       `Java execute-project-java should emit live java.io.File mutator events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
+      (projectExecute.events || []).filter(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'classic-metadata.txt' &&
+          event.change.contents === ''
+      ).length >= 3,
+      `Java execute-project-java should emit live java.io.File metadata-only file-change events: ${JSON.stringify(projectExecute.events)}`
     );
     assertCondition(
       projectExecute.events?.some(
