@@ -917,6 +917,96 @@ function createOsApi(workspaceRoot: string) {
   };
 }
 
+function createBrowserEventLoopApi(executionState: BrowserJavaScriptProjectExecutionState) {
+  type TimerHandle = ReturnType<typeof globalThis.setTimeout>;
+  type TimerCallback = (...args: unknown[]) => unknown;
+  type TimerEntry = {
+    handle: TimerHandle;
+    interval: boolean;
+  };
+
+  let nextTimerId = 1;
+  let pendingTimerWork: Promise<void> = Promise.resolve();
+  let timerError: unknown;
+  const timers = new Map<number, TimerEntry>();
+
+  const recordTimerWork = (work: Promise<void>): void => {
+    pendingTimerWork = Promise.allSettled([pendingTimerWork, work]).then(() => undefined);
+  };
+  const runTimerCallback = (callback: TimerCallback, args: unknown[]): void => {
+    const work = Promise.resolve()
+      .then(() => callback(...args))
+      .then(
+        () => undefined,
+        (error) => {
+          timerError ??= error;
+        }
+      );
+    recordTimerWork(work);
+  };
+  const setTrackedTimeout = (callback: TimerCallback, delay?: number, ...args: unknown[]): number => {
+    const id = nextTimerId++;
+    const handle = globalThis.setTimeout(() => {
+      timers.delete(id);
+      if (executionState.cancelled) return;
+      runTimerCallback(callback, args);
+    }, Math.max(0, Number(delay) || 0));
+    timers.set(id, { handle, interval: false });
+    return id;
+  };
+  const clearTrackedTimeout = (id: unknown): void => {
+    if (typeof id !== 'number') return;
+    const timer = timers.get(id);
+    if (!timer) return;
+    globalThis.clearTimeout(timer.handle);
+    timers.delete(id);
+  };
+  const setTrackedInterval = (callback: TimerCallback, delay?: number, ...args: unknown[]): number => {
+    const id = nextTimerId++;
+    const run = (): void => {
+      if (!timers.has(id) || executionState.cancelled) return;
+      runTimerCallback(callback, args);
+      const timer = timers.get(id);
+      if (!timer) return;
+      timer.handle = globalThis.setTimeout(run, Math.max(0, Number(delay) || 0));
+    };
+    const handle = globalThis.setTimeout(run, Math.max(0, Number(delay) || 0));
+    timers.set(id, { handle, interval: true });
+    return id;
+  };
+  const setTrackedImmediate = (callback: TimerCallback, ...args: unknown[]): number => setTrackedTimeout(callback, 0, ...args);
+  const drain = async (): Promise<void> => {
+    while (!executionState.cancelled && timers.size > 0) {
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      await pendingTimerWork;
+      if (timerError !== undefined) throw timerError;
+      if ([...timers.values()].some((timer) => timer.interval)) {
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      }
+    }
+    await pendingTimerWork;
+    if (timerError !== undefined) throw timerError;
+  };
+  const clearAll = (): void => {
+    for (const timer of timers.values()) {
+      globalThis.clearTimeout(timer.handle);
+    }
+    timers.clear();
+  };
+
+  return {
+    setTimeout: setTrackedTimeout,
+    clearTimeout: clearTrackedTimeout,
+    setInterval: setTrackedInterval,
+    clearInterval: clearTrackedTimeout,
+    setImmediate: setTrackedImmediate,
+    clearImmediate: clearTrackedTimeout,
+    queueMicrotask: globalThis.queueMicrotask.bind(globalThis),
+    drain,
+    clearAll,
+  };
+}
+
 function createUrlApi() {
   return {
     URL,
@@ -1701,6 +1791,7 @@ async function runBrowserJavaScriptProjectRequest(
         });
       },
     };
+    const eventLoopApi = createBrowserEventLoopApi(executionState);
     const nodePathSearchEntries = nodePathEntries(request, cwdPath, workspacePathContext);
     const syncTextModule = (path: string, bytes: Uint8Array): void => {
       const text = textFromBytes(bytes);
@@ -4617,7 +4708,25 @@ async function runBrowserJavaScriptProjectRequest(
       const executableCode = isEsmModule(modules, normalizedPath)
         ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot))
         : code;
-      const fn = new Function('require', '__import', 'module', 'exports', 'console', 'process', 'Buffer', '__filename', '__dirname', executableCode);
+      const fn = new Function(
+        'require',
+        '__import',
+        'module',
+        'exports',
+        'console',
+        'process',
+        'Buffer',
+        '__filename',
+        '__dirname',
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'setImmediate',
+        'clearImmediate',
+        'queueMicrotask',
+        executableCode
+      );
       fn(
         localRequire,
         localImport,
@@ -4627,7 +4736,14 @@ async function runBrowserJavaScriptProjectRequest(
         processApi,
         BrowserBuffer,
         workspaceFilename(normalizedPath, workspaceRoot),
-        workspaceDirname(normalizedPath, workspaceRoot)
+        workspaceDirname(normalizedPath, workspaceRoot),
+        eventLoopApi.setTimeout,
+        eventLoopApi.clearTimeout,
+        eventLoopApi.setInterval,
+        eventLoopApi.clearInterval,
+        eventLoopApi.setImmediate,
+        eventLoopApi.clearImmediate,
+        eventLoopApi.queueMicrotask
       );
       module.loaded = true;
       return module.exports;
@@ -4662,7 +4778,25 @@ async function runBrowserJavaScriptProjectRequest(
       module.require = localRequire;
       const localImport = (specifier: string) => importModule(specifier, normalizedPath);
       const executableCode = transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot));
-      const fn = new AsyncFunction('require', '__import', 'module', 'exports', 'console', 'process', 'Buffer', '__filename', '__dirname', executableCode);
+      const fn = new AsyncFunction(
+        'require',
+        '__import',
+        'module',
+        'exports',
+        'console',
+        'process',
+        'Buffer',
+        '__filename',
+        '__dirname',
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'setImmediate',
+        'clearImmediate',
+        'queueMicrotask',
+        executableCode
+      );
       await fn(
         localRequire,
         localImport,
@@ -4672,7 +4806,14 @@ async function runBrowserJavaScriptProjectRequest(
         processApi,
         BrowserBuffer,
         workspaceFilename(normalizedPath, workspaceRoot),
-        workspaceDirname(normalizedPath, workspaceRoot)
+        workspaceDirname(normalizedPath, workspaceRoot),
+        eventLoopApi.setTimeout,
+        eventLoopApi.clearTimeout,
+        eventLoopApi.setInterval,
+        eventLoopApi.clearInterval,
+        eventLoopApi.setImmediate,
+        eventLoopApi.clearImmediate,
+        eventLoopApi.queueMicrotask
       );
       module.loaded = true;
       await Promise.resolve();
@@ -4702,7 +4843,25 @@ async function runBrowserJavaScriptProjectRequest(
         const evalCode = request.options?.inputType === 'module'
           ? transformStaticEsmToCommonJs(request.code, workspaceFileUrl('[eval]', workspaceRoot))
           : request.code;
-        const fn = new AsyncFunction('require', '__import', 'module', 'exports', 'console', 'process', 'Buffer', '__filename', '__dirname', transformDynamicImports(evalCode));
+        const fn = new AsyncFunction(
+          'require',
+          '__import',
+          'module',
+          'exports',
+          'console',
+          'process',
+          'Buffer',
+          '__filename',
+          '__dirname',
+          'setTimeout',
+          'clearTimeout',
+          'setInterval',
+          'clearInterval',
+          'setImmediate',
+          'clearImmediate',
+          'queueMicrotask',
+          transformDynamicImports(evalCode)
+        );
         await fn(
           requireFromRoot,
           importFromRoot,
@@ -4712,11 +4871,19 @@ async function runBrowserJavaScriptProjectRequest(
           processApi,
           BrowserBuffer,
           `${workspaceRoot}/[eval]`,
-          cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot
+          cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot,
+          eventLoopApi.setTimeout,
+          eventLoopApi.clearTimeout,
+          eventLoopApi.setInterval,
+          eventLoopApi.clearInterval,
+          eventLoopApi.setImmediate,
+          eventLoopApi.clearImmediate,
+          eventLoopApi.queueMicrotask
         );
         await Promise.resolve();
       }
 
+      await eventLoopApi.drain();
       await eventQueue?.flush();
       const files = [
         ...Array.from(fileStore.entries())
@@ -4730,6 +4897,7 @@ async function runBrowserJavaScriptProjectRequest(
       ]
         .filter((change) => !appliedFileChangePaths.has(runtimeFileChangePath(change)))
         .sort((left, right) => left.path.localeCompare(right.path));
+      eventLoopApi.clearAll();
       io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 0 });
       return {
         stdout: stdout.join(''),
@@ -4738,6 +4906,7 @@ async function runBrowserJavaScriptProjectRequest(
         ...(files.length > 0 ? { files } : {}),
       };
     } catch (error) {
+      eventLoopApi.clearAll();
       const exitCode = typeof (error as { exitCode?: unknown }).exitCode === 'number'
         ? (error as { exitCode: number }).exitCode
         : 1;

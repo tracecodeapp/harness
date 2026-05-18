@@ -2049,6 +2049,84 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     !failedEvents.some((event) => event.type === 'output' && event.data === 'after-bad-live\n'),
     `browser node failed applyFileChange hook should stop later streamed output events: ${JSON.stringify(failedEvents)}`
   );
+
+  const timerAppliedChanges: string[] = [];
+  const timerEvents: RuntimeCommandEvent[] = [];
+  const timerResult = await createBrowserJavaScriptProjectRunner({
+    applyFileChange: async (change, phase) => {
+      timerAppliedChanges.push(`${phase}:${change.path}`);
+      return true;
+    },
+  })({
+    code: [
+      'const fs = require("node:fs");',
+      'setTimeout(() => {',
+      '  fs.writeFileSync("timer-live.txt", "timer-live\\n");',
+      '  console.log("timer-out");',
+      '}, 0);',
+      'console.log("sync-out");',
+    ].join('\n'),
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+    onEvent: (event) => timerEvents.push(event),
+  });
+
+  assertCondition(timerResult.exitCode === 0, `browser node timer-backed live I/O should succeed: ${timerResult.stderr}`);
+  assertCondition(
+    timerResult.stdout === 'sync-out\ntimer-out\n',
+    `browser node should wait for pending timer stdout before process exit: ${JSON.stringify(timerResult)}`
+  );
+  assertCondition(
+    timerAppliedChanges.includes('live:timer-live.txt'),
+    `browser node should apply timer-backed live filesystem mutations: ${JSON.stringify(timerAppliedChanges)}`
+  );
+  const timerChangeIndex = timerEvents.findIndex((event) => event.type === 'file-change' && event.change.path === 'timer-live.txt');
+  const timerOutputIndex = timerEvents.findIndex((event) => event.type === 'output' && event.data === 'timer-out\n');
+  const timerExitIndex = timerEvents.findIndex((event) => event.type === 'status' && event.phase === 'process-exit');
+  assertCondition(
+    timerChangeIndex >= 0 && timerOutputIndex > timerChangeIndex && timerExitIndex > timerOutputIndex,
+    `browser node should stream timer file changes before later stdout and exit: ${JSON.stringify(timerEvents)}`
+  );
+
+  const timeoutTimerEvents: RuntimeCommandEvent[] = [];
+  const timeoutTimerResult = await createBrowserJavaScriptProjectRunner({ timeoutMs: 5 })({
+    code: [
+      'const fs = require("node:fs");',
+      'setTimeout(() => {',
+      '  fs.writeFileSync("late-timeout.txt", "late\\n");',
+      '  console.log("late-timeout");',
+      '}, 25);',
+    ].join('\n'),
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+    onEvent: (event) => timeoutTimerEvents.push(event),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assertCondition(
+    timeoutTimerResult.exitCode === 124 &&
+      !timeoutTimerResult.files?.some((change) => change.path === 'late-timeout.txt') &&
+      !timeoutTimerResult.stdout.includes('late-timeout'),
+    `browser node should time out pending timers without returning late filesystem/output changes: ${JSON.stringify(timeoutTimerResult)}`
+  );
+  assertCondition(
+    !timeoutTimerEvents.some((event) => event.type === 'file-change' && event.change.path === 'late-timeout.txt') &&
+      !timeoutTimerEvents.some((event) => event.type === 'output' && event.data.includes('late-timeout')),
+    `browser node should suppress late timer events after timeout: ${JSON.stringify(timeoutTimerEvents)}`
+  );
 }
 
 async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promise<void> {
