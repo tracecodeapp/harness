@@ -481,6 +481,22 @@ async function main(): Promise<void> {
                 'proc_fd = os.open("/proc/kernel/version", os.O_RDONLY)',
                 'try:',
                 '    print(os.read(proc_fd, 64).decode("utf-8").strip())',
+                '    if hasattr(os, "fchmod"):',
+                '        try:',
+                '            os.fchmod(proc_fd, 0o600)',
+                '            print("proc-fchmod:ok")',
+                '        except OSError:',
+                '            print("proc-fchmod:blocked")',
+                '    else:',
+                '        print("proc-fchmod:unavailable")',
+                '    if hasattr(os, "fchown"):',
+                '        try:',
+                '            os.fchown(proc_fd, 1, 1)',
+                '            print("proc-fchown:ok")',
+                '        except OSError:',
+                '            print("proc-fchown:blocked")',
+                '    else:',
+                '        print("proc-fchown:unavailable")',
                 'finally:',
                 '    os.close(proc_fd)',
                 'proc_fdopen_fd = os.open("/proc/kernel/version", os.O_RDONLY)',
@@ -978,7 +994,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\ntracekernel test\nproc-fdopen-write:blocked\nproc-os-write:blocked\nTrue\nFalse\ncustom-in,log,stderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\ncustom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-fchmod:blocked\nproc-fchown:blocked\ntracekernel test\nproc-fdopen-write:blocked\nproc-os-write:blocked\nTrue\nFalse\ncustom-in,log,stderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\ncustom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(

@@ -1895,6 +1895,8 @@ def _install_virtual_workspace_paths():
     _original_os_close = os.close
     _original_os_truncate = getattr(os, "truncate", None)
     _original_os_ftruncate = getattr(os, "ftruncate", None)
+    _original_os_fchmod = getattr(os, "fchmod", None)
+    _original_os_fchown = getattr(os, "fchown", None)
     _open_file_descriptors = {}
     _device_file_descriptors = {}
     _proc_file_descriptors = {}
@@ -2067,6 +2069,20 @@ def _install_virtual_workspace_paths():
             _emit_file_change_for_absolute(_absolute_path)
         return _result
 
+    def _patched_os_fchmod(_fd, _mode):
+        if _fd in _device_file_descriptors:
+            return None
+        if _fd in _proc_file_descriptors:
+            raise OSError("Kernel proc path is read-only")
+        return _original_os_fchmod(_fd, _mode)
+
+    def _patched_os_fchown(_fd, _uid, _gid):
+        if _fd in _device_file_descriptors:
+            return None
+        if _fd in _proc_file_descriptors:
+            raise OSError("Kernel proc path is read-only")
+        return _original_os_fchown(_fd, _uid, _gid)
+
     builtins.open = _patched_open
     io.open = _patched_open
     os.getcwd = _patched_getcwd
@@ -2079,6 +2095,10 @@ def _install_virtual_workspace_paths():
         os.truncate = _patched_os_truncate
     if _original_os_ftruncate is not None:
         os.ftruncate = _patched_os_ftruncate
+    if _original_os_fchmod is not None:
+        os.fchmod = _patched_os_fchmod
+    if _original_os_fchown is not None:
+        os.fchown = _patched_os_fchown
 
     def _patch_one(_target, _name):
         _original = getattr(_target, _name, None)
@@ -2237,6 +2257,10 @@ def _install_virtual_workspace_paths():
             os.truncate = _original_os_truncate
         if _original_os_ftruncate is not None:
             os.ftruncate = _original_os_ftruncate
+        if _original_os_fchmod is not None:
+            os.fchmod = _original_os_fchmod
+        if _original_os_fchown is not None:
+            os.fchown = _original_os_fchown
         for _target, _name, _original in reversed(_patched):
             setattr(_target, _name, _original)
 

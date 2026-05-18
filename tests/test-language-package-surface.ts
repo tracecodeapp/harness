@@ -305,6 +305,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('emitPathSnapshot(newPath)'),
         '@tracecode/harness-python worker should ship recursive moved-directory live snapshots'
       );
+      assertCondition(
+        worker.includes('_patched_os_fchmod') &&
+          worker.includes('_patched_os_fchown') &&
+          worker.includes('if _fd in _proc_file_descriptors:') &&
+          worker.includes('Kernel proc path is read-only'),
+        '@tracecode/harness-python worker should ship virtual fd metadata guards'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-javascript') {
       const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
