@@ -2082,11 +2082,11 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const promisesResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fsp = require(\\"node:fs/promises\\"); const fs = require(\\"node:fs\\"); await fsp.mkdir(\\"async-dir\\", { recursive: true }); await fsp.writeFile(\\"async-dir/value.txt\\", \\"async\\\\n\\"); await fs.promises.appendFile(\\"async-dir/value.txt\\", \\"append\\\\n\\"); console.log(await fsp.readFile(\\"async-dir/value.txt\\", \\"utf8\\")); console.log((await fsp.stat(\\"async-dir\\")).isDirectory()); console.log((await fsp.readdir(\\"async-dir\\")).join(\\"\\,\\")); await fsp.rm(\\"async-dir\\", { recursive: true }); console.log(fs.existsSync(\\"async-dir/value.txt\\"));"',
+    '"const fsp = require(\\"node:fs/promises\\"); const fs = require(\\"node:fs\\"); await fsp.mkdir(\\"async-dir\\", { recursive: true }); await fsp.writeFile(\\"async-dir/value.txt\\", \\"async\\\\n\\"); await fs.promises.appendFile(\\"async-dir/value.txt\\", \\"append\\\\n\\"); console.log(await fsp.readFile(\\"async-dir/value.txt\\", \\"utf8\\")); console.log((await fsp.stat(\\"async-dir\\")).isDirectory()); console.log((await fsp.lstat(\\"async-dir/value.txt\\")).isFile()); console.log((await fsp.readdir(\\"async-dir\\")).join(\\"\\,\\")); await fsp.rm(\\"async-dir\\", { recursive: true }); console.log(fs.existsSync(\\"async-dir/value.txt\\"));"',
   ].join(' '));
   assertCondition(promisesResult.exitCode === 0, `browser node fs promises should succeed: ${promisesResult.stderr}`);
   assertCondition(
-    promisesResult.stdout === 'async\nappend\n\ntrue\nvalue.txt\nfalse\n',
+    promisesResult.stdout === 'async\nappend\n\ntrue\ntrue\nvalue.txt\nfalse\n',
     `browser node fs promises should match desktop-like async fs APIs: ${promisesResult.stdout}`
   );
   await assertRejectsAsync(() => workspace.readFile('async-dir/value.txt'), 'browser node fs promises rm should persist deleted nested files');
@@ -2100,6 +2100,27 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   assertCondition(
     accessResult.stdout === '0 4 2\nENOENT\n',
     `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
+  );
+
+  const callbackFsEvents: RuntimeCommandEvent[] = [];
+  const callbackFsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, value) => error ? reject(error) : resolve(value))); await call((done) => fs.mkdir(\\"callback-dir/nested\\", { recursive: true }, done)); await call((done) => fs.writeFile(\\"callback-dir/nested/value.txt\\", \\"callback\\\\n\\", done)); await call((done) => fs.appendFile(\\"callback-dir/nested/value.txt\\", \\"append\\\\n\\", done)); const text = await call((done) => fs.readFile(\\"callback-dir/nested/value.txt\\", \\"utf8\\", done)); const stats = await call((done) => fs.stat(\\"callback-dir\\", done)); const lstats = await call((done) => fs.lstat(\\"callback-dir/nested/value.txt\\", done)); const entries = await call((done) => fs.readdir(\\"callback-dir/nested\\", done)); await call((done) => fs.copyFile(\\"callback-dir/nested/value.txt\\", \\"callback-dir/copy.txt\\", done)); await call((done) => fs.rename(\\"callback-dir/copy.txt\\", \\"callback-dir/moved.txt\\", done)); const exists = await new Promise((resolve) => fs.exists(\\"callback-dir/moved.txt\\", resolve)); await call((done) => fs.unlink(\\"callback-dir/moved.txt\\", done)); await call((done) => fs.unlink(\\"callback-dir/nested/value.txt\\", done)); await call((done) => fs.rmdir(\\"callback-dir/nested\\", done)); await call((done) => fs.rm(\\"callback-dir\\", { recursive: true }, done)); console.log(text.trim()); console.log(stats.isDirectory()); console.log(lstats.isFile()); console.log(entries.join(\\"\\,\\")); console.log(exists); console.log(fs.existsSync(\\"callback-dir\\"));"',
+  ].join(' '), { onEvent: (event) => callbackFsEvents.push(event) });
+  assertCondition(callbackFsResult.exitCode === 0, `browser node callback fs workflow should succeed: ${callbackFsResult.stderr}`);
+  assertCondition(
+    callbackFsResult.stdout === 'callback\nappend\ntrue\ntrue\nvalue.txt\ntrue\nfalse\n',
+    `browser node callback fs APIs should match desktop-like callbacks: ${callbackFsResult.stdout}`
+  );
+  assertCondition(
+    callbackFsEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'callback-dir/nested/value.txt' &&
+      event.change.contents === 'callback\nappend\n'
+    ),
+    `browser node callback fs writes should emit live file changes: ${JSON.stringify(callbackFsEvents)}`
   );
 
   const fdEvents: RuntimeCommandEvent[] = [];

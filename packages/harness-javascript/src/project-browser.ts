@@ -1547,6 +1547,15 @@ async function runBrowserJavaScriptProjectRequest(
         }
         return BrowserBuffer.from(bytes);
       },
+      readFile: (path: unknown, encodingOrCallback?: string | { encoding?: string } | ((error: Error | null, data?: unknown) => void), callback?: (error: Error | null, data?: unknown) => void) => {
+        const done = typeof encodingOrCallback === 'function' ? encodingOrCallback : callback;
+        try {
+          const data = fsApi.readFileSync(path, typeof encodingOrCallback === 'function' ? undefined : encodingOrCallback);
+          queueMicrotask(() => done?.(null, data));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       writeFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
         const device = normalizeRuntimeDevicePath(path);
         if (device) {
@@ -1555,6 +1564,15 @@ async function runBrowserJavaScriptProjectRequest(
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
+      },
+      writeFile: (path: unknown, value: unknown, optionsOrCallback?: string | { encoding?: string | null } | null | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          fsApi.writeFileSync(path, value, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
       },
       appendFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
         const device = normalizeRuntimeDevicePath(path);
@@ -1569,6 +1587,15 @@ async function runBrowserJavaScriptProjectRequest(
         combined.set(previous, 0);
         combined.set(next, previous.byteLength);
         setFileBytes(normalized, combined);
+      },
+      appendFile: (path: unknown, value: unknown, optionsOrCallback?: string | { encoding?: string | null } | null | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          fsApi.appendFileSync(path, value, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
       },
       copyFileSync: (source: unknown, destination: unknown) => {
         const sourceDevice = normalizeRuntimeDevicePath(source);
@@ -1586,6 +1613,15 @@ async function runBrowserJavaScriptProjectRequest(
         const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);
         setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
       },
+      copyFile: (source: unknown, destination: unknown, modeOrCallback?: number | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof modeOrCallback === 'function' ? modeOrCallback : callback;
+        try {
+          fsApi.copyFileSync(source, destination);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       renameSync: (oldPath: unknown, newPath: unknown) => {
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
@@ -1599,7 +1635,23 @@ async function runBrowserJavaScriptProjectRequest(
         io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
         setFileBytes(normalizedNewPath, bytes);
       },
+      rename: (oldPath: unknown, newPath: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.renameSync(oldPath, newPath);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
       unlinkSync: deleteFile,
+      unlink: (path: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.unlinkSync(path);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
       rmSync: (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         try {
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
@@ -1638,6 +1690,15 @@ async function runBrowserJavaScriptProjectRequest(
           throw error;
         }
       },
+      rm: (path: unknown, optionsOrCallback?: { force?: boolean; recursive?: boolean } | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          fsApi.rmSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       existsSync: (path: unknown) => {
         try {
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
@@ -1648,6 +1709,9 @@ async function runBrowserJavaScriptProjectRequest(
         } catch {
           return false;
         }
+      },
+      exists: (path: unknown, callback?: (exists: boolean) => void) => {
+        queueMicrotask(() => callback?.(fsApi.existsSync(path)));
       },
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean } | string | null) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
@@ -1681,6 +1745,15 @@ async function runBrowserJavaScriptProjectRequest(
           isSymbolicLink: () => false,
         }));
       },
+      readdir: (path: unknown, optionsOrCallback?: { withFileTypes?: boolean } | string | null | ((error: Error | null, files?: unknown) => void), callback?: (error: Error | null, files?: unknown) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          const entries = fsApi.readdirSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null, entries));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       statSync: (path: unknown) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const isFile = fileStore.has(normalized);
@@ -1700,6 +1773,18 @@ async function runBrowserJavaScriptProjectRequest(
           isSymbolicLink: () => false,
         };
       },
+      lstatSync: (path: unknown) => fsApi.statSync(path),
+      stat: (path: unknown, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
+        try {
+          const stats = fsApi.statSync(path);
+          queueMicrotask(() => callback(null, stats));
+        } catch (error) {
+          queueMicrotask(() => callback(error as Error));
+        }
+      },
+      lstat: (path: unknown, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
+        fsApi.stat(path, callback);
+      },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
@@ -1715,6 +1800,15 @@ async function runBrowserJavaScriptProjectRequest(
         }
         return undefined;
       },
+      mkdir: (path: unknown, optionsOrCallback?: { recursive?: boolean } | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          fsApi.mkdirSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       rmdirSync: (path: unknown) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
@@ -1725,6 +1819,14 @@ async function runBrowserJavaScriptProjectRequest(
         }
         if (!directoryStore.delete(normalized)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, rmdir '${path}'`), { code: 'ENOENT' });
+        }
+      },
+      rmdir: (path: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.rmdirSync(path);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
         }
       },
     };
@@ -1775,6 +1877,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       readdir: async (path: unknown, options?: { withFileTypes?: boolean } | string | null) => fsApi.readdirSync(path, options),
       stat: async (path: unknown) => fsApi.statSync(path),
+      lstat: async (path: unknown) => fsApi.lstatSync(path),
       mkdir: async (path: unknown, options?: { recursive?: boolean }) => fsApi.mkdirSync(path, options),
       rmdir: async (path: unknown) => {
         fsApi.rmdirSync(path);
