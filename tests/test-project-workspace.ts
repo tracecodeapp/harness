@@ -2125,6 +2125,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
   );
 
+  const watchResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.mkdirSync(\\"watch-dir/nested\\", { recursive: true }); fs.writeFileSync(\\"watch-dir/nested/value.txt\\", \\"one\\\\n\\"); const events = []; const dirWatcher = fs.watch(\\"watch-dir\\", { recursive: true }, (type, name) => events.push(\\"D:\\" + type + \\":\\" + name)); const fileWatcher = fs.watch(\\"watch-dir/nested/value.txt\\", (type, name) => events.push(\\"F:\\" + type + \\":\\" + name)); fs.appendFileSync(\\"watch-dir/nested/value.txt\\", \\"two\\\\n\\"); fs.renameSync(\\"watch-dir/nested/value.txt\\", \\"watch-dir/nested/moved.txt\\"); fs.unlinkSync(\\"watch-dir/nested/moved.txt\\"); await Promise.resolve(); dirWatcher.close(); fileWatcher.close(); fs.writeFileSync(\\"watch-dir/ignored.txt\\", \\"ignored\\\\n\\"); await Promise.resolve(); console.log(events.some((event) => event === \\"D:change:nested/value.txt\\")); console.log(events.some((event) => event === \\"F:change:value.txt\\")); console.log(events.some((event) => event === \\"D:rename:nested/value.txt\\")); console.log(events.some((event) => event === \\"D:rename:nested/moved.txt\\")); console.log(events.some((event) => event.includes(\\"ignored\\")));"',
+  ].join(' '));
+  assertCondition(watchResult.exitCode === 0, `browser node fs.watch workflow should succeed: ${watchResult.stderr}`);
+  assertCondition(
+    watchResult.stdout === 'true\ntrue\ntrue\ntrue\nfalse\n',
+    `browser node fs.watch should observe live kernel mutations and close cleanly: ${watchResult.stdout}`
+  );
+
   const realpathSyncResult = await workspace.runCommand([
     'node',
     '-e',

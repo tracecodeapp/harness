@@ -1144,6 +1144,31 @@ async function runBrowserJavaScriptProjectRequest(
         modules.delete(path);
       }
     };
+    type BrowserFsWatcher = {
+      path: string;
+      recursive: boolean;
+      closed: boolean;
+      listeners: Map<string, Array<(...args: unknown[]) => void>>;
+    };
+    const fsWatchers = new Set<BrowserFsWatcher>();
+    const watchedFilename = (watcher: BrowserFsWatcher, changedPath: string): string | null => {
+      if (changedPath === watcher.path) return changedPath.split('/').pop() ?? changedPath;
+      const prefix = watcher.path ? `${watcher.path}/` : '';
+      if (!changedPath.startsWith(prefix)) return null;
+      const relative = changedPath.slice(prefix.length);
+      if (!watcher.recursive && relative.includes('/')) return null;
+      return relative;
+    };
+    const emitFsWatch = (watcher: BrowserFsWatcher, eventType: 'change' | 'rename', filename: string): void => {
+      if (watcher.closed) return;
+      for (const listener of watcher.listeners.get('change') ?? []) listener(eventType, filename);
+    };
+    const notifyFsWatchers = (eventType: 'change' | 'rename', path: string): void => {
+      for (const watcher of fsWatchers) {
+        const filename = watchedFilename(watcher, path);
+        if (filename !== null) queueMicrotask(() => emitFsWatch(watcher, eventType, filename));
+      }
+    };
     const setFileBytes = (path: string, bytes: Uint8Array): void => {
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index += 1) {
@@ -1153,6 +1178,7 @@ async function runBrowserJavaScriptProjectRequest(
       syncTextModule(path, bytes);
       cache.delete(path);
       io.fileChange(bytesToRuntimeFile(path, bytes), 'live');
+      notifyFsWatchers('change', path);
     };
     const createEventTarget = () => {
       const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
@@ -1279,6 +1305,7 @@ async function runBrowserJavaScriptProjectRequest(
       modules.delete(normalized);
       cache.delete(normalized);
       io.fileChange({ path: normalized, deleted: true }, 'live');
+      notifyFsWatchers('rename', normalized);
     };
     const fsConstants = {
       F_OK: 0,
@@ -1446,6 +1473,50 @@ async function runBrowserJavaScriptProjectRequest(
         } catch (error) {
           queueMicrotask(() => done?.(error as Error));
         }
+      },
+      watch: (
+        path: unknown,
+        optionsOrListener?: { recursive?: boolean } | string | ((eventType: string, filename: string) => void),
+        listener?: (eventType: string, filename: string) => void
+      ) => {
+        assertFileSystemAccess(path);
+        const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+        const on = (event: string, callback: (...args: unknown[]) => void): void => {
+          const next = listeners.get(event) ?? [];
+          next.push(callback);
+          listeners.set(event, next);
+        };
+        const watcher: BrowserFsWatcher = {
+          path: normalized,
+          recursive: typeof optionsOrListener === 'object' && optionsOrListener?.recursive === true,
+          closed: false,
+          listeners,
+        };
+        const initialListener = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
+        if (initialListener) on('change', initialListener as (...args: unknown[]) => void);
+        fsWatchers.add(watcher);
+        const api = {
+          on: (event: string, callback: (...args: unknown[]) => void) => {
+            on(event, callback);
+            return api;
+          },
+          once: (event: string, callback: (...args: unknown[]) => void) => {
+            const wrapped = (...args: unknown[]) => {
+              const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== wrapped);
+              listeners.set(event, next);
+              callback(...args);
+            };
+            on(event, wrapped);
+            return api;
+          },
+          close: () => {
+            watcher.closed = true;
+            fsWatchers.delete(watcher);
+            for (const closeListener of listeners.get('close') ?? []) closeListener();
+          },
+        };
+        return api;
       },
       openSync: (path: unknown, flags: unknown = 'r') => {
         const device = normalizeRuntimeDevicePath(path);
@@ -1768,7 +1839,9 @@ async function runBrowserJavaScriptProjectRequest(
         modules.delete(normalizedOldPath);
         cache.delete(normalizedOldPath);
         io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
+        notifyFsWatchers('rename', normalizedOldPath);
         setFileBytes(normalizedNewPath, bytes);
+        notifyFsWatchers('rename', normalizedNewPath);
       },
       rename: (oldPath: unknown, newPath: unknown, callback?: (error?: Error | null) => void) => {
         try {
@@ -1805,6 +1878,7 @@ async function runBrowserJavaScriptProjectRequest(
               modules.delete(filePath);
               cache.delete(filePath);
               io.fileChange({ path: filePath, deleted: true }, 'live');
+              notifyFsWatchers('rename', filePath);
             }
             for (const directoryPath of Array.from(directoryStore)) {
               if (directoryPath === normalized || directoryPath.startsWith(prefix)) {
