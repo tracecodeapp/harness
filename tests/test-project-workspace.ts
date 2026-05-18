@@ -2426,6 +2426,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node should map fd 0/1/2 to kernel stdio devices: ${JSON.stringify(stdioFdResult)}`
   );
 
+  const stdioEndResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const events = []; await new Promise((resolve) => { process.stdout.once(\\"finish\\", () => events.push(\\"out-finish\\")); process.stdout.end(\\"end-out\\\\n\\", resolve); }); await new Promise((resolve) => { process.stderr.once(\\"finish\\", () => events.push(\\"err-finish\\")); process.stderr.end(\\"end-err\\\\n\\", resolve); }); console.log(events.join(\\"\\,\\"));"',
+  ].join(' '));
+  assertCondition(stdioEndResult.exitCode === 0, `browser node stdio end workflow should succeed: ${stdioEndResult.stderr}`);
+  assertCondition(
+    stdioEndResult.stdout === 'end-out\nout-finish,err-finish\n' && stdioEndResult.stderr === 'end-err\n',
+    `browser node process stdio end should stream and emit finish: ${JSON.stringify(stdioEndResult)}`
+  );
+
   const processStdinResult = await workspace.runCommand([
     'node',
     '-e',

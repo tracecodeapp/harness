@@ -1160,18 +1160,55 @@ async function runBrowserJavaScriptProjectRequest(
       },
     };
 
-    const createWritableDevice = (device: RuntimeKernelDevicePath, fd: number) => ({
-      fd,
-      writable: true,
-      isTTY: false,
-      write: (value: unknown, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
-        const data = textFromBytes(bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined));
-        writeDevice(device, data);
-        const done = typeof encoding === 'function' ? encoding : callback;
-        done?.(null);
-        return true;
-      },
-    });
+    const createWritableDevice = (device: RuntimeKernelDevicePath, fd: number) => {
+      const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+      const on = (event: string, listener: (...args: unknown[]) => void): void => {
+        const next = listeners.get(event) ?? [];
+        next.push(listener);
+        listeners.set(event, next);
+      };
+      const emit = (event: string, ...args: unknown[]): void => {
+        for (const listener of listeners.get(event) ?? []) listener(...args);
+      };
+      const stream = {
+        fd,
+        writable: true,
+        isTTY: false,
+        write: (value: unknown, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
+          const data = textFromBytes(bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined));
+          writeDevice(device, data);
+          const done = typeof encoding === 'function' ? encoding : callback;
+          done?.(null);
+          return true;
+        },
+        end: (value?: unknown, encoding?: string | (() => void), callback?: () => void) => {
+          if (value !== undefined && value !== null) {
+            stream.write(value, typeof encoding === 'string' ? encoding : undefined);
+          }
+          const done = typeof encoding === 'function' ? encoding : callback;
+          queueMicrotask(() => {
+            done?.();
+            emit('finish');
+            emit('close');
+          });
+          return stream;
+        },
+        on: (event: string, listener: (...args: unknown[]) => void) => {
+          on(event, listener);
+          return stream;
+        },
+        once: (event: string, listener: (...args: unknown[]) => void) => {
+          const wrapped = (...args: unknown[]) => {
+            const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== wrapped);
+            listeners.set(event, next);
+            listener(...args);
+          };
+          on(event, wrapped);
+          return stream;
+        },
+      };
+      return stream;
+    };
 
     const stdinDevice = createReadableStdinDevice(request.stdin);
     const processApi = {
