@@ -235,6 +235,7 @@ public class ProjectWorkspaceDirectorySmoke {
     java.util.function.Function<String[], String> device = (fields) ->
       b64.apply(fields[0]) + "\t" + b64.apply(fields[1]) + "\t" + b64.apply(fields[2]) + "\t" + b64.apply(fields[3]) + "\t" + b64.apply(fields[4]);
     ProjectEvents.setKernelDevices(String.join("\\n",
+      device.apply(new String[] { "/dev/stdin", "1", "0", "/dev/stdin", "" }),
       device.apply(new String[] { "/dev/stdout", "0", "1", "", "/dev/stdout" }),
       device.apply(new String[] { "/dev/tty", "1", "1", "/dev/stdin", "/dev/stdout" }),
       device.apply(new String[] { "/dev/log", "0", "1", "", "/dev/stderr" })
@@ -257,6 +258,26 @@ public class ProjectWorkspaceDirectorySmoke {
         writer.print("print-writer-err\\n");
       }
       System.out.println(stdoutCapture.toString("UTF-8").replace("\\n", "|") + stderrCapture.toString("UTF-8").replace("\\n", "|"));
+      var devDir = new ProjectEvents.ProjectFile("/dev");
+      var stdoutDevice = new ProjectEvents.ProjectFile("/dev/stdout");
+      var stdinDevice = new ProjectEvents.ProjectFile("/dev/stdin");
+      var missingDevice = new ProjectEvents.ProjectFile("/dev/missing");
+      var listedDevices = devDir.list();
+      java.util.Arrays.sort(listedDevices);
+      var filteredDevices = devDir.list((dir, name) -> name.contains("out") || name.contains("err"));
+      java.util.Arrays.sort(filteredDevices);
+      var listedFiles = devDir.listFiles(file -> file.isFile() && file.canWrite());
+      java.util.ArrayList<String> writableFileNames = new java.util.ArrayList<>();
+      for (var file : listedFiles) writableFileNames.add(file.getName());
+      java.util.Collections.sort(writableFileNames);
+      System.out.println("file-api="
+        + devDir.exists() + ":" + devDir.isDirectory() + ":" + devDir.canRead() + ":" + devDir.canWrite()
+        + ":" + stdoutDevice.exists() + ":" + stdoutDevice.isFile() + ":" + stdoutDevice.canRead() + ":" + stdoutDevice.canWrite()
+        + ":" + stdinDevice.canRead() + ":" + stdinDevice.canWrite()
+        + ":" + missingDevice.exists() + ":" + missingDevice.isFile() + ":" + stdoutDevice.length()
+        + ":" + String.join(",", listedDevices)
+        + ":" + String.join(",", filteredDevices)
+        + ":" + String.join(",", writableFileNames));
     } finally {
       ProjectEvents.clearKernelDevices();
     }
@@ -281,7 +302,7 @@ public class ProjectWorkspaceDirectorySmoke {
       ],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput, deviceWriterOutput] = output.trim().split('\n');
+    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput, deviceWriterOutput, fileApiOutput] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
     assertCondition(
       Array.isArray(JSON.parse(changedFilesJson ?? 'null')) && JSON.parse(changedFilesJson ?? 'null').length === 0,
@@ -298,6 +319,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       deviceWriterOutput === 'file-writer-out|print-writer-out|tty-writer-out|print-writer-err|',
       `Java browser helper should route FileWriter and PrintWriter through kernel devices: ${output}`
+    );
+    assertCondition(
+      fileApiOutput === 'file-api=true:true:true:false:true:true:false:true:true:false:false:false:0:log,stdin,stdout,tty:stdout:log,stdout,tty',
+      `Java browser helper should route java.io.File metadata/listing through kernel devices: ${output}`
     );
     const projectEventsSource = readFileSync(
       join(process.cwd(), 'workers', 'java', 'src', 'tracecode', 'browser', 'ProjectEvents.java'),

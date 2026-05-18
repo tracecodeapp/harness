@@ -4,10 +4,12 @@ import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileDescriptor;
+import java.io.FileFilter;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
+import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
@@ -752,6 +754,114 @@ public final class ProjectEvents {
     }
 
     @Override
+    public boolean exists() {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceDirectory(normalized)) return true;
+      if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
+      return super.exists();
+    }
+
+    @Override
+    public boolean isDirectory() {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceDirectory(normalized)) return true;
+      if (isVirtualDevicePath(normalized)) return false;
+      return super.isDirectory();
+    }
+
+    @Override
+    public boolean isFile() {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceDirectory(normalized)) return false;
+      if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
+      return super.isFile();
+    }
+
+    @Override
+    public boolean canRead() {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceDirectory(normalized)) return true;
+      if (isVirtualDevicePath(normalized)) {
+        KernelDevice device = KERNEL_DEVICES.get().get(normalized);
+        return device != null && device.readable;
+      }
+      return super.canRead();
+    }
+
+    @Override
+    public boolean canWrite() {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceDirectory(normalized)) return false;
+      if (isVirtualDevicePath(normalized)) {
+        KernelDevice device = KERNEL_DEVICES.get().get(normalized);
+        return device != null && device.writable;
+      }
+      return super.canWrite();
+    }
+
+    @Override
+    public long length() {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceNamespacePath(normalized)) return 0L;
+      return super.length();
+    }
+
+    @Override
+    public String[] list() {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceDirectory(normalized)) return kernelDeviceNames();
+      if (isVirtualDevicePath(normalized)) return null;
+      return super.list();
+    }
+
+    @Override
+    public String[] list(FilenameFilter filter) {
+      String normalized = normalizeVirtualPath(toPath());
+      if (isVirtualDeviceDirectory(normalized)) {
+        ArrayList<String> names = new ArrayList<>();
+        for (String name : kernelDeviceNames()) {
+          if (filter == null || filter.accept(this, name)) names.add(name);
+        }
+        return names.toArray(new String[0]);
+      }
+      if (isVirtualDevicePath(normalized)) return null;
+      return super.list(filter);
+    }
+
+    @Override
+    public File[] listFiles() {
+      String[] names = list();
+      if (names == null) return null;
+      File[] files = new File[names.length];
+      for (int index = 0; index < names.length; index += 1) {
+        files[index] = new ProjectFile(this, names[index]);
+      }
+      return files;
+    }
+
+    @Override
+    public File[] listFiles(FilenameFilter filter) {
+      String[] names = list(filter);
+      if (names == null) return null;
+      File[] files = new File[names.length];
+      for (int index = 0; index < names.length; index += 1) {
+        files[index] = new ProjectFile(this, names[index]);
+      }
+      return files;
+    }
+
+    @Override
+    public File[] listFiles(FileFilter filter) {
+      File[] files = listFiles();
+      if (files == null) return null;
+      ArrayList<File> accepted = new ArrayList<>();
+      for (File file : files) {
+        if (filter == null || filter.accept(file)) accepted.add(file);
+      }
+      return accepted.toArray(new File[0]);
+    }
+
+    @Override
     public boolean createNewFile() throws IOException {
       assertWritableProjectPath(toPath());
       boolean created = super.createNewFile();
@@ -1132,6 +1242,15 @@ public final class ProjectEvents {
     ArrayList<Path> paths = new ArrayList<>();
     for (String device : devices) paths.add(Path.of(device));
     return paths;
+  }
+
+  private static String[] kernelDeviceNames() {
+    ArrayList<String> names = new ArrayList<>();
+    for (String device : KERNEL_DEVICES.get().keySet()) {
+      if (device.startsWith("/dev/")) names.add(device.substring("/dev/".length()));
+    }
+    Collections.sort(names);
+    return names.toArray(new String[0]);
   }
 
   private static String normalizeVirtualPath(Path path) {
