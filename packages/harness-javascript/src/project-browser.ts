@@ -3197,7 +3197,16 @@ async function runBrowserJavaScriptProjectRequest(
               ? `EBADF: bad file descriptor, open '${path}'`
               : `ENOENT: no such file or directory, open '${path}'`);
         } else if (optionFd !== null) sourceBytes = readDescriptorFileBytes(optionFd);
-        else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
+        else {
+          const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+          if (workspaceFileAncestor(normalized) !== null) {
+            throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: 'ENOTDIR' });
+          }
+          if (isWorkspaceDirectoryPath(normalized)) {
+            throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
+          }
+          sourceBytes = fileStore.get(normalized);
+        }
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
