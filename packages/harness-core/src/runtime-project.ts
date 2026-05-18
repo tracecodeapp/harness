@@ -311,6 +311,61 @@ export class RuntimeProjectEventQueue {
   }
 }
 
+export interface RuntimeProjectLiveIoControllerOptions {
+  actor?: RuntimeWorkspaceActor;
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
+  onEvent?: RuntimeCommandEventHandler;
+}
+
+export class RuntimeProjectLiveIoController {
+  private readonly outputTracker = new RuntimeProjectOutputTracker();
+  private readonly eventQueue: RuntimeProjectEventQueue | null;
+  private readonly appliedFileChangePaths = new Set<string>();
+
+  constructor(private readonly options: RuntimeProjectLiveIoControllerOptions) {
+    this.eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
+  }
+
+  emit(event: RuntimeCommandEvent): void {
+    this.outputTracker.observe(event);
+    this.options.onEvent?.(event);
+  }
+
+  handleRuntimeEvent(event: RuntimeCommandEvent): void {
+    if (!this.eventQueue) {
+      this.emit(event);
+      return;
+    }
+    this.eventQueue.enqueue(event, {
+      actor: this.options.actor,
+      applyFileChange: async (change, phase) => {
+        const shouldEmit = await this.options.applyFileChange?.(change, phase);
+        this.appliedFileChangePaths.add(runtimeFileChangePath(change));
+        return shouldEmit;
+      },
+      emit: (nextEvent) => this.emit(nextEvent),
+    });
+  }
+
+  async flush(): Promise<void> {
+    await this.eventQueue?.flush();
+  }
+
+  filterAppliedResultFiles<Result extends RuntimeCommandResult>(result: Result): Result {
+    if (this.appliedFileChangePaths.size === 0) return result;
+    return filterRuntimeCommandResultFiles(result, (change) =>
+      this.appliedFileChangePaths.has(runtimeFileChangePath(change))
+    ) as Result;
+  }
+
+  emitMissingFinalOutput(
+    result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>,
+    output: (stream: RuntimeCommandEventStream, data: string) => void
+  ): void {
+    this.outputTracker.emitMissingFinalOutput(result, output);
+  }
+}
+
 export async function applyRuntimeCommandResultFiles(
   result: RuntimeCommandResult,
   applyFileChange: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>
@@ -344,37 +399,20 @@ export async function runRuntimeProjectWorkerBridge<
   Request extends RuntimeProjectCommandRequest<string>,
   Result extends RuntimeCommandResult = RuntimeCommandResult
 >(options: RuntimeProjectWorkerBridgeOptions<Request, Result>): Promise<Result> {
-  const outputTracker = new RuntimeProjectOutputTracker();
-  const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
-  const appliedFileChangePaths = new Set<string>();
-  const io = createRuntimeProjectIoBridge((event) => {
-    outputTracker.observe(event);
-    options.request.onEvent?.(event);
+  const liveIo = new RuntimeProjectLiveIoController({
+    applyFileChange: options.applyFileChange,
+    onEvent: options.request.onEvent,
   });
-  const emitWorkerEvent = (event: RuntimeCommandEvent): void => {
-    outputTracker.observe(event);
-    options.request.onEvent?.(event);
-  };
+  const io = createRuntimeProjectIoBridge((event) => liveIo.emit(event));
   const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
-    if (eventQueue) {
-      eventQueue.enqueue(event, {
-        applyFileChange: async (change, phase) => {
-          const shouldEmit = await options.applyFileChange?.(change, phase);
-          appliedFileChangePaths.add(runtimeFileChangePath(change));
-          return shouldEmit;
-        },
-        emit: emitWorkerEvent,
-      });
-      return;
-    }
-    emitWorkerEvent(event);
+    liveIo.handleRuntimeEvent(event);
   };
   io.status(options.startPhase, options.startMessage, options.startDetail);
   const { onEvent: _onEvent, ...workerRequest } = options.request;
   let result: Result;
   try {
     result = await options.run(workerRequest, forwardWorkerEvent);
-    await eventQueue?.flush();
+    await liveIo.flush();
   } catch (error) {
     const message = runtimeErrorMessage(error);
     const failedResult = {
@@ -383,21 +421,16 @@ export async function runRuntimeProjectWorkerBridge<
       exitCode: 1,
     } as Result;
     io.status(options.finishPhase, options.finishMessage, { exitCode: failedResult.exitCode, error: message });
-    outputTracker.emitMissingFinalOutput(failedResult, (stream, data) => io.output(stream, data));
+    liveIo.emitMissingFinalOutput(failedResult, (stream, data) => io.output(stream, data));
     return failedResult;
   }
-  const commandResult =
-    appliedFileChangePaths.size > 0
-      ? (filterRuntimeCommandResultFiles(result, (change) =>
-          appliedFileChangePaths.has(runtimeFileChangePath(change))
-        ) as Result)
-      : result;
+  const commandResult = liveIo.filterAppliedResultFiles(result);
   io.status(
     options.finishPhase,
     options.finishMessage,
     options.finishDetail ? options.finishDetail(commandResult) : { exitCode: commandResult.exitCode }
   );
-  outputTracker.emitMissingFinalOutput(commandResult, (stream, data) => io.output(stream, data));
+  liveIo.emitMissingFinalOutput(commandResult, (stream, data) => io.output(stream, data));
   return commandResult;
 }
 

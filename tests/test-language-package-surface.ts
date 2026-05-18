@@ -279,6 +279,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-core declarations should export shared tracekernel helpers'
       );
       assertCondition(
+        declarations.includes('class RuntimeProjectLiveIoController') &&
+          declarations.includes('interface RuntimeProjectLiveIoControllerOptions') &&
+          declarations.includes('filterAppliedResultFiles') &&
+          declarations.includes('emitMissingFinalOutput'),
+        '@tracecode/harness-core declarations should export the shared live project I/O controller'
+      );
+      assertCondition(
         declarations.includes("type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live'") &&
           declarations.includes('interface RuntimeProjectIoSupport'),
         '@tracecode/harness-core declarations should export project I/O support tier types'

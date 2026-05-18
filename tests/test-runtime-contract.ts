@@ -45,6 +45,7 @@ import {
   normalizeRuntimeKernelManifestDevicePath,
 } from '../packages/harness-core/src/runtime-kernel';
 import {
+  RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
   runRuntimeProjectWorkerBridge,
   type RuntimeCommandEvent,
@@ -467,6 +468,48 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
 }
 
 async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
+  const controllerEvents: RuntimeCommandEvent[] = [];
+  const controllerAppliedChanges: string[] = [];
+  const controller = new RuntimeProjectLiveIoController({
+    onEvent: (event) => controllerEvents.push(event),
+    applyFileChange: async (change, phase) => {
+      controllerAppliedChanges.push(`${phase}:${change.path}`);
+      return change.path !== 'controller-hidden.txt';
+    },
+  });
+  controller.handleRuntimeEvent({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'controller-one\n' });
+  controller.handleRuntimeEvent({ type: 'file-change', phase: 'live', change: { path: 'controller-live.txt', contents: 'live\n' } });
+  controller.handleRuntimeEvent({ type: 'file-change', phase: 'live', change: { path: 'controller-hidden.txt', contents: 'hidden\n' } });
+  controller.handleRuntimeEvent({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'controller-two\n' });
+  await controller.flush();
+  const controllerResult = controller.filterAppliedResultFiles({
+    stdout: 'controller-one\ncontroller-two\ncontroller-three\n',
+    stderr: '',
+    exitCode: 0,
+    files: [
+      { path: 'controller-live.txt', contents: 'final-live\n' },
+      { path: 'controller-hidden.txt', contents: 'final-hidden\n' },
+      { path: 'controller-returned.txt', contents: 'returned\n' },
+    ],
+  });
+  controller.emitMissingFinalOutput(controllerResult, (stream, data) => {
+    controller.emit({ type: 'output', stream, device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr', data });
+  });
+
+  assertCondition(
+    stableStringify(controllerAppliedChanges) === stableStringify(['live:controller-live.txt', 'live:controller-hidden.txt']) &&
+      stableStringify(controllerResult.files) === stableStringify([{ path: 'controller-returned.txt', contents: 'returned\n' }]),
+    `runtime live I/O controller should apply live changes and filter final-diff duplicates: ${stableStringify({ controllerAppliedChanges, controllerResult })}`
+  );
+  assertCondition(
+    controllerEvents
+      .filter((event) => event.type === 'output' && event.stream === 'stdout')
+      .map((event) => event.data)
+      .join('') === 'controller-one\ncontroller-two\ncontroller-three\n' &&
+      !controllerEvents.some((event) => event.type === 'file-change' && event.change.path === 'controller-hidden.txt'),
+    `runtime live I/O controller should preserve queued event ordering and reconcile final output suffixes: ${stableStringify(controllerEvents)}`
+  );
+
   const events: RuntimeCommandEvent[] = [];
   const appliedChanges: string[] = [];
   const request: RuntimeProjectCommandRequest<'run'> = {

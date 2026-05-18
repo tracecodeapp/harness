@@ -12,7 +12,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
-import { RuntimeProjectEventQueue, createRuntimeProjectIoBridge, runtimeFileChangePath } from '../../harness-core/src/runtime-project';
+import { RuntimeProjectLiveIoController, createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
@@ -1505,23 +1505,17 @@ async function runBrowserJavaScriptProjectRequest(
 
     const stdout: string[] = [];
     const stderr: string[] = [];
-    const appliedFileChangePaths = new Set<string>();
-    const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
+    const liveIo = new RuntimeProjectLiveIoController({
+      applyFileChange: options.applyFileChange ? async (change, phase) => {
+        if (executionState.cancelled) return false;
+        return options.applyFileChange?.(change, phase);
+      } : undefined,
+      onEvent: (event) => {
+        if (!executionState.cancelled) request.onEvent?.(event);
+      },
+    });
     const emitRuntimeEvent = (event: RuntimeCommandEvent): void => {
-      if (executionState.cancelled) return;
-      if (eventQueue) {
-        eventQueue.enqueue(event, {
-          applyFileChange: async (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => {
-            if (executionState.cancelled) return false;
-            const shouldEmit = await options.applyFileChange?.(change, phase);
-            appliedFileChangePaths.add(runtimeFileChangePath(change));
-            return shouldEmit;
-          },
-          emit: (nextEvent) => request.onEvent?.(nextEvent),
-        });
-        return;
-      }
-      request.onEvent?.(event);
+      liveIo.handleRuntimeEvent(event);
     };
     const io = createRuntimeProjectIoBridge(emitRuntimeEvent);
     const workspacePathContext = createWorkspacePathContext(request.project);
@@ -4884,8 +4878,8 @@ async function runBrowserJavaScriptProjectRequest(
       }
 
       await eventLoopApi.drain();
-      await eventQueue?.flush();
-      const files = [
+      await liveIo.flush();
+      const resultFiles = [
         ...Array.from(fileStore.entries())
         .filter(([path, contents]) => !byteEqual(originalFiles.get(path), contents))
         .sort(([left], [right]) => left.localeCompare(right))
@@ -4895,8 +4889,13 @@ async function runBrowserJavaScriptProjectRequest(
           .sort((left, right) => left.localeCompare(right))
           .map((path): RuntimeFileChange => ({ path, deleted: true })),
       ]
-        .filter((change) => !appliedFileChangePaths.has(runtimeFileChangePath(change)))
         .sort((left, right) => left.path.localeCompare(right.path));
+      const files = liveIo.filterAppliedResultFiles({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        files: resultFiles,
+      }).files ?? [];
       eventLoopApi.clearAll();
       io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 0 });
       return {
@@ -4916,7 +4915,7 @@ async function runBrowserJavaScriptProjectRequest(
           ? `${error.message}\n`
           : `${String(error)}\n`;
       try {
-        await eventQueue?.flush();
+        await liveIo.flush();
       } catch (flushError) {
         io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
         return {
