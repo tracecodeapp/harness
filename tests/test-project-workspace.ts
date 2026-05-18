@@ -2067,6 +2067,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   await assertRejectsAsync(() => workspace.readFile('copy-target.txt'), 'browser node renameSync should remove the old target path');
   await assertRejectsAsync(() => workspace.readFile('async-copy-target.txt'), 'browser node async rename should remove the old target path');
 
+  const copyModeResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error) => error ? reject(error) : resolve())); fs.writeFileSync(\\"copy-mode-source.txt\\", \\"source\\"); fs.writeFileSync(\\"copy-mode-target.txt\\", \\"target\\"); try { fs.copyFileSync(\\"copy-mode-source.txt\\", \\"copy-mode-target.txt\\", fs.constants.COPYFILE_EXCL); } catch (error) { console.log(error.code); } try { await call((done) => fs.copyFile(\\"copy-mode-source.txt\\", \\"copy-mode-target.txt\\", fs.COPYFILE_EXCL, done)); } catch (error) { console.log(error.code); } try { await fsp.copyFile(\\"copy-mode-source.txt\\", \\"copy-mode-target.txt\\", fsp.constants.COPYFILE_EXCL); } catch (error) { console.log(error.code); } fs.copyFileSync(\\"copy-mode-source.txt\\", \\"copy-mode-created.txt\\", fs.constants.COPYFILE_EXCL); console.log(fs.constants.COPYFILE_EXCL, fs.COPYFILE_EXCL); console.log(fs.readFileSync(\\"copy-mode-target.txt\\", \\"utf8\\")); console.log(fs.readFileSync(\\"copy-mode-created.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(copyModeResult.exitCode === 0, `browser node copyFile mode workflow should succeed: ${copyModeResult.stderr}`);
+  assertCondition(
+    copyModeResult.stdout === 'EEXIST\nEEXIST\nEEXIST\n1 1\ntarget\nsource\n',
+    `browser node copyFile should support COPYFILE_EXCL modes: ${copyModeResult.stdout}`
+  );
+
   const cpEvents: RuntimeCommandEvent[] = [];
   const cpResult = await workspace.runCommand([
     'node',

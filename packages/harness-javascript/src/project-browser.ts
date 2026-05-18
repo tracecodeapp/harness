@@ -1411,6 +1411,9 @@ async function runBrowserJavaScriptProjectRequest(
       R_OK: 4,
       W_OK: 2,
       X_OK: 1,
+      COPYFILE_EXCL: 1,
+      COPYFILE_FICLONE: 2,
+      COPYFILE_FICLONE_FORCE: 4,
     } as const;
     let mkdtempCounter = 0;
     const fileSystemEntryExists = (path: unknown): boolean => {
@@ -1562,6 +1565,9 @@ async function runBrowserJavaScriptProjectRequest(
       R_OK: fsConstants.R_OK,
       W_OK: fsConstants.W_OK,
       X_OK: fsConstants.X_OK,
+      COPYFILE_EXCL: fsConstants.COPYFILE_EXCL,
+      COPYFILE_FICLONE: fsConstants.COPYFILE_FICLONE,
+      COPYFILE_FICLONE_FORCE: fsConstants.COPYFILE_FICLONE_FORCE,
       accessSync: (path: unknown, mode = fsConstants.F_OK) => {
         assertFileSystemAccess(path, mode);
       },
@@ -2058,7 +2064,7 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
-      copyFileSync: (source: unknown, destination: unknown) => {
+      copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
         const sourceDevice = normalizeRuntimeDevicePath(source);
         const destinationDevice = normalizeRuntimeDevicePath(destination);
         const sourceBytes = sourceDevice
@@ -2072,12 +2078,15 @@ async function runBrowserJavaScriptProjectRequest(
           return;
         }
         const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);
+        if ((Number(mode) & fsConstants.COPYFILE_EXCL) !== 0 && fileSystemEntryExists(workspaceFilename(normalizedDestination, workspaceRoot))) {
+          throw Object.assign(new Error(`EEXIST: file already exists, copyfile '${source}' -> '${destination}'`), { code: 'EEXIST' });
+        }
         setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
       },
       copyFile: (source: unknown, destination: unknown, modeOrCallback?: number | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
         const done = typeof modeOrCallback === 'function' ? modeOrCallback : callback;
         try {
-          fsApi.copyFileSync(source, destination);
+          fsApi.copyFileSync(source, destination, typeof modeOrCallback === 'number' ? modeOrCallback : 0);
           queueMicrotask(() => done?.(null));
         } catch (error) {
           queueMicrotask(() => done?.(error as Error));
@@ -2503,8 +2512,8 @@ async function runBrowserJavaScriptProjectRequest(
       appendFile: async (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
         fsApi.appendFileSync(path, value, options);
       },
-      copyFile: async (source: unknown, destination: unknown) => {
-        fsApi.copyFileSync(source, destination);
+      copyFile: async (source: unknown, destination: unknown, mode = 0) => {
+        fsApi.copyFileSync(source, destination, mode);
       },
       cp: async (source: unknown, destination: unknown, options?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean }) => {
         fsApi.cpSync(source, destination, options);
