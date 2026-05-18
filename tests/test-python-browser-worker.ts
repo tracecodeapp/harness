@@ -242,6 +242,8 @@ async function main(): Promise<void> {
             'js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-live.txt", "provider-live\\\\\\\\n", { encoding: "utf8" })\\')',
             'js.eval(\\'pyodide.FS.chmod("/tracecode_project/provider-metadata.txt", 0o600); if (typeof pyodide.FS.utime === "function") pyodide.FS.utime("/tracecode_project/provider-metadata.txt", 1, 1)\\')',
             'js.eval(\\'const providerEmpty = pyodide.FS.open("/tracecode_project/provider-empty.txt", "w"); pyodide.FS.close(providerEmpty)\\')',
+            'js.eval(\\'pyodide.FS.createDataFile("/tracecode_project", "provider-create-data.txt", "provider-create-data\\\\\\\\n", true, true)\\')',
+            'js.eval(\\'pyodide.FS.createPath("/tracecode_project", "provider-created-path/nested", true, true); pyodide.FS.createDataFile("/tracecode_project/provider-created-path/nested", "value.txt", "provider-created-path\\\\\\\\n", true, true)\\')',
             'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-tree"); pyodide.FS.mkdir("/tracecode_project/provider-tree/nested"); pyodide.FS.writeFile("/tracecode_project/provider-tree/nested/value.txt", "provider-tree\\\\\\\\n", { encoding: "utf8" }); pyodide.FS.rename("/tracecode_project/provider-tree", "/tracecode_project/provider-tree-moved")\\')',
             'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-dir"); pyodide.FS.rename("/tracecode_project/provider-dir", "/tracecode_project/provider-renamed-dir"); pyodide.FS.rmdir("/tracecode_project/provider-renamed-dir")\\')',
             'fd = os.open("/workspace/fd-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
@@ -891,6 +893,14 @@ async function main(): Promise<void> {
       'Python project file run should report provider-level zero-byte creates'
     );
     assertCondition(
+      findFile(results.fileRun, 'provider-create-data.txt')?.contents === 'provider-create-data\n',
+      'Python project file run should report provider-level createDataFile writes'
+    );
+    assertCondition(
+      findFile(results.fileRun, 'provider-created-path/nested/value.txt')?.contents === 'provider-created-path\n',
+      'Python project file run should report provider-level createPath children'
+    );
+    assertCondition(
       findFile(results.fileRun, 'provider-tree-moved/nested/value.txt')?.contents === 'provider-tree\n',
       'Python project file run should report provider-level moved directory children'
     );
@@ -989,6 +999,36 @@ async function main(): Promise<void> {
         event.change.contents === ''
       )) === true,
       `Python project worker should stream provider-level zero-byte creates: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'provider-create-data.txt' &&
+        event.change.contents === 'provider-create-data\n'
+      )) === true,
+      `Python project worker should stream provider-level createDataFile writes: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'provider-created-path' &&
+        event.change.directory === true
+      )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-created-path/nested' &&
+          event.change.directory === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-created-path/nested/value.txt' &&
+          event.change.contents === 'provider-created-path\n'
+        )) === true,
+      `Python project worker should stream provider-level createPath subtrees: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (

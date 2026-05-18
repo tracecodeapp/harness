@@ -946,6 +946,30 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     return result;
   });
 
+  patch('createDataFile', (original) => function patchedCreateDataFile(parent, name, ...args) {
+    const basePath = normalizePyodideFsProjectPath(parent);
+    const targetPath = name === null || name === undefined || String(name) === ''
+      ? basePath
+      : `${String(basePath || '').replace(/\/+$/, '')}/${String(name).replace(/^\/+/, '')}`;
+    rejectKernelVirtualMutation(parent, 'createDataFile');
+    rejectKernelVirtualMutation(targetPath, 'createDataFile');
+    const result = original.call(this, parent, name, ...args);
+    emitFileChange(targetPath);
+    return result;
+  });
+
+  patch('createPath', (original) => function patchedCreatePath(parent, path, ...args) {
+    const basePath = normalizePyodideFsProjectPath(parent);
+    const targetPath = path === null || path === undefined || String(path) === ''
+      ? basePath
+      : `${String(basePath || '').replace(/\/+$/, '')}/${String(path).replace(/^\/+/, '')}`;
+    rejectKernelVirtualMutation(parent, 'createPath');
+    rejectKernelVirtualMutation(targetPath, 'createPath');
+    const result = original.call(this, parent, path, ...args);
+    emitPathSnapshot(targetPath);
+    return result;
+  });
+
   patch('truncate', (original) => function patchedTruncate(path, ...args) {
     rejectKernelVirtualMutation(path, 'truncate');
     const result = original.call(this, path, ...args);
