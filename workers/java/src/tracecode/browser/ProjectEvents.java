@@ -4,11 +4,13 @@ import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileDescriptor;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
+import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
@@ -264,42 +266,144 @@ public final class ProjectEvents {
 
   public static final class ProjectFileOutputStream extends FileOutputStream {
     private final Path path;
+    private final KernelDevice device;
 
     public ProjectFileOutputStream(String name) throws IOException {
-      super(writableFileName(name));
+      super(outputFileTarget(Path.of(name)));
       this.path = Path.of(name);
+      this.device = kernelDevice(this.path);
     }
 
     public ProjectFileOutputStream(String name, boolean append) throws IOException {
-      super(writableFileName(name), append);
+      super(outputFileTarget(Path.of(name)), append);
       this.path = Path.of(name);
+      this.device = kernelDevice(this.path);
     }
 
     public ProjectFileOutputStream(File file) throws IOException {
-      super(writableFile(file));
+      super(outputFileTarget(file == null ? null : file.toPath()));
       this.path = file.toPath();
+      this.device = kernelDevice(this.path);
     }
 
     public ProjectFileOutputStream(File file, boolean append) throws IOException {
-      super(writableFile(file), append);
+      super(outputFileTarget(file == null ? null : file.toPath()), append);
       this.path = file.toPath();
+      this.device = kernelDevice(this.path);
     }
 
     public ProjectFileOutputStream(FileDescriptor fdObj) {
       super(fdObj);
       this.path = null;
+      this.device = null;
+    }
+
+    @Override
+    public void write(int value) throws IOException {
+      if (device != null) {
+        writeKernelDevice(device, new byte[] { (byte) value });
+        return;
+      }
+      super.write(value);
+    }
+
+    @Override
+    public void write(byte[] bytes) throws IOException {
+      if (device != null) {
+        writeKernelDevice(device, bytes);
+        return;
+      }
+      super.write(bytes);
+    }
+
+    @Override
+    public void write(byte[] bytes, int offset, int length) throws IOException {
+      if (device != null) {
+        byte[] chunk = new byte[length];
+        System.arraycopy(bytes, offset, chunk, 0, length);
+        writeKernelDevice(device, chunk);
+        return;
+      }
+      super.write(bytes, offset, length);
     }
 
     @Override
     public void flush() throws IOException {
+      if (device != null) return;
       super.flush();
       emitFileSnapshot(path);
     }
 
     @Override
     public void close() throws IOException {
+      if (device != null) {
+        super.close();
+        return;
+      }
       super.close();
       emitFileSnapshot(path);
+    }
+  }
+
+  public static final class ProjectFileInputStream extends FileInputStream {
+    private final Path path;
+    private final byte[] deviceBytes;
+    private int deviceOffset = 0;
+
+    public ProjectFileInputStream(String name) throws IOException {
+      super(inputFileTarget(Path.of(name)));
+      this.path = Path.of(name);
+      this.deviceBytes = kernelInputBytes(this.path);
+    }
+
+    public ProjectFileInputStream(File file) throws IOException {
+      super(inputFileTarget(file == null ? null : file.toPath()));
+      this.path = file.toPath();
+      this.deviceBytes = kernelInputBytes(this.path);
+    }
+
+    public ProjectFileInputStream(FileDescriptor fdObj) {
+      super(fdObj);
+      this.path = null;
+      this.deviceBytes = null;
+    }
+
+    @Override
+    public int read() throws IOException {
+      if (deviceBytes == null) return super.read();
+      if (deviceOffset >= deviceBytes.length) return -1;
+      return deviceBytes[deviceOffset++] & 0xff;
+    }
+
+    @Override
+    public int read(byte[] bytes) throws IOException {
+      return read(bytes, 0, bytes.length);
+    }
+
+    @Override
+    public int read(byte[] bytes, int offset, int length) throws IOException {
+      if (deviceBytes == null) return super.read(bytes, offset, length);
+      if (length == 0) return 0;
+      if (deviceOffset >= deviceBytes.length) return -1;
+      int count = Math.min(length, deviceBytes.length - deviceOffset);
+      System.arraycopy(deviceBytes, deviceOffset, bytes, offset, count);
+      deviceOffset += count;
+      return count;
+    }
+
+    @Override
+    public long skip(long count) throws IOException {
+      if (deviceBytes == null) return super.skip(count);
+      if (count <= 0) return 0;
+      long skipped = Math.min(count, deviceBytes.length - deviceOffset);
+      deviceOffset += (int) skipped;
+      return skipped;
+    }
+
+    @Override
+    public int available() throws IOException {
+      if (deviceBytes == null) return super.available();
+      return deviceBytes.length - deviceOffset;
     }
   }
 
@@ -432,6 +536,49 @@ public final class ProjectEvents {
     }
   }
 
+  public static final class ProjectPrintStream extends PrintStream {
+    public ProjectPrintStream(String fileName) throws IOException {
+      super(printStreamOutput(Path.of(fileName)));
+    }
+
+    public ProjectPrintStream(String fileName, String charsetName) throws IOException {
+      super(printStreamOutput(Path.of(fileName)), false, charsetName);
+    }
+
+    public ProjectPrintStream(String fileName, Charset charset) throws IOException {
+      super(printStreamOutput(Path.of(fileName)), false, charset);
+    }
+
+    public ProjectPrintStream(File file) throws IOException {
+      super(printStreamOutput(file == null ? null : file.toPath()));
+    }
+
+    public ProjectPrintStream(File file, String charsetName) throws IOException {
+      super(printStreamOutput(file == null ? null : file.toPath()), false, charsetName);
+    }
+
+    public ProjectPrintStream(File file, Charset charset) throws IOException {
+      super(printStreamOutput(file == null ? null : file.toPath()), false, charset);
+    }
+
+    public ProjectPrintStream(OutputStream out) {
+      super(out);
+    }
+
+    public ProjectPrintStream(OutputStream out, boolean autoFlush) {
+      super(out, autoFlush);
+    }
+
+    public ProjectPrintStream(OutputStream out, boolean autoFlush, String charsetName)
+        throws java.io.UnsupportedEncodingException {
+      super(out, autoFlush, charsetName);
+    }
+
+    public ProjectPrintStream(OutputStream out, boolean autoFlush, Charset charset) {
+      super(out, autoFlush, charset);
+    }
+  }
+
   private static void emitOutput(String stream, String data) {
     if (!PROJECT_EVENT_BRIDGE_ENABLED.get() || data.isEmpty()) return;
     try {
@@ -549,6 +696,37 @@ public final class ProjectEvents {
 
   private static File writableFile(File file) throws IOException {
     assertWritableProjectPath(file == null ? null : file.toPath());
+    return file;
+  }
+
+  private static File outputFileTarget(Path path) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) return temporaryDeviceFile();
+    assertWritableProjectPath(path);
+    return path.toFile();
+  }
+
+  private static File inputFileTarget(Path path) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) return temporaryDeviceFile();
+    return path.toFile();
+  }
+
+  private static byte[] kernelInputBytes(Path path) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    return device == null ? null : readKernelDevice(device);
+  }
+
+  private static OutputStream printStreamOutput(Path path) throws IOException {
+    KernelDevice device = writableKernelDevice(path);
+    if (device != null) return new KernelDeviceOutputStream(device);
+    assertWritableProjectPath(path);
+    return new ProjectOutputStream(new FileOutputStream(path.toFile()), path);
+  }
+
+  private static File temporaryDeviceFile() throws IOException {
+    File file = File.createTempFile("tracecode-device-", ".tmp");
+    file.deleteOnExit();
     return file;
   }
 

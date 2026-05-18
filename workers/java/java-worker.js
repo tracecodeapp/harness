@@ -3203,8 +3203,12 @@ function augmentJavaProjectFileMutations(source) {
     .replace(/(?<![\w.])Files\.(readString|readAllBytes|writeString|write|newOutputStream|newBufferedWriter|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
     .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
+    .replace(/\bnew\s+java\.io\.FileInputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileInputStream(')
+    .replace(/(?<![\w.])new\s+FileInputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileInputStream(')
     .replace(/\bnew\s+java\.io\.FileOutputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileOutputStream(')
     .replace(/(?<![\w.])new\s+FileOutputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileOutputStream(')
+    .replace(/\bnew\s+java\.io\.PrintStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectPrintStream(')
+    .replace(/(?<![\w.])new\s+PrintStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectPrintStream(')
     .replace(/\bnew\s+java\.io\.PrintWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectPrintWriter(')
     .replace(/(?<![\w.])new\s+PrintWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectPrintWriter(');
 }

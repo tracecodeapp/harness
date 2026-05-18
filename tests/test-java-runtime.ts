@@ -749,8 +749,8 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 .join('\n');
               const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
                 decodedSourceManifest.includes('/dev/stdout');
-              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-write:IOException\n' : ''}${hasKernelDevices ? 'dev_stdin=from-stdin\ndev_stdout\nstdout-read:IOException\n' : ''}`;
-              const stderr = hasKernelDevices ? 'dev_stderr\n' : '';
+              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\n' : ''}${hasKernelDevices ? 'dev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
+              const stderr = hasKernelDevices ? 'dev_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
                 'stdout',
@@ -775,6 +775,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
+                  'proc-stream=tracekernel test\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
                   'proc-write:IOException\n'
                 );
               }
@@ -787,7 +792,17 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
+                  'dev_stream_stdin=from-stdin\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
                   'dev_stdout\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'fos_stdout\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
@@ -796,8 +811,18 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
+                  'stdout',
+                  'stdout-stream-read:IOException\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
                   'stderr',
                   'dev_stderr\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stderr',
+                  'ps_stderr\n'
                 );
               }
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
@@ -814,6 +839,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 null,
                 'printed.txt',
                 Buffer.from('printed\n', 'utf8').toString('base64')
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'ps-file.txt',
+                Buffer.from('ps-file\n', 'utf8').toString('base64')
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
@@ -852,6 +882,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   { path: 'generated.txt', contents: Buffer.from('created\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'writer.txt', contents: Buffer.from('writer\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'printed.txt', contents: Buffer.from('printed\n', 'utf8').toString('base64'), encoding: 'base64' },
+                  { path: 'ps-file.txt', contents: Buffer.from('ps-file\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'stream.bin', contents: Buffer.from([0, 254]).toString('base64'), encoding: 'base64' },
                   { path: 'data.bin', contents: Buffer.from([0, 253]).toString('base64'), encoding: 'base64' },
                   { path: 'nio-stream.bin', contents: Buffer.from([0, 252]).toString('base64'), encoding: 'base64' },
@@ -1312,6 +1343,7 @@ async function main(): Promise<void> {
             path: 'Main.java',
             contents: [
               'import java.io.*;',
+              'import java.nio.charset.StandardCharsets;',
               'import java.nio.file.*;',
               'class Main {',
               '  public static void main(String[] args) throws Exception {',
@@ -1320,6 +1352,7 @@ async function main(): Promise<void> {
               '    try (var writer = new PrintWriter("printed.txt")) { writer.println("printed"); }',
               '    try (var stream = new FileOutputStream("stream.bin")) { stream.write(new byte[] { 0, (byte)254 }); }',
               '    try (var stream = new DataOutputStream(new FileOutputStream("data.bin"))) { stream.write(new byte[] { 0, (byte)253 }); }',
+              '    try (var stream = new PrintStream("ps-file.txt")) { stream.println("ps-file"); }',
               '    try (var stream = Files.newOutputStream(Path.of("nio-stream.bin"))) { stream.write(new byte[] { 0, (byte)252 }); }',
               '    try (var writer = Files.newBufferedWriter(Path.of("nio-writer.txt"))) { writer.write("nio-writer\\n"); }',
               '    Files.deleteIfExists(Path.of("stale.txt"));',
@@ -1327,11 +1360,16 @@ async function main(): Promise<void> {
               '    System.out.println("java_args=" + String.join(",", args));',
               '    System.out.println("java_stdin=" + new BufferedReader(new InputStreamReader(System.in)).readLine());',
               '    System.out.println(Files.readString(Path.of("/proc/kernel/info")).contains("tracekernel") ? "proc-info" : "proc-missing");',
+              '    try (var stream = new FileInputStream("/proc/kernel/version")) { System.out.println("proc-stream=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    try { Files.writeString(Path.of("/proc/kernel/info"), "{}\\\\n"); System.out.println("proc-write:ok"); } catch (IOException ex) { System.out.println("proc-write:" + ex.getClass().getSimpleName()); }',
               '    System.out.println("dev_stdin=" + Files.readString(Path.of("/dev/stdin")).trim());',
+              '    try (var stream = new FileInputStream("/dev/stdin")) { System.out.println("dev_stream_stdin=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    Files.writeString(Path.of("/dev/stdout"), "dev_stdout\\\\n");',
+              '    try (var stream = new FileOutputStream("/dev/stdout")) { stream.write("fos_stdout\\\\n".getBytes(StandardCharsets.UTF_8)); }',
               '    Files.writeString(Path.of("/dev/stderr"), "dev_stderr\\\\n");',
+              '    try (var stream = new PrintStream("/dev/stderr", "UTF-8")) { stream.print("ps_stderr\\\\n"); }',
               '    try { Files.readString(Path.of("/dev/stdout")); System.out.println("stdout-read:ok"); } catch (IOException ex) { System.out.println("stdout-read:" + ex.getClass().getSimpleName()); }',
+              '    try { new FileInputStream("/dev/stdout").close(); System.out.println("stdout-stream-read:ok"); } catch (IOException ex) { System.out.println("stdout-stream-read:" + ex.getClass().getSimpleName()); }',
               '  }',
               '}',
               '',
@@ -1353,10 +1391,10 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-write:IOException\ndev_stdin=from-stdin\ndev_stdout\nstdout-read:IOException\n',
-      'Java execute-project-java should return captured stdout'
+      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nstdout-read:IOException\nstdout-stream-read:IOException\n',
+      `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
-    assertCondition(projectExecute.stderr === 'dev_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
+    assertCondition(projectExecute.stderr === 'dev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
     assertCondition(
       projectExecute.events?.some(
         (event) =>
@@ -1386,6 +1424,12 @@ async function main(): Promise<void> {
           (event) =>
             event.type === 'output' &&
             event.stream === 'stdout' &&
+            event.data === 'proc-stream=tracekernel test\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
             event.data === 'proc-write:IOException\n'
       ) === true &&
         projectExecute.events?.some(
@@ -1398,7 +1442,19 @@ async function main(): Promise<void> {
           (event) =>
             event.type === 'output' &&
             event.stream === 'stdout' &&
+            event.data === 'dev_stream_stdin=from-stdin\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
             event.data === 'dev_stdout\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'fos_stdout\n'
         ) === true &&
         projectExecute.events?.some(
           (event) =>
@@ -1411,6 +1467,12 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stderr' &&
             event.data === 'dev_stderr\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stderr' &&
+            event.data === 'ps_stderr\n'
       ) === true,
       `Java execute-project-java should emit live stdout project events: ${JSON.stringify(projectExecute.events)}`
     );
@@ -1448,6 +1510,14 @@ async function main(): Promise<void> {
             event.change?.path === 'printed.txt' &&
             event.change.encoding === 'base64' &&
             Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'printed\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'ps-file.txt' &&
+            event.change.encoding === 'base64' &&
+            Buffer.from(event.change.contents ?? '', 'base64').toString('utf8') === 'ps-file\n'
         ) === true,
       `Java execute-project-java should emit live writer file-change project events: ${JSON.stringify(projectExecute.events)}`
     );
@@ -1504,6 +1574,11 @@ async function main(): Promise<void> {
           file.path === 'printed.txt' &&
             file.encoding === 'base64' &&
             Buffer.from(file.contents, 'base64').toString('utf8') === 'printed\n'
+        ) &&
+        projectExecute.files?.some((file) =>
+          file.path === 'ps-file.txt' &&
+            file.encoding === 'base64' &&
+            Buffer.from(file.contents, 'base64').toString('utf8') === 'ps-file\n'
         ) &&
         projectExecute.files?.some((file) =>
           file.path === 'stream.bin' &&
@@ -1584,7 +1659,10 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("writer.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("printed.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileInputStream("/dev/stdin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileOutputStream("stream.bin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileOutputStream("/dev/stdout")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintStream("/dev/stderr"') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new DataOutputStream(new tracecode.browser.ProjectEvents.ProjectFileOutputStream("data.bin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newOutputStream(Path.of("nio-stream.bin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newBufferedWriter(Path.of("nio-writer.txt")') === true &&
