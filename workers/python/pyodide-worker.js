@@ -1264,6 +1264,32 @@ def _normalize_device_path(_value):
             return _original
     return None
 
+def _normalize_device_namespace_path(_value):
+    if isinstance(_value, (str, bytes, os.PathLike)):
+        _original = os.fspath(_value).replace("\\\\", "/").rstrip("/") or "/"
+        if _original == "/dev" or _original.startswith("/dev/"):
+            return _original
+    return None
+
+def _device_entry_kind(_path):
+    if _path == "/dev":
+        return "directory"
+    if _path in _kernel_devices:
+        return "file"
+    return None
+
+def _device_dir_entries(_path):
+    if _path != "/dev":
+        return None
+    return sorted([_entry[len("/dev/"):] for _entry in _kernel_devices if _entry.startswith("/dev/")])
+
+def _device_stat(_path):
+    _kind = _device_entry_kind(_path)
+    if _kind is None:
+        raise FileNotFoundError(_path)
+    _mode = (stat.S_IFDIR | 0o755) if _kind == "directory" else (stat.S_IFCHR | 0o666)
+    return os.stat_result((_mode, 0, 0, 2 if _kind == "directory" else 1, 0, 0, 0, 0, 0, 0))
+
 def _normalize_proc_path(_value):
     if isinstance(_value, (str, bytes, os.PathLike)):
         _original = os.fspath(_value).replace("\\\\", "/").rstrip("/") or "/"
@@ -1602,6 +1628,54 @@ def _install_virtual_workspace_paths():
         if _original is None:
             return
         def _patched_one(_path, *args, **kwargs):
+            _device_path = _normalize_device_namespace_path(_path)
+            if _device_path:
+                _kind = _device_entry_kind(_device_path)
+                if _name in ("chmod", "chown", "mkdir", "makedirs", "remove", "removedirs", "rmdir", "unlink", "utime"):
+                    if _kind is None:
+                        raise FileNotFoundError(_device_path)
+                    raise OSError("Kernel device namespace is read-only: " + _device_path)
+                if _name in ("exists", "lexists"):
+                    return _kind is not None
+                if _name == "isfile":
+                    return _kind == "file"
+                if _name == "isdir":
+                    return _kind == "directory"
+                if _name == "islink":
+                    return False
+                if _name == "ismount":
+                    return _device_path == "/dev"
+                if _name == "listdir":
+                    _entries = _device_dir_entries(_device_path)
+                    if _entries is None:
+                        if _kind is None:
+                            raise FileNotFoundError(_device_path)
+                        raise NotADirectoryError(_device_path)
+                    return _entries
+                if _name in ("stat", "lstat"):
+                    return _device_stat(_device_path)
+                if _name == "access":
+                    if _kind is None:
+                        return False
+                    _mode = int(args[0]) if args else int(kwargs.get("mode", os.F_OK))
+                    if _kind == "directory":
+                        return (_mode & os.W_OK) == 0 and (_mode & os.X_OK) == 0
+                    _device_info = _kernel_devices.get(_device_path, {})
+                    if (_mode & os.R_OK) and not bool(_device_info.get("readable")):
+                        return False
+                    if (_mode & os.W_OK) and not bool(_device_info.get("writable")):
+                        return False
+                    return (_mode & os.X_OK) == 0
+                if _name in ("getsize",):
+                    return 0
+                if _name in ("getatime", "getctime", "getmtime"):
+                    return 0
+                if _name == "realpath":
+                    if _kind is None:
+                        raise FileNotFoundError(_device_path)
+                    return _device_path
+                if _name in ("readlink", "scandir"):
+                    raise OSError("Unsupported device operation: " + _name)
             _proc_path = _normalize_proc_path(_path)
             if _proc_path:
                 _kind = _proc_entry_kind(_proc_path)
@@ -1647,6 +1721,13 @@ def _install_virtual_workspace_paths():
         if _original is None:
             return
         def _patched_two(_src, _dst, *args, **kwargs):
+            _device_src = _normalize_device_namespace_path(_src)
+            _device_dst = _normalize_device_namespace_path(_dst)
+            if _device_src or _device_dst:
+                _device_path = _device_src or _device_dst
+                if _device_entry_kind(_device_path) is None:
+                    raise FileNotFoundError(_device_path)
+                raise OSError("Kernel device namespace is read-only: " + _device_path)
             _proc_src = _normalize_proc_path(_src)
             _proc_dst = _normalize_proc_path(_dst)
             if _proc_src or _proc_dst:
