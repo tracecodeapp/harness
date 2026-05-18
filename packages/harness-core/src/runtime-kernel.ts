@@ -29,6 +29,13 @@ export type RuntimeKernelAccessTarget =
   | { kind: 'workspace' }
   | { kind: 'allowed'; path: string }
   | { kind: 'denied'; reason: 'not-found' | 'permission-denied'; path: string };
+export type RuntimeKernelReadTarget =
+  | { kind: 'workspace' }
+  | { kind: 'proc-file'; path: string }
+  | { kind: 'proc-directory'; path: string }
+  | { kind: 'device-file'; path: RuntimeKernelDevicePath }
+  | { kind: 'device-directory'; path: '/dev' }
+  | { kind: 'error'; reason: 'not-found'; path: string };
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -197,6 +204,20 @@ export function runtimeKernelAccessTarget(path: string, request: RuntimeKernelAc
   return request.write || request.execute
     ? { kind: 'denied', reason: 'permission-denied', path: virtualPath.path }
     : { kind: 'allowed', path: virtualPath.path };
+}
+
+export function runtimeKernelReadTarget(path: string): RuntimeKernelReadTarget {
+  const virtualPath = classifyRuntimeKernelVirtualPath(path);
+  if (virtualPath === null) return { kind: 'workspace' };
+  if (virtualPath.kind === 'device-namespace') {
+    return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device-directory') return virtualPath;
+  if (virtualPath.kind === 'device') return { kind: 'device-file', path: virtualPath.path };
+  const kind = runtimeProcEntryKind(virtualPath.path);
+  if (kind === 'file') return { kind: 'proc-file', path: virtualPath.path };
+  if (kind === 'directory') return { kind: 'proc-directory', path: virtualPath.path };
+  return { kind: 'error', reason: 'not-found', path: virtualPath.path };
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {

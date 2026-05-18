@@ -20,10 +20,10 @@ import {
   runtimeKernelAccessTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
+  runtimeKernelReadTarget,
   runtimeKernelWriteTarget,
   readRuntimeProcFile,
   runtimeProcDirEntries,
-  runtimeProcEntryKind,
 } from '../../harness-core/src/runtime-kernel';
 import type {
   CommandContext,
@@ -289,6 +289,11 @@ function kernelMetadataTarget(path: string): ReturnType<typeof runtimeKernelMeta
 function kernelAccessTarget(path: string): ReturnType<typeof runtimeKernelAccessTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelAccessTarget(path);
+}
+
+function kernelReadTarget(path: string): ReturnType<typeof runtimeKernelReadTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelReadTarget(path);
 }
 
 function throwKernelMetadataTargetError(
@@ -2294,27 +2299,6 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private procStat(path: string): RuntimeWorkspaceStat | null {
-    const procPath = normalizeProcPath(path);
-    if (procPath === null) return null;
-    const kind = runtimeProcEntryKind(procPath);
-    if (kind === 'directory') {
-      return { isFile: false, isDirectory: true };
-    }
-    if (kind === 'file') {
-      return { isFile: true, isDirectory: false };
-    }
-    throw new Error(`Kernel proc path not found: ${path}`);
-  }
-
-  private procReadDir(path: string): string[] | null {
-    const procPath = normalizeProcPath(path);
-    if (procPath === null) return null;
-    const entries = runtimeProcDirEntries(procPath);
-    if (entries) return entries;
-    throw new Error(`Kernel proc path is not a directory: ${path}`);
-  }
-
   private readDeviceFile(path: string, encoding?: RuntimeFileEncoding): string | null {
     const devicePath = normalizeDevPath(path);
     if (devicePath === null) {
@@ -2324,29 +2308,6 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
     if (encoding === 'base64') return base64FromBytes(new TextEncoder().encode(this.readDevice(devicePath)));
     return this.readDevice(devicePath);
-  }
-
-  private deviceStat(path: string): RuntimeWorkspaceStat | null {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath === null) {
-      if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
-      return null;
-    }
-    return {
-      isFile: devicePath !== '/dev',
-      isDirectory: devicePath === '/dev',
-    };
-  }
-
-  private deviceReadDir(path: string): string[] | null {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath === null) {
-      if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
-      return null;
-    }
-    const entries = runtimeDeviceDirEntries(devicePath);
-    if (entries) return entries;
-    throw new Error(`Kernel device path is not a directory: ${path}`);
   }
 
   private readDevice(device: RuntimeKernelDevicePath): string {
@@ -2455,10 +2416,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
-    const procFile = this.readProcFile(path, encoding);
-    if (procFile !== null) return procFile;
-    const deviceFile = this.readDeviceFile(path, encoding);
-    if (deviceFile !== null) return deviceFile;
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind === 'proc-file') {
+      if (encoding === 'base64') throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
+      return readRuntimeProcFile(readTarget.path, this.kernelInfo);
+    }
+    if (readTarget.kind === 'proc-directory') throw new Error(`Kernel proc path is a directory: ${path}`);
+    if (readTarget.kind === 'device-file') {
+      if (encoding === 'base64') return base64FromBytes(new TextEncoder().encode(this.readDevice(readTarget.path)));
+      return this.readDevice(readTarget.path);
+    }
+    if (readTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${path}`);
+    if (readTarget.kind === 'error') throw new Error(`Kernel device path not found: ${path}`);
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
     if (normalizedEncoding === 'base64') {
@@ -2476,10 +2445,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
-    const procStat = this.procStat(path);
-    if (procStat !== null) return procStat;
-    const deviceStat = this.deviceStat(path);
-    if (deviceStat !== null) return deviceStat;
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind === 'proc-file') return { isFile: true, isDirectory: false };
+    if (readTarget.kind === 'proc-directory') return { isFile: false, isDirectory: true };
+    if (readTarget.kind === 'device-file') return { isFile: true, isDirectory: false };
+    if (readTarget.kind === 'device-directory') return { isFile: false, isDirectory: true };
+    if (readTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
     const stat = await this.bash.fs.stat(this.toWorkspaceEntryPath(path));
     return {
       isFile: stat.isFile,
@@ -2488,10 +2459,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async readDir(path = '.'): Promise<string[]> {
-    const procEntries = this.procReadDir(path);
-    if (procEntries !== null) return procEntries;
-    const deviceEntries = this.deviceReadDir(path);
-    if (deviceEntries !== null) return deviceEntries;
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind === 'proc-directory') return runtimeProcDirEntries(readTarget.path) ?? [];
+    if (readTarget.kind === 'proc-file') throw new Error(`Kernel proc path is not a directory: ${path}`);
+    if (readTarget.kind === 'device-directory') return runtimeDeviceDirEntries(readTarget.path) ?? [];
+    if (readTarget.kind === 'device-file') throw new Error(`Kernel device path is not a directory: ${path}`);
+    if (readTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
     const entries = await this.bash.fs.readdir(this.toWorkspaceEntryPath(path));
     return [...entries].sort((left, right) => left.localeCompare(right));
   }
