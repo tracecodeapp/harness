@@ -5378,6 +5378,7 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     `browser java runner should only return unapplied final files: ${JSON.stringify(result.files)}`
   );
 
+  const previewEvents: RuntimeCommandEvent[] = [];
   const previewResult = await runner({
     code: '',
     source: 'run',
@@ -5390,14 +5391,28 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     },
     options: { enablePreview: true },
+    onEvent: (event) => previewEvents.push(event),
   });
   assertCondition(
     previewResult.exitCode !== 0 &&
       previewResult.stderr.includes('--enable-preview is not supported in the browser project environment'),
     `browser java runner should reject preview mode locally: ${previewResult.stderr}`
   );
+  const previewStderrIndex = previewEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data === previewResult.stderr
+  );
+  const previewExitIndex = previewEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 2
+  );
+  assertCondition(
+    previewEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      previewStderrIndex >= 0 &&
+      previewExitIndex > previewStderrIndex,
+    `browser java preview rejection should stream stderr before process-exit: ${JSON.stringify(previewEvents)}`
+  );
   assertCondition(callCount === 1, 'browser java runner should reject preview mode before invoking the worker');
 
+  const assertionsEvents: RuntimeCommandEvent[] = [];
   const assertionsResult = await runner({
     code: '',
     source: 'run',
@@ -5410,11 +5425,24 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     },
     options: { enableAssertions: true },
+    onEvent: (event) => assertionsEvents.push(event),
   });
   assertCondition(
     assertionsResult.exitCode !== 0 &&
       assertionsResult.stderr.includes('-ea is not supported in the browser project environment'),
     `browser java runner should reject assertions mode locally: ${assertionsResult.stderr}`
+  );
+  const assertionsStderrIndex = assertionsEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data === assertionsResult.stderr
+  );
+  const assertionsExitIndex = assertionsEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 2
+  );
+  assertCondition(
+    assertionsEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      assertionsStderrIndex >= 0 &&
+      assertionsExitIndex > assertionsStderrIndex,
+    `browser java assertions rejection should stream stderr before process-exit: ${JSON.stringify(assertionsEvents)}`
   );
   assertCondition(callCount === 1, 'browser java runner should reject assertions mode before invoking the worker');
 }

@@ -9,7 +9,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
-import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
+import { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
 import type { JavaWorkerClient } from '../../harness-browser/src/java-worker-client';
 
 export type JavaProjectFileEncoding = RuntimeFileEncoding;
@@ -27,6 +27,34 @@ export interface BrowserJavaProjectRunnerOptions {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
+function unsupportedBrowserJavaResult(request: JavaProjectCommandRequest, stderr: string): JavaProjectCommandResult {
+  const result: JavaProjectCommandResult = {
+    stdout: '',
+    stderr,
+    exitCode: 2,
+  };
+  const io = createRuntimeProjectIoBridge(request.onEvent);
+  io.status(
+    request.source === 'compile' ? 'compile-start' : 'process-start',
+    request.source === 'compile' ? 'Starting Java browser compile' : 'Starting Java browser run',
+    {
+      source: request.source,
+      scriptPath: request.scriptPath,
+      args: request.args,
+      cwd: request.cwd,
+    }
+  );
+  io.output('stderr', result.stderr);
+  io.status(
+    request.source === 'compile' ? 'compile-end' : 'process-exit',
+    request.source === 'compile' ? 'Finished Java browser compile' : 'Finished Java browser run',
+    {
+      exitCode: result.exitCode,
+    }
+  );
+  return result;
+}
+
 export function createBrowserJavaProjectRunner(
   workerClient: Pick<JavaWorkerClient, 'executeProjectJava'> & {
     executeProjectJava(
@@ -40,18 +68,14 @@ export function createBrowserJavaProjectRunner(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
     if (request.options?.enablePreview === true) {
-      return Promise.resolve({
-        stdout: '',
-        stderr: 'java: --enable-preview is not supported in the browser project environment\n',
-        exitCode: 2,
-      });
+      return Promise.resolve(
+        unsupportedBrowserJavaResult(request, 'java: --enable-preview is not supported in the browser project environment\n')
+      );
     }
     if (request.options?.enableAssertions === true) {
-      return Promise.resolve({
-        stdout: '',
-        stderr: 'java: -ea is not supported in the browser project environment\n',
-        exitCode: 2,
-      });
+      return Promise.resolve(
+        unsupportedBrowserJavaResult(request, 'java: -ea is not supported in the browser project environment\n')
+      );
     }
     return runRuntimeProjectWorkerBridge({
       request,
