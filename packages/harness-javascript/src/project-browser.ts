@@ -1493,6 +1493,7 @@ async function runBrowserJavaScriptProjectRequest(
       let started = false;
       let closed = false;
       let destroyed = false;
+      let streamEncoding = encoding;
       const closeStream = (): void => {
         if (closed) return;
         closed = true;
@@ -1501,7 +1502,7 @@ async function runBrowserJavaScriptProjectRequest(
       };
       const formatChunk = (chunk: Uint8Array): BrowserBuffer | string => {
         const buffer = BrowserBuffer.from(chunk);
-        return encoding ? buffer.toString(encoding) : buffer;
+        return streamEncoding ? buffer.toString(streamEncoding) : buffer;
       };
       const scheduleRead = (): void => {
         if (started) return;
@@ -1520,6 +1521,10 @@ async function runBrowserJavaScriptProjectRequest(
         },
         get destroyed() {
           return destroyed;
+        },
+        setEncoding: (nextEncoding: string) => {
+          streamEncoding = nextEncoding;
+          return stream;
         },
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);

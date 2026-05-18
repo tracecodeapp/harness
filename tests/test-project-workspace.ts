@@ -2403,6 +2403,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node createWriteStream should emit live file mutations: ${JSON.stringify(streamEvents)}`
   );
 
+  const streamSetEncodingResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"stream-encoding.txt\\", Buffer.from(\\"68656c6c6f\\", \\"hex\\")); const chunks = []; await new Promise((resolve, reject) => { fs.createReadStream(\\"stream-encoding.txt\\").setEncoding(\\"utf8\\").on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(typeof chunk + \\":\\" + chunk)).on(\\"end\\", resolve); }); console.log(chunks.join(\\"|\\"));"',
+  ].join(' '));
+  assertCondition(streamSetEncodingResult.exitCode === 0, `browser node stream setEncoding workflow should succeed: ${streamSetEncodingResult.stderr}`);
+  assertCondition(
+    streamSetEncodingResult.stdout === 'string:hello\n',
+    `browser node readable file streams should support setEncoding: ${streamSetEncodingResult.stdout}`
+  );
+
   const streamListenerAliasResult = await workspace.runCommand([
     'node',
     '-e',
