@@ -3235,18 +3235,70 @@ async function runBrowserJavaScriptProjectRequest(
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalizedOldPath);
-        if (!bytes) {
+        if (bytes) {
+          fileStore.delete(normalizedOldPath);
+          modules.delete(normalizedOldPath);
+          cache.delete(normalizedOldPath);
+          deleteEntryMetadata(normalizedOldPath);
+          io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
+          notifyFsWatchers('rename', normalizedOldPath);
+          notifyWatchFileWatchers(normalizedOldPath);
+          setFileBytes(normalizedNewPath, bytes);
+          notifyFsWatchers('rename', normalizedNewPath);
+          return;
+        }
+
+        const oldPrefix = normalizedOldPath ? `${normalizedOldPath}/` : '';
+        const sourceDirectories = Array.from(directoryStore)
+          .filter((directoryPath) => directoryPath === normalizedOldPath || directoryPath.startsWith(oldPrefix))
+          .sort((left, right) => left.localeCompare(right));
+        const sourceFiles = Array.from(fileStore.entries())
+          .filter(([filePath]) => filePath.startsWith(oldPrefix))
+          .sort(([left], [right]) => left.localeCompare(right));
+        if (sourceDirectories.length === 0 && sourceFiles.length === 0) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`), { code: 'ENOENT' });
         }
-        fileStore.delete(normalizedOldPath);
-        modules.delete(normalizedOldPath);
-        cache.delete(normalizedOldPath);
-        deleteEntryMetadata(normalizedOldPath);
-        io.fileChange({ path: normalizedOldPath, deleted: true }, 'live');
-        notifyFsWatchers('rename', normalizedOldPath);
-        notifyWatchFileWatchers(normalizedOldPath);
-        setFileBytes(normalizedNewPath, bytes);
-        notifyFsWatchers('rename', normalizedNewPath);
+
+        const existingDestinationFiles = fileStore.has(normalizedNewPath)
+          || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(`${normalizedNewPath}/`));
+        const existingDestinationDirectories = directoryStore.has(normalizedNewPath)
+          || Array.from(directoryStore).some((directoryPath) => directoryPath.startsWith(`${normalizedNewPath}/`));
+        if (existingDestinationFiles || existingDestinationDirectories) {
+          throw Object.assign(new Error(`EEXIST: file already exists, rename '${oldPath}' -> '${newPath}'`), { code: 'EEXIST' });
+        }
+
+        for (const [filePath] of sourceFiles) {
+          fileStore.delete(filePath);
+          modules.delete(filePath);
+          cache.delete(filePath);
+          deleteEntryMetadata(filePath);
+          io.fileChange({ path: filePath, deleted: true }, 'live');
+          notifyFsWatchers('rename', filePath);
+          notifyWatchFileWatchers(filePath);
+        }
+        for (const directoryPath of [...sourceDirectories].sort((left, right) => right.length - left.length || right.localeCompare(left))) {
+          directoryStore.delete(directoryPath);
+          deleteEntryMetadata(directoryPath);
+          emitDirectoryDelete(directoryPath);
+          notifyDirectoryMutation(directoryPath);
+        }
+        for (const directoryPath of sourceDirectories) {
+          const relative = directoryPath === normalizedOldPath ? '' : directoryPath.slice(oldPrefix.length);
+          const nextDirectory = relative ? `${normalizedNewPath}/${relative}` : normalizedNewPath;
+          const existed = directoryStore.has(nextDirectory);
+          directoryStore.add(nextDirectory);
+          if (!entryMetadata.has(nextDirectory)) touchEntryMetadata(nextDirectory);
+          if (!existed) {
+            emitDirectoryCreate(nextDirectory);
+            notifyDirectoryMutation(nextDirectory);
+          }
+        }
+        for (const [filePath, fileBytes] of sourceFiles) {
+          const relative = filePath.slice(oldPrefix.length);
+          const nextPath = normalizedNewPath ? `${normalizedNewPath}/${relative}` : relative;
+          setFileBytes(nextPath, fileBytes);
+          notifyFsWatchers('rename', nextPath);
+        }
       },
       rename: (oldPath: unknown, newPath: unknown, callback?: (error?: Error | null) => void) => {
         try {

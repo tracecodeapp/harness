@@ -2365,6 +2365,52 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   await assertRejectsAsync(() => workspace.readFile('copy-target.txt'), 'browser node renameSync should remove the old target path');
   await assertRejectsAsync(() => workspace.readFile('async-copy-target.txt'), 'browser node async rename should remove the old target path');
 
+  const renameDirectoryEvents: RuntimeCommandEvent[] = [];
+  const renameDirectoryResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.mkdirSync(\\"rename-tree/child\\", { recursive: true }); fs.mkdirSync(\\"rename-tree/empty\\"); fs.writeFileSync(\\"rename-tree/child/value.txt\\", \\"moved\\\\n\\"); fs.renameSync(\\"rename-tree\\", \\"renamed-tree\\"); await fsp.mkdir(\\"async-rename-tree/child\\", { recursive: true }); await fsp.writeFile(\\"async-rename-tree/child/value.txt\\", \\"async-moved\\\\n\\"); await fsp.rename(\\"async-rename-tree\\", \\"async-renamed-tree\\"); console.log(fs.readFileSync(\\"renamed-tree/child/value.txt\\", \\"utf8\\")); console.log(fs.statSync(\\"renamed-tree/empty\\").isDirectory()); console.log(await fsp.readFile(\\"async-renamed-tree/child/value.txt\\", \\"utf8\\"));"',
+  ].join(' '), { onEvent: (event) => renameDirectoryEvents.push(event) });
+  assertCondition(renameDirectoryResult.exitCode === 0, `browser node directory rename workflow should succeed: ${renameDirectoryResult.stderr}`);
+  assertCondition(
+    renameDirectoryResult.stdout === 'moved\n\ntrue\nasync-moved\n\n',
+    `browser node directory rename should match desktop-like fs output: ${renameDirectoryResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('renamed-tree/child/value.txt') === 'moved\n', 'browser node renameSync should persist moved directory files');
+  assertCondition((await workspace.stat('renamed-tree/empty')).isDirectory, 'browser node renameSync should persist moved empty directories');
+  await assertRejectsAsync(() => workspace.readFile('rename-tree/child/value.txt'), 'browser node renameSync should remove old directory files');
+  assertCondition(await workspace.readFile('async-renamed-tree/child/value.txt') === 'async-moved\n', 'browser node async rename should persist moved directory files');
+  await assertRejectsAsync(() => workspace.readFile('async-rename-tree/child/value.txt'), 'browser node async rename should remove old directory files');
+  assertCondition(
+    renameDirectoryEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'rename-tree/child/value.txt' &&
+      event.change.deleted === true
+    ) &&
+      renameDirectoryEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'renamed-tree/child/value.txt' &&
+        'contents' in event.change
+      ) &&
+      renameDirectoryEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'rename-tree/empty' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+      ) &&
+      renameDirectoryEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'renamed-tree/empty' &&
+        event.change.directory === true &&
+        event.change.deleted !== true
+      ),
+    `browser node directory rename should stream live old-tree deletes and new-tree snapshots: ${JSON.stringify(renameDirectoryEvents)}`
+  );
+
   const copyModeResult = await workspace.runCommand([
     'node',
     '-e',
