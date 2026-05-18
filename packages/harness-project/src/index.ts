@@ -2558,26 +2558,19 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
-    const sourceTarget = kernelReadTarget(sourcePath);
-    const writeTarget = kernelWriteTarget(destinationPath);
-    if (writeTarget.kind === 'error') throwKernelWriteTargetError(destinationPath, writeTarget);
-    if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.outputDevice, await this.readFile(sourcePath), PRINCIPAL_ACTOR);
+    const copyTarget = kernelCopyTarget(sourcePath, destinationPath);
+    if (copyTarget.kind === 'file-copy') {
+      await this.copyFileLike(sourcePath, destinationPath);
       return;
     }
-    if (sourceTarget.kind === 'device-file') {
-      await this.writeFileAs(destinationPath, this.readDevice(sourceTarget.path), PRINCIPAL_ACTOR, 'utf8', 'live');
-      return;
+    if (copyTarget.kind === 'error') {
+      throw new Error(
+        copyTarget.reason === 'source-directory'
+          ? `Kernel virtual path is a directory: ${sourcePath}`
+          : `Kernel virtual path not found: ${sourcePath}`
+      );
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
-    if (sourceTarget.kind === 'proc-file') {
-      await this.writeFileAs(destinationPath, readRuntimeProcFile(sourceTarget.path, this.kernelInfo), PRINCIPAL_ACTOR, 'utf8', 'live');
-      return;
-    }
-    if (sourceTarget.kind === 'device-directory' || sourceTarget.kind === 'proc-directory') {
-      throw new Error(`Kernel virtual path is a directory: ${sourcePath}`);
-    }
-    if (sourceTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${sourcePath}`);
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
     const sourceBytes = await this.bash.fs.readFileBuffer(absoluteSourcePath);
     await this.bash.fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
@@ -2588,6 +2581,28 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       phase: 'live',
       actor: PRINCIPAL_ACTOR,
     });
+  }
+
+  private async copyFileLike(sourcePath: string, destinationPath: string): Promise<void> {
+    const sourceBytes = await this.readKernelCopyBytes(sourcePath);
+    const writeTarget = kernelWriteTarget(destinationPath);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(destinationPath, writeTarget);
+    if (writeTarget.kind === 'device') {
+      this.writeDevice(writeTarget.outputDevice, contentToText(sourceBytes), PRINCIPAL_ACTOR);
+      return;
+    }
+    await this.writeFileAs(destinationPath, base64FromBytes(sourceBytes), PRINCIPAL_ACTOR, 'base64', 'live');
+  }
+
+  private async readKernelCopyBytes(sourcePath: string): Promise<Uint8Array> {
+    const sourceTarget = kernelReadTarget(sourcePath);
+    if (sourceTarget.kind === 'device-file') return new TextEncoder().encode(this.readDevice(sourceTarget.path));
+    if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readRuntimeProcFile(sourceTarget.path, this.kernelInfo));
+    if (sourceTarget.kind === 'device-directory' || sourceTarget.kind === 'proc-directory') {
+      throw new Error(`Kernel virtual path is a directory: ${sourcePath}`);
+    }
+    if (sourceTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${sourcePath}`);
+    return this.bash.fs.readFileBuffer(this.toWorkspacePath(sourcePath));
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
