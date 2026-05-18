@@ -2106,6 +2106,29 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     'browser node Buffer writes should persist binary files'
   );
 
+  const stdioFdResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); console.log(fs.readFileSync(0, \\"utf8\\").trim()); process.stdout.write(\\"stream-out\\\\n\\"); fs.writeFileSync(1, \\"fd-out\\\\n\\"); process.stderr.write(\\"stream-err\\\\n\\"); fs.writeFileSync(2, \\"fd-err\\\\n\\");"',
+  ].join(' '), { stdin: 'from-fd\n' });
+  assertCondition(stdioFdResult.exitCode === 0, `browser node stdio fd workflow should succeed: ${stdioFdResult.stderr}`);
+  assertCondition(
+    stdioFdResult.stdout === 'from-fd\nstream-out\nfd-out\n' &&
+      stdioFdResult.stderr === 'stream-err\nfd-err\n',
+    `browser node should map fd 0/1/2 to kernel stdio devices: ${JSON.stringify(stdioFdResult)}`
+  );
+
+  const processStdinResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"process.stdin.setEncoding(\\"utf8\\"); console.log(process.stdin.read().trim());"',
+  ].join(' '), { stdin: 'from-process\n' });
+  assertCondition(processStdinResult.exitCode === 0, `browser node process.stdin workflow should succeed: ${processStdinResult.stderr}`);
+  assertCondition(
+    processStdinResult.stdout === 'from-process\n',
+    `browser node process.stdin should expose request stdin as a readable device: ${JSON.stringify(processStdinResult)}`
+  );
+
   const zlibResult = await workspace.runCommand([
     'node',
     '-e',

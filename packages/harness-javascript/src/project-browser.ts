@@ -101,6 +101,9 @@ function workspacePathInputToString(path: unknown): string {
 }
 
 function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | null {
+  if (path === 0) return '/dev/stdin';
+  if (path === 1) return '/dev/stdout';
+  if (path === 2) return '/dev/stderr';
   const raw = workspacePathInputToString(path).replace(/\\/g, '/');
   if (raw === '/dev/stdin' || raw === '/dev/stdout' || raw === '/dev/stderr' || raw === '/dev/tty') {
     return raw;
@@ -344,6 +347,66 @@ function createZlibApi() {
     deflateSync: (input: unknown) => browserBufferFromBytes(fflate.deflateSync(bytesFromNodeValue(input))),
     inflateSync: (input: unknown) => browserBufferFromBytes(fflate.inflateSync(bytesFromNodeValue(input))),
   };
+}
+
+function createReadableStdinDevice(input: string) {
+  const bytes = BrowserBuffer.from(input);
+  let offset = 0;
+  let encoding: string | undefined;
+  let flowScheduled = false;
+  const dataListeners: Array<(chunk: BrowserBuffer | string) => void> = [];
+  const endListeners: Array<() => void> = [];
+
+  const formatChunk = (chunk: BrowserBuffer): BrowserBuffer | string => (
+    encoding ? chunk.toString(encoding) : chunk
+  );
+  const read = (size?: number): BrowserBuffer | string | null => {
+    if (offset >= bytes.byteLength) return null;
+    const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : bytes.byteLength - offset;
+    const end = Math.min(bytes.byteLength, offset + requested);
+    const chunk = BrowserBuffer.from(bytes.slice(offset, end));
+    offset = end;
+    return formatChunk(chunk);
+  };
+  const scheduleFlow = (): void => {
+    if (flowScheduled) return;
+    flowScheduled = true;
+    queueMicrotask(() => {
+      const chunk = read();
+      if (chunk !== null) {
+        for (const listener of dataListeners) listener(chunk);
+      }
+      for (const listener of endListeners) listener();
+    });
+  };
+  const stream = {
+    fd: 0,
+    readable: true,
+    isTTY: false,
+    setEncoding: (nextEncoding: string) => {
+      encoding = nextEncoding;
+      return stream;
+    },
+    read,
+    on: (event: string, listener: (chunk?: BrowserBuffer | string) => void) => {
+      if (event === 'data') {
+        dataListeners.push((chunk) => listener(chunk));
+        scheduleFlow();
+      } else if (event === 'end') {
+        endListeners.push(() => listener());
+        scheduleFlow();
+      }
+      return stream;
+    },
+    once: (event: string, listener: (chunk?: BrowserBuffer | string) => void) => stream.on(event, listener),
+    resume: () => stream,
+    pause: () => stream,
+    [Symbol.asyncIterator]: async function* () {
+      const chunk = read();
+      if (chunk !== null) yield chunk;
+    },
+  };
+  return stream;
 }
 
 function createPathApi(getCwd: () => string, workspaceRoot: string) {
@@ -1044,7 +1107,10 @@ async function runBrowserJavaScriptProjectRequest(
       },
     };
 
-    const createWritableDevice = (device: RuntimeKernelDevicePath) => ({
+    const createWritableDevice = (device: RuntimeKernelDevicePath, fd: number) => ({
+      fd,
+      writable: true,
+      isTTY: false,
       write: (value: unknown, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
         const data = textFromBytes(bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined));
         writeDevice(device, data);
@@ -1054,13 +1120,14 @@ async function runBrowserJavaScriptProjectRequest(
       },
     });
 
+    const stdinDevice = createReadableStdinDevice(request.stdin);
     const processApi = {
       argv: processArgvForRequest(request),
       env: request.env,
       cwd: () => request.cwd,
-      stdin: request.stdin,
-      stdout: createWritableDevice('/dev/stdout'),
-      stderr: createWritableDevice('/dev/stderr'),
+      stdin: stdinDevice,
+      stdout: createWritableDevice('/dev/stdout', 1),
+      stderr: createWritableDevice('/dev/stderr', 2),
       exit: (code = 0) => {
         throw Object.assign(new Error(`process.exit(${code})`), {
           exitCode: Number(code) || 0,
