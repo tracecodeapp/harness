@@ -5,6 +5,7 @@ import type {
   RuntimeFileChange,
   RuntimeFileEncoding,
   RuntimeFileMutationPhase,
+  RuntimeKernelDeviceInfo,
   RuntimeKernelDevicePath,
   RuntimeKernelInfo,
   RuntimeProjectCommandRequest,
@@ -131,10 +132,13 @@ function workspacePathInputToString(path: unknown): string {
   return String(path);
 }
 
-function runtimeWriteTarget(path: unknown): ReturnType<typeof runtimeKernelWriteTarget> | null {
+function runtimeWriteTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelWriteTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelWriteTarget(raw);
+  return runtimeKernelWriteTarget(raw, devices);
 }
 
 function runtimeMutationTarget(path: unknown): ReturnType<typeof runtimeKernelMutationTarget> | null {
@@ -149,55 +153,77 @@ function runtimeMetadataTarget(path: unknown): ReturnType<typeof runtimeKernelMe
   return runtimeKernelMetadataTarget(raw);
 }
 
-function runtimeAccessTarget(path: unknown, mode: number): ReturnType<typeof runtimeKernelAccessTarget> | null {
+function runtimeAccessTarget(
+  path: unknown,
+  mode: number,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelAccessTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelAccessTarget(raw, {
     read: (mode & 4) !== 0,
     write: (mode & 2) !== 0,
     execute: (mode & 1) !== 0,
-  });
+  }, devices);
 }
 
 function runtimeOpenTarget(
   path: unknown,
-  request: Parameters<typeof runtimeKernelOpenTarget>[1]
+  request: Parameters<typeof runtimeKernelOpenTarget>[1],
+  devices?: readonly RuntimeKernelDeviceInfo[]
 ): ReturnType<typeof runtimeKernelOpenTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelOpenTarget(raw, request);
+  return runtimeKernelOpenTarget(raw, request, devices);
 }
 
-function runtimeReadTarget(path: unknown): ReturnType<typeof runtimeKernelReadTarget> | null {
+function runtimeReadTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelReadTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelReadTarget(raw);
+  return runtimeKernelReadTarget(raw, devices);
 }
 
-function runtimeFileReadTarget(path: unknown): ReturnType<typeof runtimeKernelFileReadTarget> | null {
+function runtimeFileReadTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelFileReadTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelFileReadTarget(raw);
+  return runtimeKernelFileReadTarget(raw, devices);
 }
 
-function runtimeCopyTarget(source: unknown, destination: unknown): ReturnType<typeof runtimeKernelCopyTarget> | null {
+function runtimeCopyTarget(
+  source: unknown,
+  destination: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelCopyTarget> | null {
   if (typeof source === 'number' || typeof destination === 'number') return null;
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelCopyTarget(sourceRaw, destinationRaw);
+  return runtimeKernelCopyTarget(sourceRaw, destinationRaw, devices);
 }
 
-function runtimeFileCopyTarget(source: unknown, destination: unknown): ReturnType<typeof runtimeKernelFileCopyTarget> | null {
+function runtimeFileCopyTarget(
+  source: unknown,
+  destination: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelFileCopyTarget> | null {
   if (typeof source === 'number' || typeof destination === 'number') return null;
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelFileCopyTarget(sourceRaw, destinationRaw);
+  return runtimeKernelFileCopyTarget(sourceRaw, destinationRaw, devices);
 }
 
-function runtimeDirectoryTarget(path: unknown): ReturnType<typeof runtimeKernelDirectoryTarget> | null {
+function runtimeDirectoryTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelDirectoryTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelDirectoryTarget(raw);
+  return runtimeKernelDirectoryTarget(raw, devices);
 }
 
 function throwRuntimeWriteTargetError(
@@ -2011,7 +2037,7 @@ async function runBrowserJavaScriptProjectRequest(
             writable: true,
             create: true,
             truncate: !parsed.append,
-          })
+          }, kernelDevices)
         : null;
       if (openTarget?.kind === 'error') {
         const message = openTarget.reason === 'read-only'
@@ -2219,7 +2245,7 @@ async function runBrowserJavaScriptProjectRequest(
     } as const;
     let mkdtempCounter = 0;
     const fileSystemEntryExists = (path: unknown): boolean => {
-      const readTarget = runtimeReadTarget(path);
+      const readTarget = runtimeReadTarget(path, kernelDevices);
       if (
         readTarget?.kind === 'device-file' ||
         readTarget?.kind === 'device-directory' ||
@@ -2237,7 +2263,7 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const assertFileSystemAccess = (path: unknown, mode: number = fsConstants.F_OK): void => {
       const requested = Number(mode) || fsConstants.F_OK;
-      const accessTarget = runtimeAccessTarget(path, requested);
+      const accessTarget = runtimeAccessTarget(path, requested, kernelDevices);
       if (accessTarget?.kind === 'allowed') return;
       if (accessTarget?.kind === 'denied') {
         const code = accessTarget.reason === 'not-found' ? 'ENOENT' : 'EACCES';
@@ -2384,7 +2410,7 @@ async function runBrowserJavaScriptProjectRequest(
       setFileBytes(path, next);
     };
     const realpathForEntry = (path: unknown): string => {
-      const readTarget = runtimeReadTarget(path);
+      const readTarget = runtimeReadTarget(path, kernelDevices);
       if (readTarget?.kind === 'device-file' || readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
         return readTarget.path;
       }
@@ -2403,7 +2429,7 @@ async function runBrowserJavaScriptProjectRequest(
       destination: unknown,
       options: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean } = {}
     ): void => {
-      const copyTarget = runtimeCopyTarget(source, destination);
+      const copyTarget = runtimeCopyTarget(source, destination, kernelDevices);
       if (copyTarget?.kind === 'file-copy') {
         fsApi.copyFileSync(source, destination);
         return;
@@ -2642,7 +2668,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       openSync: (path: unknown, flags: unknown = 'r') => {
         const parsed = parseOpenFlags(flags);
-        const openTarget = runtimeOpenTarget(path, parsed);
+        const openTarget = runtimeOpenTarget(path, parsed, kernelDevices);
         const fd = nextFd++;
         if (openTarget?.kind === 'error') {
           const message = openTarget.reason === 'read-only'
@@ -2954,7 +2980,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
         const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
-        const readTarget = optionFd === null ? runtimeFileReadTarget(path) : null;
+        const readTarget = optionFd === null ? runtimeFileReadTarget(path, kernelDevices) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
         let sourceBytes: Uint8Array | undefined;
         if (readTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(readTarget.path));
@@ -2984,7 +3010,7 @@ async function runBrowserJavaScriptProjectRequest(
           const bytes = BrowserBuffer.from(readDescriptorFileBytes(path));
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         }
-        const readTarget = runtimeFileReadTarget(path);
+        const readTarget = runtimeFileReadTarget(path, kernelDevices);
         if (readTarget?.kind === 'device-file') {
           const contents = readDevice(readTarget.path);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
@@ -3024,7 +3050,7 @@ async function runBrowserJavaScriptProjectRequest(
           writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options));
           return;
         }
-        const writeTarget = runtimeWriteTarget(path);
+        const writeTarget = runtimeWriteTarget(path, kernelDevices);
         if (writeTarget?.kind === 'error') {
           const message = writeTarget.reason === 'proc-read-only'
             ? `EROFS: read-only file system, open '${path}'`
@@ -3056,7 +3082,7 @@ async function runBrowserJavaScriptProjectRequest(
           writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options), true);
           return;
         }
-        const writeTarget = runtimeWriteTarget(path);
+        const writeTarget = runtimeWriteTarget(path, kernelDevices);
         if (writeTarget?.kind === 'error') {
           const message = writeTarget.reason === 'proc-read-only'
             ? `EROFS: read-only file system, open '${path}'`
@@ -3089,7 +3115,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
-        const copyTarget = runtimeFileCopyTarget(source, destination);
+        const copyTarget = runtimeFileCopyTarget(source, destination, kernelDevices);
         if (copyTarget?.kind === 'error' && copyTarget.side === 'destination') {
           const message = copyTarget.reason === 'proc-read-only'
             ? `EROFS: read-only file system, copyfile '${source}' -> '${destination}'`
@@ -3103,7 +3129,7 @@ async function runBrowserJavaScriptProjectRequest(
         let sourceBytes: Uint8Array | undefined;
         const sourceTarget = copyTarget?.kind === 'virtual-source' || copyTarget?.kind === 'device-destination'
           ? copyTarget.source
-          : runtimeFileReadTarget(source);
+          : runtimeFileReadTarget(source, kernelDevices);
         if (sourceTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(sourceTarget.path));
         else if (sourceTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(sourceTarget.path, kernelInfo));
         else if (copyTarget?.kind === 'error' && copyTarget.side === 'source') {
@@ -3121,7 +3147,7 @@ async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
         if (copyTarget?.kind === 'device-destination') {
-          const destinationTarget = runtimeWriteTarget(destination);
+          const destinationTarget = runtimeWriteTarget(destination, kernelDevices);
           writeDevice(destinationTarget?.kind === 'device' ? destinationTarget.device : copyTarget.outputDevice, textFromBytes(sourceBytes));
           return;
         }
@@ -3260,7 +3286,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       existsSync: (path: unknown) => {
         try {
-          const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK);
+          const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
           if (accessTarget?.kind === 'allowed') return true;
           if (accessTarget?.kind === 'denied') return false;
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
@@ -3276,7 +3302,7 @@ async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => callback?.(fsApi.existsSync(path)));
       },
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => {
-        const directoryTarget = runtimeDirectoryTarget(path);
+        const directoryTarget = runtimeDirectoryTarget(path, kernelDevices);
         const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
         if (directoryTarget?.kind === 'directory') {
           const names = directoryTarget.entries.map((entry) => entry.name);
@@ -3419,7 +3445,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       statSync: (path: unknown) => {
-        const readTarget = runtimeReadTarget(path);
+        const readTarget = runtimeReadTarget(path, kernelDevices);
         if (readTarget?.kind === 'device-file' || readTarget?.kind === 'device-directory') return statForDevicePath(readTarget.path);
         if (readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
           const procStats = statForProcPath(readTarget.path);

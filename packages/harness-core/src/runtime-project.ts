@@ -122,11 +122,7 @@ export interface RuntimeCommandResult {
 
 export type RuntimeCommandEventStream = 'stdout' | 'stderr';
 
-export type RuntimeKernelDevicePath =
-  | '/dev/stdin'
-  | '/dev/stdout'
-  | '/dev/stderr'
-  | '/dev/tty';
+export type RuntimeKernelDevicePath = `/dev/${string}`;
 
 export interface RuntimeKernelDeviceInfo {
   path: RuntimeKernelDevicePath;

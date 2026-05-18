@@ -1987,8 +1987,17 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     code: [
       'const fs = require("node:fs");',
       'process.stdout.write(fs.readFileSync("/dev/tty", "utf8").trim() + "\\n");',
+      'process.stdout.write(fs.readFileSync("/dev/custom-in", "utf8").trim() + "\\n");',
+      'process.stdout.write(String(fs.readdirSync("/dev").includes("log") && fs.readdirSync("/dev").includes("custom-in")) + "\\n");',
+      'process.stdout.write(String(fs.existsSync("/dev/log")) + ":" + String(fs.existsSync("/dev/missing")) + "\\n");',
+      'fs.accessSync("/dev/log", fs.constants.W_OK);',
+      'fs.accessSync("/dev/custom-in", fs.constants.R_OK);',
+      'fs.copyFileSync("/dev/custom-in", "custom-copy.txt");',
+      'process.stdout.write(fs.readFileSync("custom-copy.txt", "utf8").trim() + "\\n");',
       'fs.writeFileSync("/dev/tty", "tty-device\\n");',
       'fs.copyFileSync("message.txt", "/dev/tty");',
+      'fs.writeFileSync("/dev/log", "log-device\\n");',
+      'fs.copyFileSync("message.txt", "/dev/log");',
     ].join('\n'),
     source: 'argument',
     args: [],
@@ -2003,15 +2012,17 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
         { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stderr' },
+        { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
       ],
     },
     onEvent: (event) => events.push(event),
   });
 
   assertCondition(result.exitCode === 0, `browser node custom kernel device inventory should succeed: ${result.stderr}`);
-  assertCondition(result.stdout === 'from-tty\n', `browser node should read /dev/tty from configured stdin source: ${JSON.stringify(result)}`);
+  assertCondition(result.stdout === 'from-tty\nfrom-tty\ntrue\ntrue:false\nfrom-tty\n', `browser node should read manifest devices and list them in /dev: ${JSON.stringify(result)}`);
   assertCondition(
-    result.stderr === 'tty-device\ncopy-device\n',
+    result.stderr === 'tty-device\ncopy-device\nlog-device\ncopy-device\n',
     `browser node should route /dev/tty writes through configured stderr target: ${JSON.stringify(result)}`
   );
   assertCondition(
@@ -2026,8 +2037,17 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       event.stream === 'stderr' &&
       event.device === '/dev/stderr' &&
       event.sourceDevice === '/dev/tty'
-    ).map((event) => event.data).join('') === result.stderr,
+    ).map((event) => event.data).join('') === 'tty-device\ncopy-device\n',
     `browser node should preserve source device for custom-routed /dev/tty writes: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.filter((event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.sourceDevice === '/dev/log'
+    ).map((event) => event.data).join('') === 'log-device\ncopy-device\n',
+    `browser node should support manifest-provided custom output devices: ${JSON.stringify(events)}`
   );
 
   const restrictedResult = await createBrowserJavaScriptProjectRunner()({
