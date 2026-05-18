@@ -1863,6 +1863,46 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
   );
 }
 
+async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<void> {
+  const appliedChanges: string[] = [];
+  const events: RuntimeCommandEvent[] = [];
+  const runner = createBrowserJavaScriptProjectRunner({
+    applyFileChange: async (change, phase) => {
+      appliedChanges.push(`${phase}:${change.path}`);
+      return false;
+    },
+  });
+
+  const result = await runner({
+    code: 'const fs = require("node:fs"); fs.writeFileSync("live-js.txt", "live\\n"); console.log("after-live");',
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+    onEvent: (event) => events.push(event),
+  });
+
+  assertCondition(result.exitCode === 0, `browser node applyFileChange hook command should succeed: ${result.stderr}`);
+  assertCondition(result.stdout === 'after-live\n', `browser node applyFileChange hook should preserve stdout: ${result.stdout}`);
+  assertCondition(
+    appliedChanges.includes('live:live-js.txt'),
+    `browser node applyFileChange hook should receive live mutations: ${JSON.stringify(appliedChanges)}`
+  );
+  assertCondition(
+    events.some((event) => event.type === 'output' && event.data === 'after-live\n'),
+    `browser node applyFileChange hook should preserve later output events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    !events.some((event) => event.type === 'file-change' && event.change.path === 'live-js.txt'),
+    `browser node applyFileChange hook should support suppressing duplicate file-change events: ${JSON.stringify(events)}`
+  );
+}
+
 async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<void> {
   const request: JavaScriptProjectCommandRequest = {
     code: '',
@@ -6088,6 +6128,7 @@ async function main(): Promise<void> {
   await testNativeJavaScriptProjectRunnerStdin();
   await testNativeJavaScriptProjectRunnerAbsoluteWorkspacePaths();
   await testProjectJavaScriptRunnersDirectAbsoluteScriptPath();
+  await testBrowserJavaScriptProjectRunnerApplyFileChangeHook();
   await testProjectJavaScriptRunnersPreserveEmptyDirectories();
   await testBrowserJavaScriptProjectRunner();
   await testBrowserJavaScriptProjectRunnerCwd();

@@ -1,15 +1,17 @@
 import type {
+  RuntimeCommandEvent,
   RuntimeCommandResult,
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileEncoding,
+  RuntimeFileMutationPhase,
   RuntimeKernelDevicePath,
   RuntimeKernelInfo,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
-import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
+import { RuntimeProjectEventQueue, createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
@@ -50,6 +52,7 @@ export type JavaScriptProjectCommandRunner = RuntimeProjectCommandRunner<JavaScr
 export type BrowserJavaScriptProjectCommandRunner = JavaScriptProjectCommandRunner;
 
 export interface BrowserJavaScriptProjectRunnerOptions {
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   allowDynamicEval?: boolean;
   timeoutMs?: number;
 }
@@ -1249,7 +1252,18 @@ async function runBrowserJavaScriptProjectRequest(
 
     const stdout: string[] = [];
     const stderr: string[] = [];
-    const io = createRuntimeProjectIoBridge(request.onEvent);
+    const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
+    const emitRuntimeEvent = (event: RuntimeCommandEvent): void => {
+      if (eventQueue) {
+        eventQueue.enqueue(event, {
+          applyFileChange: options.applyFileChange as (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>,
+          emit: (nextEvent) => request.onEvent?.(nextEvent),
+        });
+        return;
+      }
+      request.onEvent?.(event);
+    };
+    const io = createRuntimeProjectIoBridge(emitRuntimeEvent);
     const workspacePathContext = createWorkspacePathContext(request.project);
     const workspaceRoot = workspacePathContext.root;
     const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
@@ -3960,6 +3974,7 @@ async function runBrowserJavaScriptProjectRequest(
         await Promise.resolve();
       }
 
+      await eventQueue?.flush();
       return {
         stdout: stdout.join(''),
         stderr: stderr.join(''),
@@ -3984,6 +3999,15 @@ async function runBrowserJavaScriptProjectRequest(
         : error instanceof Error
           ? `${error.message}\n`
           : `${String(error)}\n`;
+      try {
+        await eventQueue?.flush();
+      } catch (flushError) {
+        return {
+          stdout: stdout.join(''),
+          stderr: stderr.join('') + (flushError instanceof Error ? `${flushError.message}\n` : `${String(flushError)}\n`),
+          exitCode: 1,
+        };
+      }
       return {
         stdout: stdout.join(''),
         stderr: stderr.join('') + stderrSuffix,
