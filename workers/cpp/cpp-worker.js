@@ -851,6 +851,7 @@ class WasiProcess {
     }
 
     if (this.fs.isDirectory(normalized)) {
+      if (options.write || options.truncate || options.append || options.create) return -EISDIR;
       return this.allocateFd({ kind: 'dir', path: normalized, offset: 0, readable: true, writable: false });
     }
 
