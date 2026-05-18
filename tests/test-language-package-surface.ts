@@ -369,6 +369,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         worker.includes('sourceDevice') && worker.includes('this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device)'),
         '@tracecode/harness-cpp worker should ship stdio source device events'
       );
+      assertCondition(
+        worker.includes('directory: true') &&
+          worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true })') &&
+          worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true, deleted: true })'),
+        '@tracecode/harness-cpp worker should ship live directory mutation events'
+      );
     }
 
     const packedPackageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as {

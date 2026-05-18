@@ -317,6 +317,9 @@ async function main(): Promise<void> {
             '  DIR* scratch_dir = opendir("scratch");',
             '  std::cout << (rmdir_result == 0 && !scratch_dir ? "rmdir:gone" : "rmdir:still") << "\\\\n";',
             '  if (scratch_dir) closedir(scratch_dir);',
+            '  mkdir("rename-dir", 0777);',
+            '  std::rename("rename-dir", "renamed-dir");',
+            '  rmdir("renamed-dir");',
             '  std::ofstream("rename-source.txt") << "moved\\\\n";',
             '  std::rename("rename-source.txt", "renamed.txt");',
             '  std::remove("stale.txt");',
@@ -1267,6 +1270,48 @@ async function main(): Promise<void> {
         event.change.contents === ''
       )) === true,
       `C++ browser project run should stream zero-byte open-created files: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/scratch' &&
+        event.change.directory === true
+      )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/scratch' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/rename-dir' &&
+          event.change.directory === true
+        )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/rename-dir' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/renamed-dir' &&
+          event.change.directory === true
+        )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/renamed-dir' &&
+          event.change.directory === true &&
+          event.change.deleted === true
+        )) === true,
+      `C++ browser project run should stream live directory mutations: ${JSON.stringify(projectRun.events)}`
     );
     {
       const events = projectRun.events || [];

@@ -426,7 +426,9 @@ class InMemoryFileSystem {
       return;
     }
     this.addDirectory(dirname(normalized));
+    const existed = this.dirs.has(normalized);
     this.dirs.add(normalized);
+    if (!existed) this.fileChangeObserver?.({ path: normalized, directory: true });
   }
 
   addFile(pathname, contents) {
@@ -501,6 +503,43 @@ class InMemoryFileSystem {
       if (file.startsWith(prefix)) return ENOTEMPTY;
     }
     this.dirs.delete(normalized);
+    this.fileChangeObserver?.({ path: normalized, directory: true, deleted: true });
+    return ESUCCESS;
+  }
+
+  rename(oldPathname, newPathname) {
+    const oldPath = normalizePath(oldPathname);
+    const newPath = normalizePath(newPathname);
+    if (this.isReadOnly(oldPath) || this.isReadOnly(newPath)) {
+      throw Object.assign(new Error(`Read-only file system: ${oldPath}`), { code: 'EROFS' });
+    }
+    if (this.files.has(oldPath)) {
+      this.writeFile(newPath, this.readFile(oldPath));
+      this.unlink(oldPath);
+      return ESUCCESS;
+    }
+    if (!this.dirs.has(oldPath)) return ENOENT;
+    const oldPrefix = `${oldPath}/`;
+    const newPrefix = `${newPath}/`;
+    const directories = [...this.dirs]
+      .filter((path) => path === oldPath || path.startsWith(oldPrefix))
+      .sort((left, right) => left.length - right.length);
+    const files = [...this.files.entries()].filter(([path]) => path.startsWith(oldPrefix));
+    for (const directory of directories) {
+      const target = directory === oldPath ? newPath : `${newPrefix}${directory.slice(oldPrefix.length)}`;
+      this.addDirectory(target);
+    }
+    for (const [file, bytes] of files) {
+      const target = `${newPrefix}${file.slice(oldPrefix.length)}`;
+      this.writeFile(target, bytes);
+    }
+    for (const [file] of files) {
+      this.unlink(file);
+    }
+    for (const directory of directories.sort((left, right) => right.length - left.length)) {
+      this.dirs.delete(directory);
+      this.fileChangeObserver?.({ path: directory, directory: true, deleted: true });
+    }
     return ESUCCESS;
   }
 
@@ -1070,10 +1109,7 @@ class WasiProcess {
     if (this.fs.isReadOnly(oldPath) || isRuntimeProcPath(newPath)) return EROFS;
     if (isRuntimeDeviceNamespacePath(oldPath)) return this.kernelDevices.has(oldPath) || isRuntimeDeviceDirectory(oldPath) ? EROFS : ENOENT;
     if (isRuntimeDeviceNamespacePath(newPath)) return this.kernelDevices.has(newPath) || isRuntimeDeviceDirectory(newPath) ? EROFS : ENOENT;
-    if (!this.fs.isFile(oldPath)) return ENOENT;
-    this.fs.writeFile(newPath, this.fs.readFile(oldPath));
-    this.fs.unlink(oldPath);
-    return ESUCCESS;
+    return this.fs.rename(oldPath, newPath);
   }
 
   path_readlink() {
@@ -4654,7 +4690,9 @@ async function handleProjectCpp(request, messageId) {
   fs.setFileChangeObserver((change) => {
     const relativePath = relativeProjectPath(change.path, request?.project);
     if (!relativePath) return;
-    events.fileChange(change.deleted
+    events.fileChange(change.directory
+      ? { path: relativePath, directory: true, ...(change.deleted ? { deleted: true } : {}) }
+      : change.deleted
       ? { path: relativePath, deleted: true }
       : encodeProjectFileChange(relativePath, change.bytes));
   });
