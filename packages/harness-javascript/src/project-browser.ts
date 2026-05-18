@@ -25,6 +25,8 @@ import {
   runtimeKernelFileCopyTarget,
   runtimeKernelFileReadTarget,
   runtimeKernelFileReadErrorCode,
+  runtimeKernelLinkErrorCode,
+  runtimeKernelLinkTarget,
   runtimeKernelMetadataErrorCode,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationErrorCode,
@@ -227,6 +229,17 @@ function runtimeFileCopyTarget(
   return runtimeKernelFileCopyTarget(sourceRaw, destinationRaw, devices);
 }
 
+function runtimeLinkTarget(
+  source: unknown,
+  destination: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelLinkTarget> | null {
+  if (typeof source === 'number' || typeof destination === 'number') return null;
+  const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelLinkTarget(sourceRaw, destinationRaw, devices);
+}
+
 function runtimeDirectoryTarget(
   path: unknown,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -272,6 +285,13 @@ function throwRuntimeReadTargetError(
   message: string
 ): never {
   throw Object.assign(new Error(message), { code: runtimeKernelFileReadErrorCode(target.reason) });
+}
+
+function throwRuntimeLinkTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelLinkTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: runtimeKernelLinkErrorCode(target.reason) });
 }
 
 function throwRuntimeDirectoryTargetError(
@@ -2983,13 +3003,16 @@ async function runBrowserJavaScriptProjectRequest(
             : typeof positionOrCallback === 'function'
               ? positionOrCallback
               : callback;
-        const offset = options?.offset ?? (typeof offsetOrOptions === 'number' ? offsetOrOptions : 0);
-        const length = options?.length ?? (typeof lengthOrCallback === 'number' ? lengthOrCallback : buffer.byteLength - offset);
-        const position = options !== undefined
-          ? options.position
-          : typeof positionOrCallback === 'number' || positionOrCallback === null
-            ? positionOrCallback
-            : null;
+        const offset: number = options?.offset ?? (typeof offsetOrOptions === 'number' ? offsetOrOptions : 0);
+        const length: number = options?.length ?? (typeof lengthOrCallback === 'number' ? lengthOrCallback : buffer.byteLength - offset);
+        let position: number | null | undefined;
+        if (options !== undefined) {
+          position = options.position;
+        } else if (typeof positionOrCallback === 'number') {
+          position = positionOrCallback;
+        } else {
+          position = null;
+        }
         try {
           const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
           queueMicrotask(() => done?.(null, bytesRead, buffer));
@@ -3447,13 +3470,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       linkSync: (existingPath: unknown, newPath: unknown) => {
-        const sourceMutationTarget = runtimeMutationTarget(existingPath, kernelDevices);
-        if (sourceMutationTarget?.kind === 'error') {
-          throwRuntimeMutationTargetError(sourceMutationTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
-        }
-        const destinationMutationTarget = runtimeMutationTarget(newPath, kernelDevices);
-        if (destinationMutationTarget?.kind === 'error') {
-          throwRuntimeMutationTargetError(destinationMutationTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
+        const linkTarget = runtimeLinkTarget(existingPath, newPath, kernelDevices);
+        if (linkTarget?.kind === 'error') {
+          throwRuntimeLinkTargetError(linkTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
         }
         const normalizedSource = assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext);
         const normalizedDestination = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);

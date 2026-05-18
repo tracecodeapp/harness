@@ -23,6 +23,7 @@ import {
 } from '../packages/harness-core/src/trace-adapters/java';
 import {
   runtimeKernelFileReadTarget,
+  runtimeKernelLinkTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelOpenTarget,
@@ -113,6 +114,22 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
       { path: '/dev/log' as const, readable: false, writable: true, outputDevice: '/dev/stderr' as const },
     ])) === '{"kind":"ignored-device","path":"/dev/log"}',
     'kernel metadata target should ignore metadata changes on manifest custom devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelLinkTarget('/proc/kernel/info', 'copy.txt', devices)) ===
+      '{"kind":"error","path":"/proc/kernel/info","reason":"proc-read-only","side":"source"}',
+    'kernel link target should reject proc sources through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelLinkTarget('source.txt', '/dev/log', [
+      ...devices,
+      { path: '/dev/log' as const, readable: false, writable: true, outputDevice: '/dev/stderr' as const },
+    ])) === '{"kind":"error","path":"/dev/log","reason":"device-read-only","side":"destination"}',
+    'kernel link target should reject manifest device destinations through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelLinkTarget('source.txt', 'copy.txt', devices)) === '{"kind":"workspace"}',
+    'kernel link target should allow workspace hard links'
   );
 }
 

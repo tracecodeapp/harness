@@ -23,6 +23,7 @@ import {
   runtimeKernelCopyTarget,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileReadTarget,
+  runtimeKernelLinkTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
@@ -269,6 +270,12 @@ function throwKernelWriteTargetError(path: string, target: Extract<ReturnType<ty
 function kernelMutationTarget(path: string): ReturnType<typeof runtimeKernelMutationTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelMutationTarget(path);
+}
+
+function kernelLinkTarget(existingPath: string, newPath: string): ReturnType<typeof runtimeKernelLinkTarget> {
+  assertNoNul(existingPath, 'Kernel path');
+  assertNoNul(newPath, 'Kernel path');
+  return runtimeKernelLinkTarget(existingPath, newPath);
 }
 
 function throwKernelMutationTargetError(
@@ -900,10 +907,8 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
-    const sourceMutationTarget = kernelMutationTarget(existingPath);
-    if (sourceMutationTarget.kind === 'error') throwKernelMutationTargetError(existingPath, sourceMutationTarget);
-    const destinationMutationTarget = kernelMutationTarget(newPath);
-    if (destinationMutationTarget.kind === 'error') throwKernelMutationTargetError(newPath, destinationMutationTarget);
+    const linkTarget = kernelLinkTarget(existingPath, newPath);
+    if (linkTarget.kind === 'error') throwKernelMutationTargetError(linkTarget.side === 'source' ? existingPath : newPath, linkTarget);
     return this.base.link(this.mapPath(existingPath), this.mapPath(newPath));
   }
 

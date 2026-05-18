@@ -85,6 +85,14 @@ export type RuntimeKernelFileCopyTarget =
       reason: Extract<RuntimeKernelWriteTarget, { kind: 'error' }>['reason'];
       path: string;
     };
+export type RuntimeKernelLinkTarget =
+  | { kind: 'workspace' }
+  | {
+      kind: 'error';
+      side: 'source' | 'destination';
+      reason: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>['reason'];
+      path: string;
+    };
 export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'ENOTDIR' | 'EROFS';
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
@@ -599,6 +607,28 @@ export function runtimeKernelFileCopyTarget(
   }
 
   return { kind: 'workspace' };
+}
+
+export function runtimeKernelLinkTarget(
+  source: string,
+  destination: string,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelLinkTarget {
+  const sourceTarget = runtimeKernelMutationTarget(source, devices);
+  if (sourceTarget.kind === 'error') {
+    return { kind: 'error', side: 'source', reason: sourceTarget.reason, path: sourceTarget.path };
+  }
+  const destinationTarget = runtimeKernelMutationTarget(destination, devices);
+  if (destinationTarget.kind === 'error') {
+    return { kind: 'error', side: 'destination', reason: destinationTarget.reason, path: destinationTarget.path };
+  }
+  return { kind: 'workspace' };
+}
+
+export function runtimeKernelLinkErrorCode(
+  reason: Extract<RuntimeKernelLinkTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return runtimeKernelMutationErrorCode(reason);
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {

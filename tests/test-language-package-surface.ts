@@ -259,6 +259,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('type RuntimeKernelWriteTarget') &&
           declarations.includes('runtimeKernelStatTarget') &&
           declarations.includes('type RuntimeKernelStatTarget') &&
+          declarations.includes('runtimeKernelLinkTarget') &&
+          declarations.includes('type RuntimeKernelLinkTarget') &&
           declarations.includes('normalizeRuntimeDevicePath'),
         '@tracecode/harness-core declarations should export shared tracekernel helpers'
       );
@@ -274,7 +276,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         projectDist.includes('symlink(target, linkPath)') &&
           projectDist.includes('const mutationTarget = kernelMutationTarget(linkPath)') &&
           projectDist.includes('link(existingPath, newPath)') &&
-          projectDist.includes('const sourceMutationTarget = kernelMutationTarget(existingPath)') &&
+          projectDist.includes('const linkTarget = kernelLinkTarget(existingPath, newPath)') &&
           projectDist.includes('Kernel virtual path is not a symbolic link') &&
           projectDist.includes('const statTarget = kernelStatTarget(path') &&
           projectDist.includes('virtualStat(stat') &&
