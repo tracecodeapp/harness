@@ -250,6 +250,7 @@ async function main(): Promise<void> {
             '#include <iostream>',
             '#include <string>',
             '#include <sys/stat.h>',
+            '#include <sys/statvfs.h>',
             '#include <time.h>',
             '#include <unistd.h>',
             'int main(int argc, char** argv) {',
@@ -302,6 +303,13 @@ async function main(): Promise<void> {
             '  struct stat stdout_stat = {};',
             '  bool dev_stat_ok = stat("/dev", &dev_stat) == 0 && stat("/dev/stdout", &stdout_stat) == 0;',
             '  std::cout << (dev_stat_ok && S_ISDIR(dev_stat.st_mode) && !S_ISDIR(stdout_stat.st_mode) ? "dev-stat:ok" : "dev-stat:bad") << "\\\\n";',
+            '  struct statvfs root_vfs = {};',
+            '  struct statvfs dev_vfs = {};',
+            '  struct statvfs proc_vfs = {};',
+            '  bool statvfs_ok = statvfs(".", &root_vfs) == 0 && statvfs("/dev/stdout", &dev_vfs) == 0 && statvfs("/proc/kernel/info", &proc_vfs) == 0;',
+            '  std::cout << (statvfs_ok && root_vfs.f_bsize > 0 && dev_vfs.f_bsize == root_vfs.f_bsize && proc_vfs.f_blocks == root_vfs.f_blocks ? "statvfs:ok" : "statvfs:bad") << "\\\\n";',
+            '  std::cout << (statvfs("/dev/missing", &dev_vfs) == 0 ? "statvfs-dev-missing:ok" : "statvfs-dev-missing:blocked") << "\\\\n";',
+            '  std::cout << (statvfs("/proc/missing", &proc_vfs) == 0 ? "statvfs-proc-missing:ok" : "statvfs-proc-missing:blocked") << "\\\\n";',
             '  int stdout_stat_fd = open("/dev/stdout", O_WRONLY);',
             '  struct stat stdout_fd_stat = {};',
             '  bool stdout_fd_stat_ok = stdout_stat_fd >= 0 && fstat(stdout_stat_fd, &stdout_fd_stat) == 0;',
@@ -1245,7 +1253,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\ncustom-kernel-mkdir:blocked\ncustom-kernel-create:blocked\n') === true &&
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
-        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nsymlink-dev:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,

@@ -203,6 +203,72 @@ function projectStdinSourcePath(payload) {
   return 'tracecode-stdin.cpp';
 }
 
+const TRACEKERNEL_STATVFS_SOURCE = String.raw`
+#include <errno.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+static void tracecode_fill_statvfs(struct statvfs *out) {
+  memset(out, 0, sizeof(*out));
+  out->f_bsize = 4096;
+  out->f_frsize = 4096;
+  out->f_blocks = 1048576;
+  out->f_bfree = 1048000;
+  out->f_bavail = 1048000;
+  out->f_files = 1000000;
+  out->f_ffree = 999000;
+  out->f_favail = 999000;
+  out->f_fsid = 0x74726365UL;
+  out->f_namemax = 255;
+  out->f_type = 0x74726365U;
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+int __wrap_statvfs(const char *path, struct statvfs *out) {
+  struct stat st;
+  if (!path || !out) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (stat(path, &st) != 0) {
+    return -1;
+  }
+  tracecode_fill_statvfs(out);
+  return 0;
+}
+
+#ifdef __cplusplus
+extern "C"
+#endif
+int __wrap_fstatvfs(int fd, struct statvfs *out) {
+  struct stat st;
+  if (!out) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (fstat(fd, &st) != 0) {
+    return -1;
+  }
+  tracecode_fill_statvfs(out);
+  return 0;
+}
+
+#ifdef __cplusplus
+}
+#endif
+`;
+
+function shouldLinkTracekernelStatvfs(args) {
+  return !args.some((arg) => arg === '-c' || arg === '-S' || arg === '-E');
+}
+
 async function compileProjectWithYowasp(payload) {
   const startedAt = performance.now();
   const assets = payload?.assets || {};
@@ -259,6 +325,10 @@ async function compileProjectWithYowasp(payload) {
       sourceFiles[stdinSourcePath.slice(cwd.length + 1)] = stdinBytes;
     }
   }
+  const linkTracekernelStatvfs = shouldLinkTracekernelStatvfs(requestedArgs);
+  if (linkTracekernelStatvfs) {
+    sourceFiles['tracecode_statvfs.c'] = encodeUtf8(TRACEKERNEL_STATVFS_SOURCE);
+  }
   const outputIndex = requestedArgs.indexOf('-o');
   const outputPath = normalizeProjectPath(outputIndex >= 0 ? requestedArgs[outputIndex + 1] || 'a.out' : 'a.out', payload) || 'a.out';
   const workspaceOutputPath = payload?.workspaceOutputPath
@@ -270,6 +340,7 @@ async function compileProjectWithYowasp(payload) {
   const defaultStandard = compilerCommand === 'clang' ? 'c17' : 'c++23';
   const compileArgs = [
     compilerCommand,
+    ...(linkTracekernelStatvfs ? ['tracecode_statvfs.c'] : []),
     ...requestedArgs.map((arg, index) => outputIndex >= 0 && index === outputIndex + 1 ? outputPath : normalizeCompilePathArg(arg, payload)),
     ...(outputIndex >= 0 ? [] : ['-o', outputPath]),
   ];
@@ -281,6 +352,9 @@ async function compileProjectWithYowasp(payload) {
   }
   if (!compileArgs.some((arg) => arg.startsWith('-Wl,-z,stack-size='))) {
     compileArgs.splice(1, 0, `-Wl,-z,stack-size=${Number(payload?.stackSize) || 8 * 1024 * 1024}`);
+  }
+  if (linkTracekernelStatvfs) {
+    compileArgs.splice(1, 0, '-Wl,--wrap=statvfs', '-Wl,--wrap=fstatvfs');
   }
 
   const stdoutChunks = [];
