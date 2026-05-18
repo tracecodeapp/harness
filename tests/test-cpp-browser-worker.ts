@@ -75,6 +75,8 @@ async function main(): Promise<void> {
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stderr' },
         { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/capture', readable: false, writable: true, outputDevice: '/dev/capture' },
+        { path: '/dev/tee', readable: false, writable: true, outputDevice: '/dev/capture' },
         { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
       ];
 
@@ -334,6 +336,10 @@ async function main(): Promise<void> {
             '  if (tty_device) { std::fputs("tty-device\\\\n", tty_device); std::fclose(tty_device); }',
             '  FILE* log_device = std::fopen("/dev/log", "w");',
             '  if (log_device) { std::fputs("log-device\\\\n", log_device); std::fclose(log_device); }',
+            '  FILE* capture_device = std::fopen("/dev/capture", "w");',
+            '  if (capture_device) { std::fputs("capture-device\\\\n", capture_device); std::fclose(capture_device); }',
+            '  FILE* tee_device = std::fopen("/dev/tee", "w");',
+            '  if (tee_device) { std::fputs("tee-device\\\\n", tee_device); std::fclose(tee_device); }',
             '  std::ofstream("generated.txt") << helper_value() << "\\\\n";',
             '  std::ofstream bytes("bytes.bin", std::ios::binary);',
             '  char raw[2] = {0, static_cast<char>(255)};',
@@ -1328,7 +1334,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nlink-missing-parent:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
-        projectRun.stdout?.includes('device-out\n') === true,
+        projectRun.stdout?.includes('device-out\ncapture-device\ntee-device\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
@@ -1337,7 +1343,7 @@ async function main(): Promise<void> {
     );
     assertCondition(
       projectRun.events
-        ?.filter((event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout')
+        ?.filter((event) => event.type === 'output' && event.stream === 'stdout')
         .map((event) => event.data)
         .join('') === projectRun.stdout,
       `C++ browser project run should stream stdout events: ${JSON.stringify(projectRun.events)}`
@@ -1368,6 +1374,23 @@ async function main(): Promise<void> {
         event.data === 'log-device\n'
       )) === true,
       `C++ browser project run should support manifest-provided custom output devices: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.device === '/dev/capture' &&
+        event.sourceDevice === undefined &&
+        event.data === 'capture-device\n'
+      )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/capture' &&
+          event.sourceDevice === '/dev/tee' &&
+          event.data === 'tee-device\n'
+        )) === true,
+      `C++ browser project run should preserve custom stdout output devices: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectDeviceLeakRun.exitCode === 0 &&

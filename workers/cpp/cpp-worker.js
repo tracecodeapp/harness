@@ -935,7 +935,7 @@ class WasiProcess {
       const stream = entry.outputDevice === '/dev/stderr' ? 'stderr' : 'stdout';
       if (stream === 'stdout') this.stdoutChunks.push(...chunks);
       if (stream === 'stderr') this.stderrChunks.push(...chunks);
-      this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device);
+      this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device, entry.outputDevice);
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -4784,14 +4784,14 @@ function diffProjectFs(before, fs) {
 
 function createProjectEventBridge(messageId) {
   return {
-    output(stream, data, device) {
+    output(stream, data, device, outputDevice) {
       if (!data) return;
-      const outputDevice = stream === 'stderr' ? '/dev/stderr' : '/dev/stdout';
+      const resolvedOutputDevice = outputDevice || (stream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
       postProjectEvent(messageId, {
         type: 'output',
         stream,
-        device: outputDevice,
-        ...(device && device !== outputDevice ? { sourceDevice: device } : {}),
+        device: resolvedOutputDevice,
+        ...(device && device !== resolvedOutputDevice ? { sourceDevice: device } : {}),
         data,
       });
     },
@@ -4868,7 +4868,7 @@ async function handleProjectCpp(request, messageId) {
     stdin: request?.stdin || '',
     env: request?.env || { USER: 'tracecode' },
     kernelDevices: projectKernelDevices(request?.project),
-    onOutput: (stream, data, device) => events.output(stream, data, device),
+    onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
   });
   return {
     stdout: program.stdout,
