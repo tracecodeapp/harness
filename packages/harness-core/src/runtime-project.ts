@@ -227,7 +227,9 @@ export class RuntimeProjectEventQueue {
   }
 
   flush(): Promise<void> {
-    return this.queue;
+    const pending = this.queue;
+    this.queue = pending.catch(() => undefined);
+    return pending;
   }
 }
 

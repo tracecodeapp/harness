@@ -11,11 +11,13 @@ import {
   type CppProjectCommandRequest,
   type CSharpProjectCommandRequest,
   type PythonProjectCommandRequest,
+  type RuntimeCommandResult,
   type RuntimeCommandEvent,
   type RuntimeWorkspaceEvent,
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,
 } from '../packages/harness-project/src/index';
+import { RuntimeProjectEventQueue } from '../packages/harness-core/src/runtime-project';
 import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
 import {
   createBrowserPythonProjectRunner,
@@ -5514,6 +5516,55 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
   workspace.dispose();
 }
 
+async function testRuntimeProjectEventQueueRecoversAfterApplyFailure(): Promise<void> {
+  const events: RuntimeCommandEvent[] = [];
+  const queue = new RuntimeProjectEventQueue();
+
+  queue.enqueue(
+    { type: 'file-change', phase: 'live', change: { path: 'bad.txt', contents: 'bad\n' } },
+    {
+      applyFileChange: async (change) => {
+        throw new Error(`reject:${change.path}`);
+      },
+      emit: (event) => events.push(event),
+    }
+  );
+  queue.enqueue(
+    { type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'after-bad\n' },
+    {
+      applyFileChange: async () => undefined,
+      emit: (event) => events.push(event),
+    }
+  );
+
+  let failedFlush = '';
+  try {
+    await queue.flush();
+  } catch (error) {
+    failedFlush = error instanceof Error ? error.message : String(error);
+  }
+
+  assertCondition(failedFlush === 'reject:bad.txt', `event queue should surface failed live apply errors: ${failedFlush}`);
+  assertCondition(
+    events.length === 0,
+    `event queue should suppress later events in a failed batch: ${JSON.stringify(events)}`
+  );
+
+  queue.enqueue(
+    { type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'after-reset\n' },
+    {
+      applyFileChange: async () => undefined,
+      emit: (event) => events.push(event),
+    }
+  );
+  await queue.flush();
+
+  assertCondition(
+    events.some((event) => event.type === 'output' && event.data === 'after-reset\n'),
+    `event queue should recover after a failed flush: ${JSON.stringify(events)}`
+  );
+}
+
 async function testWorkspaceKernelEvents(): Promise<void> {
   const events: RuntimeWorkspaceEvent[] = [];
   const workspace = await createRuntimeWorkspace();
@@ -5704,17 +5755,19 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     },
   });
   let failedLiveError = '';
+  let failedLiveResult: RuntimeCommandResult | null = null;
   try {
-    await failedLiveWorkspace.runCommand('node bad-live.js', {
+    failedLiveResult = await failedLiveWorkspace.runCommand('node bad-live.js', {
       onEvent: (event) => failedLiveEvents.push(event),
     });
   } catch (error) {
     failedLiveError = error instanceof Error ? error.message : String(error);
   }
+  const failedLiveMessage = failedLiveError || failedLiveResult?.stderr || '';
   assertCondition(
-    failedLiveError.includes('Project path must stay inside the workspace') ||
-      failedLiveError.includes('Kernel proc path is read-only'),
-    `invalid live file-change should reject the command with a filesystem error: ${failedLiveError}`
+    failedLiveMessage.includes('Project path must stay inside the workspace') ||
+      failedLiveMessage.includes('Kernel proc path is read-only'),
+    `invalid live file-change should fail the command with a filesystem error: ${JSON.stringify({ failedLiveError, failedLiveResult })}`
   );
   assertCondition(
     !failedLiveEvents.some((event) => event.type === 'output' && event.data === 'after-bad-live\n'),
@@ -6216,6 +6269,7 @@ async function main(): Promise<void> {
   await testBrowserProjectWorkspaceAdvancedCommandTranslation();
   await testNativeProjectWorkspaceFactory();
   await testProjectWorkspaceCommandEvents();
+  await testRuntimeProjectEventQueueRecoversAfterApplyFailure();
   await testWorkspaceKernelEvents();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
