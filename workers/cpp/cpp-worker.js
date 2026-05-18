@@ -658,11 +658,12 @@ class WasiProcess {
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
     this.kernelDevices = wasiKernelDevices(options);
+    this.stdioDevices = standaloneKernelDevices();
     this.filestatSizeOffset = options.filestatSizeOffset || 32;
     this.fds = new Map([
-      [0, this.stdioEntryForDevice('/dev/stdin')],
-      [1, this.stdioEntryForDevice('/dev/stdout')],
-      [2, this.stdioEntryForDevice('/dev/stderr')],
+      [0, this.stdioEntryForDevice('/dev/stdin', this.stdioDevices)],
+      [1, this.stdioEntryForDevice('/dev/stdout', this.stdioDevices)],
+      [2, this.stdioEntryForDevice('/dev/stderr', this.stdioDevices)],
       [3, { kind: 'dir', path: this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
     ]);
     this.nextFd = 4;
@@ -699,8 +700,8 @@ class WasiProcess {
     return resolveAt(base, path);
   }
 
-  stdioEntryForDevice(device) {
-    const info = this.kernelDevices.get(normalizePath(device));
+  stdioEntryForDevice(device, devices = this.kernelDevices) {
+    const info = devices.get(normalizePath(device));
     if (!info) return { kind: 'stdio', device, offset: 0, readable: false, writable: false, inputDevice: '', outputDevice: '' };
     return {
       kind: 'stdio',
@@ -4669,11 +4670,12 @@ function createProjectEventBridge(messageId) {
   return {
     output(stream, data, device) {
       if (!data) return;
+      const outputDevice = stream === 'stderr' ? '/dev/stderr' : '/dev/stdout';
       postProjectEvent(messageId, {
         type: 'output',
         stream,
-        device: stream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
-        ...(device ? { sourceDevice: device } : {}),
+        device: outputDevice,
+        ...(device && device !== outputDevice ? { sourceDevice: device } : {}),
         data,
       });
     },

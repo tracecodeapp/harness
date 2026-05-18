@@ -401,6 +401,25 @@ async function main(): Promise<void> {
           path: 'src/empty_dir_main.cpp',
           contents: '#include <dirent.h>\\n#include <iostream>\\n#include <string>\\nint main() { DIR* child = opendir("empty/child"); std::cout << (child ? "dir" : "missing") << "\\\\n"; if (child) closedir(child); DIR* parent = opendir("empty"); bool saw = false; if (parent) { while (dirent* entry = readdir(parent)) { if (std::string(entry->d_name) == "child") saw = true; } closedir(parent); } std::cout << (saw ? "child" : "missing") << "\\\\n"; }\\n',
         },
+        {
+          path: 'src/no_device_main.cpp',
+          contents: [
+            '#include <cstdio>',
+            '#include <fstream>',
+            '#include <iostream>',
+            'int main() {',
+            '  std::cout << "fd-stdout" << "\\\\n";',
+            '  std::cerr << "fd-stderr" << "\\\\n";',
+            '  FILE* stdout_device = std::fopen("/dev/stdout", "w");',
+            '  std::cout << (stdout_device ? "dev-stdout:ok" : "dev-stdout:blocked") << "\\\\n";',
+            '  if (stdout_device) { std::fputs("invented\\\\n", stdout_device); std::fclose(stdout_device); }',
+            '  std::ifstream stdout_read("/dev/stdout");',
+            '  std::cout << (stdout_read ? "dev-stdout-read:ok" : "dev-stdout-read:blocked") << "\\\\n";',
+            '  return 0;',
+            '}',
+            '',
+          ].join('\\n'),
+        },
         { path: 'build/.keep', contents: '' },
         { path: 'src/stale.txt', contents: 'delete me\\n' },
       ];
@@ -613,6 +632,24 @@ async function main(): Promise<void> {
         env: {},
         stdin: '',
         project: { files: [...projectFiles, ...(emptyDirectoryCompile.files || [])], directories: ['empty/child'] },
+      });
+      const noDeviceManifestCompile = await send('execute-project-cpp', {
+        source: 'compile',
+        scriptPath: '/workspace/src/no_device_main.cpp',
+        args: ['/workspace/src/no_device_main.cpp', '-o', '/workspace/out/no-device-app'],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: projectFiles },
+      });
+      const noDeviceManifestRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: '/workspace/out/no-device-app',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: '',
+        project: { files: [...projectFiles, ...(noDeviceManifestCompile.files || [])], noKernelDevicesForTest: true },
       });
       const objectCompile = await send('execute-project-cpp', {
         source: 'compile',
@@ -869,6 +906,8 @@ async function main(): Promise<void> {
         cProjectRun,
         emptyDirectoryCompile,
         emptyDirectoryRun,
+        noDeviceManifestCompile,
+        noDeviceManifestRun,
         objectCompile,
         linkProjectCompile,
         linkProjectRun,
@@ -980,6 +1019,13 @@ async function main(): Promise<void> {
       exitCode?: number;
       files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
     };
+    const noDeviceManifestCompile = results.noDeviceManifestCompile as {
+      stdout?: string;
+      stderr?: string;
+      exitCode?: number;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+    };
+    const noDeviceManifestRun = results.noDeviceManifestRun as CppProjectWorkerResponse;
     const objectCompile = results.objectCompile as {
       stdout?: string;
       stderr?: string;
@@ -1500,6 +1546,25 @@ async function main(): Promise<void> {
     assertCondition(
       emptyDirectoryRun.exitCode === 0 && emptyDirectoryRun.stdout === 'dir\nchild\n',
       `C++ browser project run should materialize project directories: ${JSON.stringify(emptyDirectoryRun)}`
+    );
+    assertCondition(
+      noDeviceManifestCompile.exitCode === 0 && noDeviceManifestCompile.files?.some((file) => file.path === 'out/no-device-app' && file.encoding === 'base64'),
+      `C++ browser project compile should emit no-device-manifest smoke binary: ${JSON.stringify(noDeviceManifestCompile)}`
+    );
+    assertCondition(
+      noDeviceManifestRun.exitCode === 0 &&
+        noDeviceManifestRun.stdout === 'fd-stdout\ndev-stdout:blocked\ndev-stdout-read:blocked\n' &&
+        noDeviceManifestRun.stderr === 'fd-stderr\n',
+      `C++ browser project run should preserve inherited stdio without inventing /dev devices: ${JSON.stringify(noDeviceManifestRun)}`
+    );
+    assertCondition(
+      noDeviceManifestRun.events
+        ?.filter((event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout')
+        .every((event) => event.sourceDevice === undefined) === true &&
+        noDeviceManifestRun.events
+          ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
+          .every((event) => event.sourceDevice === undefined) === true,
+      `C++ browser project direct stdio events should not report a redundant sourceDevice: ${JSON.stringify(noDeviceManifestRun.events)}`
     );
     assertCondition(
       objectCompile.exitCode === 0 && objectCompile.files?.some((file) => file.path === 'lib/linked.o' && file.encoding === 'base64'),
