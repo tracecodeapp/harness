@@ -512,6 +512,56 @@ async function main(): Promise<void> {
         },
       });
 
+      const duplicateFdRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import os',
+          'stdout_fd = os.open("/dev/stdout", os.O_WRONLY)',
+          'stdout_dup = os.dup(stdout_fd)',
+          'os.close(stdout_fd)',
+          'try:',
+          '    os.write(stdout_dup, b"dup-stdout\\\\n")',
+          'finally:',
+          '    os.close(stdout_dup)',
+          'log_fd = os.open("/dev/log", os.O_WRONLY)',
+          'log_dup = os.dup2(log_fd, 1000123)',
+          'os.close(log_fd)',
+          'try:',
+          '    os.write(log_dup, b"dup2-log\\\\n")',
+          'finally:',
+          '    os.close(log_dup)',
+          'custom_fd = os.open("/dev/custom-in", os.O_RDONLY)',
+          'custom_first = os.read(custom_fd, 4).decode("utf-8")',
+          'custom_dup = os.dup(custom_fd)',
+          'os.close(custom_fd)',
+          'try:',
+          '    print("dev-dup-read=" + custom_first + "|" + os.read(custom_dup, 64).decode("utf-8").strip())',
+          'finally:',
+          '    os.close(custom_dup)',
+          'proc_fd = os.open("/proc/kernel/version", os.O_RDONLY)',
+          'proc_first = os.read(proc_fd, 5).decode("utf-8")',
+          'proc_dup = os.dup(proc_fd)',
+          'os.close(proc_fd)',
+          'try:',
+          '    print("proc-dup=" + proc_first + "|" + os.read(proc_dup, 64).decode("utf-8").strip().replace("\\\\n", "<lf>"))',
+          'finally:',
+          '    os.close(proc_dup)',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: 'dup-stdin\\n',
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelDevices: traceKernelDevices,
+          kernelFiles: [
+            { path: '/proc/kernel/version', contents: 'proc-dup-one\\nproc-dup-two\\n' },
+          ],
+        },
+      });
+
       const vectoredFdRun = await send('execute-project-python', {
         source: 'argument',
         scriptPath: '<string>',
@@ -800,7 +850,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, sharedStdinCursorRun, fdReadlineRun, duplicateFdRun, vectoredFdRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -812,6 +862,7 @@ async function main(): Promise<void> {
       manifestCustomDeviceRun: PythonProjectWorkerResponse;
       sharedStdinCursorRun: PythonProjectWorkerResponse;
       fdReadlineRun: PythonProjectWorkerResponse;
+      duplicateFdRun: PythonProjectWorkerResponse;
       vectoredFdRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       linkApiRun: PythonProjectWorkerResponse;
@@ -1349,6 +1400,34 @@ async function main(): Promise<void> {
     assertCondition(
       results.fdReadlineRun.stdout === 'dev-line-1=dev-one\ndev-line-2=dev-two\ndev-rest=dev-three\nproc-line-1=proc-one\nproc-line-2=proc-two\nproc-rest=proc-three\n',
       `Python project fd readline should preserve unread virtual fd data: ${JSON.stringify(results.fdReadlineRun.stdout)}`
+    );
+    assertCondition(results.duplicateFdRun.exitCode === 0, `Python project duplicate fd run should succeed: ${results.duplicateFdRun.stderr}`);
+    assertCondition(
+      results.duplicateFdRun.stdout === 'dup-stdout\ndev-dup-read=dup-|stdin\nproc-dup=proc-|dup-one<lf>proc-dup-two\n',
+      `Python project duplicated virtual fds should preserve device/proc behavior: ${JSON.stringify(results.duplicateFdRun.stdout)}`
+    );
+    assertCondition(
+      results.duplicateFdRun.stderr === 'dup2-log\n',
+      `Python project duplicated stderr-like virtual fds should route output: ${JSON.stringify(results.duplicateFdRun.stderr)}`
+    );
+    assertCondition(
+      results.duplicateFdRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.device === '/dev/stdout' &&
+        event.data === 'dup-stdout\n'
+      )) === true,
+      `Python project duplicated stdout fd should stream output events: ${JSON.stringify(results.duplicateFdRun.events)}`
+    );
+    assertCondition(
+      results.duplicateFdRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stderr' &&
+        event.device === '/dev/stderr' &&
+        event.sourceDevice === '/dev/log' &&
+        event.data === 'dup2-log\n'
+      )) === true,
+      `Python project dup2 stderr-like fd should preserve source device events: ${JSON.stringify(results.duplicateFdRun.events)}`
     );
     assertCondition(results.vectoredFdRun.exitCode === 0, `Python project vectored fd run should succeed: ${results.vectoredFdRun.stderr}`);
     assertCondition(

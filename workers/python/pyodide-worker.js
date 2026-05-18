@@ -2162,6 +2162,8 @@ def _install_virtual_workspace_paths():
     _original_os_write = os.write
     _original_os_writev = getattr(os, "writev", None)
     _original_os_close = os.close
+    _original_os_dup = getattr(os, "dup", None)
+    _original_os_dup2 = getattr(os, "dup2", None)
     _original_os_truncate = getattr(os, "truncate", None)
     _original_os_ftruncate = getattr(os, "ftruncate", None)
     _original_os_fchmod = getattr(os, "fchmod", None)
@@ -2259,6 +2261,7 @@ def _install_virtual_workspace_paths():
             _proc_file_descriptors[_fd] = {
                 "path": _proc_path,
                 "handle": io.BytesIO(_proc_read_text(_proc_path).encode("utf-8")),
+                "refs": 1,
             }
             return _fd
         _mapped_path = _map_workspace_path(_path)
@@ -2343,7 +2346,9 @@ def _install_virtual_workspace_paths():
             return None
         _proc_handle = _proc_file_descriptors.pop(_fd, None)
         if _proc_handle is not None:
-            _proc_handle.get("handle").close()
+            _proc_handle["refs"] = max(0, int(_proc_handle.get("refs", 1)) - 1)
+            if int(_proc_handle.get("refs", 0)) == 0:
+                _proc_handle.get("handle").close()
             return None
         _absolute_path = _open_file_descriptors.pop(_fd, None)
         _workspace_file_descriptors.pop(_fd, None)
@@ -2352,6 +2357,68 @@ def _install_virtual_workspace_paths():
         finally:
             if _absolute_path:
                 _emit_file_change_for_absolute(_absolute_path)
+
+    def _virtual_descriptor_kind(_fd):
+        if _fd in _device_file_descriptors:
+            return "device"
+        if _fd in _proc_file_descriptors:
+            return "proc"
+        return None
+
+    def _register_virtual_fd_duplicate(_old_fd, _new_fd):
+        nonlocal _next_virtual_fd
+        _kind = _virtual_descriptor_kind(_old_fd)
+        if _kind == "device":
+            _device_file_descriptors[_new_fd] = _device_file_descriptors[_old_fd]
+        elif _kind == "proc":
+            _proc_descriptor = _proc_file_descriptors[_old_fd]
+            _proc_descriptor["refs"] = int(_proc_descriptor.get("refs", 1)) + 1
+            _proc_file_descriptors[_new_fd] = _proc_descriptor
+        else:
+            raise OSError("Bad file descriptor")
+        if _new_fd >= _next_virtual_fd:
+            _next_virtual_fd = _new_fd + 1
+        return _new_fd
+
+    def _close_virtual_target_fd(_fd):
+        if _virtual_descriptor_kind(_fd) is not None:
+            _patched_os_close(_fd)
+            return True
+        return False
+
+    def _patched_os_dup(_fd):
+        nonlocal _next_virtual_fd
+        if _virtual_descriptor_kind(_fd) is not None:
+            _new_fd = _next_virtual_fd
+            _next_virtual_fd += 1
+            return _register_virtual_fd_duplicate(_fd, _new_fd)
+        _new_fd = _original_os_dup(_fd)
+        if _fd in _workspace_file_descriptors:
+            _workspace_file_descriptors[_new_fd] = _workspace_file_descriptors[_fd]
+        if _fd in _open_file_descriptors:
+            _open_file_descriptors[_new_fd] = _open_file_descriptors[_fd]
+        return _new_fd
+
+    def _patched_os_dup2(_fd, _fd2, _inheritable=True):
+        if _fd == _fd2:
+            if _virtual_descriptor_kind(_fd) is not None:
+                return _fd2
+            try:
+                return _original_os_dup2(_fd, _fd2, inheritable=_inheritable)
+            except TypeError:
+                return _original_os_dup2(_fd, _fd2)
+        _close_virtual_target_fd(_fd2)
+        if _virtual_descriptor_kind(_fd) is not None:
+            return _register_virtual_fd_duplicate(_fd, _fd2)
+        try:
+            _new_fd = _original_os_dup2(_fd, _fd2, inheritable=_inheritable)
+        except TypeError:
+            _new_fd = _original_os_dup2(_fd, _fd2)
+        if _fd in _workspace_file_descriptors:
+            _workspace_file_descriptors[_new_fd] = _workspace_file_descriptors[_fd]
+        if _fd in _open_file_descriptors:
+            _open_file_descriptors[_new_fd] = _open_file_descriptors[_fd]
+        return _new_fd
 
     def _patched_os_truncate(_path, _length):
         _proc_path = _normalize_proc_path(_path)
@@ -2433,6 +2500,10 @@ def _install_virtual_workspace_paths():
     if _original_os_writev is not None:
         os.writev = _patched_os_writev
     os.close = _patched_os_close
+    if _original_os_dup is not None:
+        os.dup = _patched_os_dup
+    if _original_os_dup2 is not None:
+        os.dup2 = _patched_os_dup2
     if _original_os_truncate is not None:
         os.truncate = _patched_os_truncate
     if _original_os_ftruncate is not None:
@@ -2623,6 +2694,10 @@ def _install_virtual_workspace_paths():
         if _original_os_writev is not None:
             os.writev = _original_os_writev
         os.close = _original_os_close
+        if _original_os_dup is not None:
+            os.dup = _original_os_dup
+        if _original_os_dup2 is not None:
+            os.dup2 = _original_os_dup2
         if _original_os_truncate is not None:
             os.truncate = _original_os_truncate
         if _original_os_ftruncate is not None:
