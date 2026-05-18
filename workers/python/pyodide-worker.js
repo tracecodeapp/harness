@@ -930,6 +930,15 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     return result;
   });
 
+  patch('symlink', (original) => function patchedSymlink(oldPath, newPath, ...args) {
+    if (relativePath(newPath)) {
+      const error = new Error('Symbolic links are not supported by the project file manifest');
+      error.code = 'ENOSYS';
+      throw error;
+    }
+    return original.call(this, oldPath, newPath, ...args);
+  });
+
   return () => {
     for (const [name, original] of patched.reverse()) {
       fs[name] = original;
@@ -2235,7 +2244,17 @@ def _install_virtual_workspace_paths():
     def _patch_two(_target, _name):
         _original = getattr(_target, _name, None)
         if _original is None:
-            return
+            if _target is not os or _name != "link":
+                return
+            def _original(_mapped_src, _mapped_dst, *args, **kwargs):
+                if os.path.isdir(_mapped_src):
+                    raise IsADirectoryError(_mapped_src)
+                if os.path.exists(_mapped_dst):
+                    raise FileExistsError(_mapped_dst)
+                with _project_original_open(_mapped_src, "rb") as _source_handle:
+                    with _project_original_open(_mapped_dst, "xb") as _destination_handle:
+                        _destination_handle.write(_source_handle.read())
+                return None
         def _patched_two(_src, _dst, *args, **kwargs):
             _device_src = _normalize_device_namespace_path(_src)
             _device_dst = _normalize_device_namespace_path(_dst)
@@ -2248,6 +2267,11 @@ def _install_virtual_workspace_paths():
             _proc_dst = _normalize_proc_path(_dst)
             if _proc_src or _proc_dst:
                 raise OSError("Kernel proc path is read-only: " + (_proc_src or _proc_dst))
+            if _name == "symlink":
+                raise OSError(
+                    getattr(__import__("errno"), "ENOSYS", 38),
+                    "Symbolic links are not supported by the project file manifest",
+                )
             _mapped_src = _map_workspace_path(_src)
             _mapped_dst = _map_workspace_path(_dst)
             _absolute_src = _absolute_mapped_path(_mapped_src)

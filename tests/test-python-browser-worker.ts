@@ -446,6 +446,40 @@ async function main(): Promise<void> {
         project: { cwd: '/workspace', directories: ['empty/child'], files: [] },
       });
 
+      const linkApiRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import errno',
+          'import os',
+          'import js',
+          'with open("/workspace/link-source.txt", "w", encoding="utf-8") as source:',
+          '    source.write("linked\\\\n")',
+          'os.link("/workspace/link-source.txt", "/workspace/link-hard.txt")',
+          'try:',
+          '    os.symlink("/workspace/link-source.txt", "/workspace/link-symlink.txt")',
+          '    print("symlink:ok")',
+          'except OSError as error:',
+          '    print("symlink:" + ("ENOSYS" if error.errno == errno.ENOSYS else type(error).__name__))',
+          'try:',
+          '    js.eval(\\'pyodide.FS.symlink("/tracecode_project/link-source.txt", "/tracecode_project/provider-symlink.txt")\\')',
+          '    print("provider-symlink:ok")',
+          'except Exception as error:',
+          '    print("provider-symlink:blocked")',
+          'try:',
+          '    os.readlink("/workspace/link-source.txt")',
+          '    print("readlink:ok")',
+          'except OSError:',
+          '    print("readlink:blocked")',
+          'print(open("/workspace/link-hard.txt", "r", encoding="utf-8").read(), end="")',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: '',
+        project: { cwd: '/workspace', files: [] },
+      });
+
       const canonicalRootRun = await send('execute-project-python', {
         source: 'file',
         scriptPath: '/home/ada/weather-api/app.py',
@@ -577,7 +611,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, linkApiRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -589,6 +623,7 @@ async function main(): Promise<void> {
       manifestCustomDeviceRun: PythonProjectWorkerResponse;
       fdReadlineRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
+      linkApiRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
     };
@@ -1011,6 +1046,37 @@ async function main(): Promise<void> {
     assertCondition(
       results.directoryRun.stdout === 'True\nchild\n',
       `Python project worker should materialize snapshot directories: ${JSON.stringify(results.directoryRun.stdout)}`
+    );
+    assertCondition(results.linkApiRun.exitCode === 0, `Python project link API run should succeed: ${results.linkApiRun.stderr}`);
+    assertCondition(
+      results.linkApiRun.stdout === 'symlink:ENOSYS\nprovider-symlink:blocked\nreadlink:blocked\nlinked\n',
+      `Python project link APIs should use manifest-representable semantics: ${JSON.stringify(results.linkApiRun.stdout)}`
+    );
+    assertCondition(
+      findFile(results.linkApiRun, 'link-hard.txt')?.contents === 'linked\n',
+      'Python project hard links should persist as regular file snapshots'
+    );
+    assertCondition(
+      findFile(results.linkApiRun, 'link-symlink.txt') === undefined &&
+        findFile(results.linkApiRun, 'provider-symlink.txt') === undefined,
+      'Python project symlinks should not appear in final file diffs'
+    );
+    assertCondition(
+      results.linkApiRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'link-hard.txt' &&
+        event.change.contents === 'linked\n'
+      )) === true,
+      `Python project hard links should stream live file snapshots: ${JSON.stringify(results.linkApiRun.events)}`
+    );
+    assertCondition(
+      results.linkApiRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        (event.change?.path === 'link-symlink.txt' || event.change?.path === 'provider-symlink.txt')
+      )) !== true,
+      `Python project rejected symlinks should not stream file mutations: ${JSON.stringify(results.linkApiRun.events)}`
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
