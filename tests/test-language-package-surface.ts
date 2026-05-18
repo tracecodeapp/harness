@@ -344,6 +344,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('ProjectEvents.setKernelFiles('),
         '@tracecode/harness-java worker should ship manifest kernel file bridge setup'
       );
+      assertCondition(
+        worker.includes('newInputStream|newBufferedReader') &&
+          worker.includes('readAllLines|lines|list'),
+        '@tracecode/harness-java worker should ship NIO read device rewrites'
+      );
       const helperJarListing = spawnSync('jar', ['tf', join(packageDir, 'workers/vendor/java-browser-helper.jar')], {
         encoding: 'utf8',
       });
@@ -374,6 +379,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         helperApi.stdout.includes('setKernelFiles(java.lang.String)'),
         '@tracecode/harness-java helper jar should expose manifest kernel file bridge'
+      );
+      assertCondition(
+        helperApi.stdout.includes('newInputStream(java.nio.file.Path, java.nio.file.OpenOption...)') &&
+          helperApi.stdout.includes('newBufferedReader(java.nio.file.Path, java.nio.charset.Charset)') &&
+          helperApi.stdout.includes('readAllLines(java.nio.file.Path, java.nio.charset.Charset)') &&
+          helperApi.stdout.includes('lines(java.nio.file.Path, java.nio.charset.Charset)'),
+        '@tracecode/harness-java helper jar should expose NIO read device bridge'
       );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {

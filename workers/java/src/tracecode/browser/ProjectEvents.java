@@ -1,12 +1,16 @@
 package tracecode.browser;
 
-import java.io.ByteArrayOutputStream;
 import java.io.BufferedWriter;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileFilter;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.FilenameFilter;
@@ -107,6 +111,53 @@ public final class ProjectEvents {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return readKernelDevice(device);
     return Files.readAllBytes(path);
+  }
+
+  public static InputStream newInputStream(Path path, OpenOption... options) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) return new ByteArrayInputStream(readKernelDevice(device));
+    return Files.newInputStream(path, options);
+  }
+
+  public static BufferedReader newBufferedReader(Path path) throws IOException {
+    return newBufferedReader(path, StandardCharsets.UTF_8);
+  }
+
+  public static BufferedReader newBufferedReader(Path path, Charset charset) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) {
+      Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
+      return new BufferedReader(new InputStreamReader(new ByteArrayInputStream(readKernelDevice(device)), effectiveCharset));
+    }
+    return Files.newBufferedReader(path, charset);
+  }
+
+  public static List<String> readAllLines(Path path) throws IOException {
+    return readAllLines(path, StandardCharsets.UTF_8);
+  }
+
+  public static List<String> readAllLines(Path path, Charset charset) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) {
+      Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
+      return new BufferedReader(new InputStreamReader(new ByteArrayInputStream(readKernelDevice(device)), effectiveCharset))
+          .lines()
+          .collect(java.util.stream.Collectors.toList());
+    }
+    return Files.readAllLines(path, charset);
+  }
+
+  public static Stream<String> lines(Path path) throws IOException {
+    return lines(path, StandardCharsets.UTF_8);
+  }
+
+  public static Stream<String> lines(Path path, Charset charset) throws IOException {
+    KernelDevice device = readableKernelDevice(path);
+    if (device != null) {
+      Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
+      return new String(readKernelDevice(device), effectiveCharset).lines();
+    }
+    return Files.lines(path, charset);
   }
 
   public static Stream<Path> list(Path path) throws IOException {
