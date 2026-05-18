@@ -1935,6 +1935,47 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   );
 }
 
+async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promise<void> {
+  const events: RuntimeCommandEvent[] = [];
+  const result = await createBrowserJavaScriptProjectRunner()({
+    code: [
+      'const fs = require("node:fs");',
+      'process.stdout.write(fs.readFileSync("/dev/tty", "utf8").trim() + "\\n");',
+      'fs.writeFileSync("/dev/tty", "tty-device\\n");',
+      'fs.copyFileSync("message.txt", "/dev/tty");',
+    ].join('\n'),
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: 'from-tty\n',
+    project: {
+      cwd: '/workspace',
+      files: [{ path: 'message.txt', contents: 'copy-device\n' }],
+      kernelDevices: [
+        { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+        { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stderr' },
+      ],
+    },
+    onEvent: (event) => events.push(event),
+  });
+
+  assertCondition(result.exitCode === 0, `browser node custom kernel device inventory should succeed: ${result.stderr}`);
+  assertCondition(result.stdout === 'from-tty\n', `browser node should read /dev/tty from configured stdin source: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stderr === 'tty-device\ncopy-device\n',
+    `browser node should route /dev/tty writes through configured stderr target: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    events.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
+      .map((event) => event.data)
+      .join('') === result.stderr,
+    `browser node should stream custom device-routed stderr events: ${JSON.stringify(events)}`
+  );
+}
+
 async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<void> {
   const request: JavaScriptProjectCommandRequest = {
     code: '',
@@ -6220,6 +6261,7 @@ async function main(): Promise<void> {
   await testNativeJavaScriptProjectRunnerAbsoluteWorkspacePaths();
   await testProjectJavaScriptRunnersDirectAbsoluteScriptPath();
   await testBrowserJavaScriptProjectRunnerApplyFileChangeHook();
+  await testBrowserJavaScriptProjectRunnerKernelDeviceInventory();
   await testProjectJavaScriptRunnersPreserveEmptyDirectories();
   await testBrowserJavaScriptProjectRunner();
   await testBrowserJavaScriptProjectRunnerCwd();

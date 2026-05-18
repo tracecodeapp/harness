@@ -15,11 +15,11 @@ import { RuntimeProjectEventQueue, createRuntimeProjectIoBridge } from '../../ha
 import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
-  runtimeDeviceInputSource,
-  runtimeDeviceOutputTarget,
   runtimeDeviceStat,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
+  runtimeKernelDeviceInputSource,
+  runtimeKernelDeviceOutputTarget,
   runtimeKernelDirectoryErrorCode,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileCopyTarget,
@@ -1267,6 +1267,7 @@ async function runBrowserJavaScriptProjectRequest(
     const workspacePathContext = createWorkspacePathContext(request.project);
     const workspaceRoot = workspacePathContext.root;
     const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
+    const kernelDevices = request.project.kernelDevices;
     const cwdPath = workspaceCwdPath(request);
     const fileStore = new Map(
       request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)])
@@ -1359,7 +1360,7 @@ async function runBrowserJavaScriptProjectRequest(
     };
 
     const writeDevice = (device: RuntimeKernelDevicePath, data: string): void => {
-      const outputDevice = runtimeDeviceOutputTarget(device);
+      const outputDevice = runtimeKernelDeviceOutputTarget(kernelDevices, device);
       if (!outputDevice) {
         throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       }
@@ -1367,7 +1368,7 @@ async function runBrowserJavaScriptProjectRequest(
     };
 
     const readDevice = (device: RuntimeKernelDevicePath): string => {
-      if (runtimeDeviceInputSource(device)) return request.stdin;
+      if (runtimeKernelDeviceInputSource(kernelDevices, device)) return request.stdin;
       return '';
     };
 
@@ -3008,7 +3009,7 @@ async function runBrowserJavaScriptProjectRequest(
           throwRuntimeWriteTargetError(writeTarget, message);
         }
         if (writeTarget?.kind === 'device') {
-          writeDevice(writeTarget.outputDevice, textFromBytes(bytesFromFsWriteValue(value, options)));
+          writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
@@ -3040,7 +3041,7 @@ async function runBrowserJavaScriptProjectRequest(
           throwRuntimeWriteTargetError(writeTarget, message);
         }
         if (writeTarget?.kind === 'device') {
-          writeDevice(writeTarget.outputDevice, textFromBytes(bytesFromFsWriteValue(value, options)));
+          writeDevice(writeTarget.device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
@@ -3093,7 +3094,8 @@ async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
         if (copyTarget?.kind === 'device-destination') {
-          writeDevice(copyTarget.outputDevice, textFromBytes(sourceBytes));
+          const destinationTarget = runtimeWriteTarget(destination);
+          writeDevice(destinationTarget?.kind === 'device' ? destinationTarget.device : copyTarget.outputDevice, textFromBytes(sourceBytes));
           return;
         }
         const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);

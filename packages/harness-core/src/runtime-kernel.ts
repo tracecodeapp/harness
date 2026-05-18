@@ -167,6 +167,38 @@ export function runtimeDeviceOutputTarget(device: RuntimeKernelDevicePath): Runt
   return device === '/dev/tty' ? '/dev/stdout' : device;
 }
 
+export function runtimeKernelDeviceInfo(
+  devices: readonly RuntimeKernelDeviceInfo[] | undefined,
+  device: RuntimeKernelDevicePath
+): RuntimeKernelDeviceInfo | null {
+  const entries = devices ?? runtimeKernelVirtualDevices();
+  return entries.find((entry) => entry.path === device) ?? null;
+}
+
+function normalizeDeviceReference(value: RuntimeKernelDevicePath | undefined): RuntimeKernelDevicePath | null {
+  if (!value) return null;
+  const normalized = normalizeRuntimeDevicePath(value);
+  return normalized === '/dev' ? null : normalized;
+}
+
+export function runtimeKernelDeviceInputSource(
+  devices: readonly RuntimeKernelDeviceInfo[] | undefined,
+  device: RuntimeKernelDevicePath
+): RuntimeKernelDevicePath | null {
+  const info = runtimeKernelDeviceInfo(devices, device);
+  if (!info?.readable) return null;
+  return normalizeDeviceReference(info.inputDevice) ?? device;
+}
+
+export function runtimeKernelDeviceOutputTarget(
+  devices: readonly RuntimeKernelDeviceInfo[] | undefined,
+  device: RuntimeKernelDevicePath
+): RuntimeKernelDevicePath | null {
+  const info = runtimeKernelDeviceInfo(devices, device);
+  if (!info?.writable) return null;
+  return normalizeDeviceReference(info.outputDevice) ?? device;
+}
+
 export function runtimeDeviceDirEntries(path: '/dev' | RuntimeKernelDevicePath): string[] | null {
   return path === '/dev' ? [...RUNTIME_KERNEL_DEVICE_ENTRIES] : null;
 }
