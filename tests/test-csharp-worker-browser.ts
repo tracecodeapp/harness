@@ -218,6 +218,18 @@ async function testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents(): Promise
       ),
     `C# browser no-build rejection should stream status and stderr events, received ${JSON.stringify(observed)}`
   );
+  const stderrIndex = observed.findIndex(
+    (event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.data === result.stderr
+  );
+  const exitIndex = observed.findIndex((event) => event.type === 'status' && event.phase === 'process-exit');
+  assertCondition(
+    stderrIndex >= 0 && exitIndex > stderrIndex,
+    `C# browser no-build rejection should stream stderr before process-exit, received ${JSON.stringify(observed)}`
+  );
 }
 
 function createExternalCSharpDllBase64(): string {

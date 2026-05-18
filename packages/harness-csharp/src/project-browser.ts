@@ -41,8 +41,8 @@ function unsupportedBrowserCSharpRunResult(request: CSharpProjectCommandRequest)
     args: request.args,
     cwd: request.cwd,
   });
-  io.status('process-exit', 'Finished C# browser run', { exitCode: result.exitCode });
   io.output('stderr', result.stderr);
+  io.status('process-exit', 'Finished C# browser run', { exitCode: result.exitCode });
   return result;
 }
 
