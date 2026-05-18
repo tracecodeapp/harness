@@ -154,7 +154,9 @@ async function main(): Promise<void> {
             '    os.close(tty_fd)',
             'with open("/dev/tty", "w", encoding="utf-8") as tty:',
             '    tty.write("dev-file-tty\\\\n")',
+            '    tty.writelines(["dev-file-tty-lines", "\\\\n"])',
             'sys.__stdout__.write("provider-hook-out\\\\n")',
+            'sys.__stdout__.writelines(["provider-hook-lines", "\\\\n"])',
             'sys.__stdout__.flush()',
             'stderr_fd = os.open("/dev/stderr", os.O_WRONLY)',
             'try:',
@@ -166,6 +168,8 @@ async function main(): Promise<void> {
             'print("stderr-line", file=sys.stderr)',
             'with open("/workspace/generated.txt", "w", encoding="utf-8") as handle:',
             '    handle.write(str(answer()) + "\\\\n")',
+            'with open("/workspace/writelines.txt", "w", encoding="utf-8") as handle:',
+            '    handle.writelines(["line-a\\\\n", "line-b\\\\n"])',
             'with open("bytes.bin", "wb") as handle:',
             '    handle.write(bytes([0, 255]))',
             'js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-live.txt", "provider-live\\\\\\\\n", { encoding: "utf8" })\\')',
@@ -428,7 +432,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-file-tty\nprovider-hook-out\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-file-tty\ndev-file-tty-lines\nprovider-hook-out\nprovider-hook-lines\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
@@ -451,7 +455,7 @@ async function main(): Promise<void> {
           event.sourceDevice === '/dev/tty'
         )
         .map((event) => event.data)
-        .join('') === 'dev-fd-tty\ndev-file-tty\n',
+        .join('') === 'dev-fd-tty\ndev-file-tty\ndev-file-tty-lines\n',
       `Python project worker should preserve /dev/tty source device on routed output events: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
@@ -464,6 +468,10 @@ async function main(): Promise<void> {
     assertCondition(
       findFile(results.fileRun, 'generated.txt')?.contents === '42\n',
       'Python project file run should report generated text files'
+    );
+    assertCondition(
+      findFile(results.fileRun, 'writelines.txt')?.contents === 'line-a\nline-b\n',
+      'Python project file run should report writelines side effects'
     );
     assertCondition(
       findFile(results.fileRun, 'bytes.bin')?.contents === 'AP8=' &&
@@ -509,6 +517,15 @@ async function main(): Promise<void> {
         event.change.encoding === 'base64'
       )) === true,
       `Python project worker should stream live binary file mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'writelines.txt' &&
+        event.change.contents === 'line-a\nline-b\n'
+      )) === true,
+      `Python project worker should stream live writelines mutations: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (

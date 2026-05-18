@@ -1116,6 +1116,12 @@ class _TraceProjectStream(io.StringIO):
             _emit_project_event(_event)
         return super().write(_text)
 
+    def writelines(self, _lines):
+        _text = "".join(str(_line) for _line in _lines)
+        if _text:
+            self.write(_text)
+        return None
+
 class _TraceDeviceFile:
     def __init__(self, _device, _mode="r"):
         self._device = _device
@@ -1142,6 +1148,11 @@ class _TraceDeviceFile:
         _output_device = str(_kernel_devices.get(self._device, {}).get("outputDevice") or self._device)
         _target = _stderr if _output_device == "/dev/stderr" else _stdout
         return _target.write(_value, self._device if self._device != _output_device else None)
+
+    def writelines(self, _lines):
+        for _line in _lines:
+            self.write(_line)
+        return None
 
     def flush(self):
         return None
@@ -1176,6 +1187,11 @@ class _TraceProjectFile:
 
     def write(self, *args, **kwargs):
         _result = self._handle.write(*args, **kwargs)
+        self._emit()
+        return _result
+
+    def writelines(self, *args, **kwargs):
+        _result = self._handle.writelines(*args, **kwargs)
         self._emit()
         return _result
 
