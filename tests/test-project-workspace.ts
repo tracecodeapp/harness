@@ -7597,6 +7597,47 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   deviceWorkspace.dispose();
 }
 
+async function testWorkspaceTerminalSessionCwd(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    kernel: {
+      user: { username: 'obi' },
+      host: { hostname: 'tracevm' },
+      workspace: { name: 'weather-api' },
+    },
+    files: [
+      { path: 'main.txt', contents: 'root\n' },
+      { path: 'src/app.txt', contents: 'src\n' },
+    ],
+  });
+  await workspace.mkdir('src/nested');
+
+  const session = workspace.createTerminalSession();
+  assertCondition(session.cwd === '/home/obi/weather-api', `terminal session should start at workspace root: ${session.cwd}`);
+  assertCondition(session.prompt.text === 'obi@tracevm weather-api %', `terminal prompt should use kernel identity: ${session.prompt.text}`);
+
+  const cdSrc = await session.run('cd src');
+  assertCondition(cdSrc.exitCode === 0, `terminal cd should succeed: ${cdSrc.stderr}`);
+  assertCondition(session.cwd === '/home/obi/weather-api/src', `terminal cd should update session cwd: ${session.cwd}`);
+  assertCondition(session.prompt.text === 'obi@tracevm src %', `terminal prompt should follow cwd basename: ${session.prompt.text}`);
+
+  const pwd = await session.run('pwd');
+  assertCondition(pwd.stdout === '/home/obi/weather-api/src\n', `terminal pwd should read session cwd: ${JSON.stringify(pwd)}`);
+  const cat = await session.run('cat app.txt');
+  assertCondition(cat.stdout === 'src\n', `terminal commands should run from session cwd: ${JSON.stringify(cat)}`);
+
+  const cdParent = await session.run('cd ..');
+  assertCondition(cdParent.exitCode === 0 && session.cwd === '/home/obi/weather-api', `terminal cd .. should return to root: ${session.cwd}`);
+  const aliasCd = await session.run('cd /workspace/src/nested');
+  assertCondition(aliasCd.exitCode === 0, `terminal cd should accept workspace alias: ${aliasCd.stderr}`);
+  assertCondition(session.cwd === '/home/obi/weather-api/src/nested', `terminal alias cd should canonicalize cwd: ${session.cwd}`);
+
+  const escape = await session.run('cd ../../..');
+  assertCondition(escape.exitCode !== 0, 'terminal cd should reject workspace escapes');
+  assertCondition(session.cwd === '/home/obi/weather-api/src/nested', 'failed terminal cd should preserve cwd');
+
+  workspace.dispose();
+}
+
 async function testTraceKernelInfoConfig(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     kernel: {
@@ -8003,6 +8044,7 @@ async function main(): Promise<void> {
   await testProjectWorkspaceCommandEvents();
   await testRuntimeProjectEventQueueRecoversAfterApplyFailure();
   await testWorkspaceKernelEvents();
+  await testWorkspaceTerminalSessionCwd();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
   await testConfiguredKernelNativeCompiledRunners();

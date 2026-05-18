@@ -460,6 +460,25 @@ export interface RuntimeWorkspaceRemoveOptions {
   recursive?: boolean;
 }
 
+export interface RuntimeProjectTerminalPrompt {
+  user: string;
+  host: string;
+  cwd: string;
+  label: string;
+  text: string;
+}
+
+export interface RuntimeProjectTerminalSession {
+  readonly cwd: string;
+  readonly prompt: RuntimeProjectTerminalPrompt;
+  run(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
+}
+
+export interface RuntimeProjectTerminalSessionOptions {
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
 export type RuntimeProjectCommandSource = 'argument' | 'file' | 'stdin';
 
 export interface RuntimeProjectCommandRequest<
@@ -497,6 +516,7 @@ export interface RuntimeWorkspace {
   deleteFile(path: string): Promise<void>;
   remove(path: string, options?: RuntimeWorkspaceRemoveOptions): Promise<void>;
   runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
+  createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
   snapshot(options?: { entrypoint?: string }): Promise<RuntimeProjectSnapshot>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
   dispose(): void;

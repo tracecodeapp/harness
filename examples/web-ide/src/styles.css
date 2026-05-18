@@ -447,6 +447,227 @@ body {
   outline-offset: -1px;
 }
 
+/* === Dev Project IDE === */
+.dev-ide-root {
+  height: 100vh;
+  width: 100vw;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1e1f22;
+  color: var(--text-main);
+}
+
+.dev-menubar {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 8px;
+  background: #2b2d30;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.dev-menu-group {
+  position: relative;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.dev-menu-trigger {
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: #cfd3dc;
+  padding: 0 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-menu-trigger:hover,
+.dev-menu-group:focus-within .dev-menu-trigger,
+.dev-menu-group:hover .dev-menu-trigger {
+  background: #3a3d42;
+}
+
+.dev-menu-popover {
+  position: absolute;
+  left: 0;
+  top: 28px;
+  z-index: 20;
+  min-width: 170px;
+  padding: 5px;
+  display: none;
+  background: #2b2d30;
+  border: 1px solid #4b4e55;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.36);
+}
+
+.dev-menu-group:hover .dev-menu-popover,
+.dev-menu-group:focus-within .dev-menu-popover {
+  display: block;
+}
+
+.dev-menu-popover button {
+  width: 100%;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: #dfe1e5;
+  text-align: left;
+  padding: 0 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-menu-popover button:hover {
+  background: #355f9d;
+}
+
+.dev-menu-spacer {
+  flex: 1;
+}
+
+.dev-workspace-name {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.dev-workbench {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 42px 280px minmax(0, 1fr) 330px;
+  background: #1e1f22;
+}
+
+.dev-activitybar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  background: #252629;
+  border-right: 1px solid var(--border-color);
+}
+
+.dev-activitybar button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-activitybar button.active,
+.dev-activitybar button:hover {
+  color: var(--text-main);
+  background: #36393f;
+}
+
+.dev-explorer,
+.dev-inspector {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #202124;
+}
+
+.dev-explorer {
+  border-right: 1px solid var(--border-color);
+}
+
+.dev-inspector {
+  border-left: 1px solid var(--border-color);
+}
+
+.dev-editor-shell {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1e1f22;
+}
+
+.dev-editor-tabs {
+  height: 34px;
+  display: flex;
+  background: #252629;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dev-editor-tab {
+  min-width: 180px;
+  max-width: 340px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: #1e1f22;
+  border-right: 1px solid var(--border-color);
+  color: #dfe1e5;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.dev-dirty-indicator {
+  color: var(--warning-color);
+  font-family: var(--font-ui);
+  font-size: 11px;
+}
+
+.dev-monaco-root {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+.dev-bottom-panel {
+  height: 260px;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  background: #1e1f22;
+  border-top: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.dev-bottom-tabs {
+  height: 31px;
+  display: flex;
+  background: #252629;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dev-bottom-tabs button {
+  min-width: 86px;
+  border: 0;
+  border-right: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-bottom-tabs button.active,
+.dev-bottom-tabs button:hover {
+  color: var(--text-main);
+  background: #1e1f22;
+}
+
 /* === Dev Terminal === */
 .dev-terminal-root {
   height: 100vh;
@@ -592,6 +813,46 @@ body {
   white-space: pre-wrap;
 }
 
+.dev-file-tree {
+  padding: 6px 0;
+}
+
+.dev-file-entry {
+  width: 100%;
+  height: 24px;
+  display: block;
+  border: 0;
+  background: transparent;
+  color: #c6cad2;
+  text-align: left;
+  padding: 0 8px 0 calc(10px + var(--depth, 0) * 14px);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 24px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-file-entry.directory {
+  color: #aeb4bf;
+  cursor: default;
+}
+
+.dev-file-entry.file:hover,
+.dev-file-entry.active {
+  background: #31343a;
+  color: #ffffff;
+}
+
+.dev-file-empty {
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
 .dev-event-line {
   min-height: 18px;
   color: #c6cad2;
@@ -678,7 +939,7 @@ body {
 }
 
 .dev-terminal-form {
-  height: 42px;
+  height: 38px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -692,6 +953,7 @@ body {
 .dev-terminal-prompt {
   color: var(--accent-run);
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .dev-terminal-input {

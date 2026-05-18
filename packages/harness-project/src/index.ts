@@ -75,6 +75,9 @@ import type {
   RuntimeTraceKernelConfig,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectTerminalPrompt,
+  RuntimeProjectTerminalSession,
+  RuntimeProjectTerminalSessionOptions,
   RuntimeProjectIoBridge,
   RuntimeProjectLiveIoControllerOptions,
   RuntimeProjectWorkerBridgeOptions,
@@ -147,6 +150,73 @@ export interface CreateRuntimeWorkspaceOptions {
   javascript?: boolean | ProjectWorkspaceJavaScriptConfig;
   executionLimits?: ProjectWorkspaceExecutionLimits;
   kernel?: RuntimeTraceKernelConfig;
+}
+
+export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
+  private currentCwd: string;
+  private readonly env: Record<string, string>;
+
+  constructor(
+    private readonly options: {
+      workspaceRoot: string;
+      kernelInfo: RuntimeKernelInfo;
+      resolveCwd: (currentCwd: string, target: string) => Promise<string>;
+      runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
+    },
+    sessionOptions: RuntimeProjectTerminalSessionOptions = {}
+  ) {
+    this.currentCwd = sessionOptions.cwd ?? options.workspaceRoot;
+    this.env = { ...(sessionOptions.env ?? {}) };
+  }
+
+  get cwd(): string {
+    return this.currentCwd;
+  }
+
+  get prompt(): RuntimeProjectTerminalPrompt {
+    const user = this.options.kernelInfo.user.username;
+    const host = this.options.kernelInfo.host.hostname;
+    const label = terminalCwdLabel(this.options.workspaceRoot, this.currentCwd);
+    return {
+      user,
+      host,
+      cwd: this.currentCwd,
+      label,
+      text: `${user}@${host} ${label} %`,
+    };
+  }
+
+  async run(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
+    const trimmed = command.trim();
+    if (!trimmed) return { stdout: '', stderr: '', exitCode: 0 };
+
+    const words = parseSimpleCommandWords(trimmed);
+    if (words?.[0] === 'cd') {
+      if (words.length > 2) {
+        return { stdout: '', stderr: 'cd: too many arguments\n', exitCode: 1 };
+      }
+      try {
+        this.currentCwd = await this.options.resolveCwd(this.currentCwd, words[1] ?? this.options.workspaceRoot);
+        return { stdout: '', stderr: '', exitCode: 0 };
+      } catch (error) {
+        return { stdout: '', stderr: `cd: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+      }
+    }
+
+    if (words?.[0] === 'pwd' && words.length === 1) {
+      return { stdout: `${this.currentCwd}\n`, stderr: '', exitCode: 0 };
+    }
+
+    return this.options.runCommand(trimmed, {
+      ...options,
+      cwd: this.currentCwd,
+      env: {
+        ...this.env,
+        ...(options.env ?? {}),
+        PWD: this.currentCwd,
+      },
+    });
+  }
 }
 
 const DEFAULT_CWD = '/workspace';
@@ -1651,6 +1721,30 @@ function parseSimpleCommandWords(command: string): string[] | null {
   return words.length > 0 ? words : null;
 }
 
+function normalizeTerminalAbsolutePath(path: string): string {
+  assertNoNul(path, 'Terminal path');
+  if (!path.startsWith('/')) throw new Error(`Terminal path must be absolute: ${path}`);
+  const parts: string[] = [];
+  for (const part of path.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`;
+}
+
+function terminalCwdLabel(workspaceRoot: string, cwd: string): string {
+  if (cwd === workspaceRoot) {
+    const workspaceName = workspaceRoot.split('/').filter(Boolean).at(-1);
+    return workspaceName || '/';
+  }
+  const cwdName = cwd.split('/').filter(Boolean).at(-1);
+  return cwdName || '/';
+}
+
 function hasWorkspaceGlob(value: string): boolean {
   return /[*?[]/.test(value);
 }
@@ -2478,6 +2572,27 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return toWorkspaceRelativePath(this.cwd, path, this.kernelInfo.workspaceAlias);
   }
 
+  private resolveTerminalPath(currentCwd: string, target: string): string {
+    const rawTarget = target.trim() || this.cwd;
+    const normalizedTarget = rawTarget === '~' ? this.kernelInfo.home : rawTarget;
+    const absolutePath = normalizedTarget.startsWith('/')
+      ? normalizeTerminalAbsolutePath(mapWorkspaceAlias(this.cwd, this.kernelInfo.workspaceAlias, normalizedTarget))
+      : normalizeTerminalAbsolutePath(`${currentCwd}/${normalizedTarget}`);
+    if (!isWithinWorkspace(this.cwd, absolutePath)) {
+      throw new Error(`Project path must stay inside the workspace: ${target}`);
+    }
+    return absolutePath;
+  }
+
+  private async resolveTerminalCwd(currentCwd: string, target: string): Promise<string> {
+    const absolutePath = this.resolveTerminalPath(currentCwd, target);
+    const stat = await this.stat(absolutePath);
+    if (!stat.isDirectory) {
+      throw new Error(`not a directory: ${target}`);
+    }
+    return absolutePath;
+  }
+
   private readProcFile(path: string, encoding?: RuntimeFileEncoding): string | null {
     const procPath = normalizeProcPath(path);
     if (procPath === null) return null;
@@ -2827,6 +2942,21 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       stderr: `${result.stderr}${commandDeviceStderr}`,
       exitCode: result.exitCode,
     };
+  }
+
+  createTerminalSession(options: RuntimeProjectTerminalSessionOptions = {}): RuntimeProjectTerminalSession {
+    return new RuntimeProjectWorkspaceTerminalSession(
+      {
+        workspaceRoot: this.cwd,
+        kernelInfo: this.kernelInfo,
+        resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
+        runCommand: (command, commandOptions) => this.runCommand(command, commandOptions),
+      },
+      {
+        ...options,
+        cwd: options.cwd ? this.resolveTerminalPath(this.cwd, options.cwd) : this.cwd,
+      }
+    );
   }
 
   private async tryRunCppExecutable(
@@ -3200,6 +3330,9 @@ export type {
   RuntimeTraceKernelConfig,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
+  RuntimeProjectTerminalPrompt,
+  RuntimeProjectTerminalSession,
+  RuntimeProjectTerminalSessionOptions,
   RuntimeProjectIoBridge,
   RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,

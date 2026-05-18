@@ -184,42 +184,96 @@ const getEditorLanguage = (lang: Language): string => {
 
 async function bootDevTerminal(): Promise<void> {
   document.body.innerHTML = `
-    <main class="dev-terminal-root">
-      <aside class="dev-sidebar">
-        <section class="dev-panel">
-          <div class="dev-panel-header">Project I/O</div>
-          <div class="dev-capability-list" id="dev-capability-list"></div>
-        </section>
-        <section class="dev-panel">
-          <div class="dev-panel-header">MVP Checks</div>
-          <div class="dev-command-list" id="dev-command-list"></div>
-        </section>
-        <section class="dev-panel dev-panel-grow">
-          <div class="dev-panel-header">Files</div>
-          <div class="dev-file-tree" id="dev-file-tree"></div>
-        </section>
-        <section class="dev-panel dev-panel-grow">
-          <div class="dev-panel-header">Events</div>
-          <div class="dev-event-log" id="dev-event-log"></div>
-        </section>
-      </aside>
-      <section class="dev-terminal">
-        <div class="dev-terminal-header">
-          <span class="dev-terminal-title">/dev</span>
-          <span class="dev-terminal-status" id="dev-terminal-status">booting</span>
+    <main class="dev-ide-root">
+      <header class="dev-menubar">
+        <div class="dev-menu-group">
+          <button class="dev-menu-trigger" type="button">File</button>
+          <div class="dev-menu-popover">
+            <button id="dev-new-file" type="button">New File</button>
+            <button id="dev-save-file" type="button">Save</button>
+            <button id="dev-refresh-files" type="button">Refresh Explorer</button>
+          </div>
         </div>
-        <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite"></div>
-        <form class="dev-terminal-form" id="dev-terminal-form">
-          <span class="dev-terminal-prompt">$</span>
-          <input
-            id="dev-terminal-input"
-            class="dev-terminal-input"
-            autocomplete="off"
-            spellcheck="false"
-            autofocus
-          />
-        </form>
+        <div class="dev-menu-group">
+          <button class="dev-menu-trigger" type="button">Edit</button>
+          <div class="dev-menu-popover">
+            <button id="dev-format-file" type="button">Format Document</button>
+            <button id="dev-clear-terminal" type="button">Clear Terminal</button>
+          </div>
+        </div>
+        <div class="dev-menu-group">
+          <button class="dev-menu-trigger" type="button">View</button>
+          <div class="dev-menu-popover">
+            <button id="dev-focus-terminal" type="button">Terminal</button>
+            <button id="dev-focus-explorer" type="button">Explorer</button>
+          </div>
+        </div>
+        <div class="dev-menu-group">
+          <button class="dev-menu-trigger" type="button">Run</button>
+          <div class="dev-menu-popover">
+            <button id="dev-run-current" type="button">Run Current File</button>
+            <button id="dev-run-mvp" type="button">Run MVP Checks</button>
+          </div>
+        </div>
+        <div class="dev-menu-spacer"></div>
+        <span class="dev-workspace-name">tracekernel / weather-api</span>
+        <span class="dev-terminal-status" id="dev-terminal-status">booting</span>
+      </header>
+      <section class="dev-workbench">
+        <nav class="dev-activitybar" aria-label="Dev workspace views">
+          <button class="active" type="button" title="Explorer">F</button>
+          <button type="button" title="Search">S</button>
+          <button type="button" title="Run">R</button>
+          <button type="button" title="Kernel">K</button>
+        </nav>
+        <aside class="dev-explorer">
+          <div class="dev-panel-header">Explorer</div>
+          <div class="dev-file-tree" id="dev-file-tree"></div>
+        </aside>
+        <section class="dev-editor-shell">
+          <div class="dev-editor-tabs">
+            <div class="dev-editor-tab active">
+              <span id="dev-current-file">main.py</span>
+              <span class="dev-dirty-indicator" id="dev-dirty-indicator"></span>
+            </div>
+          </div>
+          <div id="dev-editor-root" class="dev-monaco-root"></div>
+        </section>
+        <aside class="dev-inspector">
+          <section class="dev-panel">
+            <div class="dev-panel-header">Project I/O</div>
+            <div class="dev-capability-list" id="dev-capability-list"></div>
+          </section>
+          <section class="dev-panel">
+            <div class="dev-panel-header">MVP Checks</div>
+            <div class="dev-command-list" id="dev-command-list"></div>
+          </section>
+          <section class="dev-panel dev-panel-grow">
+            <div class="dev-panel-header">Events</div>
+            <div class="dev-event-log" id="dev-event-log"></div>
+          </section>
+        </aside>
       </section>
+      <footer class="dev-bottom-panel">
+        <div class="dev-bottom-tabs">
+          <button class="active" type="button">Terminal</button>
+          <button type="button">Problems</button>
+          <button type="button">Output</button>
+        </div>
+        <section class="dev-terminal">
+          <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite"></div>
+          <form class="dev-terminal-form" id="dev-terminal-form">
+            <span class="dev-terminal-prompt" id="dev-terminal-prompt">user@tracevm weather-api %</span>
+            <input
+              id="dev-terminal-input"
+              class="dev-terminal-input"
+              autocomplete="off"
+              spellcheck="false"
+              autofocus
+            />
+          </form>
+        </section>
+      </footer>
     </main>
   `;
 
@@ -227,10 +281,23 @@ async function bootDevTerminal(): Promise<void> {
   const status = document.querySelector<HTMLSpanElement>('#dev-terminal-status')!;
   const form = document.querySelector<HTMLFormElement>('#dev-terminal-form')!;
   const input = document.querySelector<HTMLInputElement>('#dev-terminal-input')!;
+  const prompt = document.querySelector<HTMLSpanElement>('#dev-terminal-prompt')!;
   const capabilityList = document.querySelector<HTMLDivElement>('#dev-capability-list')!;
   const commandList = document.querySelector<HTMLDivElement>('#dev-command-list')!;
   const fileTree = document.querySelector<HTMLDivElement>('#dev-file-tree')!;
   const eventLog = document.querySelector<HTMLDivElement>('#dev-event-log')!;
+  const editorRoot = document.querySelector<HTMLDivElement>('#dev-editor-root')!;
+  const currentFileLabel = document.querySelector<HTMLSpanElement>('#dev-current-file')!;
+  const dirtyIndicator = document.querySelector<HTMLSpanElement>('#dev-dirty-indicator')!;
+  const newFileButton = document.querySelector<HTMLButtonElement>('#dev-new-file')!;
+  const saveFileButton = document.querySelector<HTMLButtonElement>('#dev-save-file')!;
+  const refreshFilesButton = document.querySelector<HTMLButtonElement>('#dev-refresh-files')!;
+  const formatFileButton = document.querySelector<HTMLButtonElement>('#dev-format-file')!;
+  const clearTerminalButton = document.querySelector<HTMLButtonElement>('#dev-clear-terminal')!;
+  const focusTerminalButton = document.querySelector<HTMLButtonElement>('#dev-focus-terminal')!;
+  const focusExplorerButton = document.querySelector<HTMLButtonElement>('#dev-focus-explorer')!;
+  const runCurrentButton = document.querySelector<HTMLButtonElement>('#dev-run-current')!;
+  const runMvpButton = document.querySelector<HTMLButtonElement>('#dev-run-mvp')!;
 
   const appendLine = (text: string, className = ''): void => {
     const line = document.createElement('div');
@@ -297,6 +364,11 @@ async function bootDevTerminal(): Promise<void> {
     javaProjectTimeoutMs: 120_000,
     csharpProjectTimeoutMs: 120_000,
     cppProjectTimeoutMs: 120_000,
+    kernel: {
+      user: { username: 'user' },
+      host: { hostname: 'tracevm' },
+      workspace: { name: 'weather-api' },
+    },
     files: [
       {
         path: 'helper.py',
@@ -671,10 +743,79 @@ int main(int argc, char** argv) {
     ],
   });
 
+  const terminalSession = workspace.createTerminalSession();
+  const updatePrompt = (): void => {
+    prompt.textContent = terminalSession.prompt.text;
+  };
+
+  let activeFilePath = 'main.py';
+  let suppressEditorChange = false;
+  let saveTimer: number | undefined;
+
+  const inferMonacoLanguage = (path: string): string => {
+    if (path.endsWith('.py')) return 'python';
+    if (path.endsWith('.js') || path.endsWith('.mjs')) return 'javascript';
+    if (path.endsWith('.ts')) return 'typescript';
+    if (path.endsWith('.java')) return 'java';
+    if (path.endsWith('.cs') || path.endsWith('.csproj')) return 'csharp';
+    if (path.endsWith('.cpp') || path.endsWith('.hpp') || path.endsWith('.h')) return 'cpp';
+    if (path.endsWith('.json')) return 'json';
+    return 'plaintext';
+  };
+
+  const projectEditor = monaco.editor.create(editorRoot, {
+    value: '',
+    language: 'python',
+    theme: 'tracecodeDark',
+    automaticLayout: true,
+    minimap: { enabled: false },
+    fontSize: 13,
+    fontFamily: 'var(--font-mono)',
+    lineHeight: 22,
+    padding: { top: 12, bottom: 12 },
+    scrollBeyondLastLine: false,
+  });
+
+  const markClean = (): void => {
+    dirtyIndicator.textContent = '';
+    status.textContent = 'ready';
+  };
+
+  const saveActiveFile = async (): Promise<void> => {
+    await workspace.writeFile(activeFilePath, projectEditor.getValue());
+    markClean();
+  };
+
+  projectEditor.onDidChangeModelContent(() => {
+    if (suppressEditorChange) return;
+    dirtyIndicator.textContent = 'edited';
+    status.textContent = 'saving';
+    window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      void saveActiveFile().then(renderFileTree).catch((error) => {
+        status.textContent = 'save failed';
+        appendLine(error instanceof Error ? error.message : String(error), 'stderr');
+      });
+    }, 350);
+  });
+
+  const openFile = async (path: string): Promise<void> => {
+    activeFilePath = path;
+    currentFileLabel.textContent = path;
+    const contents = await workspace.readFile(path);
+    suppressEditorChange = true;
+    projectEditor.getModel()?.setValue(contents);
+    monaco.editor.setModelLanguage(projectEditor.getModel()!, inferMonacoLanguage(path));
+    suppressEditorChange = false;
+    markClean();
+    document.querySelectorAll('.dev-file-entry.active').forEach((entry) => entry.classList.remove('active'));
+    document.querySelector<HTMLElement>(`[data-dev-file="${CSS.escape(path)}"]`)?.classList.add('active');
+  };
+
   const renderFileTree = async (): Promise<void> => {
-    const rows: string[] = [];
+    fileTree.replaceChildren();
     const visit = async (dir: string, depth: number): Promise<void> => {
-      if (depth > 4 || rows.length > 160) return;
+      if (depth > 5 || fileTree.childElementCount > 220) return;
       let entries: string[] = [];
       try {
         entries = await workspace.readDir(dir);
@@ -683,21 +824,35 @@ int main(int argc, char** argv) {
       }
       for (const entry of entries) {
         const path = dir === '.' ? entry : `${dir}/${entry}`;
-        let marker = '';
+        let isDirectory = false;
         try {
           const stat = await workspace.stat(path);
-          marker = stat.isDirectory ? '/' : '';
+          isDirectory = stat.isDirectory;
         } catch {
-          marker = '';
+          isDirectory = false;
         }
-        rows.push(`${'  '.repeat(depth)}${entry}${marker}`);
-        if (marker) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = `dev-file-entry ${isDirectory ? 'directory' : 'file'} ${path === activeFilePath ? 'active' : ''}`;
+        row.dataset.devFile = path;
+        row.style.setProperty('--depth', String(depth));
+        row.textContent = `${isDirectory ? '▸ ' : ''}${entry}${isDirectory ? '/' : ''}`;
+        row.addEventListener('click', () => {
+          if (!isDirectory) void openFile(path);
+        });
+        fileTree.append(row);
+        if (isDirectory) {
           await visit(path, depth + 1);
         }
       }
     };
     await visit('.', 0);
-    fileTree.textContent = rows.join('\n') || '(empty)';
+    if (fileTree.childElementCount === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'dev-file-empty';
+      empty.textContent = 'No files';
+      fileTree.append(empty);
+    }
   };
 
   const mvpCommands: Record<string, { label: string; command: string; setup?: () => Promise<void> }> = {
@@ -810,7 +965,7 @@ int main(int argc, char** argv) {
       }
 
       const streamedOutput = { stdout: '', stderr: '' };
-      const result = await workspace.runCommand(command, {
+      const result = await terminalSession.run(command, {
         onEvent: (event: RuntimeCommandEvent) => {
           if (event.type === 'status') {
             appendLine(`[${event.phase}] ${event.message}`, 'status');
@@ -841,10 +996,12 @@ int main(int argc, char** argv) {
       if (result.exitCode !== 0) {
         appendLine(`exit ${result.exitCode}`, 'exit');
       }
+      updatePrompt();
     } catch (error) {
       appendLine(error instanceof Error ? error.message : String(error), 'stderr');
     } finally {
       await renderFileTree();
+      updatePrompt();
       status.textContent = 'ready';
       input.disabled = false;
       input.focus();
@@ -873,6 +1030,53 @@ int main(int argc, char** argv) {
     })
   );
 
+  const commandForActiveFile = (): string => {
+    const path = activeFilePath;
+    const absolutePath = `${workspace.cwd}/${path}`;
+    if (path.endsWith('.py')) return `python3 ${JSON.stringify(absolutePath)}`;
+    if (path.endsWith('.js') || path.endsWith('.mjs')) return `node ${JSON.stringify(absolutePath)}`;
+    if (path.endsWith('.java')) {
+      const className = path.split('/').pop()!.replace(/\.java$/, '');
+      return `javac ${JSON.stringify(absolutePath)} && java ${className}`;
+    }
+    if (path.endsWith('.csproj')) return `dotnet run --project ${JSON.stringify(absolutePath)}`;
+    if (path.endsWith('.cpp')) return `clang++ -std=c++17 ${JSON.stringify(absolutePath)} && ./a.out`;
+    return `cat ${JSON.stringify(absolutePath)}`;
+  };
+
+  newFileButton.addEventListener('click', () => {
+    const path = window.prompt('New project file path', 'src/new-file.txt')?.trim();
+    if (!path) return;
+    void workspace.writeFile(path, '').then(async () => {
+      await renderFileTree();
+      await openFile(path);
+    });
+  });
+  saveFileButton.addEventListener('click', () => {
+    void saveActiveFile().then(renderFileTree);
+  });
+  refreshFilesButton.addEventListener('click', () => {
+    void renderFileTree();
+  });
+  formatFileButton.addEventListener('click', () => {
+    void projectEditor.getAction('editor.action.formatDocument')?.run();
+  });
+  clearTerminalButton.addEventListener('click', () => {
+    output.replaceChildren();
+  });
+  focusTerminalButton.addEventListener('click', () => {
+    input.focus();
+  });
+  focusExplorerButton.addEventListener('click', () => {
+    fileTree.querySelector<HTMLButtonElement>('.dev-file-entry')?.focus();
+  });
+  runCurrentButton.addEventListener('click', () => {
+    void saveActiveFile().then(() => runTerminalCommand(commandForActiveFile()));
+  });
+  runMvpButton.addEventListener('click', () => {
+    void runTerminalCommand('mvp');
+  });
+
   const disposeTerminal = (): void => {
     workspace.dispose();
   };
@@ -889,8 +1093,10 @@ int main(int argc, char** argv) {
   }
 
   status.textContent = 'ready';
+  updatePrompt();
   renderCapabilities();
   await renderFileTree();
+  await openFile(activeFilePath);
   appendLine('Ready. Try: python3 main.py alpha beta');
   appendLine('Ready. Try: python3 globpy/*.py data/*.txt');
   appendLine('Ready. Try: node index.js alpha beta');
