@@ -330,7 +330,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         worker.includes("patch('open'") &&
           worker.includes('isCreateOrTruncateOpenFlags') &&
-          worker.includes('kernelVirtualPathTarget(path)') &&
+          worker.includes('kernelVirtualMutationTarget(path)') &&
           worker.includes('emitFileChange(streamPath(stream))'),
         '@tracecode/harness-python worker should ship shared-kernel live empty-open file mutation hooks'
       );

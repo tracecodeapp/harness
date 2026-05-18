@@ -761,6 +761,25 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
     return fallbackKernelVirtualPathTarget(path);
   };
 
+  const fallbackKernelVirtualMutationTarget = (path) => {
+    const target = fallbackKernelVirtualPathTarget(path);
+    if (target.kind === 'workspace') return target;
+    if (target.kind === 'device-not-found') {
+      return { kind: 'error', reason: 'device-not-found', path: target.path };
+    }
+    if (target.kind === 'proc') {
+      return { kind: 'error', reason: 'proc-read-only', path: target.path };
+    }
+    return { kind: 'error', reason: 'device-read-only', path: target.path };
+  };
+
+  const kernelVirtualMutationTarget = (path) => {
+    if (kernelPolicy && typeof kernelPolicy.runtimeKernelVirtualMutationTarget === 'function') {
+      return kernelPolicy.runtimeKernelVirtualMutationTarget(path, { devices });
+    }
+    return fallbackKernelVirtualMutationTarget(path);
+  };
+
   const kernelDeviceOutputTarget = (path) => {
     const target = kernelVirtualPathTarget(path);
     if (target.kind !== 'device-file') return null;
@@ -789,10 +808,10 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   };
 
   const rejectKernelVirtualMutation = (path, operation) => {
-    const target = kernelVirtualPathTarget(path);
-    if (target.kind === 'workspace') return;
+    const target = kernelVirtualMutationTarget(path);
+    if (target.kind !== 'error') return;
     const error = new Error(`Kernel virtual namespace is not a provider FS mutation target: ${target.path}`);
-    error.code = target.kind === 'proc' || target.kind === 'read-only-file' ? 'EROFS' : 'EACCES';
+    error.code = target.reason === 'proc-read-only' || target.reason === 'kernel-read-only' ? 'EROFS' : 'EACCES';
     error.operation = operation;
     error.path = target.path;
     throw error;
