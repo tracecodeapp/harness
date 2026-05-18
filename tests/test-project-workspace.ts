@@ -4841,6 +4841,11 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
         stdout: `java-streamed\n${request.source}:${request.scriptPath}:${request.project.files.length}`,
         stderr: '',
         exitCode: 0,
+        files: [
+          { path: 'java-live.txt', contents: 'live\n' },
+          { path: 'java-generated.txt', contents: 'generated\n' },
+          { path: 'java-returned.txt', contents: 'returned\n' },
+        ],
       };
     },
   }, {
@@ -4905,6 +4910,14 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
       event.change.path === 'java-generated.txt'
     ),
     `browser java runner should forward worker final-diff file-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.filter((event) => event.type === 'file-change' && event.change.path === 'java-live.txt').length === 1,
+    `browser java runner should not return already-applied live file changes as final diffs: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    result.files?.length === 1 && result.files[0]?.path === 'java-returned.txt',
+    `browser java runner should only return unapplied final files: ${JSON.stringify(result.files)}`
   );
 
   const previewResult = await runner({

@@ -1072,6 +1072,12 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
+                  'bad_nested_device\n',
+                  '/dev/nested/path'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
                   'stdout-read:IOException\n'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
@@ -1828,6 +1834,7 @@ async function main(): Promise<void> {
           { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
           { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
           { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+          { path: '/dev/nested/path', readable: false, writable: true, outputDevice: '/dev/stdout' },
         ],
       },
     });
@@ -1972,6 +1979,15 @@ async function main(): Promise<void> {
             event.stream === 'stdout' &&
             event.data === 'from-stdin\n'
         ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.device === '/dev/stdout' &&
+            event.data === 'bad_nested_device\n' &&
+            event.sourceDevice === undefined
+        ) === true &&
+        !projectExecute.events?.some((event) => event.type === 'output' && event.sourceDevice === '/dev/nested/path') &&
         projectExecute.events?.some(
           (event) =>
             event.type === 'output' &&
@@ -2382,6 +2398,10 @@ async function main(): Promise<void> {
       defaultAdapterSource.includes('ProjectEvents.setKernelDevices("') &&
         defaultAdapterSource.includes('L2Rldi9zdGRvdXQ='),
       'Java execute-project-java adapter should pass project kernelDevices into ProjectEvents'
+    );
+    assertCondition(
+      !defaultAdapterSource.includes(Buffer.from('/dev/nested/path').toString('base64')),
+      'Java execute-project-java adapter should ignore kernelDevices outside runtime-kernel device references'
     );
     assertCondition(
       defaultAdapterSource.includes('ProjectEvents.setKernelFiles("'),

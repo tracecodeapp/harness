@@ -1183,6 +1183,28 @@ def _emit_file_delete_for_absolute(_absolute_path):
     if _relative_path:
         _emit_project_event({"type": "file-change", "phase": "live", "change": {"path": _relative_path, "deleted": True}})
 
+def _emit_directory_change_for_absolute(_absolute_path, _deleted=False):
+    _relative_path = _project_relative_path_from_absolute(_absolute_path)
+    if _relative_path:
+        _change = {"path": _relative_path, "directory": True}
+        if _deleted:
+            _change["deleted"] = True
+        _emit_project_event({"type": "file-change", "phase": "live", "change": _change})
+
+def _emit_path_snapshot_for_absolute(_absolute_path):
+    if os.path.isfile(_absolute_path):
+        _emit_file_change_for_absolute(_absolute_path)
+        return
+    if not os.path.isdir(_absolute_path):
+        return
+    _emit_directory_change_for_absolute(_absolute_path)
+    for _dirpath, _dirnames, _filenames in os.walk(_absolute_path):
+        _dirnames.sort()
+        for _dirname in _dirnames:
+            _emit_directory_change_for_absolute(os.path.join(_dirpath, _dirname))
+        for _filename in sorted(_filenames):
+            _emit_file_change_for_absolute(os.path.join(_dirpath, _filename))
+
 class _TraceProjectStream(io.StringIO):
     def __init__(self, _stream):
         super().__init__()
@@ -2230,10 +2252,15 @@ def _install_virtual_workspace_paths():
             _mapped_dst = _map_workspace_path(_dst)
             _absolute_src = _absolute_mapped_path(_mapped_src)
             _absolute_dst = _absolute_mapped_path(_mapped_dst)
+            _src_is_directory = bool(_absolute_src and os.path.isdir(_absolute_src))
             _result = _original(_mapped_src, _mapped_dst, *args, **kwargs)
             if _name in ("rename", "replace"):
-                _emit_file_delete_for_absolute(_absolute_src)
-                _emit_file_change_for_absolute(_absolute_dst)
+                if _src_is_directory:
+                    _emit_directory_change_for_absolute(_absolute_src, True)
+                    _emit_path_snapshot_for_absolute(_absolute_dst)
+                else:
+                    _emit_file_delete_for_absolute(_absolute_src)
+                    _emit_file_change_for_absolute(_absolute_dst)
             elif _name in ("link", "symlink"):
                 _emit_file_change_for_absolute(_absolute_dst)
             return _result

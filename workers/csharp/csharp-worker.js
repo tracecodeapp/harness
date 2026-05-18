@@ -676,6 +676,9 @@ function installRuntimeFsHooks(runtime) {
           throwKernelDevicePathError(path, 'open', 'EROFS');
         }
       }
+      if (activeProjectIo && isKernelVirtualFsPath(path) && (isWritableOpenFlags(flags) || isCreateOrTruncateOpenFlags(flags))) {
+        throwKernelFsError(path, 'open', 'EROFS', 'read-only file system');
+      }
       const shouldEmitCreateSnapshot = Boolean(activeProjectIo) && isCreateOrTruncateOpenFlags(flags);
       const stream = originalOpen.apply(this, arguments);
       if (shouldEmitCreateSnapshot && stream?.path) emitProjectFileSnapshot(stream.path);
@@ -686,6 +689,7 @@ function installRuntimeFsHooks(runtime) {
   const originalTruncate = fs.truncate;
   if (typeof originalTruncate === 'function') {
     fs.truncate = function truncateWithProjectEvents(path) {
+      if (activeProjectIo) throwKernelVirtualMutationError(path, 'truncate');
       const result = originalTruncate.apply(this, arguments);
       if (activeProjectIo) emitProjectFileSnapshot(path);
       return result;
@@ -696,6 +700,7 @@ function installRuntimeFsHooks(runtime) {
   if (typeof originalFtruncate === 'function') {
     fs.ftruncate = function ftruncateWithProjectEvents(fd) {
       const stream = typeof fs.getStream === 'function' ? fs.getStream(fd) : null;
+      if (activeProjectIo && stream?.path) throwKernelVirtualMutationError(stream.path, 'ftruncate');
       const result = originalFtruncate.apply(this, arguments);
       if (activeProjectIo && stream?.path) emitProjectFileSnapshot(stream.path);
       return result;

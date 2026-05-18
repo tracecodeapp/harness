@@ -921,8 +921,18 @@ async function main(): Promise<void> {
           event.change?.path === 'live-dir' &&
           event.change.directory === true &&
           event.change.deleted === true
-        )) === true,
+      )) === true,
       `Python project worker should stream live directory mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'live-dir/child' &&
+        event.change.deleted === true &&
+        event.change.directory !== true
+      )) !== true,
+      `Python project worker should not emit file-shaped deletes for directory renames: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (

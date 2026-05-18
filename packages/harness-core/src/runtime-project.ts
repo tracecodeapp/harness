@@ -329,7 +329,7 @@ export async function runRuntimeProjectWorkerBridge<
 >(options: RuntimeProjectWorkerBridgeOptions<Request, Result>): Promise<Result> {
   const outputTracker = new RuntimeProjectOutputTracker();
   const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
-  const appliedFinalDiffPaths = new Set<string>();
+  const appliedFileChangePaths = new Set<string>();
   const io = createRuntimeProjectIoBridge((event) => {
     outputTracker.observe(event);
     options.request.onEvent?.(event);
@@ -343,7 +343,7 @@ export async function runRuntimeProjectWorkerBridge<
       eventQueue.enqueue(event, {
         applyFileChange: async (change, phase) => {
           const shouldEmit = await options.applyFileChange?.(change, phase);
-          if (phase === 'final-diff') appliedFinalDiffPaths.add(runtimeFileChangePath(change));
+          appliedFileChangePaths.add(runtimeFileChangePath(change));
           return shouldEmit;
         },
         emit: emitWorkerEvent,
@@ -370,9 +370,9 @@ export async function runRuntimeProjectWorkerBridge<
     return failedResult;
   }
   const commandResult =
-    appliedFinalDiffPaths.size > 0
+    appliedFileChangePaths.size > 0
       ? (filterRuntimeCommandResultFiles(result, (change) =>
-          appliedFinalDiffPaths.has(runtimeFileChangePath(change))
+          appliedFileChangePaths.has(runtimeFileChangePath(change))
         ) as Result)
       : result;
   io.status(

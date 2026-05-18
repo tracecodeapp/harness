@@ -3140,9 +3140,31 @@ function projectJavaWorkspaceFiles(project) {
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function normalizeKernelAbsolutePath(path) {
+  const raw = String(path ?? '').replace(/\\/g, '/');
+  if (!raw.startsWith('/')) return null;
+  const parts = [];
+  for (const part of raw.split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `/${parts.join('/')}`.replace(/\/+$/, '') || '/';
+}
+
+function normalizeKernelDeviceReference(path) {
+  const normalized = normalizeKernelAbsolutePath(path);
+  if (normalized === null || normalized === '/dev' || !normalized.startsWith('/dev/')) return null;
+  const deviceName = normalized.slice('/dev/'.length);
+  return deviceName.length > 0 && !deviceName.includes('/') ? normalized : null;
+}
+
 function normalizeKernelVirtualFilePath(path) {
-  const normalized = String(path ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
-  if (normalized.startsWith('/') && normalized !== '/dev' && !normalized.startsWith('/dev/')) return normalized;
+  const normalized = normalizeKernelAbsolutePath(path);
+  if (normalized !== null && normalized !== '/dev' && !normalizeKernelDeviceReference(normalized) && !normalized.startsWith('/dev/')) return normalized;
   throw new Error(`Unsupported Java kernel virtual file path: ${path}`);
 }
 
@@ -3284,12 +3306,12 @@ function projectKernelDeviceManifest(project) {
   const devices = Array.isArray(project?.kernelDevices) ? project.kernelDevices : [];
   return devices
     .map((device) => {
-      const path = String(device?.path ?? '').replace(/\\/g, '/');
-      if (!path.startsWith('/dev/')) return null;
+      const path = normalizeKernelDeviceReference(device?.path);
+      if (path === null) return null;
       const readable = device?.readable === true ? '1' : '0';
       const writable = device?.writable === true ? '1' : '0';
-      const inputDevice = typeof device?.inputDevice === 'string' ? device.inputDevice.replace(/\\/g, '/') : '';
-      const outputDevice = typeof device?.outputDevice === 'string' ? device.outputDevice.replace(/\\/g, '/') : '';
+      const inputDevice = typeof device?.inputDevice === 'string' ? normalizeKernelDeviceReference(device.inputDevice) ?? '' : '';
+      const outputDevice = typeof device?.outputDevice === 'string' ? normalizeKernelDeviceReference(device.outputDevice) ?? '' : '';
       return [path, readable, writable, inputDevice, outputDevice].map((part) => base64Utf8(part)).join('\t');
     })
     .filter(Boolean)
@@ -4243,8 +4265,8 @@ async function runJavaProjectRequest(payload, requestId) {
     stderrEmitted: false,
     kernelDevicePaths: new Set(
       (Array.isArray(payload?.project?.kernelDevices) ? payload.project.kernelDevices : [])
-        .map((device) => String(device?.path ?? '').replace(/\\/g, '/'))
-        .filter((path) => path.startsWith('/dev/'))
+        .map((device) => normalizeKernelDeviceReference(device?.path))
+        .filter((path) => path !== null)
     ),
   };
   let reportText;

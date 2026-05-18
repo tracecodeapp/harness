@@ -283,6 +283,9 @@ async function main(): Promise<void> {
             '  std::cout << custom_kernel_text;',
             '  std::ofstream custom_kernel_write("/tracekernel/custom");',
             '  std::cout << (custom_kernel_write ? "custom-kernel-write:ok" : "custom-kernel-write:blocked") << "\\\\n";',
+            '  std::cout << (mkdir("/tracekernel/new", 0777) == 0 ? "custom-kernel-mkdir:ok" : "custom-kernel-mkdir:blocked") << "\\\\n";',
+            '  std::ofstream custom_kernel_create("/tracekernel/new.txt");',
+            '  std::cout << (custom_kernel_create ? "custom-kernel-create:ok" : "custom-kernel-create:blocked") << "\\\\n";',
             '  timespec blocked_times[2] = {};',
             '  blocked_times[0].tv_nsec = UTIME_NOW;',
             '  blocked_times[1].tv_nsec = UTIME_NOW;',
@@ -311,6 +314,9 @@ async function main(): Promise<void> {
             '  std::ofstream("rename-device-source.txt") << "blocked\\\\n";',
             '  std::cout << (std::rename("rename-device-source.txt", "/dev/stdout") == 0 ? "dev-rename:ok" : "dev-rename:blocked") << "\\\\n";',
             '  std::remove("rename-device-source.txt");',
+            '  std::ofstream("rename-kernel-source.txt") << "blocked\\\\n";',
+            '  std::cout << (std::rename("rename-kernel-source.txt", "/tracekernel/renamed") == 0 ? "custom-kernel-rename:ok" : "custom-kernel-rename:blocked") << "\\\\n";',
+            '  std::remove("rename-kernel-source.txt");',
             '  FILE* stdout_device = std::fopen("/dev/stdout", "w");',
             '  if (stdout_device) { std::fputs("device-out\\\\n", stdout_device); std::fclose(stdout_device); }',
             '  FILE* stderr_device = std::fopen("/dev/stderr", "w");',
@@ -1208,9 +1214,9 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('42\n') === true &&
         projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
-        projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\n') === true &&
+        projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\ncustom-kernel-mkdir:blocked\ncustom-kernel-create:blocked\n') === true &&
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
-        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,

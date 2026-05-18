@@ -1358,14 +1358,16 @@ public final class ProjectEvents {
       if (line.isEmpty()) continue;
       String[] fields = line.split("\\t", -1);
       if (fields.length < 5) continue;
-      String path = decodeManifestField(fields[0]);
-      if (!path.startsWith("/dev/")) continue;
+      String path = normalizeKernelDeviceReference(decodeManifestField(fields[0]));
+      if (path == null) continue;
+      String inputDevice = normalizeKernelDeviceReference(decodeManifestField(fields[3]));
+      String outputDevice = normalizeKernelDeviceReference(decodeManifestField(fields[4]));
       devices.put(path, new KernelDevice(
           path,
           "1".equals(decodeManifestField(fields[1])),
           "1".equals(decodeManifestField(fields[2])),
-          decodeManifestField(fields[3]),
-          decodeManifestField(fields[4])));
+          inputDevice == null ? "" : inputDevice,
+          outputDevice == null ? "" : outputDevice));
     }
     return devices;
   }
@@ -1439,6 +1441,29 @@ public final class ProjectEvents {
       normalized = normalized.substring(0, normalized.length() - 1);
     }
     return normalized.isEmpty() ? "/" : normalized;
+  }
+
+  private static String normalizeKernelAbsoluteString(String value) {
+    if (value == null) return null;
+    String raw = value.replace('\\', '/');
+    if (!raw.startsWith("/")) return null;
+    ArrayList<String> parts = new ArrayList<>();
+    for (String part : raw.split("/")) {
+      if (part.isEmpty() || ".".equals(part)) continue;
+      if ("..".equals(part)) {
+        if (!parts.isEmpty()) parts.remove(parts.size() - 1);
+      } else {
+        parts.add(part);
+      }
+    }
+    return "/" + String.join("/", parts);
+  }
+
+  private static String normalizeKernelDeviceReference(String value) {
+    String normalized = normalizeKernelAbsoluteString(value);
+    if (normalized == null || "/dev".equals(normalized) || !normalized.startsWith("/dev/")) return null;
+    String deviceName = normalized.substring("/dev/".length());
+    return !deviceName.isEmpty() && deviceName.indexOf('/') < 0 ? normalized : null;
   }
 
   private static boolean isVirtualDeviceDirectory(String normalized) {

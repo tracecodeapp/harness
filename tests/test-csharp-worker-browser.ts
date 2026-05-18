@@ -2737,8 +2737,12 @@ async function main(): Promise<void> {
                 'try { File.WriteAllText("/proc/kernel/info", "{}\\n"); Console.WriteLine("proc-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-write:" + ex.GetType().Name); }',
                 'try { Directory.CreateDirectory("/proc/kernel/new"); Console.WriteLine("proc-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("proc-mkdir:" + ex.GetType().Name); }',
                 'try { File.Delete("/proc/kernel/info"); Console.WriteLine("proc-delete:ok"); } catch (Exception ex) { Console.WriteLine("proc-delete:" + ex.GetType().Name); }',
+                'try { using var procWrite = File.Open("/proc/kernel/info", FileMode.Open, FileAccess.ReadWrite); Console.WriteLine("proc-open-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-open-write:" + ex.GetType().Name); }',
+                'try { using var procTruncate = new FileStream("/proc/kernel/info", FileMode.Truncate, FileAccess.Write); Console.WriteLine("proc-truncate:ok"); } catch (Exception ex) { Console.WriteLine("proc-truncate:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/tracekernel/custom", "bad\\n"); Console.WriteLine("custom-kernel-write:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-write:" + ex.GetType().Name); }',
                 'try { Directory.CreateDirectory("/tracekernel/new"); Console.WriteLine("custom-kernel-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-mkdir:" + ex.GetType().Name); }',
+                'try { using var customWrite = File.Open("/tracekernel/custom", FileMode.Open, FileAccess.ReadWrite); Console.WriteLine("custom-kernel-open-write:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-open-write:" + ex.GetType().Name); }',
+                'try { using var customTruncate = new FileStream("/tracekernel/custom", FileMode.Truncate, FileAccess.Write); Console.WriteLine("custom-kernel-truncate:ok"); } catch (Exception ex) { Console.WriteLine("custom-kernel-truncate:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stdout", "dev-stdout\\n"); Console.WriteLine("dev-stdout-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
@@ -2848,12 +2852,16 @@ async function main(): Promise<void> {
     );
     assertCondition(
       projectRun.stdout.includes('proc-mkdir:') && !projectRun.stdout.includes('proc-mkdir:ok') &&
-        projectRun.stdout.includes('proc-delete:') && !projectRun.stdout.includes('proc-delete:ok'),
+        projectRun.stdout.includes('proc-delete:') && !projectRun.stdout.includes('proc-delete:ok') &&
+        projectRun.stdout.includes('proc-open-write:') && !projectRun.stdout.includes('proc-open-write:ok') &&
+        projectRun.stdout.includes('proc-truncate:') && !projectRun.stdout.includes('proc-truncate:ok'),
       `C# project worker should reject /proc mkdir/delete mutations, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stdout.includes('custom-kernel-write:') && !projectRun.stdout.includes('custom-kernel-write:ok') &&
-        projectRun.stdout.includes('custom-kernel-mkdir:') && !projectRun.stdout.includes('custom-kernel-mkdir:ok'),
+        projectRun.stdout.includes('custom-kernel-mkdir:') && !projectRun.stdout.includes('custom-kernel-mkdir:ok') &&
+        projectRun.stdout.includes('custom-kernel-open-write:') && !projectRun.stdout.includes('custom-kernel-open-write:ok') &&
+        projectRun.stdout.includes('custom-kernel-truncate:') && !projectRun.stdout.includes('custom-kernel-truncate:ok'),
       `C# project worker should reject manifest-provided kernel virtual mutations outside /proc, received ${projectRun.stdout}`
     );
     assertCondition(

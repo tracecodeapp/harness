@@ -700,7 +700,8 @@ class WasiProcess {
       path === 'dev' ||
       path.startsWith('dev/') ||
       path.startsWith('/dev') ||
-      this.isKernelVirtualPathOperand(path)
+      this.isKernelVirtualPathOperand(path) ||
+      this.isKernelVirtualNamespaceOperand(path)
     ) {
       return normalizePath(path);
     }
@@ -745,6 +746,28 @@ class WasiProcess {
     return false;
   }
 
+  isKernelVirtualNamespaceOperand(pathname) {
+    const normalized = normalizePath(pathname);
+    if (normalized === '/') return false;
+    for (const path of this.fs.readOnlyFiles) {
+      const slash = path.indexOf('/', 1);
+      const root = slash < 0 ? path : path.slice(0, slash);
+      if (normalized === root || normalized.startsWith(`${root}/`)) return true;
+    }
+    return false;
+  }
+
+  isKernelVirtualNamespacePath(pathname) {
+    const normalized = normalizePath(pathname);
+    if (normalized === '/') return false;
+    for (const path of this.fs.readOnlyFiles) {
+      const slash = path.indexOf('/', 1);
+      const root = slash < 0 ? path : path.slice(0, slash);
+      if (normalized === path || normalized.startsWith(`${root}/`)) return true;
+    }
+    return false;
+  }
+
   deviceNamespaceMutationErrno(pathname, missingErrno = ENOENT) {
     const normalized = normalizePath(pathname);
     if (!isRuntimeDeviceNamespacePath(normalized)) return null;
@@ -771,7 +794,7 @@ class WasiProcess {
     if (isRuntimeDeviceNamespacePath(normalized)) {
       return this.isKnownDevicePath(normalized) ? -EBADF : -ENOENT;
     }
-    if (this.fs.isReadOnly(normalized) && (options.create || options.truncate || options.append || options.write)) {
+    if ((this.fs.isReadOnly(normalized) || this.isKernelVirtualNamespacePath(normalized)) && (options.create || options.truncate || options.append || options.write)) {
       return -EROFS;
     }
     if (options.directory) {
@@ -1113,7 +1136,7 @@ class WasiProcess {
   path_filestat_set_times(dirfd, _flags, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (isRuntimeProcPath(pathname) || this.fs.isReadOnly(pathname)) return EROFS;
+    if (isRuntimeProcPath(pathname) || this.fs.isReadOnly(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
     const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
     if (deviceErrno !== null) return deviceErrno;
     if (!this.fs.exists(pathname)) return ENOENT;
@@ -1123,7 +1146,7 @@ class WasiProcess {
   path_create_directory(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (isRuntimeProcPath(pathname)) return EROFS;
+    if (isRuntimeProcPath(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
     const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
     if (deviceErrno !== null) return deviceErrno;
     this.fs.addDirectory(pathname);
@@ -1133,7 +1156,7 @@ class WasiProcess {
   path_unlink_file(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (this.fs.isReadOnly(pathname)) return EROFS;
+    if (this.fs.isReadOnly(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
     const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
     if (deviceErrno !== null) return deviceErrno;
     return this.fs.unlink(pathname);
@@ -1142,7 +1165,7 @@ class WasiProcess {
   path_remove_directory(dirfd, pathPtr, pathLen) {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
-    if (isRuntimeProcPath(pathname)) return EROFS;
+    if (isRuntimeProcPath(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
     const deviceErrno = this.deviceNamespaceMutationErrno(pathname, ENOTDIR);
     if (deviceErrno !== null) return deviceErrno;
     if (this.fs.isFile(pathname)) return ENOTDIR;
@@ -1153,7 +1176,12 @@ class WasiProcess {
     const oldPath = this.resolveFdPath(oldFd, oldPathPtr, oldPathLen);
     const newPath = this.resolveFdPath(newFd, newPathPtr, newPathLen);
     if (!oldPath || !newPath) return EBADF;
-    if (this.fs.isReadOnly(oldPath) || isRuntimeProcPath(newPath)) return EROFS;
+    if (
+      this.fs.isReadOnly(oldPath) ||
+      this.isKernelVirtualNamespacePath(oldPath) ||
+      isRuntimeProcPath(newPath) ||
+      this.isKernelVirtualNamespacePath(newPath)
+    ) return EROFS;
     const oldDeviceErrno = this.deviceNamespaceMutationErrno(oldPath);
     if (oldDeviceErrno !== null) return oldDeviceErrno;
     const newDeviceErrno = this.deviceNamespaceMutationErrno(newPath);

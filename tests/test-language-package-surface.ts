@@ -494,6 +494,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('emitProjectResultOutputEvents(events, result)'),
         '@tracecode/harness-cpp worker should stream returned compiler output events'
       );
+      assertCondition(
+        worker.includes('isKernelVirtualNamespacePath(pathname)') &&
+          worker.includes('this.isKernelVirtualNamespacePath(newPath)'),
+        '@tracecode/harness-cpp worker should guard manifest kernel namespaces with shared read-only semantics'
+      );
     }
 
     const packedPackageJson = JSON.parse(await readFile(join(packageDir, 'package.json'), 'utf8')) as {
