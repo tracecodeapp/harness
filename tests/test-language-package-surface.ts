@@ -319,6 +319,16 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectBrowser.includes('io.fileChange({ path, directory: true, deleted: true }, "live")'),
         '@tracecode/harness-javascript browser project runner should ship live directory mutation events'
       );
+      assertCondition(
+        projectBrowser.includes('readvSync') &&
+          projectBrowser.includes('writevSync') &&
+          projectBrowser.includes('ftruncateSync') &&
+          projectBrowser.includes('descriptorMetadataPath') &&
+          projectBrowser.includes('writeFileToHandle') &&
+          projectBrowser.includes('appendFileToHandle') &&
+          projectBrowser.includes('createWriteStream'),
+        '@tracecode/harness-javascript browser project runner should ship FileHandle/vector/truncate/metadata live I/O bridge'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-java') {
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');

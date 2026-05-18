@@ -2861,11 +2861,11 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const fileHandleLifecycleResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fsp = require(\\"node:fs/promises\\"); const handle = await fsp.open(\\"handle-lifecycle.txt\\", \\"w+\\"); await handle.writeFile(\\"handle-data\\"); console.log((await handle.stat()).isFile()); await handle.close(); await handle.close(); for (const op of [\\"stat\\", \\"readFile\\", \\"writeFile\\", \\"truncate\\"]) { try { if (op === \\"stat\\") await handle.stat(); else if (op === \\"readFile\\") await handle.readFile(\\"utf8\\"); else if (op === \\"writeFile\\") await handle.writeFile(\\"after\\"); else await handle.truncate(0); console.log(op + \\":ok\\"); } catch (error) { console.log(op + \\":\\" + error.code); } } const proc = await fsp.open(\\"/proc/kernel/info\\", \\"r\\"); console.log(JSON.parse(await proc.readFile(\\"utf8\\")).name); await proc.close(); try { await proc.readFile(\\"utf8\\"); } catch (error) { console.log(error.code); }"',
+    '"const fsp = require(\\"node:fs/promises\\"); const handle = await fsp.open(\\"handle-lifecycle.txt\\", \\"w+\\"); await handle.writeFile(\\"handle-data\\"); console.log((await handle.stat()).isFile()); await handle.close(); await handle.close(); for (const op of [\\"stat\\", \\"readFile\\", \\"writeFile\\", \\"truncate\\"]) { try { if (op === \\"stat\\") await handle.stat(); else if (op === \\"readFile\\") await handle.readFile(\\"utf8\\"); else if (op === \\"writeFile\\") await handle.writeFile(\\"after\\"); else await handle.truncate(0); console.log(op + \\":ok\\"); } catch (error) { console.log(op + \\":\\" + error.code); } } const proc = await fsp.open(\\"/proc/kernel/info\\", \\"r\\"); console.log(JSON.parse(await proc.readFile(\\"utf8\\")).name); for (const op of [\\"chmod\\", \\"chown\\", \\"utimes\\"]) { try { if (op === \\"chmod\\") await proc.chmod(0o600); else if (op === \\"chown\\") await proc.chown(1, 1); else await proc.utimes(new Date(), new Date()); console.log(op + \\":ok\\"); } catch (error) { console.log(op + \\":\\" + error.code); } } await proc.close(); try { await proc.readFile(\\"utf8\\"); } catch (error) { console.log(error.code); }"',
   ].join(' '));
   assertCondition(fileHandleLifecycleResult.exitCode === 0, `browser node FileHandle lifecycle workflow should succeed: ${fileHandleLifecycleResult.stderr}`);
   assertCondition(
-    fileHandleLifecycleResult.stdout === 'true\nstat:EBADF\nreadFile:EBADF\nwriteFile:EBADF\ntruncate:EBADF\ntracekernel\nEBADF\n',
+    fileHandleLifecycleResult.stdout === 'true\nstat:EBADF\nreadFile:EBADF\nwriteFile:EBADF\ntruncate:EBADF\ntracekernel\nchmod:EROFS\nchown:EROFS\nutimes:EROFS\nEBADF\n',
     `browser node FileHandle APIs should reject use-after-close and support /proc handles: ${fileHandleLifecycleResult.stdout}`
   );
   assertCondition(await workspace.readFile('handle-lifecycle.txt') === 'handle-data', 'browser node FileHandle writes should persist through kernel FS');
@@ -5562,6 +5562,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'const procFd = fs.openSync("/proc/kernel/info", "r");',
           'console.log(JSON.parse(fs.readFileSync(procFd, "utf8")).workspaceRoot);',
           'console.log(fs.fstatSync(procFd).isFile());',
+          'try { fs.fchmodSync(procFd, 0o600); } catch (error) { console.log(error.code); }',
           'fs.closeSync(procFd);',
           'try { fs.writeFileSync("/proc/kernel/info", "{}\\n"); } catch (error) { console.log(error.code); }',
           'fs.writeFileSync("copy-device.txt", "copy-device\\n");',
@@ -5690,6 +5691,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         'true',
         '/home/ada/weather-api',
         'true',
+        'EROFS',
         'EROFS',
         'copy-device',
         'EROFS',

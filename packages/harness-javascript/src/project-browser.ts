@@ -2396,6 +2396,19 @@ async function runBrowserJavaScriptProjectRequest(
       if (!entry) throw Object.assign(new Error(`EBADF: bad file descriptor, fd ${fd}`), { code: 'EBADF' });
       return entry;
     };
+    const descriptorMetadataPath = (fd: number, operation: string): string | null => {
+      const entry = fileDescriptor(fd);
+      const path = entry.kind === 'device' ? entry.device ?? '/dev/stdin' : entry.path ?? '';
+      const metadataTarget = runtimeKernelMetadataTarget(path);
+      if (metadataTarget.kind === 'ignored-device') return null;
+      if (metadataTarget.kind === 'error') {
+        const message = metadataTarget.reason === 'proc-read-only'
+          ? `EROFS: read-only file system, ${operation}`
+          : `ENOENT: no such file or directory, ${operation}`;
+        throwRuntimeMetadataTargetError(metadataTarget, message);
+      }
+      return path;
+    };
     const descriptorBytes = (entry: BrowserFileDescriptor): Uint8Array => {
       if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
       if (entry.kind === 'proc') return utf8Bytes(readProcFile(entry.path ?? '', kernelInfo));
@@ -2927,12 +2940,12 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       fchmodSync: (fd: number, mode: unknown) => {
-        const entry = fileDescriptor(fd);
-        if (entry.kind === 'file') {
-          const stats = statForNormalizedPath(entry.path ?? '');
+        const path = descriptorMetadataPath(fd, 'fchmod');
+        if (path !== null) {
+          const stats = statForNormalizedPath(path);
           const typeMode = stats?.isDirectory() ? 0o40000 : 0o100000;
-          updateEntryMetadata(entry.path ?? '', { mode: typeMode | (Number(mode) & 0o7777) });
-          notifyMetadataMutation(entry.path ?? '');
+          updateEntryMetadata(path, { mode: typeMode | (Number(mode) & 0o7777) });
+          notifyMetadataMutation(path);
         }
         return undefined;
       },
@@ -2945,10 +2958,10 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       fchownSync: (fd: number, uid: unknown, gid: unknown) => {
-        const entry = fileDescriptor(fd);
-        if (entry.kind === 'file') {
-          updateEntryMetadata(entry.path ?? '', { uid: Number(uid) || 0, gid: Number(gid) || 0 });
-          notifyMetadataMutation(entry.path ?? '');
+        const path = descriptorMetadataPath(fd, 'fchown');
+        if (path !== null) {
+          updateEntryMetadata(path, { uid: Number(uid) || 0, gid: Number(gid) || 0 });
+          notifyMetadataMutation(path);
         }
         return undefined;
       },
@@ -2961,10 +2974,10 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       futimesSync: (fd: number, atime: unknown, mtime: unknown) => {
-        const entry = fileDescriptor(fd);
-        if (entry.kind === 'file') {
-          updateEntryMetadata(entry.path ?? '', { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
-          notifyMetadataMutation(entry.path ?? '');
+        const path = descriptorMetadataPath(fd, 'futimes');
+        if (path !== null) {
+          updateEntryMetadata(path, { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
+          notifyMetadataMutation(path);
         }
         return undefined;
       },
