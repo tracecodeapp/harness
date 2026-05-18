@@ -1494,6 +1494,7 @@ async function runBrowserJavaScriptProjectRequest(
       let closed = false;
       let destroyed = false;
       let ended = false;
+      let offset = 0;
       let streamEncoding = encoding;
       const closeStream = (): void => {
         if (closed) return;
@@ -1505,13 +1506,27 @@ async function runBrowserJavaScriptProjectRequest(
         const buffer = BrowserBuffer.from(chunk);
         return streamEncoding ? buffer.toString(streamEncoding) : buffer;
       };
+      const readChunk = (size?: number): BrowserBuffer | string | null => {
+        if (destroyed || offset >= bytes.byteLength) {
+          ended = offset >= bytes.byteLength;
+          return null;
+        }
+        const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : bytes.byteLength - offset;
+        const end = Math.min(bytes.byteLength, offset + requested);
+        const chunk = bytes.slice(offset, end);
+        offset = end;
+        if (offset >= bytes.byteLength) ended = true;
+        return formatChunk(chunk);
+      };
       const scheduleRead = (): void => {
         if (started) return;
         started = true;
         queueMicrotask(() => {
           if (closed || destroyed) return;
-          if (bytes.byteLength > 0) events.emit('data', formatChunk(bytes));
-          ended = true;
+          const chunk = readChunk();
+          if (chunk !== null && (typeof chunk !== 'string' || chunk.length > 0) && (!(chunk instanceof Uint8Array) || chunk.byteLength > 0)) {
+            events.emit('data', chunk);
+          }
           events.emit('end');
           closeStream();
         });
@@ -1530,10 +1545,14 @@ async function runBrowserJavaScriptProjectRequest(
         get readableEncoding() {
           return streamEncoding ?? null;
         },
+        get readableLength() {
+          return Math.max(0, bytes.byteLength - offset);
+        },
         setEncoding: (nextEncoding: string) => {
           streamEncoding = nextEncoding;
           return stream;
         },
+        read: (size?: number) => readChunk(size),
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
           if (event === 'data' || event === 'end') scheduleRead();

@@ -2425,6 +2425,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node file streams should expose common stream state properties: ${streamStateResult.stdout}`
   );
 
+  const streamReadResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"stream-read.txt\\", \\"abcdef\\"); const input = fs.createReadStream(\\"stream-read.txt\\"); const first = input.read(2); console.log(Buffer.isBuffer(first) + \\":\\" + first.toString() + \\":\\" + input.readableLength + \\":\\" + input.readableEnded); input.setEncoding(\\"utf8\\"); const chunks = []; await new Promise((resolve, reject) => input.on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(typeof chunk + \\":\\" + chunk)).on(\\"end\\", resolve)); console.log(chunks.join(\\"|\\")); console.log(input.readableEnded + \\":\\" + input.closed + \\":\\" + input.read());"',
+  ].join(' '));
+  assertCondition(streamReadResult.exitCode === 0, `browser node stream read workflow should succeed: ${streamReadResult.stderr}`);
+  assertCondition(
+    streamReadResult.stdout === 'true:ab:4:false\nstring:cdef\ntrue:true:null\n',
+    `browser node readable file streams should support pull reads and event reads on the same cursor: ${streamReadResult.stdout}`
+  );
+
   const streamListenerAliasResult = await workspace.runCommand([
     'node',
     '-e',
