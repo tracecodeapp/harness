@@ -2896,6 +2896,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node createWriteStream should emit live file mutations: ${JSON.stringify(streamEvents)}`
   );
 
+  const streamOverwriteResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const write = (path, options, chunks) => new Promise((resolve, reject) => { const out = fs.createWriteStream(path, options); out.on(\\"error\\", reject); out.on(\\"finish\\", resolve); for (const chunk of chunks.slice(0, -1)) out.write(chunk); out.end(chunks.at(-1)); }); fs.writeFileSync(\\"stream-rplus.txt\\", \\"abcdef\\"); await write(\\"stream-rplus.txt\\", { flags: \\"r+\\" }, [\\"XY\\", \\"Z\\"]); fs.writeFileSync(\\"stream-start.txt\\", \\"abcdef\\"); await write(\\"stream-start.txt\\", { flags: \\"r+\\", start: 2 }, [\\"XY\\"]); fs.writeFileSync(\\"stream-append.txt\\", \\"abcdef\\"); await write(\\"stream-append.txt\\", { flags: \\"a+\\" }, [\\"XY\\"]); console.log(fs.readFileSync(\\"stream-rplus.txt\\", \\"utf8\\")); console.log(fs.readFileSync(\\"stream-start.txt\\", \\"utf8\\")); console.log(fs.readFileSync(\\"stream-append.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(streamOverwriteResult.exitCode === 0, `browser node overwrite stream workflow should succeed: ${streamOverwriteResult.stderr}`);
+  assertCondition(
+    streamOverwriteResult.stdout === 'XYZdef\nabXYef\nabcdefXY\n',
+    `browser node write streams should respect overwrite, start, and append cursors: ${streamOverwriteResult.stdout}`
+  );
+
   const streamSetEncodingResult = await workspace.runCommand([
     'node',
     '-e',

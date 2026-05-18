@@ -2103,7 +2103,7 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const createWritableStream = (
       path: unknown,
-      options?: string | { autoClose?: boolean; encoding?: string | null; fd?: number; flags?: string } | null
+      options?: string | { autoClose?: boolean; encoding?: string | null; fd?: number; flags?: string; start?: number } | null
     ) => {
       const events = createEventTarget();
       const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
@@ -2115,7 +2115,7 @@ async function runBrowserJavaScriptProjectRequest(
             ...parsed,
             writable: true,
             create: true,
-            truncate: !parsed.append,
+            truncate: parsed.truncate,
           }, kernelDevices)
         : null;
       if (openTarget?.kind === 'error') {
@@ -2132,7 +2132,7 @@ async function runBrowserJavaScriptProjectRequest(
       if (normalized !== null) {
         assertWorkspaceFileWritePath(normalized, path, 'open');
       }
-      if (normalized !== null && !flags.includes('a')) {
+      if (normalized !== null && parsed.truncate) {
         setFileBytes(normalized, new Uint8Array());
       }
       let closed = false;
@@ -2141,6 +2141,9 @@ async function runBrowserJavaScriptProjectRequest(
       let writableEnded = false;
       let writableFinished = false;
       let writableCorked = 0;
+      let writeOffset = typeof options === 'object' && typeof options?.start === 'number'
+        ? Math.max(0, options.start)
+        : 0;
       const writeBytes = (value: unknown, writeEncoding?: string): number => {
         if (writableEnded) {
           throw Object.assign(new Error('ERR_STREAM_WRITE_AFTER_END: write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' });
@@ -2160,10 +2163,12 @@ async function runBrowserJavaScriptProjectRequest(
           return bytes.byteLength;
         }
         const previous = fileStore.get(normalized ?? '') ?? new Uint8Array();
-        const combined = new Uint8Array(previous.byteLength + bytes.byteLength);
-        combined.set(previous, 0);
-        combined.set(bytes, previous.byteLength);
-        setFileBytes(normalized ?? '', combined);
+        const start = parsed.append ? previous.byteLength : writeOffset;
+        const next = new Uint8Array(Math.max(previous.byteLength, start + bytes.byteLength));
+        next.set(previous, 0);
+        next.set(bytes, start);
+        setFileBytes(normalized ?? '', next);
+        writeOffset = start + bytes.byteLength;
         bytesWritten += bytes.byteLength;
         return bytes.byteLength;
       };
