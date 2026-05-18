@@ -21,6 +21,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelWriteTarget,
   runtimeProcCanMutate,
@@ -165,6 +166,12 @@ function runtimeMutationTarget(path: unknown): ReturnType<typeof runtimeKernelMu
   return runtimeKernelMutationTarget(raw);
 }
 
+function runtimeMetadataTarget(path: unknown): ReturnType<typeof runtimeKernelMetadataTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelMetadataTarget(raw);
+}
+
 function throwRuntimeWriteTargetError(
   target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>,
   message: string
@@ -192,6 +199,16 @@ function throwRuntimeMutationTargetError(
     throw Object.assign(new Error(message), { code: 'ENOENT' });
   }
   throw Object.assign(new Error(message), { code: 'EROFS' });
+}
+
+function throwRuntimeMetadataTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelMetadataTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  if (target.reason === 'proc-read-only') {
+    throw Object.assign(new Error(message), { code: 'EROFS' });
+  }
+  throw Object.assign(new Error(message), { code: 'ENOENT' });
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
@@ -2192,8 +2209,14 @@ async function runBrowserJavaScriptProjectRequest(
       notifyWatchFileWatchers(path);
     };
     const metadataPathForEntry = (path: unknown): string | null => {
-      if (normalizeRuntimeDevicePath(path)) return null;
-      assertRuntimeProcMutablePath(path, `EROFS: read-only file system, metadata '${path}'`);
+      const metadataTarget = runtimeMetadataTarget(path);
+      if (metadataTarget?.kind === 'ignored-device') return null;
+      if (metadataTarget?.kind === 'error') {
+        const message = metadataTarget.reason === 'proc-read-only'
+          ? `EROFS: read-only file system, metadata '${path}'`
+          : `ENOENT: no such file or directory, metadata '${path}'`;
+        throwRuntimeMetadataTargetError(metadataTarget, message);
+      }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
@@ -3377,7 +3400,15 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       truncateSync: (path: unknown, length = 0) => {
-        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, truncate '${path}'`);
+        const mutationTarget = runtimeMutationTarget(path);
+        if (mutationTarget?.kind === 'error') {
+          const message = mutationTarget.reason === 'device-not-found'
+            ? `ENOENT: no such file or directory, truncate '${path}'`
+            : mutationTarget.reason === 'proc-read-only'
+              ? `EROFS: read-only file system, truncate '${path}'`
+              : `EROFS: read-only file system, truncate '${path}'`;
+          throwRuntimeMutationTargetError(mutationTarget, message);
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         truncateFileBytes(normalized, length);
         return undefined;

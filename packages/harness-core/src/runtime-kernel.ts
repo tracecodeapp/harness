@@ -16,6 +16,10 @@ export type RuntimeKernelWriteTarget =
 export type RuntimeKernelMutationTarget =
   | { kind: 'workspace' }
   | { kind: 'error'; reason: 'proc-read-only' | 'device-read-only' | 'device-not-found'; path: string };
+export type RuntimeKernelMetadataTarget =
+  | { kind: 'workspace' }
+  | { kind: 'ignored-device'; path: '/dev' | RuntimeKernelDevicePath }
+  | { kind: 'error'; reason: 'proc-read-only' | 'device-not-found'; path: string };
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -146,6 +150,18 @@ export function runtimeKernelMutationTarget(path: string): RuntimeKernelMutation
     return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
   }
   return { kind: 'error', reason: 'device-read-only', path: virtualPath.path };
+}
+
+export function runtimeKernelMetadataTarget(path: string): RuntimeKernelMetadataTarget {
+  const virtualPath = classifyRuntimeKernelVirtualPath(path);
+  if (virtualPath === null) return { kind: 'workspace' };
+  if (virtualPath.kind === 'proc') {
+    return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device-namespace') {
+    return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
+  }
+  return { kind: 'ignored-device', path: virtualPath.path };
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {

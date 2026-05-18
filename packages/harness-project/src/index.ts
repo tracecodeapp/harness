@@ -17,6 +17,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelWriteTarget,
   readRuntimeProcFile,
@@ -277,6 +278,19 @@ function throwKernelMutationTargetError(
   if (target.reason === 'proc-read-only') throw new Error(`Kernel proc path is read-only: ${path}`);
   if (target.reason === 'device-not-found') throw new Error(`Kernel device path not found: ${path}`);
   throw new Error(deviceMessage);
+}
+
+function kernelMetadataTarget(path: string): ReturnType<typeof runtimeKernelMetadataTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelMetadataTarget(path);
+}
+
+function throwKernelMetadataTargetError(
+  path: string,
+  target: Extract<ReturnType<typeof runtimeKernelMetadataTarget>, { kind: 'error' }>
+): never {
+  if (target.reason === 'proc-read-only') throw new Error(`Kernel proc path is read-only: ${path}`);
+  throw new Error(`Kernel device path not found: ${path}`);
 }
 
 function mapWorkspaceAlias(workspaceRoot: string, workspaceAlias: string | undefined, absolutePath: string): string {
@@ -757,7 +771,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   chmod(path: string, mode: number): Promise<void> {
-    if (isDevNamespacePath(path)) return Promise.resolve();
+    const metadataTarget = kernelMetadataTarget(path);
+    if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
+    if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
     return this.base.chmod(this.mapPath(path), mode);
   }
 
@@ -791,7 +807,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   utimes(path: string, atime: Date, mtime: Date): Promise<void> {
-    if (isDevNamespacePath(path)) return Promise.resolve();
+    const metadataTarget = kernelMetadataTarget(path);
+    if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
+    if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
     return this.base.utimes(this.mapPath(path), atime, mtime);
   }
 
