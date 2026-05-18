@@ -1214,10 +1214,37 @@ def _emit_path_snapshot_for_absolute(_absolute_path):
         for _filename in sorted(_filenames):
             _emit_file_change_for_absolute(os.path.join(_dirpath, _filename))
 
+class _TraceProjectBinaryBuffer:
+    def __init__(self, _text_stream):
+        self._text_stream = _text_stream
+        self.closed = False
+
+    def write(self, _value):
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        _data = _value if isinstance(_value, (bytes, bytearray)) else bytes(_value)
+        self._text_stream.write(bytes(_data).decode("utf-8", "replace"))
+        return len(_data)
+
+    def flush(self):
+        return self._text_stream.flush()
+
+    def close(self):
+        self.closed = True
+
+    def writable(self):
+        return True
+
+
 class _TraceProjectStream(io.StringIO):
     def __init__(self, _stream):
         super().__init__()
         self._stream = _stream
+        self._binary_buffer = _TraceProjectBinaryBuffer(self)
+
+    @property
+    def buffer(self):
+        return self._binary_buffer
 
     def write(self, _value, _source_device=None):
         _text = str(_value)

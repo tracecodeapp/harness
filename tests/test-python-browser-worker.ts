@@ -210,6 +210,8 @@ async function main(): Promise<void> {
             'sys.__stdout__.write("provider-hook-out\\\\n")',
             'sys.__stdout__.writelines(["provider-hook-lines", "\\\\n"])',
             'sys.__stdout__.flush()',
+            'sys.stdout.buffer.write(b"stdout-buffer\\\\n")',
+            'sys.stdout.flush()',
             'stderr_fd = os.open("/dev/stderr", os.O_WRONLY)',
             'try:',
             '    os.write(stderr_fd, b"dev-fd-err\\\\n")',
@@ -217,6 +219,8 @@ async function main(): Promise<void> {
             '    os.close(stderr_fd)',
             'sys.__stderr__.write("provider-hook-err\\\\n")',
             'sys.__stderr__.flush()',
+            'sys.stderr.buffer.write(b"stderr-buffer\\\\n")',
+            'sys.stderr.flush()',
             'print("stderr-line", file=sys.stderr)',
             'with open("/workspace/generated.txt", "w", encoding="utf-8") as handle:',
             '    handle.write(str(answer()) + "\\\\n")',
@@ -685,11 +689,11 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-write-open:blocked\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-file-log-read-open:blocked\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nafter-live-file\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-write-open:blocked\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-file-log-read-open:blocked\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nstdout-buffer\nafter-live-file\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
-      results.fileRun.stderr === 'dev-file-log\ndev-file-log-binary\ndev-fd-log\ndev-fd-err\nprovider-hook-err\nstderr-line\n',
+      results.fileRun.stderr === 'dev-file-log\ndev-file-log-binary\ndev-fd-log\ndev-fd-err\nprovider-hook-err\nstderr-buffer\nstderr-line\n',
       `Python project file stderr should match workspace semantics: ${JSON.stringify(results.fileRun.stderr)}`
     );
     assertCondition(
