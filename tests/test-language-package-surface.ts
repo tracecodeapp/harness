@@ -247,6 +247,22 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(fileStat.isFile(), `${packageCheck.name} extracted file should exist at ${relativePath}`);
     }
 
+    if (packageCheck.name === '@tracecode/harness-core') {
+      const declarations = await readFile(join(packageDir, 'dist/index.d.ts'), 'utf8');
+      assertCondition(
+        declarations.includes('interface RuntimeDirectoryChange') &&
+          declarations.includes('type RuntimeFileChange = RuntimeFile | RuntimeFileDeletion | RuntimeDirectoryChange'),
+        '@tracecode/harness-core declarations should ship directory file-change events'
+      );
+    }
+    if (packageCheck.name === '@tracecode/harness-project') {
+      const projectDist = await readFile(join(packageDir, 'dist/index.js'), 'utf8');
+      assertCondition(
+        projectDist.includes('function isRuntimeDirectoryChange(') &&
+          projectDist.includes('directory: true'),
+        '@tracecode/harness-project should ship directory file-change application support'
+      );
+    }
     if (packageCheck.name === '@tracecode/harness-python') {
       const worker = await readFile(join(packageDir, 'workers/pyodide-worker.js'), 'utf8');
       assertCondition(
@@ -277,6 +293,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectBrowser.includes('io.output(stream, data, device, sourceDevice)') &&
           projectBrowser.includes('device !== outputDevice ? device :'),
         '@tracecode/harness-javascript browser project runner should ship routed source device output events'
+      );
+      assertCondition(
+        projectBrowser.includes('io.fileChange({ path, directory: true }, "live")') &&
+          projectBrowser.includes('io.fileChange({ path, directory: true, deleted: true }, "live")'),
+        '@tracecode/harness-javascript browser project runner should ship live directory mutation events'
       );
     }
     if (packageCheck.name === '@tracecode/harness-java') {

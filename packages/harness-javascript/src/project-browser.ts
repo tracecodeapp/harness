@@ -1726,12 +1726,22 @@ async function runBrowserJavaScriptProjectRequest(
       notifyFsWatchers('rename', path);
       notifyWatchFileWatchers(path);
     };
+    const emitDirectoryCreate = (path: string): void => {
+      if (!path) return;
+      io.fileChange({ path, directory: true }, 'live');
+    };
+    const emitDirectoryDelete = (path: string): void => {
+      if (!path) return;
+      io.fileChange({ path, directory: true, deleted: true }, 'live');
+    };
     const setFileBytes = (path: string, bytes: Uint8Array): void => {
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index += 1) {
         const directoryPath = parts.slice(0, index).join('/');
+        const existed = directoryStore.has(directoryPath);
         directoryStore.add(directoryPath);
         if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
+        if (!existed) emitDirectoryCreate(directoryPath);
       }
       fileStore.set(path, bytes);
       touchEntryMetadata(path);
@@ -2437,14 +2447,18 @@ async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, cp '${source}'`), { code: 'EISDIR' });
       }
 
+      const destinationDirectoryExisted = directoryStore.has(normalizedDestination);
       directoryStore.add(normalizedDestination);
+      if (!destinationDirectoryExisted) emitDirectoryCreate(normalizedDestination);
       for (const directoryPath of descendantDirectories) {
         const relative = directoryPath === normalizedSource ? '' : directoryPath.slice(sourcePrefix.length);
         const nextDirectory = relative ? `${normalizedDestination}/${relative}` : normalizedDestination;
         if (options.filter && !options.filter(workspaceFilename(directoryPath, workspaceRoot), workspaceFilename(nextDirectory, workspaceRoot))) {
           continue;
         }
+        const existed = directoryStore.has(nextDirectory);
         directoryStore.add(nextDirectory);
+        if (!existed) emitDirectoryCreate(nextDirectory);
       }
       for (const [filePath, bytes] of descendantFiles) {
         const relative = filePath.slice(sourcePrefix.length);
@@ -3214,6 +3228,7 @@ async function runBrowserJavaScriptProjectRequest(
               if (directoryPath === normalized || directoryPath.startsWith(prefix)) {
                 directoryStore.delete(directoryPath);
                 deleteEntryMetadata(directoryPath);
+                emitDirectoryDelete(directoryPath);
                 notifyDirectoryMutation(directoryPath);
               }
             }
@@ -3222,6 +3237,7 @@ async function runBrowserJavaScriptProjectRequest(
           if (directoryStore.has(normalized)) {
             directoryStore.delete(normalized);
             deleteEntryMetadata(normalized);
+            emitDirectoryDelete(normalized);
             notifyDirectoryMutation(normalized);
             return;
           }
@@ -3486,7 +3502,10 @@ async function runBrowserJavaScriptProjectRequest(
           const existed = directoryStore.has(directoryPath);
           directoryStore.add(directoryPath);
           if (!entryMetadata.has(directoryPath)) touchEntryMetadata(directoryPath);
-          if (!existed) notifyDirectoryMutation(directoryPath);
+          if (!existed) {
+            emitDirectoryCreate(directoryPath);
+            notifyDirectoryMutation(directoryPath);
+          }
         }
         return undefined;
       },
@@ -3543,6 +3562,7 @@ async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, rmdir '${path}'`), { code: 'ENOENT' });
         }
         deleteEntryMetadata(normalized);
+        emitDirectoryDelete(normalized);
         notifyDirectoryMutation(normalized);
       },
       rmdir: (path: unknown, callback?: (error?: Error | null) => void) => {

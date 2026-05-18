@@ -57,6 +57,7 @@ import type {
   RuntimeFile,
   RuntimeFileChange,
   RuntimeFileDeletion,
+  RuntimeDirectoryChange,
   RuntimeFileEncoding,
   RuntimeKernelHostConfig,
   RuntimeKernelHostInfo,
@@ -446,6 +447,10 @@ function toWorkspaceRelativePath(cwd: string, path: string, workspaceAlias?: str
   return relativePath;
 }
 
+function isRuntimeDirectoryChange(change: RuntimeFileChange): change is RuntimeDirectoryChange {
+  return (change as RuntimeDirectoryChange).directory === true;
+}
+
 function resolveWorkspaceContextPath(
   ctx: CommandContext,
   workspaceRoot: string,
@@ -707,14 +712,19 @@ class KernelObservedFileSystem implements IFileSystem {
     return this.base.stat(this.mapPath(path));
   }
 
-  mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
+  async mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
     const mutationTarget = kernelMutationTarget(path);
     if (mutationTarget.kind === 'error') return Promise.reject(new Error(
       mutationTarget.reason === 'proc-read-only'
         ? `Kernel proc path is read-only: ${path}`
         : `Kernel device namespace is read-only: ${path}`
     ));
-    return this.base.mkdir(this.mapPath(path), options);
+    const mappedPath = this.mapPath(path);
+    const createdDirectories = await this.collectMissingDirectories(mappedPath);
+    await this.base.mkdir(mappedPath, options);
+    for (const directoryPath of createdDirectories) {
+      this.emitDirectoryCreate(directoryPath);
+    }
   }
 
   readdir(path: string): Promise<string[]> {
@@ -756,9 +766,13 @@ class KernelObservedFileSystem implements IFileSystem {
     if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
     const mappedPath = this.mapPath(path);
     const deletedFiles = await this.collectExistingFiles(mappedPath);
+    const deletedDirectories = await this.collectExistingDirectories(mappedPath);
     await this.base.rm(mappedPath, options);
     for (const deletedPath of deletedFiles) {
       this.emitFileDelete(deletedPath);
+    }
+    for (const deletedPath of deletedDirectories) {
+      this.emitDirectoryDelete(deletedPath);
     }
   }
 
@@ -778,6 +792,7 @@ class KernelObservedFileSystem implements IFileSystem {
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     await this.base.cp(mappedSource, mappedDestination, options);
+    await this.emitExistingDirectories(mappedDestination);
     await this.emitExistingFiles(mappedDestination);
   }
 
@@ -816,10 +831,15 @@ class KernelObservedFileSystem implements IFileSystem {
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     const deletedFiles = await this.collectExistingFiles(mappedSource);
+    const deletedDirectories = await this.collectExistingDirectories(mappedSource);
     await this.base.mv(mappedSource, mappedDestination);
+    await this.emitExistingDirectories(mappedDestination);
     await this.emitExistingFiles(mappedDestination);
     for (const deletedPath of deletedFiles) {
       this.emitFileDelete(deletedPath);
+    }
+    for (const deletedPath of deletedDirectories) {
+      this.emitDirectoryDelete(deletedPath);
     }
   }
 
@@ -900,6 +920,26 @@ class KernelObservedFileSystem implements IFileSystem {
     }
   }
 
+  private async emitExistingDirectories(path: string): Promise<void> {
+    for (const directoryPath of await this.collectExistingDirectories(path)) {
+      this.emitDirectoryCreate(directoryPath);
+    }
+  }
+
+  private async collectMissingDirectories(path: string): Promise<string[]> {
+    const root = this.workspaceRoot();
+    if (!isWithinWorkspace(root, path)) return [];
+    if (path === root) return [];
+    const relativeParts = toProjectPath(root, path).split('/').filter(Boolean);
+    const missing: string[] = [];
+    let current = root;
+    for (const part of relativeParts) {
+      current = `${current}/${part}`;
+      if (!(await this.base.exists(current))) missing.push(current);
+    }
+    return missing;
+  }
+
   private async collectExistingFiles(path: string): Promise<string[]> {
     if (!isWithinWorkspace(this.workspaceRoot(), path) || !(await this.base.exists(path))) return [];
     const stat = await this.base.stat(path);
@@ -910,6 +950,18 @@ class KernelObservedFileSystem implements IFileSystem {
       files.push(...await this.collectExistingFiles(`${path}/${entry}`));
     }
     return files;
+  }
+
+  private async collectExistingDirectories(path: string): Promise<string[]> {
+    if (!isWithinWorkspace(this.workspaceRoot(), path) || !(await this.base.exists(path))) return [];
+    const stat = await this.base.stat(path);
+    if (!stat.isDirectory) return [];
+    const directories: string[] = [];
+    for (const entry of await this.base.readdir(path)) {
+      directories.push(...await this.collectExistingDirectories(`${path}/${entry}`));
+    }
+    directories.push(path);
+    return directories.filter((directoryPath) => directoryPath !== this.workspaceRoot());
   }
 
   private async emitFileWrite(path: string): Promise<void> {
@@ -926,6 +978,16 @@ class KernelObservedFileSystem implements IFileSystem {
   private emitFileDelete(path: string): void {
     if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path)) return;
     this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), deleted: true });
+  }
+
+  private emitDirectoryCreate(path: string): void {
+    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
+    this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), directory: true });
+  }
+
+  private emitDirectoryDelete(path: string): void {
+    if (this.suspendDepth > 0 || !isWithinWorkspace(this.workspaceRoot(), path) || path === this.workspaceRoot()) return;
+    this.onFileChange({ path: toProjectPath(this.workspaceRoot(), path), directory: true, deleted: true });
   }
 
   private readDeviceFile(device: '/dev' | RuntimeKernelDevicePath, options?: FsReadFileOptions): string {
@@ -2570,7 +2632,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async mkdir(path: string): Promise<void> {
     const mutationTarget = kernelMutationTarget(path);
     if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
-    await this.bash.fs.mkdir(this.toWorkspaceEntryPath(path), { recursive: true });
+    const absolutePath = this.toWorkspaceEntryPath(path);
+    const createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
+    await this.bash.fs.mkdir(absolutePath, { recursive: true });
+    for (const relativePath of createdDirectories) {
+      this.emitRuntimeEvent({
+        type: 'file-change',
+        change: { path: relativePath, directory: true },
+        phase: 'live',
+        actor: PRINCIPAL_ACTOR,
+      });
+    }
   }
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
@@ -2654,15 +2726,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
     const mutationTarget = kernelMutationTarget(path);
     if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
-    const deletedFiles = await this.collectDeletedFilesForRemove(path, options);
+    const deletedChanges = await this.collectDeletedChangesForRemove(path, options);
     await this.bash.fs.rm(this.toWorkspaceEntryPath(path), {
       force: options.force ?? true,
       recursive: options.recursive,
     });
-    for (const deletedPath of deletedFiles) {
+    for (const change of deletedChanges) {
       this.emitRuntimeEvent({
         type: 'file-change',
-        change: { path: deletedPath, deleted: true },
+        change,
         phase: 'live',
         actor: PRINCIPAL_ACTOR,
       });
@@ -2889,7 +2961,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       if (mutationTarget.kind === 'error') {
         throwKernelMutationTargetError(change.path, mutationTarget, `Kernel device namespace is not a file-change target: ${change.path}`);
       }
-      const absolutePath = this.toWorkspacePath(change.path);
+      const absolutePath = this.toWorkspaceEntryPath(change.path);
+      if (isRuntimeDirectoryChange(change)) {
+        if (change.deleted === true) {
+          await this.bash.fs.rm(absolutePath, { force: true, recursive: true });
+          return;
+        }
+        await this.bash.fs.mkdir(absolutePath, { recursive: true });
+        return;
+      }
       if ((change as RuntimeFileDeletion).deleted === true) {
         await this.bash.fs.rm(absolutePath, { force: true });
         return;
@@ -2947,20 +3027,44 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private async collectDeletedFilesForRemove(
+  private async collectMissingWorkspaceDirectories(absolutePath: string): Promise<string[]> {
+    if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return [];
+    const relativeParts = toProjectPath(this.cwd, absolutePath).split('/').filter(Boolean);
+    const missing: string[] = [];
+    let current = this.cwd;
+    for (const part of relativeParts) {
+      current = `${current}/${part}`;
+      if (!(await this.bash.fs.exists(current))) missing.push(toProjectPath(this.cwd, current));
+    }
+    return missing;
+  }
+
+  private async collectDeletedChangesForRemove(
     path: string,
     options: RuntimeWorkspaceRemoveOptions
-  ): Promise<string[]> {
+  ): Promise<RuntimeFileChange[]> {
     const absolutePath = this.toWorkspaceEntryPath(path);
     if (!(await this.bash.fs.exists(absolutePath))) return [];
     const stat = await this.bash.fs.stat(absolutePath);
-    if (stat.isFile) return [toProjectPath(this.cwd, absolutePath)];
+    if (stat.isFile) return [{ path: toProjectPath(this.cwd, absolutePath), deleted: true }];
     if (!stat.isDirectory || !options.recursive) return [];
 
     const files: RuntimeFile[] = [];
     const directories: string[] = [];
     await collectSnapshotFiles(this.bash.fs, this.cwd, absolutePath, files, directories);
-    return files.map((file) => file.path);
+    const directoryPath = toProjectDirectoryPath(this.cwd, absolutePath);
+    const deletedDirectories = [
+      ...directories,
+      ...(directoryPath ? [directoryPath] : []),
+    ].sort((left, right) => right.localeCompare(left));
+    return [
+      ...files.map((file): RuntimeFileDeletion => ({ path: file.path, deleted: true })),
+      ...deletedDirectories.map((deletedPath): RuntimeDirectoryChange => ({
+        path: deletedPath,
+        directory: true,
+        deleted: true,
+      })),
+    ];
   }
 
   private async collectFiles(absolutePath: string, files: RuntimeFile[], directories: string[]): Promise<void> {

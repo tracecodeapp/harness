@@ -309,10 +309,13 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
     (await workspace.readDir('/workspace/src/nested')).join(',') === 'value.txt',
     'readDir should list absolute virtual directory entries'
   );
+  const directoryEvents: RuntimeWorkspaceEvent[] = [];
+  const unsubscribeDirectoryEvents = workspace.watch((event) => directoryEvents.push(event));
   await workspace.mkdir('src/created/deep');
   await workspace.mkdir('/workspace/src/absolute-created');
   await workspace.mkdir('src/persist-empty/deep');
   await workspace.mkdir('.');
+  unsubscribeDirectoryEvents();
   const createdStat = await workspace.stat('src/created/deep');
   assertCondition(!createdStat.isFile && createdStat.isDirectory, 'mkdir should create recursive relative directories');
   const absoluteCreatedStat = await workspace.stat('/workspace/src/absolute-created');
@@ -320,6 +323,21 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
   assertCondition(
     (await workspace.readDir('src/created')).join(',') === 'deep',
     'mkdir should make created directories visible to readDir'
+  );
+  assertCondition(
+    directoryEvents.some((event) =>
+      event.type === 'file-change' &&
+        event.change.path === 'src/created' &&
+        'directory' in event.change &&
+        event.change.directory === true
+    ) &&
+      directoryEvents.some((event) =>
+        event.type === 'file-change' &&
+          event.change.path === 'src/created/deep' &&
+          'directory' in event.change &&
+          event.change.directory === true
+      ),
+    `workspace mkdir should stream live directory mutations: ${JSON.stringify(directoryEvents)}`
   );
   await workspace.copyFile('src/hello.txt', 'src/copied/hello-copy.txt');
   assertCondition(await workspace.readFile('src/copied/hello-copy.txt') === 'hello\n', 'copyFile should copy text files');
@@ -357,8 +375,28 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
     () => workspace.remove('src/created'),
     'remove should reject non-empty directories without recursive mode'
   );
+  const directoryDeleteEvents: RuntimeWorkspaceEvent[] = [];
+  const unsubscribeDirectoryDeleteEvents = workspace.watch((event) => directoryDeleteEvents.push(event));
   await workspace.remove('src/created', { recursive: true });
+  unsubscribeDirectoryDeleteEvents();
   assertCondition(!(await workspace.exists('src/created/deep')), 'remove should recursively delete relative directories');
+  assertCondition(
+    directoryDeleteEvents.some((event) =>
+      event.type === 'file-change' &&
+        event.change.path === 'src/created/deep' &&
+        'directory' in event.change &&
+        event.change.directory === true &&
+        event.change.deleted === true
+    ) &&
+      directoryDeleteEvents.some((event) =>
+        event.type === 'file-change' &&
+          event.change.path === 'src/created' &&
+          'directory' in event.change &&
+          event.change.directory === true &&
+          event.change.deleted === true
+      ),
+    `workspace remove should stream live directory deletions: ${JSON.stringify(directoryDeleteEvents)}`
+  );
   await workspace.remove('/workspace/src/absolute-created', { recursive: true });
   assertCondition(!(await workspace.exists('/workspace/src/absolute-created')), 'remove should recursively delete absolute virtual directories');
   await workspace.remove('src/missing-remove');
@@ -1876,7 +1914,13 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   });
 
   const result = await runner({
-    code: 'const fs = require("node:fs"); fs.writeFileSync("live-js.txt", "live\\n"); console.log("after-live");',
+    code: [
+      'const fs = require("node:fs");',
+      'fs.mkdirSync("live-dir/nested", { recursive: true });',
+      'fs.writeFileSync("live-dir/nested/live-js.txt", "live\\n");',
+      'fs.rmSync("live-dir", { recursive: true });',
+      'console.log("after-live");',
+    ].join(' '),
     source: 'argument',
     args: [],
     cwd: '/workspace',
@@ -1892,15 +1936,17 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
   assertCondition(result.exitCode === 0, `browser node applyFileChange hook command should succeed: ${result.stderr}`);
   assertCondition(result.stdout === 'after-live\n', `browser node applyFileChange hook should preserve stdout: ${result.stdout}`);
   assertCondition(
-    appliedChanges.includes('live:live-js.txt'),
-    `browser node applyFileChange hook should receive live mutations: ${JSON.stringify(appliedChanges)}`
+    appliedChanges.includes('live:live-dir') &&
+      appliedChanges.includes('live:live-dir/nested') &&
+      appliedChanges.includes('live:live-dir/nested/live-js.txt'),
+    `browser node applyFileChange hook should receive live file and directory mutations: ${JSON.stringify(appliedChanges)}`
   );
   assertCondition(
     events.some((event) => event.type === 'output' && event.data === 'after-live\n'),
     `browser node applyFileChange hook should preserve later output events: ${JSON.stringify(events)}`
   );
   assertCondition(
-    !events.some((event) => event.type === 'file-change' && event.change.path === 'live-js.txt'),
+    !events.some((event) => event.type === 'file-change' && event.change.path.startsWith('live-dir')),
     `browser node applyFileChange hook should support suppressing duplicate file-change events: ${JSON.stringify(events)}`
   );
 
@@ -5828,6 +5874,7 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   const liveReadPromises: Promise<string>[] = [];
   const liveBinaryReadPromises: Promise<string>[] = [];
   const liveDeleteReadPromises: Promise<boolean>[] = [];
+  const liveDirectoryStatPromises: Promise<boolean>[] = [];
   let liveTextEventObservedBeforeRunnerReturn = false;
   const liveWorkspace = await createRuntimeWorkspace({
     files: [
@@ -5844,6 +5891,7 @@ async function testWorkspaceKernelEvents(): Promise<void> {
         event.change.path === 'live-runtime.txt'
       );
       request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'live-bytes.bin', contents: 'AP8=', encoding: 'base64' } });
+      request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'live-dir/nested', directory: true } });
       request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'stale-live.txt', deleted: true } });
       return { stdout: 'live-runner\n', stderr: '', exitCode: 0 };
     },
@@ -5856,6 +5904,9 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       }
       if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'live-bytes.bin') {
         liveBinaryReadPromises.push(liveWorkspace.readFile('live-bytes.bin', 'base64'));
+      }
+      if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'live-dir/nested') {
+        liveDirectoryStatPromises.push(liveWorkspace.stat('live-dir/nested').then((stat) => stat.isDirectory));
       }
       if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'stale-live.txt') {
         liveDeleteReadPromises.push(liveWorkspace.readFile('stale-live.txt').then(() => false, () => true));
@@ -5883,6 +5934,7 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   );
   assertCondition(await liveWorkspace.readFile('live-runtime.txt') === 'live-runtime\n', 'runtime live file-change events should update workspace files');
   assertCondition(await liveWorkspace.readFile('live-bytes.bin', 'base64') === 'AP8=', 'runtime live binary file-change events should update workspace files');
+  assertCondition((await liveWorkspace.stat('live-dir/nested')).isDirectory, 'runtime live directory-change events should update workspace directories');
   await assertRejectsAsync(() => liveWorkspace.readFile('stale-live.txt'), 'runtime live deletion events should update workspace files');
   assertCondition(
     (await Promise.all(liveReadPromises)).includes('live-runtime\n'),
@@ -5891,6 +5943,10 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   assertCondition(
     (await Promise.all(liveBinaryReadPromises)).includes('AP8='),
     `runtime live binary changes should be readable before onEvent returns: ${JSON.stringify(liveRuntimeEvents)}`
+  );
+  assertCondition(
+    (await Promise.all(liveDirectoryStatPromises)).includes(true),
+    `runtime live directory changes should be visible before onEvent returns: ${JSON.stringify(liveRuntimeEvents)}`
   );
   assertCondition(
     (await Promise.all(liveDeleteReadPromises)).includes(true),
@@ -5933,7 +5989,7 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   const shellCommandEvents: RuntimeCommandEvent[] = [];
   shellWorkspace.watch((event) => shellWatchEvents.push(event));
   const shellResult = await shellWorkspace.runCommand(
-    'printf "live\\n" > live.txt && printf "again\\n" >> live.txt && cp live.txt copied.txt && mv copied.txt moved.txt && rm live.txt',
+    'mkdir -p shell-dir/nested && printf "live\\n" > live.txt && printf "again\\n" >> live.txt && cp live.txt copied.txt && mv copied.txt moved.txt && rm live.txt && rmdir shell-dir/nested',
     { onEvent: (event) => shellCommandEvents.push(event) }
   );
   assertCondition(shellResult.exitCode === 0, `shell filesystem mutation command should succeed: ${shellResult.stderr}`);
@@ -5968,6 +6024,26 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       event.change.path === 'moved.txt'
     ),
     `runCommand onEvent should receive live shell filesystem mutations: ${JSON.stringify(shellCommandEvents)}`
+  );
+  assertCondition(
+    shellCommandEvents.some((event) =>
+      event.type === 'file-change' &&
+        event.actor?.kind === 'runtime' &&
+        event.phase === 'live' &&
+        event.change.path === 'shell-dir/nested' &&
+        'directory' in event.change &&
+        event.change.directory === true
+    ) &&
+      shellCommandEvents.some((event) =>
+        event.type === 'file-change' &&
+          event.actor?.kind === 'runtime' &&
+          event.phase === 'live' &&
+          event.change.path === 'shell-dir/nested' &&
+          'directory' in event.change &&
+          event.change.directory === true &&
+          event.change.deleted === true
+      ),
+    `runCommand onEvent should receive live shell directory mutations: ${JSON.stringify(shellCommandEvents)}`
   );
   shellWorkspace.dispose();
 

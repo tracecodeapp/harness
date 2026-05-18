@@ -11,7 +11,13 @@ export interface RuntimeFileDeletion {
   deleted: true;
 }
 
-export type RuntimeFileChange = RuntimeFile | RuntimeFileDeletion;
+export interface RuntimeDirectoryChange {
+  path: string;
+  directory: true;
+  deleted?: true;
+}
+
+export type RuntimeFileChange = RuntimeFile | RuntimeFileDeletion | RuntimeDirectoryChange;
 
 export type RuntimeWorkspaceActorKind = 'principal' | 'runtime' | 'system';
 
