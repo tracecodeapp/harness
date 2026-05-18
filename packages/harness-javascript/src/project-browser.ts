@@ -2316,6 +2316,13 @@ async function runBrowserJavaScriptProjectRequest(
       };
       return stream;
     };
+    const assertStreamRangeInteger = (name: 'start' | 'end', value: unknown): number | undefined => {
+      if (value === undefined) return undefined;
+      if (!Number.isInteger(value) || Number(value) < 0) {
+        throw Object.assign(new RangeError(`The value of "${name}" is out of range.`), { code: 'ERR_OUT_OF_RANGE' });
+      }
+      return Number(value);
+    };
     const deleteFile = (path: unknown): void => {
       const mutationTarget = runtimeMutationTarget(path);
       if (mutationTarget?.kind === 'error') {
@@ -3241,8 +3248,13 @@ async function runBrowserJavaScriptProjectRequest(
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
-        const start = typeof options === 'object' && typeof options?.start === 'number' ? Math.max(0, options.start) : 0;
-        const endInclusive = typeof options === 'object' && typeof options?.end === 'number' ? options.end : sourceBytes.byteLength - 1;
+        const requestedStart = typeof options === 'object' ? assertStreamRangeInteger('start', options?.start) : undefined;
+        const requestedEnd = typeof options === 'object' ? assertStreamRangeInteger('end', options?.end) : undefined;
+        if (requestedStart !== undefined && requestedEnd !== undefined && requestedEnd < requestedStart) {
+          throw Object.assign(new RangeError('The value of "start" is out of range.'), { code: 'ERR_OUT_OF_RANGE' });
+        }
+        const start = requestedStart ?? 0;
+        const endInclusive = requestedEnd ?? sourceBytes.byteLength - 1;
         const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
         return createReadableStream(
           sourceBytes.slice(start, Math.max(start, endInclusive + 1)),

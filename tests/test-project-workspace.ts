@@ -2929,6 +2929,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node readable file streams should support setEncoding: ${streamSetEncodingResult.stdout}`
   );
 
+  const streamRangeResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const read = (options) => new Promise((resolve) => { const chunks = []; let input; try { input = fs.createReadStream(\\"stream-range.txt\\", options); } catch (error) { resolve(\\"throw:\\" + error.code + \\":\\" + error.name); return; } input.on(\\"error\\", (error) => resolve(\\"error:\\" + error.code + \\":\\" + error.name)).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", () => resolve(Buffer.concat(chunks).toString(\\"utf8\\"))); }); fs.writeFileSync(\\"stream-range.txt\\", \\"abcdef\\"); console.log(await read({ start: 2, end: 3 })); console.log(await read({ start: 4, end: 2 })); console.log(await read({ start: -1 })); console.log(await read({ end: -1 })); console.log(await read({ start: 1.5 })); console.log(await read({ end: 2.5 }));"',
+  ].join(' '));
+  assertCondition(streamRangeResult.exitCode === 0, `browser node stream range workflow should succeed: ${streamRangeResult.stderr}`);
+  assertCondition(
+    streamRangeResult.stdout === 'cd\nthrow:ERR_OUT_OF_RANGE:RangeError\nthrow:ERR_OUT_OF_RANGE:RangeError\nthrow:ERR_OUT_OF_RANGE:RangeError\nthrow:ERR_OUT_OF_RANGE:RangeError\nthrow:ERR_OUT_OF_RANGE:RangeError\n',
+    `browser node readable file streams should validate ranges like Node: ${streamRangeResult.stdout}`
+  );
+
   const streamStateResult = await workspace.runCommand([
     'node',
     '-e',
