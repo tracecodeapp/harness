@@ -20,6 +20,15 @@ export type RuntimeKernelMetadataTarget =
   | { kind: 'workspace' }
   | { kind: 'ignored-device'; path: '/dev' | RuntimeKernelDevicePath }
   | { kind: 'error'; reason: 'proc-read-only' | 'device-not-found'; path: string };
+export interface RuntimeKernelAccessRequest {
+  read?: boolean;
+  write?: boolean;
+  execute?: boolean;
+}
+export type RuntimeKernelAccessTarget =
+  | { kind: 'workspace' }
+  | { kind: 'allowed'; path: string }
+  | { kind: 'denied'; reason: 'not-found' | 'permission-denied'; path: string };
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -162,6 +171,32 @@ export function runtimeKernelMetadataTarget(path: string): RuntimeKernelMetadata
     return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
   }
   return { kind: 'ignored-device', path: virtualPath.path };
+}
+
+export function runtimeKernelAccessTarget(path: string, request: RuntimeKernelAccessRequest = {}): RuntimeKernelAccessTarget {
+  const virtualPath = classifyRuntimeKernelVirtualPath(path);
+  if (virtualPath === null) return { kind: 'workspace' };
+  if (virtualPath.kind === 'device-namespace') {
+    return { kind: 'denied', reason: 'not-found', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device-directory') {
+    return request.write || request.execute
+      ? { kind: 'denied', reason: 'permission-denied', path: virtualPath.path }
+      : { kind: 'allowed', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device') {
+    const readable = runtimeDeviceCanRead(virtualPath.path);
+    const writable = runtimeDeviceCanWrite(virtualPath.path);
+    return (request.read && !readable) || (request.write && !writable) || request.execute
+      ? { kind: 'denied', reason: 'permission-denied', path: virtualPath.path }
+      : { kind: 'allowed', path: virtualPath.path };
+  }
+  if (!runtimeProcEntryKind(virtualPath.path)) {
+    return { kind: 'denied', reason: 'not-found', path: virtualPath.path };
+  }
+  return request.write || request.execute
+    ? { kind: 'denied', reason: 'permission-denied', path: virtualPath.path }
+    : { kind: 'allowed', path: virtualPath.path };
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {

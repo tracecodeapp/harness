@@ -17,6 +17,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelAccessTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelWriteTarget,
@@ -283,6 +284,11 @@ function throwKernelMutationTargetError(
 function kernelMetadataTarget(path: string): ReturnType<typeof runtimeKernelMetadataTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelMetadataTarget(path);
+}
+
+function kernelAccessTarget(path: string): ReturnType<typeof runtimeKernelAccessTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelAccessTarget(path);
 }
 
 function throwKernelMetadataTargetError(
@@ -648,8 +654,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   exists(path: string): Promise<boolean> {
-    if (normalizeDevPath(path) !== null) return Promise.resolve(true);
-    if (isDevNamespacePath(path)) return Promise.resolve(false);
+    const accessTarget = kernelAccessTarget(path);
+    if (accessTarget.kind === 'allowed') return Promise.resolve(true);
+    if (accessTarget.kind === 'denied') return Promise.resolve(false);
     return this.base.exists(this.mapPath(path));
   }
 
@@ -2462,18 +2469,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async exists(path: string): Promise<boolean> {
-    try {
-      const procStat = this.procStat(path);
-      if (procStat !== null) return true;
-    } catch {
-      return false;
-    }
-    try {
-      const deviceStat = this.deviceStat(path);
-      if (deviceStat !== null) return true;
-    } catch {
-      return false;
-    }
+    const accessTarget = kernelAccessTarget(path);
+    if (accessTarget.kind === 'allowed') return true;
+    if (accessTarget.kind === 'denied') return false;
     return this.bash.fs.exists(this.toWorkspaceEntryPath(path));
   }
 

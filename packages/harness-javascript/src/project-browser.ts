@@ -21,6 +21,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelAccessTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelWriteTarget,
@@ -170,6 +171,16 @@ function runtimeMetadataTarget(path: unknown): ReturnType<typeof runtimeKernelMe
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelMetadataTarget(raw);
+}
+
+function runtimeAccessTarget(path: unknown, mode: number): ReturnType<typeof runtimeKernelAccessTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelAccessTarget(raw, {
+    read: (mode & 4) !== 0,
+    write: (mode & 2) !== 0,
+    execute: (mode & 1) !== 0,
+  });
 }
 
 function throwRuntimeWriteTargetError(
@@ -2164,34 +2175,19 @@ async function runBrowserJavaScriptProjectRequest(
         || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix));
     };
     const assertFileSystemAccess = (path: unknown, mode: number = fsConstants.F_OK): void => {
-      const device = normalizeRuntimeDevicePath(path);
-      if (device) {
-        const requested = Number(mode) || fsConstants.F_OK;
-        const readable = runtimeDeviceCanRead(device);
-        const writable = runtimeDeviceCanWrite(device);
-        if (((requested & fsConstants.R_OK) !== 0 && !readable) || ((requested & fsConstants.W_OK) !== 0 && !writable)) {
-          throw Object.assign(new Error(`EACCES: permission denied, access '${path}'`), { code: 'EACCES' });
-        }
-        return;
-      }
-      const procPath = normalizeRuntimeProcPath(path);
-      if (procPath) {
-        const stats = statForProcPath(procPath);
-        if (!stats) {
-          throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
-        }
-        const requested = Number(mode) || fsConstants.F_OK;
-        if ((requested & fsConstants.W_OK) !== 0) {
-          throw Object.assign(new Error(`EACCES: permission denied, access '${path}'`), { code: 'EACCES' });
-        }
-        return;
+      const requested = Number(mode) || fsConstants.F_OK;
+      const accessTarget = runtimeAccessTarget(path, requested);
+      if (accessTarget?.kind === 'allowed') return;
+      if (accessTarget?.kind === 'denied') {
+        const code = accessTarget.reason === 'not-found' ? 'ENOENT' : 'EACCES';
+        const reason = accessTarget.reason === 'not-found' ? 'no such file or directory' : 'permission denied';
+        throw Object.assign(new Error(`${code}: ${reason}, access '${path}'`), { code });
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       const stats = statForNormalizedPath(normalized);
       if (!stats) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
       }
-      const requested = Number(mode) || fsConstants.F_OK;
       const permissionMode = stats.mode & 0o777;
       const readable = (permissionMode & 0o444) !== 0;
       const writable = (permissionMode & 0o222) !== 0;
@@ -3172,9 +3168,9 @@ async function runBrowserJavaScriptProjectRequest(
       },
       existsSync: (path: unknown) => {
         try {
-          if (normalizeRuntimeDeviceNamespacePath(path)) return true;
-          const procPath = normalizeRuntimeProcPath(path);
-          if (procPath) return procEntryKind(procPath) !== null;
+          const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK);
+          if (accessTarget?.kind === 'allowed') return true;
+          if (accessTarget?.kind === 'denied') return false;
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           const prefix = normalized ? `${normalized}/` : '';
           return fileStore.has(normalized)
