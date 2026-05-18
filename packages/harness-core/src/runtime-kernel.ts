@@ -1,8 +1,9 @@
-import type { RuntimeKernelInfo } from './runtime-project';
+import type { RuntimeKernelDevicePath, RuntimeKernelInfo } from './runtime-project';
 
 export type RuntimeKernelProcEntryKind = 'file' | 'directory';
+export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['stderr', 'stdin', 'stdout', 'tty'] as const;
 
-export function normalizeRuntimeProcPath(path: string): string | null {
+function normalizeRuntimeAbsolutePath(path: string): string | null {
   const raw = path.replace(/\\/g, '/');
   if (!raw.startsWith('/')) return null;
   const parts: string[] = [];
@@ -11,8 +12,33 @@ export function normalizeRuntimeProcPath(path: string): string | null {
     if (part === '..') parts.pop();
     else parts.push(part);
   }
-  const normalized = `/${parts.join('/')}`.replace(/\/+$/, '') || '/';
+  return `/${parts.join('/')}`.replace(/\/+$/, '') || '/';
+}
+
+export function normalizeRuntimeProcPath(path: string): string | null {
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  if (normalized === null) return null;
   return normalized === '/proc' || normalized.startsWith('/proc/') ? normalized : null;
+}
+
+export function normalizeRuntimeDevicePath(path: string): '/dev' | RuntimeKernelDevicePath | null {
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  if (normalized === null) return null;
+  if (normalized === '/dev') return '/dev';
+  if (
+    normalized === '/dev/stdin' ||
+    normalized === '/dev/stdout' ||
+    normalized === '/dev/stderr' ||
+    normalized === '/dev/tty'
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+export function isRuntimeDeviceNamespacePath(path: string): boolean {
+  const normalized = normalizeRuntimeAbsolutePath(path);
+  return normalized === '/dev' || normalized?.startsWith('/dev/') === true;
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {

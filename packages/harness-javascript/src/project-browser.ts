@@ -11,7 +11,10 @@ import type {
 } from '../../harness-core/src/runtime-project';
 import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import {
+  isRuntimeDeviceNamespacePath,
   normalizeRuntimeProcPath as normalizeRuntimeProcPathString,
+  normalizeRuntimeDevicePath as normalizeRuntimeDevicePathString,
+  RUNTIME_KERNEL_DEVICE_ENTRIES,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
   runtimeProcEntryKind as procEntryKind,
@@ -113,10 +116,10 @@ function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | nu
   if (path === 1) return '/dev/stdout';
   if (path === 2) return '/dev/stderr';
   const raw = workspacePathInputToString(path).replace(/\\/g, '/');
-  if (raw === '/dev/stdin' || raw === '/dev/stdout' || raw === '/dev/stderr' || raw === '/dev/tty') {
-    return raw;
-  }
-  if (raw.startsWith('/dev/')) {
+  const devicePath = normalizeRuntimeDevicePathString(raw);
+  if (devicePath === '/dev') return null;
+  if (devicePath !== null) return devicePath;
+  if (isRuntimeDeviceNamespacePath(raw)) {
     throw Object.assign(new Error(`ENOENT: no such file or directory, open '${raw}'`), { code: 'ENOENT' });
   }
   return null;
@@ -124,8 +127,7 @@ function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | nu
 
 function normalizeRuntimeDeviceNamespacePath(path: unknown): '/dev' | RuntimeKernelDevicePath | null {
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  if (raw === '/dev') return '/dev';
-  return normalizeRuntimeDevicePath(raw);
+  return normalizeRuntimeDevicePathString(raw);
 }
 
 function normalizeRuntimeProcPath(path: unknown): string | null {
@@ -3081,7 +3083,7 @@ async function runBrowserJavaScriptProjectRequest(
           if (devicePath !== '/dev') {
             throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
           }
-          const names = ['stderr', 'stdin', 'stdout', 'tty'];
+          const names = [...RUNTIME_KERNEL_DEVICE_ENTRIES];
           if (!withFileTypes) return names;
           return names.map((name) => ({
             name,

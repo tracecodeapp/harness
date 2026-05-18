@@ -8,7 +8,10 @@ import {
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
+  isRuntimeDeviceNamespacePath,
   normalizeRuntimeProcPath,
+  normalizeRuntimeDevicePath,
+  RUNTIME_KERNEL_DEVICE_ENTRIES,
   readRuntimeProcFile,
   runtimeProcDirEntries,
   runtimeProcEntryKind,
@@ -234,27 +237,12 @@ function normalizeProcPath(path: string): string | null {
 
 function normalizeDevPath(path: string): '/dev' | RuntimeKernelDevicePath | null {
   assertNoNul(path, 'Kernel path');
-  const raw = path.replace(/\\/g, '/');
-  if (!raw.startsWith('/')) return null;
-  const normalized = normalizeWorkspaceCwd(raw);
-  if (normalized === '/dev') return '/dev';
-  if (
-    normalized === '/dev/stdin' ||
-    normalized === '/dev/stdout' ||
-    normalized === '/dev/stderr' ||
-    normalized === '/dev/tty'
-  ) {
-    return normalized;
-  }
-  return normalized.startsWith('/dev/') ? null : null;
+  return normalizeRuntimeDevicePath(path);
 }
 
 function isDevNamespacePath(path: string): boolean {
   assertNoNul(path, 'Kernel path');
-  const raw = path.replace(/\\/g, '/');
-  if (!raw.startsWith('/')) return false;
-  const normalized = normalizeWorkspaceCwd(raw);
-  return normalized === '/dev' || normalized.startsWith('/dev/');
+  return isRuntimeDeviceNamespacePath(path);
 }
 
 function isKernelVirtualPath(path: string): boolean {
@@ -635,7 +623,7 @@ class KernelObservedFileSystem implements IFileSystem {
 
   readdir(path: string): Promise<string[]> {
     const devicePath = normalizeDevPath(path);
-    if (devicePath === '/dev') return Promise.resolve(['stderr', 'stdin', 'stdout', 'tty']);
+    if (devicePath === '/dev') return Promise.resolve([...RUNTIME_KERNEL_DEVICE_ENTRIES]);
     if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     return this.base.readdir(this.mapPath(path));
@@ -644,7 +632,7 @@ class KernelObservedFileSystem implements IFileSystem {
   readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
     const devicePath = normalizeDevPath(path);
     if (devicePath === '/dev') {
-      return Promise.resolve(['stderr', 'stdin', 'stdout', 'tty'].map((name) => ({
+      return Promise.resolve(RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => ({
         name,
         isFile: true,
         isDirectory: false,
@@ -724,7 +712,8 @@ class KernelObservedFileSystem implements IFileSystem {
           if (path.startsWith(`${root}/`)) return [path, `${alias}${path.slice(root.length)}`];
           return [path];
         });
-    return Array.from(new Set([...aliasPaths, '/dev', '/dev/stderr', '/dev/stdin', '/dev/stdout', '/dev/tty'])).sort((left, right) => left.localeCompare(right));
+    const devicePaths = ['/dev', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
+    return Array.from(new Set([...aliasPaths, ...devicePaths])).sort((left, right) => left.localeCompare(right));
   }
 
   chmod(path: string, mode: number): Promise<void> {
@@ -2287,7 +2276,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
       return null;
     }
-    if (devicePath === '/dev') return ['stderr', 'stdin', 'stdout', 'tty'];
+    if (devicePath === '/dev') return [...RUNTIME_KERNEL_DEVICE_ENTRIES];
     throw new Error(`Kernel device path is not a directory: ${path}`);
   }
 
