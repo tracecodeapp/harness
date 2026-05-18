@@ -1379,9 +1379,16 @@ async function runBrowserJavaScriptProjectRequest(
         },
       };
     };
-    const createReadableStream = (bytes: Uint8Array, encoding?: string) => {
+    const createReadableStream = (bytes: Uint8Array, encoding?: string, onClose?: () => void) => {
       const events = createEventTarget();
       let started = false;
+      let closed = false;
+      const close = (): void => {
+        if (closed) return;
+        closed = true;
+        onClose?.();
+        events.emit('close');
+      };
       const formatChunk = (chunk: Uint8Array): BrowserBuffer | string => {
         const buffer = BrowserBuffer.from(chunk);
         return encoding ? buffer.toString(encoding) : buffer;
@@ -1392,7 +1399,7 @@ async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => {
           if (bytes.byteLength > 0) events.emit('data', formatChunk(bytes));
           events.emit('end');
-          events.emit('close');
+          close();
         });
       };
       const stream = {
@@ -1417,18 +1424,24 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const createWritableStream = (
       path: unknown,
-      options?: string | { encoding?: string | null; flags?: string } | null
+      options?: string | { autoClose?: boolean; encoding?: string | null; fd?: number; flags?: string } | null
     ) => {
       const events = createEventTarget();
-      const device = normalizeRuntimeDevicePath(path);
+      const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
+      const device = optionFd === null ? normalizeRuntimeDevicePath(path) : null;
       const encoding = requestedEncodingFromOptions(options);
       const flags = typeof options === 'object' && typeof options?.flags === 'string' ? options.flags : 'w';
-      const normalized = device ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+      const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
+      const normalized = device || optionFd !== null ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (normalized !== null && !flags.includes('a')) {
         setFileBytes(normalized, new Uint8Array());
       }
       const writeBytes = (value: unknown, writeEncoding?: string): void => {
         const bytes = bytesFromFsWriteValue(value, writeEncoding ?? encoding);
+        if (optionFd !== null) {
+          writeDescriptorFileBytes(optionFd, bytes, flags.includes('a'));
+          return;
+        }
         if (device) {
           writeDevice(device, textFromBytes(bytes));
           return;
@@ -1465,6 +1478,7 @@ async function runBrowserJavaScriptProjectRequest(
             closed = true;
             queueMicrotask(() => {
               done?.();
+              if (autoClose && optionFd !== null) fsApi.closeSync(optionFd);
               events.emit('finish');
               events.emit('close');
             });
@@ -2146,18 +2160,26 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      createReadStream: (path: unknown, options?: string | { encoding?: string; start?: number; end?: number } | null) => {
-        const device = normalizeRuntimeDevicePath(path);
+      createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
+        const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
+        const device = optionFd === null ? normalizeRuntimeDevicePath(path) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
         const sourceBytes = device
           ? utf8Bytes(readDevice(device))
-          : fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
+          : optionFd !== null
+            ? readDescriptorFileBytes(optionFd)
+            : fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
         const start = typeof options === 'object' && typeof options?.start === 'number' ? Math.max(0, options.start) : 0;
         const endInclusive = typeof options === 'object' && typeof options?.end === 'number' ? options.end : sourceBytes.byteLength - 1;
-        return createReadableStream(sourceBytes.slice(start, Math.max(start, endInclusive + 1)), requestedEncoding);
+        const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
+        return createReadableStream(
+          sourceBytes.slice(start, Math.max(start, endInclusive + 1)),
+          requestedEncoding,
+          autoClose && optionFd !== null ? () => fsApi.closeSync(optionFd) : undefined
+        );
       },
       createWriteStream: createWritableStream,
       readFileSync: (path: unknown, encoding?: string | { encoding?: string }) => {

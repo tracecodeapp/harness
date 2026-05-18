@@ -2391,6 +2391,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node createWriteStream should emit live file mutations: ${JSON.stringify(streamEvents)}`
   );
 
+  const fdStreamResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const writeFd = fs.openSync(\\"fd-streamed.txt\\", \\"w+\\"); await new Promise((resolve, reject) => { const out = fs.createWriteStream(null, { fd: writeFd }); out.on(\\"error\\", reject); out.on(\\"finish\\", resolve); out.write(\\"fd-one\\\\n\\"); out.end(\\"fd-two\\\\n\\"); }); let closeError = \\"none\\"; try { fs.fstatSync(writeFd); } catch (error) { closeError = error.code; } const readFd = fs.openSync(\\"fd-streamed.txt\\", \\"r\\"); const chunks = []; await new Promise((resolve, reject) => { fs.createReadStream(null, { fd: readFd, encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve); }); let readCloseError = \\"none\\"; try { fs.fstatSync(readFd); } catch (error) { readCloseError = error.code; } console.log(chunks.join(\\"\\").trim()); console.log(closeError + \\":\\" + readCloseError);"',
+  ].join(' '));
+  assertCondition(fdStreamResult.exitCode === 0, `browser node fd stream workflow should succeed: ${fdStreamResult.stderr}`);
+  assertCondition(
+    fdStreamResult.stdout === 'fd-one\nfd-two\nEBADF:EBADF\n',
+    `browser node fd streams should read/write descriptor-backed files and auto-close: ${fdStreamResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('fd-streamed.txt') === 'fd-one\nfd-two\n', 'browser node fd createWriteStream should persist through kernel FS');
+
   const watchFileResult = await workspace.runCommand([
     'node',
     '-e',
