@@ -120,6 +120,8 @@ async function main(): Promise<void> {
         { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+        { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
       ];
 
       const projectFiles = [
@@ -142,6 +144,22 @@ async function main(): Promise<void> {
             '    print("dev-fd-stdin=" + os.read(stdin_fd, 64).decode("utf-8").strip())',
             'finally:',
             '    os.close(stdin_fd)',
+            'custom_fd = os.open("/dev/custom-in", os.O_RDONLY)',
+            'try:',
+            '    print("dev-fd-custom-in=" + os.read(custom_fd, 64).decode("utf-8").strip())',
+            'finally:',
+            '    os.close(custom_fd)',
+            'print("dev-custom-present=" + str("log" in os.listdir("/dev") and "custom-in" in os.listdir("/dev")))',
+            'print("dev-custom-access=" + str(os.access("/dev/log", os.W_OK)) + ":" + str(os.access("/dev/custom-in", os.R_OK)))',
+            'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in:',
+            '    print("dev-file-custom-in=" + custom_in.read().strip())',
+            'with open("/dev/log", "w", encoding="utf-8") as log:',
+            '    log.write("dev-file-log\\\\n")',
+            'log_fd = os.open("/dev/log", os.O_WRONLY)',
+            'try:',
+            '    os.write(log_fd, b"dev-fd-log\\\\n")',
+            'finally:',
+            '    os.close(log_fd)',
             'stdout_fd = os.open("/dev/stdout", os.O_WRONLY)',
             'try:',
             '    os.write(stdout_fd, b"dev-fd-out\\\\n")',
@@ -446,11 +464,11 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\nprovider-hook-out\nprovider-hook-lines\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\nprovider-hook-out\nprovider-hook-lines\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
-      results.fileRun.stderr === 'dev-fd-err\nprovider-hook-err\nstderr-line\n',
+      results.fileRun.stderr === 'dev-file-log\ndev-fd-log\ndev-fd-err\nprovider-hook-err\nstderr-line\n',
       `Python project file stderr should match workspace semantics: ${JSON.stringify(results.fileRun.stderr)}`
     );
     assertCondition(
@@ -478,6 +496,18 @@ async function main(): Promise<void> {
         .map((event) => event.data)
         .join('') === results.fileRun.stderr,
       `Python project worker should stream stderr events: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events
+        ?.filter((event) =>
+          event.type === 'output' &&
+          event.stream === 'stderr' &&
+          event.device === '/dev/stderr' &&
+          event.sourceDevice === '/dev/log'
+        )
+        .map((event) => event.data)
+        .join('') === 'dev-file-log\ndev-fd-log\n',
+      `Python project worker should support manifest-provided custom output devices: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       findFile(results.fileRun, 'generated.txt')?.contents === '42\n',
@@ -752,7 +782,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-os-write:blocked\nTrue\nFalse\nstderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\nstderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-os-write:blocked\nTrue\nFalse\ncustom-in,log,stderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\ncustom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(
