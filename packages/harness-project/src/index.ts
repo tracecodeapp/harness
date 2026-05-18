@@ -671,7 +671,7 @@ class KernelObservedFileSystem implements IFileSystem {
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.outputDevice, contentToText(content));
+      this.writeDevice(writeTarget.device, contentToText(content));
       return;
     }
     const mappedPath = this.mapPath(path);
@@ -683,7 +683,7 @@ class KernelObservedFileSystem implements IFileSystem {
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.outputDevice, contentToText(content));
+      this.writeDevice(writeTarget.device, contentToText(content));
       return;
     }
     const mappedPath = this.mapPath(path);
@@ -786,7 +786,7 @@ class KernelObservedFileSystem implements IFileSystem {
     const writeTarget = kernelWriteTarget(dest);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.outputDevice, contentToText(sourceBytes));
+      this.writeDevice(writeTarget.device, contentToText(sourceBytes));
       return;
     }
     const mappedDestination = this.mapPath(dest);
@@ -948,7 +948,7 @@ class KernelObservedFileSystem implements IFileSystem {
     if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
     const outputDevice = runtimeDeviceOutputTarget(device);
     if (!outputDevice) throw new Error(`Kernel device is read-only: ${device}`);
-    this.writeDevice(outputDevice, contentToText(content));
+    this.writeDevice(device, contentToText(content));
   }
 
   private deviceStat(device: '/dev' | RuntimeKernelDevicePath): Awaited<ReturnType<IFileSystem['stat']>> {
@@ -2420,6 +2420,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       type: 'output',
       stream: outputDevice === '/dev/stderr' ? 'stderr' : 'stdout',
       device: outputDevice,
+      ...(device !== outputDevice ? { sourceDevice: device } : {}),
       data,
       ...(actor ? { actor } : {}),
     });
@@ -2437,7 +2438,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (writeTarget.kind === 'device') {
       const normalizedEncoding = assertSupportedEncoding(encoding);
       this.writeDevice(
-        writeTarget.outputDevice,
+        writeTarget.device,
         normalizedEncoding === 'base64'
           ? new TextDecoder().decode(bytesFromBase64(contents))
           : contents,
@@ -2481,7 +2482,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
       this.writeDevice(
-        writeTarget.outputDevice,
+        writeTarget.device,
         normalizedEncoding === 'base64'
           ? new TextDecoder().decode(bytesFromBase64(contents))
           : contents,
@@ -2603,7 +2604,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const writeTarget = kernelWriteTarget(destinationPath);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(destinationPath, writeTarget);
     if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.outputDevice, contentToText(sourceBytes), PRINCIPAL_ACTOR);
+      this.writeDevice(writeTarget.device, contentToText(sourceBytes), PRINCIPAL_ACTOR);
       return;
     }
     await this.writeFileAs(destinationPath, base64FromBytes(sourceBytes), PRINCIPAL_ACTOR, 'base64', 'live');

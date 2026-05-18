@@ -5958,6 +5958,10 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     onEvent: (event) => deviceCommandEvents.push(event),
   });
   assertCondition(stdoutResult.stdout === 'device-out\n', `/dev/stdout writes should be command stdout: ${JSON.stringify(stdoutResult)}`);
+  const ttyResult = await deviceWorkspace.runCommand('printf "tty-out\\n" > /dev/tty', {
+    onEvent: (event) => deviceCommandEvents.push(event),
+  });
+  assertCondition(ttyResult.stdout === 'tty-out\n', `/dev/tty writes should route to command stdout: ${JSON.stringify(ttyResult)}`);
   const stderrResult = await deviceWorkspace.runCommand('printf "device-err\\n" > /dev/stderr');
   assertCondition(stderrResult.stderr === 'device-err\n', `/dev/stderr writes should be command stderr: ${JSON.stringify(stderrResult)}`);
   const shellCopyVirtualResult = await deviceWorkspace.runCommand(
@@ -5982,13 +5986,25 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     ),
     `runCommand onEvent should receive /dev/stdout output events: ${JSON.stringify(deviceCommandEvents)}`
   );
+  assertCondition(
+    deviceCommandEvents.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.sourceDevice === '/dev/tty' &&
+      event.data === 'tty-out\n'
+    ),
+    `runCommand onEvent should preserve /dev/tty source device: ${JSON.stringify(deviceCommandEvents)}`
+  );
   assertCondition((await deviceWorkspace.readDir('/dev')).join(',') === 'stderr,stdin,stdout,tty', '/dev should list kernel devices');
   const stdoutStat = await deviceWorkspace.stat('/dev/stdout');
   assertCondition(stdoutStat.isFile && !stdoutStat.isDirectory, '/dev/stdout should stat as a file device');
   await assertRejectsAsync(() => deviceWorkspace.writeFile('/dev/stdin', 'blocked\n'), '/dev/stdin should be read-only');
   await deviceWorkspace.writeFile('/dev/stdout', 'principal-out\n');
+  await deviceWorkspace.writeFile('/dev/tty', 'principal-tty\n');
   await deviceWorkspace.writeFile('copy-device.txt', 'copy-device-out\n');
   await deviceWorkspace.copyFile('copy-device.txt', '/dev/stdout');
+  await deviceWorkspace.copyFile('copy-device.txt', '/dev/tty');
   await assertRejectsAsync(() => deviceWorkspace.copyFile('copy-device.txt', '/proc/kernel/info'), 'copyFile should reject /proc destinations');
   await deviceWorkspace.copyFile('/proc/kernel/info', 'copied-proc-info.json');
   assertCondition(
@@ -6020,6 +6036,23 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       event.data === 'copy-device-out\n'
     ),
     `workspace copyFile should route /dev/stdout through kernel write target: ${JSON.stringify(deviceWatchEvents)}`
+  );
+  assertCondition(
+    deviceWatchEvents.some((event) =>
+      event.type === 'output' &&
+      event.actor?.kind === 'principal' &&
+      event.device === '/dev/stdout' &&
+      event.sourceDevice === '/dev/tty' &&
+      event.data === 'principal-tty\n'
+    ) &&
+      deviceWatchEvents.some((event) =>
+        event.type === 'output' &&
+        event.actor?.kind === 'principal' &&
+        event.device === '/dev/stdout' &&
+        event.sourceDevice === '/dev/tty' &&
+        event.data === 'copy-device-out\n'
+      ),
+    `workspace principal writes should preserve /dev/tty source device: ${JSON.stringify(deviceWatchEvents)}`
   );
   deviceWorkspace.dispose();
 }
