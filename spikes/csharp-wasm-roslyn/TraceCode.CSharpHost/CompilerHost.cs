@@ -1172,9 +1172,15 @@ public static partial class CompilerHost
                 "WriteAllText" or
                 "WriteAllBytes" or
                 "WriteAllLines" or
+                "WriteAllTextAsync" or
+                "WriteAllBytesAsync" or
+                "WriteAllLinesAsync" or
                 "AppendAllLines" or
                 "AppendAllBytes" or
                 "AppendAllText" or
+                "AppendAllLinesAsync" or
+                "AppendAllBytesAsync" or
+                "AppendAllTextAsync" or
                 "CreateText" or
                 "AppendText" or
                 "OpenWrite" or
@@ -1273,6 +1279,86 @@ public static class ProjectFile
     {
         System.IO.File.AppendAllText(path, contents, encoding);
         TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+    }
+
+    public static System.Threading.Tasks.Task WriteAllTextAsync(string path, string? contents, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.WriteAllText(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task WriteAllTextAsync(string path, string? contents, System.Text.Encoding encoding, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.WriteAllText(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task WriteAllBytesAsync(string path, byte[] bytes, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.WriteAllBytes(path, bytes);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task WriteAllLinesAsync(string path, System.Collections.Generic.IEnumerable<string> contents, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.WriteAllLines(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task WriteAllLinesAsync(string path, System.Collections.Generic.IEnumerable<string> contents, System.Text.Encoding encoding, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.WriteAllLines(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task AppendAllTextAsync(string path, string? contents, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.AppendAllText(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task AppendAllTextAsync(string path, string? contents, System.Text.Encoding encoding, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.AppendAllText(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task AppendAllLinesAsync(string path, System.Collections.Generic.IEnumerable<string> contents, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.AppendAllLines(path, contents);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task AppendAllLinesAsync(string path, System.Collections.Generic.IEnumerable<string> contents, System.Text.Encoding encoding, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.AppendAllLines(path, contents, encoding);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
+    }
+
+    public static System.Threading.Tasks.Task AppendAllBytesAsync(string path, byte[] bytes, System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        System.IO.File.AppendAllBytes(path, bytes);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(path);
+        return System.Threading.Tasks.Task.CompletedTask;
     }
 
     public static System.IO.StreamWriter CreateText(string path)

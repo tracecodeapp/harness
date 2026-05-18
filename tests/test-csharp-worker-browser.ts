@@ -2761,6 +2761,12 @@ async function main(): Promise<void> {
                 'File.WriteAllLines("lines.txt", new[] { "one", "two" });',
                 'File.AppendAllLines("lines.txt", new[] { "three" });',
                 'File.AppendAllBytes("append-bytes.bin", new byte[] { 0, 251 });',
+                'await File.WriteAllTextAsync("async-text.txt", "async-one\\n");',
+                'await File.AppendAllTextAsync("async-text.txt", "async-two\\n");',
+                'await File.WriteAllBytesAsync("async-bytes.bin", new byte[] { 0, 250 });',
+                'await File.AppendAllBytesAsync("async-bytes.bin", new byte[] { 251 });',
+                'await File.WriteAllLinesAsync("async-lines.txt", new[] { "async-a", "async-b" });',
+                'await File.AppendAllLinesAsync("async-lines.txt", new[] { "async-c" });',
                 'File.Copy("generated.txt", "copied.txt");',
                 'File.Move("copied.txt", "moved.txt");',
                 'File.Delete("stale.txt");',
@@ -2779,7 +2785,10 @@ async function main(): Promise<void> {
       },
       assetBaseUrl
     );
-    assertCondition(projectRun.exitCode === 0, `C# project worker should run multifile project: ${projectRun.stderr}`);
+    assertCondition(
+      projectRun.exitCode === 0,
+      `C# project worker should run multifile project: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, files: projectRun.files, events: projectRun.events })}`
+    );
     assertCondition(
       projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\ncustom-kernel-file\n') &&
         projectRun.stdout.includes('dev-stdout\n') &&
@@ -3016,6 +3025,44 @@ async function main(): Promise<void> {
             event.change.contents === 'APs='
         ) === true,
       `C# project worker should stream line and byte append changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/async-text.txt' && file.contents === 'async-one\nasync-two\n') === true &&
+        projectRun.files?.some((file) => file.path === 'src/async-bytes.bin' && file.encoding === 'base64' && file.contents === 'APr7') === true &&
+        projectRun.files?.some((file) => file.path === 'src/async-lines.txt' && file.contents === 'async-a\nasync-b\nasync-c\n') === true,
+      `C# project worker should return async file API changes, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/async-text.txt' &&
+          event.change.contents === 'async-one\n'
+      ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/async-text.txt' &&
+            event.change.contents === 'async-one\nasync-two\n'
+        ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/async-bytes.bin' &&
+            event.change.encoding === 'base64' &&
+            event.change.contents === 'APr7'
+        ) === true &&
+        projectRun.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'src/async-lines.txt' &&
+            event.change.contents === 'async-a\nasync-b\nasync-c\n'
+        ) === true,
+      `C# project worker should stream async file API changes, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some(

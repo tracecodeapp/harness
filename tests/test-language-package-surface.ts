@@ -420,6 +420,17 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('throwKernelDevicePathError(path, \'open\')'),
         '@tracecode/harness-csharp worker should ship manifest-scoped /dev cleanup and namespace guards'
       );
+      const csharpHostDll = await readFile(join(packageDir, 'workers/vendor/csharp/_framework/supportFiles/173_TraceCode.CSharpHost.dll'));
+      const csharpHostApi = csharpHostDll.toString('utf16le');
+      assertCondition(
+        csharpHostApi.includes('WriteAllTextAsync') &&
+          csharpHostApi.includes('AppendAllTextAsync') &&
+          csharpHostApi.includes('WriteAllBytesAsync') &&
+          csharpHostApi.includes('AppendAllBytesAsync') &&
+          csharpHostApi.includes('WriteAllLinesAsync') &&
+          csharpHostApi.includes('AppendAllLinesAsync'),
+        '@tracecode/harness-csharp worker should ship async File live-mutation bridge methods'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
       const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');
