@@ -5273,8 +5273,8 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
 
     const node = await workspace.runCommand('node index.js', {
       onEvent: (event) => {
+        nodeEvents.push(event);
         if (event.type === 'file-change' && event.change.path === 'node.txt') {
-          nodeEvents.push(event);
           if (event.phase === 'live') nodeLiveReadPromises.push(workspace.readFile('node.txt'));
         }
       },
@@ -5289,6 +5289,11 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       nodeEvents.filter((event) => event.type === 'file-change' && event.change.path === 'node.txt').length === 1 &&
         nodeEvents.some((event) => event.type === 'file-change' && event.change.path === 'node.txt' && event.phase === 'live'),
       `browser project workspace should not re-emit Node live file changes as final-diff: ${JSON.stringify(nodeEvents)}`
+    );
+    assertCondition(
+      nodeEvents.some((event) => event.type === 'status' && event.phase === 'process-start' && event.actor?.kind === 'runtime') &&
+        nodeEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.actor?.kind === 'runtime'),
+      `browser project workspace should emit Node process status events: ${JSON.stringify(nodeEvents)}`
     );
 
     const java = await workspace.runCommand('java Main');

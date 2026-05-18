@@ -1300,6 +1300,11 @@ async function runBrowserJavaScriptProjectRequest(
     const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
     const kernelDevices = request.project.kernelDevices;
     const cwdPath = workspaceCwdPath(request);
+    io.status('process-start', 'Starting browser Node', {
+      command: 'node',
+      args: processArgvForRequest(request).slice(2),
+      cwd: request.cwd,
+    });
     const fileStore = new Map(
       request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)])
     );
@@ -4053,6 +4058,7 @@ async function runBrowserJavaScriptProjectRequest(
       ]
         .filter((change) => !appliedFileChangePaths.has(runtimeFileChangePath(change)))
         .sort((left, right) => left.path.localeCompare(right.path));
+      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 0 });
       return {
         stdout: stdout.join(''),
         stderr: stderr.join(''),
@@ -4071,12 +4077,14 @@ async function runBrowserJavaScriptProjectRequest(
       try {
         await eventQueue?.flush();
       } catch (flushError) {
+        io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
         return {
           stdout: stdout.join(''),
           stderr: stderr.join('') + (flushError instanceof Error ? `${flushError.message}\n` : `${String(flushError)}\n`),
           exitCode: 1,
         };
       }
+      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode });
       return {
         stdout: stdout.join(''),
         stderr: stderr.join('') + stderrSuffix,
