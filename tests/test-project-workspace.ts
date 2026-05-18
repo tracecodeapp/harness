@@ -2551,13 +2551,25 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const stdioFdResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); console.log(fs.readFileSync(0, \\"utf8\\").trim()); process.stdout.write(\\"stream-out\\\\n\\"); fs.writeFileSync(1, \\"fd-out\\\\n\\"); process.stderr.write(\\"stream-err\\\\n\\"); fs.writeFileSync(2, \\"fd-err\\\\n\\");"',
+    '"const fs = require(\\"node:fs\\"); console.log(fs.readFileSync(0, \\"utf8\\").trim()); console.log(\\"second:\\" + fs.readFileSync(0, \\"utf8\\").length); process.stdout.write(\\"stream-out\\\\n\\"); fs.writeFileSync(1, \\"fd-out\\\\n\\"); process.stderr.write(\\"stream-err\\\\n\\"); fs.writeFileSync(2, \\"fd-err\\\\n\\");"',
   ].join(' '), { stdin: 'from-fd\n' });
   assertCondition(stdioFdResult.exitCode === 0, `browser node stdio fd workflow should succeed: ${stdioFdResult.stderr}`);
   assertCondition(
-    stdioFdResult.stdout === 'from-fd\nstream-out\nfd-out\n' &&
+    stdioFdResult.stdout === 'from-fd\nsecond:0\nstream-out\nfd-out\n' &&
       stdioFdResult.stderr === 'stream-err\nfd-err\n',
     `browser node should map fd 0/1/2 to kernel stdio devices: ${JSON.stringify(stdioFdResult)}`
+  );
+
+  const stdioDeviceStreamResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const chunks = []; await new Promise((resolve, reject) => fs.createReadStream(null, { fd: 0, encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve)); console.log(chunks.join(\\"\\").trim()); const handle = await fsp.open(\\"/dev/stdin\\", \\"r\\"); console.log(\\"handle:\\" + (await handle.readFile(\\"utf8\\")).trim()); await handle.close(); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stdout\\").on(\\"error\\", reject).end(\\"device-stream-out\\\\n\\", resolve)); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stderr\\").on(\\"error\\", reject).end(\\"device-stream-err\\\\n\\", resolve));"',
+  ].join(' '), { stdin: 'from-stream\n' });
+  assertCondition(stdioDeviceStreamResult.exitCode === 0, `browser node stdio device stream workflow should succeed: ${stdioDeviceStreamResult.stderr}`);
+  assertCondition(
+    stdioDeviceStreamResult.stdout === 'from-stream\nhandle:from-stream\ndevice-stream-out\n' &&
+      stdioDeviceStreamResult.stderr === 'device-stream-err\n',
+    `browser node fd/device streams should consume stdin and stream stdout/stderr live: ${JSON.stringify(stdioDeviceStreamResult)}`
   );
 
   const devFsResult = await workspace.runCommand([

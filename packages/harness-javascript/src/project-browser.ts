@@ -2232,9 +2232,9 @@ async function runBrowserJavaScriptProjectRequest(
       const entry = fileDescriptor(fd);
       if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
       const source = descriptorBytes(entry);
-      const start = entry.kind === 'device' ? 0 : entry.offset;
+      const start = entry.offset;
       const bytes = source.slice(start);
-      if (entry.kind !== 'device') entry.offset = source.byteLength;
+      entry.offset = source.byteLength;
       return bytes;
     };
     const writeDescriptorBytes = (entry: BrowserFileDescriptor, bytes: Uint8Array, position?: number | null): void => {
