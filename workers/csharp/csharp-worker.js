@@ -165,6 +165,16 @@ function isWritableOpenFlags(flags) {
   return Boolean(numericFlags & 1) || Boolean(numericFlags & 2) || Boolean(numericFlags & 64) || Boolean(numericFlags & 512);
 }
 
+function isReadableOpenFlags(flags) {
+  if (typeof flags === 'string') {
+    return flags.includes('r') || flags.includes('+');
+  }
+  const numericFlags = Number(flags);
+  if (!Number.isFinite(numericFlags)) return false;
+  const accessMode = numericFlags & 3;
+  return accessMode === 0 || accessMode === 2;
+}
+
 function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
   if (typeof path !== 'string' || !path) return null;
   const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
@@ -613,6 +623,9 @@ function installRuntimeFsHooks(runtime) {
       if (activeProjectIo && isKernelDeviceNamespacePath(path)) {
         const devicePath = normalizeKernelDevicePath(path);
         if (!devicePath || !kernelDeviceInfo(devicePath)) {
+          throwKernelDevicePathError(path, 'open');
+        }
+        if (isReadableOpenFlags(flags) && !kernelDeviceInputSource(devicePath)) {
           throwKernelDevicePathError(path, 'open');
         }
         if (isWritableOpenFlags(flags) && !kernelDeviceOutputTarget(devicePath)) {

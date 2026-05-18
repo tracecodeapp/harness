@@ -2743,6 +2743,8 @@ async function main(): Promise<void> {
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/log", "dev-log\\n"); Console.WriteLine("dev-log-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-log-write:" + ex.GetType().Name); }',
+                'try { File.ReadAllText("/dev/stdout"); Console.WriteLine("dev-stdout-read:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-read:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/dev/stdin", "bad\\n"); Console.WriteLine("dev-stdin-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdin-write:" + ex.GetType().Name); }',
                 'Console.Error.WriteLine("stderr-line");',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
@@ -2815,6 +2817,11 @@ async function main(): Promise<void> {
       projectRun.stdout.includes('custom-kernel-write:') && !projectRun.stdout.includes('custom-kernel-write:ok') &&
         projectRun.stdout.includes('custom-kernel-mkdir:') && !projectRun.stdout.includes('custom-kernel-mkdir:ok'),
       `C# project worker should reject manifest-provided kernel virtual mutations outside /proc, received ${projectRun.stdout}`
+    );
+    assertCondition(
+      projectRun.stdout.includes('dev-stdout-read:') && !projectRun.stdout.includes('dev-stdout-read:ok') &&
+        projectRun.stdout.includes('dev-stdin-write:') && !projectRun.stdout.includes('dev-stdin-write:ok'),
+      `C# project worker should enforce kernel device open permissions, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stderr === 'dev-stderr\ndev-log\nstderr-line\n',

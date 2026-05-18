@@ -393,6 +393,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         worker.includes('let materializedKernelDevicePaths = new Set()') &&
           worker.includes('materializedKernelDevicePaths.add(devicePath)') &&
+          worker.includes('function isReadableOpenFlags(flags)') &&
           worker.includes('function isKernelDeviceNamespacePath(value)') &&
           worker.includes('throwKernelDevicePathError(path, \'open\')'),
         '@tracecode/harness-csharp worker should ship manifest-scoped /dev cleanup and namespace guards'
