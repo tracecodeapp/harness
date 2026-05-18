@@ -32,6 +32,7 @@ import {
   runtimeKernelDeviceOutputTarget,
   runtimeKernelFileCopyTarget,
   runtimeKernelFileCopyErrorCode,
+  runtimeKernelFileCopyErrorMessage,
   runtimeKernelFileReadErrorMessage,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
@@ -40,6 +41,7 @@ import {
   runtimeKernelMetadataTarget,
   runtimeKernelMetadataErrorMessage,
   runtimeKernelMutationTarget,
+  runtimeKernelOpenErrorMessage,
   runtimeKernelOpenTarget,
   runtimeKernelReadErrorMessage,
   runtimeKernelReadTarget,
@@ -195,15 +197,26 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     copyToProcTarget.kind === 'error' &&
       copyToProcTarget.side === 'destination' &&
-      runtimeKernelFileCopyErrorCode(copyToProcTarget) === 'EROFS',
+      runtimeKernelFileCopyErrorCode(copyToProcTarget) === 'EROFS' &&
+      runtimeKernelFileCopyErrorMessage('/proc/kernel/info', '/proc/kernel/version', copyToProcTarget) ===
+        "EROFS: read-only file system, copyfile '/proc/kernel/info' -> '/proc/kernel/version'",
     `kernel file copy error code should route destination errors through write policy: ${stableStringify(copyToProcTarget)}`
   );
   const copyFromStdoutTarget = runtimeKernelFileCopyTarget('/dev/stdout', 'stdout-copy.txt', devices);
   assertCondition(
     copyFromStdoutTarget.kind === 'error' &&
       copyFromStdoutTarget.side === 'source' &&
-      runtimeKernelFileCopyErrorCode(copyFromStdoutTarget) === 'EBADF',
+      runtimeKernelFileCopyErrorCode(copyFromStdoutTarget) === 'EBADF' &&
+      runtimeKernelFileCopyErrorMessage('/dev/stdout', 'stdout-copy.txt', copyFromStdoutTarget) ===
+        "EBADF: bad file descriptor, copyfile '/dev/stdout' -> 'stdout-copy.txt'",
     `kernel file copy error code should route source errors through file-read policy: ${stableStringify(copyFromStdoutTarget)}`
+  );
+  const readOnlyProcOpenTarget = runtimeKernelOpenTarget('/proc/kernel/info', { writable: true, truncate: true }, devices);
+  assertCondition(
+    readOnlyProcOpenTarget.kind === 'error' &&
+      runtimeKernelOpenErrorMessage('/proc/kernel/info', readOnlyProcOpenTarget) ===
+        "EROFS: read-only file system, open '/proc/kernel/info'",
+    `kernel open error message should be shared: ${stableStringify(readOnlyProcOpenTarget)}`
   );
   assertCondition(
     stableStringify(runtimeKernelOpenTarget('/dev/stdout', { readable: true }, devices)) ===

@@ -584,6 +584,17 @@ export function runtimeKernelOpenErrorCode(
   return 'ENOENT';
 }
 
+export function runtimeKernelOpenErrorMessage(
+  path: string,
+  target: Extract<RuntimeKernelOpenTarget, { kind: 'error' }>,
+  operation = 'open'
+): string {
+  const code = runtimeKernelOpenErrorCode(target.reason);
+  if (code === 'EROFS') return `EROFS: read-only file system, ${operation} '${path}'`;
+  if (code === 'EISDIR') return `EISDIR: illegal operation on a directory, ${operation} '${path}'`;
+  return `ENOENT: no such file or directory, ${operation} '${path}'`;
+}
+
 export function runtimeKernelReadTarget(
   path: string,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -789,6 +800,20 @@ export function runtimeKernelFileCopyErrorCode(
   return target.side === 'destination'
     ? runtimeKernelWriteErrorCode(target.reason)
     : runtimeKernelFileReadErrorCode(target.reason);
+}
+
+export function runtimeKernelFileCopyErrorMessage(
+  source: string,
+  destination: string,
+  target: Extract<RuntimeKernelFileCopyTarget, { kind: 'error' }>,
+  operation = 'copyfile'
+): string {
+  const code = runtimeKernelFileCopyErrorCode(target);
+  const suffix = `${operation} '${source}' -> '${destination}'`;
+  if (code === 'EROFS') return `EROFS: read-only file system, ${suffix}`;
+  if (code === 'EBADF') return `EBADF: bad file descriptor, ${suffix}`;
+  if (code === 'EISDIR') return `EISDIR: illegal operation on a directory, ${suffix}`;
+  return `ENOENT: no such file or directory, ${suffix}`;
 }
 
 export function runtimeKernelLinkTarget(

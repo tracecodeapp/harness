@@ -24,6 +24,7 @@ import {
   runtimeKernelDeviceOutputTarget,
   runtimeKernelDirectoryErrorCode,
   runtimeKernelDirectoryTarget,
+  runtimeKernelFileCopyErrorMessage,
   runtimeKernelFileCopyTarget,
   runtimeKernelFileCopyErrorCode,
   runtimeKernelFileReadTarget,
@@ -37,6 +38,7 @@ import {
   runtimeKernelMutationErrorCode,
   runtimeKernelMutationTarget,
   runtimeKernelOpenErrorCode,
+  runtimeKernelOpenErrorMessage,
   runtimeKernelOpenTarget,
   runtimeKernelReadTarget,
   runtimeKernelRenameErrorCode,
@@ -2340,12 +2342,9 @@ async function runBrowserJavaScriptProjectRequest(
           }, kernelDevices)
         : null;
       if (openTarget?.kind === 'error') {
-        const message = openTarget.reason === 'read-only'
-          ? `EROFS: read-only file system, open '${path}'`
-          : openTarget.reason === 'is-directory'
-            ? `EISDIR: illegal operation on a directory, open '${path}'`
-            : `ENOENT: no such file or directory, open '${path}'`;
-        throw Object.assign(new Error(message), { code: runtimeKernelOpenErrorCode(openTarget.reason) });
+        throw Object.assign(new Error(runtimeKernelOpenErrorMessage(String(path), openTarget)), {
+          code: runtimeKernelOpenErrorCode(openTarget.reason),
+        });
       }
       const device = openTarget?.kind === 'device' ? openTarget.device : null;
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
@@ -3094,12 +3093,9 @@ async function runBrowserJavaScriptProjectRequest(
         const openTarget = runtimeOpenTarget(path, parsed, kernelDevices);
         const fd = nextFd++;
         if (openTarget?.kind === 'error') {
-          const message = openTarget.reason === 'read-only'
-            ? `EROFS: read-only file system, open '${path}'`
-            : openTarget.reason === 'is-directory'
-              ? `EISDIR: illegal operation on a directory, open '${path}'`
-              : `ENOENT: no such file or directory, open '${path}'`;
-          throw Object.assign(new Error(message), { code: runtimeKernelOpenErrorCode(openTarget.reason) });
+          throw Object.assign(new Error(runtimeKernelOpenErrorMessage(String(path), openTarget)), {
+            code: runtimeKernelOpenErrorCode(openTarget.reason),
+          });
         }
         if (openTarget?.kind === 'device') {
           fileDescriptors.set(fd, {
@@ -3634,14 +3630,9 @@ async function runBrowserJavaScriptProjectRequest(
       copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
         const copyTarget = runtimeFileCopyTarget(source, destination, kernelDevices);
         if (copyTarget?.kind === 'error' && copyTarget.side === 'destination') {
-          const message = copyTarget.reason === 'proc-read-only'
-            ? `EROFS: read-only file system, copyfile '${source}' -> '${destination}'`
-            : copyTarget.reason === 'device-read-only'
-              ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
-              : copyTarget.reason === 'device-directory'
-                ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
-                : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`;
-          throw Object.assign(new Error(message), { code: runtimeKernelFileCopyErrorCode(copyTarget) });
+          throw Object.assign(new Error(runtimeKernelFileCopyErrorMessage(String(source), String(destination), copyTarget)), {
+            code: runtimeKernelFileCopyErrorCode(copyTarget),
+          });
         }
         let sourceBytes: Uint8Array | undefined;
         const sourceTarget = copyTarget?.kind === 'virtual-source' || copyTarget?.kind === 'device-destination'
@@ -3650,11 +3641,7 @@ async function runBrowserJavaScriptProjectRequest(
         if (sourceTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(sourceTarget.path));
         else if (sourceTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(sourceTarget.path, kernelInfo));
         else if (copyTarget?.kind === 'error' && copyTarget.side === 'source') {
-          throw Object.assign(new Error(copyTarget.reason === 'is-directory'
-            ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
-            : copyTarget.reason === 'permission-denied'
-              ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
-            : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), {
+          throw Object.assign(new Error(runtimeKernelFileCopyErrorMessage(String(source), String(destination), copyTarget)), {
             code: runtimeKernelFileCopyErrorCode(copyTarget),
           });
         } else if (sourceTarget?.kind === 'error') {
