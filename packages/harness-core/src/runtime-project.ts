@@ -88,6 +88,7 @@ export interface RuntimeKernelInfo {
 
 export interface RuntimeProjectSnapshot {
   files: RuntimeFile[];
+  kernelFiles?: RuntimeFile[];
   directories?: string[];
   entrypoint?: string;
   cwd?: string;

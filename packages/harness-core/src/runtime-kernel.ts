@@ -1,4 +1,4 @@
-import type { RuntimeKernelDevicePath, RuntimeKernelInfo } from './runtime-project';
+import type { RuntimeFile, RuntimeKernelDevicePath, RuntimeKernelInfo } from './runtime-project';
 
 export type RuntimeKernelProcEntryKind = 'file' | 'directory';
 export type RuntimeKernelDeviceEntryKind = 'file' | 'directory';
@@ -463,6 +463,13 @@ export function runtimeKernelVirtualPaths(): string[] {
   const devicePaths = ['/dev', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
   const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/self', '/proc/self/mountinfo'];
   return [...devicePaths, ...procPaths];
+}
+
+export function runtimeKernelVirtualFiles(info: RuntimeKernelInfo): RuntimeFile[] {
+  return [
+    { path: '/proc/kernel/info', contents: readRuntimeProcFile('/proc/kernel/info', info) },
+    { path: '/proc/self/mountinfo', contents: readRuntimeProcFile('/proc/self/mountinfo', info) },
+  ];
 }
 
 export function readRuntimeProcFile(path: string, info: RuntimeKernelInfo): string {

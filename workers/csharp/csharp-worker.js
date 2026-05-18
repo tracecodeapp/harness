@@ -131,6 +131,51 @@ function mapProjectRuntimePathList(value, request) {
     .join('');
 }
 
+function ensureRuntimeDirectory(fs, path) {
+  const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  if (normalized === '/') return;
+  const parts = normalized.split('/').filter(Boolean);
+  let current = '';
+  for (const part of parts) {
+    current += `/${part}`;
+    try {
+      const stat = fs.stat(current);
+      if (stat && fs.isDir(stat.mode)) continue;
+    } catch {
+      // Directory does not exist yet.
+    }
+    fs.mkdir(current);
+  }
+}
+
+function runtimeDirectoryName(path) {
+  const normalized = String(path || '').replace(/\\/g, '/');
+  const index = normalized.lastIndexOf('/');
+  return index <= 0 ? '/' : normalized.slice(0, index);
+}
+
+function materializeKernelVirtualFiles(request) {
+  const fs = runtimeModule?.FS;
+  const files = request?.project?.kernelFiles;
+  if (!fs || !Array.isArray(files)) return;
+  for (const file of files) {
+    if (!file || typeof file.path !== 'string' || !file.path.startsWith('/proc/')) continue;
+    ensureRuntimeDirectory(fs, runtimeDirectoryName(file.path));
+    try {
+      fs.unlink(file.path);
+    } catch {
+      // The proc file may not exist yet.
+    }
+    const contents = file.encoding === 'base64'
+      ? Uint8Array.from(atob(String(file.contents || '')), (char) => char.charCodeAt(0))
+      : String(file.contents ?? '');
+    fs.writeFile(file.path, contents);
+    if (typeof fs.chmod === 'function') {
+      fs.chmod(file.path, 0o444);
+    }
+  }
+}
+
 function projectRuntimeRequest(request) {
   const project = request?.project && typeof request.project === 'object'
     ? {
@@ -261,6 +306,9 @@ function installRuntimeFsHooks(runtime) {
   const originalWriteFile = fs.writeFile;
   if (typeof originalWriteFile === 'function') {
     fs.writeFile = function writeFileWithProjectEvents(path) {
+      if (activeProjectIo && typeof path === 'string' && path.replace(/\\/g, '/').startsWith('/proc/')) {
+        throw Object.assign(new Error(`EROFS: read-only file system, write '${path}'`), { code: 'EROFS' });
+      }
       const result = originalWriteFile.apply(this, arguments);
       if (activeProjectIo) emitProjectFileSnapshot(path);
       return result;
@@ -518,6 +566,7 @@ async function handleMessage(message) {
     const initMs = elapsedMs(runtimeStartedAt) || runtimeResult.timings?.initMs || 0;
     const { assetBaseUrl, idleTimeoutMs, timeoutMs, ...request } = message.payload ?? {};
     const hostCallStartedAt = now();
+    materializeKernelVirtualFiles(request);
     activeProjectIo = {
       messageId: message.id,
       request,

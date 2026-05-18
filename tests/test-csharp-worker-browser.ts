@@ -68,6 +68,7 @@ type CSharpProjectWorkerRequest = {
   stdin: string;
   project: {
     files: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
+    kernelFiles?: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     directories?: string[];
   };
 };
@@ -75,6 +76,10 @@ type CSharpProjectWorkerRequest = {
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE_ROOT = join(ROOT, 'spikes', 'csharp-wasm-roslyn', 'fixtures');
 const WORKER_REQUEST_TIMEOUT_MS = 60_000;
+const TRACE_KERNEL_PROC_FILES = [
+  { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
+  { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
+];
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -2626,6 +2631,7 @@ async function main(): Promise<void> {
         stdin: 'from-stdin\n',
         project: {
           directories: ['src/empty/child'],
+          kernelFiles: TRACE_KERNEL_PROC_FILES,
           files: [
             {
               path: 'src/Program.cs',
@@ -2636,6 +2642,9 @@ async function main(): Promise<void> {
                 'Console.WriteLine(Console.ReadLine());',
                 'Console.WriteLine(Environment.GetEnvironmentVariable("MODE"));',
                 'Console.WriteLine(string.Join(",", args));',
+                'Console.WriteLine(File.ReadAllText("/proc/kernel/info").Contains("\\"name\\": \\"tracekernel\\"") ? "proc-info" : "proc-missing");',
+                'Console.WriteLine(Directory.GetFiles("/proc/kernel").Select(Path.GetFileName).Single());',
+                'try { File.WriteAllText("/proc/kernel/info", "{}\\n"); Console.WriteLine("proc-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-write:" + ex.GetType().Name); }',
                 'Console.Error.WriteLine("stderr-line");',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
@@ -2662,8 +2671,12 @@ async function main(): Promise<void> {
     );
     assertCondition(projectRun.exitCode === 0, `C# project worker should run multifile project: ${projectRun.stderr}`);
     assertCondition(
-      projectRun.stdout.endsWith('42\ndir\nchild\nfrom-stdin\nbrowser-csharp-project\nalpha,beta\n'),
-      `C# project worker should preserve stdout/stdin/env/args: ${projectRun.stdout}`
+      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\nbrowser-csharp-project\nalpha,beta\nproc-info\ninfo\n'),
+      `C# project worker should preserve stdout/stdin/env/args/proc reads: ${projectRun.stdout}`
+    );
+    assertCondition(
+      projectRun.stdout.includes('proc-write:') && !projectRun.stdout.includes('proc-write:ok'),
+      `C# project worker should expose /proc as read-only, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stderr === 'stderr-line\n',
