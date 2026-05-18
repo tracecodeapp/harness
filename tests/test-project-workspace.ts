@@ -2127,6 +2127,9 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       'try { fs.writeSync(1, "fd1-out\\n"); console.log("fd1:ok"); } catch (error) { console.log("fd1:" + error.code); }',
       'try { process.stdin.resume(); let text = ""; process.stdin.on("data", (chunk) => text += chunk); await new Promise((resolve) => process.stdin.on("end", resolve)); console.log("stdin:" + text.trim()); } catch (error) { console.log("stdin:" + error.code); }',
       'try { process.stdout.write("process-out\\n"); console.log("process:ok"); } catch (error) { console.log("process:" + error.code); }',
+      'try { fs.readFileSync("/dev/stdout", "utf8"); console.log("stdout-readfile:ok"); } catch (error) { console.log("stdout-readfile:" + error.code); }',
+      'try { await new Promise((resolve, reject) => fs.createReadStream("/dev/stdout").on("error", reject).on("end", resolve).resume()); console.log("stdout-stream:ok"); } catch (error) { console.log("stdout-stream:" + error.code); }',
+      'try { fs.copyFileSync("/dev/stdout", "stdout-copy.txt"); console.log("stdout-copy:ok"); } catch (error) { console.log("stdout-copy:" + error.code); }',
       'try { const fd = fs.openSync("/dev/stdout", "r"); const buffer = Buffer.alloc(1); fs.readSync(fd, buffer, 0, 1, 0); console.log("stdout-read-open:ok"); } catch (error) { console.log("stdout-read-open:" + error.code); }',
       'try { const fd = fs.openSync("/dev/stdin", "w"); fs.writeSync(fd, "stdin-write\\n"); console.log("stdin-write-open:ok"); } catch (error) { console.log("stdin-write-open:" + error.code); }',
       'fs.writeFileSync("/dev/stderr", "stderr-ok\\n");',
@@ -2149,7 +2152,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
   });
   assertCondition(restrictedResult.exitCode === 0, `browser node restricted kernel device inventory should succeed: ${restrictedResult.stderr}`);
   assertCondition(
-    restrictedResult.stdout === 'fd0:EBADF\nfd1:EBADF\nstdin:\nprocess:EBADF\nstdout-read-open:EBADF\nstdin-write-open:EBADF\n',
+    restrictedResult.stdout === 'fd0:EBADF\nfd1:EBADF\nstdin:\nprocess:EBADF\nstdout-readfile:EBADF\nstdout-stream:EBADF\nstdout-copy:EBADF\nstdout-read-open:EBADF\nstdin-write-open:EBADF\n',
     `browser node fd/process stdio should respect restricted kernelDevices: ${JSON.stringify(restrictedResult)}`
   );
   assertCondition(

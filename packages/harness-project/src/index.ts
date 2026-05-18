@@ -2611,6 +2611,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
+    const accessTarget = kernelAccessTarget(path);
+    if (accessTarget.kind === 'allowed') {
+      if (accessTarget.path === '/dev' || accessTarget.path.startsWith('/dev/')) {
+        return { isFile: accessTarget.path !== '/dev', isDirectory: accessTarget.path === '/dev' };
+      }
+      if (accessTarget.path === '/proc' || accessTarget.path.startsWith('/proc/')) {
+        return { isFile: !runtimeProcDirEntries(accessTarget.path), isDirectory: Boolean(runtimeProcDirEntries(accessTarget.path)) };
+      }
+    }
+    if (accessTarget.kind === 'denied') throw new Error(`Kernel virtual path not found: ${path}`);
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'proc-file') return { isFile: true, isDirectory: false };
     if (readTarget.kind === 'proc-directory') return { isFile: false, isDirectory: true };

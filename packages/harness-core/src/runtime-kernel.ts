@@ -47,12 +47,12 @@ export type RuntimeKernelReadTarget =
   | { kind: 'proc-directory'; path: string }
   | { kind: 'device-file'; path: RuntimeKernelDevicePath }
   | { kind: 'device-directory'; path: '/dev' }
-  | { kind: 'error'; reason: 'not-found'; path: string };
+  | { kind: 'error'; reason: 'not-found' | 'permission-denied'; path: string };
 export type RuntimeKernelFileReadTarget =
   | { kind: 'workspace' }
   | { kind: 'proc-file'; path: string }
   | { kind: 'device-file'; path: RuntimeKernelDevicePath }
-  | { kind: 'error'; reason: 'is-directory' | 'not-found'; path: string };
+  | { kind: 'error'; reason: 'is-directory' | 'not-found' | 'permission-denied'; path: string };
 export interface RuntimeKernelDirectoryEntry {
   name: string;
   kind: RuntimeKernelProcEntryKind | RuntimeKernelDeviceEntryKind;
@@ -409,15 +409,20 @@ export function runtimeKernelReadTarget(
   if (virtualPath === null) return { kind: 'workspace' };
   if (virtualPath.kind === 'device-namespace') {
     const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
-    return device && runtimeKernelDeviceInfo(devices, device)
+    const info = device ? runtimeKernelDeviceInfo(devices, device) : null;
+    if (!device || !info) return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+    return info.readable
       ? { kind: 'device-file', path: device }
-      : { kind: 'error', reason: 'not-found', path: virtualPath.path };
+      : { kind: 'error', reason: 'permission-denied', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-directory') return virtualPath;
   if (virtualPath.kind === 'device') {
-    return devices && !runtimeKernelDeviceInfo(devices, virtualPath.path)
-      ? { kind: 'error', reason: 'not-found', path: virtualPath.path }
-      : { kind: 'device-file', path: virtualPath.path };
+    const info = devices ? runtimeKernelDeviceInfo(devices, virtualPath.path) : null;
+    if (devices && !info) return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+    const readable = info ? info.readable : runtimeDeviceCanRead(virtualPath.path);
+    return readable
+      ? { kind: 'device-file', path: virtualPath.path }
+      : { kind: 'error', reason: 'permission-denied', path: virtualPath.path };
   }
   const kind = runtimeProcEntryKind(virtualPath.path);
   if (kind === 'file') return { kind: 'proc-file', path: virtualPath.path };
@@ -442,6 +447,7 @@ export function runtimeKernelFileReadTarget(
 export function runtimeKernelFileReadErrorCode(
   reason: Extract<RuntimeKernelFileReadTarget, { kind: 'error' }>['reason']
 ): RuntimeKernelErrorCode {
+  if (reason === 'permission-denied') return 'EBADF';
   return reason === 'is-directory' ? 'EISDIR' : 'ENOENT';
 }
 
@@ -474,7 +480,10 @@ export function runtimeKernelDirectoryTarget(
   if (readTarget.kind === 'device-file' || readTarget.kind === 'proc-file') {
     return { kind: 'error', reason: 'not-directory', path: readTarget.path };
   }
-  return readTarget;
+  if (readTarget.reason === 'permission-denied') {
+    return { kind: 'error', reason: 'not-directory', path: readTarget.path };
+  }
+  return { kind: 'error', reason: 'not-found', path: readTarget.path };
 }
 
 export function runtimeKernelDirectoryErrorCode(

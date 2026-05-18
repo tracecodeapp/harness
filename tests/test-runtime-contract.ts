@@ -20,7 +20,7 @@ import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
-import { runtimeKernelOpenTarget } from '../packages/harness-core/src/runtime-kernel';
+import { runtimeKernelFileReadTarget, runtimeKernelOpenTarget } from '../packages/harness-core/src/runtime-kernel';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -76,6 +76,16 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     stableStringify(runtimeKernelOpenTarget('/dev/tty', { readable: true, writable: true }, devices)) ===
       '{"device":"/dev/tty","kind":"device","readable":true,"writable":true}',
     'kernel open target should grant requested access only when the manifest allows it'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelFileReadTarget('/dev/stdout', devices)) ===
+      '{"kind":"error","path":"/dev/stdout","reason":"permission-denied"}',
+    'kernel read target should reject high-level reads on write-only devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelFileReadTarget('/dev/stdin', devices)) ===
+      '{"kind":"device-file","path":"/dev/stdin"}',
+    'kernel read target should allow high-level reads on readable devices'
   );
 }
 

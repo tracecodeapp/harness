@@ -2276,6 +2276,9 @@ async function runBrowserJavaScriptProjectRequest(
     } as const;
     let mkdtempCounter = 0;
     const fileSystemEntryExists = (path: unknown): boolean => {
+      const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
+      if (accessTarget?.kind === 'allowed') return true;
+      if (accessTarget?.kind === 'denied') return false;
       const readTarget = runtimeReadTarget(path, kernelDevices);
       if (
         readTarget?.kind === 'device-file' ||
@@ -2441,6 +2444,11 @@ async function runBrowserJavaScriptProjectRequest(
       setFileBytes(path, next);
     };
     const realpathForEntry = (path: unknown): string => {
+      const accessTarget = runtimeAccessTarget(path, 0, kernelDevices);
+      if (accessTarget?.kind === 'allowed') return accessTarget.path;
+      if (accessTarget?.kind === 'denied') {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
+      }
       const readTarget = runtimeReadTarget(path, kernelDevices);
       if (readTarget?.kind === 'device-file' || readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
         return readTarget.path;
@@ -3019,7 +3027,9 @@ async function runBrowserJavaScriptProjectRequest(
         else if (readTarget?.kind === 'error') {
           throwRuntimeReadTargetError(readTarget, readTarget.reason === 'is-directory'
             ? `EISDIR: illegal operation on a directory, open '${path}'`
-            : `ENOENT: no such file or directory, open '${path}'`);
+            : readTarget.reason === 'permission-denied'
+              ? `EBADF: bad file descriptor, open '${path}'`
+              : `ENOENT: no such file or directory, open '${path}'`);
         } else if (optionFd !== null) sourceBytes = readDescriptorFileBytes(optionFd);
         else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
         if (!sourceBytes) {
@@ -3055,7 +3065,9 @@ async function runBrowserJavaScriptProjectRequest(
         if (readTarget?.kind === 'error') {
           throwRuntimeReadTargetError(readTarget, readTarget.reason === 'is-directory'
             ? `EISDIR: illegal operation on a directory, open '${path}'`
-            : `ENOENT: no such file or directory, open '${path}'`);
+            : readTarget.reason === 'permission-denied'
+              ? `EBADF: bad file descriptor, open '${path}'`
+              : `ENOENT: no such file or directory, open '${path}'`);
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalized);
@@ -3166,13 +3178,17 @@ async function runBrowserJavaScriptProjectRequest(
         else if (copyTarget?.kind === 'error' && copyTarget.side === 'source') {
           throw Object.assign(new Error(copyTarget.reason === 'is-directory'
             ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
+            : copyTarget.reason === 'permission-denied'
+              ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
             : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), {
             code: runtimeKernelFileReadErrorCode(copyTarget.reason),
           });
         } else if (sourceTarget?.kind === 'error') {
           throwRuntimeReadTargetError(sourceTarget, sourceTarget.reason === 'is-directory'
             ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
-            : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`);
+            : sourceTarget.reason === 'permission-denied'
+              ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
+              : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`);
         } else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
@@ -3476,6 +3492,18 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       statSync: (path: unknown) => {
+        const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
+        if (accessTarget?.kind === 'allowed') {
+          if (accessTarget.path === '/dev' || accessTarget.path.startsWith('/dev/')) {
+            return statForDevicePath(accessTarget.path as '/dev' | RuntimeKernelDevicePath);
+          }
+          if (accessTarget.path === '/proc' || accessTarget.path.startsWith('/proc/')) {
+            const procStats = statForProcPath(accessTarget.path);
+            if (!procStats) throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
+            return procStats;
+          }
+        }
+        if (accessTarget?.kind === 'denied') throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
         const readTarget = runtimeReadTarget(path, kernelDevices);
         if (readTarget?.kind === 'device-file' || readTarget?.kind === 'device-directory') return statForDevicePath(readTarget.path);
         if (readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
