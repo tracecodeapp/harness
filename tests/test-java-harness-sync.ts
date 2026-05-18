@@ -51,6 +51,7 @@ async function main(): Promise<void> {
     '/app/workers/vendor/javaparser-core-3.25.10.jar',
     'cheerpjRunLibrary',
     'Java_tracecode_browser_ProjectEvents_emitOutputNative',
+    'sourceDevice',
     'Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative',
     'tracecode.browser.BrowserCompileAndTraceLibrary',
     'harness.browser.JavaRewriteLibrary',

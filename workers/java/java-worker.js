@@ -64,9 +64,15 @@ function postMessageResponse(message) {
   self.postMessage(message);
 }
 
-function emitLiveJavaProjectOutput(stream, data) {
+function emitLiveJavaProjectOutput(stream, data, sourceDevice) {
   if (!activeJavaProjectIo?.messageId || typeof data !== 'string' || data.length === 0) return;
   const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
+  const normalizedSourceDevice = sourceDevice === '/dev/stdin' ||
+    sourceDevice === '/dev/stdout' ||
+    sourceDevice === '/dev/stderr' ||
+    sourceDevice === '/dev/tty'
+    ? sourceDevice
+    : '';
   if (normalizedStream === 'stderr') {
     activeJavaProjectIo.stderrEmitted = true;
   } else {
@@ -76,6 +82,7 @@ function emitLiveJavaProjectOutput(stream, data) {
     type: 'output',
     stream: normalizedStream,
     device: normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
+    ...(normalizedSourceDevice ? { sourceDevice: normalizedSourceDevice } : {}),
     data,
   });
 }
@@ -109,8 +116,8 @@ function emitLiveJavaProjectFileDelete(path) {
 
 function javaProjectNativeBridge() {
   return {
-    Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data) => {
-      emitLiveJavaProjectOutput(String(stream ?? 'stdout'), String(data ?? ''));
+    Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data, sourceDevice) => {
+      emitLiveJavaProjectOutput(String(stream ?? 'stdout'), String(data ?? ''), String(sourceDevice ?? ''));
     },
     Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative: (_library, path, contents) => {
       emitLiveJavaProjectFileSnapshot(String(path ?? ''), String(contents ?? ''));

@@ -759,7 +759,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 .join('\n');
               const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
                 decodedSourceManifest.includes('/dev/stdout');
-              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
+              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? 'dev_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
@@ -848,6 +848,12 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   null,
                   'stdout',
                   'fos_stdout\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev_tty\n',
+                  '/dev/tty'
                 );
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
@@ -1412,6 +1418,8 @@ async function main(): Promise<void> {
       events?: Array<{
         type: string;
         stream?: 'stdout' | 'stderr';
+        device?: string;
+        sourceDevice?: string;
         data?: string;
         phase?: string;
         change?: { path: string; contents?: string; encoding?: string; deleted?: true };
@@ -1474,6 +1482,7 @@ async function main(): Promise<void> {
               '    try (var stream = new FileInputStream("/dev/stdin")) { System.out.println("dev_stream_stdin=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    Files.writeString(Path.of("/dev/stdout"), "dev_stdout\\\\n");',
               '    try (var stream = new FileOutputStream("/dev/stdout")) { stream.write("fos_stdout\\\\n".getBytes(StandardCharsets.UTF_8)); }',
+              '    Files.writeString(Path.of("/dev/tty"), "dev_tty\\\\n");',
               '    Files.writeString(Path.of("/dev/stderr"), "dev_stderr\\\\n");',
               '    try (var stream = new PrintStream("/dev/stderr", "UTF-8")) { stream.print("ps_stderr\\\\n"); }',
               '    try { Files.readString(Path.of("/dev/stdout")); System.out.println("stdout-read:ok"); } catch (IOException ex) { System.out.println("stdout-read:" + ex.getClass().getSimpleName()); }',
@@ -1499,7 +1508,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
+      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -1563,6 +1572,14 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stdout' &&
             event.data === 'fos_stdout\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.device === '/dev/stdout' &&
+            event.sourceDevice === '/dev/tty' &&
+            event.data === 'dev_tty\n'
         ) === true &&
         projectExecute.events?.some(
           (event) =>

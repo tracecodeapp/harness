@@ -266,6 +266,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         worker.includes('new tracecode.browser.ProjectEvents.ProjectFile('),
         '@tracecode/harness-java worker should ship java.io.File live-mutation rewrites'
       );
+      assertCondition(
+        worker.includes('emitLiveJavaProjectOutput(String(stream ?? \'stdout\'), String(data ?? \'\'), String(sourceDevice ?? \'\'))') &&
+          worker.includes('sourceDevice'),
+        '@tracecode/harness-java worker should ship routed source device output events'
+      );
       const helperJarListing = spawnSync('jar', ['tf', join(packageDir, 'workers/vendor/java-browser-helper.jar')], {
         encoding: 'utf8',
       });
@@ -275,6 +280,18 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         helperJarListing.stdout.includes('tracecode/browser/ProjectEvents$ProjectFile.class'),
         '@tracecode/harness-java helper jar should include ProjectEvents.ProjectFile'
+      );
+      const helperApi = spawnSync(
+        'javap',
+        ['-classpath', join(packageDir, 'workers/vendor/java-browser-helper.jar'), '-private', 'tracecode.browser.ProjectEvents'],
+        { encoding: 'utf8' }
+      );
+      if (helperApi.status !== 0) {
+        throw new Error(helperApi.stderr || helperApi.stdout || '@tracecode/harness-java helper jar API listing failed');
+      }
+      assertCondition(
+        helperApi.stdout.includes('emitOutputNative(java.lang.String, java.lang.String, java.lang.String)'),
+        '@tracecode/harness-java helper jar should expose source-device output native bridge'
       );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {
