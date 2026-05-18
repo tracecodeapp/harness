@@ -550,7 +550,9 @@ public final class ProjectEvents {
     KernelDevice device = writableKernelDevice(path);
     if (device != null) return new KernelDeviceOutputStream(device);
     assertWritableProjectPath(path);
-    return new ProjectOutputStream(Files.newOutputStream(path, options), path);
+    boolean existed = Files.exists(path);
+    OutputStream stream = Files.newOutputStream(path, options);
+    return new ProjectOutputStream(stream, path, outputOpenSnapshotRequired(existed, options));
   }
 
   public static BufferedWriter newBufferedWriter(Path path, OpenOption... options) throws IOException {
@@ -559,7 +561,9 @@ public final class ProjectEvents {
       return new BufferedWriter(new OutputStreamWriter(new KernelDeviceOutputStream(device), StandardCharsets.UTF_8));
     }
     assertWritableProjectPath(path);
-    return new ProjectBufferedWriter(Files.newBufferedWriter(path, options), path);
+    boolean existed = Files.exists(path);
+    BufferedWriter writer = Files.newBufferedWriter(path, options);
+    return new ProjectBufferedWriter(writer, path, outputOpenSnapshotRequired(existed, options));
   }
 
   public static BufferedWriter newBufferedWriter(Path path, Charset charset, OpenOption... options) throws IOException {
@@ -568,7 +572,9 @@ public final class ProjectEvents {
       return new BufferedWriter(new OutputStreamWriter(new KernelDeviceOutputStream(device), charset));
     }
     assertWritableProjectPath(path);
-    return new ProjectBufferedWriter(Files.newBufferedWriter(path, charset, options), path);
+    boolean existed = Files.exists(path);
+    BufferedWriter writer = Files.newBufferedWriter(path, charset, options);
+    return new ProjectBufferedWriter(writer, path, outputOpenSnapshotRequired(existed, options));
   }
 
   public static SeekableByteChannel newByteChannel(Path path, OpenOption... options) throws IOException {
@@ -578,7 +584,9 @@ public final class ProjectEvents {
     if (kernelFileChannel != null) return kernelFileChannel;
     boolean writable = byteChannelCanWrite(options);
     if (writable) assertWritableProjectPath(path);
-    return new ProjectSeekableByteChannel(Files.newByteChannel(path, options), path, writable);
+    boolean existed = Files.exists(path);
+    SeekableByteChannel channel = Files.newByteChannel(path, options);
+    return new ProjectSeekableByteChannel(channel, path, writable, byteChannelOpenSnapshotRequired(existed, options));
   }
 
   public static SeekableByteChannel newByteChannel(
@@ -593,7 +601,9 @@ public final class ProjectEvents {
     if (kernelFileChannel != null) return kernelFileChannel;
     boolean writable = byteChannelCanWrite(optionArray);
     if (writable) assertWritableProjectPath(path);
-    return new ProjectSeekableByteChannel(Files.newByteChannel(path, options, attrs), path, writable);
+    boolean existed = Files.exists(path);
+    SeekableByteChannel channel = Files.newByteChannel(path, options, attrs);
+    return new ProjectSeekableByteChannel(channel, path, writable, byteChannelOpenSnapshotRequired(existed, optionArray));
   }
 
   public static final class ProjectFileWriter extends FileWriter {
@@ -1344,9 +1354,10 @@ public final class ProjectEvents {
     private final OutputStream delegate;
     private final Path path;
 
-    ProjectOutputStream(OutputStream delegate, Path path) {
+    ProjectOutputStream(OutputStream delegate, Path path, boolean emitInitialSnapshot) {
       this.delegate = delegate;
       this.path = path;
+      if (emitInitialSnapshot) emitFileSnapshot(path);
     }
 
     @Override
@@ -1385,10 +1396,11 @@ public final class ProjectEvents {
     private final Path path;
     private final boolean writable;
 
-    ProjectSeekableByteChannel(SeekableByteChannel delegate, Path path, boolean writable) {
+    ProjectSeekableByteChannel(SeekableByteChannel delegate, Path path, boolean writable, boolean emitInitialSnapshot) {
       this.delegate = delegate;
       this.path = path;
       this.writable = writable;
+      if (emitInitialSnapshot) emitFileSnapshot(path);
     }
 
     @Override
@@ -1441,9 +1453,10 @@ public final class ProjectEvents {
   private static final class ProjectBufferedWriter extends BufferedWriter {
     private final Path path;
 
-    ProjectBufferedWriter(Writer delegate, Path path) {
+    ProjectBufferedWriter(Writer delegate, Path path, boolean emitInitialSnapshot) {
       super(delegate);
       this.path = path;
+      if (emitInitialSnapshot) emitFileSnapshot(path);
     }
 
     @Override
@@ -2197,6 +2210,26 @@ public final class ProjectEvents {
     return false;
   }
 
+  private static boolean outputOpenSnapshotRequired(boolean existed, OpenOption... options) {
+    if (options == null || options.length == 0) return true;
+    boolean creates = false;
+    boolean appends = false;
+    boolean truncates = false;
+    for (OpenOption option : options) {
+      if (option == StandardOpenOption.CREATE || option == StandardOpenOption.CREATE_NEW) creates = true;
+      if (option == StandardOpenOption.APPEND) appends = true;
+      if (option == StandardOpenOption.TRUNCATE_EXISTING) truncates = true;
+    }
+    if (!existed && creates) return true;
+    if (truncates) return true;
+    return !existed && !appends;
+  }
+
+  private static boolean byteChannelOpenSnapshotRequired(boolean existed, OpenOption... options) {
+    if (!byteChannelCanWrite(options)) return false;
+    return outputOpenSnapshotRequired(existed, options);
+  }
+
   private static boolean byteChannelCanRead(OpenOption... options) {
     if (options == null || options.length == 0) return true;
     for (OpenOption option : options) {
@@ -2250,7 +2283,7 @@ public final class ProjectEvents {
     KernelDevice device = writableKernelDevice(path);
     if (device != null) return new KernelDeviceOutputStream(device);
     assertWritableProjectPath(path);
-    return new ProjectOutputStream(new FileOutputStream(path.toFile()), path);
+    return new ProjectOutputStream(new FileOutputStream(path.toFile()), path, true);
   }
 
   private static Writer printWriterOutput(Path path, Charset charset) throws IOException {

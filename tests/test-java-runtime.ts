@@ -1078,8 +1078,38 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               const hasCustomKernelDevices = hasKernelDevices &&
                 decodedSourceManifest.includes('/dev/log') &&
                 decodedSourceManifest.includes('/dev/custom-in');
-              const stdout = `after-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : 'dev-list=null,stderr,stdin,stdout,tty\ndev-stream=null,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : ''}`;
+              const stdout = `after-empty-nio-stream\nafter-empty-nio-writer\nafter-empty-nio-channel\nafter-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : 'dev-list=null,stderr,stdin,stdout,tty\ndev-stream=null,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n' : 'dev_stderr\nfd_stderr\nps_stderr\n' : '';
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'empty-nio-stream.bin',
+                ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                'after-empty-nio-stream\n'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'empty-nio-writer.txt',
+                ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                'after-empty-nio-writer\n'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
+                null,
+                'empty-nio-channel.bin',
+                ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                null,
+                'stdout',
+                'after-empty-nio-channel\n'
+              );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
                 'empty-open-writer.txt',
@@ -1570,6 +1600,9 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   { path: 'nio-stream.bin', contents: Buffer.from([0, 252]).toString('base64'), encoding: 'base64' },
                   { path: 'nio-writer.txt', contents: Buffer.from('nio-writer\n', 'utf8').toString('base64'), encoding: 'base64' },
                   { path: 'byte-channel.bin', contents: Buffer.from([0, 7, 6]).toString('base64'), encoding: 'base64' },
+                  { path: 'empty-nio-stream.bin', contents: '', encoding: 'base64' },
+                  { path: 'empty-nio-writer.txt', contents: '', encoding: 'base64' },
+                  { path: 'empty-nio-channel.bin', contents: '', encoding: 'base64' },
                   { path: 'random.bin', contents: Buffer.from([0, 9, 8]).toString('base64'), encoding: 'base64' },
                   { path: 'classic-created.txt', contents: '', encoding: 'base64' },
                   { path: 'classic-metadata.txt', contents: '', encoding: 'base64' },
@@ -2065,6 +2098,15 @@ async function main(): Promise<void> {
               '    try (var stream = Files.newOutputStream(Path.of("nio-stream.bin"))) { stream.write(new byte[] { 0, (byte)252 }); }',
               '    try (var writer = Files.newBufferedWriter(Path.of("nio-writer.txt"))) { writer.write("nio-writer\\n"); }',
               '    try (var channel = Files.newByteChannel(Path.of("byte-channel.bin"), EnumSet.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))) { channel.write(ByteBuffer.wrap(new byte[] { 0, 7, 6, 5 })); channel.truncate(3); }',
+              '    var emptyNioStream = Files.newOutputStream(Path.of("empty-nio-stream.bin"));',
+              '    System.out.println("after-empty-nio-stream");',
+              '    emptyNioStream.close();',
+              '    var emptyNioWriter = Files.newBufferedWriter(Path.of("empty-nio-writer.txt"));',
+              '    System.out.println("after-empty-nio-writer");',
+              '    emptyNioWriter.close();',
+              '    var emptyNioChannel = Files.newByteChannel(Path.of("empty-nio-channel.bin"), EnumSet.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING));',
+              '    System.out.println("after-empty-nio-channel");',
+              '    emptyNioChannel.close();',
               '    try (var raf = new RandomAccessFile("random.bin", "rw")) { raf.write(new byte[] { 0, 1, 2, 3 }); raf.seek(1); raf.write(new byte[] { 9, 8 }); raf.setLength(3); }',
               '    new File("classic-created.txt").createNewFile();',
               '    var classicMetadata = new File("classic-metadata.txt");',
@@ -2179,7 +2221,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === 'after-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\ncustom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\ndev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n',
+      projectExecute.stdout === 'after-empty-nio-stream\nafter-empty-nio-writer\nafter-empty-nio-channel\nafter-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\ncustom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\ndev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -2690,6 +2732,54 @@ async function main(): Promise<void> {
     );
     {
       const events = projectExecute.events ?? [];
+      const emptyNioStreamLiveIndex = events.findIndex((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'empty-nio-stream.bin' &&
+        event.change.encoding === 'base64' &&
+        event.change.contents === ''
+      );
+      const afterEmptyNioStreamOutputIndex = events.findIndex((event) =>
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.data === 'after-empty-nio-stream\n'
+      );
+      assertCondition(
+        emptyNioStreamLiveIndex >= 0 && afterEmptyNioStreamOutputIndex > emptyNioStreamLiveIndex,
+        `Java Files.newOutputStream open/truncate should emit live empty file-change before later stdout: ${JSON.stringify(events)}`
+      );
+      const emptyNioWriterLiveIndex = events.findIndex((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'empty-nio-writer.txt' &&
+        event.change.encoding === 'base64' &&
+        event.change.contents === ''
+      );
+      const afterEmptyNioWriterOutputIndex = events.findIndex((event) =>
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.data === 'after-empty-nio-writer\n'
+      );
+      assertCondition(
+        emptyNioWriterLiveIndex >= 0 && afterEmptyNioWriterOutputIndex > emptyNioWriterLiveIndex,
+        `Java Files.newBufferedWriter open/truncate should emit live empty file-change before later stdout: ${JSON.stringify(events)}`
+      );
+      const emptyNioChannelLiveIndex = events.findIndex((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'empty-nio-channel.bin' &&
+        event.change.encoding === 'base64' &&
+        event.change.contents === ''
+      );
+      const afterEmptyNioChannelOutputIndex = events.findIndex((event) =>
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.data === 'after-empty-nio-channel\n'
+      );
+      assertCondition(
+        emptyNioChannelLiveIndex >= 0 && afterEmptyNioChannelOutputIndex > emptyNioChannelLiveIndex,
+        `Java Files.newByteChannel open/truncate should emit live empty file-change before later stdout: ${JSON.stringify(events)}`
+      );
       const emptyWriterLiveIndex = events.findIndex((event) =>
         event.type === 'file-change' &&
         event.phase === 'live' &&
@@ -2919,6 +3009,9 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.delete(Path.of("live-dir/renamed-child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newOutputStream(Path.of("nio-stream.bin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newBufferedWriter(Path.of("nio-writer.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newOutputStream(Path.of("empty-nio-stream.bin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newBufferedWriter(Path.of("empty-nio-writer.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newByteChannel(Path.of("empty-nio-channel.bin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.deleteIfExists(Path.of("stale.txt")') === true,
       'Java execute-project-java should route project source file mutations through the live event bridge'
     );
