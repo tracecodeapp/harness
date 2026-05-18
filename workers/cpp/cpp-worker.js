@@ -785,6 +785,14 @@ class WasiProcess {
     return isRuntimeDeviceDirectory(normalized) || this.isKnownDevicePath(normalized) ? EROFS : missingErrno;
   }
 
+  parentDirectoryErrno(pathname) {
+    const parent = dirname(pathname);
+    if (parent === '/') return null;
+    if (this.fs.isFile(parent)) return ENOTDIR;
+    if (!this.fs.isDirectory(parent)) return ENOENT;
+    return null;
+  }
+
   filetypeForPath(pathname) {
     const normalized = normalizePath(pathname);
     if (isRuntimeDeviceDirectory(normalized)) return FILETYPE_DIRECTORY;
@@ -815,6 +823,8 @@ class WasiProcess {
 
     if (!this.fs.exists(normalized)) {
       if (!options.create) return -ENOENT;
+      const parentErrno = this.parentDirectoryErrno(normalized);
+      if (parentErrno !== null) return -parentErrno;
       this.fs.writeFile(normalized, new Uint8Array());
     } else if (options.exclusive) {
       return -EEXIST;
@@ -1160,6 +1170,9 @@ class WasiProcess {
     if (isRuntimeProcPath(pathname) || this.isKernelVirtualNamespacePath(pathname)) return EROFS;
     const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
     if (deviceErrno !== null) return deviceErrno;
+    if (this.fs.exists(pathname)) return EEXIST;
+    const parentErrno = this.parentDirectoryErrno(pathname);
+    if (parentErrno !== null) return parentErrno;
     this.fs.addDirectory(pathname);
     return ESUCCESS;
   }
@@ -1197,6 +1210,8 @@ class WasiProcess {
     if (oldDeviceErrno !== null) return oldDeviceErrno;
     const newDeviceErrno = this.deviceNamespaceMutationErrno(newPath);
     if (newDeviceErrno !== null) return newDeviceErrno;
+    const parentErrno = this.parentDirectoryErrno(newPath);
+    if (parentErrno !== null) return parentErrno;
     return this.fs.rename(oldPath, newPath);
   }
 

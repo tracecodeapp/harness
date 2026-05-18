@@ -365,6 +365,14 @@ async function main(): Promise<void> {
             '  if (empty_fd >= 0) { close(empty_fd); }',
             '  int missing_remove_result = std::remove("missing-delete.txt");',
             '  std::cout << (missing_remove_result == 0 ? "missing-remove:ok" : "missing-remove:blocked") << "\\\\n";',
+            '  int mkdir_missing_parent_result = mkdir("missing-parent/child", 0777);',
+            '  std::cout << (mkdir_missing_parent_result == 0 ? "mkdir-missing-parent:ok" : "mkdir-missing-parent:blocked") << "\\\\n";',
+            '  int open_missing_parent_fd = open("missing-open/file.txt", O_CREAT | O_WRONLY, 0644);',
+            '  std::cout << (open_missing_parent_fd >= 0 ? "open-missing-parent:ok" : "open-missing-parent:blocked") << "\\\\n";',
+            '  if (open_missing_parent_fd >= 0) close(open_missing_parent_fd);',
+            '  std::ofstream("rename-parent-source.txt") << "blocked\\\\n";',
+            '  std::cout << (std::rename("rename-parent-source.txt", "missing-rename/child.txt") == 0 ? "rename-missing-parent:ok" : "rename-missing-parent:blocked") << "\\\\n";',
+            '  std::remove("rename-parent-source.txt");',
             '  mkdir("unlink-dir", 0777);',
             '  int unlink_dir_result = unlink("unlink-dir");',
             '  std::cout << (unlink_dir_result == 0 ? "unlink-dir:ok" : "unlink-dir:blocked") << "\\\\n";',
@@ -1260,7 +1268,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
-        projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nmkdir-missing-parent:blocked\nopen-missing-parent:blocked\nrename-missing-parent:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
@@ -1485,6 +1493,19 @@ async function main(): Promise<void> {
           event.change.directory !== true
         )) !== true,
       `C++ browser project run should not stream failed unlink mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path.startsWith('src/missing-parent/') || file.path.startsWith('src/missing-open/') || file.path.startsWith('src/missing-rename/')) !== true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          (
+            event.change?.path.startsWith('src/missing-parent/') ||
+            event.change?.path.startsWith('src/missing-open/') ||
+            event.change?.path.startsWith('src/missing-rename/')
+          )
+        )) !== true,
+      `C++ browser project run should not create or stream mutations below missing parents: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.events?.some((event) => (
