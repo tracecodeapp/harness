@@ -322,6 +322,12 @@ async function main(): Promise<void> {
             '  if (zero_fd >= 0) { write(zero_fd, "nonzero", 7); ftruncate(zero_fd, 0); close(zero_fd); }',
             '  int empty_fd = open("empty-open.txt", O_CREAT | O_TRUNC | O_WRONLY, 0644);',
             '  if (empty_fd >= 0) { close(empty_fd); }',
+            '  int missing_remove_result = std::remove("missing-delete.txt");',
+            '  std::cout << (missing_remove_result == 0 ? "missing-remove:ok" : "missing-remove:blocked") << "\\\\n";',
+            '  mkdir("unlink-dir", 0777);',
+            '  int unlink_dir_result = unlink("unlink-dir");',
+            '  std::cout << (unlink_dir_result == 0 ? "unlink-dir:ok" : "unlink-dir:blocked") << "\\\\n";',
+            '  rmdir("unlink-dir");',
             '  mkdir("scratch", 0777);',
             '  std::ofstream("scratch/transient.txt") << "gone\\\\n";',
             '  std::remove("scratch/transient.txt");',
@@ -1122,6 +1128,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
@@ -1292,6 +1299,22 @@ async function main(): Promise<void> {
         event.change.contents === ''
       )) === true,
       `C++ browser project run should stream zero-byte open-created files: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/missing-delete.txt' &&
+        event.change.deleted === true
+      )) !== true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/unlink-dir' &&
+          event.change.deleted === true &&
+          event.change.directory !== true
+        )) !== true,
+      `C++ browser project run should not stream failed unlink mutations: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some((event) => (

@@ -487,9 +487,12 @@ class InMemoryFileSystem {
   unlink(pathname) {
     const normalized = normalizePath(pathname);
     if (this.isReadOnly(normalized)) throw Object.assign(new Error(`Read-only file system: ${normalized}`), { code: 'EROFS' });
+    if (this.dirs.has(normalized)) return EISDIR;
+    if (!this.files.has(normalized)) return ENOENT;
     this.files.delete(normalized);
     this.readOnlyFiles.delete(normalized);
     this.fileChangeObserver?.({ path: normalized, deleted: true });
+    return ESUCCESS;
   }
 
   removeDirectory(pathname) {
@@ -1107,8 +1110,7 @@ class WasiProcess {
     if (this.fs.isReadOnly(pathname)) return EROFS;
     const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
     if (deviceErrno !== null) return deviceErrno;
-    this.fs.unlink(pathname);
-    return ESUCCESS;
+    return this.fs.unlink(pathname);
   }
 
   path_remove_directory(dirfd, pathPtr, pathLen) {
