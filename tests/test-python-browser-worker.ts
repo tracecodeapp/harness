@@ -210,6 +210,11 @@ async function main(): Promise<void> {
             'print("stderr-line", file=sys.stderr)',
             'with open("/workspace/generated.txt", "w", encoding="utf-8") as handle:',
             '    handle.write(str(answer()) + "\\\\n")',
+            'with open("/workspace/live-before-stdout.txt", "w", encoding="utf-8") as handle:',
+            '    handle.write("before-output\\\\n")',
+            '    handle.flush()',
+            'sys.stdout.write("after-live-file\\\\n")',
+            'sys.stdout.flush()',
             'with open("/workspace/writelines.txt", "w", encoding="utf-8") as handle:',
             '    handle.writelines(["line-a\\\\n", "line-b\\\\n"])',
             'with open("bytes.bin", "wb") as handle:',
@@ -564,7 +569,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fdopen-stdin=from-stdin\ndev-fd-custom-in=from-stdin\ndev-custom-present=True\ndev-custom-access=True:True\ndev-file-custom-in=from-stdin\ndev-file-custom-in-chunks=from|-stdin|True\ndev-file-custom-in-binary=from-stdin\ndev-file-custom-in-binary-chunks=from|-stdin|True\ndev-fd-out\ndev-fdopen-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\ndev-file-tty-rw-read=from-stdin\ndev-file-tty-rw-eof=True\ndev-file-tty-rw-write\nprovider-hook-out\nprovider-hook-lines\nafter-live-file\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
@@ -612,6 +617,10 @@ async function main(): Promise<void> {
     assertCondition(
       findFile(results.fileRun, 'generated.txt')?.contents === '42\n',
       'Python project file run should report generated text files'
+    );
+    assertCondition(
+      findFile(results.fileRun, 'live-before-stdout.txt')?.contents === 'before-output\n',
+      'Python project file run should report flushed live text files'
     );
     assertCondition(
       findFile(results.fileRun, 'writelines.txt')?.contents === 'line-a\nline-b\n',
@@ -667,6 +676,22 @@ async function main(): Promise<void> {
         event.change.contents === '42\n'
       )) === true,
       `Python project worker should stream live text file mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    const liveBeforeStdoutIndex = results.fileRun.events?.findIndex((event) => (
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change?.path === 'live-before-stdout.txt' &&
+      event.change.contents === 'before-output\n'
+    )) ?? -1;
+    const stdoutAfterLiveIndex = results.fileRun.events?.findIndex((event) => (
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.data === 'after-live-file\n'
+    )) ?? -1;
+    assertCondition(
+      liveBeforeStdoutIndex >= 0 && stdoutAfterLiveIndex > liveBeforeStdoutIndex,
+      `Python project worker should emit flushed file mutations before later stdout: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (
