@@ -600,7 +600,6 @@ function runtimeFsIsDirectory(fs, path) {
 
 function runtimeFsPath(value) {
   if (typeof value === 'string') return value;
-  if (typeof value?.path === 'string') return value.path;
   const fs = runtimeModule?.FS;
   if (fs && typeof fs.getPath === 'function' && value && typeof value === 'object') {
     try {
@@ -609,7 +608,32 @@ function runtimeFsPath(value) {
       // Some provider FS calls pass detached node-like values.
     }
   }
+  if (typeof value?.path === 'string') return value.path;
   return null;
+}
+
+function runtimeFsPathCandidates(value) {
+  const paths = [];
+  const addPath = (path) => {
+    if (typeof path === 'string' && path && !paths.includes(path)) paths.push(path);
+  };
+  if (typeof value === 'string') addPath(value);
+  if (typeof value?.path === 'string') addPath(value.path);
+  const fs = runtimeModule?.FS;
+  if (fs && typeof fs.getPath === 'function' && value && typeof value === 'object') {
+    try {
+      addPath(fs.getPath(value));
+    } catch {
+      // Some provider FS calls pass detached node-like values.
+    }
+  }
+  return paths;
+}
+
+function throwKernelVirtualMutationErrorForRuntimePath(value, operation) {
+  for (const path of runtimeFsPathCandidates(value)) {
+    throwKernelVirtualMutationError(path, operation);
+  }
 }
 
 function emitProjectPathSnapshot(path) {
@@ -726,8 +750,7 @@ function installRuntimeFsHooks(runtime) {
   const originalChmod = fs.chmod;
   if (typeof originalChmod === 'function') {
     fs.chmod = function chmodWithProjectKernelGuards(path) {
-      const resolvedPath = runtimeFsPath(path);
-      if (activeProjectIo && resolvedPath) throwKernelVirtualMutationError(resolvedPath, 'chmod');
+      if (activeProjectIo) throwKernelVirtualMutationErrorForRuntimePath(path, 'chmod');
       return originalChmod.apply(this, arguments);
     };
   }
@@ -736,7 +759,7 @@ function installRuntimeFsHooks(runtime) {
   if (typeof originalFchmod === 'function') {
     fs.fchmod = function fchmodWithProjectKernelGuards(fd) {
       const stream = typeof fs.getStream === 'function' ? fs.getStream(fd) : null;
-      if (activeProjectIo && stream?.path) throwKernelVirtualMutationError(stream.path, 'fchmod');
+      if (activeProjectIo && stream) throwKernelVirtualMutationErrorForRuntimePath(stream, 'fchmod');
       return originalFchmod.apply(this, arguments);
     };
   }
@@ -744,8 +767,7 @@ function installRuntimeFsHooks(runtime) {
   const originalUtime = fs.utime;
   if (typeof originalUtime === 'function') {
     fs.utime = function utimeWithProjectKernelGuards(path) {
-      const resolvedPath = runtimeFsPath(path);
-      if (activeProjectIo && resolvedPath) throwKernelVirtualMutationError(resolvedPath, 'utime');
+      if (activeProjectIo) throwKernelVirtualMutationErrorForRuntimePath(path, 'utime');
       return originalUtime.apply(this, arguments);
     };
   }
