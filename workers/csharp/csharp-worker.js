@@ -6,6 +6,7 @@ let configuredAssetBaseUrl = null;
 let runtimeModule = null;
 let runtimeFsHooksInstalled = false;
 let activeProjectIo = null;
+let materializedKernelDevicePaths = new Set();
 const WORKER_DEBUG = (() => {
   try {
     return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
@@ -82,6 +83,12 @@ function normalizeKernelDevicePath(value) {
     : null;
 }
 
+function isKernelDeviceNamespacePath(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+  return normalized === '/dev' || normalized.startsWith('/dev/');
+}
+
 function kernelDeviceEntries(request = activeProjectIo?.request) {
   const devices = request?.project?.kernelDevices;
   return Array.isArray(devices) ? devices : [];
@@ -147,6 +154,15 @@ function isCreateOrTruncateOpenFlags(flags) {
   const numericFlags = Number(flags);
   if (!Number.isFinite(numericFlags)) return false;
   return Boolean(numericFlags & 64) || Boolean(numericFlags & 512);
+}
+
+function isWritableOpenFlags(flags) {
+  if (typeof flags === 'string') {
+    return flags.includes('w') || flags.includes('a') || flags.includes('+');
+  }
+  const numericFlags = Number(flags);
+  if (!Number.isFinite(numericFlags)) return false;
+  return Boolean(numericFlags & 1) || Boolean(numericFlags & 2) || Boolean(numericFlags & 64) || Boolean(numericFlags & 512);
 }
 
 function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
@@ -287,6 +303,20 @@ function materializeKernelDevices(request) {
   const fs = runtimeModule?.FS;
   if (!fs || typeof fs.createDevice !== 'function') return;
   ensureRuntimeDirectory(fs, '/dev');
+  const nextDevicePaths = new Set(
+    kernelDeviceEntries(request)
+      .map((device) => normalizeKernelDevicePath(device?.path))
+      .filter(Boolean)
+  );
+  for (const staleDevicePath of materializedKernelDevicePaths) {
+    if (nextDevicePaths.has(staleDevicePath)) continue;
+    try {
+      fs.unlink(staleDevicePath);
+    } catch {
+      // The runtime may already have removed this device.
+    }
+  }
+  materializedKernelDevicePaths = new Set();
   for (const device of kernelDeviceEntries(request)) {
     const devicePath = normalizeKernelDevicePath(device?.path);
     if (!devicePath) continue;
@@ -311,6 +341,7 @@ function materializeKernelDevices(request) {
           }
         : undefined
     );
+    materializedKernelDevicePaths.add(devicePath);
   }
 }
 
@@ -365,6 +396,19 @@ function runtimeWriteFileBytes(data) {
   if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   if (Array.isArray(data)) return Uint8Array.from(data);
   return encodeUtf8(String(data ?? ''));
+}
+
+function throwKernelDevicePathError(path, operation) {
+  const devicePath = normalizeKernelDevicePath(path);
+  const device = kernelDeviceInfo(devicePath);
+  const code = device ? 'EROFS' : 'ENOENT';
+  const errno = device ? 69 : 44;
+  const fs = runtimeModule?.FS;
+  if (typeof fs?.ErrnoError === 'function') {
+    throw new fs.ErrnoError(errno);
+  }
+  const reason = device ? 'read-only file system' : 'no such file or directory';
+  throw Object.assign(new Error(`${code}: ${reason}, ${operation} '${path}'`), { code, errno });
 }
 
 function emitProjectEvent(payload) {
@@ -551,6 +595,9 @@ function installRuntimeFsHooks(runtime) {
         }
         return undefined;
       }
+      if (activeProjectIo && isKernelDeviceNamespacePath(path)) {
+        throwKernelDevicePathError(path, 'write');
+      }
       if (activeProjectIo && isKernelVirtualFsPath(path)) {
         throw Object.assign(new Error(`EROFS: read-only file system, write '${path}'`), { code: 'EROFS' });
       }
@@ -563,6 +610,15 @@ function installRuntimeFsHooks(runtime) {
   const originalOpen = fs.open;
   if (typeof originalOpen === 'function') {
     fs.open = function openWithProjectEvents(path, flags) {
+      if (activeProjectIo && isKernelDeviceNamespacePath(path)) {
+        const devicePath = normalizeKernelDevicePath(path);
+        if (!devicePath || !kernelDeviceInfo(devicePath)) {
+          throwKernelDevicePathError(path, 'open');
+        }
+        if (isWritableOpenFlags(flags) && !kernelDeviceOutputTarget(devicePath)) {
+          throwKernelDevicePathError(path, 'open');
+        }
+      }
       const shouldEmitCreateSnapshot = Boolean(activeProjectIo) && isCreateOrTruncateOpenFlags(flags);
       const stream = originalOpen.apply(this, arguments);
       if (shouldEmitCreateSnapshot && stream?.path) emitProjectFileSnapshot(stream.path);

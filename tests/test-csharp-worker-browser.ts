@@ -3149,6 +3149,66 @@ async function main(): Promise<void> {
       `C# project worker should preserve sourceDevice for manifest /dev/log writes, received ${JSON.stringify(manifestCustomDeviceRun.events)}`
     );
 
+    const [deviceLeakFirstRun, deviceLeakSecondRun] = await runProjectWorkerSequenceCase(
+      page,
+      [
+        {
+          source: 'run',
+          scriptPath: '<project>',
+          args: [],
+          cwd: '/workspace/src',
+          env: {},
+          stdin: '',
+          project: {
+            kernelDevices: TRACE_KERNEL_DEVICES,
+            files: [
+              {
+                path: 'src/Program.cs',
+                contents: 'File.WriteAllText("/dev/log", "first-log\\n");\n',
+              },
+            ],
+          },
+        },
+        {
+          source: 'run',
+          scriptPath: '<project>',
+          args: [],
+          cwd: '/workspace/src',
+          env: {},
+          stdin: '',
+          project: {
+            kernelDevices: TRACE_KERNEL_DEVICES.filter((device) => device.path !== '/dev/log'),
+            files: [
+              {
+                path: 'src/Program.cs',
+                contents: [
+                  'try {',
+                  '  File.WriteAllText("/dev/log", "leaked-log\\n");',
+                  '  Console.WriteLine("dev-log:ok");',
+                  '} catch (Exception ex) {',
+                  '  Console.WriteLine("dev-log:" + ex.GetType().Name);',
+                  '}',
+                ].join('\n'),
+              },
+            ],
+          },
+        },
+      ],
+      assetBaseUrl
+    );
+    assertCondition(
+      deviceLeakFirstRun.stderr === 'first-log\n',
+      `C# project worker sequence setup should write manifest /dev/log, received ${JSON.stringify(deviceLeakFirstRun)}`
+    );
+    assertCondition(
+      deviceLeakSecondRun.exitCode === 0 &&
+        deviceLeakSecondRun.stdout.includes('dev-log:') &&
+        !deviceLeakSecondRun.stdout.includes('dev-log:ok') &&
+        deviceLeakSecondRun.stderr === '' &&
+        deviceLeakSecondRun.events?.some((event) => event.type === 'output' && event.sourceDevice === '/dev/log') !== true,
+      `C# project worker should not leak manifest-created devices between project runs, received ${JSON.stringify(deviceLeakSecondRun)}`
+    );
+
     const restrictedDeviceRun = await runProjectWorkerCase(
       page,
       {
