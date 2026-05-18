@@ -50,6 +50,8 @@ interface CSharpProjectWorkerResponse {
   events?: Array<{
     type: string;
     stream?: 'stdout' | 'stderr';
+    device?: string;
+    sourceDevice?: string;
     data?: string;
     phase?: string;
     change?: {
@@ -2756,6 +2758,17 @@ async function main(): Promise<void> {
         projectRun.stdout.includes('dev-stdout\n') &&
         projectRun.stdout.includes('dev-tty\n'),
       `C# project worker should preserve stdout/stdin/env/args/proc reads: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, events: projectRun.events })}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/stdout' &&
+          event.sourceDevice === '/dev/tty' &&
+          event.data === 'dev-tty\n'
+      ) === true,
+      `C# project worker should preserve /dev/tty source device on routed output events: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.stdout.includes('proc-write:') && !projectRun.stdout.includes('proc-write:ok'),

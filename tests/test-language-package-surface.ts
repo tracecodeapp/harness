@@ -283,6 +283,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         !worker.includes('FALLBACK_KERNEL_DEVICES'),
         '@tracecode/harness-csharp worker should not ship fallback kernel device inventory'
       );
+      assertCondition(
+        worker.includes('sourceDevice') && worker.includes('context.stdoutSourceDevice = device !== outputDevice ? device : undefined'),
+        '@tracecode/harness-csharp worker should ship routed source device events'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
       const worker = await readFile(join(packageDir, 'workers/cpp-worker.js'), 'utf8');

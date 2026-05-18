@@ -342,6 +342,7 @@ function routeProjectOutputEvent(payload) {
     ...payload,
     stream,
     device: outputDevice,
+    ...(requestedDevice !== outputDevice ? { sourceDevice: requestedDevice } : {}),
   };
 }
 
@@ -357,12 +358,13 @@ function emitProjectEventJson(payloadJson) {
   }
 }
 
-function emitProjectOutput(stream, data, device = stream === 'stdout' ? '/dev/stdout' : '/dev/stderr') {
+function emitProjectOutput(stream, data, device = stream === 'stdout' ? '/dev/stdout' : '/dev/stderr', sourceDevice) {
   if (!data) return;
   emitProjectEvent({
     type: 'output',
     stream,
     device,
+    ...(sourceDevice ? { sourceDevice } : {}),
     data,
   });
 }
@@ -374,7 +376,12 @@ function flushProjectOutput(stream) {
   if (!buffer.length) return;
   const bytes = new Uint8Array(buffer);
   buffer.length = 0;
-  emitProjectOutput(stream, decodeUtf8(bytes), stream === 'stdout' ? context.stdoutDevice : context.stderrDevice);
+  emitProjectOutput(
+    stream,
+    decodeUtf8(bytes),
+    stream === 'stdout' ? context.stdoutDevice : context.stderrDevice,
+    stream === 'stdout' ? context.stdoutSourceDevice : context.stderrSourceDevice
+  );
 }
 
 function writeProjectDeviceByte(device, value, options = {}) {
@@ -384,8 +391,13 @@ function writeProjectDeviceByte(device, value, options = {}) {
   if (!outputDevice) return;
   const stream = kernelDeviceStream(outputDevice);
   const buffer = stream === 'stdout' ? context.stdoutBytes : context.stderrBytes;
-  if (stream === 'stdout') context.stdoutDevice = outputDevice;
-  else context.stderrDevice = outputDevice;
+  if (stream === 'stdout') {
+    context.stdoutDevice = outputDevice;
+    context.stdoutSourceDevice = device !== outputDevice ? device : undefined;
+  } else {
+    context.stderrDevice = outputDevice;
+    context.stderrSourceDevice = device !== outputDevice ? device : undefined;
+  }
   const byte = value & 0xff;
   buffer.push(byte);
   if (options.recordResult) context.directDeviceOutput = true;
@@ -739,6 +751,8 @@ async function handleMessage(message) {
       directDeviceOutput: false,
       stdoutDevice: '/dev/stdout',
       stderrDevice: '/dev/stderr',
+      stdoutSourceDevice: undefined,
+      stderrSourceDevice: undefined,
     };
     let result;
     try {
