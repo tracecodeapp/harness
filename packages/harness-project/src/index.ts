@@ -27,6 +27,7 @@ import {
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
+  runtimeKernelRenameTarget,
   runtimeKernelStatTarget,
   runtimeKernelVirtualDevices,
   runtimeKernelVirtualFiles,
@@ -276,6 +277,12 @@ function kernelLinkTarget(existingPath: string, newPath: string): ReturnType<typ
   assertNoNul(existingPath, 'Kernel path');
   assertNoNul(newPath, 'Kernel path');
   return runtimeKernelLinkTarget(existingPath, newPath);
+}
+
+function kernelRenameTarget(sourcePath: string, destinationPath: string): ReturnType<typeof runtimeKernelRenameTarget> {
+  assertNoNul(sourcePath, 'Kernel path');
+  assertNoNul(destinationPath, 'Kernel path');
+  return runtimeKernelRenameTarget(sourcePath, destinationPath);
 }
 
 function throwKernelMutationTargetError(
@@ -2710,10 +2717,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
-    const sourceMutationTarget = kernelMutationTarget(sourcePath);
-    if (sourceMutationTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
-    const destinationMutationTarget = kernelMutationTarget(destinationPath);
-    if (destinationMutationTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
+    const renameTarget = kernelRenameTarget(sourcePath, destinationPath);
+    if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
     await this.copyFile(sourcePath, destinationPath);
     await this.bash.fs.rm(this.toWorkspacePath(sourcePath), { force: true });
     this.emitRuntimeEvent({

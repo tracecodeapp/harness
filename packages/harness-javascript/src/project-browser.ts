@@ -34,6 +34,8 @@ import {
   runtimeKernelOpenErrorCode,
   runtimeKernelOpenTarget,
   runtimeKernelReadTarget,
+  runtimeKernelRenameErrorCode,
+  runtimeKernelRenameTarget,
   runtimeKernelStatTarget,
   runtimeKernelWriteErrorCode,
   runtimeKernelWriteTarget,
@@ -240,6 +242,17 @@ function runtimeLinkTarget(
   return runtimeKernelLinkTarget(sourceRaw, destinationRaw, devices);
 }
 
+function runtimeRenameTarget(
+  source: unknown,
+  destination: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelRenameTarget> | null {
+  if (typeof source === 'number' || typeof destination === 'number') return null;
+  const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  const destinationRaw = workspacePathInputToString(destination).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelRenameTarget(sourceRaw, destinationRaw, devices);
+}
+
 function runtimeDirectoryTarget(
   path: unknown,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -292,6 +305,13 @@ function throwRuntimeLinkTargetError(
   message: string
 ): never {
   throw Object.assign(new Error(message), { code: runtimeKernelLinkErrorCode(target.reason) });
+}
+
+function throwRuntimeRenameTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelRenameTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: runtimeKernelRenameErrorCode(target.reason) });
 }
 
 function throwRuntimeDirectoryTargetError(
@@ -3546,13 +3566,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       renameSync: (oldPath: unknown, newPath: unknown) => {
-        const oldMutationTarget = runtimeMutationTarget(oldPath, kernelDevices);
-        if (oldMutationTarget?.kind === 'error') {
-          throwRuntimeMutationTargetError(oldMutationTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
-        }
-        const newMutationTarget = runtimeMutationTarget(newPath, kernelDevices);
-        if (newMutationTarget?.kind === 'error') {
-          throwRuntimeMutationTargetError(newMutationTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
+        const renameTarget = runtimeRenameTarget(oldPath, newPath, kernelDevices);
+        if (renameTarget?.kind === 'error') {
+          throwRuntimeRenameTargetError(renameTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
         }
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);

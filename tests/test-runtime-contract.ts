@@ -27,6 +27,7 @@ import {
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelOpenTarget,
+  runtimeKernelRenameTarget,
   runtimeKernelStatTarget,
 } from '../packages/harness-core/src/runtime-kernel';
 import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
@@ -130,6 +131,22 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     stableStringify(runtimeKernelLinkTarget('source.txt', 'copy.txt', devices)) === '{"kind":"workspace"}',
     'kernel link target should allow workspace hard links'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelRenameTarget('/dev/log', 'copy.txt', [
+      ...devices,
+      { path: '/dev/log' as const, readable: false, writable: true, outputDevice: '/dev/stderr' as const },
+    ])) === '{"kind":"error","path":"/dev/log","reason":"device-read-only","side":"source"}',
+    'kernel rename target should reject manifest device sources through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelRenameTarget('source.txt', '/proc/kernel/info', devices)) ===
+      '{"kind":"error","path":"/proc/kernel/info","reason":"proc-read-only","side":"destination"}',
+    'kernel rename target should reject proc destinations through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelRenameTarget('source.txt', 'moved.txt', devices)) === '{"kind":"workspace"}',
+    'kernel rename target should allow workspace renames'
   );
 }
 
