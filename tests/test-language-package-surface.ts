@@ -431,9 +431,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('self.TraceRuntimeKernelPolicy') &&
           worker.includes('runtimeKernelDeviceOutputTarget') &&
           worker.includes('normalizeRuntimeKernelManifestDevicePath') &&
+          worker.includes('normalizeRuntimeKernelPath') &&
+          worker.includes('isRuntimeKernelDeviceNamespacePath') &&
           worker.includes('sourceDevice') &&
           worker.includes('outputDevicePath'),
-        '@tracecode/harness-java worker should load shared worker kernel policy for routed source and output device events'
+        '@tracecode/harness-java worker should load shared worker kernel policy for routed source, output device, and kernel manifest path decisions'
       );
       assertCondition(
         worker.includes('projectKernelFileManifest') &&

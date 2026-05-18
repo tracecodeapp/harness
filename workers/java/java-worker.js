@@ -3200,8 +3200,14 @@ function kernelDeviceOutputTarget(path, request) {
 }
 
 function normalizeKernelVirtualFilePath(path) {
-  const normalized = normalizeKernelAbsolutePath(path);
-  if (normalized !== null && normalized !== '/dev' && !normalizeKernelDeviceReference(normalized) && !normalized.startsWith('/dev/')) return normalized;
+  const policy = self.TraceRuntimeKernelPolicy;
+  const normalized = typeof policy?.normalizeRuntimeKernelPath === 'function'
+    ? policy.normalizeRuntimeKernelPath(path)
+    : normalizeKernelAbsolutePath(path);
+  const isDeviceNamespace = typeof policy?.isRuntimeKernelDeviceNamespacePath === 'function'
+    ? policy.isRuntimeKernelDeviceNamespacePath(normalized)
+    : normalized === '/dev' || normalized?.startsWith('/dev/') === true;
+  if (normalized !== null && normalized.startsWith('/') && !isDeviceNamespace) return normalized;
   throw new Error(`Unsupported Java kernel virtual file path: ${path}`);
 }
 
