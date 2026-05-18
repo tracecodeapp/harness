@@ -252,6 +252,13 @@ public final class ProjectEvents {
     return result;
   }
 
+  public static Path createFile(Path path, FileAttribute<?>... attrs) throws IOException {
+    assertWritableProjectPath(path);
+    Path result = Files.createFile(path, attrs);
+    emitFileSnapshot(path);
+    return result;
+  }
+
   public static void delete(Path path) throws IOException {
     assertWritableProjectPath(path);
     Files.delete(path);
