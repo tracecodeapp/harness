@@ -5825,6 +5825,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   const javaLiveReadPromises: Promise<string>[] = [];
   const csharpLiveReadPromises: Promise<string>[] = [];
   const cppLiveReadPromises: Promise<string>[] = [];
+  const pythonEvents: RuntimeCommandEvent[] = [];
   const nodeEvents: RuntimeCommandEvent[] = [];
   const javaEvents: RuntimeCommandEvent[] = [];
   const csharpEvents: RuntimeCommandEvent[] = [];
@@ -5901,6 +5902,7 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
   try {
     const python = await workspace.runCommand('python3 main.py', {
       onEvent: (event) => {
+        pythonEvents.push(event);
         if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'python-live.txt') {
           pythonLiveReadPromises.push(workspace.readFile('python-live.txt'));
         }
@@ -5918,6 +5920,15 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     assertCondition(
       pythonLiveReadPromises.length === 1,
       `browser project workspace should not duplicate Python live file-change events: ${pythonLiveReadPromises.length}`
+    );
+    assertCondition(
+      pythonEvents.some((event) =>
+        event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change.path === 'python-live.txt' &&
+          event.actor?.kind === 'runtime'
+      ),
+      `browser project workspace should attribute Python live worker changes to the active runtime actor: ${JSON.stringify(pythonEvents)}`
     );
     assertCondition((await workspace.readDir('empty')).join(',') === 'child', 'browser project workspace should preserve empty directories in snapshots');
 
@@ -5967,6 +5978,15 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       javaEvents.filter((event) => event.type === 'file-change' && event.change.path === 'java-live.txt').length === 1,
       `browser project workspace should not duplicate Java live file-change events: ${JSON.stringify(javaEvents)}`
     );
+    assertCondition(
+      javaEvents.some((event) =>
+        event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change.path === 'java-live.txt' &&
+          event.actor?.kind === 'runtime'
+      ),
+      `browser project workspace should attribute Java live worker changes to the active runtime actor: ${JSON.stringify(javaEvents)}`
+    );
 
     const csharp = await workspace.runCommand('dotnet run alpha beta', {
       onEvent: (event) => {
@@ -5989,6 +6009,15 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       csharpEvents.filter((event) => event.type === 'file-change' && event.change.path === 'csharp-live.txt').length === 1,
       `browser project workspace should not duplicate C# live file-change events: ${JSON.stringify(csharpEvents)}`
     );
+    assertCondition(
+      csharpEvents.some((event) =>
+        event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change.path === 'csharp-live.txt' &&
+          event.actor?.kind === 'runtime'
+      ),
+      `browser project workspace should attribute C# live worker changes to the active runtime actor: ${JSON.stringify(csharpEvents)}`
+    );
 
     const cpp = await workspace.runCommand('clang++ main.cpp -o a.out', {
       onEvent: (event) => {
@@ -6010,6 +6039,15 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     assertCondition(
       cppEvents.filter((event) => event.type === 'file-change' && event.change.path === 'cpp-live.txt').length === 1,
       `browser project workspace should not duplicate C++ live file-change events: ${JSON.stringify(cppEvents)}`
+    );
+    assertCondition(
+      cppEvents.some((event) =>
+        event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change.path === 'cpp-live.txt' &&
+          event.actor?.kind === 'runtime'
+      ),
+      `browser project workspace should attribute C++ live worker changes to the active runtime actor: ${JSON.stringify(cppEvents)}`
     );
 
     const cppRunEvents: RuntimeCommandEvent[] = [];
