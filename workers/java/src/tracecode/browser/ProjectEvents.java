@@ -281,6 +281,41 @@ public final class ProjectEvents {
     return Files.isRegularFile(path, options);
   }
 
+  public static boolean isReadable(Path path) {
+    String normalized = normalizeVirtualPath(path);
+    if (isVirtualDeviceDirectory(normalized)) return true;
+    if (isVirtualDevicePath(normalized)) {
+      KernelDevice device = KERNEL_DEVICES.get().get(normalized);
+      return device != null && device.readable;
+    }
+    if (isKernelVirtualDirectory(normalized) || isKernelVirtualFile(normalized)) return true;
+    if (isKernelVirtualNamespacePath(normalized)) return false;
+    return Files.isReadable(path);
+  }
+
+  public static boolean isWritable(Path path) {
+    String normalized = normalizeVirtualPath(path);
+    if (isVirtualDeviceDirectory(normalized)) return false;
+    if (isVirtualDevicePath(normalized)) {
+      KernelDevice device = KERNEL_DEVICES.get().get(normalized);
+      return device != null && device.writable;
+    }
+    if (isKernelVirtualNamespacePath(normalized)) return false;
+    return Files.isWritable(path);
+  }
+
+  public static long size(Path path) throws IOException {
+    String normalized = normalizeVirtualPath(path);
+    if (isVirtualDeviceNamespacePath(normalized)) {
+      if (isVirtualDeviceDirectory(normalized) || KERNEL_DEVICES.get().containsKey(normalized)) return 0L;
+      throw new NoSuchFileException(normalized);
+    }
+    if (isKernelVirtualDirectory(normalized)) return 0L;
+    if (isKernelVirtualFile(normalized)) return KERNEL_VIRTUAL_FILES.get().get(normalized).length;
+    if (isKernelVirtualNamespacePath(normalized)) throw new NoSuchFileException(normalized);
+    return Files.size(path);
+  }
+
   public static Path writeString(Path path, CharSequence contents, OpenOption... options) throws IOException {
     KernelDevice device = writableKernelDevice(path);
     if (device != null) {

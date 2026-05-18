@@ -280,6 +280,15 @@ public class ProjectWorkspaceDirectorySmoke {
         + ":" + String.join(",", writableFileNames));
       String kernelFileManifest = b64.apply("/tracekernel/custom") + "\t" + b64.apply("custom-kernel-file\\n");
       ProjectEvents.setKernelFiles(kernelFileManifest);
+      System.out.println("nio-stat-api="
+        + ProjectEvents.isReadable(Paths.get("/dev")) + ":" + ProjectEvents.isWritable(Paths.get("/dev"))
+        + ":" + ProjectEvents.isReadable(Paths.get("/dev/stdin")) + ":" + ProjectEvents.isWritable(Paths.get("/dev/stdin"))
+        + ":" + ProjectEvents.isReadable(Paths.get("/dev/stdout")) + ":" + ProjectEvents.isWritable(Paths.get("/dev/stdout"))
+        + ":" + ProjectEvents.size(Paths.get("/dev/stdout"))
+        + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel")) + ":" + ProjectEvents.isWritable(Paths.get("/tracekernel"))
+        + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel/custom")) + ":" + ProjectEvents.isWritable(Paths.get("/tracekernel/custom"))
+        + ":" + ProjectEvents.size(Paths.get("/tracekernel")) + ":" + ProjectEvents.size(Paths.get("/tracekernel/custom"))
+        + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel/missing")));
       var customKernelFile = new ProjectEvents.ProjectFile("/tracekernel/custom");
       var customKernelDir = new ProjectEvents.ProjectFile("/tracekernel");
       var customKernelRootEntries = customKernelDir.list();
@@ -349,7 +358,16 @@ public class ProjectWorkspaceDirectorySmoke {
       ],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput, deviceWriterOutput, fileApiOutput, kernelFileApiOutput] = output.trim().split('\n');
+    const [
+      isDirectory,
+      changedFilesJson,
+      kernelChangedFilesJson,
+      deviceChannelInput,
+      deviceWriterOutput,
+      fileApiOutput,
+      nioStatApiOutput,
+      kernelFileApiOutput,
+    ] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
     assertCondition(
       Array.isArray(JSON.parse(changedFilesJson ?? 'null')) && JSON.parse(changedFilesJson ?? 'null').length === 0,
@@ -370,6 +388,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       fileApiOutput === 'file-api=true:true:true:false:true:true:false:true:true:false:false:false:0:log,stdin,stdout,tty:stdout:log,stdout,tty',
       `Java browser helper should route java.io.File metadata/listing through kernel devices: ${output}`
+    );
+    assertCondition(
+      nioStatApiOutput === 'nio-stat-api=true:false:true:false:false:true:0:true:false:true:false:0:19:false',
+      `Java browser helper should route NIO metadata probes through kernel virtual paths: ${output}`
     );
     assertCondition(
       kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:19:custom:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:/tracekernel/custom:IOException:IOException',
@@ -891,7 +913,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               const hasCustomKernelDevices = hasKernelDevices &&
                 decodedSourceManifest.includes('/dev/log') &&
                 decodedSourceManifest.includes('/dev/custom-in');
-              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : ''}`;
+              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n' : 'dev_stderr\nfd_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
@@ -939,6 +961,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   'stdout',
                   'proc-list=info,version\n'
                 );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'proc-stat=true:false:28\n'
+                );
               }
               if (hasKernelDevices) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
@@ -965,6 +992,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   null,
                   'stdout',
                   'dev-stat=true:true:true:false\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev-nio-stat=true:false:false:true:0\n'
                 );
                 if (hasCustomKernelDevices) {
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
@@ -1802,6 +1834,7 @@ async function main(): Promise<void> {
               '    try (var stream = new FileInputStream("/proc/kernel/version")) { System.out.println("proc-stream=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    try { Files.writeString(Path.of("/proc/kernel/info"), "{}\\\\n"); System.out.println("proc-write:ok"); } catch (IOException ex) { System.out.println("proc-write:" + ex.getClass().getSimpleName()); }',
               '    try (var paths = Files.list(Path.of("/proc/kernel"))) { System.out.println("proc-list=" + paths.map(path -> path.getFileName().toString()).sorted().collect(Collectors.joining(","))); }',
+              '    System.out.println("proc-stat=" + Files.isReadable(Path.of("/proc/kernel/info")) + ":" + Files.isWritable(Path.of("/proc/kernel/info")) + ":" + Files.size(Path.of("/proc/kernel/info")));',
               '    System.out.println("custom-kernel=" + Files.readString(Path.of("/tracekernel/custom")).trim());',
               '    try { Files.writeString(Path.of("/tracekernel/custom"), "bad\\\\n"); System.out.println("custom-kernel-write:ok"); } catch (IOException ex) { System.out.println("custom-kernel-write:" + ex.getClass().getSimpleName()); }',
               '    try { Files.createDirectories(Path.of("/tracekernel/new")); System.out.println("custom-kernel-mkdir:ok"); } catch (IOException ex) { System.out.println("custom-kernel-mkdir:" + ex.getClass().getSimpleName()); }',
@@ -1812,6 +1845,7 @@ async function main(): Promise<void> {
               '    try (var paths = Files.newDirectoryStream(Path.of("/dev"), "std*")) { var names = new java.util.ArrayList<String>(); for (var path : paths) names.add(path.getFileName().toString()); java.util.Collections.sort(names); System.out.println("dev-glob=" + String.join(",", names)); }',
               '    try (var paths = Files.newDirectoryStream(Path.of("/dev"), path -> path.getFileName().toString().contains("out") || path.getFileName().toString().contains("err"))) { var names = new java.util.ArrayList<String>(); for (var path : paths) names.add(path.getFileName().toString()); java.util.Collections.sort(names); System.out.println("dev-filter=" + String.join(",", names)); }',
               '    System.out.println("dev-stat=" + Files.isDirectory(Path.of("/dev")) + ":" + Files.isRegularFile(Path.of("/dev/stdout")) + ":" + Files.exists(Path.of("/dev/stdin")) + ":" + Files.exists(Path.of("/dev/missing")));',
+              '    System.out.println("dev-nio-stat=" + Files.isReadable(Path.of("/dev/stdin")) + ":" + Files.isWritable(Path.of("/dev/stdin")) + ":" + Files.isReadable(Path.of("/dev/stdout")) + ":" + Files.isWritable(Path.of("/dev/stdout")) + ":" + Files.size(Path.of("/dev/stdout")));',
               '    System.out.println("dev-custom=" + Files.readString(Path.of("/dev/custom-in")).trim() + ":" + Files.exists(Path.of("/dev/log")));',
               '    try { Files.deleteIfExists(Path.of("/dev/stdout")); System.out.println("dev-delete:ok"); } catch (IOException ex) { System.out.println("dev-delete:" + ex.getClass().getSimpleName()); }',
               '    System.out.println("dev_stdin=" + Files.readString(Path.of("/dev/stdin")).trim());',
@@ -1867,7 +1901,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ncustom-kernel=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n',
+      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\ncustom-kernel=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -2475,6 +2509,9 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newDirectoryStream(Path.of("/dev")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.isDirectory(Path.of("/dev")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.isRegularFile(Path.of("/dev/stdout")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.isReadable(Path.of("/dev/stdin")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.isWritable(Path.of("/dev/stdout")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.size(Path.of("/proc/kernel/info")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.exists(Path.of("/dev/stdin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("writer.txt")') === true &&

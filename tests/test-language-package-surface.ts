@@ -381,8 +381,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes('newInputStream|newBufferedReader') &&
-          worker.includes('readAllLines|lines|list'),
-        '@tracecode/harness-java worker should ship NIO read device rewrites'
+          worker.includes('readAllLines|lines|list') &&
+          worker.includes('isReadable|isWritable|size'),
+        '@tracecode/harness-java worker should ship NIO read/stat device rewrites'
       );
       const helperJarListing = spawnSync('jar', ['tf', join(packageDir, 'workers/vendor/java-browser-helper.jar')], {
         encoding: 'utf8',
@@ -419,8 +420,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         helperApi.stdout.includes('newInputStream(java.nio.file.Path, java.nio.file.OpenOption...)') &&
           helperApi.stdout.includes('newBufferedReader(java.nio.file.Path, java.nio.charset.Charset)') &&
           helperApi.stdout.includes('readAllLines(java.nio.file.Path, java.nio.charset.Charset)') &&
-          helperApi.stdout.includes('lines(java.nio.file.Path, java.nio.charset.Charset)'),
-        '@tracecode/harness-java helper jar should expose NIO read device bridge'
+          helperApi.stdout.includes('lines(java.nio.file.Path, java.nio.charset.Charset)') &&
+          helperApi.stdout.includes('isReadable(java.nio.file.Path)') &&
+          helperApi.stdout.includes('isWritable(java.nio.file.Path)') &&
+          helperApi.stdout.includes('size(java.nio.file.Path)'),
+        '@tracecode/harness-java helper jar should expose NIO read/stat device bridge'
       );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {
