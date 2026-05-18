@@ -111,6 +111,8 @@ async function main(): Promise<void> {
     'Files.newBufferedReader',
     'Files.createTempFile',
     'Files.createTempDirectory',
+    'Files.setLastModifiedTime',
+    'Files.setAttribute',
     'Files.readAllLines',
     'Files.lines',
     'Files.isReadable',

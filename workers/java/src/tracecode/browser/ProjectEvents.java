@@ -37,6 +37,7 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
@@ -436,6 +437,16 @@ public final class ProjectEvents {
     Path result = Files.createTempDirectory(prefix, attrs);
     emitDirectoryCreate(result);
     return result;
+  }
+
+  public static Path setLastModifiedTime(Path path, FileTime time) throws IOException {
+    assertWritableProjectPath(path);
+    return Files.setLastModifiedTime(path, time);
+  }
+
+  public static Path setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
+    assertWritableProjectPath(path);
+    return Files.setAttribute(path, attribute, value, options);
   }
 
   public static void delete(Path path) throws IOException {

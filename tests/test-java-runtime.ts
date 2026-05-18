@@ -284,6 +284,18 @@ public class ProjectWorkspaceDirectorySmoke {
         + ":" + String.join(",", writableFileNames));
       String kernelFileManifest = b64.apply("/tracekernel/custom") + "\t" + b64.apply("custom-kernel-file\\n");
       ProjectEvents.setKernelFiles(kernelFileManifest);
+      String devNioSetLastModifiedResult = "ok";
+      try {
+        ProjectEvents.setLastModifiedTime(Paths.get("/dev/stdout"), java.nio.file.attribute.FileTime.fromMillis(1L));
+      } catch (java.io.IOException ex) {
+        devNioSetLastModifiedResult = ex.getClass().getSimpleName();
+      }
+      String customKernelNioSetAttributeResult = "ok";
+      try {
+        ProjectEvents.setAttribute(Paths.get("/tracekernel/custom"), "basic:lastModifiedTime", java.nio.file.attribute.FileTime.fromMillis(1L));
+      } catch (java.io.IOException ex) {
+        customKernelNioSetAttributeResult = ex.getClass().getSimpleName();
+      }
       System.out.println("nio-stat-api="
         + ProjectEvents.isReadable(Paths.get("/dev")) + ":" + ProjectEvents.isWritable(Paths.get("/dev"))
         + ":" + ProjectEvents.isReadable(Paths.get("/dev/stdin")) + ":" + ProjectEvents.isWritable(Paths.get("/dev/stdin"))
@@ -292,7 +304,8 @@ public class ProjectWorkspaceDirectorySmoke {
         + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel")) + ":" + ProjectEvents.isWritable(Paths.get("/tracekernel"))
         + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel/custom")) + ":" + ProjectEvents.isWritable(Paths.get("/tracekernel/custom"))
         + ":" + ProjectEvents.size(Paths.get("/tracekernel")) + ":" + ProjectEvents.size(Paths.get("/tracekernel/custom"))
-        + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel/missing")));
+        + ":" + ProjectEvents.isReadable(Paths.get("/tracekernel/missing"))
+        + ":" + devNioSetLastModifiedResult + ":" + customKernelNioSetAttributeResult);
       var customKernelFile = new ProjectEvents.ProjectFile("/tracekernel/custom");
       var customKernelDir = new ProjectEvents.ProjectFile("/tracekernel");
       boolean customKernelSetLastModified = customKernelFile.setLastModified(1L);
@@ -407,7 +420,7 @@ public class ProjectWorkspaceDirectorySmoke {
       `Java browser helper should route java.io.File metadata/listing through kernel devices: ${output}`
     );
     assertCondition(
-      nioStatApiOutput === 'nio-stat-api=true:false:true:false:false:true:0:true:false:true:false:0:19:false',
+      nioStatApiOutput === 'nio-stat-api=true:false:true:false:false:true:0:true:false:true:false:0:19:false:IOException:IOException',
       `Java browser helper should route NIO metadata probes through kernel virtual paths: ${output}`
     );
     assertCondition(
@@ -1896,6 +1909,8 @@ async function main(): Promise<void> {
               '    try (var stream = new DataOutputStream(new FileOutputStream("data.bin"))) { stream.write(new byte[] { 0, (byte)253 }); }',
               '    try (var stream = new PrintStream("ps-file.txt")) { stream.println("ps-file"); }',
               '    Files.createFile(Path.of("nio-created.txt"));',
+              '    Files.setLastModifiedTime(Path.of("nio-created.txt"), java.nio.file.attribute.FileTime.fromMillis(1L));',
+              '    Files.setAttribute(Path.of("nio-created.txt"), "basic:lastModifiedTime", java.nio.file.attribute.FileTime.fromMillis(2L));',
               '    Files.createDirectories(Path.of("live-dir/child"));',
               '    Path tempRoot = Path.of("temp-root");',
               '    Files.createDirectories(tempRoot);',
@@ -2637,6 +2652,8 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.copy(Path.of("/dev/stdin"), Path.of("stdin-copy.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.copy(Path.of("stdin-copy.txt"), Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createFile(Path.of("nio-created.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.setLastModifiedTime(Path.of("nio-created.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.setAttribute(Path.of("nio-created.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createDirectories(Path.of("live-dir/child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createTempFile(tempRoot, "case", ".txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createTempDirectory(tempRoot, "child")') === true &&
