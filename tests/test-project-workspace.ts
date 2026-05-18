@@ -2049,6 +2049,16 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     !failedEvents.some((event) => event.type === 'output' && event.data === 'after-bad-live\n'),
     `browser node failed applyFileChange hook should stop later streamed output events: ${JSON.stringify(failedEvents)}`
   );
+  const failedApplyStderrIndex = failedEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('reject-live:bad-live-js.txt')
+  );
+  const failedApplyExitIndex = failedEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 1
+  );
+  assertCondition(
+    failedApplyStderrIndex >= 0 && failedApplyExitIndex > failedApplyStderrIndex,
+    `browser node failed applyFileChange hook should stream stderr before process-exit: ${JSON.stringify(failedEvents)}`
+  );
 
   const timerAppliedChanges: string[] = [];
   const timerEvents: RuntimeCommandEvent[] = [];
@@ -2126,6 +2136,16 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     !timeoutTimerEvents.some((event) => event.type === 'file-change' && event.change.path === 'late-timeout.txt') &&
       !timeoutTimerEvents.some((event) => event.type === 'output' && event.data.includes('late-timeout')),
     `browser node should suppress late timer events after timeout: ${JSON.stringify(timeoutTimerEvents)}`
+  );
+  const timeoutStderrIndex = timeoutTimerEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('node: execution timed out after 5ms')
+  );
+  const timeoutExitIndex = timeoutTimerEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124
+  );
+  assertCondition(
+    timeoutStderrIndex >= 0 && timeoutExitIndex > timeoutStderrIndex,
+    `browser node timeout should stream timeout stderr before process-exit: ${JSON.stringify(timeoutTimerEvents)}`
   );
 }
 

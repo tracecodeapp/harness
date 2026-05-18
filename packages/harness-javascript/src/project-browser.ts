@@ -1476,15 +1476,13 @@ export function createBrowserJavaScriptProjectRunner(
     const timeout = new Promise<RuntimeCommandResult>((resolve) => {
       timeoutId = setTimeout(() => {
         executionState.cancelled = true;
-        request.onEvent?.({
-          type: 'status',
-          phase: 'process-exit',
-          message: 'Browser Node timed out',
-          detail: { command: 'node', exitCode: 124, timeoutMs },
-        });
+        const io = createRuntimeProjectIoBridge(request.onEvent);
+        const timeoutStderr = `node: execution timed out after ${timeoutMs}ms\n`;
+        io.output('stderr', timeoutStderr);
+        io.status('process-exit', 'Browser Node timed out', { command: 'node', exitCode: 124, timeoutMs });
         resolve({
           stdout: '',
-          stderr: `node: execution timed out after ${timeoutMs}ms\n`,
+          stderr: timeoutStderr,
           exitCode: 124,
         });
       }, timeoutMs);
@@ -1499,9 +1497,13 @@ async function runBrowserJavaScriptProjectRequest(
   executionState: BrowserJavaScriptProjectExecutionState
 ): Promise<RuntimeCommandResult> {
     if (options.allowDynamicEval === false) {
+      const stderr = 'node: browser JavaScript project runner requires dynamic evaluation\n';
+      const io = createRuntimeProjectIoBridge(request.onEvent);
+      io.output('stderr', stderr);
+      io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
       return {
         stdout: '',
-        stderr: 'node: browser JavaScript project runner requires dynamic evaluation\n',
+        stderr,
         exitCode: 1,
       };
     }
@@ -4916,20 +4918,23 @@ async function runBrowserJavaScriptProjectRequest(
         : error instanceof Error
           ? `${error.message}\n`
           : `${String(error)}\n`;
+      if (stderrSuffix) emitOutput('stderr', stderrSuffix);
       try {
         await liveIo.flush();
       } catch (flushError) {
+        const flushStderr = flushError instanceof Error ? `${flushError.message}\n` : `${String(flushError)}\n`;
+        createRuntimeProjectIoBridge(request.onEvent).output('stderr', flushStderr);
         io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode: 1 });
         return {
           stdout: stdout.join(''),
-          stderr: stderr.join('') + (flushError instanceof Error ? `${flushError.message}\n` : `${String(flushError)}\n`),
+          stderr: stderr.join('') + flushStderr,
           exitCode: 1,
         };
       }
       io.status('process-exit', 'Browser Node exited', { command: 'node', exitCode });
       return {
         stdout: stdout.join(''),
-        stderr: stderr.join('') + stderrSuffix,
+        stderr: stderr.join(''),
         exitCode,
       };
     }
