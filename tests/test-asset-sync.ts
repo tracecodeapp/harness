@@ -29,6 +29,7 @@ async function main(): Promise<void> {
     'pyodide-worker.js',
     'generated-python-harness-snippets.js',
     'pyodide/runtime-core.js',
+    'shared/runtime-kernel-policy-classic.js',
     'javascript-worker.js',
     'java-worker.js',
     'cpp-worker.js',
@@ -90,6 +91,7 @@ async function main(): Promise<void> {
     'pyodide-worker.js',
     'generated-python-harness-snippets.js',
     'pyodide/runtime-core.js',
+    'shared/runtime-kernel-policy-classic.js',
   ]) {
     const fileStat = await stat(join(filteredTargetDir, relativePath));
     assertCondition(fileStat.isFile(), `Expected filtered synced asset at ${relativePath}`);

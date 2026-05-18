@@ -75,6 +75,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'workers/pyodide-worker.js',
       'workers/generated-python-harness-snippets.js',
       'workers/pyodide/runtime-core.js',
+      'workers/shared/runtime-kernel-policy-classic.js',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -327,8 +328,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         worker.includes("patch('open'") &&
           worker.includes('isCreateOrTruncateOpenFlags') &&
+          worker.includes('kernelVirtualPathTarget(path)') &&
           worker.includes('emitFileChange(streamPath(stream))'),
-        '@tracecode/harness-python worker should ship live empty-open file mutation hooks'
+        '@tracecode/harness-python worker should ship shared-kernel live empty-open file mutation hooks'
+      );
+      assertCondition(
+        worker.includes('shared-kernel-policy-loaded') &&
+          worker.includes('self.TraceRuntimeKernelPolicy') &&
+          worker.includes('runtimeKernelVirtualPathTarget(path, { knownDevices: knownDevicePaths })'),
+        '@tracecode/harness-python worker should load shared worker kernel policy for virtual path decisions'
       );
       assertCondition(
         worker.includes("patch('mkdir'") &&

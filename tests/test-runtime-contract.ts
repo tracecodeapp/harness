@@ -1,6 +1,8 @@
 #!/usr/bin/env npx tsx
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import {
   createBrowserHarness,
   SUPPORTED_LANGUAGES,
@@ -322,6 +324,10 @@ function assertRuntimeProjectIoBridgeOutputDevices(): void {
 function assertWorkerRuntimeKernelPolicyContract(): void {
   const knownDevices = ['/dev/stdout', '/dev/log', '/dev/custom-in'];
   const readOnlyPaths = ['/tracekernel/custom', '/proc/kernel/info'];
+  const classicContext = { self: {} as { TraceRuntimeKernelPolicy?: typeof import('../workers/shared/runtime-kernel-policy.js') } };
+  vm.createContext(classicContext);
+  vm.runInContext(readFileSync('workers/shared/runtime-kernel-policy-classic.js', 'utf8'), classicContext);
+  const classicPolicy = classicContext.self.TraceRuntimeKernelPolicy;
 
   assertCondition(
     normalizeWorkerKernelDeviceReference('/dev/log') === '/dev/log' &&
@@ -367,6 +373,14 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
     stableStringify(workerRuntimeKernelVirtualMutationTarget('src/value.txt', { knownDevices, readOnlyPaths })) ===
       stableStringify({ kind: 'workspace', path: '/src/value.txt' }),
     'shared worker kernel policy should allow workspace mutations'
+  );
+  assertCondition(
+    classicPolicy !== undefined &&
+      stableStringify(classicPolicy.runtimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) ===
+        stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) &&
+      stableStringify(classicPolicy.runtimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
+        stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })),
+    'classic worker kernel policy should match module worker kernel policy'
   );
 }
 

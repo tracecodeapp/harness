@@ -33,6 +33,9 @@ const PYODIDE_INDEX_URLS = [
 const GENERATED_HARNESS_SNIPPETS_PATHS = [
   './generated-python-harness-snippets.js',
 ];
+const SHARED_KERNEL_POLICY_PATHS = [
+  './shared/runtime-kernel-policy-classic.js',
+];
 
 let pyodide = null;
 let isLoading = false;
@@ -85,6 +88,20 @@ async function ensurePythonLibraryPackages(runtime) {
 // Load generated shared harness snippets when available. Keep worker startup
 // resilient by falling back to embedded implementations if this import fails.
 if (typeof importScripts === 'function') {
+  for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
+    try {
+      importScripts(scriptPath);
+      emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitRuntimeDiagnostic('warn', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
+        scriptPath,
+        message,
+      });
+    }
+  }
+
   for (const scriptPath of GENERATED_HARNESS_SNIPPETS_PATHS) {
     try {
       importScripts(scriptPath);
@@ -724,20 +741,32 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null;
   const textDecoderLossy = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
   const devices = normalizeProjectKernelDevices(kernelDevices);
+  const knownDevicePaths = Object.keys(devices);
+  const kernelPolicy = self.TraceRuntimeKernelPolicy;
 
-  const kernelVirtualNamespacePath = (path) => {
+  const fallbackKernelVirtualPathTarget = (path) => {
     const normalized = normalizePyodideFsProjectPath(path);
-    if (!normalized) return null;
-    if (normalized === '/dev' || normalized.startsWith('/dev/')) return normalized;
-    if (normalized === '/proc' || normalized.startsWith('/proc/')) return normalized;
-    return null;
+    if (!normalized) return { kind: 'workspace', path: '/' };
+    if (normalized === '/proc' || normalized.startsWith('/proc/')) return { kind: 'proc', path: normalized };
+    if (normalized === '/dev') return { kind: 'device-directory', path: normalized };
+    if (normalized.startsWith('/dev/')) {
+      return devices[normalized] ? { kind: 'device-file', path: normalized } : { kind: 'device-not-found', path: normalized };
+    }
+    return { kind: 'workspace', path: normalized };
+  };
+
+  const kernelVirtualPathTarget = (path) => {
+    if (kernelPolicy && typeof kernelPolicy.runtimeKernelVirtualPathTarget === 'function') {
+      return kernelPolicy.runtimeKernelVirtualPathTarget(path, { knownDevices: knownDevicePaths });
+    }
+    return fallbackKernelVirtualPathTarget(path);
   };
 
   const kernelDeviceOutputTarget = (path) => {
-    const kernelPath = kernelVirtualNamespacePath(path);
-    if (!kernelPath || !kernelPath.startsWith('/dev/') || !devices[kernelPath]) return null;
-    const outputDevice = String(devices[kernelPath].outputDevice || '');
-    return outputDevice ? { device: kernelPath, outputDevice } : null;
+    const target = kernelVirtualPathTarget(path);
+    if (target.kind !== 'device-file' || !devices[target.path]) return null;
+    const outputDevice = String(devices[target.path].outputDevice || '');
+    return outputDevice ? { device: target.path, outputDevice } : null;
   };
 
   const isCreateOrTruncateOpenFlags = (flags) => {
@@ -759,12 +788,12 @@ function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   };
 
   const rejectKernelVirtualMutation = (path, operation) => {
-    const kernelPath = kernelVirtualNamespacePath(path);
-    if (!kernelPath) return;
-    const error = new Error(`Kernel virtual namespace is not a provider FS mutation target: ${kernelPath}`);
-    error.code = kernelPath === '/proc' || kernelPath.startsWith('/proc/') ? 'EROFS' : 'EACCES';
+    const target = kernelVirtualPathTarget(path);
+    if (target.kind === 'workspace') return;
+    const error = new Error(`Kernel virtual namespace is not a provider FS mutation target: ${target.path}`);
+    error.code = target.kind === 'proc' || target.kind === 'read-only-file' ? 'EROFS' : 'EACCES';
     error.operation = operation;
-    error.path = kernelPath;
+    error.path = target.path;
     throw error;
   };
 
