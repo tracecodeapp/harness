@@ -69,6 +69,13 @@ type CSharpProjectWorkerRequest = {
   project: {
     files: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     kernelFiles?: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
+    kernelDevices?: Array<{
+      path: '/dev/stdin' | '/dev/stdout' | '/dev/stderr' | '/dev/tty';
+      readable: boolean;
+      writable: boolean;
+      inputDevice?: '/dev/stdin' | '/dev/stdout' | '/dev/stderr' | '/dev/tty';
+      outputDevice?: '/dev/stdin' | '/dev/stdout' | '/dev/stderr' | '/dev/tty';
+    }>;
     directories?: string[];
   };
 };
@@ -79,6 +86,12 @@ const WORKER_REQUEST_TIMEOUT_MS = 60_000;
 const TRACE_KERNEL_PROC_FILES = [
   { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
   { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
+];
+const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['kernelDevices']> = [
+  { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+  { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+  { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+  { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
 ];
 
 function assertCondition(condition: boolean, message: string): void {
@@ -2632,6 +2645,7 @@ async function main(): Promise<void> {
         project: {
           directories: ['src/empty/child'],
           kernelFiles: TRACE_KERNEL_PROC_FILES,
+          kernelDevices: TRACE_KERNEL_DEVICES,
           files: [
             {
               path: 'src/Program.cs',
@@ -2834,6 +2848,54 @@ async function main(): Promise<void> {
           event.change.deleted === true
       ) === true,
       `C# project worker should stream deleted file changes, received ${JSON.stringify(projectRun.events)}`
+    );
+
+    const restrictedDeviceRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: 'hidden-stdin\n',
+        project: {
+          kernelDevices: [
+            { path: '/dev/stdin', readable: false, writable: false },
+            { path: '/dev/stdout', readable: false, writable: false },
+            { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stdout' },
+            { path: '/dev/tty', readable: false, writable: false },
+          ],
+          files: [
+            {
+              path: 'src/Program.cs',
+              contents: [
+                'Console.WriteLine(Console.ReadLine() ?? "no-input");',
+                'Console.WriteLine("stdout-blocked");',
+                'Console.Error.WriteLine("stderr-routed");',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(restrictedDeviceRun.exitCode === 0, `C# project worker should run restricted device inventory case: ${restrictedDeviceRun.stderr}`);
+    assertCondition(
+      restrictedDeviceRun.stdout.includes('no-input\nstdout-blocked\n') && restrictedDeviceRun.stderr === 'stderr-routed\n',
+      `C# project worker should preserve host stdout/stderr while device callbacks consult inventory, received stdout=${JSON.stringify(restrictedDeviceRun.stdout)} stderr=${JSON.stringify(restrictedDeviceRun.stderr)}`
+    );
+    assertCondition(
+      restrictedDeviceRun.events?.some(
+        (event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout' && event.data.includes('stderr-routed')
+      ) === true,
+      `C# project worker should route device output through kernelDevices, received ${JSON.stringify(restrictedDeviceRun.events)}`
+    );
+    assertCondition(
+      restrictedDeviceRun.events?.some(
+        (event) => event.type === 'output' && typeof event.data === 'string' && event.data.includes('stdout-blocked')
+      ) !== true,
+      `C# project worker should suppress unwritable stdout device events, received ${JSON.stringify(restrictedDeviceRun.events)}`
     );
 
     const projectBuild = await runProjectWorkerCase(

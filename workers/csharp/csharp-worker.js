@@ -16,6 +16,12 @@ const WORKER_DEBUG = (() => {
 const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
+const FALLBACK_KERNEL_DEVICES = Object.freeze([
+  { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+  { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+  { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+  { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+]);
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
   functionName: 'Add',
@@ -72,6 +78,47 @@ function now() {
 
 function elapsedMs(startedAt) {
   return Math.max(0, Math.round(now() - startedAt));
+}
+
+function normalizeKernelDevicePath(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
+  return normalized === '/dev/stdin' ||
+    normalized === '/dev/stdout' ||
+    normalized === '/dev/stderr' ||
+    normalized === '/dev/tty'
+    ? normalized
+    : null;
+}
+
+function kernelDeviceEntries(request = activeProjectIo?.request) {
+  const devices = request?.project?.kernelDevices;
+  return Array.isArray(devices) && devices.length > 0 ? devices : FALLBACK_KERNEL_DEVICES;
+}
+
+function kernelDeviceInfo(path, request = activeProjectIo?.request) {
+  const devicePath = normalizeKernelDevicePath(path);
+  if (!devicePath) return null;
+  for (const device of kernelDeviceEntries(request)) {
+    if (normalizeKernelDevicePath(device?.path) === devicePath) return device;
+  }
+  return null;
+}
+
+function kernelDeviceInputSource(path, request = activeProjectIo?.request) {
+  const device = kernelDeviceInfo(path, request);
+  if (!device?.readable) return null;
+  return normalizeKernelDevicePath(device.inputDevice) || normalizeKernelDevicePath(device.path);
+}
+
+function kernelDeviceOutputTarget(path, request = activeProjectIo?.request) {
+  const device = kernelDeviceInfo(path, request);
+  if (!device?.writable) return null;
+  return normalizeKernelDevicePath(device.outputDevice) || normalizeKernelDevicePath(device.path);
+}
+
+function kernelDeviceStream(path) {
+  return normalizeKernelDevicePath(path) === '/dev/stderr' ? 'stderr' : 'stdout';
 }
 
 function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
@@ -176,6 +223,10 @@ function materializeKernelVirtualFiles(request) {
   }
 }
 
+function projectRuntimeStdin(request) {
+  return kernelDeviceInputSource('/dev/stdin', request) ? String(request?.stdin || '') : '';
+}
+
 function projectRuntimeRequest(request) {
   const project = request?.project && typeof request.project === 'object'
     ? {
@@ -193,6 +244,7 @@ function projectRuntimeRequest(request) {
     : request?.env;
   return {
     ...request,
+    stdin: projectRuntimeStdin(request),
     cwd: mapProjectRuntimePath(request?.cwd, request),
     scriptPath: mapProjectRuntimePath(request?.scriptPath, request),
     args: Array.isArray(request?.args)
@@ -220,10 +272,24 @@ function emitProjectEvent(payload) {
   self.postMessage({ id: activeProjectIo.messageId, type: 'project-event', payload });
 }
 
+function routeProjectOutputEvent(payload) {
+  if (!payload || typeof payload !== 'object' || payload.type !== 'output') return payload;
+  const requestedDevice = normalizeKernelDevicePath(payload.device) || (payload.stream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
+  const outputDevice = kernelDeviceOutputTarget(requestedDevice);
+  if (!outputDevice) return null;
+  const stream = kernelDeviceStream(outputDevice);
+  return {
+    ...payload,
+    stream,
+    device: outputDevice,
+  };
+}
+
 function emitProjectEventJson(payloadJson) {
   if (!activeProjectIo?.messageId || typeof payloadJson !== 'string') return;
   try {
-    emitProjectEvent(JSON.parse(payloadJson));
+    const payload = routeProjectOutputEvent(JSON.parse(payloadJson));
+    if (payload) emitProjectEvent(payload);
   } catch (error) {
     emitRuntimeDiagnostic('warn', 'project-event', 'C# host emitted an invalid project event payload.', {
       error: error instanceof Error ? error.message : String(error),
@@ -231,12 +297,12 @@ function emitProjectEventJson(payloadJson) {
   }
 }
 
-function emitProjectOutput(stream, data) {
+function emitProjectOutput(stream, data, device = stream === 'stdout' ? '/dev/stdout' : '/dev/stderr') {
   if (!data) return;
   emitProjectEvent({
     type: 'output',
     stream,
-    device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
+    device,
     data,
   });
 }
@@ -248,13 +314,18 @@ function flushProjectOutput(stream) {
   if (!buffer.length) return;
   const bytes = new Uint8Array(buffer);
   buffer.length = 0;
-  emitProjectOutput(stream, decodeUtf8(bytes));
+  emitProjectOutput(stream, decodeUtf8(bytes), stream === 'stdout' ? context.stdoutDevice : context.stderrDevice);
 }
 
-function writeProjectOutputByte(stream, value) {
+function writeProjectDeviceByte(device, value) {
   const context = activeProjectIo;
   if (!context || typeof value !== 'number' || value < 0) return;
+  const outputDevice = kernelDeviceOutputTarget(device, context.request);
+  if (!outputDevice) return;
+  const stream = kernelDeviceStream(outputDevice);
   const buffer = stream === 'stdout' ? context.stdoutBytes : context.stderrBytes;
+  if (stream === 'stdout') context.stdoutDevice = outputDevice;
+  else context.stderrDevice = outputDevice;
   buffer.push(value & 0xff);
   if (value === 10) flushProjectOutput(stream);
 }
@@ -262,6 +333,7 @@ function writeProjectOutputByte(stream, value) {
 function readProjectInputByte() {
   const context = activeProjectIo;
   if (!context) return null;
+  if (!kernelDeviceInputSource('/dev/stdin', context.request)) return null;
   if (context.stdinIndex >= context.stdinBytes.length) return null;
   return context.stdinBytes[context.stdinIndex++];
 }
@@ -409,8 +481,8 @@ async function loadRuntime(assetBaseUrl) {
       const runtimeBuilder = dotnet
         .withModuleConfig({
           stdin: readProjectInputByte,
-          stdout: (value) => writeProjectOutputByte('stdout', value),
-          stderr: (value) => writeProjectOutputByte('stderr', value),
+          stdout: (value) => writeProjectDeviceByte('/dev/stdout', value),
+          stderr: (value) => writeProjectDeviceByte('/dev/stderr', value),
         })
         .withApplicationArguments('tracecode-csharp-worker');
       const runtime = await runtimeBuilder.create();
@@ -570,10 +642,12 @@ async function handleMessage(message) {
     activeProjectIo = {
       messageId: message.id,
       request,
-      stdinBytes: encodeUtf8(request.stdin || ''),
+      stdinBytes: encodeUtf8(projectRuntimeStdin(request)),
       stdinIndex: 0,
       stdoutBytes: [],
       stderrBytes: [],
+      stdoutDevice: '/dev/stdout',
+      stderrDevice: '/dev/stderr',
     };
     let result;
     try {
