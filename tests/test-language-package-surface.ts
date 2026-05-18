@@ -140,6 +140,7 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project-browser.cjs',
       'dist/project-browser.d.ts',
       'workers/csharp-worker.js',
+      'workers/shared/runtime-kernel-policy-classic.js',
       'workers/vendor/csharp/_framework/dotnet.js',
       'workers/vendor/csharp/_framework/dotnet.native.wasm',
       'workers/vendor/csharp/_framework/dotnet.runtime.js',
@@ -559,10 +560,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         worker.includes('let materializedKernelDevicePaths = new Set()') &&
           worker.includes('materializedKernelDevicePaths.add(devicePath)') &&
+          worker.includes('shared-kernel-policy-loaded') &&
+          worker.includes('self.TraceRuntimeKernelPolicy') &&
+          worker.includes('runtimeKernelVirtualOpenTarget(path, flags)') &&
+          worker.includes('runtimeKernelVirtualMutationTarget(path)') &&
           worker.includes('function isReadableOpenFlags(flags)') &&
           worker.includes('function isKernelDeviceNamespacePath(value)') &&
-          worker.includes('throwKernelDevicePathError(path, \'open\')'),
-        '@tracecode/harness-csharp worker should ship manifest-scoped /dev cleanup and namespace guards'
+          worker.includes("runtimeKernelDeviceOutputTarget(kernelDeviceEntries(request), path)"),
+        '@tracecode/harness-csharp worker should load shared worker kernel policy for manifest-scoped /dev cleanup and namespace guards'
       );
       assertCondition(
         worker.includes('function emitMissingProjectResultOutput(result)') &&

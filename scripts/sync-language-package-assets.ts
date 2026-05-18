@@ -109,6 +109,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'csharp-worker.js'],
       },
       {
+        source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
+        target: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
+      },
+      {
         source: ['workers', 'vendor', 'csharp'],
         target: ['workers', 'vendor', 'csharp'],
       },

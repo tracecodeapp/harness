@@ -55,6 +55,11 @@ const ASSET_COPY_PLAN = [
     languages: ['csharp'],
   },
   {
+    source: ['workers', 'shared', 'runtime-kernel-policy-classic.js'],
+    target: ['shared', 'runtime-kernel-policy-classic.js'],
+    languages: ['csharp'],
+  },
+  {
     source: ['workers', 'cpp', 'cpp-worker.js'],
     target: ['cpp-worker.js'],
     languages: ['cpp'],

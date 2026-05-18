@@ -11,6 +11,10 @@ let materializedKernelVirtualDirectoryPaths = new Set();
 let hiddenKernelVirtualFilePaths = new Set();
 let hiddenKernelVirtualDirectoryPaths = new Set();
 let materializedKernelDevicePaths = new Set();
+const SHARED_KERNEL_POLICY_PATHS = [
+  '../shared/runtime-kernel-policy-classic.js',
+  './shared/runtime-kernel-policy-classic.js',
+];
 const WORKER_DEBUG = (() => {
   try {
     return typeof self !== 'undefined' && typeof self.location?.search === 'string' && self.location.search.includes('dev=');
@@ -72,6 +76,22 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
   });
 }
 
+if (typeof importScripts === 'function') {
+  for (const scriptPath of SHARED_KERNEL_POLICY_PATHS) {
+    try {
+      importScripts(scriptPath);
+      emitRuntimeDiagnostic('info', 'shared-kernel-policy-loaded', 'Loaded shared runtime kernel policy.', { scriptPath });
+      break;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      emitRuntimeDiagnostic('warn', 'shared-kernel-policy-load-failed', 'Failed to load shared runtime kernel policy.', {
+        scriptPath,
+        message,
+      });
+    }
+  }
+}
+
 function now() {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
@@ -80,21 +100,36 @@ function elapsedMs(startedAt) {
   return Math.max(0, Math.round(now() - startedAt));
 }
 
-function normalizeKernelDevicePath(value) {
+function normalizeRawKernelDevicePath(value) {
   if (typeof value !== 'string' || value.length === 0) return null;
   const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
-  return normalized.startsWith('/dev/') && normalized.length > '/dev/'.length && !normalized.slice('/dev/'.length).includes('/')
-    ? normalized
-    : null;
+  return normalized.startsWith('/dev/') && normalized.length > '/dev/'.length ? normalized : null;
+}
+
+function normalizeKernelDevicePath(value, request = activeProjectIo?.request) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelVirtualPathTarget === 'function') {
+    const target = policy.runtimeKernelVirtualPathTarget(value, { devices: kernelDeviceEntries(request) });
+    if (target?.kind === 'device-file') return target.path;
+  }
+  return normalizeRawKernelDevicePath(value);
 }
 
 function isKernelDeviceNamespacePath(value) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.isRuntimeKernelDeviceNamespacePath === 'function') {
+    return policy.isRuntimeKernelDeviceNamespacePath(value);
+  }
   if (typeof value !== 'string' || value.length === 0) return false;
   const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
   return normalized === '/dev' || normalized.startsWith('/dev/');
 }
 
 function isKernelDeviceDirectoryPath(value) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.isRuntimeKernelDeviceDirectory === 'function') {
+    return policy.isRuntimeKernelDeviceDirectory(value);
+  }
   if (typeof value !== 'string' || value.length === 0) return false;
   return (value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/') === '/dev';
 }
@@ -105,24 +140,36 @@ function kernelDeviceEntries(request = activeProjectIo?.request) {
 }
 
 function kernelDeviceInfo(path, request = activeProjectIo?.request) {
-  const devicePath = normalizeKernelDevicePath(path);
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelDeviceInfo === 'function') {
+    return policy.runtimeKernelDeviceInfo(kernelDeviceEntries(request), path);
+  }
+  const devicePath = normalizeKernelDevicePath(path, request);
   if (!devicePath) return null;
   for (const device of kernelDeviceEntries(request)) {
-    if (normalizeKernelDevicePath(device?.path) === devicePath) return device;
+    if (normalizeKernelDevicePath(device?.path, request) === devicePath) return device;
   }
   return null;
 }
 
 function kernelDeviceInputSource(path, request = activeProjectIo?.request) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelDeviceInputSource === 'function') {
+    return policy.runtimeKernelDeviceInputSource(kernelDeviceEntries(request), path) || null;
+  }
   const device = kernelDeviceInfo(path, request);
   if (!device?.readable) return null;
-  return normalizeKernelDevicePath(device.inputDevice) || normalizeKernelDevicePath(device.path);
+  return normalizeKernelDevicePath(device.inputDevice, request) || normalizeKernelDevicePath(device.path, request);
 }
 
 function kernelDeviceOutputTarget(path, request = activeProjectIo?.request) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelDeviceOutputTarget === 'function') {
+    return policy.runtimeKernelDeviceOutputTarget(kernelDeviceEntries(request), path) || null;
+  }
   const device = kernelDeviceInfo(path, request);
   if (!device?.writable) return null;
-  return normalizeKernelDevicePath(device.outputDevice) || normalizeKernelDevicePath(device.path);
+  return normalizeKernelDevicePath(device.outputDevice, request) || normalizeKernelDevicePath(device.path, request);
 }
 
 function kernelDeviceStream(path) {
@@ -155,6 +202,80 @@ function isKernelVirtualFsPath(path, request = activeProjectIo?.request) {
     }
   }
   return false;
+}
+
+function kernelVirtualProcEntryKind(path, request = activeProjectIo?.request) {
+  const normalized = normalizeKernelVirtualManifestPath(path);
+  if (!normalized || (normalized !== '/proc' && !normalized.startsWith('/proc/'))) return undefined;
+  let hasProcEntry = false;
+  for (const filePath of kernelVirtualManifestPaths(request)) {
+    if (filePath !== '/proc' && !filePath.startsWith('/proc/')) continue;
+    hasProcEntry = true;
+    if (normalized === filePath) return 'file';
+    for (const directory of runtimeAncestorDirectories(filePath)) {
+      if (normalized === directory) return 'directory';
+    }
+  }
+  return hasProcEntry && normalized === '/proc' ? 'directory' : undefined;
+}
+
+function runtimeKernelVirtualPathTarget(path, request = activeProjectIo?.request) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelVirtualPathTarget === 'function') {
+    return policy.runtimeKernelVirtualPathTarget(path, { devices: kernelDeviceEntries(request) });
+  }
+  if (isKernelDeviceDirectoryPath(path)) return { kind: 'device-directory', path: '/dev' };
+  if (isKernelDeviceNamespacePath(path)) {
+    const device = normalizeRawKernelDevicePath(path);
+    return device && kernelDeviceInfo(device, request)
+      ? { kind: 'device-file', path: device }
+      : { kind: 'device-not-found', path };
+  }
+  return { kind: 'workspace', path };
+}
+
+function runtimeKernelVirtualMutationTarget(path, request = activeProjectIo?.request) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelVirtualMutationTarget === 'function') {
+    const target = policy.runtimeKernelVirtualMutationTarget(path, { devices: kernelDeviceEntries(request) });
+    if (target.kind !== 'workspace') return target;
+  }
+  if (isKernelDeviceNamespacePath(path)) {
+    return kernelDeviceInfo(path, request)
+      ? { kind: 'error', reason: 'device-read-only', path }
+      : { kind: 'error', reason: 'device-not-found', path };
+  }
+  if (isKernelVirtualFsPath(path, request)) {
+    return { kind: 'error', reason: 'kernel-read-only', path };
+  }
+  return { kind: 'workspace', path };
+}
+
+function runtimeKernelVirtualOpenTarget(path, flags, request = activeProjectIo?.request) {
+  const openRequest = {
+    readable: isReadableOpenFlags(flags),
+    writable: isWritableOpenFlags(flags),
+    create: isCreateOrTruncateOpenFlags(flags),
+    truncate: isCreateOrTruncateOpenFlags(flags),
+  };
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelVirtualOpenTarget === 'function') {
+    return policy.runtimeKernelVirtualOpenTarget(path, openRequest, {
+      devices: kernelDeviceEntries(request),
+      procEntryKind: kernelVirtualProcEntryKind(path, request),
+    });
+  }
+  const target = runtimeKernelVirtualPathTarget(path, request);
+  if (target.kind === 'workspace') return target;
+  if (target.kind === 'device-directory') return { kind: 'error', reason: 'is-directory', path: target.path };
+  if (target.kind === 'device-not-found') return { kind: 'error', reason: 'not-found', path: target.path };
+  if (target.kind === 'device-file') {
+    const info = kernelDeviceInfo(target.path, request);
+    return info
+      ? { kind: 'device', device: target.path, readable: Boolean(info.readable && openRequest.readable), writable: Boolean(info.writable && openRequest.writable) }
+      : { kind: 'error', reason: 'not-found', path: target.path };
+  }
+  return { kind: 'error', reason: 'read-only', path: target.path };
 }
 
 function isHiddenKernelVirtualFsPath(path) {
@@ -391,7 +512,7 @@ function materializeKernelDevices(request) {
   ensureRuntimeDirectory(fs, '/dev');
   const nextDevicePaths = new Set(
     kernelDeviceEntries(request)
-      .map((device) => normalizeKernelDevicePath(device?.path))
+      .map((device) => normalizeKernelDevicePath(device?.path, request))
       .filter(Boolean)
   );
   for (const staleDevicePath of materializedKernelDevicePaths) {
@@ -404,16 +525,18 @@ function materializeKernelDevices(request) {
   }
   materializedKernelDevicePaths = new Set();
   for (const device of kernelDeviceEntries(request)) {
-    const devicePath = normalizeKernelDevicePath(device?.path);
+    const devicePath = normalizeKernelDevicePath(device?.path, request);
     if (!devicePath) continue;
-    const name = devicePath.slice('/dev/'.length);
+    const name = devicePath.slice(devicePath.lastIndexOf('/') + 1);
     try {
       fs.unlink(devicePath);
     } catch {
       // The runtime may not have created this device yet.
     }
+    const deviceDirectory = runtimeDirectoryName(devicePath);
+    ensureRuntimeDirectory(fs, deviceDirectory);
     fs.createDevice(
-      '/dev',
+      deviceDirectory,
       name,
       device.readable
         ? () => {
@@ -515,12 +638,12 @@ function throwKernelDevicePathError(path, operation, code = 'ENOENT') {
 }
 
 function throwKernelVirtualMutationError(path, operation) {
-  if (isKernelDeviceNamespacePath(path)) {
-    throwKernelDevicePathError(path, operation);
+  const target = runtimeKernelVirtualMutationTarget(path);
+  if (target.kind === 'workspace') return;
+  if (target.reason === 'device-not-found') {
+    throwKernelFsError(path, operation, 'ENOENT', 'no such file or directory');
   }
-  if (isKernelVirtualFsPath(path)) {
-    throwKernelFsError(path, operation, 'EROFS', 'read-only file system');
-  }
+  throwKernelFsError(path, operation, 'EROFS', 'read-only file system');
 }
 
 function emitProjectEvent(payload) {
@@ -822,20 +945,24 @@ function installRuntimeFsHooks(runtime) {
       if (activeProjectIo && isHiddenKernelVirtualFsPath(path)) {
         throwKernelFsError(path, 'open', 'ENOENT', 'no such file or directory');
       }
-      if (activeProjectIo && isKernelDeviceNamespacePath(path)) {
-        const devicePath = normalizeKernelDevicePath(path);
-        if (!devicePath || !kernelDeviceInfo(devicePath)) {
-          throwKernelDevicePathError(path, 'open');
+      if (activeProjectIo) {
+        const openTarget = runtimeKernelVirtualOpenTarget(path, flags);
+        if (openTarget.kind === 'error') {
+          const code = openTarget.reason === 'not-found' ? 'ENOENT' : openTarget.reason === 'is-directory' ? 'EISDIR' : 'EROFS';
+          const reason = code === 'ENOENT' ? 'no such file or directory' : code === 'EISDIR' ? 'is a directory' : 'read-only file system';
+          throwKernelFsError(path, 'open', code, reason);
         }
-        if (isReadableOpenFlags(flags) && !kernelDeviceInputSource(devicePath)) {
-          throwKernelDevicePathError(path, 'open', 'EROFS');
+        if (openTarget.kind === 'device') {
+          if (isReadableOpenFlags(flags) && !openTarget.readable) {
+            throwKernelFsError(path, 'open', 'EROFS', 'read-only file system');
+          }
+          if (isWritableOpenFlags(flags) && !openTarget.writable) {
+            throwKernelFsError(path, 'open', 'EROFS', 'read-only file system');
+          }
         }
-        if (isWritableOpenFlags(flags) && !kernelDeviceOutputTarget(devicePath)) {
-          throwKernelDevicePathError(path, 'open', 'EROFS');
+        if (openTarget.kind === 'workspace' && isKernelVirtualFsPath(path) && (isWritableOpenFlags(flags) || isCreateOrTruncateOpenFlags(flags))) {
+          throwKernelFsError(path, 'open', 'EROFS', 'read-only file system');
         }
-      }
-      if (activeProjectIo && isKernelVirtualFsPath(path) && (isWritableOpenFlags(flags) || isCreateOrTruncateOpenFlags(flags))) {
-        throwKernelFsError(path, 'open', 'EROFS', 'read-only file system');
       }
       const shouldEmitCreateSnapshot = Boolean(activeProjectIo) && isCreateOrTruncateOpenFlags(flags);
       const stream = originalOpen.apply(this, arguments);
