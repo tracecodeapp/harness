@@ -465,6 +465,19 @@ async function main(): Promise<void> {
         stdin: 'from-stdin\\n',
         project: { files: [...projectFiles, ...(projectCompile.files || [])], kernelFiles: traceKernelProcFiles, kernelDevices: traceKernelDevices },
       });
+      const projectDeviceLeakRun = await send('execute-project-cpp', {
+        source: 'run',
+        scriptPath: './a.out',
+        args: ['alpha', 'beta'],
+        cwd: '/workspace/src',
+        env: { MODE: 'browser-cpp-project' },
+        stdin: 'from-stdin\\n',
+        project: {
+          files: [...projectFiles, ...(projectCompile.files || [])],
+          kernelFiles: traceKernelProcFiles,
+          kernelDevices: traceKernelDevices.filter((device) => device.path !== '/dev/log'),
+        },
+      });
       const absoluteProjectCompile = await send('execute-project-cpp', {
         source: 'compile',
         scriptPath: '/workspace/src/absolute_main.cpp',
@@ -913,6 +926,7 @@ async function main(): Promise<void> {
         syntaxError,
         projectCompile,
         projectRun,
+        projectDeviceLeakRun,
         absoluteProjectCompile,
         absoluteProjectRun,
         inlineAbsoluteIncludeCompile,
@@ -966,6 +980,7 @@ async function main(): Promise<void> {
     const syntaxError = results.syntaxError as { success?: boolean; error?: string; errorLine?: number };
     const projectCompile = results.projectCompile as CppProjectWorkerResponse;
     const projectRun = results.projectRun as CppProjectWorkerResponse;
+    const projectDeviceLeakRun = results.projectDeviceLeakRun as CppProjectWorkerResponse;
     const absoluteProjectCompile = results.absoluteProjectCompile as {
       stdout?: string;
       stderr?: string;
@@ -1259,6 +1274,12 @@ async function main(): Promise<void> {
         event.data === 'log-device\n'
       )) === true,
       `C++ browser project run should support manifest-provided custom output devices: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectDeviceLeakRun.exitCode === 0 &&
+        projectDeviceLeakRun.stderr?.includes('log-device\n') !== true &&
+        projectDeviceLeakRun.events?.some((event) => event.type === 'output' && event.sourceDevice === '/dev/log') !== true,
+      `C++ browser project run should not leak manifest-provided devices between requests: ${JSON.stringify(projectDeviceLeakRun)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,
