@@ -1901,6 +1901,36 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     !events.some((event) => event.type === 'file-change' && event.change.path === 'live-js.txt'),
     `browser node applyFileChange hook should support suppressing duplicate file-change events: ${JSON.stringify(events)}`
   );
+
+  const failedEvents: RuntimeCommandEvent[] = [];
+  const failedRunner = createBrowserJavaScriptProjectRunner({
+    applyFileChange: async (change) => {
+      throw new Error(`reject-live:${change.path}`);
+    },
+  });
+  const failedResult = await failedRunner({
+    code: 'const fs = require("node:fs"); fs.writeFileSync("bad-live-js.txt", "bad\\n"); console.log("after-bad-live");',
+    source: 'argument',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+    onEvent: (event) => failedEvents.push(event),
+  });
+
+  assertCondition(failedResult.exitCode === 1, `browser node failed applyFileChange hook should fail command: ${JSON.stringify(failedResult)}`);
+  assertCondition(
+    failedResult.stderr.includes('reject-live:bad-live-js.txt'),
+    `browser node failed applyFileChange hook should surface apply error: ${failedResult.stderr}`
+  );
+  assertCondition(
+    !failedEvents.some((event) => event.type === 'output' && event.data === 'after-bad-live\n'),
+    `browser node failed applyFileChange hook should stop later streamed output events: ${JSON.stringify(failedEvents)}`
+  );
 }
 
 async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<void> {
