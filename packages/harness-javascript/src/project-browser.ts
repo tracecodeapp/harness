@@ -27,6 +27,8 @@ import {
   runtimeKernelFileReadErrorCode,
   runtimeKernelLinkErrorCode,
   runtimeKernelLinkTarget,
+  runtimeKernelMkdirErrorCode,
+  runtimeKernelMkdirTarget,
   runtimeKernelMetadataErrorCode,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationErrorCode,
@@ -275,6 +277,15 @@ function runtimeRemoveTarget(
   return runtimeKernelRemoveTarget(raw, devices);
 }
 
+function runtimeMkdirTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelMkdirTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelMkdirTarget(raw, devices);
+}
+
 function runtimeDirectoryTarget(
   path: unknown,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -348,6 +359,13 @@ function throwRuntimeRemoveTargetError(
   message: string
 ): never {
   throw Object.assign(new Error(message), { code: runtimeKernelRemoveErrorCode(target.reason) });
+}
+
+function throwRuntimeMkdirTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelMkdirTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: runtimeKernelMkdirErrorCode(target.reason) });
 }
 
 function throwRuntimeDirectoryTargetError(
@@ -4033,9 +4051,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
-        const mutationTarget = runtimeMutationTarget(path, kernelDevices);
-        if (mutationTarget?.kind === 'error') {
-          throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, mkdir '${path}'`);
+        const mkdirTarget = runtimeMkdirTarget(path, kernelDevices);
+        if (mkdirTarget?.kind === 'error') {
+          throwRuntimeMkdirTargetError(mkdirTarget, `EROFS: read-only file system, mkdir '${path}'`);
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;

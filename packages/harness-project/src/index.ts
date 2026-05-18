@@ -24,6 +24,7 @@ import {
   runtimeKernelDirectoryTarget,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
+  runtimeKernelMkdirTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
@@ -295,6 +296,11 @@ function kernelSymlinkTarget(linkPath: string): ReturnType<typeof runtimeKernelS
 function kernelRemoveTarget(path: string): ReturnType<typeof runtimeKernelRemoveTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelRemoveTarget(path);
+}
+
+function kernelMkdirTarget(path: string): ReturnType<typeof runtimeKernelMkdirTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelMkdirTarget(path);
 }
 
 function throwKernelMutationTargetError(
@@ -767,9 +773,9 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
-    const mutationTarget = kernelMutationTarget(path);
-    if (mutationTarget.kind === 'error') return Promise.reject(new Error(
-      mutationTarget.reason === 'proc-read-only'
+    const mkdirTarget = kernelMkdirTarget(path);
+    if (mkdirTarget.kind === 'error') return Promise.reject(new Error(
+      mkdirTarget.reason === 'proc-read-only'
         ? `Kernel proc path is read-only: ${path}`
         : `Kernel device namespace is read-only: ${path}`
     ));
@@ -2662,8 +2668,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async mkdir(path: string): Promise<void> {
-    const mutationTarget = kernelMutationTarget(path);
-    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
+    const mkdirTarget = kernelMkdirTarget(path);
+    if (mkdirTarget.kind === 'error') throwKernelMutationTargetError(path, mkdirTarget);
     const absolutePath = this.toWorkspaceEntryPath(path);
     const createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
     await this.bash.fs.mkdir(absolutePath, { recursive: true });

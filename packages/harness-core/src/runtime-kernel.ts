@@ -115,6 +115,13 @@ export type RuntimeKernelRemoveTarget =
       reason: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>['reason'];
       path: string;
     };
+export type RuntimeKernelMkdirTarget =
+  | { kind: 'workspace' }
+  | {
+      kind: 'error';
+      reason: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>['reason'];
+      path: string;
+    };
 export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'ENOTDIR' | 'EROFS';
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
@@ -705,6 +712,23 @@ export function runtimeKernelRemoveTarget(
 
 export function runtimeKernelRemoveErrorCode(
   reason: Extract<RuntimeKernelRemoveTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return runtimeKernelMutationErrorCode(reason);
+}
+
+export function runtimeKernelMkdirTarget(
+  path: string,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelMkdirTarget {
+  const mkdirTarget = runtimeKernelMutationTarget(path, devices);
+  if (mkdirTarget.kind === 'error') {
+    return { kind: 'error', reason: mkdirTarget.reason, path: mkdirTarget.path };
+  }
+  return { kind: 'workspace' };
+}
+
+export function runtimeKernelMkdirErrorCode(
+  reason: Extract<RuntimeKernelMkdirTarget, { kind: 'error' }>['reason']
 ): RuntimeKernelErrorCode {
   return runtimeKernelMutationErrorCode(reason);
 }

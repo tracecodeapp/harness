@@ -24,6 +24,7 @@ import {
 import {
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
+  runtimeKernelMkdirTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelOpenTarget,
@@ -167,6 +168,15 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     stableStringify(runtimeKernelRemoveTarget('stale.txt', devices)) === '{"kind":"workspace"}',
     'kernel remove target should allow workspace removals'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelMkdirTarget('/proc/new', devices)) ===
+      '{"kind":"error","path":"/proc/new","reason":"proc-read-only"}',
+    'kernel mkdir target should reject proc directories through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelMkdirTarget('new-dir', devices)) === '{"kind":"workspace"}',
+    'kernel mkdir target should allow workspace directories'
   );
 }
 
