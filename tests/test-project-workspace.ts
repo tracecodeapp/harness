@@ -3007,6 +3007,8 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
           'process.stderr.write("stream-err\\n");',
           'fs.writeFileSync("live.txt", "one\\n");',
           'fs.appendFileSync("live.txt", "two\\n");',
+          'const emptyFd = fs.openSync("empty-open.txt", "w");',
+          'fs.closeSync(emptyFd);',
           'fs.renameSync("live.txt", "moved.txt");',
           'fs.writeFileSync("/dev/stdout", "device-out\\n");',
           'fs.writeFileSync("/dev/stderr", "device-err\\n");',
@@ -3035,6 +3037,7 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
     `browser node should preserve streamed stderr in command result: ${result.stderr}`
   );
   assertCondition(await workspace.readFile('moved.txt') === 'one\ntwo\n', 'browser node final diff should persist moved file');
+  assertCondition(await workspace.readFile('empty-open.txt') === '', 'browser node final diff should persist zero-byte open creates');
   await assertRejectsAsync(() => workspace.readFile('stale.txt'), 'browser node final diff should persist removed file');
   assertCondition(
     commandEvents.some((event) =>
@@ -3066,6 +3069,17 @@ async function testBrowserJavaScriptProjectRunnerLiveIoEvents(): Promise<void> {
       event.change.contents === 'one\ntwo\n'
     ),
     `workspace watch should receive browser node live append events: ${JSON.stringify(watchEvents)}`
+  );
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'live' &&
+      event.change.path === 'empty-open.txt' &&
+      !('deleted' in event.change) &&
+      event.change.contents === ''
+    ),
+    `browser node onEvent should receive live zero-byte open creates: ${JSON.stringify(commandEvents)}`
   );
   assertCondition(
     commandEvents.some((event) =>
