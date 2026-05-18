@@ -383,6 +383,11 @@ async function main(): Promise<void> {
             '  if (zero_fd >= 0) { write(zero_fd, "nonzero", 7); ftruncate(zero_fd, 0); close(zero_fd); }',
             '  int empty_fd = open("empty-open.txt", O_CREAT | O_TRUNC | O_WRONLY, 0644);',
             '  if (empty_fd >= 0) { close(empty_fd); }',
+            '  std::ofstream("metadata-only.txt") << "metadata\\\\n";',
+            '  timespec metadata_times[2] = {};',
+            '  metadata_times[0].tv_nsec = UTIME_NOW;',
+            '  metadata_times[1].tv_nsec = UTIME_NOW;',
+            '  std::cout << (utimensat(AT_FDCWD, "metadata-only.txt", metadata_times, 0) == 0 ? "metadata-utime:ok" : "metadata-utime:blocked") << "\\\\n";',
             '  int missing_remove_result = std::remove("missing-delete.txt");',
             '  std::cout << (missing_remove_result == 0 ? "missing-remove:ok" : "missing-remove:blocked") << "\\\\n";',
             '  int mkdir_missing_parent_result = mkdir("missing-parent/child", 0777);',
@@ -1482,6 +1487,10 @@ async function main(): Promise<void> {
       `C++ browser project run should remove directories through WASI rmdir: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
+      projectRun.stdout?.includes('metadata-utime:ok\n') === true,
+      `C++ browser project run should allow metadata-only mutations on workspace files: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
       projectRun.files?.some((file) => file.path === 'src/persist-dir' && file.directory === true) === true &&
         projectRun.files?.some((file) => file.path === 'src/stale-dir' && file.directory === true && file.deleted === true) === true,
       `C++ browser project run should return final directory mutations: ${JSON.stringify(projectRun)}`
@@ -1560,8 +1569,17 @@ async function main(): Promise<void> {
           event.phase === 'live' &&
           event.change?.path === 'src/allocated.bin' &&
           event.change.contents === 'hi\0\0'
-        )) === true,
+      )) === true,
       `C++ browser project run should stream live posix_fallocate mutations before final diff: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      (projectRun.events || []).filter((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/metadata-only.txt' &&
+        event.change.contents === 'metadata\n'
+      )).length >= 2,
+      `C++ browser project run should stream live metadata-only mutations: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some((event) => (

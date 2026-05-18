@@ -502,6 +502,17 @@ class InMemoryFileSystem {
     this.writeFile(pathname, next);
   }
 
+  emitPathSnapshot(pathname) {
+    const normalized = normalizePath(pathname);
+    if (this.files.has(normalized)) {
+      this.fileChangeObserver?.({ path: normalized, bytes: this.readFile(normalized) });
+      return;
+    }
+    if (this.dirs.has(normalized)) {
+      this.fileChangeObserver?.({ path: normalized, directory: true });
+    }
+  }
+
   unlink(pathname) {
     const normalized = normalizePath(pathname);
     if (this.isReadOnly(normalized)) throw Object.assign(new Error(`Read-only file system: ${normalized}`), { code: 'EROFS' });
@@ -1187,6 +1198,7 @@ class WasiProcess {
     const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
     if (deviceErrno !== null) return deviceErrno;
     if (!this.fs.exists(pathname)) return ENOENT;
+    this.fs.emitPathSnapshot(pathname);
     return ESUCCESS;
   }
 
