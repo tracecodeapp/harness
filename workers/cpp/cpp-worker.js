@@ -693,7 +693,15 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return null;
     const path = this.mem.readString(pathPtr, pathLen);
-    if (path === 'proc' || path.startsWith('proc/') || path.startsWith('/proc') || path === 'dev' || path.startsWith('dev/') || path.startsWith('/dev')) {
+    if (
+      path === 'proc' ||
+      path.startsWith('proc/') ||
+      path.startsWith('/proc') ||
+      path === 'dev' ||
+      path.startsWith('dev/') ||
+      path.startsWith('/dev') ||
+      this.isKernelVirtualPathOperand(path)
+    ) {
       return normalizePath(path);
     }
     const base = entry.kind === 'dir' ? entry.path : dirname(entry.path || '/');
@@ -726,6 +734,15 @@ class WasiProcess {
 
   isKnownDevicePath(pathname) {
     return this.kernelDevices.has(normalizePath(pathname));
+  }
+
+  isKernelVirtualPathOperand(pathname) {
+    const normalized = normalizePath(pathname);
+    if (normalized === '/') return false;
+    for (const path of this.fs.readOnlyFiles) {
+      if (normalized === path || path.startsWith(`${normalized}/`)) return true;
+    }
+    return false;
   }
 
   deviceNamespaceMutationErrno(pathname, missingErrno = ENOENT) {
@@ -4308,7 +4325,11 @@ function wasiKernelDevices(options) {
 function projectKernelVirtualFiles(project) {
   const files = Array.isArray(project?.kernelFiles) ? project.kernelFiles : [];
   return files
-    .filter((file) => file && typeof file.path === 'string' && isRuntimeProcPath(file.path))
+    .filter((file) => {
+      if (!file || typeof file.path !== 'string') return false;
+      const path = normalizePath(file.path);
+      return path.startsWith('/') && !isRuntimeDeviceNamespacePath(path);
+    })
     .map((file) => ({
       path: normalizePath(file.path),
       contents: projectPathBytes(file),

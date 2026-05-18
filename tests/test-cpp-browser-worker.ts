@@ -66,6 +66,7 @@ async function main(): Promise<void> {
       const traceKernelProcFiles = [
         { path: '/proc/kernel/info', contents: '{\\n  "name": "tracekernel"\\n}\\n' },
         { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\\n' },
+        { path: '/tracekernel/custom', contents: 'custom-kernel-file\\n' },
       ];
       const traceKernelDevices = [
         { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
@@ -276,6 +277,11 @@ async function main(): Promise<void> {
             '  std::cout << (saw_info ? "info" : "missing") << "\\\\n";',
             '  std::ofstream proc_write("/proc/kernel/info");',
             '  std::cout << (proc_write ? "proc-write:ok" : "proc-write:blocked") << "\\\\n";',
+            '  std::ifstream custom_kernel_info("/tracekernel/custom");',
+            '  std::string custom_kernel_text((std::istreambuf_iterator<char>(custom_kernel_info)), std::istreambuf_iterator<char>());',
+            '  std::cout << custom_kernel_text;',
+            '  std::ofstream custom_kernel_write("/tracekernel/custom");',
+            '  std::cout << (custom_kernel_write ? "custom-kernel-write:ok" : "custom-kernel-write:blocked") << "\\\\n";',
             '  DIR* dev_dir = opendir("/dev");',
             '  bool saw_stdin = false;',
             '  bool saw_stdout = false;',
@@ -1182,6 +1188,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('42\n') === true &&
         projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
+        projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\n') === true &&
