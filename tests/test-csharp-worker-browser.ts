@@ -2798,12 +2798,34 @@ async function main(): Promise<void> {
       projectRun.events?.some(
         (event) =>
           event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/stdout' &&
+          event.data === 'dev-stdout\n' &&
+          event.sourceDevice === undefined
+      ) === true,
+      `C# project worker should not report redundant sourceDevice for direct /dev/stdout writes: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'output' &&
           event.stream === 'stderr' &&
           event.device === '/dev/stderr' &&
           event.sourceDevice === '/dev/log' &&
           event.data === 'dev-log\n'
       ) === true,
       `C# project worker should adapt manifest-provided custom devices: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stderr' &&
+          event.device === '/dev/stderr' &&
+          event.data === 'dev-stderr\n' &&
+          event.sourceDevice === undefined
+      ) === true,
+      `C# project worker should not report redundant sourceDevice for direct /dev/stderr writes: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.stdout.includes('proc-write:') && !projectRun.stdout.includes('proc-write:ok'),

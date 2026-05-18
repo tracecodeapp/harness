@@ -456,8 +456,9 @@ function routeProjectOutputEvent(payload) {
   const outputDevice = kernelDeviceOutputTarget(requestedDevice);
   if (!outputDevice) return null;
   const stream = kernelDeviceStream(outputDevice);
+  const { sourceDevice: _sourceDevice, ...event } = payload;
   return {
-    ...payload,
+    ...event,
     stream,
     device: outputDevice,
     ...(requestedDevice !== outputDevice ? { sourceDevice: requestedDevice } : {}),
@@ -482,7 +483,7 @@ function emitProjectOutput(stream, data, device = stream === 'stdout' ? '/dev/st
     type: 'output',
     stream,
     device,
-    ...(sourceDevice ? { sourceDevice } : {}),
+    ...(sourceDevice && sourceDevice !== device ? { sourceDevice } : {}),
     data,
   });
 }
