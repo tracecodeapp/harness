@@ -21,6 +21,7 @@ import {
 } from './runtime-assets';
 
 export type BrowserProjectWorkspace = RuntimeWorkspace;
+export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptions, 'applyFileChange'>;
 
 export interface CreateBrowserProjectWorkspaceOptions
   extends Omit<CreateRuntimeWorkspaceOptions, 'pythonRunner' | 'nodeRunner' | 'javaRunner' | 'csharpRunner' | 'cppRunner'> {
@@ -31,7 +32,7 @@ export interface CreateBrowserProjectWorkspaceOptions
   javaWorkerClient?: Pick<JavaWorkerClient, 'executeProjectJava' | 'terminate'>;
   csharpWorkerClient?: Pick<CSharpWorkerClient, 'executeProjectCSharp' | 'terminate'>;
   cppWorkerClient?: Pick<CppWorkerClient, 'executeProjectCpp' | 'terminate'>;
-  nodeProject?: BrowserJavaScriptProjectRunnerOptions;
+  nodeProject?: BrowserProjectNodeOptions;
   nodeProjectTimeoutMs?: number;
   pythonProjectTimeoutMs?: number;
   javaProjectTimeoutMs?: number;
@@ -122,8 +123,8 @@ export async function createBrowserProjectWorkspace(
     }),
     nodeRunner: createBrowserJavaScriptProjectRunner({
       timeoutMs: nodeProjectTimeoutMs,
-      applyFileChange: applyWorkerFileChange,
       ...nodeProject,
+      applyFileChange: applyWorkerFileChange,
     }),
     javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {
       timeoutMs: javaProjectTimeoutMs,
