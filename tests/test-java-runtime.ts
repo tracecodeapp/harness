@@ -249,6 +249,16 @@ public class ProjectWorkspaceDirectorySmoke {
       Array.isArray(JSON.parse(kernelChangedFilesJson ?? 'null')) && JSON.parse(kernelChangedFilesJson ?? 'null').length === 0,
       'Java browser helper should not report kernel virtual manifest entries as workspace deletions'
     );
+    const projectEventsSource = readFileSync(
+      join(process.cwd(), 'workers', 'java', 'src', 'tracecode', 'browser', 'ProjectEvents.java'),
+      'utf8'
+    );
+    assertCondition(
+      /ProjectFileOutputStream[\s\S]*super\.write\(value\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
+        /ProjectFileOutputStream[\s\S]*super\.write\(bytes\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
+        /ProjectOutputStream[\s\S]*delegate\.write\(bytes, offset, length\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource),
+      'Java browser helper should emit live file snapshots from unbuffered file stream writes'
+    );
     console.log('PASS: Java browser helper materializes workspace directories');
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });

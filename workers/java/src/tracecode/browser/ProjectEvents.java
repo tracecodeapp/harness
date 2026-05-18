@@ -305,6 +305,7 @@ public final class ProjectEvents {
         return;
       }
       super.write(value);
+      emitFileSnapshot(path);
     }
 
     @Override
@@ -314,6 +315,7 @@ public final class ProjectEvents {
         return;
       }
       super.write(bytes);
+      emitFileSnapshot(path);
     }
 
     @Override
@@ -325,6 +327,7 @@ public final class ProjectEvents {
         return;
       }
       super.write(bytes, offset, length);
+      emitFileSnapshot(path);
     }
 
     @Override
@@ -419,16 +422,19 @@ public final class ProjectEvents {
     @Override
     public void write(int value) throws IOException {
       delegate.write(value);
+      emitFileSnapshot(path);
     }
 
     @Override
     public void write(byte[] bytes) throws IOException {
       delegate.write(bytes);
+      emitFileSnapshot(path);
     }
 
     @Override
     public void write(byte[] bytes, int offset, int length) throws IOException {
       delegate.write(bytes, offset, length);
+      emitFileSnapshot(path);
     }
 
     @Override
