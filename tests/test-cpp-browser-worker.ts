@@ -383,6 +383,10 @@ async function main(): Promise<void> {
             '  std::cout << (symlink_result < 0 ? "symlink:blocked" : "symlink:ok") << "\\\\n";',
             '  std::cout << (link_proc_result < 0 ? "link-proc:blocked" : "link-proc:ok") << "\\\\n";',
             '  std::cout << (symlink_dev_result < 0 ? "symlink-dev:blocked" : "symlink-dev:ok") << "\\\\n";',
+            '  std::ofstream("dev/local.txt") << "local-dev\\\\n";',
+            '  std::ifstream local_dev_file("dev/local.txt");',
+            '  std::string local_dev_text((std::istreambuf_iterator<char>(local_dev_file)), std::istreambuf_iterator<char>());',
+            '  std::cout << (local_dev_text == "local-dev\\\\n" ? "local-dev-path:ok" : "local-dev-path:blocked") << "\\\\n";',
             '  mkdir("scratch", 0777);',
             '  std::ofstream("scratch/transient.txt") << "gone\\\\n";',
             '  std::remove("scratch/transient.txt");',
@@ -403,6 +407,7 @@ async function main(): Promise<void> {
         },
         { path: 'src/helper.hpp', contents: 'int helper_value();\\n' },
         { path: 'src/helper.cpp', contents: '#include "helper.hpp"\\nint helper_value() { return 42; }\\n' },
+        { path: 'src/dev/.keep', contents: '' },
         {
           path: 'src/absolute_main.cpp',
           contents: [
@@ -1255,7 +1260,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\nstatvfs:ok\nstatvfs-dev-missing:blocked\nstatvfs-proc-missing:blocked\ndev-fstat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\ncustom-kernel-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
-        projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nsymlink-dev:blocked\n') === true &&
+        projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\nlink-hard:ok\nreadlink:blocked\nsymlink:blocked\nlink-proc:blocked\nsymlink-dev:blocked\nlocal-dev-path:ok\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
@@ -1334,6 +1339,10 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/link-symlink.txt' || file.path === 'src/link-proc.txt') !== true,
       `C++ browser project run should not persist unsupported symlinks or kernel hard links: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/dev/local.txt' && file.contents === 'local-dev\n') === true,
+      `C++ browser project run should preserve relative dev/ file mutations as project files: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/multi.txt' && file.contents === 'onetwo\n') === true,

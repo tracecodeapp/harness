@@ -704,17 +704,17 @@ class WasiProcess {
     const entry = this.fds.get(fd);
     if (!entry) return null;
     const path = this.mem.readString(pathPtr, pathLen);
+    if (path.startsWith('/')) return normalizePath(path);
+    const virtualPath = normalizePath(path);
     if (
       path === 'proc' ||
-      path.startsWith('proc/') ||
-      path.startsWith('/proc') ||
       path === 'dev' ||
-      path.startsWith('dev/') ||
-      path.startsWith('/dev') ||
-      this.isKernelVirtualPathOperand(path) ||
-      this.isKernelVirtualNamespaceOperand(path)
+      this.isKnownDevicePath(virtualPath) ||
+      standaloneKernelDevices().has(virtualPath) ||
+      this.isKernelVirtualPathOperand(virtualPath) ||
+      this.isKernelVirtualNamespaceOperand(virtualPath)
     ) {
-      return normalizePath(path);
+      return virtualPath;
     }
     const base = entry.kind === 'dir' ? entry.path : dirname(entry.path || '/');
     return resolveAt(base, path);
