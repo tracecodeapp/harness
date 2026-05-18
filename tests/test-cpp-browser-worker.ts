@@ -309,6 +309,15 @@ async function main(): Promise<void> {
             '  if (patch_fd >= 0) { write(patch_fd, "abcd", 4); pwrite(patch_fd, "XY", 2, 1); close(patch_fd); }',
             '  int truncate_fd = open("truncated.txt", O_CREAT | O_WRONLY, 0644);',
             '  if (truncate_fd >= 0) { write(truncate_fd, "abcdef", 6); ftruncate(truncate_fd, 3); close(truncate_fd); }',
+            '  int readonly_seed_fd = open("readonly-fd.txt", O_CREAT | O_WRONLY, 0644);',
+            '  if (readonly_seed_fd >= 0) { write(readonly_seed_fd, "original\\\\n", 9); close(readonly_seed_fd); }',
+            '  int readonly_fd = open("readonly-fd.txt", O_RDONLY);',
+            '  int readonly_pwrite_result = -1;',
+            '  int readonly_truncate_result = -1;',
+            '  if (readonly_fd >= 0) { readonly_pwrite_result = pwrite(readonly_fd, "X", 1, 0); readonly_truncate_result = ftruncate(readonly_fd, 4); close(readonly_fd); }',
+            '  std::ifstream readonly_file("readonly-fd.txt");',
+            '  std::string readonly_contents((std::istreambuf_iterator<char>(readonly_file)), std::istreambuf_iterator<char>());',
+            '  std::cout << (readonly_pwrite_result < 0 && readonly_truncate_result < 0 && readonly_contents == "original\\\\n" ? "readonly-fd-mutation:blocked" : "readonly-fd-mutation:changed") << "\\\\n";',
             '  int allocated_fd = open("allocated.bin", O_CREAT | O_RDWR, 0644);',
             '  if (allocated_fd >= 0) { posix_fallocate(allocated_fd, 0, 4); write(allocated_fd, "hi", 2); close(allocated_fd); }',
             '  std::cout << "before-live\\\\n" << std::flush;',
@@ -1128,6 +1137,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
@@ -1185,6 +1195,10 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/truncated.txt' && file.contents === 'abc') === true,
       `C++ browser project run should return ftruncate mutations: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/readonly-fd.txt' && file.contents === 'original\n') === true,
+      `C++ browser project run should not mutate files through read-only descriptors: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/allocated.bin' && file.contents === 'hi\0\0') === true,
@@ -1251,6 +1265,22 @@ async function main(): Promise<void> {
         event.change.contents === 'abc'
       )) === true,
       `C++ browser project run should stream live ftruncate mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/readonly-fd.txt' &&
+        event.change.contents === 'original\n'
+      )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/readonly-fd.txt' &&
+          event.change.contents !== '' &&
+          event.change.contents !== 'original\n'
+        )) !== true,
+      `C++ browser project run should stream only the allowed read-only fd seed write: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some((event) => (

@@ -919,6 +919,7 @@ class WasiProcess {
   fd_pwrite(fd, iovs, iovsLen, offset, nwrittenOut) {
     const entry = this.fds.get(fd);
     if (!entry || entry.kind !== 'file') return EBADF;
+    if (!entry.writable) return EBADF;
     if (this.fs.isReadOnly(entry.path)) return EROFS;
     const oldOffset = entry.offset;
     entry.offset = Number(offset);
@@ -1001,6 +1002,7 @@ class WasiProcess {
   fd_filestat_set_size(fd, size) {
     const entry = this.fds.get(fd);
     if (!entry || entry.kind !== 'file') return EBADF;
+    if (!entry.writable) return EBADF;
     if (this.fs.isReadOnly(entry.path)) return EROFS;
     this.fs.resizeFile(entry.path, Number(size));
     return ESUCCESS;
