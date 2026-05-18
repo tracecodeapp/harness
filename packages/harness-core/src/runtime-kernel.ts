@@ -45,6 +45,7 @@ export type RuntimeKernelCopyTarget =
   | { kind: 'workspace' }
   | { kind: 'file-copy' }
   | { kind: 'error'; reason: 'source-directory' | 'source-not-found'; path: string };
+export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'EROFS';
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -165,6 +166,15 @@ export function runtimeKernelWriteTarget(path: string): RuntimeKernelWriteTarget
   return { kind: 'device', device: virtualPath.path, outputDevice };
 }
 
+export function runtimeKernelWriteErrorCode(
+  reason: Extract<RuntimeKernelWriteTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  if (reason === 'proc-read-only') return 'EROFS';
+  if (reason === 'device-directory') return 'EISDIR';
+  if (reason === 'device-read-only') return 'EBADF';
+  return 'ENOENT';
+}
+
 export function runtimeKernelMutationTarget(path: string): RuntimeKernelMutationTarget {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
@@ -177,6 +187,12 @@ export function runtimeKernelMutationTarget(path: string): RuntimeKernelMutation
   return { kind: 'error', reason: 'device-read-only', path: virtualPath.path };
 }
 
+export function runtimeKernelMutationErrorCode(
+  reason: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return reason === 'device-not-found' ? 'ENOENT' : 'EROFS';
+}
+
 export function runtimeKernelMetadataTarget(path: string): RuntimeKernelMetadataTarget {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
@@ -187,6 +203,12 @@ export function runtimeKernelMetadataTarget(path: string): RuntimeKernelMetadata
     return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
   }
   return { kind: 'ignored-device', path: virtualPath.path };
+}
+
+export function runtimeKernelMetadataErrorCode(
+  reason: Extract<RuntimeKernelMetadataTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return reason === 'proc-read-only' ? 'EROFS' : 'ENOENT';
 }
 
 export function runtimeKernelAccessTarget(path: string, request: RuntimeKernelAccessRequest = {}): RuntimeKernelAccessTarget {
@@ -238,6 +260,12 @@ export function runtimeKernelFileReadTarget(path: string): RuntimeKernelFileRead
     return { kind: 'error', reason: 'is-directory', path: readTarget.path };
   }
   return readTarget;
+}
+
+export function runtimeKernelFileReadErrorCode(
+  reason: Extract<RuntimeKernelFileReadTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return reason === 'is-directory' ? 'EISDIR' : 'ENOENT';
 }
 
 export function runtimeKernelCopyTarget(source: string, destination: string): RuntimeKernelCopyTarget {

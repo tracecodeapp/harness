@@ -24,9 +24,13 @@ import {
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
   runtimeKernelFileReadTarget,
+  runtimeKernelFileReadErrorCode,
+  runtimeKernelMetadataErrorCode,
   runtimeKernelMetadataTarget,
+  runtimeKernelMutationErrorCode,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
+  runtimeKernelWriteErrorCode,
   runtimeKernelWriteTarget,
   runtimeProcCanMutate,
   runtimeProcStat,
@@ -205,46 +209,28 @@ function throwRuntimeWriteTargetError(
   target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>,
   message: string
 ): never {
-  if (target.reason === 'proc-read-only') {
-    throw Object.assign(new Error(message), { code: 'EROFS' });
-  }
-  if (target.reason === 'device-directory') {
-    throw Object.assign(new Error(message), { code: 'EISDIR' });
-  }
-  if (target.reason === 'device-read-only') {
-    throw Object.assign(new Error(message), { code: 'EBADF' });
-  }
-  throw Object.assign(new Error(message), { code: 'ENOENT' });
+  throw Object.assign(new Error(message), { code: runtimeKernelWriteErrorCode(target.reason) });
 }
 
 function throwRuntimeMutationTargetError(
   target: Extract<ReturnType<typeof runtimeKernelMutationTarget>, { kind: 'error' }>,
   message: string
 ): never {
-  if (target.reason === 'proc-read-only') {
-    throw Object.assign(new Error(message), { code: 'EROFS' });
-  }
-  if (target.reason === 'device-not-found') {
-    throw Object.assign(new Error(message), { code: 'ENOENT' });
-  }
-  throw Object.assign(new Error(message), { code: 'EROFS' });
+  throw Object.assign(new Error(message), { code: runtimeKernelMutationErrorCode(target.reason) });
 }
 
 function throwRuntimeMetadataTargetError(
   target: Extract<ReturnType<typeof runtimeKernelMetadataTarget>, { kind: 'error' }>,
   message: string
 ): never {
-  if (target.reason === 'proc-read-only') {
-    throw Object.assign(new Error(message), { code: 'EROFS' });
-  }
-  throw Object.assign(new Error(message), { code: 'ENOENT' });
+  throw Object.assign(new Error(message), { code: runtimeKernelMetadataErrorCode(target.reason) });
 }
 
 function throwRuntimeReadTargetError(
   target: Extract<ReturnType<typeof runtimeKernelFileReadTarget>, { kind: 'error' }>,
   message: string
 ): never {
-  throw Object.assign(new Error(message), { code: target.reason === 'is-directory' ? 'EISDIR' : 'ENOENT' });
+  throw Object.assign(new Error(message), { code: runtimeKernelFileReadErrorCode(target.reason) });
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
