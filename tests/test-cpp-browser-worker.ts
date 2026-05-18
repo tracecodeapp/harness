@@ -144,7 +144,15 @@ async function main(): Promise<void> {
         new Promise((resolve, reject) => {
           const id = String(++nextId);
           pending.set(id, { resolve, reject, events: [] });
-          worker.postMessage({ id, type, payload });
+          const requestPayload = (() => {
+            if (type !== 'execute-project-cpp' || payload?.source !== 'run' || !payload?.project || payload.project.kernelDevices !== undefined) {
+              return payload;
+            }
+            const { noKernelDevicesForTest, ...project } = payload.project;
+            if (noKernelDevicesForTest) return { ...payload, project };
+            return { ...payload, project: { ...project, kernelDevices: traceKernelDevices } };
+          })();
+          worker.postMessage({ id, type, payload: requestPayload });
         });
 
       const decodeBase64 = (value) => {

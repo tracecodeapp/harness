@@ -615,7 +615,7 @@ class WasiProcess {
     this.stdoutChunks = [];
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
-    this.kernelDevices = options.kernelDevices instanceof Map ? options.kernelDevices : projectKernelDevices();
+    this.kernelDevices = wasiKernelDevices(options);
     this.filestatSizeOffset = options.filestatSizeOffset || 32;
     this.fds = new Map([
       [0, this.stdioEntryForDevice('/dev/stdin')],
@@ -4211,13 +4211,20 @@ function projectKernelDevices(project) {
       outputDevice: typeof entry?.outputDevice === 'string' ? normalizePath(entry.outputDevice) : '',
     });
   }
-  if (devices.size === 0) {
-    devices.set('/dev/stdin', { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin', outputDevice: '' });
-    devices.set('/dev/stdout', { path: '/dev/stdout', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stdout' });
-    devices.set('/dev/stderr', { path: '/dev/stderr', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stderr' });
-    devices.set('/dev/tty', { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' });
-  }
   return devices;
+}
+
+function standaloneKernelDevices() {
+  return new Map([
+    ['/dev/stdin', { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin', outputDevice: '' }],
+    ['/dev/stdout', { path: '/dev/stdout', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stdout' }],
+    ['/dev/stderr', { path: '/dev/stderr', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stderr' }],
+    ['/dev/tty', { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' }],
+  ]);
+}
+
+function wasiKernelDevices(options) {
+  return options.kernelDevices instanceof Map ? options.kernelDevices : standaloneKernelDevices();
 }
 
 function projectKernelVirtualFiles(project) {
