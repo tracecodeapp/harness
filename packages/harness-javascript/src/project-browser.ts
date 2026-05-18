@@ -2866,12 +2866,34 @@ async function runBrowserJavaScriptProjectRequest(
         if (position === undefined || position === null) entry.offset = start + count;
         return count;
       },
-      read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, callback: (error: Error | null, bytesRead?: number, buffer?: Uint8Array) => void) => {
+      read: (
+        fd: number,
+        buffer: Uint8Array,
+        offsetOrOptions?: number | { offset?: number; length?: number; position?: number | null } | ((error: Error | null, bytesRead?: number, buffer?: Uint8Array) => void),
+        lengthOrCallback?: number | ((error: Error | null, bytesRead?: number, buffer?: Uint8Array) => void),
+        positionOrCallback?: number | null | ((error: Error | null, bytesRead?: number, buffer?: Uint8Array) => void),
+        callback?: (error: Error | null, bytesRead?: number, buffer?: Uint8Array) => void
+      ) => {
+        const options = typeof offsetOrOptions === 'object' && offsetOrOptions !== null ? offsetOrOptions : undefined;
+        const done = typeof offsetOrOptions === 'function'
+          ? offsetOrOptions
+          : typeof lengthOrCallback === 'function'
+            ? lengthOrCallback
+            : typeof positionOrCallback === 'function'
+              ? positionOrCallback
+              : callback;
+        const offset = options?.offset ?? (typeof offsetOrOptions === 'number' ? offsetOrOptions : 0);
+        const length = options?.length ?? (typeof lengthOrCallback === 'number' ? lengthOrCallback : buffer.byteLength - offset);
+        const position = options !== undefined
+          ? options.position
+          : typeof positionOrCallback === 'number' || positionOrCallback === null
+            ? positionOrCallback
+            : null;
         try {
           const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
-          queueMicrotask(() => callback(null, bytesRead, buffer));
+          queueMicrotask(() => done?.(null, bytesRead, buffer));
         } catch (error) {
-          queueMicrotask(() => callback(error as Error, undefined, buffer));
+          queueMicrotask(() => done?.(error as Error, undefined, buffer));
         }
       },
       readvSync: (fd: number, buffers: Uint8Array[], position?: number | null) => {
@@ -2918,11 +2940,12 @@ async function runBrowserJavaScriptProjectRequest(
       write: (
         fd: number,
         value: unknown,
-        offsetOrPosition?: number | ((error: Error | null, written?: number, value?: unknown) => void),
+        offsetOrPosition?: number | { offset?: number; length?: number; position?: number | null; encoding?: string } | ((error: Error | null, written?: number, value?: unknown) => void),
         lengthOrEncoding?: number | string | ((error: Error | null, written?: number, value?: unknown) => void),
         positionOrCallback?: number | null | ((error: Error | null, written?: number, value?: unknown) => void),
         callback?: (error: Error | null, written?: number, value?: unknown) => void
       ) => {
+        const options = typeof offsetOrPosition === 'object' && offsetOrPosition !== null ? offsetOrPosition : undefined;
         const done = typeof offsetOrPosition === 'function'
           ? offsetOrPosition
           : typeof lengthOrEncoding === 'function'
@@ -2931,7 +2954,9 @@ async function runBrowserJavaScriptProjectRequest(
               ? positionOrCallback
               : callback;
         let writePosition: number | null | undefined;
-        if (typeof positionOrCallback === 'number') {
+        if (options !== undefined) {
+          writePosition = options.position;
+        } else if (typeof positionOrCallback === 'number') {
           writePosition = positionOrCallback;
         } else if (positionOrCallback === null) {
           writePosition = null;
@@ -2940,8 +2965,8 @@ async function runBrowserJavaScriptProjectRequest(
           const written = fsApi.writeSync(
             fd,
             value,
-            typeof offsetOrPosition === 'number' ? offsetOrPosition : undefined,
-            typeof lengthOrEncoding === 'number' || typeof lengthOrEncoding === 'string' ? lengthOrEncoding : undefined,
+            options?.offset ?? (typeof offsetOrPosition === 'number' ? offsetOrPosition : undefined),
+            options?.length ?? options?.encoding ?? (typeof lengthOrEncoding === 'number' || typeof lengthOrEncoding === 'string' ? lengthOrEncoding : undefined),
             writePosition
           );
           queueMicrotask(() => done?.(null, written, value));

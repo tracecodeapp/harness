@@ -2780,6 +2780,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node vector fd writes should emit live file changes: ${JSON.stringify(vectorEvents)}`
   );
 
+  const fdOptionsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const callRead = (fd, buffer, options) => new Promise((resolve, reject) => fs.read(fd, buffer, options, (error, bytesRead, returnedBuffer) => error ? reject(error) : resolve({ bytesRead, returnedBuffer }))); const callWrite = (fd, value, options) => new Promise((resolve, reject) => fs.write(fd, value, options, (error, bytesWritten, returnedValue) => error ? reject(error) : resolve({ bytesWritten, returnedValue }))); fs.writeFileSync(\\"fd-options.txt\\", \\"abcdef\\"); const fd = fs.openSync(\\"fd-options.txt\\", \\"r+\\"); const first = Buffer.alloc(4, 46); const read = await callRead(fd, first, { offset: 1, length: 2, position: 2 }); const write = await callWrite(fd, Buffer.from(\\"XYZZ\\"), { offset: 0, length: 2, position: 1 }); const second = Buffer.alloc(8, 46); const readAfterWrite = await callRead(fd, second, { offset: 0, length: 6, position: 0 }); fs.closeSync(fd); console.log(read.bytesRead + \\":\\" + (read.returnedBuffer === first) + \\":\\" + first.toString()); console.log(write.bytesWritten + \\":\\" + Buffer.isBuffer(write.returnedValue)); console.log(readAfterWrite.bytesRead + \\":\\" + second.toString()); console.log(fs.readFileSync(\\"fd-options.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(fdOptionsResult.exitCode === 0, `browser node fd options workflow should succeed: ${fdOptionsResult.stderr}`);
+  assertCondition(
+    fdOptionsResult.stdout === '2:true:.cd.\n2:true\n6:aXYdef..\naXYdef\n',
+    `browser node fs.read/fs.write should support options-object overloads: ${fdOptionsResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('fd-options.txt') === 'aXYdef', 'browser node options-object fd writes should persist through kernel FS');
+
   const truncateEvents: RuntimeCommandEvent[] = [];
   const truncateResult = await workspace.runCommand([
     'node',
