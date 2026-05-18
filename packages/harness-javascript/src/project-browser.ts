@@ -1490,12 +1490,23 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const createReadableStream = (bytes: Uint8Array, encoding?: string, onClose?: () => void) => {
       const events = createEventTarget();
+      type PipeDestination = {
+        write?: (chunk: BrowserBuffer | string) => unknown;
+        end?: () => unknown;
+        emit?: (event: string, ...args: unknown[]) => unknown;
+      };
+      type PipeBinding = {
+        destination: PipeDestination;
+        onData: (chunk: unknown) => void;
+        onEnd: () => void;
+      };
       let started = false;
       let closed = false;
       let destroyed = false;
       let ended = false;
       let offset = 0;
       let streamEncoding = encoding;
+      const pipeBindings: PipeBinding[] = [];
       const closeStream = (): void => {
         if (closed) return;
         closed = true;
@@ -1588,10 +1599,29 @@ async function runBrowserJavaScriptProjectRequest(
           closeStream();
           return stream;
         },
-        pipe: (destination: { write?: (chunk: BrowserBuffer | string) => unknown; end?: () => unknown }) => {
-          stream.on('data', (chunk) => destination.write?.(chunk as BrowserBuffer | string));
-          stream.on('end', () => destination.end?.());
+        pipe: (destination: PipeDestination, options?: { end?: boolean }) => {
+          const onData = (chunk: unknown) => destination.write?.(chunk as BrowserBuffer | string);
+          const onEnd = () => {
+            if (options?.end !== false) destination.end?.();
+          };
+          pipeBindings.push({ destination, onData, onEnd });
+          events.on('data', onData);
+          events.on('end', onEnd);
+          destination.emit?.('pipe', stream);
+          scheduleRead();
           return destination;
+        },
+        unpipe: (destination?: PipeDestination) => {
+          for (let index = pipeBindings.length - 1; index >= 0; index -= 1) {
+            const binding = pipeBindings[index];
+            if (!destination || binding.destination === destination) {
+              events.removeListener('data', binding.onData);
+              events.removeListener('end', binding.onEnd);
+              binding.destination.emit?.('unpipe', stream);
+              pipeBindings.splice(index, 1);
+            }
+          }
+          return stream;
         },
       };
       return stream;

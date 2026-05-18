@@ -2436,6 +2436,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node readable file streams should support pull reads and event reads on the same cursor: ${streamReadResult.stdout}`
   );
 
+  const streamPipeResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"stream-pipe-source.txt\\", \\"pipe-data\\"); const events = []; const out = fs.createWriteStream(\\"stream-pipe-target.txt\\"); out.on(\\"pipe\\", () => events.push(\\"pipe\\")); out.on(\\"unpipe\\", () => events.push(\\"unpipe\\")); fs.createReadStream(\\"stream-pipe-source.txt\\").pipe(out, { end: false }); await new Promise((resolve) => queueMicrotask(resolve)); out.end(\\"+tail\\"); await new Promise((resolve) => out.on(\\"close\\", resolve)); const skipped = fs.createWriteStream(\\"stream-pipe-skipped.txt\\"); const input = fs.createReadStream(\\"stream-pipe-source.txt\\"); input.pipe(skipped); input.unpipe(skipped); await new Promise((resolve) => queueMicrotask(resolve)); skipped.end(\\"manual\\"); await new Promise((resolve) => skipped.on(\\"close\\", resolve)); console.log(events.join(\\"|\\")); console.log(fs.readFileSync(\\"stream-pipe-target.txt\\", \\"utf8\\")); console.log(fs.readFileSync(\\"stream-pipe-skipped.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(streamPipeResult.exitCode === 0, `browser node stream pipe workflow should succeed: ${streamPipeResult.stderr}`);
+  assertCondition(
+    streamPipeResult.stdout === 'pipe\npipe-data+tail\nmanual\n',
+    `browser node readable file streams should support pipe options and unpipe: ${streamPipeResult.stdout}`
+  );
+
   const streamListenerAliasResult = await workspace.runCommand([
     'node',
     '-e',
