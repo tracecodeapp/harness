@@ -1379,6 +1379,39 @@ def _proc_stat(_path):
     _size = 0 if _kind == "directory" else len(_proc_read_text(_path).encode("utf-8"))
     return os.stat_result((_mode, 0, 0, 2 if _kind == "directory" else 1, 0, 0, _size, 0, 0, 0))
 
+class _TraceDirEntry:
+    def __init__(self, _parent, _name, _kind_fn, _stat_fn):
+        self.name = _name
+        self.path = (_parent.rstrip("/") + "/" + _name) if _parent != "/" else "/" + _name
+        self._kind_fn = _kind_fn
+        self._stat_fn = _stat_fn
+
+    def is_dir(self, *args, **kwargs):
+        return self._kind_fn(self.path) == "directory"
+
+    def is_file(self, *args, **kwargs):
+        return self._kind_fn(self.path) == "file"
+
+    def is_symlink(self):
+        return False
+
+    def stat(self, *args, **kwargs):
+        return self._stat_fn(self.path)
+
+    def inode(self):
+        return 0
+
+    def __fspath__(self):
+        return self.path
+
+def _virtual_scandir(_path, _entries_fn, _kind_fn, _stat_fn):
+    _entries = _entries_fn(_path)
+    if _entries is None:
+        if _kind_fn(_path) is None:
+            raise FileNotFoundError(_path)
+        raise NotADirectoryError(_path)
+    return [_TraceDirEntry(_path, _name, _kind_fn, _stat_fn) for _name in _entries]
+
 class _TraceProcFile:
     def __init__(self, _path, _mode="r"):
         self._path = _path
@@ -1674,7 +1707,9 @@ def _install_virtual_workspace_paths():
                     if _kind is None:
                         raise FileNotFoundError(_device_path)
                     return _device_path
-                if _name in ("readlink", "scandir"):
+                if _name == "scandir":
+                    return _virtual_scandir(_device_path, _device_dir_entries, _device_entry_kind, _device_stat)
+                if _name in ("readlink",):
                     raise OSError("Unsupported device operation: " + _name)
             _proc_path = _normalize_proc_path(_path)
             if _proc_path:
@@ -1705,7 +1740,9 @@ def _install_virtual_workspace_paths():
                     return 0
                 if _name == "realpath":
                     return _proc_path
-                if _name in ("readlink", "scandir"):
+                if _name == "scandir":
+                    return _virtual_scandir(_proc_path, _proc_dir_entries, _proc_entry_kind, _proc_stat)
+                if _name in ("readlink",):
                     raise OSError("Unsupported proc operation: " + _name)
             _mapped_path = _map_workspace_path(_path)
             _absolute_path = _absolute_mapped_path(_mapped_path)

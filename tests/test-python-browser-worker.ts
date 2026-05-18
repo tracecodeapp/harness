@@ -331,6 +331,8 @@ async function main(): Promise<void> {
                 'print(os.access("/dev/stdout", os.W_OK))',
                 'print(os.access("/dev/stdin", os.W_OK))',
                 'print(os.stat("/dev/stdout").st_size)',
+                'print(",".join(sorted(entry.name + ":" + str(entry.is_file()) + ":" + str(entry.is_dir()) for entry in os.scandir("/dev"))))',
+                'print(",".join(sorted(entry.name + ":" + str(entry.is_file()) + ":" + str(entry.is_dir()) for entry in os.scandir("/proc"))))',
                 'with open("/home/ada/weather-api/canonical.txt", "w", encoding="utf-8") as handle:',
                 '    handle.write("canonical\\\\n")',
                 'with open("/workspace/alias.txt", "w", encoding="utf-8") as handle:',
@@ -568,7 +570,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-os-write:blocked\nTrue\nFalse\nstderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-os-write:blocked\nTrue\nFalse\nstderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\nstderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(
