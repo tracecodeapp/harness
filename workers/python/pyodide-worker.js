@@ -1248,9 +1248,12 @@ def _install_virtual_workspace_paths():
     _original_getcwd = os.getcwd
     _original_chdir = os.chdir
     _original_os_open = os.open
+    _original_os_read = os.read
     _original_os_write = os.write
     _original_os_close = os.close
     _open_file_descriptors = {}
+    _proc_file_descriptors = {}
+    _next_proc_fd = 1000000
     _patched = []
 
     def _absolute_mapped_path(_path):
@@ -1284,6 +1287,17 @@ def _install_virtual_workspace_paths():
         return _original_chdir(_map_workspace_path(_path))
 
     def _patched_os_open(_path, _flags, *args, **kwargs):
+        nonlocal _next_proc_fd
+        _proc_path = _normalize_proc_path(_path)
+        if _proc_path:
+            if _is_mutating_fd_flags(_flags):
+                raise OSError("Kernel proc path is read-only: " + _proc_path)
+            if _proc_entry_kind(_proc_path) == "directory":
+                raise IsADirectoryError(_proc_path)
+            _fd = _next_proc_fd
+            _next_proc_fd += 1
+            _proc_file_descriptors[_fd] = io.BytesIO(_proc_read_text(_proc_path).encode("utf-8"))
+            return _fd
         _mapped_path = _map_workspace_path(_path)
         _absolute_path = _absolute_mapped_path(_mapped_path)
         _fd = _original_os_open(_mapped_path, _flags, *args, **kwargs)
@@ -1292,7 +1306,15 @@ def _install_virtual_workspace_paths():
             _emit_file_change_for_absolute(_absolute_path)
         return _fd
 
+    def _patched_os_read(_fd, _length):
+        _proc_handle = _proc_file_descriptors.get(_fd)
+        if _proc_handle is not None:
+            return _proc_handle.read(_length)
+        return _original_os_read(_fd, _length)
+
     def _patched_os_write(_fd, _data):
+        if _fd in _proc_file_descriptors:
+            raise OSError("Kernel proc path is read-only")
         _result = _original_os_write(_fd, _data)
         _absolute_path = _open_file_descriptors.get(_fd)
         if _absolute_path:
@@ -1300,6 +1322,10 @@ def _install_virtual_workspace_paths():
         return _result
 
     def _patched_os_close(_fd):
+        _proc_handle = _proc_file_descriptors.pop(_fd, None)
+        if _proc_handle is not None:
+            _proc_handle.close()
+            return None
         _absolute_path = _open_file_descriptors.pop(_fd, None)
         try:
             return _original_os_close(_fd)
@@ -1312,6 +1338,7 @@ def _install_virtual_workspace_paths():
     os.getcwd = _patched_getcwd
     os.chdir = _patched_chdir
     os.open = _patched_os_open
+    os.read = _patched_os_read
     os.write = _patched_os_write
     os.close = _patched_os_close
 

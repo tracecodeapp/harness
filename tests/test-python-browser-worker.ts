@@ -277,6 +277,16 @@ async function main(): Promise<void> {
                 'print(proc_info["name"])',
                 'print(os.listdir("/proc/kernel"))',
                 'print(open("/proc/kernel/version", "r", encoding="utf-8").read().strip())',
+                'proc_fd = os.open("/proc/kernel/version", os.O_RDONLY)',
+                'try:',
+                '    print(os.read(proc_fd, 64).decode("utf-8").strip())',
+                'finally:',
+                '    os.close(proc_fd)',
+                'try:',
+                '    os.open("/proc/kernel/version", os.O_WRONLY)',
+                '    print("proc-os-write:ok")',
+                'except OSError:',
+                '    print("proc-os-write:blocked")',
                 'print(os.path.isfile("/proc/kernel/info"))',
                 'print(os.access("/proc/kernel/info", os.W_OK))',
                 'with open("/home/ada/weather-api/canonical.txt", "w", encoding="utf-8") as handle:',
@@ -434,7 +444,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\nTrue\nFalse\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-os-write:blocked\nTrue\nFalse\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(
