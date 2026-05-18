@@ -2999,19 +2999,22 @@ function javaReportConsoleOutput(report) {
   );
 }
 
-function javaNormalizeProjectCompilerOutput(output, sourceRoot) {
+function javaNormalizeProjectCompilerOutput(output, sourceRoot, projectRoot = '') {
   const root = String(sourceRoot ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
   if (!root) return output;
+  const targetRoot = String(projectRoot || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const replacementRoot = targetRoot || '.';
   const escapedRoot = escapeRegExp(root);
   return String(output ?? '')
-    .replace(new RegExp(`${escapedRoot}/`, 'g'), '')
-    .replace(new RegExp(escapedRoot, 'g'), '.');
+    .replace(new RegExp(`${escapedRoot}/`, 'g'), `${replacementRoot}/`)
+    .replace(new RegExp(escapedRoot, 'g'), replacementRoot);
 }
 
-function javaProjectFailureStderr(report, sourceRoot) {
+function javaProjectFailureStderr(report, sourceRoot, projectRoot) {
   const compilerOutput = javaNormalizeProjectCompilerOutput(
     javaReportConsoleOutput(report).join('\n').trim(),
-    sourceRoot
+    sourceRoot,
+    projectRoot
   );
   const runtimeError = typeof report?.runtimeError === 'string' ? report.runtimeError.trim() : '';
   if (compilerOutput.length > 0) {
@@ -3970,7 +3973,8 @@ function emitJavaProjectResultEvents(id, result, options = {}) {
 }
 
 function commandResultFromJavaProjectReport(report, totalEnd, totalStart, libraryCallEnd, libraryCallStart, outputDir, payload, sourceRoot) {
-  let compilerOutput = javaNormalizeProjectCompilerOutput(javaReportConsoleOutput(report).join('\n'), sourceRoot);
+  const projectRoot = projectVirtualRoot(payload?.project);
+  let compilerOutput = javaNormalizeProjectCompilerOutput(javaReportConsoleOutput(report).join('\n'), sourceRoot, projectRoot);
   if (
     report.success === true &&
     payload?.source === 'compile' &&
@@ -3987,7 +3991,7 @@ function commandResultFromJavaProjectReport(report, totalEnd, totalStart, librar
   if (report.success !== true) {
     return {
       stdout: '',
-      stderr: javaProjectFailureStderr(report, sourceRoot),
+      stderr: javaProjectFailureStderr(report, sourceRoot, projectRoot),
       exitCode: 1,
       timings: {
         hostCallMs: libraryCallEnd - libraryCallStart,
