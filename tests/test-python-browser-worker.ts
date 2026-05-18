@@ -350,7 +350,11 @@ async function main(): Promise<void> {
         cwd: '/workspace',
         env: {},
         stdin: 'stdin-data\\n',
-        project: { cwd: '/workspace', files: [] },
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelDevices: [{ path: '/dev/stdin', readable: true, writable: false }],
+        },
       });
 
       const argumentRun = await send('execute-project-python', {
@@ -389,6 +393,8 @@ async function main(): Promise<void> {
         scriptPath: '<string>',
         code: [
           'import os',
+          'import sys',
+          'print("stdin-visible=" + sys.stdin.read().strip())',
           'with open("/dev/custom-in", "r", encoding="utf-8") as custom_in:',
           '    print("custom-file=" + custom_in.read().strip())',
           'custom_fd = os.open("/dev/custom-in", os.O_RDONLY)',
@@ -1133,7 +1139,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.manifestCustomDeviceRun.exitCode === 0, `Python project manifest custom device run should succeed: ${results.manifestCustomDeviceRun.stderr}`);
     assertCondition(
-      results.manifestCustomDeviceRun.stdout === 'custom-file=manifest-stdin\ncustom-fd=manifest-stdin\nnested-dev-dir=True:0\npts-file\npts-fd\n',
+      results.manifestCustomDeviceRun.stdout === 'stdin-visible=\ncustom-file=manifest-stdin\ncustom-fd=manifest-stdin\nnested-dev-dir=True:0\npts-file\npts-fd\n',
       `Python project custom input device should read from stdin: ${JSON.stringify(results.manifestCustomDeviceRun.stdout)}`
     );
     assertCondition(

@@ -1191,6 +1191,12 @@ _restore_workspace_paths = lambda: None
 _active_project_cwd = _root
 _project_original_open = builtins.open
 
+def _project_stdin_text():
+    _stdin_device = _kernel_devices.get("/dev/stdin", {})
+    if isinstance(_stdin_device, dict) and bool(_stdin_device.get("readable")):
+        return str(_request.get("stdin", ""))
+    return ""
+
 def _emit_project_event(_event):
     try:
         _js_self.__tracecodeProjectEvent(json.dumps(_event))
@@ -2504,7 +2510,7 @@ try:
         if _script_dir and _script_dir not in sys.path:
             sys.path.insert(0, _script_dir)
     sys.argv = _project_argv()
-    sys.stdin = io.StringIO(str(_request.get("stdin", "")))
+    sys.stdin = io.StringIO(_project_stdin_text())
     with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
         try:
             if _source == "file":
