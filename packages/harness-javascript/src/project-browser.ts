@@ -1154,6 +1154,123 @@ async function runBrowserJavaScriptProjectRequest(
       cache.delete(path);
       io.fileChange(bytesToRuntimeFile(path, bytes), 'live');
     };
+    const createEventTarget = () => {
+      const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+      const on = (event: string, listener: (...args: unknown[]) => void): void => {
+        const next = listeners.get(event) ?? [];
+        next.push(listener);
+        listeners.set(event, next);
+      };
+      return {
+        emit: (event: string, ...args: unknown[]) => {
+          for (const listener of listeners.get(event) ?? []) listener(...args);
+        },
+        on,
+        once: (event: string, listener: (...args: unknown[]) => void) => {
+          const wrapped = (...args: unknown[]) => {
+            const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== wrapped);
+            listeners.set(event, next);
+            listener(...args);
+          };
+          on(event, wrapped);
+        },
+      };
+    };
+    const createReadableStream = (bytes: Uint8Array, encoding?: string) => {
+      const events = createEventTarget();
+      let started = false;
+      const formatChunk = (chunk: Uint8Array): BrowserBuffer | string => {
+        const buffer = BrowserBuffer.from(chunk);
+        return encoding ? buffer.toString(encoding) : buffer;
+      };
+      const scheduleRead = (): void => {
+        if (started) return;
+        started = true;
+        queueMicrotask(() => {
+          if (bytes.byteLength > 0) events.emit('data', formatChunk(bytes));
+          events.emit('end');
+          events.emit('close');
+        });
+      };
+      const stream = {
+        readable: true,
+        on: (event: string, listener: (...args: unknown[]) => void) => {
+          events.on(event, listener);
+          if (event === 'data' || event === 'end') scheduleRead();
+          return stream;
+        },
+        once: (event: string, listener: (...args: unknown[]) => void) => {
+          events.once(event, listener);
+          if (event === 'data' || event === 'end') scheduleRead();
+          return stream;
+        },
+        pipe: (destination: { write?: (chunk: BrowserBuffer | string) => unknown; end?: () => unknown }) => {
+          stream.on('data', (chunk) => destination.write?.(chunk as BrowserBuffer | string));
+          stream.on('end', () => destination.end?.());
+          return destination;
+        },
+      };
+      return stream;
+    };
+    const createWritableStream = (
+      path: unknown,
+      options?: string | { encoding?: string | null; flags?: string } | null
+    ) => {
+      const events = createEventTarget();
+      const device = normalizeRuntimeDevicePath(path);
+      const encoding = requestedEncodingFromOptions(options);
+      const flags = typeof options === 'object' && typeof options?.flags === 'string' ? options.flags : 'w';
+      const normalized = device ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+      if (normalized !== null && !flags.includes('a')) {
+        setFileBytes(normalized, new Uint8Array());
+      }
+      const writeBytes = (value: unknown, writeEncoding?: string): void => {
+        const bytes = bytesFromFsWriteValue(value, writeEncoding ?? encoding);
+        if (device) {
+          writeDevice(device, textFromBytes(bytes));
+          return;
+        }
+        const previous = fileStore.get(normalized ?? '') ?? new Uint8Array();
+        const combined = new Uint8Array(previous.byteLength + bytes.byteLength);
+        combined.set(previous, 0);
+        combined.set(bytes, previous.byteLength);
+        setFileBytes(normalized ?? '', combined);
+      };
+      let closed = false;
+      const stream = {
+        writable: true,
+        on: (event: string, listener: (...args: unknown[]) => void) => {
+          events.on(event, listener);
+          return stream;
+        },
+        once: (event: string, listener: (...args: unknown[]) => void) => {
+          events.once(event, listener);
+          return stream;
+        },
+        write: (value: unknown, writeEncoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
+          writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
+          const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
+          done?.(null);
+          return true;
+        },
+        end: (value?: unknown, writeEncoding?: string | (() => void), callback?: () => void) => {
+          if (value !== undefined && value !== null) {
+            writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
+          }
+          const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
+          if (!closed) {
+            closed = true;
+            queueMicrotask(() => {
+              done?.();
+              events.emit('finish');
+              events.emit('close');
+            });
+          }
+          return stream;
+        },
+      };
+      return stream;
+    };
     const deleteFile = (path: unknown): void => {
       const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (!fileStore.delete(normalized)) {
@@ -1164,6 +1281,20 @@ async function runBrowserJavaScriptProjectRequest(
       io.fileChange({ path: normalized, deleted: true }, 'live');
     };
     const fsApi = {
+      createReadStream: (path: unknown, options?: string | { encoding?: string; start?: number; end?: number } | null) => {
+        const device = normalizeRuntimeDevicePath(path);
+        const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
+        const sourceBytes = device
+          ? utf8Bytes(readDevice(device))
+          : fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
+        if (!sourceBytes) {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+        }
+        const start = typeof options === 'object' && typeof options?.start === 'number' ? Math.max(0, options.start) : 0;
+        const endInclusive = typeof options === 'object' && typeof options?.end === 'number' ? options.end : sourceBytes.byteLength - 1;
+        return createReadableStream(sourceBytes.slice(start, Math.max(start, endInclusive + 1)), requestedEncoding);
+      },
+      createWriteStream: createWritableStream,
       readFileSync: (path: unknown, encoding?: string | { encoding?: string }) => {
         const device = normalizeRuntimeDevicePath(path);
         if (device) {

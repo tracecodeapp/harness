@@ -2106,6 +2106,25 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     'browser node Buffer writes should persist binary files'
   );
 
+  const streamEvents: RuntimeCommandEvent[] = [];
+  const streamResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); await new Promise((resolve, reject) => { const out = fs.createWriteStream(\\"streamed.txt\\"); out.on(\\"error\\", reject); out.on(\\"finish\\", resolve); out.write(\\"one\\\\n\\"); out.end(Buffer.from(\\"two\\\\n\\")); }); await new Promise((resolve) => { const chunks = []; fs.createReadStream(\\"streamed.txt\\", { encoding: \\"utf8\\" }).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", () => { process.stdout.write(chunks.join(\\"\\")); resolve(); }); });"',
+  ].join(' '), { onEvent: (event) => streamEvents.push(event) });
+  assertCondition(streamResult.exitCode === 0, `browser node file stream workflow should succeed: ${streamResult.stderr}`);
+  assertCondition(streamResult.stdout === 'one\ntwo\n', `browser node file streams should read written data: ${streamResult.stdout}`);
+  assertCondition(await workspace.readFile('streamed.txt') === 'one\ntwo\n', 'browser node createWriteStream should persist written data');
+  assertCondition(
+    streamEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'streamed.txt' &&
+      event.change.contents === 'one\ntwo\n'
+    ),
+    `browser node createWriteStream should emit live file mutations: ${JSON.stringify(streamEvents)}`
+  );
+
   const stdioFdResult = await workspace.runCommand([
     'node',
     '-e',
