@@ -34,6 +34,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -259,16 +260,45 @@ public final class ProjectEvents {
     return result;
   }
 
+  public static Path createDirectory(Path dir, FileAttribute<?>... attrs) throws IOException {
+    assertWritableProjectPath(dir);
+    Path result = Files.createDirectory(dir, attrs);
+    emitDirectoryCreate(dir);
+    return result;
+  }
+
+  public static Path createDirectories(Path dir, FileAttribute<?>... attrs) throws IOException {
+    assertWritableProjectPath(dir);
+    List<Path> missing = missingDirectories(dir);
+    Path result = Files.createDirectories(dir, attrs);
+    for (Path created : missing) {
+      if (Files.isDirectory(created)) emitDirectoryCreate(created);
+    }
+    return result;
+  }
+
   public static void delete(Path path) throws IOException {
     assertWritableProjectPath(path);
+    boolean directory = Files.isDirectory(path);
     Files.delete(path);
-    emitFileDelete(path);
+    if (directory) {
+      emitDirectoryDelete(path);
+    } else {
+      emitFileDelete(path);
+    }
   }
 
   public static boolean deleteIfExists(Path path) throws IOException {
     assertWritableProjectPath(path);
+    boolean directory = Files.isDirectory(path);
     boolean deleted = Files.deleteIfExists(path);
-    if (deleted) emitFileDelete(path);
+    if (deleted) {
+      if (directory) {
+        emitDirectoryDelete(path);
+      } else {
+        emitFileDelete(path);
+      }
+    }
     return deleted;
   }
 
@@ -286,17 +316,28 @@ public final class ProjectEvents {
       emitFileSnapshot(target);
       return target;
     }
+    boolean directory = Files.isDirectory(source);
     Path result = Files.copy(source, target, options);
-    emitFileSnapshot(target);
+    if (directory) {
+      emitDirectoryCreate(target);
+    } else {
+      emitFileSnapshot(target);
+    }
     return result;
   }
 
   public static Path move(Path source, Path target, CopyOption... options) throws IOException {
     assertWritableProjectPath(source);
     assertWritableProjectPath(target);
+    boolean directory = Files.isDirectory(source);
     Path result = Files.move(source, target, options);
-    emitFileDelete(source);
-    emitFileSnapshot(target);
+    if (directory) {
+      emitDirectoryDelete(source);
+      emitDirectoryCreate(target);
+    } else {
+      emitFileDelete(source);
+      emitFileSnapshot(target);
+    }
     return result;
   }
 
@@ -669,8 +710,15 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
+      boolean directory = isDirectory();
       boolean deleted = super.delete();
-      if (deleted) emitFileDelete(toPath());
+      if (deleted) {
+        if (directory) {
+          emitDirectoryDelete(toPath());
+        } else {
+          emitFileDelete(toPath());
+        }
+      }
       return deleted;
     }
 
@@ -681,7 +729,9 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.mkdir();
+      boolean created = super.mkdir();
+      if (created) emitDirectoryCreate(toPath());
+      return created;
     }
 
     @Override
@@ -691,7 +741,14 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
-      return super.mkdirs();
+      List<Path> missing = missingDirectories(toPath());
+      boolean created = super.mkdirs();
+      if (created) {
+        for (Path dir : missing) {
+          if (Files.isDirectory(dir)) emitDirectoryCreate(dir);
+        }
+      }
+      return created;
     }
 
     @Override
@@ -702,10 +759,16 @@ public final class ProjectEvents {
       } catch (IOException error) {
         return false;
       }
+      boolean directory = isDirectory();
       boolean renamed = super.renameTo(dest);
       if (renamed) {
-        emitFileDelete(toPath());
-        if (dest != null) emitFileSnapshot(dest.toPath());
+        if (directory) {
+          emitDirectoryDelete(toPath());
+          if (dest != null) emitDirectoryCreate(dest.toPath());
+        } else {
+          emitFileDelete(toPath());
+          if (dest != null) emitFileSnapshot(dest.toPath());
+        }
       }
       return renamed;
     }
@@ -960,6 +1023,8 @@ public final class ProjectEvents {
   private static native void emitOutputNative(String stream, String data, String sourceDevice);
   private static native void emitFileSnapshotNative(String path, String contents);
   private static native void emitFileDeleteNative(String path);
+  private static native void emitDirectoryCreateNative(String path);
+  private static native void emitDirectoryDeleteNative(String path);
 
   private static Map<String, KernelDevice> parseKernelDevices(String manifest) {
     Map<String, KernelDevice> devices = new HashMap<>();
@@ -1249,6 +1314,47 @@ public final class ProjectEvents {
     } catch (UnsatisfiedLinkError | SecurityException ignored) {
       // Final-diff persistence still captures deletes when live browser bridge emission is unavailable.
     }
+  }
+
+  private static void emitDirectoryCreate(Path path) {
+    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
+    String relativePath = projectRelativePath(path);
+    if (relativePath == null) return;
+    try {
+      emitDirectoryCreateNative(relativePath);
+    } catch (UnsatisfiedLinkError | SecurityException ignored) {
+      // Final-diff persistence still captures directory creates when live browser bridge emission is unavailable.
+    }
+  }
+
+  private static void emitDirectoryDelete(Path path) {
+    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;
+    String relativePath = projectRelativePath(path);
+    if (relativePath == null) return;
+    try {
+      emitDirectoryDeleteNative(relativePath);
+    } catch (UnsatisfiedLinkError | SecurityException ignored) {
+      // Final-diff persistence still captures directory deletes when live browser bridge emission is unavailable.
+    }
+  }
+
+  private static List<Path> missingDirectories(Path path) {
+    ArrayList<Path> missing = new ArrayList<>();
+    Path root = PROJECT_WORKSPACE_ROOT.get();
+    if (root == null || path == null) return missing;
+    Path absolute = path.toAbsolutePath().normalize();
+    if (!absolute.startsWith(root)) return missing;
+    ArrayList<Path> candidates = new ArrayList<>();
+    Path current = absolute;
+    while (current != null && !current.equals(root)) {
+      candidates.add(current);
+      current = current.getParent();
+    }
+    Collections.reverse(candidates);
+    for (Path candidate : candidates) {
+      if (!Files.exists(candidate)) missing.add(candidate);
+    }
+    return missing;
   }
 
   private static String projectRelativePath(Path path) {

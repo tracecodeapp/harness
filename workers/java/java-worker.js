@@ -114,6 +114,31 @@ function emitLiveJavaProjectFileDelete(path) {
   });
 }
 
+function emitLiveJavaProjectDirectoryCreate(path) {
+  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0) return;
+  postProjectEvent(activeJavaProjectIo.messageId, {
+    type: 'file-change',
+    phase: 'live',
+    change: {
+      path: normalizeProjectFilePath(path),
+      directory: true,
+    },
+  });
+}
+
+function emitLiveJavaProjectDirectoryDelete(path) {
+  if (!activeJavaProjectIo?.messageId || typeof path !== 'string' || path.length === 0) return;
+  postProjectEvent(activeJavaProjectIo.messageId, {
+    type: 'file-change',
+    phase: 'live',
+    change: {
+      path: normalizeProjectFilePath(path),
+      directory: true,
+      deleted: true,
+    },
+  });
+}
+
 function javaProjectNativeBridge() {
   return {
     Java_tracecode_browser_ProjectEvents_emitOutputNative: (_library, stream, data, sourceDevice) => {
@@ -124,6 +149,12 @@ function javaProjectNativeBridge() {
     },
     Java_tracecode_browser_ProjectEvents_emitFileDeleteNative: (_library, path) => {
       emitLiveJavaProjectFileDelete(String(path ?? ''));
+    },
+    Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative: (_library, path) => {
+      emitLiveJavaProjectDirectoryCreate(String(path ?? ''));
+    },
+    Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative: (_library, path) => {
+      emitLiveJavaProjectDirectoryDelete(String(path ?? ''));
     },
   };
 }
@@ -3206,8 +3237,8 @@ function javaProjectSourcePath(file) {
 
 function augmentJavaProjectFileMutations(source) {
   return String(source ?? '')
-    .replace(/\bjava\.nio\.file\.Files\.(readString|readAllBytes|list|newDirectoryStream|exists|notExists|isDirectory|isRegularFile|writeString|write|createFile|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
-    .replace(/(?<![\w.])Files\.(readString|readAllBytes|list|newDirectoryStream|exists|notExists|isDirectory|isRegularFile|writeString|write|createFile|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/\bjava\.nio\.file\.Files\.(readString|readAllBytes|list|newDirectoryStream|exists|notExists|isDirectory|isRegularFile|writeString|write|createFile|createDirectory|createDirectories|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
+    .replace(/(?<![\w.])Files\.(readString|readAllBytes|list|newDirectoryStream|exists|notExists|isDirectory|isRegularFile|writeString|write|createFile|createDirectory|createDirectories|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
     .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/\bnew\s+java\.io\.FileInputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileInputStream(')

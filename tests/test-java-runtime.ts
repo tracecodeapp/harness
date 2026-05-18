@@ -926,6 +926,30 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'nio-created.txt',
                 ''
               );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
+                null,
+                'live-dir'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
+                null,
+                'live-dir/child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
+                null,
+                'live-dir/child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
+                null,
+                'live-dir/renamed-child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
+                null,
+                'live-dir/renamed-child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
+                null,
+                'live-dir'
+              );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
                 'nio-stream.bin',
@@ -950,6 +974,30 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 null,
                 'classic-created.txt',
                 ''
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
+                null,
+                'classic-dir'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
+                null,
+                'classic-dir/child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
+                null,
+                'classic-dir/child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative?.(
+                null,
+                'classic-dir/renamed-child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
+                null,
+                'classic-dir/renamed-child'
+              );
+              cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative?.(
+                null,
+                'classic-dir'
               );
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileDeleteNative?.(
                 null,
@@ -1431,7 +1479,7 @@ async function main(): Promise<void> {
       stdout: string;
       stderr: string;
       exitCode: number;
-      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true }>;
+      files?: Array<{ path: string; contents?: string; encoding?: string; deleted?: true; directory?: true }>;
       events?: Array<{
         type: string;
         stream?: 'stdout' | 'stderr';
@@ -1439,7 +1487,7 @@ async function main(): Promise<void> {
         sourceDevice?: string;
         data?: string;
         phase?: string;
-        change?: { path: string; contents?: string; encoding?: string; deleted?: true };
+        change?: { path: string; contents?: string; encoding?: string; deleted?: true; directory?: true };
       }>;
     }>('execute-project-java', {
       code: '',
@@ -1471,11 +1519,19 @@ async function main(): Promise<void> {
               '    try (var stream = new DataOutputStream(new FileOutputStream("data.bin"))) { stream.write(new byte[] { 0, (byte)253 }); }',
               '    try (var stream = new PrintStream("ps-file.txt")) { stream.println("ps-file"); }',
               '    Files.createFile(Path.of("nio-created.txt"));',
+              '    Files.createDirectories(Path.of("live-dir/child"));',
+              '    Files.move(Path.of("live-dir/child"), Path.of("live-dir/renamed-child"));',
+              '    Files.delete(Path.of("live-dir/renamed-child"));',
+              '    Files.delete(Path.of("live-dir"));',
               '    try (var stream = Files.newOutputStream(Path.of("nio-stream.bin"))) { stream.write(new byte[] { 0, (byte)252 }); }',
               '    try (var writer = Files.newBufferedWriter(Path.of("nio-writer.txt"))) { writer.write("nio-writer\\n"); }',
               '    try (var channel = Files.newByteChannel(Path.of("byte-channel.bin"), EnumSet.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING))) { channel.write(ByteBuffer.wrap(new byte[] { 0, 7, 6, 5 })); channel.truncate(3); }',
               '    try (var raf = new RandomAccessFile("random.bin", "rw")) { raf.write(new byte[] { 0, 1, 2, 3 }); raf.seek(1); raf.write(new byte[] { 9, 8 }); raf.setLength(3); }',
               '    new File("classic-created.txt").createNewFile();',
+              '    new File("classic-dir/child").mkdirs();',
+              '    new File("classic-dir/child").renameTo(new File("classic-dir/renamed-child"));',
+              '    new File("classic-dir/renamed-child").delete();',
+              '    new File("classic-dir").delete();',
               '    try (var writer = new FileWriter("classic-rename-source.txt")) { writer.write("classic\\n"); }',
               '    new File("classic-rename-source.txt").renameTo(new File("classic-renamed.txt"));',
               '    new File("classic-delete.txt").createNewFile();',
@@ -1725,6 +1781,46 @@ async function main(): Promise<void> {
         (event) =>
           event.type === 'file-change' &&
           event.phase === 'live' &&
+          event.change?.path === 'live-dir' &&
+          event.change.directory === true
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'live-dir/child' &&
+            event.change.directory === true
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'live-dir/renamed-child' &&
+            event.change.directory === true
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'live-dir/renamed-child' &&
+            event.change.directory === true &&
+            event.change.deleted === true
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'live-dir' &&
+            event.change.directory === true &&
+            event.change.deleted === true
+        ) === true,
+      `Java execute-project-java should emit live NIO directory mutation events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
           event.change?.path === 'byte-channel.bin' &&
           event.change.encoding === 'base64' &&
           event.change.contents === 'AAcG'
@@ -1774,6 +1870,46 @@ async function main(): Promise<void> {
             event.change.deleted === true
         ) === true,
       `Java execute-project-java should emit live java.io.File mutator events: ${JSON.stringify(projectExecute.events)}`
+    );
+    assertCondition(
+      projectExecute.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'classic-dir' &&
+          event.change.directory === true
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'classic-dir/child' &&
+            event.change.directory === true
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'classic-dir/renamed-child' &&
+            event.change.directory === true
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'classic-dir/renamed-child' &&
+            event.change.directory === true &&
+            event.change.deleted === true
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'file-change' &&
+            event.phase === 'live' &&
+            event.change?.path === 'classic-dir' &&
+            event.change.directory === true &&
+            event.change.deleted === true
+        ) === true,
+      `Java execute-project-java should emit live java.io.File directory mutation events: ${JSON.stringify(projectExecute.events)}`
     );
     assertCondition(
       projectExecute.events?.some(
@@ -1946,6 +2082,9 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.copy(Path.of("/dev/stdin"), Path.of("stdin-copy.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.copy(Path.of("stdin-copy.txt"), Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createFile(Path.of("nio-created.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createDirectories(Path.of("live-dir/child")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.move(Path.of("live-dir/child"), Path.of("live-dir/renamed-child")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.delete(Path.of("live-dir/renamed-child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newOutputStream(Path.of("nio-stream.bin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newBufferedWriter(Path.of("nio-writer.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.deleteIfExists(Path.of("stale.txt")') === true,

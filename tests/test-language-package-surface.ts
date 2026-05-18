@@ -314,6 +314,14 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-java worker should ship java.io.File live-mutation rewrites'
       );
       assertCondition(
+        worker.includes('emitLiveJavaProjectDirectoryCreate') &&
+          worker.includes('emitLiveJavaProjectDirectoryDelete') &&
+          worker.includes('Java_tracecode_browser_ProjectEvents_emitDirectoryCreateNative') &&
+          worker.includes('Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative') &&
+          worker.includes('createFile|createDirectory|createDirectories'),
+        '@tracecode/harness-java worker should ship live directory mutation bridge hooks'
+      );
+      assertCondition(
         worker.includes('emitLiveJavaProjectOutput(String(stream ?? \'stdout\'), String(data ?? \'\'), String(sourceDevice ?? \'\'))') &&
           worker.includes('sourceDevice'),
         '@tracecode/harness-java worker should ship routed source device output events'
@@ -339,6 +347,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         helperApi.stdout.includes('emitOutputNative(java.lang.String, java.lang.String, java.lang.String)'),
         '@tracecode/harness-java helper jar should expose source-device output native bridge'
+      );
+      assertCondition(
+        helperApi.stdout.includes('emitDirectoryCreateNative(java.lang.String)') &&
+          helperApi.stdout.includes('emitDirectoryDeleteNative(java.lang.String)'),
+        '@tracecode/harness-java helper jar should expose directory native bridge hooks'
       );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {
