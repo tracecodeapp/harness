@@ -14,8 +14,6 @@ import {
   isRuntimeDeviceNamespacePath,
   normalizeRuntimeProcPath as normalizeRuntimeProcPathString,
   normalizeRuntimeDevicePath as normalizeRuntimeDevicePathString,
-  runtimeDeviceCanRead,
-  runtimeDeviceCanWrite,
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
@@ -32,6 +30,8 @@ import {
   runtimeKernelMetadataTarget,
   runtimeKernelMutationErrorCode,
   runtimeKernelMutationTarget,
+  runtimeKernelOpenErrorCode,
+  runtimeKernelOpenTarget,
   runtimeKernelReadTarget,
   runtimeKernelWriteErrorCode,
   runtimeKernelWriteTarget,
@@ -187,6 +187,15 @@ function runtimeAccessTarget(path: unknown, mode: number): ReturnType<typeof run
     write: (mode & 2) !== 0,
     execute: (mode & 1) !== 0,
   });
+}
+
+function runtimeOpenTarget(
+  path: unknown,
+  request: Parameters<typeof runtimeKernelOpenTarget>[1]
+): ReturnType<typeof runtimeKernelOpenTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelOpenTarget(raw, request);
 }
 
 function runtimeReadTarget(path: unknown): ReturnType<typeof runtimeKernelReadTarget> | null {
@@ -2601,38 +2610,35 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       openSync: (path: unknown, flags: unknown = 'r') => {
-        const device = normalizeRuntimeDevicePath(path);
         const parsed = parseOpenFlags(flags);
+        const openTarget = runtimeOpenTarget(path, parsed);
         const fd = nextFd++;
-        if (device) {
+        if (openTarget?.kind === 'error') {
+          const message = openTarget.reason === 'read-only'
+            ? `EROFS: read-only file system, open '${path}'`
+            : openTarget.reason === 'is-directory'
+              ? `EISDIR: illegal operation on a directory, open '${path}'`
+              : `ENOENT: no such file or directory, open '${path}'`;
+          throw Object.assign(new Error(message), { code: runtimeKernelOpenErrorCode(openTarget.reason) });
+        }
+        if (openTarget?.kind === 'device') {
           fileDescriptors.set(fd, {
             kind: 'device',
-            device,
+            device: openTarget.device,
             offset: 0,
-            readable: runtimeDeviceCanRead(device) || parsed.readable,
-            writable: runtimeDeviceCanWrite(device) && parsed.writable,
+            readable: openTarget.readable,
+            writable: openTarget.writable,
             append: true,
           });
           return fd;
         }
-        const procPath = normalizeRuntimeProcPath(path);
-        if (procPath) {
-          const kind = procEntryKind(procPath);
-          if (!kind) {
-            throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
-          }
-          if (kind === 'directory') {
-            throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
-          }
-          if (parsed.writable || parsed.create || parsed.truncate || parsed.exclusive) {
-            assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
-          }
+        if (openTarget?.kind === 'proc-file') {
           fileDescriptors.set(fd, {
             kind: 'proc',
-            path: procPath,
+            path: openTarget.path,
             offset: 0,
-            readable: true,
-            writable: false,
+            readable: openTarget.readable,
+            writable: openTarget.writable,
             append: false,
           });
           return fd;

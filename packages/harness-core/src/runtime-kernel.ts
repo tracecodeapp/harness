@@ -25,10 +25,22 @@ export interface RuntimeKernelAccessRequest {
   write?: boolean;
   execute?: boolean;
 }
+export interface RuntimeKernelOpenRequest {
+  readable?: boolean;
+  writable?: boolean;
+  create?: boolean;
+  truncate?: boolean;
+  exclusive?: boolean;
+}
 export type RuntimeKernelAccessTarget =
   | { kind: 'workspace' }
   | { kind: 'allowed'; path: string }
   | { kind: 'denied'; reason: 'not-found' | 'permission-denied'; path: string };
+export type RuntimeKernelOpenTarget =
+  | { kind: 'workspace' }
+  | { kind: 'device'; device: RuntimeKernelDevicePath; readable: boolean; writable: boolean }
+  | { kind: 'proc-file'; path: string; readable: true; writable: false }
+  | { kind: 'error'; reason: 'not-found' | 'is-directory' | 'read-only'; path: string };
 export type RuntimeKernelReadTarget =
   | { kind: 'workspace' }
   | { kind: 'proc-file'; path: string }
@@ -259,6 +271,45 @@ export function runtimeKernelAccessTarget(path: string, request: RuntimeKernelAc
   return request.write || request.execute
     ? { kind: 'denied', reason: 'permission-denied', path: virtualPath.path }
     : { kind: 'allowed', path: virtualPath.path };
+}
+
+export function runtimeKernelOpenTarget(path: string, request: RuntimeKernelOpenRequest = {}): RuntimeKernelOpenTarget {
+  const virtualPath = classifyRuntimeKernelVirtualPath(path);
+  if (virtualPath === null) return { kind: 'workspace' };
+  if (virtualPath.kind === 'device-namespace') {
+    return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device-directory') {
+    return { kind: 'error', reason: 'is-directory', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device') {
+    return {
+      kind: 'device',
+      device: virtualPath.path,
+      readable: runtimeDeviceCanRead(virtualPath.path) || request.readable === true,
+      writable: runtimeDeviceCanWrite(virtualPath.path) && request.writable === true,
+    };
+  }
+
+  const entryKind = runtimeProcEntryKind(virtualPath.path);
+  if (!entryKind) {
+    return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+  }
+  if (entryKind === 'directory') {
+    return { kind: 'error', reason: 'is-directory', path: virtualPath.path };
+  }
+  if (request.writable || request.create || request.truncate || request.exclusive) {
+    return { kind: 'error', reason: 'read-only', path: virtualPath.path };
+  }
+  return { kind: 'proc-file', path: virtualPath.path, readable: true, writable: false };
+}
+
+export function runtimeKernelOpenErrorCode(
+  reason: Extract<RuntimeKernelOpenTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  if (reason === 'is-directory') return 'EISDIR';
+  if (reason === 'read-only') return 'EROFS';
+  return 'ENOENT';
 }
 
 export function runtimeKernelReadTarget(path: string): RuntimeKernelReadTarget {
