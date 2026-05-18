@@ -22,7 +22,7 @@ export type BrowserCSharpProjectCommandRunner = CSharpProjectCommandRunner;
 
 export interface BrowserCSharpProjectRunnerOptions {
   timeoutMs?: number;
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>;
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;

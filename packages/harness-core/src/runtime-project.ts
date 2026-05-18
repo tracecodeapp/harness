@@ -201,7 +201,7 @@ export class RuntimeProjectOutputTracker {
 
 export interface RuntimeProjectEventQueueOptions {
   actor?: RuntimeWorkspaceActor;
-  applyFileChange(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): Promise<void>;
+  applyFileChange(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): Promise<boolean | void>;
   emit(event: RuntimeCommandEvent): void;
 }
 
@@ -216,7 +216,8 @@ export class RuntimeProjectEventQueue {
       }
 
       const phase = event.phase ?? 'live';
-      await options.applyFileChange(event.change, phase);
+      const shouldEmit = await options.applyFileChange(event.change, phase);
+      if (shouldEmit === false) return;
       options.emit({
         ...event,
         phase,
@@ -241,7 +242,7 @@ export interface RuntimeProjectWorkerBridgeOptions<
   finishPhase: string;
   finishMessage: string;
   finishDetail?: (result: Result) => Record<string, unknown>;
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>;
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   run(
     request: Omit<Request, 'onEvent'>,
     onEvent: RuntimeCommandEventHandler
@@ -265,7 +266,7 @@ export async function runRuntimeProjectWorkerBridge<
   const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
     if (eventQueue) {
       eventQueue.enqueue(event, {
-        applyFileChange: options.applyFileChange as (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>,
+        applyFileChange: options.applyFileChange as (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>,
         emit: emitWorkerEvent,
       });
       return;

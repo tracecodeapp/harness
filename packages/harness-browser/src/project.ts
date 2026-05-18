@@ -111,6 +111,7 @@ export async function createBrowserProjectWorkspace(
   const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
     async (change, phase) => {
       await workspace.kernel.applyFileChange(change, undefined, phase);
+      return false;
     };
 
   workspace = await createRuntimeWorkspace({

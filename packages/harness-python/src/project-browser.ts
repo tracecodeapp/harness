@@ -25,7 +25,7 @@ export type PyodidePythonProjectCommandRunner = PythonProjectCommandRunner;
 
 export interface BrowserPythonProjectRunnerOptions {
   timeoutMs?: number;
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>;
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
 }
 
 export type CreatePyodidePythonProjectRunnerOptions = BrowserPythonProjectRunnerOptions;

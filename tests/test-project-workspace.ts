@@ -4921,6 +4921,10 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
       (await Promise.all(pythonLiveReadPromises)).includes('python-live\n'),
       'browser project workspace should apply Python live file changes before forwarding the event'
     );
+    assertCondition(
+      pythonLiveReadPromises.length === 1,
+      `browser project workspace should not duplicate Python live file-change events: ${pythonLiveReadPromises.length}`
+    );
     assertCondition((await workspace.readDir('empty')).join(',') === 'child', 'browser project workspace should preserve empty directories in snapshots');
 
     const node = await workspace.runCommand('node index.js');

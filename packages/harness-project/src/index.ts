@@ -2805,12 +2805,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
       applyFileChange: async (change, actor = SYSTEM_ACTOR, phase = 'final-diff') => {
-        if ((change as { deleted?: boolean }).deleted === true) {
-          await this.deleteFileAs(change.path, actor, phase);
-          return;
-        }
-        const changedFile = change as RuntimeFile;
-        await this.writeFileAs(changedFile.path, changedFile.contents, actor, changedFile.encoding, phase);
+        await withSuspendedFsNotifications(this.bash.fs, async () => {
+          if ((change as { deleted?: boolean }).deleted === true) {
+            await this.deleteFileAs(change.path, actor, phase);
+            return;
+          }
+          const changedFile = change as RuntimeFile;
+          await this.writeFileAs(changedFile.path, changedFile.contents, actor, changedFile.encoding, phase);
+        });
       },
       snapshot: (options) => this.snapshot(options),
       watch: (listener) => this.watch(listener),

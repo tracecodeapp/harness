@@ -22,7 +22,7 @@ export type BrowserJavaProjectCommandRunner = JavaProjectCommandRunner;
 
 export interface BrowserJavaProjectRunnerOptions {
   timeoutMs?: number;
-  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>;
+  applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
