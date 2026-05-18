@@ -1283,6 +1283,7 @@ class _TraceDeviceFdFile:
         self._fd = _fd
         self._mode = str(_mode or "r")
         self._binary = "b" in self._mode
+        self._read_buffer = b""
         self.closed = False
 
     def readable(self):
@@ -1291,18 +1292,47 @@ class _TraceDeviceFdFile:
     def writable(self):
         return "w" in self._mode or "a" in self._mode or "+" in self._mode
 
-    def read(self, _size=-1):
+    def _read_bytes(self, _size=-1):
         if not self.readable():
             raise OSError("Kernel device is not readable")
-        _length = 1024 * 1024 if _size is None or int(_size) < 0 else int(_size)
-        _data = os.read(self._fd, _length)
+        if _size is None or int(_size) < 0:
+            _chunks = [self._read_buffer]
+            self._read_buffer = b""
+            while True:
+                _chunk = os.read(self._fd, 8192)
+                if not _chunk:
+                    break
+                _chunks.append(_chunk)
+            return b"".join(_chunks)
+        _length = int(_size)
+        if _length <= 0:
+            return b""
+        _data = self._read_buffer[:_length]
+        self._read_buffer = self._read_buffer[_length:]
+        if len(_data) < _length:
+            _data += os.read(self._fd, _length - len(_data))
+        return _data
+
+    def read(self, _size=-1):
+        _data = self._read_bytes(_size)
         return _data if self._binary else _data.decode("utf-8", "replace")
 
     def readline(self, _size=-1):
-        _text = self.read(_size)
+        if not self.readable():
+            raise OSError("Kernel device is not readable")
+        _limit = None if _size is None or int(_size) < 0 else int(_size)
+        _line = bytearray()
+        while _limit is None or len(_line) < _limit:
+            _byte = self._read_bytes(1)
+            if not _byte:
+                break
+            _line.extend(_byte)
+            if _byte == b"\\n":
+                break
+        _text = bytes(_line)
         if self._binary:
-            return _text.splitlines(True)[0] if _text else b""
-        return _text.splitlines(True)[0] if _text else ""
+            return _text
+        return _text.decode("utf-8", "replace")
 
     def write(self, _value):
         if not self.writable():
@@ -1749,6 +1779,7 @@ class _TraceProcFdFile:
         self._fd = _fd
         self._mode = str(_mode or "r")
         self._binary = "b" in self._mode
+        self._read_buffer = b""
         self.closed = False
 
     def readable(self):
@@ -1757,16 +1788,43 @@ class _TraceProcFdFile:
     def writable(self):
         return False
 
+    def _read_bytes(self, _size=-1):
+        if _size is None or int(_size) < 0:
+            _chunks = [self._read_buffer]
+            self._read_buffer = b""
+            while True:
+                _chunk = os.read(self._fd, 8192)
+                if not _chunk:
+                    break
+                _chunks.append(_chunk)
+            return b"".join(_chunks)
+        _length = int(_size)
+        if _length <= 0:
+            return b""
+        _data = self._read_buffer[:_length]
+        self._read_buffer = self._read_buffer[_length:]
+        if len(_data) < _length:
+            _data += os.read(self._fd, _length - len(_data))
+        return _data
+
     def read(self, _size=-1):
-        _length = 1024 * 1024 if _size is None or int(_size) < 0 else int(_size)
-        _data = os.read(self._fd, _length)
+        _data = self._read_bytes(_size)
         return _data if self._binary else _data.decode("utf-8", "replace")
 
     def readline(self, _size=-1):
-        _text = self.read(_size)
+        _limit = None if _size is None or int(_size) < 0 else int(_size)
+        _line = bytearray()
+        while _limit is None or len(_line) < _limit:
+            _byte = self._read_bytes(1)
+            if not _byte:
+                break
+            _line.extend(_byte)
+            if _byte == b"\\n":
+                break
+        _text = bytes(_line)
         if self._binary:
-            return _text.splitlines(True)[0] if _text else b""
-        return _text.splitlines(True)[0] if _text else ""
+            return _text
+        return _text.decode("utf-8", "replace")
 
     def write(self, *_args, **_kwargs):
         raise OSError("Kernel proc path is read-only")

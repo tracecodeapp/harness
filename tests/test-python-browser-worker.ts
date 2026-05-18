@@ -388,6 +388,38 @@ async function main(): Promise<void> {
         },
       });
 
+      const fdReadlineRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import os',
+          'custom_fd = os.open("/dev/custom-in", os.O_RDONLY)',
+          'with os.fdopen(custom_fd, "r", encoding="utf-8") as custom_in:',
+          '    print("dev-line-1=" + custom_in.readline().strip())',
+          '    print("dev-line-2=" + custom_in.readline().strip())',
+          '    print("dev-rest=" + custom_in.read().strip())',
+          'proc_fd = os.open("/proc/kernel/version", os.O_RDONLY)',
+          'with os.fdopen(proc_fd, "r", encoding="utf-8") as proc_file:',
+          '    print("proc-line-1=" + proc_file.readline().strip())',
+          '    print("proc-line-2=" + proc_file.readline().strip())',
+          '    print("proc-rest=" + proc_file.read().strip())',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: 'dev-one\\ndev-two\\ndev-three\\n',
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelDevices: [
+            { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+          ],
+          kernelFiles: [
+            { path: '/proc/kernel/version', contents: 'proc-one\\nproc-two\\nproc-three\\n' },
+          ],
+        },
+      });
+
       const directoryRun = await send('execute-project-python', {
         source: 'argument',
         scriptPath: '<string>',
@@ -514,7 +546,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, directoryRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -524,6 +556,7 @@ async function main(): Promise<void> {
       argumentRun: PythonProjectWorkerResponse;
       noDeviceManifestRun: PythonProjectWorkerResponse;
       manifestCustomDeviceRun: PythonProjectWorkerResponse;
+      fdReadlineRun: PythonProjectWorkerResponse;
       directoryRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
@@ -907,6 +940,11 @@ async function main(): Promise<void> {
         .map((event) => event.data)
         .join('') === 'log-file\nlog-fd\n',
       `Python project custom log device should preserve sourceDevice: ${JSON.stringify(results.manifestCustomDeviceRun.events)}`
+    );
+    assertCondition(results.fdReadlineRun.exitCode === 0, `Python project fd readline run should succeed: ${results.fdReadlineRun.stderr}`);
+    assertCondition(
+      results.fdReadlineRun.stdout === 'dev-line-1=dev-one\ndev-line-2=dev-two\ndev-rest=dev-three\nproc-line-1=proc-one\nproc-line-2=proc-two\nproc-rest=proc-three\n',
+      `Python project fd readline should preserve unread virtual fd data: ${JSON.stringify(results.fdReadlineRun.stdout)}`
     );
     assertCondition(results.directoryRun.exitCode === 0, `Python project directory source should succeed: ${results.directoryRun.stderr}`);
     assertCondition(
