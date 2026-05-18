@@ -2414,6 +2414,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node readable file streams should support setEncoding: ${streamSetEncodingResult.stdout}`
   );
 
+  const streamStateResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const out = fs.createWriteStream(\\"stream-state.txt\\"); console.log(out.writable + \\":\\" + out.writableEnded + \\":\\" + out.writableFinished + \\":\\" + out.bytesWritten); out.write(\\"abc\\"); console.log(out.bytesWritten); await new Promise((resolve) => out.end(\\"def\\", resolve)); console.log(out.writableEnded + \\":\\" + out.writableFinished + \\":\\" + out.closed + \\":\\" + out.bytesWritten); const input = fs.createReadStream(\\"stream-state.txt\\"); console.log(input.readable + \\":\\" + input.readableEnded + \\":\\" + input.readableEncoding); input.setEncoding(\\"utf8\\"); console.log(input.readableEncoding); const chunks = []; await new Promise((resolve, reject) => input.on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve)); console.log(chunks.join(\\"\\")); console.log(input.readableEnded + \\":\\" + input.closed);"',
+  ].join(' '));
+  assertCondition(streamStateResult.exitCode === 0, `browser node stream state workflow should succeed: ${streamStateResult.stderr}`);
+  assertCondition(
+    streamStateResult.stdout === 'true:false:false:0\n3\ntrue:true:true:6\ntrue:false:null\nutf8\nabcdef\ntrue:true\n',
+    `browser node file streams should expose common stream state properties: ${streamStateResult.stdout}`
+  );
+
   const streamListenerAliasResult = await workspace.runCommand([
     'node',
     '-e',

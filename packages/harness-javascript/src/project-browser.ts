@@ -1493,6 +1493,7 @@ async function runBrowserJavaScriptProjectRequest(
       let started = false;
       let closed = false;
       let destroyed = false;
+      let ended = false;
       let streamEncoding = encoding;
       const closeStream = (): void => {
         if (closed) return;
@@ -1510,6 +1511,7 @@ async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => {
           if (closed || destroyed) return;
           if (bytes.byteLength > 0) events.emit('data', formatChunk(bytes));
+          ended = true;
           events.emit('end');
           closeStream();
         });
@@ -1521,6 +1523,12 @@ async function runBrowserJavaScriptProjectRequest(
         },
         get destroyed() {
           return destroyed;
+        },
+        get readableEnded() {
+          return ended;
+        },
+        get readableEncoding() {
+          return streamEncoding ?? null;
         },
         setEncoding: (nextEncoding: string) => {
           streamEncoding = nextEncoding;
@@ -1585,24 +1593,31 @@ async function runBrowserJavaScriptProjectRequest(
       }
       let closed = false;
       let destroyed = false;
-      const writeBytes = (value: unknown, writeEncoding?: string): void => {
+      let bytesWritten = 0;
+      let writableEnded = false;
+      let writableFinished = false;
+      const writeBytes = (value: unknown, writeEncoding?: string): number => {
         if (closed || destroyed) {
           throw Object.assign(new Error('ERR_STREAM_DESTROYED: Cannot call write after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
         }
         const bytes = bytesFromFsWriteValue(value, writeEncoding ?? encoding);
         if (optionFd !== null) {
           writeDescriptorFileBytes(optionFd, bytes, flags.includes('a'));
-          return;
+          bytesWritten += bytes.byteLength;
+          return bytes.byteLength;
         }
         if (device) {
           writeDevice(device, textFromBytes(bytes));
-          return;
+          bytesWritten += bytes.byteLength;
+          return bytes.byteLength;
         }
         const previous = fileStore.get(normalized ?? '') ?? new Uint8Array();
         const combined = new Uint8Array(previous.byteLength + bytes.byteLength);
         combined.set(previous, 0);
         combined.set(bytes, previous.byteLength);
         setFileBytes(normalized ?? '', combined);
+        bytesWritten += bytes.byteLength;
+        return bytes.byteLength;
       };
       const closeStream = (emitFinish: boolean, done?: () => void, error?: Error): void => {
         if (closed) return;
@@ -1611,7 +1626,10 @@ async function runBrowserJavaScriptProjectRequest(
           if (error) events.emit('error', error);
           done?.();
           if (autoClose && optionFd !== null) fsApi.closeSync(optionFd);
-          if (emitFinish) events.emit('finish');
+          if (emitFinish) {
+            writableFinished = true;
+            events.emit('finish');
+          }
           events.emit('close');
         });
       };
@@ -1622,6 +1640,15 @@ async function runBrowserJavaScriptProjectRequest(
         },
         get destroyed() {
           return destroyed;
+        },
+        get bytesWritten() {
+          return bytesWritten;
+        },
+        get writableEnded() {
+          return writableEnded;
+        },
+        get writableFinished() {
+          return writableFinished;
         },
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
@@ -1661,6 +1688,7 @@ async function runBrowserJavaScriptProjectRequest(
           if (value !== undefined && value !== null) {
             writeBytes(value, typeof writeEncoding === 'string' ? writeEncoding : undefined);
           }
+          writableEnded = true;
           const done = typeof writeEncoding === 'function' ? writeEncoding : callback;
           closeStream(true, done);
           return stream;
