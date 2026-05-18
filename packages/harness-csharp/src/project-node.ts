@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
+import { emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -432,12 +433,12 @@ function runProcess(
     child.stdout.on('data', (chunk) => {
       const data = String(chunk);
       stdout += data;
-      options.onEvent?.({ type: 'output', stream: 'stdout', data });
+      emitRuntimeCommandOutput(options.onEvent, 'stdout', data);
     });
     child.stderr.on('data', (chunk) => {
       const data = String(chunk);
       stderr += data;
-      options.onEvent?.({ type: 'output', stream: 'stderr', data });
+      emitRuntimeCommandOutput(options.onEvent, 'stderr', data);
     });
     child.on('error', (error) => {
       if (settled) return;

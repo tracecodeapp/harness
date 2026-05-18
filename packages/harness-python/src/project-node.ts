@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
+import { emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -363,12 +364,12 @@ export function createNativePythonProjectRunner(
         child.stdout.on('data', (chunk) => {
           const data = String(chunk);
           stdout += data;
-          request.onEvent?.({ type: 'output', stream: 'stdout', data });
+          emitRuntimeCommandOutput(request.onEvent, 'stdout', data);
         });
         child.stderr.on('data', (chunk) => {
           const data = String(chunk);
           stderr += data;
-          request.onEvent?.({ type: 'output', stream: 'stderr', data });
+          emitRuntimeCommandOutput(request.onEvent, 'stderr', data);
         });
         child.on('error', (error) => {
           if (settled) return;

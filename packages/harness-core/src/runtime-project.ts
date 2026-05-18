@@ -190,6 +190,15 @@ export function createRuntimeProjectIoBridge(onEvent: RuntimeCommandEventHandler
   };
 }
 
+export function emitRuntimeCommandOutput(
+  onEvent: RuntimeCommandEventHandler | undefined,
+  stream: RuntimeCommandEventStream,
+  data: string,
+  device?: RuntimeKernelDevicePath
+): void {
+  createRuntimeProjectIoBridge(onEvent).output(stream, data, device);
+}
+
 export class RuntimeProjectOutputTracker {
   private stdoutStreamed = false;
   private stderrStreamed = false;

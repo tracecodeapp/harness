@@ -5555,6 +5555,41 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
     `project command should emit stderr chunks: ${JSON.stringify(events)}`
   );
   workspace.dispose();
+
+  const directEvents: RuntimeCommandEvent[] = [];
+  const direct = await createNativePythonProjectRunner()({
+    code: 'import sys\nprint("direct-out")\nprint("direct-err", file=sys.stderr)\n',
+    source: 'argument',
+    scriptPath: '-c',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      cwd: '/workspace',
+      files: [],
+    },
+    onEvent: (event) => directEvents.push(event),
+  });
+  assertCondition(direct.exitCode === 0, `direct native project command should succeed: ${direct.stderr}`);
+  assertCondition(
+    directEvents.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.data.includes('direct-out')
+    ),
+    `direct native project runner should emit stdout device metadata: ${JSON.stringify(directEvents)}`
+  );
+  assertCondition(
+    directEvents.some((event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.data.includes('direct-err')
+    ),
+    `direct native project runner should emit stderr device metadata: ${JSON.stringify(directEvents)}`
+  );
 }
 
 async function testRuntimeProjectEventQueueRecoversAfterApplyFailure(): Promise<void> {
