@@ -24,6 +24,7 @@ import {
   runtimeKernelAccessTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
+  runtimeKernelReadTarget,
   runtimeKernelWriteTarget,
   runtimeProcCanMutate,
   readRuntimeProcFile as readProcFile,
@@ -136,11 +137,6 @@ function normalizeRuntimeDevicePath(path: unknown): RuntimeKernelDevicePath | nu
   return null;
 }
 
-function normalizeRuntimeDeviceNamespacePath(path: unknown): '/dev' | RuntimeKernelDevicePath | null {
-  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return normalizeRuntimeDevicePathString(raw);
-}
-
 function normalizeRuntimeProcPath(path: unknown): string | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
@@ -181,6 +177,12 @@ function runtimeAccessTarget(path: unknown, mode: number): ReturnType<typeof run
     write: (mode & 2) !== 0,
     execute: (mode & 1) !== 0,
   });
+}
+
+function runtimeReadTarget(path: unknown): ReturnType<typeof runtimeKernelReadTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelReadTarget(raw);
 }
 
 function throwRuntimeWriteTargetError(
@@ -2315,14 +2317,13 @@ async function runBrowserJavaScriptProjectRequest(
       setFileBytes(path, next);
     };
     const realpathForEntry = (path: unknown): string => {
-      const device = normalizeRuntimeDevicePath(path);
-      if (device) return device;
-      const procPath = normalizeRuntimeProcPath(path);
-      if (procPath) {
-        if (!procEntryKind(procPath)) {
-          throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
-        }
-        return procPath;
+      const readTarget = runtimeReadTarget(path);
+      if (readTarget?.kind === 'device-file' || readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
+        return readTarget.path;
+      }
+      if (readTarget?.kind === 'device-directory') return readTarget.path;
+      if (readTarget?.kind === 'error') {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
@@ -2880,16 +2881,17 @@ async function runBrowserJavaScriptProjectRequest(
       },
       createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
         const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
-        const device = optionFd === null ? normalizeRuntimeDevicePath(path) : null;
-        const procPath = optionFd === null ? normalizeRuntimeProcPath(path) : null;
+        const readTarget = optionFd === null ? runtimeReadTarget(path) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
-        const sourceBytes = device
-          ? utf8Bytes(readDevice(device))
-          : procPath
-            ? utf8Bytes(readProcFile(procPath, kernelInfo))
-            : optionFd !== null
-              ? readDescriptorFileBytes(optionFd)
-              : fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
+        let sourceBytes: Uint8Array | undefined;
+        if (readTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(readTarget.path));
+        else if (readTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(readTarget.path, kernelInfo));
+        else if (readTarget?.kind === 'device-directory' || readTarget?.kind === 'proc-directory') {
+          throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
+        } else if (readTarget?.kind === 'error') {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+        } else if (optionFd !== null) sourceBytes = readDescriptorFileBytes(optionFd);
+        else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
@@ -2909,17 +2911,22 @@ async function runBrowserJavaScriptProjectRequest(
           const bytes = BrowserBuffer.from(readDescriptorFileBytes(path));
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         }
-        const device = normalizeRuntimeDevicePath(path);
-        if (device) {
-          const contents = readDevice(device);
+        const readTarget = runtimeReadTarget(path);
+        if (readTarget?.kind === 'device-file') {
+          const contents = readDevice(readTarget.path);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
         }
-        const procPath = normalizeRuntimeProcPath(path);
-        if (procPath) {
-          const contents = readProcFile(procPath, kernelInfo);
+        if (readTarget?.kind === 'proc-file') {
+          const contents = readProcFile(readTarget.path, kernelInfo);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
+        }
+        if (readTarget?.kind === 'device-directory' || readTarget?.kind === 'proc-directory') {
+          throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
+        }
+        if (readTarget?.kind === 'error') {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalized);
@@ -3184,13 +3191,10 @@ async function runBrowserJavaScriptProjectRequest(
         queueMicrotask(() => callback?.(fsApi.existsSync(path)));
       },
       readdirSync: (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => {
-        const devicePath = normalizeRuntimeDeviceNamespacePath(path);
+        const readTarget = runtimeReadTarget(path);
         const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
-        if (devicePath) {
-          if (devicePath !== '/dev') {
-            throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
-          }
-          const names = runtimeDeviceDirEntries(devicePath) ?? [];
+        if (readTarget?.kind === 'device-directory') {
+          const names = runtimeDeviceDirEntries(readTarget.path) ?? [];
           if (!withFileTypes) return names;
           return names.map((name) => {
             const kind = runtimeDeviceEntryKind(`/dev/${name}` as RuntimeKernelDevicePath);
@@ -3204,29 +3208,30 @@ async function runBrowserJavaScriptProjectRequest(
             };
           });
         }
-        const procPath = normalizeRuntimeProcPath(path);
-        if (procPath) {
-          const names = procDirEntries(procPath);
-          if (!names) {
-            const kind = procEntryKind(procPath);
-            throw Object.assign(
-              new Error(`${kind === 'file' ? 'ENOTDIR: not a directory' : 'ENOENT: no such file or directory'}, scandir '${path}'`),
-              { code: kind === 'file' ? 'ENOTDIR' : 'ENOENT' }
-            );
-          }
+        if (readTarget?.kind === 'device-file') {
+          throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
+        }
+        if (readTarget?.kind === 'proc-directory') {
+          const names = procDirEntries(readTarget.path) ?? [];
           if (!withFileTypes) return names;
           return names.map((name) => {
-            const childPath = `${procPath}/${name}`;
+            const childPath = `${readTarget.path}/${name}`;
             const kind = procEntryKind(childPath) ?? 'file';
             return {
               name,
-              path: procPath,
-              parentPath: procPath,
+              path: readTarget.path,
+              parentPath: readTarget.path,
               isFile: () => kind === 'file',
               isDirectory: () => kind === 'directory',
               isSymbolicLink: () => false,
             };
           });
+        }
+        if (readTarget?.kind === 'proc-file') {
+          throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
+        }
+        if (readTarget?.kind === 'error') {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${path}'`), { code: 'ENOENT' });
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
@@ -3352,16 +3357,14 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       statSync: (path: unknown) => {
-        const devicePath = normalizeRuntimeDeviceNamespacePath(path);
-        if (devicePath) return statForDevicePath(devicePath);
-        const procPath = normalizeRuntimeProcPath(path);
-        if (procPath) {
-          const stats = statForProcPath(procPath);
-          if (!stats) {
-            throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
-          }
-          return stats;
+        const readTarget = runtimeReadTarget(path);
+        if (readTarget?.kind === 'device-file' || readTarget?.kind === 'device-directory') return statForDevicePath(readTarget.path);
+        if (readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
+          const procStats = statForProcPath(readTarget.path);
+          if (!procStats) throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
+          return procStats;
         }
+        if (readTarget?.kind === 'error') throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const stats = statForNormalizedPath(normalized);
         if (!stats) {
