@@ -42,6 +42,27 @@ const BRIDGED_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['p
   },
 };
 
+const NO_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
+  workspace: {
+    supported: false,
+    kernelFs: false,
+    virtualDevices: false,
+    virtualProc: false,
+  },
+  filesystem: {
+    finalDiff: false,
+    liveMutationEvents: false,
+    providerLiveInterception: false,
+    binaryFiles: false,
+    directories: false,
+  },
+  stdio: {
+    stdin: false,
+    outputEvents: false,
+    deviceFiles: false,
+  },
+};
+
 const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   language: 'python',
   maturity: 'stable',
@@ -175,7 +196,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: false,
       },
     },
-    project: LIVE_PROJECT_IO_CAPABILITIES,
+    project: NO_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {

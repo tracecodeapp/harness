@@ -620,17 +620,6 @@ const COMMON_STABLE_COVERAGE = [
   'execution.styles.script',
   'execution.styles.interviewMode',
   'execution.timeouts.clientTimeouts',
-  'project.workspace.supported',
-  'project.workspace.kernelFs',
-  'project.workspace.virtualDevices',
-  'project.workspace.virtualProc',
-  'project.filesystem.finalDiff',
-  'project.filesystem.liveMutationEvents',
-  'project.filesystem.binaryFiles',
-  'project.filesystem.directories',
-  'project.stdio.stdin',
-  'project.stdio.outputEvents',
-  'project.stdio.deviceFiles',
   'tracing.supported',
   'tracing.events.line',
   'tracing.events.call',
@@ -654,18 +643,32 @@ const COMMON_STABLE_COVERAGE = [
   'structures.cycleReferences',
 ] as const satisfies readonly string[];
 
+const PROJECT_IO_COVERAGE = [
+  'project.workspace.supported',
+  'project.workspace.kernelFs',
+  'project.workspace.virtualDevices',
+  'project.workspace.virtualProc',
+  'project.filesystem.finalDiff',
+  'project.filesystem.liveMutationEvents',
+  'project.filesystem.binaryFiles',
+  'project.filesystem.directories',
+  'project.stdio.stdin',
+  'project.stdio.outputEvents',
+  'project.stdio.deviceFiles',
+] as const satisfies readonly string[];
+
 const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
   python: [
     ...COMMON_STABLE_COVERAGE,
+    ...PROJECT_IO_COVERAGE,
     'execution.timeouts.runtimeTimeouts',
     'project.filesystem.providerLiveInterception',
     'tracing.events.stdout',
     'diagnostics.mappedErrorLines',
   ],
-  javascript: [...COMMON_STABLE_COVERAGE, 'project.filesystem.providerLiveInterception'],
+  javascript: [...COMMON_STABLE_COVERAGE, ...PROJECT_IO_COVERAGE, 'project.filesystem.providerLiveInterception'],
   typescript: [
     ...COMMON_STABLE_COVERAGE,
-    'project.filesystem.providerLiveInterception',
     'diagnostics.compileErrors',
     'diagnostics.mappedErrorLines',
   ],
@@ -1156,6 +1159,12 @@ async function main(): Promise<void> {
   assertCondition(
     typescriptProfile.capabilities.diagnostics.mappedErrorLines,
     'TypeScript should preserve mapped compile error lines'
+  );
+  assertCondition(
+    !typescriptProfile.capabilities.project.workspace.supported &&
+      !typescriptProfile.capabilities.project.filesystem.liveMutationEvents &&
+      !typescriptProfile.capabilities.project.stdio.outputEvents,
+    'TypeScript should not advertise project I/O until a TypeScript project command runner exists'
   );
   assertCondition(
     pythonProfile.capabilities.project.filesystem.providerLiveInterception &&
