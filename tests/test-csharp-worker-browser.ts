@@ -2756,6 +2756,7 @@ async function main(): Promise<void> {
                 'try { File.WriteAllText("/dev", "bad\\n"); Console.WriteLine("dev-dir-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-dir-write:" + ex.GetType().Name); }',
                 'try { File.SetAttributes("/dev/stdout", FileAttributes.Normal); Console.WriteLine("dev-chmod:ok"); } catch (Exception ex) { Console.WriteLine("dev-chmod:" + ex.GetType().Name); }',
                 'try { File.SetLastWriteTimeUtc("/dev/stdout", DateTime.UnixEpoch); Console.WriteLine("dev-utime:ok"); } catch (Exception ex) { Console.WriteLine("dev-utime:" + ex.GetType().Name); }',
+                'try { Directory.SetLastWriteTimeUtc("/dev", DateTime.UnixEpoch); Console.WriteLine("dev-dir-utime:ok"); } catch (Exception ex) { Console.WriteLine("dev-dir-utime:" + ex.GetType().Name); }',
                 'try { Directory.CreateDirectory("/dev/new"); Console.WriteLine("dev-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("dev-mkdir:" + ex.GetType().Name); }',
                 'try { File.Move("stale.txt", "/dev/log"); Console.WriteLine("dev-rename-dest:ok"); } catch (Exception ex) { Console.WriteLine("dev-rename-dest:" + ex.GetType().Name); }',
                 'try { File.Move("/dev/log", "dev-log-copy"); Console.WriteLine("dev-rename-source:ok"); } catch (Exception ex) { Console.WriteLine("dev-rename-source:" + ex.GetType().Name); }',
@@ -2889,6 +2890,7 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.stdout.includes('dev-chmod:') && !projectRun.stdout.includes('dev-chmod:ok') &&
         projectRun.stdout.includes('dev-utime:') && !projectRun.stdout.includes('dev-utime:ok') &&
+        projectRun.stdout.includes('dev-dir-utime:') && !projectRun.stdout.includes('dev-dir-utime:ok') &&
         projectRun.stdout.includes('dev-mkdir:') && !projectRun.stdout.includes('dev-mkdir:ok') &&
         projectRun.stdout.includes('dev-rename-dest:') && !projectRun.stdout.includes('dev-rename-dest:ok') &&
         projectRun.stdout.includes('dev-rename-source:') && !projectRun.stdout.includes('dev-rename-source:ok'),
