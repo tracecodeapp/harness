@@ -3942,9 +3942,21 @@ async function runBrowserJavaScriptProjectRequest(
         };
         return {
           fd,
-          read: async (buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
+          read: async (
+            bufferOrOptions?: Uint8Array | { buffer?: Uint8Array; offset?: number; length?: number; position?: number | null },
+            offset = 0,
+            length?: number,
+            position?: number | null
+          ) => {
             assertFileHandleOpen();
-            const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
+            const options = typeof bufferOrOptions === 'object' && bufferOrOptions !== null && !ArrayBuffer.isView(bufferOrOptions)
+              ? bufferOrOptions
+              : undefined;
+            const buffer = options?.buffer ?? (ArrayBuffer.isView(bufferOrOptions) ? bufferOrOptions : BrowserBuffer.alloc(16 * 1024));
+            const readOffset = options?.offset ?? offset;
+            const readLength = options?.length ?? length ?? buffer.byteLength - readOffset;
+            const readPosition = options !== undefined ? options.position : position;
+            const bytesRead = fsApi.readSync(fd, buffer, readOffset, readLength, readPosition);
             return { bytesRead, buffer };
           },
           readFile: async (encoding?: string | { encoding?: string | null } | null) => readFileFromHandle(encoding),
@@ -3953,9 +3965,21 @@ async function runBrowserJavaScriptProjectRequest(
             const bytesRead = fsApi.readvSync(fd, buffers, position);
             return { bytesRead, buffers };
           },
-          write: async (value: unknown, offsetOrPosition?: number, lengthOrEncoding?: number | string, position?: number | null) => {
+          write: async (
+            value: unknown,
+            offsetOrPosition?: number | { offset?: number; length?: number; position?: number | null },
+            lengthOrEncoding?: number | string,
+            position?: number | null
+          ) => {
             assertFileHandleOpen();
-            const bytesWritten = fsApi.writeSync(fd, value, offsetOrPosition, lengthOrEncoding, position);
+            const options = typeof offsetOrPosition === 'object' && offsetOrPosition !== null ? offsetOrPosition : undefined;
+            const bytesWritten = fsApi.writeSync(
+              fd,
+              value,
+              options?.offset ?? (typeof offsetOrPosition === 'number' ? offsetOrPosition : undefined),
+              options?.length ?? lengthOrEncoding,
+              options !== undefined ? options.position : position
+            );
             return {
               bytesWritten,
               buffer: value,

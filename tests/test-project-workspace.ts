@@ -2746,6 +2746,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node FileHandle writes should emit live file changes: ${JSON.stringify(fileHandleEvents)}`
   );
 
+  const fileHandleOptionsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fsp = require(\\"node:fs/promises\\"); const fs = require(\\"node:fs\\"); await fsp.writeFile(\\"handle-options.txt\\", \\"abcdef\\"); const handle = await fsp.open(\\"handle-options.txt\\", \\"r+\\"); const firstBuffer = Buffer.alloc(4, 46); const first = await handle.read({ buffer: firstBuffer, offset: 1, length: 2, position: 2 }); const second = await handle.read({ length: 2, position: 4 }); const write = await handle.write(Buffer.from(\\"XYZZ\\"), { offset: 0, length: 2, position: 1 }); const third = await handle.read(); await handle.close(); console.log(first.bytesRead + \\":\\" + (first.buffer === firstBuffer) + \\":\\" + firstBuffer.toString()); console.log(second.bytesRead + \\":\\" + Buffer.isBuffer(second.buffer) + \\":\\" + second.buffer.subarray(0, second.bytesRead).toString()); console.log(write.bytesWritten + \\":\\" + Buffer.isBuffer(write.buffer)); console.log(third.bytesRead + \\":\\" + third.buffer.subarray(0, third.bytesRead).toString()); console.log(fs.readFileSync(\\"handle-options.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(fileHandleOptionsResult.exitCode === 0, `browser node FileHandle options workflow should succeed: ${fileHandleOptionsResult.stderr}`);
+  assertCondition(
+    fileHandleOptionsResult.stdout === '2:true:.cd.\n2:true:ef\n2:true\n6:aXYdef\naXYdef\n',
+    `browser node FileHandle read/write should support options-object overloads: ${fileHandleOptionsResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('handle-options.txt') === 'aXYdef', 'browser node FileHandle options writes should persist through kernel FS');
+
   const fileHandleStreamResult = await workspace.runCommand([
     'node',
     '-e',
