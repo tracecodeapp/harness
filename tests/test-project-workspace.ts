@@ -6542,12 +6542,14 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   assertCondition((await deviceWorkspace.readDir('/dev')).join(',') === 'stderr,stdin,stdout,tty', '/dev should list kernel devices');
   const stdoutStat = await deviceWorkspace.stat('/dev/stdout');
   assertCondition(stdoutStat.isFile && !stdoutStat.isDirectory, '/dev/stdout should stat as a file device');
+  await assertRejectsAsync(() => deviceWorkspace.readFile('/dev/stdout'), 'readFile should reject unreadable /dev/stdout');
   await assertRejectsAsync(() => deviceWorkspace.writeFile('/dev/stdin', 'blocked\n'), '/dev/stdin should be read-only');
   await deviceWorkspace.writeFile('/dev/stdout', 'principal-out\n');
   await deviceWorkspace.writeFile('/dev/tty', 'principal-tty\n');
   await deviceWorkspace.writeFile('copy-device.txt', 'copy-device-out\n');
   await deviceWorkspace.copyFile('copy-device.txt', '/dev/stdout');
   await deviceWorkspace.copyFile('copy-device.txt', '/dev/tty');
+  await assertRejectsAsync(() => deviceWorkspace.copyFile('/dev/stdout', 'stdout-copy.txt'), 'copyFile should reject unreadable /dev/stdout sources');
   await assertRejectsAsync(() => deviceWorkspace.copyFile('copy-device.txt', '/proc/kernel/info'), 'copyFile should reject /proc destinations');
   await deviceWorkspace.copyFile('/proc/kernel/info', 'copied-proc-info.json');
   assertCondition(

@@ -314,6 +314,23 @@ function kernelFileReadTarget(path: string): ReturnType<typeof runtimeKernelFile
   return runtimeKernelFileReadTarget(path);
 }
 
+function throwKernelReadTargetError(
+  path: string,
+  target: Extract<ReturnType<typeof runtimeKernelReadTarget>, { kind: 'error' }>
+): never {
+  if (target.reason === 'permission-denied') throw new Error(`Kernel device is not readable: ${target.path}`);
+  throw new Error(`Kernel virtual path not found: ${path}`);
+}
+
+function throwKernelFileReadTargetError(
+  path: string,
+  target: Extract<ReturnType<typeof runtimeKernelFileReadTarget>, { kind: 'error' }>
+): never {
+  if (target.reason === 'is-directory') throw new Error(`Kernel virtual path is a directory: ${path}`);
+  if (target.reason === 'permission-denied') throw new Error(`Kernel device is not readable: ${target.path}`);
+  throw new Error(`Kernel virtual path not found: ${path}`);
+}
+
 function kernelCopyTarget(source: string, destination: string): ReturnType<typeof runtimeKernelCopyTarget> {
   assertNoNul(source, 'Kernel path');
   assertNoNul(destination, 'Kernel path');
@@ -650,34 +667,37 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   readFile(path: string, options?: FsReadFileOptions): Promise<string> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) return Promise.resolve(this.readDeviceFile(devicePath, options));
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
-    const procPath = normalizeProcPath(path);
-    if (procPath !== null) return Promise.resolve(this.readProcFile(procPath, options));
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind === 'device-file') return Promise.resolve(this.readDeviceFile(readTarget.path, options));
+    if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
+    if (readTarget.kind === 'proc-file') return Promise.resolve(this.readProcFile(readTarget.path, options));
+    if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
+    if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
     return this.base.readFile(this.mapPath(path), options);
   }
 
   readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) {
-      return Promise.resolve(this.readDeviceFile(devicePath)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind === 'device-file') {
+      return Promise.resolve(this.readDeviceFile(readTarget.path)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
-    const procPath = normalizeProcPath(path);
-    if (procPath !== null) {
-      return Promise.resolve(this.readProcFile(procPath)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+    if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
+    if (readTarget.kind === 'proc-file') {
+      return Promise.resolve(this.readProcFile(readTarget.path)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
+    if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
+    if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
     if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
     return this.base.readFileBytes(this.mapPath(path)) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
   }
 
   readFileBuffer(path: string): Promise<Uint8Array> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(devicePath)));
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
-    const procPath = normalizeProcPath(path);
-    if (procPath !== null) return Promise.resolve(new TextEncoder().encode(this.readProcFile(procPath)));
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind === 'device-file') return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(readTarget.path)));
+    if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
+    if (readTarget.kind === 'proc-file') return Promise.resolve(new TextEncoder().encode(this.readProcFile(readTarget.path)));
+    if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
+    if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
@@ -822,13 +842,7 @@ class KernelObservedFileSystem implements IFileSystem {
     const sourceTarget = kernelFileReadTarget(path);
     if (sourceTarget.kind === 'device-file') return this.readDeviceFile(sourceTarget.path);
     if (sourceTarget.kind === 'proc-file') return readRuntimeProcFile(sourceTarget.path, this.kernelInfo());
-    if (sourceTarget.kind === 'error') {
-      throw new Error(
-        sourceTarget.reason === 'is-directory'
-          ? `Kernel virtual path is a directory: ${path}`
-          : `Kernel virtual path not found: ${path}`
-      );
-    }
+    if (sourceTarget.kind === 'error') throwKernelFileReadTargetError(path, sourceTarget);
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
@@ -1002,9 +1016,12 @@ class KernelObservedFileSystem implements IFileSystem {
   private readDeviceFile(device: '/dev' | RuntimeKernelDevicePath, options?: FsReadFileOptions): string {
     if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
     const inputDevice = runtimeDeviceInputSource(device);
-    if (inputDevice) return this.readDevice(inputDevice);
-    if (options === 'base64' || (typeof options === 'object' && options?.encoding === 'base64')) return '';
-    return '';
+    if (!inputDevice) throw new Error(`Kernel device is not readable: ${device}`);
+    const content = this.readDevice(inputDevice);
+    if (options === 'base64' || (typeof options === 'object' && options?.encoding === 'base64')) {
+      return base64FromBytes(new TextEncoder().encode(content));
+    }
+    return content;
   }
 
   private readProcFile(path: string, options?: FsReadFileOptions): string {
@@ -2465,14 +2482,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private readDeviceFile(path: string, encoding?: RuntimeFileEncoding): string | null {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath === null) {
-      if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
-      return null;
-    }
-    if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
-    if (encoding === 'base64') return base64FromBytes(new TextEncoder().encode(this.readDevice(devicePath)));
-    return this.readDevice(devicePath);
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind === 'workspace' || readTarget.kind === 'proc-file' || readTarget.kind === 'proc-directory') return null;
+    if (readTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${path}`);
+    if (readTarget.kind === 'error') throwKernelReadTargetError(path, readTarget);
+    if (encoding === 'base64') return base64FromBytes(new TextEncoder().encode(this.readDevice(readTarget.path)));
+    return this.readDevice(readTarget.path);
   }
 
   private readDevice(device: RuntimeKernelDevicePath): string {
@@ -2593,7 +2608,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       return this.readDevice(readTarget.path);
     }
     if (readTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${path}`);
-    if (readTarget.kind === 'error') throw new Error(`Kernel device path not found: ${path}`);
+    if (readTarget.kind === 'error') throwKernelReadTargetError(path, readTarget);
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
     if (normalizedEncoding === 'base64') {
