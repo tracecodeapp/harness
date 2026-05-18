@@ -19,6 +19,7 @@ import java.nio.charset.Charset;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.CopyOption;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -98,15 +100,55 @@ public final class ProjectEvents {
   public static Stream<Path> list(Path path) throws IOException {
     String normalized = normalizeVirtualPath(path);
     if ("/dev".equals(normalized)) {
-      ArrayList<String> devices = new ArrayList<>(KERNEL_DEVICES.get().keySet());
-      Collections.sort(devices);
-      return devices.stream().map(Path::of);
+      return kernelDevicePaths().stream();
     }
     if (normalized != null && normalized.startsWith("/dev/")) {
       if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
       throw new NoSuchFileException(normalized);
     }
     return Files.list(path);
+  }
+
+  public static DirectoryStream<Path> newDirectoryStream(Path dir) throws IOException {
+    String normalized = normalizeVirtualPath(dir);
+    if ("/dev".equals(normalized)) return new KernelDirectoryStream(kernelDevicePaths());
+    if (normalized != null && normalized.startsWith("/dev/")) {
+      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
+      throw new NoSuchFileException(normalized);
+    }
+    return Files.newDirectoryStream(dir);
+  }
+
+  public static DirectoryStream<Path> newDirectoryStream(Path dir, String glob) throws IOException {
+    String normalized = normalizeVirtualPath(dir);
+    if ("/dev".equals(normalized)) {
+      DirectoryStream.Filter<Path> filter = (entry) -> dir.getFileSystem()
+          .getPathMatcher("glob:" + glob)
+          .matches(entry.getFileName());
+      return newDirectoryStream(dir, filter);
+    }
+    if (normalized != null && normalized.startsWith("/dev/")) {
+      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
+      throw new NoSuchFileException(normalized);
+    }
+    return Files.newDirectoryStream(dir, glob);
+  }
+
+  public static DirectoryStream<Path> newDirectoryStream(Path dir, DirectoryStream.Filter<? super Path> filter)
+      throws IOException {
+    String normalized = normalizeVirtualPath(dir);
+    if ("/dev".equals(normalized)) {
+      ArrayList<Path> entries = new ArrayList<>();
+      for (Path entry : kernelDevicePaths()) {
+        if (filter == null || filter.accept(entry)) entries.add(entry);
+      }
+      return new KernelDirectoryStream(entries);
+    }
+    if (normalized != null && normalized.startsWith("/dev/")) {
+      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
+      throw new NoSuchFileException(normalized);
+    }
+    return Files.newDirectoryStream(dir, filter);
   }
 
   public static boolean exists(Path path, LinkOption... options) {
@@ -835,6 +877,14 @@ public final class ProjectEvents {
     return KERNEL_DEVICES.get().get(normalized);
   }
 
+  private static ArrayList<Path> kernelDevicePaths() {
+    ArrayList<String> devices = new ArrayList<>(KERNEL_DEVICES.get().keySet());
+    Collections.sort(devices);
+    ArrayList<Path> paths = new ArrayList<>();
+    for (String device : devices) paths.add(Path.of(device));
+    return paths;
+  }
+
   private static String normalizeVirtualPath(Path path) {
     if (path == null) return null;
     String normalized = path.toString().replace('\\', '/');
@@ -873,6 +923,26 @@ public final class ProjectEvents {
       this.writable = writable;
       this.inputDevice = inputDevice == null ? "" : inputDevice;
       this.outputDevice = outputDevice == null ? "" : outputDevice;
+    }
+  }
+
+  private static final class KernelDirectoryStream implements DirectoryStream<Path> {
+    private final Iterable<Path> entries;
+    private boolean open = true;
+
+    KernelDirectoryStream(Iterable<Path> entries) {
+      this.entries = entries;
+    }
+
+    @Override
+    public Iterator<Path> iterator() {
+      if (!open) throw new IllegalStateException("Directory stream is closed");
+      return entries.iterator();
+    }
+
+    @Override
+    public void close() {
+      open = false;
     }
   }
 
