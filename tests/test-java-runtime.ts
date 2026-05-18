@@ -216,6 +216,8 @@ public class ProjectWorkspaceDirectorySmoke {
     collectChangedProjectFilesJson.setAccessible(true);
     System.out.println(Files.isDirectory(root.resolve("empty/child")));
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, manifest));
+    String kernelManifest = "/proc/kernel/info\\t" + java.util.Base64.getEncoder().encodeToString("kernel".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    System.out.println(collectChangedProjectFilesJson.invoke(null, root, kernelManifest));
   }
 }
 `,
@@ -237,11 +239,15 @@ public class ProjectWorkspaceDirectorySmoke {
       ],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [isDirectory, changedFilesJson] = output.trim().split('\n');
+    const [isDirectory, changedFilesJson, kernelChangedFilesJson] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
     assertCondition(
       Array.isArray(JSON.parse(changedFilesJson ?? 'null')) && JSON.parse(changedFilesJson ?? 'null').length === 0,
       'Java browser helper should not report directory manifest entries as file changes'
+    );
+    assertCondition(
+      Array.isArray(JSON.parse(kernelChangedFilesJson ?? 'null')) && JSON.parse(kernelChangedFilesJson ?? 'null').length === 0,
+      'Java browser helper should not report kernel virtual manifest entries as workspace deletions'
     );
     console.log('PASS: Java browser helper materializes workspace directories');
   } finally {
@@ -735,6 +741,8 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               compilerProfile: string
             ) => {
               projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName, resourceManifest, compileClasspath, workspaceManifest, workspaceRoot, workspaceCwd });
+              const hasKernelProc = workspaceManifest.includes('/proc/kernel/info\t');
+              const stdout = `5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-write:IOException\n' : ''}`;
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                 null,
                 'stdout',
@@ -750,6 +758,18 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 'stdout',
                 'java_stdin=from-stdin\n'
               );
+              if (hasKernelProc) {
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'proc-info\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'proc-write:IOException\n'
+                );
+              }
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
                 'generated.txt',
@@ -792,7 +812,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify(JSON.stringify({
-                  stdout: '5\njava_args=alpha,beta\njava_stdin=from-stdin\n',
+                  stdout,
                   stderr: '',
                   exitCode: 0,
                 })),
@@ -1276,17 +1296,23 @@ async function main(): Promise<void> {
               '    System.out.println(Helper.add(2, 3));',
               '    System.out.println("java_args=" + String.join(",", args));',
               '    System.out.println("java_stdin=" + new BufferedReader(new InputStreamReader(System.in)).readLine());',
+              '    System.out.println(Files.readString(Path.of("/proc/kernel/info")).contains("tracekernel") ? "proc-info" : "proc-missing");',
+              '    try { Files.writeString(Path.of("/proc/kernel/info"), "{}\\\\n"); System.out.println("proc-write:ok"); } catch (IOException ex) { System.out.println("proc-write:" + ex.getClass().getSimpleName()); }',
               '  }',
               '}',
               '',
             ].join('\n'),
           },
         ],
+        kernelFiles: [
+          { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
+          { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
+        ],
       },
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\n',
+      projectExecute.stdout === '5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-write:IOException\n',
       'Java execute-project-java should return captured stdout'
     );
     assertCondition(
@@ -1307,6 +1333,18 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stdout' &&
             event.data === 'java_stdin=from-stdin\n'
+      ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'proc-info\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'proc-write:IOException\n'
       ) === true,
       `Java execute-project-java should emit live stdout project events: ${JSON.stringify(projectExecute.events)}`
     );
@@ -1481,8 +1519,10 @@ async function main(): Promise<void> {
       'Java execute-project-java should route project source file mutations through the live event bridge'
     );
     assertCondition(
-      defaultWorkspaceManifest.includes('Helper.java') &&
+        defaultWorkspaceManifest.includes('Helper.java') &&
         defaultWorkspaceManifest.includes('Main.java') &&
+        defaultWorkspaceManifest.includes('/proc/kernel/info\t') &&
+        defaultWorkspaceManifest.includes('/proc/self/mountinfo\t') &&
         defaultWorkspaceManifest.includes('\tdir\tempty/child') &&
         harness.projectCompileCalls.at(-1)?.workspaceRoot?.endsWith('/workspace') &&
         harness.projectCompileCalls.at(-1)?.workspaceCwd?.endsWith('/workspace'),

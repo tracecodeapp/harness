@@ -38,6 +38,7 @@ public final class ProjectEvents {
   }
 
   public static Path writeString(Path path, CharSequence contents, OpenOption... options) throws IOException {
+    assertWritableProjectPath(path);
     Path result = Files.writeString(path, contents, options);
     emitFileSnapshot(path);
     return result;
@@ -45,12 +46,14 @@ public final class ProjectEvents {
 
   public static Path writeString(Path path, CharSequence contents, java.nio.charset.Charset charset, OpenOption... options)
       throws IOException {
+    assertWritableProjectPath(path);
     Path result = Files.writeString(path, contents, charset, options);
     emitFileSnapshot(path);
     return result;
   }
 
   public static Path write(Path path, byte[] bytes, OpenOption... options) throws IOException {
+    assertWritableProjectPath(path);
     Path result = Files.write(path, bytes, options);
     emitFileSnapshot(path);
     return result;
@@ -58,6 +61,7 @@ public final class ProjectEvents {
 
   public static Path write(Path path, Iterable<? extends CharSequence> lines, OpenOption... options)
       throws IOException {
+    assertWritableProjectPath(path);
     Path result = Files.write(path, lines, options);
     emitFileSnapshot(path);
     return result;
@@ -69,29 +73,35 @@ public final class ProjectEvents {
       java.nio.charset.Charset charset,
       OpenOption... options
   ) throws IOException {
+    assertWritableProjectPath(path);
     Path result = Files.write(path, lines, charset, options);
     emitFileSnapshot(path);
     return result;
   }
 
   public static void delete(Path path) throws IOException {
+    assertWritableProjectPath(path);
     Files.delete(path);
     emitFileDelete(path);
   }
 
   public static boolean deleteIfExists(Path path) throws IOException {
+    assertWritableProjectPath(path);
     boolean deleted = Files.deleteIfExists(path);
     if (deleted) emitFileDelete(path);
     return deleted;
   }
 
   public static Path copy(Path source, Path target, CopyOption... options) throws IOException {
+    assertWritableProjectPath(target);
     Path result = Files.copy(source, target, options);
     emitFileSnapshot(target);
     return result;
   }
 
   public static Path move(Path source, Path target, CopyOption... options) throws IOException {
+    assertWritableProjectPath(source);
+    assertWritableProjectPath(target);
     Path result = Files.move(source, target, options);
     emitFileDelete(source);
     emitFileSnapshot(target);
@@ -99,14 +109,17 @@ public final class ProjectEvents {
   }
 
   public static OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+    assertWritableProjectPath(path);
     return new ProjectOutputStream(Files.newOutputStream(path, options), path);
   }
 
   public static BufferedWriter newBufferedWriter(Path path, OpenOption... options) throws IOException {
+    assertWritableProjectPath(path);
     return new ProjectBufferedWriter(Files.newBufferedWriter(path, options), path);
   }
 
   public static BufferedWriter newBufferedWriter(Path path, Charset charset, OpenOption... options) throws IOException {
+    assertWritableProjectPath(path);
     return new ProjectBufferedWriter(Files.newBufferedWriter(path, charset, options), path);
   }
 
@@ -114,42 +127,42 @@ public final class ProjectEvents {
     private final Path path;
 
     public ProjectFileWriter(String fileName) throws IOException {
-      super(fileName);
+      super(writableFileName(fileName));
       this.path = Path.of(fileName);
     }
 
     public ProjectFileWriter(String fileName, boolean append) throws IOException {
-      super(fileName, append);
+      super(writableFileName(fileName), append);
       this.path = Path.of(fileName);
     }
 
     public ProjectFileWriter(String fileName, Charset charset) throws IOException {
-      super(fileName, charset);
+      super(writableFileName(fileName), charset);
       this.path = Path.of(fileName);
     }
 
     public ProjectFileWriter(String fileName, Charset charset, boolean append) throws IOException {
-      super(fileName, charset, append);
+      super(writableFileName(fileName), charset, append);
       this.path = Path.of(fileName);
     }
 
     public ProjectFileWriter(File file) throws IOException {
-      super(file);
+      super(writableFile(file));
       this.path = file.toPath();
     }
 
     public ProjectFileWriter(File file, boolean append) throws IOException {
-      super(file, append);
+      super(writableFile(file), append);
       this.path = file.toPath();
     }
 
     public ProjectFileWriter(File file, Charset charset) throws IOException {
-      super(file, charset);
+      super(writableFile(file), charset);
       this.path = file.toPath();
     }
 
     public ProjectFileWriter(File file, Charset charset, boolean append) throws IOException {
-      super(file, charset, append);
+      super(writableFile(file), charset, append);
       this.path = file.toPath();
     }
 
@@ -170,22 +183,22 @@ public final class ProjectEvents {
     private final Path path;
 
     public ProjectFileOutputStream(String name) throws IOException {
-      super(name);
+      super(writableFileName(name));
       this.path = Path.of(name);
     }
 
     public ProjectFileOutputStream(String name, boolean append) throws IOException {
-      super(name, append);
+      super(writableFileName(name), append);
       this.path = Path.of(name);
     }
 
     public ProjectFileOutputStream(File file) throws IOException {
-      super(file);
+      super(writableFile(file));
       this.path = file.toPath();
     }
 
     public ProjectFileOutputStream(File file, boolean append) throws IOException {
-      super(file, append);
+      super(writableFile(file), append);
       this.path = file.toPath();
     }
 
@@ -269,32 +282,32 @@ public final class ProjectEvents {
     private final Path path;
 
     public ProjectPrintWriter(String fileName) throws IOException {
-      super(fileName);
+      super(writableFileName(fileName));
       this.path = Path.of(fileName);
     }
 
     public ProjectPrintWriter(String fileName, String charsetName) throws IOException {
-      super(fileName, charsetName);
+      super(writableFileName(fileName), charsetName);
       this.path = Path.of(fileName);
     }
 
     public ProjectPrintWriter(String fileName, Charset charset) throws IOException {
-      super(fileName, charset);
+      super(writableFileName(fileName), charset);
       this.path = Path.of(fileName);
     }
 
     public ProjectPrintWriter(File file) throws IOException {
-      super(file);
+      super(writableFile(file));
       this.path = file.toPath();
     }
 
     public ProjectPrintWriter(File file, String charsetName) throws IOException {
-      super(file, charsetName);
+      super(writableFile(file), charsetName);
       this.path = file.toPath();
     }
 
     public ProjectPrintWriter(File file, Charset charset) throws IOException {
-      super(file, charset);
+      super(writableFile(file), charset);
       this.path = file.toPath();
     }
 
@@ -348,6 +361,28 @@ public final class ProjectEvents {
   private static native void emitOutputNative(String stream, String data);
   private static native void emitFileSnapshotNative(String path, String contents);
   private static native void emitFileDeleteNative(String path);
+
+  private static String writableFileName(String fileName) throws IOException {
+    assertWritableProjectPath(Path.of(fileName));
+    return fileName;
+  }
+
+  private static File writableFile(File file) throws IOException {
+    assertWritableProjectPath(file == null ? null : file.toPath());
+    return file;
+  }
+
+  private static void assertWritableProjectPath(Path path) throws IOException {
+    if (isKernelReadOnlyPath(path)) {
+      throw new IOException("Read-only kernel virtual path: " + path);
+    }
+  }
+
+  private static boolean isKernelReadOnlyPath(Path path) {
+    if (path == null) return false;
+    String normalized = path.toString().replace('\\', '/');
+    return normalized.equals("/proc") || normalized.startsWith("/proc/");
+  }
 
   private static void emitFileSnapshot(Path path) {
     if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return;

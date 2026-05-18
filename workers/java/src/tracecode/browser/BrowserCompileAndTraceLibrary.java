@@ -770,7 +770,7 @@ public final class BrowserCompileAndTraceLibrary {
     resetDirectory(resourceRoot);
     Files.createDirectories(resourceRoot);
     for (ProjectManifestEntry entry : parseProjectManifest(resourceManifest)) {
-      Path target = safeProjectSourcePath(resourceRoot, entry.path);
+      Path target = safeProjectResourcePath(resourceRoot, entry.path);
       if (entry.directory) {
         Files.createDirectories(target);
       } else {
@@ -845,6 +845,17 @@ public final class BrowserCompileAndTraceLibrary {
       throw new IOException("Java project source path escapes source root: " + relativePath);
     }
     return target;
+  }
+
+  private static Path safeProjectResourcePath(Path resourceRoot, String path) throws IOException {
+    if (isKernelVirtualManifestPath(path)) {
+      return Paths.get(path).toAbsolutePath().normalize();
+    }
+    return safeProjectSourcePath(resourceRoot, path);
+  }
+
+  private static boolean isKernelVirtualManifestPath(String path) {
+    return path != null && (path.equals("/proc/kernel/info") || path.equals("/proc/self/mountinfo"));
   }
 
   private static boolean compileWithBundledJavac(String[] args, PrintWriter compilerStderr) throws Exception {
@@ -1087,6 +1098,7 @@ public final class BrowserCompileAndTraceLibrary {
     java.util.Map<String, byte[]> originalByPath = new java.util.HashMap<>();
     for (ProjectManifestEntry entry : originalFiles) {
       if (entry.directory) continue;
+      if (isKernelVirtualManifestPath(entry.path)) continue;
       originalByPath.put(entry.path, entry.contents);
     }
 

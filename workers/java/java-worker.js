@@ -3101,6 +3101,23 @@ function projectJavaWorkspaceFiles(project) {
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
+function normalizeKernelVirtualFilePath(path) {
+  const normalized = String(path ?? '').replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+  if (normalized === '/proc/kernel/info' || normalized === '/proc/self/mountinfo') return normalized;
+  throw new Error(`Unsupported Java kernel virtual file path: ${path}`);
+}
+
+function projectJavaKernelFiles(project) {
+  const files = Array.isArray(project?.kernelFiles) ? project.kernelFiles : [];
+  return files
+    .map((file) => ({
+      path: normalizeKernelVirtualFilePath(file?.path),
+      contents: String(file?.contents ?? ''),
+      encoding: file?.encoding ?? 'utf8',
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+}
+
 function projectJavaWorkspaceDirectories(project) {
   const directories = Array.isArray(project?.directories) ? project.directories : [];
   return Array.from(new Set(
@@ -3135,6 +3152,7 @@ function projectWorkspaceManifest(project) {
   return [
     ...projectJavaWorkspaceDirectories(project).map(projectDirectoryManifestEntry),
     ...projectJavaWorkspaceFiles(project).map(projectFileManifestEntry),
+    ...projectJavaKernelFiles(project).map(projectFileManifestEntry),
   ].join('\n');
 }
 
