@@ -2393,6 +2393,9 @@ async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`${code}: ${reason}, access '${path}'`), { code });
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (workspaceFileAncestor(normalized) !== null) {
+        throw Object.assign(new Error(`ENOTDIR: not a directory, access '${path}'`), { code: 'ENOTDIR' });
+      }
       const stats = statForNormalizedPath(normalized);
       if (!stats) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
@@ -2423,6 +2426,9 @@ async function runBrowserJavaScriptProjectRequest(
         throwRuntimeMetadataTargetError(metadataTarget, message);
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (workspaceFileAncestor(normalized) !== null) {
+        throw Object.assign(new Error(`ENOTDIR: not a directory, metadata '${path}'`), { code: 'ENOTDIR' });
+      }
       if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
       }
@@ -2562,6 +2568,9 @@ async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
       }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (workspaceFileAncestor(normalized) !== null) {
+        throw Object.assign(new Error(`ENOTDIR: not a directory, realpath '${path}'`), { code: 'ENOTDIR' });
+      }
       if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
       }

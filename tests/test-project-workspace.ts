@@ -3222,6 +3222,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node read path conflicts should match desktop semantics: ${readPathConflictResult.stdout}`
   );
 
+  const metadataPathConflictResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const code = (fn) => { try { fn(); return \\"ok\\"; } catch (error) { return error.code; } }; fs.writeFileSync(\\"metadata-parent-file.txt\\", \\"file\\\\n\\"); console.log(code(() => fs.accessSync(\\"metadata-parent-file.txt/value.txt\\"))); console.log(code(() => fs.realpathSync(\\"metadata-parent-file.txt/value.txt\\"))); console.log(code(() => fs.chmodSync(\\"metadata-parent-file.txt/value.txt\\", 0o600))); console.log(code(() => fs.chownSync(\\"metadata-parent-file.txt/value.txt\\", 0, 0))); console.log(code(() => fs.utimesSync(\\"metadata-parent-file.txt/value.txt\\", new Date(), new Date()))); console.log(code(() => fs.chmodSync(\\"missing-metadata/value.txt\\", 0o600))); console.log(fs.statSync(\\"metadata-parent-file.txt\\").isFile());"',
+  ].join(' '));
+  assertCondition(metadataPathConflictResult.exitCode === 0, `browser node metadata path conflict workflow should succeed: ${metadataPathConflictResult.stderr}`);
+  assertCondition(
+    metadataPathConflictResult.stdout === 'ENOTDIR\nENOTDIR\nENOTDIR\nENOTDIR\nENOTDIR\nENOENT\ntrue\n',
+    `browser node metadata path conflicts should match desktop semantics: ${metadataPathConflictResult.stdout}`
+  );
+
   const rmConflictResult = await workspace.runCommand([
     'node',
     '-e',
