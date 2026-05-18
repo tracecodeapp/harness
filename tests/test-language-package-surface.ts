@@ -311,8 +311,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         worker.includes('sourceDevice') &&
-          worker.includes('_target.write(bytes(_data).decode("utf-8", "replace"), self._device if self._device != _output_device else None)'),
-        '@tracecode/harness-python worker should ship routed source device output events'
+          worker.includes('def write(self, _value, _source_device=None, _output_device=None):') &&
+          worker.includes('_device = str(_output_device or ("/dev/stderr" if self._stream == "stderr" else "/dev/stdout"))') &&
+          worker.includes('_target.write(bytes(_data).decode("utf-8", "replace"), self._device, _output_device)') &&
+          worker.includes('_target.write(_bytes.decode("utf-8", "replace"), _device, _output_device)'),
+        '@tracecode/harness-python worker should ship routed output/source device events'
       );
       assertCondition(
         worker.includes("patch('open'") &&

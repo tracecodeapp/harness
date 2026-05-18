@@ -121,6 +121,8 @@ async function main(): Promise<void> {
         { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
         { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
         { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/capture', readable: false, writable: true, outputDevice: '/dev/capture' },
+        { path: '/dev/tee', readable: false, writable: true, outputDevice: '/dev/capture' },
         { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
       ];
 
@@ -417,6 +419,20 @@ async function main(): Promise<void> {
           '    os.write(pts_fd, b"pts-fd\\\\n")',
           'finally:',
           '    os.close(pts_fd)',
+          'with open("/dev/capture", "w", encoding="utf-8") as capture:',
+          '    capture.write("capture-file\\\\n")',
+          'capture_fd = os.open("/dev/capture", os.O_WRONLY)',
+          'try:',
+          '    os.write(capture_fd, b"capture-fd\\\\n")',
+          'finally:',
+          '    os.close(capture_fd)',
+          'with open("/dev/tee", "w", encoding="utf-8") as tee:',
+          '    tee.write("tee-file\\\\n")',
+          'tee_fd = os.open("/dev/tee", os.O_WRONLY)',
+          'try:',
+          '    os.write(tee_fd, b"tee-fd\\\\n")',
+          'finally:',
+          '    os.close(tee_fd)',
         ].join('\\n'),
         args: [],
         cwd: '/workspace',
@@ -429,6 +445,8 @@ async function main(): Promise<void> {
             { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
             { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
             { path: '/dev/pts/0', readable: false, writable: true, outputDevice: '/dev/stdout' },
+            { path: '/dev/capture', readable: false, writable: true, outputDevice: '/dev/capture' },
+            { path: '/dev/tee', readable: false, writable: true, outputDevice: '/dev/capture' },
           ],
         },
       });
@@ -1140,7 +1158,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.manifestCustomDeviceRun.exitCode === 0, `Python project manifest custom device run should succeed: ${results.manifestCustomDeviceRun.stderr}`);
     assertCondition(
-      results.manifestCustomDeviceRun.stdout === 'stdin-visible=\ncustom-file=manifest-stdin\ncustom-fd=manifest-stdin\nnested-dev-dir=True:0\npts-file\npts-fd\n',
+      results.manifestCustomDeviceRun.stdout === 'stdin-visible=\ncustom-file=manifest-stdin\ncustom-fd=manifest-stdin\nnested-dev-dir=True:0\npts-file\npts-fd\ncapture-file\ncapture-fd\ntee-file\ntee-fd\n',
       `Python project custom input device should read from stdin: ${JSON.stringify(results.manifestCustomDeviceRun.stdout)}`
     );
     assertCondition(
@@ -1170,6 +1188,30 @@ async function main(): Promise<void> {
         .map((event) => event.data)
         .join('') === 'pts-file\npts-fd\n',
       `Python project nested custom output device should preserve sourceDevice: ${JSON.stringify(results.manifestCustomDeviceRun.events)}`
+    );
+    assertCondition(
+      results.manifestCustomDeviceRun.events
+        ?.filter((event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/capture' &&
+          event.sourceDevice === undefined
+        )
+        .map((event) => event.data)
+        .join('') === 'capture-file\ncapture-fd\n',
+      `Python project direct custom stdout-like device should preserve output device without redundant sourceDevice: ${JSON.stringify(results.manifestCustomDeviceRun.events)}`
+    );
+    assertCondition(
+      results.manifestCustomDeviceRun.events
+        ?.filter((event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/capture' &&
+          event.sourceDevice === '/dev/tee'
+        )
+        .map((event) => event.data)
+        .join('') === 'tee-file\ntee-fd\n',
+      `Python project custom stdout-like alias should preserve routed sourceDevice: ${JSON.stringify(results.manifestCustomDeviceRun.events)}`
     );
     assertCondition(results.fdReadlineRun.exitCode === 0, `Python project fd readline run should succeed: ${results.fdReadlineRun.stderr}`);
     assertCondition(
@@ -1253,7 +1295,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(
-      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-fchmod:blocked\nproc-fchown:blocked\ntracekernel test\nproc-fdopen-write:blocked\nproc-os-write:blocked\nTrue\nFalse\ncustom-in,log,stderr,stdin,stdout,tty\nTrue\nTrue\nTrue\nFalse\n0\ncustom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
+      results.canonicalRootRun.stdout === "/home/ada/weather-api/src\n/home/ada\nhelper-ok\ntracekernel\n['info', 'version']\ntracekernel test\ntracekernel test\nproc-fchmod:blocked\nproc-fchown:blocked\ntracekernel test\nproc-fdopen-write:blocked\nproc-os-write:blocked\nTrue\nFalse\ncapture,custom-in,log,stderr,stdin,stdout,tee,tty\nTrue\nTrue\nTrue\nFalse\n0\ncapture:True:False,custom-in:True:False,log:True:False,stderr:True:False,stdin:True:False,stdout:True:False,tee:True:False,tty:True:False\nkernel:False:True,self:False:True\ndev-remove:blocked\ndev-mkdir:blocked\ndev-rename:blocked\n",
       `Python project canonical root run should report tracekernel paths: ${JSON.stringify(results.canonicalRootRun.stdout)}`
     );
     assertCondition(

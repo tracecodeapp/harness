@@ -282,6 +282,13 @@ function isRuntimeDeviceDirectory(pathname) {
   return normalizePath(pathname) === '/dev';
 }
 
+function normalizeRuntimeKernelDeviceReference(pathname) {
+  const normalized = normalizePath(pathname || '');
+  if (normalized === '/dev' || !normalized.startsWith('/dev/')) return '';
+  const deviceName = normalized.slice('/dev/'.length);
+  return deviceName.length > 0 && !deviceName.includes('/') ? normalized : '';
+}
+
 function wasiRights(value) {
   try {
     return BigInt(value ?? 0);
@@ -4375,14 +4382,16 @@ function projectKernelDevices(project) {
   const entries = Array.isArray(project?.kernelDevices) ? project.kernelDevices : [];
   const devices = new Map();
   for (const entry of entries) {
-    const path = normalizePath(entry?.path || '');
-    if (!path.startsWith('/dev/')) continue;
+    const path = normalizeRuntimeKernelDeviceReference(entry?.path || '');
+    if (!path) continue;
+    const inputDevice = normalizeRuntimeKernelDeviceReference(entry?.inputDevice || '') || path;
+    const outputDevice = normalizeRuntimeKernelDeviceReference(entry?.outputDevice || '') || path;
     devices.set(path, {
       path,
       readable: entry?.readable === true,
       writable: entry?.writable === true,
-      inputDevice: typeof entry?.inputDevice === 'string' ? normalizePath(entry.inputDevice) : '',
-      outputDevice: typeof entry?.outputDevice === 'string' ? normalizePath(entry.outputDevice) : '',
+      inputDevice: entry?.readable === true ? inputDevice : '',
+      outputDevice: entry?.writable === true ? outputDevice : '',
     });
   }
   return devices;

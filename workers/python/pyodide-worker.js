@@ -1325,16 +1325,17 @@ class _TraceProjectStream(io.StringIO):
     def buffer(self):
         return self._binary_buffer
 
-    def write(self, _value, _source_device=None):
+    def write(self, _value, _source_device=None, _output_device=None):
         _text = str(_value)
+        _device = str(_output_device or ("/dev/stderr" if self._stream == "stderr" else "/dev/stdout"))
         if _text:
             _event = {
                 "type": "output",
                 "stream": self._stream,
-                "device": "/dev/stderr" if self._stream == "stderr" else "/dev/stdout",
+                "device": _device,
                 "data": _text,
             }
-            if _source_device:
+            if _source_device and _source_device != _device:
                 _event["sourceDevice"] = _source_device
             _emit_project_event(_event)
         return super().write(_text)
@@ -1394,7 +1395,7 @@ class _TraceDeviceFile:
         _output_device = str(_kernel_devices.get(self._device, {}).get("outputDevice") or self._device)
         _target = _stderr if _output_device == "/dev/stderr" else _stdout
         _data = _value if isinstance(_value, (bytes, bytearray)) else str(_value).encode("utf-8")
-        _target.write(bytes(_data).decode("utf-8", "replace"), self._device if self._device != _output_device else None)
+        _target.write(bytes(_data).decode("utf-8", "replace"), self._device, _output_device)
         return len(_data) if self._binary else len(str(_value))
 
     def writelines(self, _lines):
@@ -2201,7 +2202,7 @@ def _install_virtual_workspace_paths():
                 raise OSError("Kernel device is not writable: " + _device)
             _bytes = bytes(_data)
             _target = _stderr if _output_device == "/dev/stderr" else _stdout
-            _target.write(_bytes.decode("utf-8", "replace"), _device if _device != _output_device else None)
+            _target.write(_bytes.decode("utf-8", "replace"), _device, _output_device)
             return len(_bytes)
         if _fd in _proc_file_descriptors:
             raise OSError("Kernel proc path is read-only")

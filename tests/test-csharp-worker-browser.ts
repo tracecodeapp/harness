@@ -3442,6 +3442,39 @@ async function main(): Promise<void> {
       `C# project worker should read custom input devices without exposing /dev/stdin, received ${JSON.stringify(manifestCustomInputOnlyRun)}`
     );
 
+    const stdinDeviceConsumptionRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: 'one\ntwo\n',
+        project: {
+          kernelDevices: TRACE_KERNEL_DEVICES,
+          files: [
+            {
+              path: 'src/Program.cs',
+              contents: [
+                'Console.WriteLine("tty=" + File.ReadAllText("/dev/tty").Replace("\\n", "<lf>"));',
+                'Console.WriteLine("custom=" + File.ReadAllText("/dev/custom-in").Replace("\\n", "<lf>"));',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      stdinDeviceConsumptionRun.exitCode === 0,
+      `C# project worker should run shared stdin device consumption case: ${stdinDeviceConsumptionRun.stderr}`
+    );
+    assertCondition(
+      stdinDeviceConsumptionRun.stdout === 'tty=one<lf>two<lf>\ncustom=\n',
+      `C# project worker should expose /dev/tty as a stdin-consuming input device, received ${JSON.stringify(stdinDeviceConsumptionRun)}`
+    );
+
     const [deviceLeakFirstRun, deviceLeakSecondRun] = await runProjectWorkerSequenceCase(
       page,
       [

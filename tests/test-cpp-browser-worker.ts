@@ -78,6 +78,7 @@ async function main(): Promise<void> {
         { path: '/dev/capture', readable: false, writable: true, outputDevice: '/dev/capture' },
         { path: '/dev/tee', readable: false, writable: true, outputDevice: '/dev/capture' },
         { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/bad-output', readable: false, writable: true, outputDevice: '/tmp/not-a-device' },
       ];
 
       const compileInFrame = (payload) =>
@@ -340,6 +341,8 @@ async function main(): Promise<void> {
             '  if (capture_device) { std::fputs("capture-device\\\\n", capture_device); std::fclose(capture_device); }',
             '  FILE* tee_device = std::fopen("/dev/tee", "w");',
             '  if (tee_device) { std::fputs("tee-device\\\\n", tee_device); std::fclose(tee_device); }',
+            '  FILE* bad_output_device = std::fopen("/dev/bad-output", "w");',
+            '  if (bad_output_device) { std::fputs("bad-output-device\\\\n", bad_output_device); std::fclose(bad_output_device); }',
             '  std::ofstream("generated.txt") << helper_value() << "\\\\n";',
             '  std::ofstream bytes("bytes.bin", std::ios::binary);',
             '  char raw[2] = {0, static_cast<char>(255)};',
@@ -504,9 +507,10 @@ async function main(): Promise<void> {
             '  DIR* dev_dir = opendir("/dev");',
             '  bool saw_custom = false;',
             '  bool saw_stdin = false;',
-            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "custom-in") saw_custom = true; if (name == "stdin") saw_stdin = true; } closedir(dev_dir); }',
+            '  bool saw_nested = false;',
+            '  if (dev_dir) { while (dirent* entry = readdir(dev_dir)) { std::string name(entry->d_name); if (name == "custom-in") saw_custom = true; if (name == "stdin") saw_stdin = true; if (name == "nested/device") saw_nested = true; } closedir(dev_dir); }',
             '  std::cout << custom_line;',
-            '  std::cout << (saw_custom && !saw_stdin ? "custom-only:ok" : "custom-only:bad") << "\\\\n";',
+            '  std::cout << (saw_custom && !saw_stdin && !saw_nested ? "custom-only:ok" : "custom-only:bad") << "\\\\n";',
             '  return 0;',
             '}',
             '',
@@ -776,6 +780,7 @@ async function main(): Promise<void> {
           files: [...projectFiles, ...(customInputOnlyCompile.files || [])],
           kernelDevices: [
             { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+            { path: '/dev/nested/device', readable: true, writable: false, inputDevice: '/dev/stdin' },
           ],
         },
       });
@@ -1391,6 +1396,16 @@ async function main(): Promise<void> {
           event.data === 'tee-device\n'
         )) === true,
       `C++ browser project run should preserve custom stdout output devices: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        event.device === '/dev/bad-output' &&
+        event.sourceDevice === undefined &&
+        event.data === 'bad-output-device\n'
+      )) === true,
+      `C++ browser project run should fall back to source device for invalid outputDevice references: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectDeviceLeakRun.exitCode === 0 &&

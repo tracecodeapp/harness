@@ -22,6 +22,9 @@ import {
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
 import {
+  runtimeKernelCopyTarget,
+  runtimeKernelDeviceOutputTarget,
+  runtimeKernelFileCopyTarget,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
@@ -33,6 +36,7 @@ import {
   runtimeKernelStatTarget,
   runtimeKernelSymlinkTarget,
   runtimeKernelTruncateTarget,
+  runtimeKernelWriteTarget,
 } from '../packages/harness-core/src/runtime-kernel';
 import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
@@ -74,8 +78,33 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     { path: '/dev/stdin' as const, readable: true, writable: false, inputDevice: '/dev/stdin' as const },
     { path: '/dev/stdout' as const, readable: false, writable: true, outputDevice: '/dev/stdout' as const },
     { path: '/dev/tty' as const, readable: true, writable: true, inputDevice: '/dev/stdin' as const, outputDevice: '/dev/stdout' as const },
+    { path: '/dev/capture' as const, readable: false, writable: true, outputDevice: '/dev/capture' as const },
+    { path: '/dev/tee' as const, readable: false, writable: true, outputDevice: '/dev/capture' as const },
   ];
 
+  assertCondition(
+    runtimeKernelDeviceOutputTarget(devices, '/dev/tee') === '/dev/capture',
+    'kernel output target should resolve manifest device aliases'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelWriteTarget('/dev/capture', devices)) ===
+      '{"device":"/dev/capture","kind":"device","outputDevice":"/dev/capture"}',
+    'kernel write target should allow custom output devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelWriteTarget('/dev/tee', devices)) ===
+      '{"device":"/dev/tee","kind":"device","outputDevice":"/dev/capture"}',
+    'kernel write target should preserve source and resolved output devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelCopyTarget('/proc/kernel/info', '/dev/tee', devices)) === '{"kind":"file-copy"}',
+    'kernel copy target should delegate virtual source-to-device copies to file copy policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelFileCopyTarget('/proc/kernel/info', '/dev/tee', devices)) ===
+      '{"kind":"device-destination","outputDevice":"/dev/capture","source":{"kind":"proc-file","path":"/proc/kernel/info"}}',
+    'kernel file copy target should preserve manifest output device aliases'
+  );
   assertCondition(
     stableStringify(runtimeKernelOpenTarget('/dev/stdout', { readable: true }, devices)) ===
       '{"device":"/dev/stdout","kind":"device","readable":false,"writable":false}',

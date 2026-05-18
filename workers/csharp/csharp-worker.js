@@ -537,12 +537,18 @@ function routeProjectOutputEvent(payload) {
   const outputDevice = kernelDeviceOutputTarget(requestedDevice);
   if (!outputDevice) return null;
   const stream = kernelDeviceStream(outputDevice);
+  const payloadSourceDevice = normalizeKernelDevicePath(payload.sourceDevice);
+  const sourceDevice = payloadSourceDevice && kernelDeviceOutputTarget(payloadSourceDevice) === outputDevice
+    ? payloadSourceDevice
+    : requestedDevice !== outputDevice
+      ? requestedDevice
+      : undefined;
   const { sourceDevice: _sourceDevice, ...event } = payload;
   return {
     ...event,
     stream,
     device: outputDevice,
-    ...(requestedDevice !== outputDevice ? { sourceDevice: requestedDevice } : {}),
+    ...(sourceDevice ? { sourceDevice } : {}),
   };
 }
 
