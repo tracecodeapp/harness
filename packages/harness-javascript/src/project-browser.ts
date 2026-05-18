@@ -16,7 +16,6 @@ import { RuntimeProjectEventQueue, createRuntimeProjectIoBridge, runtimeFileChan
 import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
-  runtimeDeviceStat,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
   runtimeKernelDeviceInputSource,
@@ -33,11 +32,12 @@ import {
   runtimeKernelOpenErrorCode,
   runtimeKernelOpenTarget,
   runtimeKernelReadTarget,
+  runtimeKernelStatTarget,
   runtimeKernelWriteErrorCode,
   runtimeKernelWriteTarget,
-  runtimeProcStat,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
+  type RuntimeKernelVirtualStat,
 } from '../../harness-core/src/runtime-kernel';
 import * as fflateModule from 'fflate/browser';
 import packageJson from '../package.json' with { type: 'json' };
@@ -228,6 +228,16 @@ function runtimeDirectoryTarget(
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
   return runtimeKernelDirectoryTarget(raw, devices);
+}
+
+function runtimeStatTarget(
+  path: unknown,
+  info: RuntimeKernelInfo,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelStatTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelStatTarget(raw, info, devices);
 }
 
 function throwRuntimeWriteTargetError(
@@ -1656,18 +1666,18 @@ async function runBrowserJavaScriptProjectRequest(
         isSymbolicLink: () => false,
       };
     };
-    const statForDevicePath = (devicePath: '/dev' | RuntimeKernelDevicePath): BrowserFileStat => {
-      const kernelStat = runtimeDeviceStat(devicePath);
-      const mode = (kernelStat.isDirectory ? 0o40000 : 0o20000) | kernelStat.mode;
+    const statForKernelPath = (path: string, kernelStat: RuntimeKernelVirtualStat): BrowserFileStat => {
+      const modeType = kernelStat.isDirectory ? 0o40000 : kernelStat.isCharacterDevice ? 0o20000 : 0o100000;
+      const mode = modeType | kernelStat.mode;
       return {
         atimeMs: fsTimestampMs,
         birthtimeMs: fsTimestampMs,
         blksize: 4096,
-        blocks: 0,
+        blocks: Math.ceil(kernelStat.size / 512),
         ctimeMs: fsTimestampMs,
         dev: 1,
         gid: 0,
-        ino: inodeForPath(devicePath),
+        ino: inodeForPath(path),
         mode,
         mtimeMs: fsTimestampMs,
         nlink: kernelStat.isDirectory ? 2 : 1,
@@ -1687,37 +1697,13 @@ async function runBrowserJavaScriptProjectRequest(
         isSymbolicLink: () => false,
       };
     };
-    const statForProcPath = (procPath: string): BrowserFileStat | null => {
-      const kernelStat = runtimeProcStat(procPath, kernelInfo);
-      if (!kernelStat) return null;
-      const mode = (kernelStat.isDirectory ? 0o40000 : 0o100000) | kernelStat.mode;
-      return {
-        atimeMs: fsTimestampMs,
-        birthtimeMs: fsTimestampMs,
-        blksize: 4096,
-        blocks: Math.ceil(kernelStat.size / 512),
-        ctimeMs: fsTimestampMs,
-        dev: 1,
-        gid: 0,
-        ino: inodeForPath(procPath),
-        mode,
-        mtimeMs: fsTimestampMs,
-        nlink: kernelStat.isDirectory ? 2 : 1,
-        rdev: 0,
-        size: kernelStat.size,
-        uid: 0,
-        atime: new Date(fsTimestampMs),
-        birthtime: new Date(fsTimestampMs),
-        ctime: new Date(fsTimestampMs),
-        mtime: new Date(fsTimestampMs),
-        isBlockDevice: () => false,
-        isCharacterDevice: () => false,
-        isFIFO: () => false,
-        isFile: () => kernelStat.isFile,
-        isDirectory: () => kernelStat.isDirectory,
-        isSocket: () => false,
-        isSymbolicLink: () => false,
-      };
+    const statForKernelTarget = (path: unknown): BrowserFileStat | null => {
+      const statTarget = runtimeStatTarget(path, kernelInfo, kernelDevices);
+      if (!statTarget || statTarget.kind === 'workspace') return null;
+      if (statTarget.kind === 'error') {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
+      }
+      return statForKernelPath(statTarget.path, statTarget.stat);
     };
     const missingFileStat = (): BrowserFileStat => ({
       atime: new Date(0),
@@ -2923,12 +2909,10 @@ async function runBrowserJavaScriptProjectRequest(
       fstatSync: (fd: number) => {
         const entry = fileDescriptor(fd);
         if (entry.kind === 'device') {
-          return {
-            ...missingFileStat(),
-            isFile: () => true,
-          };
+          const statTarget = runtimeKernelStatTarget(entry.device ?? '/dev/stdin', kernelInfo, kernelDevices);
+          return statTarget.kind === 'stat' ? statForKernelPath(statTarget.path, statTarget.stat) : missingFileStat();
         }
-        if (entry.kind === 'proc') return statForProcPath(entry.path ?? '') ?? missingFileStat();
+        if (entry.kind === 'proc') return statForKernelTarget(entry.path ?? '') ?? missingFileStat();
         return statForNormalizedPath(entry.path ?? '') ?? missingFileStat();
       },
       fstat: (fd: number, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
@@ -3505,26 +3489,8 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       statSync: (path: unknown) => {
-        const accessTarget = runtimeAccessTarget(path, fsConstants.F_OK, kernelDevices);
-        if (accessTarget?.kind === 'allowed') {
-          if (accessTarget.path === '/dev' || accessTarget.path.startsWith('/dev/')) {
-            return statForDevicePath(accessTarget.path as '/dev' | RuntimeKernelDevicePath);
-          }
-          if (accessTarget.path === '/proc' || accessTarget.path.startsWith('/proc/')) {
-            const procStats = statForProcPath(accessTarget.path);
-            if (!procStats) throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
-            return procStats;
-          }
-        }
-        if (accessTarget?.kind === 'denied') throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
-        const readTarget = runtimeReadTarget(path, kernelDevices);
-        if (readTarget?.kind === 'device-file' || readTarget?.kind === 'device-directory') return statForDevicePath(readTarget.path);
-        if (readTarget?.kind === 'proc-file' || readTarget?.kind === 'proc-directory') {
-          const procStats = statForProcPath(readTarget.path);
-          if (!procStats) throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
-          return procStats;
-        }
-        if (readTarget?.kind === 'error') throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
+        const kernelStats = statForKernelTarget(path);
+        if (kernelStats) return kernelStats;
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const stats = statForNormalizedPath(normalized);
         if (!stats) {

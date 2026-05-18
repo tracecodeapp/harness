@@ -349,6 +349,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           projectBrowser.includes('createWriteStream'),
         '@tracecode/harness-javascript browser project runner should ship FileHandle/vector/truncate/metadata live I/O bridge'
       );
+      assertCondition(
+        projectBrowser.includes('runtimeKernelStatTarget') &&
+          projectBrowser.includes('statForKernelTarget'),
+        '@tracecode/harness-javascript browser project runner should use shared tracekernel stat targets'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-java') {
       const worker = await readFile(join(packageDir, 'workers/java-worker.js'), 'utf8');
