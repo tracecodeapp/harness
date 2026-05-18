@@ -1046,6 +1046,7 @@ async function loadRuntime(assetBaseUrl) {
       installRuntimeFsHooks(runtime);
       runtime.setModuleImports('tracecode', {
         emitProjectEvent: emitProjectEventJson,
+        readProjectInputByte: () => readProjectInputByte('/dev/stdin') ?? -1,
       });
       const exports = await runtime.getAssemblyExports(runtime.getConfig().mainAssemblyName);
       executeExport = exports?.TraceCode?.CSharpHost?.CompilerHost?.Execute;

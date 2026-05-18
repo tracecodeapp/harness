@@ -39,6 +39,9 @@ public static partial class CompilerHost
     [JSImport("emitProjectEvent", "tracecode")]
     internal static partial void EmitProjectEventJson(string payloadJson);
 
+    [JSImport("readProjectInputByte", "tracecode")]
+    public static partial int ReadProjectInputByte();
+
     [JSExport]
     [SupportedOSPlatform("browser")]
     public static string Execute(string requestJson)
@@ -492,7 +495,7 @@ public static partial class CompilerHost
                 path: "TraceCodeGlobalUsings.cs"
             ),
             CSharpSyntaxTree.ParseText(
-                GenerateProjectRuntimeSource(request.Stdin ?? string.Empty),
+                GenerateProjectRuntimeSource(),
                 ParseOptions,
                 path: "TraceCodeProjectRuntime.cs"
             ),
@@ -1213,25 +1216,34 @@ public static partial class CompilerHost
         }
     }
 
-    private static string GenerateProjectRuntimeSource(string stdin)
+    private static string GenerateProjectRuntimeSource()
     {
-        string serializedLines = JsonSerializer.Serialize(SplitProjectStdinLines(stdin), JsonOptions);
         return $$"""
 namespace TraceCode.Project;
 
 public static class ProjectStdin
 {
-    private static readonly string[] Lines = System.Text.Json.JsonSerializer.Deserialize<string[]>({{JsonSerializer.Serialize(serializedLines)}}) ?? System.Array.Empty<string>();
-    private static int Index;
-
     public static string? ReadLine()
     {
-        if (Index >= Lines.Length)
+        System.Text.StringBuilder builder = new();
+        bool readAny = false;
+        while (true)
         {
-            return null;
+            int value = TraceCode.CSharpHost.CompilerHost.ReadProjectInputByte();
+            if (value < 0)
+            {
+                return readAny ? builder.ToString() : null;
+            }
+            readAny = true;
+            if (value == 10)
+            {
+                return builder.ToString();
+            }
+            if (value != 13)
+            {
+                builder.Append((char)value);
+            }
         }
-
-        return Lines[Index++];
     }
 }
 
@@ -1681,21 +1693,6 @@ public sealed class ProjectFileStream : System.IO.FileStream
     }
 }
 """;
-    }
-
-    private static string[] SplitProjectStdinLines(string stdin)
-    {
-        string normalized = stdin.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
-        if (normalized.Length == 0)
-        {
-            return Array.Empty<string>();
-        }
-        string[] lines = normalized.Split('\n');
-        if (normalized.EndsWith("\n", StringComparison.Ordinal))
-        {
-            return lines.Take(lines.Length - 1).ToArray();
-        }
-        return lines;
     }
 
     private static void PrepareProjectWorkspace(

@@ -2817,7 +2817,7 @@ async function main(): Promise<void> {
       `C# project worker should run multifile project: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, files: projectRun.files, events: projectRun.events })}`
     );
     assertCondition(
-      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\ncustom-kernel-file\n') &&
+      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ntracekernel test\ninfo,version\ncustom-kernel-file\n') &&
         projectRun.stdout.includes('dev-stdout\n') &&
         projectRun.stdout.includes('dev-tty\n') &&
         projectRun.stdout.includes('capture-devicestdout-after-capture\n') &&
@@ -3472,7 +3472,40 @@ async function main(): Promise<void> {
     );
     assertCondition(
       stdinDeviceConsumptionRun.stdout === 'tty=one<lf>two<lf>\ncustom=\n',
-      `C# project worker should expose /dev/tty as a stdin-consuming input device, received ${JSON.stringify(stdinDeviceConsumptionRun)}`
+      `C# project worker should consume one stdin stream across /dev/tty and custom input devices, received ${JSON.stringify(stdinDeviceConsumptionRun)}`
+    );
+
+    const consoleAndDeviceStdinRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: 'one\ntwo\nthree\n',
+        project: {
+          kernelDevices: TRACE_KERNEL_DEVICES,
+          files: [
+            {
+              path: 'src/Program.cs',
+              contents: [
+                'Console.WriteLine("console=" + Console.ReadLine());',
+                'Console.WriteLine("custom=" + File.ReadAllText("/dev/custom-in").Replace("\\n", "<lf>"));',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      consoleAndDeviceStdinRun.exitCode === 0,
+      `C# project worker should run console/device stdin consumption case: ${consoleAndDeviceStdinRun.stderr}`
+    );
+    assertCondition(
+      consoleAndDeviceStdinRun.stdout === 'console=one\ncustom=two<lf>three<lf>\n',
+      `C# project worker should share stdin cursor between Console.ReadLine and /dev devices, received ${JSON.stringify(consoleAndDeviceStdinRun)}`
     );
 
     const [deviceLeakFirstRun, deviceLeakSecondRun] = await runProjectWorkerSequenceCase(

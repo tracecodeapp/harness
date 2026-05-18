@@ -460,6 +460,10 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-csharp worker should ship routed source device events and flush on device changes'
       );
       assertCondition(
+        worker.includes('readProjectInputByte: () => readProjectInputByte(\'/dev/stdin\') ?? -1'),
+        '@tracecode/harness-csharp worker should route managed stdin through the kernel stdin cursor'
+      );
+      assertCondition(
         worker.includes('function isCreateOrTruncateOpenFlags(') &&
           worker.includes('fs.open = function openWithProjectEvents') &&
           worker.includes('emitProjectFileSnapshot(stream.path)'),
@@ -487,15 +491,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-csharp worker should stream returned compiler/build output events'
       );
       const csharpHostDll = await readFile(join(packageDir, 'workers/vendor/csharp/_framework/supportFiles/173_TraceCode.CSharpHost.dll'));
-      const csharpHostApi = csharpHostDll.toString('utf16le');
+      const csharpHostApi = `${csharpHostDll.toString('utf8')}\n${csharpHostDll.toString('utf16le')}`;
       assertCondition(
-        csharpHostApi.includes('WriteAllTextAsync') &&
-          csharpHostApi.includes('AppendAllTextAsync') &&
-          csharpHostApi.includes('WriteAllBytesAsync') &&
-          csharpHostApi.includes('AppendAllBytesAsync') &&
-          csharpHostApi.includes('WriteAllLinesAsync') &&
-          csharpHostApi.includes('AppendAllLinesAsync'),
-        '@tracecode/harness-csharp worker should ship async File live-mutation bridge methods'
+        csharpHostApi.includes('ReadProjectInputByte') &&
+          csharpHostApi.includes('IsProjectFileMutationMethod') &&
+          csharpHostApi.includes('EmitLiveProjectFileSnapshot'),
+        '@tracecode/harness-csharp worker should ship managed project stdin and live file bridge methods'
       );
     }
     if (packageCheck.name === '@tracecode/harness-cpp') {
