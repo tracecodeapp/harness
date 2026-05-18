@@ -1,5 +1,4 @@
 import type {
-  RuntimeCommandEvent,
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
   RuntimeFile,
@@ -8,7 +7,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
-import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
+import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
 import type { CppWorkerClient } from '../../harness-browser/src/cpp-worker-client';
 
 export type CppProjectFileEncoding = RuntimeFileEncoding;
@@ -37,33 +36,15 @@ export function createBrowserCppProjectRunner(
 ): CppProjectCommandRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
-    let stdoutStreamed = false;
-    let stderrStreamed = false;
-    const io = createRuntimeProjectIoBridge((event: RuntimeCommandEvent) => {
-      if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
-      if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
-      request.onEvent?.(event);
-    });
-    const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
-      if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
-      if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
-      request.onEvent?.(event);
-    };
-    io.status(
-      request.source === 'compile' ? 'compile-start' : 'process-start',
-      request.source === 'compile' ? 'Starting C++ browser compile' : 'Starting C++ browser executable',
-      { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd }
-    );
-    const { onEvent: _onEvent, ...workerRequest } = request;
-    return workerClient.executeProjectCpp(workerRequest, timeoutMs, forwardWorkerEvent).then((result) => {
-      io.status(
-        request.source === 'compile' ? 'compile-end' : 'process-exit',
-        request.source === 'compile' ? 'Finished C++ browser compile' : 'Finished C++ browser executable',
-        { source: request.source, exitCode: result.exitCode }
-      );
-      if (result.stdout && !stdoutStreamed) io.output('stdout', result.stdout);
-      if (result.stderr && !stderrStreamed) io.output('stderr', result.stderr);
-      return result;
+    return runRuntimeProjectWorkerBridge({
+      request,
+      startPhase: request.source === 'compile' ? 'compile-start' : 'process-start',
+      startMessage: request.source === 'compile' ? 'Starting C++ browser compile' : 'Starting C++ browser executable',
+      startDetail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
+      finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
+      finishMessage: request.source === 'compile' ? 'Finished C++ browser compile' : 'Finished C++ browser executable',
+      finishDetail: (result) => ({ source: request.source, exitCode: result.exitCode }),
+      run: (workerRequest, onEvent) => workerClient.executeProjectCpp(workerRequest, timeoutMs, onEvent),
     });
   };
 }

@@ -3,7 +3,10 @@ import {
   defineCommand,
   InMemoryFs,
 } from 'just-bash/browser';
-import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
+import {
+  createRuntimeProjectIoBridge,
+  runRuntimeProjectWorkerBridge,
+} from '../../harness-core/src/runtime-project';
 import type {
   CommandContext,
   FileContent,
@@ -36,6 +39,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectIoBridge,
+  RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
   RuntimeWorkspaceActor,
@@ -2922,6 +2926,7 @@ export type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectIoBridge,
+  RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,
   RuntimeWorkspace,
   RuntimeWorkspaceActor,
@@ -2935,4 +2940,4 @@ export type {
   RuntimeWorkspaceUnsubscribe,
 };
 
-export { createRuntimeProjectIoBridge };
+export { createRuntimeProjectIoBridge, runRuntimeProjectWorkerBridge };

@@ -1,5 +1,4 @@
 import type {
-  RuntimeCommandEvent,
   RuntimeCommandResult,
   RuntimeFile,
   RuntimeFileEncoding,
@@ -8,7 +7,7 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
-import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
+import { runRuntimeProjectWorkerBridge } from '../../harness-core/src/runtime-project';
 import type { PythonWorkerClient } from '../../harness-browser/src/pyodide-worker-client';
 
 export type PythonProjectFileEncoding = RuntimeFileEncoding;
@@ -42,33 +41,21 @@ export function createBrowserPythonProjectRunner(
   workerClient: PyodidePythonProjectWorkerClient | PythonWorkerClient,
   options: BrowserPythonProjectRunnerOptions = {}
 ): BrowserPythonProjectCommandRunner {
-  return (request) => {
-    let stdoutStreamed = false;
-    let stderrStreamed = false;
-    const io = createRuntimeProjectIoBridge((event: RuntimeCommandEvent) => {
-      if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
-      if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
-      request.onEvent?.(event);
+  return (request) =>
+    runRuntimeProjectWorkerBridge({
+      request,
+      startPhase: 'process-start',
+      startMessage: 'Starting Python browser project command',
+      startDetail: {
+        source: request.source,
+        scriptPath: request.scriptPath,
+        args: request.args,
+        cwd: request.cwd,
+      },
+      finishPhase: 'process-exit',
+      finishMessage: 'Finished Python browser project command',
+      run: (workerRequest, onEvent) => workerClient.executeProjectPython(workerRequest, options.timeoutMs, onEvent),
     });
-    const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
-      if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
-      if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
-      request.onEvent?.(event);
-    };
-    io.status('process-start', 'Starting Python browser project command', {
-      source: request.source,
-      scriptPath: request.scriptPath,
-      args: request.args,
-      cwd: request.cwd,
-    });
-    const { onEvent: _onEvent, ...workerRequest } = request;
-    return workerClient.executeProjectPython(workerRequest, options.timeoutMs, forwardWorkerEvent).then((result) => {
-      io.status('process-exit', 'Finished Python browser project command', { exitCode: result.exitCode });
-      if (result.stdout && !stdoutStreamed) io.output('stdout', result.stdout);
-      if (result.stderr && !stderrStreamed) io.output('stderr', result.stderr);
-      return result;
-    });
-  };
 }
 
 export const createPyodidePythonProjectRunner = createBrowserPythonProjectRunner;

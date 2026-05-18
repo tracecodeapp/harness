@@ -179,6 +179,52 @@ export function createRuntimeProjectIoBridge(onEvent: RuntimeCommandEventHandler
   };
 }
 
+export interface RuntimeProjectWorkerBridgeOptions<
+  Request extends RuntimeProjectCommandRequest<string>,
+  Result extends RuntimeCommandResult = RuntimeCommandResult
+> {
+  request: Request;
+  startPhase: string;
+  startMessage: string;
+  startDetail?: Record<string, unknown>;
+  finishPhase: string;
+  finishMessage: string;
+  finishDetail?: (result: Result) => Record<string, unknown>;
+  run(
+    request: Omit<Request, 'onEvent'>,
+    onEvent: RuntimeCommandEventHandler
+  ): Promise<Result>;
+}
+
+export async function runRuntimeProjectWorkerBridge<
+  Request extends RuntimeProjectCommandRequest<string>,
+  Result extends RuntimeCommandResult = RuntimeCommandResult
+>(options: RuntimeProjectWorkerBridgeOptions<Request, Result>): Promise<Result> {
+  let stdoutStreamed = false;
+  let stderrStreamed = false;
+  const io = createRuntimeProjectIoBridge((event) => {
+    if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
+    if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
+    options.request.onEvent?.(event);
+  });
+  const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
+    if (event.type === 'output' && event.stream === 'stdout') stdoutStreamed = true;
+    if (event.type === 'output' && event.stream === 'stderr') stderrStreamed = true;
+    options.request.onEvent?.(event);
+  };
+  io.status(options.startPhase, options.startMessage, options.startDetail);
+  const { onEvent: _onEvent, ...workerRequest } = options.request;
+  const result = await options.run(workerRequest, forwardWorkerEvent);
+  io.status(
+    options.finishPhase,
+    options.finishMessage,
+    options.finishDetail ? options.finishDetail(result) : { exitCode: result.exitCode }
+  );
+  if (result.stdout && !stdoutStreamed) io.output('stdout', result.stdout);
+  if (result.stderr && !stderrStreamed) io.output('stderr', result.stderr);
+  return result;
+}
+
 export type RuntimeWorkspaceEvent = RuntimeCommandEvent;
 
 export type RuntimeWorkspaceEventHandler = (event: RuntimeWorkspaceEvent) => void;
