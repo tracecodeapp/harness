@@ -6569,6 +6569,27 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     typeof procVersionBytes === 'string' && procVersionBytes.startsWith('tracekernel '),
     `observed filesystem readFileBytes should return byte strings for /proc files: ${String(procVersionBytes)}`
   );
+  const observedVirtualFs = observedFs as {
+    symlink?: (target: string, linkPath: string) => Promise<void>;
+    link?: (existingPath: string, newPath: string) => Promise<void>;
+    readlink?: (path: string) => Promise<string>;
+  };
+  await assertRejectsAsync(
+    () => observedVirtualFs.symlink?.('target.txt', '/proc/kernel/link') ?? Promise.reject(new Error('symlink missing')),
+    'observed filesystem symlink should reject /proc link paths'
+  );
+  await assertRejectsAsync(
+    () => observedVirtualFs.link?.('/proc/kernel/info', 'proc-hardlink.json') ?? Promise.reject(new Error('link missing')),
+    'observed filesystem link should reject /proc sources'
+  );
+  await assertRejectsAsync(
+    () => observedVirtualFs.link?.('copy-device.txt', '/dev/stdout') ?? Promise.reject(new Error('link missing')),
+    'observed filesystem link should reject /dev destinations'
+  );
+  await assertRejectsAsync(
+    () => observedVirtualFs.readlink?.('/proc/kernel/info') ?? Promise.reject(new Error('readlink missing')),
+    'observed filesystem readlink should reject /proc files'
+  );
   await assertRejectsAsync(() => deviceWorkspace.mkdir('/proc/new'), 'mkdir should reject /proc paths');
   await assertRejectsAsync(() => deviceWorkspace.remove('/dev/stdout'), 'remove should reject /dev paths');
   await assertRejectsAsync(() => deviceWorkspace.deleteFile('/dev/stdout'), 'deleteFile should reject /dev paths');

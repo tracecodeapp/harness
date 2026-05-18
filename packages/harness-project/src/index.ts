@@ -904,19 +904,22 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
-    if (isDevNamespacePath(linkPath)) return Promise.reject(new Error(`Kernel device namespace is read-only: ${linkPath}`));
+    const mutationTarget = kernelMutationTarget(linkPath);
+    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(linkPath, mutationTarget);
     return this.base.symlink(target, this.mapPath(linkPath));
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
-    if (isDevNamespacePath(existingPath) || isDevNamespacePath(newPath)) {
-      return Promise.reject(new Error('Kernel device namespace is read-only.'));
-    }
+    const sourceMutationTarget = kernelMutationTarget(existingPath);
+    if (sourceMutationTarget.kind === 'error') throwKernelMutationTargetError(existingPath, sourceMutationTarget);
+    const destinationMutationTarget = kernelMutationTarget(newPath);
+    if (destinationMutationTarget.kind === 'error') throwKernelMutationTargetError(newPath, destinationMutationTarget);
     return this.base.link(this.mapPath(existingPath), this.mapPath(newPath));
   }
 
   readlink(path: string): Promise<string> {
-    if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path is not a symbolic link: ${path}`));
+    const readTarget = kernelReadTarget(path);
+    if (readTarget.kind !== 'workspace') return Promise.reject(new Error(`Kernel virtual path is not a symbolic link: ${path}`));
     return this.base.readlink(this.mapPath(path));
   }
 
