@@ -444,7 +444,7 @@ async function main(): Promise<void> {
       const projectCompile = await send('execute-project-cpp', {
         source: 'compile',
         scriptPath: 'main.cpp',
-        args: ['main.cpp', 'helper.cpp', '-o', 'a.out'],
+        args: ['-v', 'main.cpp', 'helper.cpp', '-o', 'a.out'],
         cwd: '/workspace/src',
         env: {},
         stdin: '',
@@ -1194,6 +1194,14 @@ async function main(): Promise<void> {
     assertCondition(
       projectCompile.exitCode === 0 && projectCompile.files?.some((file) => file.path === 'src/a.out' && file.encoding === 'base64'),
       `C++ browser project compile should emit a.out: ${JSON.stringify(projectCompile)}`
+    );
+    assertCondition(
+      projectCompile.stderr?.length > 0 &&
+        projectCompile.events
+          ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
+          .map((event) => event.data)
+          .join('') === projectCompile.stderr,
+      `C++ browser project compile should emit compiler stderr events: ${JSON.stringify(projectCompile)}`
     );
     assertCondition(projectRun.exitCode === 0, `C++ browser project run should exit successfully: ${JSON.stringify(projectRun)}`);
     assertCondition(

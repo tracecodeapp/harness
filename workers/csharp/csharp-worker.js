@@ -497,6 +497,20 @@ function emitProjectOutput(stream, data, device = stream === 'stdout' ? '/dev/st
   });
 }
 
+function emitMissingProjectResultOutput(result) {
+  const context = activeProjectIo;
+  if (!context || !result) return;
+  if (context.request?.source !== 'compile') return;
+  const stdout = typeof result.stdout === 'string' ? result.stdout : '';
+  const stderr = typeof result.stderr === 'string' ? result.stderr : '';
+  if (stdout && context.eventStdout.join('') !== stdout) {
+    emitProjectOutput('stdout', stdout);
+  }
+  if (stderr && context.eventStderr.join('') !== stderr) {
+    emitProjectOutput('stderr', stderr);
+  }
+}
+
 function flushProjectOutput(stream) {
   const context = activeProjectIo;
   if (!context) return;
@@ -989,6 +1003,7 @@ async function handleMessage(message) {
         result.stdout = activeProjectIo.eventStdout.join('');
         result.stderr = activeProjectIo.eventStderr.join('');
       }
+      emitMissingProjectResultOutput(result);
     } finally {
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');

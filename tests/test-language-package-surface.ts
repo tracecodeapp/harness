@@ -455,6 +455,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('throwKernelDevicePathError(path, \'open\')'),
         '@tracecode/harness-csharp worker should ship manifest-scoped /dev cleanup and namespace guards'
       );
+      assertCondition(
+        worker.includes('function emitMissingProjectResultOutput(result)') &&
+          worker.includes('context.eventStdout.join(\'\') !== stdout'),
+        '@tracecode/harness-csharp worker should stream returned compiler/build output events'
+      );
       const csharpHostDll = await readFile(join(packageDir, 'workers/vendor/csharp/_framework/supportFiles/173_TraceCode.CSharpHost.dll'));
       const csharpHostApi = csharpHostDll.toString('utf16le');
       assertCondition(
@@ -483,6 +488,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true })') &&
           worker.includes('this.fileChangeObserver?.({ path: normalized, directory: true, deleted: true })'),
         '@tracecode/harness-cpp worker should ship live directory mutation events'
+      );
+      assertCondition(
+        worker.includes('function emitProjectResultOutputEvents(events, result)') &&
+          worker.includes('emitProjectResultOutputEvents(events, result)'),
+        '@tracecode/harness-cpp worker should stream returned compiler output events'
       );
     }
 

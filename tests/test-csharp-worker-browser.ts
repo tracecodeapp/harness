@@ -3399,6 +3399,13 @@ async function main(): Promise<void> {
         projectBuild.stdout.includes('0 Error(s)'),
       `C# project worker should surface dotnet build output, received ${JSON.stringify(projectBuild.stdout)}`
     );
+    assertCondition(
+      projectBuild.events
+        ?.filter((event) => event.type === 'output' && event.stream === 'stdout' && event.device === '/dev/stdout')
+        .map((event) => event.data)
+        .join('') === projectBuild.stdout,
+      `C# project worker should stream dotnet build stdout events, received ${JSON.stringify(projectBuild.events)}`
+    );
 
     const canonicalProjectRun = await runProjectWorkerCase(
       page,

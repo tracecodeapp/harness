@@ -4712,6 +4712,16 @@ function createProjectEventBridge(messageId) {
   };
 }
 
+function emitProjectResultOutputEvents(events, result) {
+  if (!events || !result) return;
+  if (typeof result.stdout === 'string' && result.stdout.length > 0) {
+    events.output('stdout', result.stdout);
+  }
+  if (typeof result.stderr === 'string' && result.stderr.length > 0) {
+    events.output('stderr', result.stderr);
+  }
+}
+
 async function handleProjectCpp(request, messageId) {
   const events = createProjectEventBridge(messageId);
   if (request?.source === 'compile') {
@@ -4719,15 +4729,17 @@ async function handleProjectCpp(request, messageId) {
     const compileResult = await compileProjectOutsideMainWorker(request);
     if (!compileResult.success) {
       const stderr = [compileResult.stderr, compileResult.error].filter(Boolean).join('\n').trim();
-      return {
+      const failureResult = {
         stdout: compileResult.stdout || '',
         stderr: stderr ? `${stderr}\n` : 'C++ compilation failed.\n',
         exitCode: 1,
       };
+      emitProjectResultOutputEvents(events, failureResult);
+      return failureResult;
     }
     const outputPath = relativeProjectPath(compileResult.outputPath || 'a.out', request) || 'a.out';
     const programBytes = new Uint8Array(compileResult.programBuffer);
-    return {
+    const result = {
       stdout: compileResult.stdout || '',
       stderr: compileResult.stderr || '',
       exitCode: 0,
@@ -4737,6 +4749,8 @@ async function handleProjectCpp(request, messageId) {
         totalMs: elapsedMs(startedAt),
       },
     };
+    emitProjectResultOutputEvents(events, result);
+    return result;
   }
 
   const fs = createProjectRuntimeFs(request?.project);
