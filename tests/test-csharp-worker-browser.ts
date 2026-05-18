@@ -1950,7 +1950,7 @@ async function main(): Promise<void> {
         '  public int SumList(ListNode head) {',
         '    int total = 0;',
         '    while (head != null) {',
-        '      total += head.val;',
+        '      total += head.val + head.value;',
         '      head = head.next;',
         '    }',
         '    return total;',
@@ -1962,7 +1962,7 @@ async function main(): Promise<void> {
       assetBaseUrl
     );
     assertCondition(listNodeInput.success, `C# worker ListNode input case should succeed: ${listNodeInput.error ?? 'unknown error'}`);
-    assertCondition(listNodeInput.output === 10, `C# worker ListNode input case should return 10, received ${JSON.stringify(listNodeInput.output)}`);
+    assertCondition(listNodeInput.output === 20, `C# worker ListNode input case should return 20, received ${JSON.stringify(listNodeInput.output)}`);
 
     const requiredConstructorListNodeInput = await runWorkerCase(
       page,
@@ -2022,7 +2022,7 @@ async function main(): Promise<void> {
         'public class Solution {',
         '  public int SumTree(TreeNode root) {',
         '    if (root == null) return 0;',
-        '    return root.val + SumTree(root.left) + SumTree(root.right);',
+        '    return root.val + root.value + SumTree(root.left) + SumTree(root.right);',
         '  }',
         '}',
       ].join('\n'),
@@ -2031,7 +2031,7 @@ async function main(): Promise<void> {
       assetBaseUrl
     );
     assertCondition(treeNodeInput.success, `C# worker TreeNode input case should succeed: ${treeNodeInput.error ?? 'unknown error'}`);
-    assertCondition(treeNodeInput.output === 10, `C# worker TreeNode input case should return 10, received ${JSON.stringify(treeNodeInput.output)}`);
+    assertCondition(treeNodeInput.output === 20, `C# worker TreeNode input case should return 20, received ${JSON.stringify(treeNodeInput.output)}`);
 
     const nullableTreeNodeInput = await runWorkerCase(
       page,

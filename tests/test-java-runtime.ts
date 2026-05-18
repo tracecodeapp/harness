@@ -1055,6 +1055,30 @@ class Solution {
       treeRewrite?.exportsSource.includes('TreeNode root = buildTree(new Integer[] { 1, null, 2, 3 });'),
       'Java worker should materialize level-order TreeNode array inputs when the signature expects TreeNode'
     );
+    assertCondition(
+      !treeRewrite?.exportsSource.includes('class TreeNode {'),
+      'Java worker should not inject fallback TreeNode when user code declares TreeNode'
+    );
+
+    const defaultTreeInputCode = `class Solution {
+  int solve(TreeNode root) {
+    return root == null ? 0 : root.val + root.value;
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
+      code: defaultTreeInputCode,
+      functionName: 'solve',
+      inputs: { root: [4, null, 2] },
+      executionStyle: 'function',
+    });
+    const defaultTreeRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      defaultTreeRewrite?.exportsSource.includes('class TreeNode {') &&
+        defaultTreeRewrite.exportsSource.includes('int value;') &&
+        defaultTreeRewrite.exportsSource.includes('this.value = val;'),
+      'Java worker should inject TraceCode-compatible fallback TreeNode with val/value aliases'
+    );
 
     const listInputCode = `class ListNode {
   int val;
@@ -1080,6 +1104,30 @@ class Solution {
         'ListNode head = buildList(new Object[] { 1, 2, 3 }, sequentialNextIndices(3));'
       ),
       'Java worker should materialize array inputs as ListNode only when the signature expects ListNode'
+    );
+    assertCondition(
+      !listRewrite?.exportsSource.includes('class ListNode {'),
+      'Java worker should not inject fallback ListNode when user code declares ListNode'
+    );
+
+    const defaultListInputCode = `class Solution {
+  int solve(ListNode head) {
+    return head == null ? 0 : head.val + head.value;
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
+      code: defaultListInputCode,
+      functionName: 'solve',
+      inputs: { head: [5, 6] },
+      executionStyle: 'function',
+    });
+    const defaultListRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      defaultListRewrite?.exportsSource.includes('class ListNode {') &&
+        defaultListRewrite.exportsSource.includes('int value;') &&
+        defaultListRewrite.exportsSource.includes('this.value = val;'),
+      'Java worker should inject TraceCode-compatible fallback ListNode with val/value aliases'
     );
 
     const objectArrayInputCode = `class Solution {

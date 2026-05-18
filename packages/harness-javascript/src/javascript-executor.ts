@@ -535,6 +535,7 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
   if (firstValue === null || firstValue === undefined) return null;
   const root: Record<string, unknown> = {
     val: firstValue,
+    value: firstValue,
     left: null,
     right: null,
   };
@@ -549,6 +550,7 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
     if (leftValue !== null && leftValue !== undefined) {
       const leftNode: Record<string, unknown> = {
         val: leftValue,
+        value: leftValue,
         left: null,
         right: null,
       };
@@ -562,6 +564,7 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
     if (rightValue !== null && rightValue !== undefined) {
       const rightNode: Record<string, unknown> = {
         val: rightValue,
+        value: rightValue,
         left: null,
         right: null,
       };
@@ -584,6 +587,7 @@ function materializeTreeInput(value: unknown): unknown {
   if (isLikelyTreeNodeValue(record)) {
     const node: Record<string, unknown> = {
       val: record.val ?? record.value ?? null,
+      value: record.val ?? record.value ?? null,
       left: materializeTreeInput(record.left ?? null),
       right: materializeTreeInput(record.right ?? null),
     };
@@ -597,6 +601,7 @@ function materializeTreeInput(value: unknown): unknown {
   if (taggedRecord.__type__ === 'TreeNode') {
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
+      value: taggedRecord.val ?? taggedRecord.value ?? null,
       left: materializeTreeInput(taggedRecord.left ?? null),
       right: materializeTreeInput(taggedRecord.right ?? null),
     };
@@ -619,11 +624,12 @@ function materializeListInput(
     if (value.length === 0) return null;
     const head: Record<string, unknown> = {
       val: value[0],
+      value: value[0],
       next: null,
     };
     let current: Record<string, unknown> = head;
     for (let i = 1; i < value.length; i++) {
-      const nextNode: Record<string, unknown> = { val: value[i], next: null };
+      const nextNode: Record<string, unknown> = { val: value[i], value: value[i], next: null };
       current.next = nextNode;
       current = nextNode;
     }
@@ -644,6 +650,7 @@ function materializeListInput(
     }
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
+      value: taggedRecord.val ?? taggedRecord.value ?? null,
       next: null,
     };
     materialized.set(record as object, node);

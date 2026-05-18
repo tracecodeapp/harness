@@ -58,6 +58,7 @@ if (typeof globalThis.ListNode !== 'function') {
   globalThis.ListNode = class ListNode {
     constructor(val = 0, next = null) {
       this.val = val;
+      this.value = val;
       this.next = next;
     }
   };
@@ -66,6 +67,7 @@ if (typeof globalThis.TreeNode !== 'function') {
   globalThis.TreeNode = class TreeNode {
     constructor(val = 0, left = null, right = null) {
       this.val = val;
+      this.value = val;
       this.left = left;
       this.right = right;
     }
@@ -111,6 +113,7 @@ function ensureJavaScriptLibraries() {
 const TYPESCRIPT_RUNTIME_DECLARATIONS = `
 declare class ListNode {
   val: any;
+  value: any;
   next: ListNode | SerializedListNode | SerializedRef | null;
   prev?: ListNode | SerializedListNode | SerializedRef | null;
   constructor(val?: any, next?: ListNode | null);
@@ -118,6 +121,7 @@ declare class ListNode {
 
 declare class TreeNode {
   val: any;
+  value: any;
   left: TreeNode | SerializedTreeNode | SerializedRef | null;
   right: TreeNode | SerializedTreeNode | SerializedRef | null;
   constructor(val?: any, left?: TreeNode | null, right?: TreeNode | null);
@@ -129,6 +133,7 @@ type SerializedListNode = {
   __id__?: string;
   __type__?: 'ListNode';
   val?: any;
+  value?: any;
   next?: SerializedListNode | SerializedRef | ListNode | null;
   prev?: SerializedListNode | SerializedRef | ListNode | null;
 };
@@ -137,6 +142,7 @@ type SerializedTreeNode = {
   __id__?: string;
   __type__?: 'TreeNode';
   val?: any;
+  value?: any;
   left?: SerializedTreeNode | SerializedRef | TreeNode | null;
   right?: SerializedTreeNode | SerializedRef | TreeNode | null;
 };
@@ -583,7 +589,7 @@ function buildTreeNodeFromLevelOrder(values) {
   if (!Array.isArray(values) || values.length === 0) return null;
   const firstValue = values[0];
   if (firstValue === null || firstValue === undefined) return null;
-  const root = { val: firstValue, left: null, right: null };
+  const root = { val: firstValue, value: firstValue, left: null, right: null };
   const queue = [root];
   let index = 1;
 
@@ -593,7 +599,7 @@ function buildTreeNodeFromLevelOrder(values) {
 
     const leftValue = values[index++];
     if (leftValue !== null && leftValue !== undefined) {
-      node.left = { val: leftValue, left: null, right: null };
+      node.left = { val: leftValue, value: leftValue, left: null, right: null };
       queue.push(node.left);
     }
 
@@ -601,7 +607,7 @@ function buildTreeNodeFromLevelOrder(values) {
 
     const rightValue = values[index++];
     if (rightValue !== null && rightValue !== undefined) {
-      node.right = { val: rightValue, left: null, right: null };
+      node.right = { val: rightValue, value: rightValue, left: null, right: null };
       queue.push(node.right);
     }
   }
@@ -621,6 +627,7 @@ function materializeTreeInput(value) {
     const nodeValue = value;
     const node = {
       val: nodeValue.val ?? nodeValue.value ?? null,
+      value: nodeValue.val ?? nodeValue.value ?? null,
       left: materializeTreeInput(nodeValue.left ?? null),
       right: materializeTreeInput(nodeValue.right ?? null),
     };
@@ -637,10 +644,10 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
-    const head = { val: value[0], next: null };
+    const head = { val: value[0], value: value[0], next: null };
     let current = head;
     for (let i = 1; i < value.length; i++) {
-      current.next = { val: value[i], next: null };
+      current.next = { val: value[i], value: value[i], next: null };
       current = current.next;
     }
     return head;
@@ -658,6 +665,7 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
     }
     const node = {
       val: value.val ?? value.value ?? null,
+      value: value.val ?? value.value ?? null,
       next: null,
     };
     materialized.set(value, node);

@@ -805,6 +805,9 @@ function buildDynamicInputHelperMethods() {
 }
 
 function buildHelperMethods(features) {
+  if (features.skipInputMaterializers) {
+    return '';
+  }
   const members = [];
   if (features.hasDynamicInputs) {
     members.push(buildDynamicInputHelperMethods());
@@ -1015,6 +1018,66 @@ function buildHelperMethods(features) {
 `);
   }
   return members.join('\n');
+}
+
+function sourceDeclaresJavaClass(source, className) {
+  const escapedName = String(className).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\bclass\\s+${escapedName}\\b`).test(String(source ?? ''));
+}
+
+function buildNodePreludeSource(source, options = {}) {
+  if (options.scriptMode === true) {
+    return '';
+  }
+
+  const declarations = [];
+  if (!sourceDeclaresJavaClass(source, 'ListNode')) {
+    declarations.push(`class ListNode {
+  int val;
+  int value;
+  ListNode next;
+
+  ListNode() {
+    this(0, null);
+  }
+
+  ListNode(int val) {
+    this(val, null);
+  }
+
+  ListNode(int val, ListNode next) {
+    this.val = val;
+    this.value = val;
+    this.next = next;
+  }
+}`);
+  }
+
+  if (!sourceDeclaresJavaClass(source, 'TreeNode')) {
+    declarations.push(`class TreeNode {
+  int val;
+  int value;
+  TreeNode left;
+  TreeNode right;
+
+  TreeNode() {
+    this(0, null, null);
+  }
+
+  TreeNode(int val) {
+    this(val, null, null);
+  }
+
+  TreeNode(int val, TreeNode left, TreeNode right) {
+    this.val = val;
+    this.value = val;
+    this.left = left;
+    this.right = right;
+  }
+}`);
+  }
+
+  return declarations.length > 0 ? `${declarations.join('\n\n')}\n\n` : '';
 }
 
 function extractMethodParameters(source, methodName) {
@@ -2249,8 +2312,12 @@ function dynamicInputByKey(dynamicInputs) {
 }
 
 function buildExportsSource(source, functionName, executionStyle, input, options = {}) {
-  const features = detectFeatures(source, input, options);
+  const features = {
+    ...detectFeatures(source, input, options),
+    skipInputMaterializers: options.scriptMode === true,
+  };
   const helperMethods = buildHelperMethods(features);
+  const nodePreludeSource = buildNodePreludeSource(source, options);
   const dynamicInputsByKey = dynamicInputByKey(options.dynamicInputs ?? []);
 
   if (executionStyle === 'ops-class') {
@@ -2292,7 +2359,7 @@ function buildExportsSource(source, functionName, executionStyle, input, options
       }
     });
 
-    return `public class Exports {
+    return `${nodePreludeSource}public class Exports {
 ${helperMethods}
 
   public static String run() {
@@ -2328,7 +2395,7 @@ ${lines.join('\n')}
     ? `    solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(null);`
     : `    ${returnType || 'Object'} ${resultLocalName} = solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(${resultLocalName});`;
 
-  return `public class Exports {
+  return `${nodePreludeSource}public class Exports {
 ${helperMethods}
 
   public static String run() {
@@ -2487,6 +2554,7 @@ async function rewriteSource(payload, compileId, dynamicInputs) {
     {
       dynamicInputs,
       hasDynamicInputs: dynamicInputs.length > 0,
+      scriptMode: payload.scriptMode === true,
     }
   );
   const rewrittenSource = await rewriteLibraryClass.rewriteSource(
@@ -2515,6 +2583,7 @@ function buildPlainRunnableSource(payload, compileId, dynamicInputs) {
     {
       dynamicInputs,
       hasDynamicInputs: dynamicInputs.length > 0,
+      scriptMode: payload.scriptMode === true,
     }
   ).replaceAll(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
 
@@ -2556,6 +2625,7 @@ function buildBatchRunnableSource(payload, compileId, inputBatch, dynamicInputBa
       {
         dynamicInputs,
         hasDynamicInputs: dynamicInputs.length > 0,
+        scriptMode: payload.scriptMode === true,
       }
     ).replaceAll(
       /\bpublic class Exports\b/g,
@@ -2576,7 +2646,10 @@ function buildCompileProbeSource(payload, requestId, probeClassName, probePackag
     payload.code,
     payload.functionName,
     payload.executionStyle,
-    payload.inputs ?? {}
+    payload.inputs ?? {},
+    {
+      scriptMode: payload.scriptMode === true,
+    }
   ).replaceAll(/\bpublic class Exports\b/g, `public class ${probeClassName}`);
   return [
     `package ${probePackageName};`,

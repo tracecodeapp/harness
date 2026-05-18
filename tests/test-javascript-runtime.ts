@@ -429,7 +429,7 @@ result = twoSum([2, 7, 11, 15], 9);`,
   }>('execute-code', {
     code: `const head = new ListNode(1, new ListNode(2, new ListNode(3)));
 const root = new TreeNode(2, new TreeNode(1), new TreeNode(3));
-result = [head.val, head.next.val, root.left.val, root.right.val];`,
+result = [head.val, head.value, head.next.val, head.next.value, root.left.val, root.left.value, root.right.val, root.right.value];`,
     inputs: {},
     executionStyle: 'function',
   });
@@ -437,8 +437,8 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   assertCondition(Array.isArray(executeRuntimePreludeNodes.output), 'Prelude class execution output should be an array');
   const preludeOutput = executeRuntimePreludeNodes.output as unknown[];
   assertCondition(
-    preludeOutput[0] === 1 && preludeOutput[1] === 2 && preludeOutput[2] === 1 && preludeOutput[3] === 3,
-    'Prelude class execution should preserve ListNode/TreeNode value wiring'
+    JSON.stringify(preludeOutput) === JSON.stringify([1, 1, 2, 2, 1, 1, 3, 3]),
+    'Prelude class execution should preserve TraceCode ListNode/TreeNode val/value aliases'
   );
   console.log('PASS: execute-code runtime ListNode/TreeNode prelude support');
 
