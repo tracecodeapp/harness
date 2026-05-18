@@ -1776,6 +1776,26 @@ async function testNativeJavaScriptProjectRunnerCwd(): Promise<void> {
   assertCondition(cwdRelativeNodePathResult.exitCode === 0, `native node should resolve cwd-relative NODE_PATH entries: ${cwdRelativeNodePathResult.stderr}`);
   assertCondition(cwdRelativeNodePathResult.stdout === '129\n', `native node should import modules from cwd-relative NODE_PATH entries: ${cwdRelativeNodePathResult.stdout}`);
 
+  const timeoutEvents: RuntimeCommandEvent[] = [];
+  const timeoutWorkspace = await createRuntimeWorkspace({
+    nodeRunner: createNativeJavaScriptProjectRunner({ timeoutMs: 5 }),
+  });
+  const timeoutResult = await timeoutWorkspace.runCommand(
+    'node -e "setTimeout(() => console.log(\\"late\\"), 25)"',
+    { onEvent: (event) => timeoutEvents.push(event) }
+  );
+  assertCondition(
+    timeoutResult.exitCode === 124 && timeoutResult.stderr.includes('node: execution timed out after 5ms'),
+    `native node timeout should return a timeout result: ${JSON.stringify(timeoutResult)}`
+  );
+  assertCondition(
+    timeoutEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+      timeoutEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124) &&
+      !timeoutEvents.some((event) => event.type === 'output' && event.data.includes('late')),
+    `native node timeout should emit terminal process status without late output: ${JSON.stringify(timeoutEvents)}`
+  );
+  timeoutWorkspace.dispose();
+
 }
 
 async function testNativeJavaScriptProjectRunnerStdin(): Promise<void> {

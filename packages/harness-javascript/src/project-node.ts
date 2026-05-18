@@ -443,6 +443,7 @@ export function createNativeJavaScriptProjectRunner(
           if (settled) return;
           settled = true;
           child.kill('SIGKILL');
+          emitCommandStatus(request.onEvent, 'process-exit', `${nodeCommand} timed out`, { command: nodeCommand, exitCode: 124, timeoutMs });
           resolve({
             stdout,
             stderr: `${stderr}node: execution timed out after ${timeoutMs}ms\n`,
