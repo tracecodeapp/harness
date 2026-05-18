@@ -263,6 +263,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('type RuntimeKernelLinkTarget') &&
           declarations.includes('runtimeKernelRenameTarget') &&
           declarations.includes('type RuntimeKernelRenameTarget') &&
+          declarations.includes('runtimeKernelSymlinkTarget') &&
+          declarations.includes('type RuntimeKernelSymlinkTarget') &&
           declarations.includes('normalizeRuntimeDevicePath'),
         '@tracecode/harness-core declarations should export shared tracekernel helpers'
       );
@@ -276,7 +278,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       );
       assertCondition(
         projectDist.includes('symlink(target, linkPath)') &&
-          projectDist.includes('const mutationTarget = kernelMutationTarget(linkPath)') &&
+          projectDist.includes('const symlinkTarget = kernelSymlinkTarget(linkPath)') &&
           projectDist.includes('link(existingPath, newPath)') &&
           projectDist.includes('const linkTarget = kernelLinkTarget(existingPath, newPath)') &&
           projectDist.includes('const renameTarget = kernelRenameTarget(sourcePath, destinationPath)') &&

@@ -101,6 +101,13 @@ export type RuntimeKernelRenameTarget =
       reason: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>['reason'];
       path: string;
     };
+export type RuntimeKernelSymlinkTarget =
+  | { kind: 'workspace' }
+  | {
+      kind: 'error';
+      reason: Extract<RuntimeKernelMutationTarget, { kind: 'error' }>['reason'];
+      path: string;
+    };
 export type RuntimeKernelErrorCode = 'EBADF' | 'EISDIR' | 'ENOENT' | 'ENOTDIR' | 'EROFS';
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
@@ -657,6 +664,23 @@ export function runtimeKernelRenameTarget(
 
 export function runtimeKernelRenameErrorCode(
   reason: Extract<RuntimeKernelRenameTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return runtimeKernelMutationErrorCode(reason);
+}
+
+export function runtimeKernelSymlinkTarget(
+  linkPath: string,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelSymlinkTarget {
+  const linkTarget = runtimeKernelMutationTarget(linkPath, devices);
+  if (linkTarget.kind === 'error') {
+    return { kind: 'error', reason: linkTarget.reason, path: linkTarget.path };
+  }
+  return { kind: 'workspace' };
+}
+
+export function runtimeKernelSymlinkErrorCode(
+  reason: Extract<RuntimeKernelSymlinkTarget, { kind: 'error' }>['reason']
 ): RuntimeKernelErrorCode {
   return runtimeKernelMutationErrorCode(reason);
 }

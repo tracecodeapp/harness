@@ -29,6 +29,7 @@ import {
   runtimeKernelOpenTarget,
   runtimeKernelRenameTarget,
   runtimeKernelStatTarget,
+  runtimeKernelSymlinkTarget,
 } from '../packages/harness-core/src/runtime-kernel';
 import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
@@ -147,6 +148,15 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     stableStringify(runtimeKernelRenameTarget('source.txt', 'moved.txt', devices)) === '{"kind":"workspace"}',
     'kernel rename target should allow workspace renames'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelSymlinkTarget('/dev/stdout', devices)) ===
+      '{"kind":"error","path":"/dev/stdout","reason":"device-read-only"}',
+    'kernel symlink target should reject device link paths through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelSymlinkTarget('link.txt', devices)) === '{"kind":"workspace"}',
+    'kernel symlink target should allow workspace link paths'
   );
 }
 

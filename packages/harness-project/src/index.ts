@@ -29,6 +29,7 @@ import {
   runtimeKernelReadTarget,
   runtimeKernelRenameTarget,
   runtimeKernelStatTarget,
+  runtimeKernelSymlinkTarget,
   runtimeKernelVirtualDevices,
   runtimeKernelVirtualFiles,
   runtimeKernelVirtualPaths,
@@ -283,6 +284,11 @@ function kernelRenameTarget(sourcePath: string, destinationPath: string): Return
   assertNoNul(sourcePath, 'Kernel path');
   assertNoNul(destinationPath, 'Kernel path');
   return runtimeKernelRenameTarget(sourcePath, destinationPath);
+}
+
+function kernelSymlinkTarget(linkPath: string): ReturnType<typeof runtimeKernelSymlinkTarget> {
+  assertNoNul(linkPath, 'Kernel path');
+  return runtimeKernelSymlinkTarget(linkPath);
 }
 
 function throwKernelMutationTargetError(
@@ -908,8 +914,8 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
-    const mutationTarget = kernelMutationTarget(linkPath);
-    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(linkPath, mutationTarget);
+    const symlinkTarget = kernelSymlinkTarget(linkPath);
+    if (symlinkTarget.kind === 'error') throwKernelMutationTargetError(linkPath, symlinkTarget);
     return this.base.symlink(target, this.mapPath(linkPath));
   }
 

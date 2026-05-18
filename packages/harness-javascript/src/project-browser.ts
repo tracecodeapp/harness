@@ -37,6 +37,8 @@ import {
   runtimeKernelRenameErrorCode,
   runtimeKernelRenameTarget,
   runtimeKernelStatTarget,
+  runtimeKernelSymlinkErrorCode,
+  runtimeKernelSymlinkTarget,
   runtimeKernelWriteErrorCode,
   runtimeKernelWriteTarget,
   readRuntimeProcFile as readProcFile,
@@ -253,6 +255,15 @@ function runtimeRenameTarget(
   return runtimeKernelRenameTarget(sourceRaw, destinationRaw, devices);
 }
 
+function runtimeSymlinkTarget(
+  linkPath: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelSymlinkTarget> | null {
+  if (typeof linkPath === 'number') return null;
+  const raw = workspacePathInputToString(linkPath).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelSymlinkTarget(raw, devices);
+}
+
 function runtimeDirectoryTarget(
   path: unknown,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -312,6 +323,13 @@ function throwRuntimeRenameTargetError(
   message: string
 ): never {
   throw Object.assign(new Error(message), { code: runtimeKernelRenameErrorCode(target.reason) });
+}
+
+function throwRuntimeSymlinkTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelSymlinkTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: runtimeKernelSymlinkErrorCode(target.reason) });
 }
 
 function throwRuntimeDirectoryTargetError(
@@ -3520,9 +3538,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       symlinkSync: (_target: unknown, linkPath: unknown) => {
-        const mutationTarget = runtimeMutationTarget(linkPath, kernelDevices);
-        if (mutationTarget?.kind === 'error') {
-          throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, symlink '${linkPath}'`);
+        const symlinkTarget = runtimeSymlinkTarget(linkPath, kernelDevices);
+        if (symlinkTarget?.kind === 'error') {
+          throwRuntimeSymlinkTargetError(symlinkTarget, `EROFS: read-only file system, symlink '${linkPath}'`);
         }
         throw Object.assign(new Error(`ENOSYS: function not implemented, symlink '${linkPath}'`), { code: 'ENOSYS' });
       },
