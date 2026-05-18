@@ -1211,29 +1211,40 @@ class _TraceProjectStream(io.StringIO):
 class _TraceDeviceFile:
     def __init__(self, _device, _mode="r"):
         self._device = _device
-        self._mode = _mode
+        self._mode = str(_mode or "r")
+        self._binary = "b" in self._mode
         self.closed = False
 
     def readable(self):
-        return bool(_kernel_devices.get(self._device, {}).get("readable")) and "w" not in self._mode and "a" not in self._mode
+        return bool(_kernel_devices.get(self._device, {}).get("readable")) and (
+            "r" in self._mode or "+" in self._mode
+        )
 
     def writable(self):
-        return bool(_kernel_devices.get(self._device, {}).get("writable")) and "r" not in self._mode
+        return bool(_kernel_devices.get(self._device, {}).get("writable")) and any(
+            _marker in self._mode for _marker in ("w", "a", "x", "+")
+        )
 
     def read(self, *args):
         if not self.readable():
             raise OSError("Kernel device is not readable: " + self._device)
-        return str(_request.get("stdin", ""))
+        _data = str(_request.get("stdin", "")).encode("utf-8")
+        return _data if self._binary else _data.decode("utf-8", "replace")
 
     def readline(self, *args):
-        return self.read(*args).splitlines(True)[0] if self.read(*args) else ""
+        _data = self.read(*args)
+        if self._binary:
+            return _data.splitlines(True)[0] if _data else b""
+        return _data.splitlines(True)[0] if _data else ""
 
     def write(self, _value):
         if not self.writable():
             raise OSError("Kernel device is not writable: " + self._device)
         _output_device = str(_kernel_devices.get(self._device, {}).get("outputDevice") or self._device)
         _target = _stderr if _output_device == "/dev/stderr" else _stdout
-        return _target.write(_value, self._device if self._device != _output_device else None)
+        _data = _value if isinstance(_value, (bytes, bytearray)) else str(_value).encode("utf-8")
+        _target.write(bytes(_data).decode("utf-8", "replace"), self._device if self._device != _output_device else None)
+        return len(_data) if self._binary else len(str(_value))
 
     def writelines(self, _lines):
         for _line in _lines:
