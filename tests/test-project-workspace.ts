@@ -2154,6 +2154,31 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('async-fd.txt') === 'callback\npromise\n', 'browser node async fd writes should persist through kernel FS');
 
+  const truncateEvents: RuntimeCommandEvent[] = [];
+  const truncateResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error) => error ? reject(error) : resolve())); fs.writeFileSync(\\"truncate.txt\\", \\"abcdef\\"); fs.truncateSync(\\"truncate.txt\\", 4); await call((done) => fs.truncate(\\"truncate.txt\\", 6, done)); const fd = fs.openSync(\\"truncate.txt\\", \\"r+\\"); fs.ftruncateSync(fd, 3); await call((done) => fs.ftruncate(fd, 5, done)); fs.closeSync(fd); await fsp.truncate(\\"truncate.txt\\", 2); const handle = await fsp.open(\\"truncate.txt\\", \\"r+\\"); await handle.truncate(4); await handle.close(); const bytes = fs.readFileSync(\\"truncate.txt\\"); console.log(bytes.length); console.log(bytes.toString(\\"hex\\"));"',
+  ].join(' '), { onEvent: (event) => truncateEvents.push(event) });
+  assertCondition(truncateResult.exitCode === 0, `browser node truncate workflow should succeed: ${truncateResult.stderr}`);
+  assertCondition(
+    truncateResult.stdout === '4\n61620000\n',
+    `browser node truncate APIs should preserve and zero-fill bytes: ${truncateResult.stdout}`
+  );
+  assertCondition(
+    (await workspace.readFile('truncate.txt', 'base64')) === Buffer.from([0x61, 0x62, 0, 0]).toString('base64'),
+    'browser node truncate writes should persist zero-filled bytes'
+  );
+  assertCondition(
+    truncateEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'truncate.txt' &&
+      event.change.contents === 'ab\0\0'
+    ),
+    `browser node truncate should emit live zero-filled file changes: ${JSON.stringify(truncateEvents)}`
+  );
+
   const bufferResult = await workspace.runCommand([
     'node',
     '-e',

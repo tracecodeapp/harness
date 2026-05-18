@@ -1348,6 +1348,16 @@ async function runBrowserJavaScriptProjectRequest(
       setFileBytes(entry.path ?? '', next);
       if (position === undefined || position === null) entry.offset = start + bytes.byteLength;
     };
+    const truncateFileBytes = (path: string, length = 0): void => {
+      const previous = fileStore.get(path);
+      if (!previous) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, truncate '${path}'`), { code: 'ENOENT' });
+      }
+      const size = Math.max(0, Number(length) || 0);
+      const next = new Uint8Array(size);
+      next.set(previous.slice(0, Math.min(previous.byteLength, size)));
+      setFileBytes(path, next);
+    };
     const fsApi = {
       constants: fsConstants,
       F_OK: fsConstants.F_OK,
@@ -1512,6 +1522,23 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback(null, stats));
         } catch (error) {
           queueMicrotask(() => callback(error as Error));
+        }
+      },
+      ftruncateSync: (fd: number, length = 0) => {
+        const entry = fileDescriptor(fd);
+        if (!entry.writable) throw Object.assign(new Error('EBADF: bad file descriptor, ftruncate'), { code: 'EBADF' });
+        if (entry.kind === 'device') throw Object.assign(new Error('EINVAL: invalid argument, ftruncate'), { code: 'EINVAL' });
+        truncateFileBytes(entry.path ?? '', length);
+        if (entry.offset > length) entry.offset = length;
+        return undefined;
+      },
+      ftruncate: (fd: number, lengthOrCallback?: number | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof lengthOrCallback === 'function' ? lengthOrCallback : callback;
+        try {
+          fsApi.ftruncateSync(fd, typeof lengthOrCallback === 'number' ? lengthOrCallback : 0);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
         }
       },
       createReadStream: (path: unknown, options?: string | { encoding?: string; start?: number; end?: number } | null) => {
@@ -1785,6 +1812,20 @@ async function runBrowserJavaScriptProjectRequest(
       lstat: (path: unknown, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
         fsApi.stat(path, callback);
       },
+      truncateSync: (path: unknown, length = 0) => {
+        const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        truncateFileBytes(normalized, length);
+        return undefined;
+      },
+      truncate: (path: unknown, lengthOrCallback?: number | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof lengthOrCallback === 'function' ? lengthOrCallback : callback;
+        try {
+          fsApi.truncateSync(path, typeof lengthOrCallback === 'number' ? lengthOrCallback : 0);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
@@ -1851,6 +1892,9 @@ async function runBrowserJavaScriptProjectRequest(
             };
           },
           stat: async () => fsApi.fstatSync(fd),
+          truncate: async (length = 0) => {
+            fsApi.ftruncateSync(fd, length);
+          },
           close: async () => {
             fsApi.closeSync(fd);
           },
@@ -1871,6 +1915,9 @@ async function runBrowserJavaScriptProjectRequest(
       },
       unlink: async (path: unknown) => {
         fsApi.unlinkSync(path);
+      },
+      truncate: async (path: unknown, length = 0) => {
+        fsApi.truncateSync(path, length);
       },
       rm: async (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         fsApi.rmSync(path, options);
