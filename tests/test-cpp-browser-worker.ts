@@ -297,6 +297,8 @@ async function main(): Promise<void> {
             '  if (patch_fd >= 0) { write(patch_fd, "abcd", 4); pwrite(patch_fd, "XY", 2, 1); close(patch_fd); }',
             '  int truncate_fd = open("truncated.txt", O_CREAT | O_WRONLY, 0644);',
             '  if (truncate_fd >= 0) { write(truncate_fd, "abcdef", 6); ftruncate(truncate_fd, 3); close(truncate_fd); }',
+            '  int allocated_fd = open("allocated.bin", O_CREAT | O_RDWR, 0644);',
+            '  if (allocated_fd >= 0) { posix_fallocate(allocated_fd, 0, 4); write(allocated_fd, "hi", 2); close(allocated_fd); }',
             '  std::cout << "before-live\\\\n" << std::flush;',
             '  std::ofstream multi("multi.txt");',
             '  multi << "one";',
@@ -1153,6 +1155,10 @@ async function main(): Promise<void> {
       `C++ browser project run should return ftruncate mutations: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/allocated.bin' && file.contents === 'hi\0\0') === true,
+      `C++ browser project run should return posix_fallocate mutations: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
       projectRun.files?.some((file) => file.path === 'src/multi.txt' && file.contents === 'onetwo\n') === true,
       `C++ browser project run should return final multi-write contents: ${JSON.stringify(projectRun)}`
     );
@@ -1213,6 +1219,21 @@ async function main(): Promise<void> {
         event.change.contents === 'abc'
       )) === true,
       `C++ browser project run should stream live ftruncate mutations: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/allocated.bin' &&
+        event.change.contents === '\0\0\0\0'
+      )) === true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/allocated.bin' &&
+          event.change.contents === 'hi\0\0'
+        )) === true,
+      `C++ browser project run should stream live posix_fallocate mutations before final diff: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.events?.some((event) => (

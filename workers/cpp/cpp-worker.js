@@ -948,6 +948,18 @@ class WasiProcess {
     return ESUCCESS;
   }
 
+  fd_allocate(fd, offset, length) {
+    const entry = this.fds.get(fd);
+    if (!entry || entry.kind !== 'file') return EBADF;
+    if (!entry.writable) return EBADF;
+    if (this.fs.isReadOnly(entry.path)) return EROFS;
+    const end = Number(offset) + Number(length);
+    if (!Number.isFinite(end) || end < 0) return EINVAL;
+    const currentSize = this.fs.exists(entry.path) ? this.fs.readFile(entry.path).length : 0;
+    if (end > currentSize) this.fs.resizeFile(entry.path, end);
+    return ESUCCESS;
+  }
+
   fd_prestat_get(fd, outPtr) {
     const entry = this.fds.get(fd);
     if (!entry || !entry.preopen) return EBADF;
@@ -1114,6 +1126,7 @@ async function instantiateWasi(module, process) {
     'fd_datasync',
     'fd_fdstat_get',
     'fd_fdstat_set_flags',
+    'fd_allocate',
     'fd_filestat_get',
     'fd_filestat_set_size',
     'fd_pread',
