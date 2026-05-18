@@ -5648,7 +5648,10 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     env: {},
     stdin: '',
     project: {
-      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+      files: [
+        { path: 'Main.java', contents: 'class Main { public static void main(String[] args) { System.out.println(Helper.value()); } }\n' },
+        { path: 'Helper.java', contents: 'class Helper { static int value() { return 5; } }\n' },
+      ],
     },
     onEvent: (event) => {
       if (event.type === 'file-change' && event.change.path === 'java-live.txt') {
@@ -5661,8 +5664,12 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     },
   });
 
-  assertCondition(result.stdout === 'java-streamed\nrun:Main:1', 'browser java runner should delegate to worker client');
+  assertCondition(result.stdout === 'java-streamed\nrun:Main:2', 'browser java runner should delegate full project snapshot to worker client');
   assertCondition(received?.scriptPath === 'Main', 'browser java runner should pass through request');
+  assertCondition(
+    received?.project.files.some((file) => file.path === 'Helper.java') === true,
+    'browser java runner should include referenced helper sources in project requests'
+  );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
@@ -5815,7 +5822,10 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     env: {},
     stdin: '',
     project: {
-      files: [{ path: 'main.py', contents: 'print("hello")\n' }],
+      files: [
+        { path: 'main.py', contents: 'from helper import value\nprint(value())\n' },
+        { path: 'helper.py', contents: 'def value():\n    return 5\n' },
+      ],
     },
     onEvent: (event) => {
       if (event.type === 'file-change' && event.change.path === 'py-live.txt') {
@@ -5825,8 +5835,12 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     },
   });
 
-  assertCondition(result.stdout === 'streamed\nmain.py:1', 'pyodide runner should delegate to worker client');
+  assertCondition(result.stdout === 'streamed\nmain.py:2', 'pyodide runner should delegate full project snapshot to worker client');
   assertCondition(received?.scriptPath === 'main.py', 'pyodide runner should pass through request');
+  assertCondition(
+    received?.project.files.some((file) => file.path === 'helper.py') === true,
+    'pyodide runner should include imported helper files in project requests'
+  );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
@@ -5953,7 +5967,10 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     env: {},
     stdin: '',
     project: {
-      files: [{ path: 'Program.cs', contents: 'Console.WriteLine("hello");\n' }],
+      files: [
+        { path: 'Program.cs', contents: 'Console.WriteLine(Helper.Value());\n' },
+        { path: 'Helper.cs', contents: 'static class Helper { public static int Value() => 5; }\n' },
+      ],
     },
     onEvent: (event) => {
       if (event.type === 'file-change' && event.change.path === 'csharp-live.txt') {
@@ -5966,8 +5983,12 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     },
   });
 
-  assertCondition(result.stdout === 'csharp-streamed\nrun:<project>:alpha,beta:1', 'browser C# runner should delegate to worker client');
+  assertCondition(result.stdout === 'csharp-streamed\nrun:<project>:alpha,beta:2', 'browser C# runner should delegate full project snapshot to worker client');
   assertCondition(received?.scriptPath === '<project>', 'browser C# runner should pass through request');
+  assertCondition(
+    received?.project.files.some((file) => file.path === 'Helper.cs') === true,
+    'browser C# runner should include sibling source files in project requests'
+  );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
@@ -6053,12 +6074,16 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
     code: '',
     source: 'compile',
     scriptPath: 'main.cpp',
-    args: ['main.cpp', '-o', 'a.out'],
+    args: ['main.cpp', 'helper.cpp', '-o', 'a.out'],
     cwd: '/workspace',
     env: {},
     stdin: '',
     project: {
-      files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
+      files: [
+        { path: 'main.cpp', contents: '#include "helper.hpp"\nint main() { return value(); }\n' },
+        { path: 'helper.cpp', contents: '#include "helper.hpp"\nint value() { return 0; }\n' },
+        { path: 'helper.hpp', contents: 'int value();\n' },
+      ],
     },
     onEvent: (event) => {
       if (event.type === 'file-change' && event.change.path === 'cpp-live.txt') {
@@ -6071,8 +6096,13 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
     },
   });
 
-  assertCondition(result.stdout === 'cpp-streamed\ncompile:main.cpp:main.cpp,-o,a.out:1', 'browser C++ runner should delegate to worker client');
+  assertCondition(result.stdout === 'cpp-streamed\ncompile:main.cpp:main.cpp,helper.cpp,-o,a.out:3', 'browser C++ runner should delegate full project snapshot to worker client');
   assertCondition(received?.scriptPath === 'main.cpp', 'browser C++ runner should pass through request');
+  assertCondition(
+    received?.project.files.some((file) => file.path === 'helper.cpp') === true &&
+      received?.project.files.some((file) => file.path === 'helper.hpp') === true,
+    'browser C++ runner should include linked source and header files in project requests'
+  );
   assertCondition(
     events
       .filter((event) => event.type === 'output' && event.stream === 'stdout')
