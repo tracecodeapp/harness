@@ -197,7 +197,11 @@ function testJavaBrowserHelperWorkspaceDirectories(): void {
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardOpenOption;
 import tracecode.browser.BrowserCompileAndTraceLibrary;
+import tracecode.browser.ProjectEvents;
 
 public class ProjectWorkspaceDirectorySmoke {
   public static void main(String[] args) throws Exception {
@@ -218,6 +222,15 @@ public class ProjectWorkspaceDirectorySmoke {
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, manifest));
     String kernelManifest = "/proc/kernel/version\\t" + java.util.Base64.getEncoder().encodeToString("kernel".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, kernelManifest));
+    ProjectEvents.setKernelDevices("L2Rldi9zdGRpbg==\\tMQ==\\t\\tL2Rldi9zdGRpbg==\\t", "from-channel\\n");
+    try (var channel = ProjectEvents.newByteChannel(Paths.get("/dev/stdin"), StandardOpenOption.READ)) {
+      ByteBuffer bytes = ByteBuffer.allocate(64);
+      channel.read(bytes);
+      bytes.flip();
+      System.out.println(StandardCharsets.UTF_8.decode(bytes).toString().trim());
+    } finally {
+      ProjectEvents.clearKernelDevices();
+    }
   }
 }
 `,
@@ -239,7 +252,7 @@ public class ProjectWorkspaceDirectorySmoke {
       ],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [isDirectory, changedFilesJson, kernelChangedFilesJson] = output.trim().split('\n');
+    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
     assertCondition(
       Array.isArray(JSON.parse(changedFilesJson ?? 'null')) && JSON.parse(changedFilesJson ?? 'null').length === 0,
@@ -248,6 +261,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       Array.isArray(JSON.parse(kernelChangedFilesJson ?? 'null')) && JSON.parse(kernelChangedFilesJson ?? 'null').length === 0,
       'Java browser helper should not report kernel virtual manifest entries as workspace deletions'
+    );
+    assertCondition(
+      deviceChannelInput === 'from-channel',
+      `Java browser helper should read kernel stdin through newByteChannel: ${output}`
     );
     const projectEventsSource = readFileSync(
       join(process.cwd(), 'workers', 'java', 'src', 'tracecode', 'browser', 'ProjectEvents.java'),
@@ -762,7 +779,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               const hasCustomKernelDevices = hasKernelDevices &&
                 decodedSourceManifest.includes('/dev/log') &&
                 decodedSourceManifest.includes('/dev/custom-in');
-              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
+              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\ndev_stderr\nps_stderr\n' : 'dev_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
@@ -858,6 +875,11 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   null,
                   'stdout',
                   'dev_stream_stdin=from-stdin\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'dev_channel_stdin=from-stdin\n'
                 );
                 if (hasCustomKernelDevices) {
                   cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
@@ -1584,6 +1606,7 @@ async function main(): Promise<void> {
               '    try { Files.deleteIfExists(Path.of("/dev/stdout")); System.out.println("dev-delete:ok"); } catch (IOException ex) { System.out.println("dev-delete:" + ex.getClass().getSimpleName()); }',
               '    System.out.println("dev_stdin=" + Files.readString(Path.of("/dev/stdin")).trim());',
               '    try (var stream = new FileInputStream("/dev/stdin")) { System.out.println("dev_stream_stdin=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
+              '    try (var channel = Files.newByteChannel(Path.of("/dev/stdin"), StandardOpenOption.READ)) { var bytes = ByteBuffer.allocate(64); channel.read(bytes); bytes.flip(); System.out.println("dev_channel_stdin=" + StandardCharsets.UTF_8.decode(bytes).toString().trim()); }',
               '    try (var stream = new FileInputStream("/dev/custom-in")) { System.out.println("dev_stream_custom=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    Files.writeString(Path.of("/dev/stdout"), "dev_stdout\\\\n");',
               '    try (var stream = new FileOutputStream("/dev/stdout")) { stream.write("fos_stdout\\\\n".getBytes(StandardCharsets.UTF_8)); }',
@@ -1616,7 +1639,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
+      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_log\ndev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -1668,6 +1691,12 @@ async function main(): Promise<void> {
             event.type === 'output' &&
             event.stream === 'stdout' &&
             event.data === 'dev_stream_stdin=from-stdin\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'dev_channel_stdin=from-stdin\n'
         ) === true &&
         projectExecute.events?.some(
           (event) =>

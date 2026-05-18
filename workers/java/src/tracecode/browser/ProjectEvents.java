@@ -355,8 +355,8 @@ public final class ProjectEvents {
   }
 
   public static SeekableByteChannel newByteChannel(Path path, OpenOption... options) throws IOException {
-    KernelDevice device = writableKernelDevice(path);
-    if (device != null) return new KernelDeviceByteChannel(device);
+    SeekableByteChannel deviceChannel = kernelDeviceByteChannel(path, options);
+    if (deviceChannel != null) return deviceChannel;
     boolean writable = byteChannelCanWrite(options);
     if (writable) assertWritableProjectPath(path);
     return new ProjectSeekableByteChannel(Files.newByteChannel(path, options), path, writable);
@@ -367,9 +367,10 @@ public final class ProjectEvents {
       Set<? extends OpenOption> options,
       FileAttribute<?>... attrs
   ) throws IOException {
-    KernelDevice device = writableKernelDevice(path);
-    if (device != null) return new KernelDeviceByteChannel(device);
-    boolean writable = byteChannelCanWrite(options == null ? null : options.toArray(new OpenOption[0]));
+    OpenOption[] optionArray = options == null ? null : options.toArray(new OpenOption[0]);
+    SeekableByteChannel deviceChannel = kernelDeviceByteChannel(path, optionArray);
+    if (deviceChannel != null) return deviceChannel;
+    boolean writable = byteChannelCanWrite(optionArray);
     if (writable) assertWritableProjectPath(path);
     return new ProjectSeekableByteChannel(Files.newByteChannel(path, options, attrs), path, writable);
   }
@@ -1166,19 +1167,32 @@ public final class ProjectEvents {
 
   private static final class KernelDeviceByteChannel implements SeekableByteChannel {
     private final KernelDevice device;
+    private final boolean readable;
+    private final boolean writable;
+    private final byte[] inputBytes;
+    private int position = 0;
     private boolean open = true;
 
-    KernelDeviceByteChannel(KernelDevice device) {
+    KernelDeviceByteChannel(KernelDevice device, boolean readable, boolean writable) {
       this.device = device;
+      this.readable = readable;
+      this.writable = writable;
+      this.inputBytes = readable ? readKernelDevice(device) : new byte[0];
     }
 
     @Override
     public int read(ByteBuffer dst) throws IOException {
-      throw new IOException("Kernel device is not readable: " + device.path);
+      if (!readable) throw new IOException("Kernel device is not readable: " + device.path);
+      if (position >= inputBytes.length) return -1;
+      int length = Math.min(dst.remaining(), inputBytes.length - position);
+      dst.put(inputBytes, position, length);
+      position += length;
+      return length;
     }
 
     @Override
-    public int write(ByteBuffer src) {
+    public int write(ByteBuffer src) throws IOException {
+      if (!writable) throw new IOException("Kernel device is not writable: " + device.path);
       int length = src.remaining();
       byte[] bytes = new byte[length];
       src.get(bytes);
@@ -1188,21 +1202,26 @@ public final class ProjectEvents {
 
     @Override
     public long position() {
-      return 0;
+      return position;
     }
 
     @Override
     public SeekableByteChannel position(long newPosition) {
+      if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
+        throw new IllegalArgumentException("Invalid kernel device channel position: " + newPosition);
+      }
+      position = (int) newPosition;
       return this;
     }
 
     @Override
     public long size() {
-      return 0;
+      return inputBytes.length;
     }
 
     @Override
-    public SeekableByteChannel truncate(long size) {
+    public SeekableByteChannel truncate(long size) throws IOException {
+      if (!writable) throw new IOException("Kernel device is not writable: " + device.path);
       return this;
     }
 
@@ -1263,6 +1282,24 @@ public final class ProjectEvents {
       }
     }
     return false;
+  }
+
+  private static boolean byteChannelCanRead(OpenOption... options) {
+    if (options == null || options.length == 0) return true;
+    for (OpenOption option : options) {
+      if (option == StandardOpenOption.READ) return true;
+    }
+    return !byteChannelCanWrite(options);
+  }
+
+  private static SeekableByteChannel kernelDeviceByteChannel(Path path, OpenOption... options) throws IOException {
+    KernelDevice device = kernelDevice(path);
+    if (device == null) return null;
+    boolean readable = byteChannelCanRead(options);
+    boolean writable = byteChannelCanWrite(options);
+    if (readable && !device.readable) throw new IOException("Kernel device is not readable: " + device.path);
+    if (writable && !device.writable) throw new IOException("Kernel device is not writable: " + device.path);
+    return new KernelDeviceByteChannel(device, readable, writable);
   }
 
   private static byte[] kernelInputBytes(Path path) throws IOException {
