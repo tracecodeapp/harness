@@ -420,17 +420,17 @@ export async function runRuntimeProjectWorkerBridge<
       stderr: message ? `${message}\n` : 'Runtime project worker failed.\n',
       exitCode: 1,
     } as Result;
-    io.status(options.finishPhase, options.finishMessage, { exitCode: failedResult.exitCode, error: message });
     liveIo.emitMissingFinalOutput(failedResult, (stream, data) => io.output(stream, data));
+    io.status(options.finishPhase, options.finishMessage, { exitCode: failedResult.exitCode, error: message });
     return failedResult;
   }
   const commandResult = liveIo.filterAppliedResultFiles(result);
+  liveIo.emitMissingFinalOutput(commandResult, (stream, data) => io.output(stream, data));
   io.status(
     options.finishPhase,
     options.finishMessage,
     options.finishDetail ? options.finishDetail(commandResult) : { exitCode: commandResult.exitCode }
   );
-  liveIo.emitMissingFinalOutput(commandResult, (stream, data) => io.output(stream, data));
   return commandResult;
 }
 

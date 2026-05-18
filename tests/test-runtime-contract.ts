@@ -621,6 +621,12 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
         .join('') === 'err-one\nerr-two\n',
     `runtime worker bridge should stream missing final stdout/stderr suffixes: ${stableStringify(partialOutputEvents)}`
   );
+  const partialOutputLastOutputIndex = partialOutputEvents.findLastIndex((event) => event.type === 'output');
+  const partialOutputExitIndex = partialOutputEvents.findIndex((event) => event.type === 'status' && event.phase === 'process-exit');
+  assertCondition(
+    partialOutputLastOutputIndex >= 0 && partialOutputExitIndex > partialOutputLastOutputIndex,
+    `runtime worker bridge should emit reconciled final output before process-exit status: ${stableStringify(partialOutputEvents)}`
+  );
 
   assertCondition(
     events.some((event) =>
@@ -675,6 +681,16 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
       ) &&
       !failedEvents.some((event) => event.type === 'output' && event.data.includes('after-bad')),
     `runtime worker bridge should stop later output after live apply failures: ${stableStringify(failedEvents)}`
+  );
+  const failedErrorOutputIndex = failedEvents.findIndex((event) =>
+    event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.data === 'apply-failed:bad-live.txt\n'
+  );
+  const failedExitIndex = failedEvents.findIndex((event) => event.type === 'status' && event.phase === 'process-exit');
+  assertCondition(
+    failedErrorOutputIndex >= 0 && failedExitIndex > failedErrorOutputIndex,
+    `runtime worker bridge should emit apply failure stderr before process-exit status: ${stableStringify(failedEvents)}`
   );
 }
 
