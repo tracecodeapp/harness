@@ -145,16 +145,22 @@ function runtimeWriteTarget(
   return runtimeKernelWriteTarget(raw, devices);
 }
 
-function runtimeMutationTarget(path: unknown): ReturnType<typeof runtimeKernelMutationTarget> | null {
+function runtimeMutationTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelMutationTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelMutationTarget(raw);
+  return runtimeKernelMutationTarget(raw, devices);
 }
 
-function runtimeMetadataTarget(path: unknown): ReturnType<typeof runtimeKernelMetadataTarget> | null {
+function runtimeMetadataTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelMetadataTarget> | null {
   if (typeof path === 'number') return null;
   const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
-  return runtimeKernelMetadataTarget(raw);
+  return runtimeKernelMetadataTarget(raw, devices);
 }
 
 function runtimeAccessTarget(
@@ -2324,7 +2330,7 @@ async function runBrowserJavaScriptProjectRequest(
       return Number(value);
     };
     const deleteFile = (path: unknown): void => {
-      const mutationTarget = runtimeMutationTarget(path);
+      const mutationTarget = runtimeMutationTarget(path, kernelDevices);
       if (mutationTarget?.kind === 'error') {
         const message = mutationTarget.reason === 'device-not-found'
           ? `ENOENT: no such file or directory, unlink '${path}'`
@@ -2448,7 +2454,7 @@ async function runBrowserJavaScriptProjectRequest(
       notifyWatchFileWatchers(path);
     };
     const metadataPathForEntry = (path: unknown): string | null => {
-      const metadataTarget = runtimeMetadataTarget(path);
+      const metadataTarget = runtimeMetadataTarget(path, kernelDevices);
       if (metadataTarget?.kind === 'ignored-device') return null;
       if (metadataTarget?.kind === 'error') {
         const message = metadataTarget.reason === 'proc-read-only'
@@ -2524,7 +2530,7 @@ async function runBrowserJavaScriptProjectRequest(
     const descriptorMetadataPath = (fd: number, operation: string): string | null => {
       const entry = fileDescriptor(fd);
       const path = entry.kind === 'device' ? entry.device ?? '/dev/stdin' : entry.path ?? '';
-      const metadataTarget = runtimeKernelMetadataTarget(path);
+      const metadataTarget = runtimeKernelMetadataTarget(path, kernelDevices);
       if (metadataTarget.kind === 'ignored-device') return null;
       if (metadataTarget.kind === 'error') {
         const message = metadataTarget.reason === 'proc-read-only'
@@ -3441,11 +3447,11 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       linkSync: (existingPath: unknown, newPath: unknown) => {
-        const sourceMutationTarget = runtimeMutationTarget(existingPath);
+        const sourceMutationTarget = runtimeMutationTarget(existingPath, kernelDevices);
         if (sourceMutationTarget?.kind === 'error') {
           throwRuntimeMutationTargetError(sourceMutationTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
         }
-        const destinationMutationTarget = runtimeMutationTarget(newPath);
+        const destinationMutationTarget = runtimeMutationTarget(newPath, kernelDevices);
         if (destinationMutationTarget?.kind === 'error') {
           throwRuntimeMutationTargetError(destinationMutationTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
         }
@@ -3475,7 +3481,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       symlinkSync: (_target: unknown, linkPath: unknown) => {
-        const mutationTarget = runtimeMutationTarget(linkPath);
+        const mutationTarget = runtimeMutationTarget(linkPath, kernelDevices);
         if (mutationTarget?.kind === 'error') {
           throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, symlink '${linkPath}'`);
         }
@@ -3521,11 +3527,11 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       renameSync: (oldPath: unknown, newPath: unknown) => {
-        const oldMutationTarget = runtimeMutationTarget(oldPath);
+        const oldMutationTarget = runtimeMutationTarget(oldPath, kernelDevices);
         if (oldMutationTarget?.kind === 'error') {
           throwRuntimeMutationTargetError(oldMutationTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
         }
-        const newMutationTarget = runtimeMutationTarget(newPath);
+        const newMutationTarget = runtimeMutationTarget(newPath, kernelDevices);
         if (newMutationTarget?.kind === 'error') {
           throwRuntimeMutationTargetError(newMutationTarget, `EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`);
         }
@@ -3621,7 +3627,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       rmSync: (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         try {
-          const mutationTarget = runtimeMutationTarget(path);
+          const mutationTarget = runtimeMutationTarget(path, kernelDevices);
           if (mutationTarget?.kind === 'error') {
             const message = mutationTarget.reason === 'device-not-found'
               ? `ENOENT: no such file or directory, rm '${path}'`
@@ -3932,7 +3938,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       truncateSync: (path: unknown, length = 0) => {
-        const mutationTarget = runtimeMutationTarget(path);
+        const mutationTarget = runtimeMutationTarget(path, kernelDevices);
         if (mutationTarget?.kind === 'error') {
           const message = mutationTarget.reason === 'device-not-found'
             ? `ENOENT: no such file or directory, truncate '${path}'`
@@ -3956,7 +3962,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
-        const mutationTarget = runtimeMutationTarget(path);
+        const mutationTarget = runtimeMutationTarget(path, kernelDevices);
         if (mutationTarget?.kind === 'error') {
           throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, mkdir '${path}'`);
         }
@@ -4034,7 +4040,7 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       rmdirSync: (path: unknown) => {
-        const mutationTarget = runtimeMutationTarget(path);
+        const mutationTarget = runtimeMutationTarget(path, kernelDevices);
         if (mutationTarget?.kind === 'error') {
           throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, rmdir '${path}'`);
         }

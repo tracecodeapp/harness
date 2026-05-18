@@ -21,7 +21,13 @@ import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
-import { runtimeKernelFileReadTarget, runtimeKernelOpenTarget, runtimeKernelStatTarget } from '../packages/harness-core/src/runtime-kernel';
+import {
+  runtimeKernelFileReadTarget,
+  runtimeKernelMetadataTarget,
+  runtimeKernelMutationTarget,
+  runtimeKernelOpenTarget,
+  runtimeKernelStatTarget,
+} from '../packages/harness-core/src/runtime-kernel';
 import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
@@ -88,6 +94,25 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     stableStringify(runtimeKernelFileReadTarget('/dev/stdin', devices)) ===
       '{"kind":"device-file","path":"/dev/stdin"}',
     'kernel read target should allow high-level reads on readable devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelMutationTarget('/dev/log', [
+      ...devices,
+      { path: '/dev/log' as const, readable: false, writable: true, outputDevice: '/dev/stderr' as const },
+    ])) === '{"kind":"error","path":"/dev/log","reason":"device-read-only"}',
+    'kernel mutation target should recognize manifest custom devices as protected device paths'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelMutationTarget('/dev/log', devices)) ===
+      '{"kind":"error","path":"/dev/log","reason":"device-not-found"}',
+    'kernel mutation target should reject non-manifest custom device paths as missing'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelMetadataTarget('/dev/log', [
+      ...devices,
+      { path: '/dev/log' as const, readable: false, writable: true, outputDevice: '/dev/stderr' as const },
+    ])) === '{"kind":"ignored-device","path":"/dev/log"}',
+    'kernel metadata target should ignore metadata changes on manifest custom devices'
   );
 }
 

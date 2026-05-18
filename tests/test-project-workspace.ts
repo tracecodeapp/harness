@@ -2062,6 +2062,10 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
       'process.stdout.write(String(fs.existsSync("/dev/log")) + ":" + String(fs.existsSync("/dev/missing")) + "\\n");',
       'fs.accessSync("/dev/log", fs.constants.W_OK);',
       'fs.accessSync("/dev/custom-in", fs.constants.R_OK);',
+      'try { fs.rmSync("/dev/log"); } catch (error) { process.stdout.write("rm-log:" + error.code + "\\n"); }',
+      'fs.chmodSync("/dev/log", 0o600);',
+      'process.stdout.write("chmod-log:ok\\n");',
+      'try { fs.rmSync("/dev/missing"); } catch (error) { process.stdout.write("rm-missing:" + error.code + "\\n"); }',
       'fs.copyFileSync("/dev/custom-in", "custom-copy.txt");',
       'process.stdout.write(fs.readFileSync("custom-copy.txt", "utf8").trim() + "\\n");',
       'fs.writeFileSync("/dev/tty", "tty-device\\n");',
@@ -2090,7 +2094,10 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
   });
 
   assertCondition(result.exitCode === 0, `browser node custom kernel device inventory should succeed: ${result.stderr}`);
-  assertCondition(result.stdout === 'from-tty\nfrom-tty\ntrue\ntrue:false\nfrom-tty\n', `browser node should read manifest devices and list them in /dev: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout === 'from-tty\nfrom-tty\ntrue\ntrue:false\nrm-log:EROFS\nchmod-log:ok\nrm-missing:ENOENT\nfrom-tty\n',
+    `browser node should read manifest devices and list them in /dev: ${JSON.stringify(result)}`
+  );
   assertCondition(
     result.stderr === 'tty-device\ncopy-device\nlog-device\ncopy-device\n',
     `browser node should route /dev/tty writes through configured stderr target: ${JSON.stringify(result)}`

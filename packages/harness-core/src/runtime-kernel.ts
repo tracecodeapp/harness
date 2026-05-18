@@ -279,13 +279,23 @@ export function runtimeKernelWriteErrorCode(
   return 'ENOENT';
 }
 
-export function runtimeKernelMutationTarget(path: string): RuntimeKernelMutationTarget {
+export function runtimeKernelMutationTarget(
+  path: string,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelMutationTarget {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
   if (virtualPath.kind === 'proc') {
     return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-namespace') {
+    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    if (!device || !runtimeKernelDeviceInfo(devices, device)) {
+      return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
+    }
+    return { kind: 'error', reason: 'device-read-only', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device' && devices && !runtimeKernelDeviceInfo(devices, virtualPath.path)) {
     return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
   }
   return { kind: 'error', reason: 'device-read-only', path: virtualPath.path };
@@ -297,13 +307,23 @@ export function runtimeKernelMutationErrorCode(
   return reason === 'device-not-found' ? 'ENOENT' : 'EROFS';
 }
 
-export function runtimeKernelMetadataTarget(path: string): RuntimeKernelMetadataTarget {
+export function runtimeKernelMetadataTarget(
+  path: string,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): RuntimeKernelMetadataTarget {
   const virtualPath = classifyRuntimeKernelVirtualPath(path);
   if (virtualPath === null) return { kind: 'workspace' };
   if (virtualPath.kind === 'proc') {
     return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
   }
   if (virtualPath.kind === 'device-namespace') {
+    const device = normalizeRuntimeKernelDeviceReference(virtualPath.path);
+    if (!device || !runtimeKernelDeviceInfo(devices, device)) {
+      return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
+    }
+    return { kind: 'ignored-device', path: device };
+  }
+  if (virtualPath.kind === 'device' && devices && !runtimeKernelDeviceInfo(devices, virtualPath.path)) {
     return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
   }
   return { kind: 'ignored-device', path: virtualPath.path };
