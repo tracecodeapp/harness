@@ -2436,6 +2436,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node readable file streams should support pull reads and event reads on the same cursor: ${streamReadResult.stdout}`
   );
 
+  const streamPauseResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"stream-pause.txt\\", \\"paused\\"); const input = fs.createReadStream(\\"stream-pause.txt\\", { encoding: \\"utf8\\" }); const events = []; console.log(String(input.readableFlowing)); input.pause(); console.log(String(input.readableFlowing)); input.on(\\"data\\", (chunk) => events.push(\\"data:\\" + chunk)); input.on(\\"end\\", () => events.push(\\"end\\")); await new Promise((resolve) => queueMicrotask(resolve)); console.log(events.join(\\"|\\")); input.resume(); console.log(String(input.readableFlowing)); await new Promise((resolve) => input.on(\\"close\\", resolve)); console.log(events.join(\\"|\\")); console.log(input.readableEnded + \\":\\" + input.closed);"',
+  ].join(' '));
+  assertCondition(streamPauseResult.exitCode === 0, `browser node stream pause/resume workflow should succeed: ${streamPauseResult.stderr}`);
+  assertCondition(
+    streamPauseResult.stdout === 'null\nfalse\n\ntrue\ndata:paused|end\ntrue:true\n',
+    `browser node readable file streams should support pause/resume flow control: ${streamPauseResult.stdout}`
+  );
+
   const streamPipeResult = await workspace.runCommand([
     'node',
     '-e',

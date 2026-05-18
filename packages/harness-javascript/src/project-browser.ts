@@ -1506,6 +1506,7 @@ async function runBrowserJavaScriptProjectRequest(
       let ended = false;
       let offset = 0;
       let streamEncoding = encoding;
+      let readableFlowing: boolean | null = null;
       const pipeBindings: PipeBinding[] = [];
       const closeStream = (): void => {
         if (closed) return;
@@ -1531,6 +1532,7 @@ async function runBrowserJavaScriptProjectRequest(
       };
       const scheduleRead = (): void => {
         if (started) return;
+        if (readableFlowing === false) return;
         started = true;
         queueMicrotask(() => {
           if (closed || destroyed) return;
@@ -1559,6 +1561,9 @@ async function runBrowserJavaScriptProjectRequest(
         get readableLength() {
           return Math.max(0, bytes.byteLength - offset);
         },
+        get readableFlowing() {
+          return readableFlowing;
+        },
         setEncoding: (nextEncoding: string) => {
           streamEncoding = nextEncoding;
           return stream;
@@ -1566,7 +1571,12 @@ async function runBrowserJavaScriptProjectRequest(
         read: (size?: number) => readChunk(size),
         on: (event: string, listener: (...args: unknown[]) => void) => {
           events.on(event, listener);
-          if (event === 'data' || event === 'end') scheduleRead();
+          if (event === 'data') {
+            if (readableFlowing === null) readableFlowing = true;
+            scheduleRead();
+          } else if (event === 'end') {
+            scheduleRead();
+          }
           return stream;
         },
         addListener: (event: string, listener: (...args: unknown[]) => void) => {
@@ -1584,7 +1594,21 @@ async function runBrowserJavaScriptProjectRequest(
         emit: (event: string, ...args: unknown[]) => events.emit(event, ...args),
         once: (event: string, listener: (...args: unknown[]) => void) => {
           events.once(event, listener);
-          if (event === 'data' || event === 'end') scheduleRead();
+          if (event === 'data') {
+            if (readableFlowing === null) readableFlowing = true;
+            scheduleRead();
+          } else if (event === 'end') {
+            scheduleRead();
+          }
+          return stream;
+        },
+        pause: () => {
+          readableFlowing = false;
+          return stream;
+        },
+        resume: () => {
+          readableFlowing = true;
+          scheduleRead();
           return stream;
         },
         destroy: (error?: Error) => {
@@ -1608,6 +1632,7 @@ async function runBrowserJavaScriptProjectRequest(
           events.on('data', onData);
           events.on('end', onEnd);
           destination.emit?.('pipe', stream);
+          readableFlowing = true;
           scheduleRead();
           return destination;
         },
