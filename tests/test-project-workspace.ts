@@ -2280,6 +2280,35 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     ).map((event) => event.data).join('') === 'pts-device\n',
     `browser node should support nested manifest output devices: ${JSON.stringify(events)}`
   );
+  const customDeviceExitIndex = events.findIndex((event) => event.type === 'status' && event.phase === 'process-exit');
+  const customDeviceOutputIndexes = [
+    events.findIndex((event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.sourceDevice === '/dev/tty' &&
+      event.data === 'tty-device\n'
+    ),
+    events.findIndex((event) =>
+      event.type === 'output' &&
+      event.stream === 'stderr' &&
+      event.device === '/dev/stderr' &&
+      event.sourceDevice === '/dev/log' &&
+      event.data === 'log-device\n'
+    ),
+    events.findIndex((event) =>
+      event.type === 'output' &&
+      event.stream === 'stdout' &&
+      event.device === '/dev/stdout' &&
+      event.sourceDevice === '/dev/pts/0' &&
+      event.data === 'pts-device\n'
+    ),
+  ];
+  assertCondition(
+    customDeviceExitIndex > 0 &&
+      customDeviceOutputIndexes.every((index) => index >= 0 && index < customDeviceExitIndex),
+    `browser node custom device output events should stream before process-exit: ${JSON.stringify(events)}`
+  );
 
   const sharedStdinCursorResult = await createBrowserJavaScriptProjectRunner()({
     code: [
