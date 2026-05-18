@@ -1280,7 +1280,44 @@ async function runBrowserJavaScriptProjectRequest(
       cache.delete(normalized);
       io.fileChange({ path: normalized, deleted: true }, 'live');
     };
+    const fsConstants = {
+      F_OK: 0,
+      R_OK: 4,
+      W_OK: 2,
+      X_OK: 1,
+    } as const;
+    const fileSystemEntryExists = (path: unknown): boolean => {
+      const device = normalizeRuntimeDevicePath(path);
+      if (device) return true;
+      const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      const prefix = normalized ? `${normalized}/` : '';
+      return fileStore.has(normalized)
+        || directoryStore.has(normalized)
+        || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix));
+    };
+    const assertFileSystemAccess = (path: unknown, _mode: number = fsConstants.F_OK): void => {
+      if (!fileSystemEntryExists(path)) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
+      }
+    };
     const fsApi = {
+      constants: fsConstants,
+      F_OK: fsConstants.F_OK,
+      R_OK: fsConstants.R_OK,
+      W_OK: fsConstants.W_OK,
+      X_OK: fsConstants.X_OK,
+      accessSync: (path: unknown, mode = fsConstants.F_OK) => {
+        assertFileSystemAccess(path, mode);
+      },
+      access: (path: unknown, mode?: number | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof mode === 'function' ? mode : callback;
+        try {
+          assertFileSystemAccess(path, typeof mode === 'number' ? mode : fsConstants.F_OK);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       createReadStream: (path: unknown, options?: string | { encoding?: string; start?: number; end?: number } | null) => {
         const device = normalizeRuntimeDevicePath(path);
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
@@ -1496,6 +1533,10 @@ async function runBrowserJavaScriptProjectRequest(
       },
     };
     const fsPromisesApi = {
+      constants: fsConstants,
+      access: async (path: unknown, mode = fsConstants.F_OK) => {
+        fsApi.accessSync(path, mode);
+      },
       readFile: async (path: unknown, encoding?: string | { encoding?: string }) => fsApi.readFileSync(path, encoding),
       writeFile: async (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
         fsApi.writeFileSync(path, value, options);

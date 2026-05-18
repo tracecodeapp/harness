@@ -2091,6 +2091,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   await assertRejectsAsync(() => workspace.readFile('async-dir/value.txt'), 'browser node fs promises rm should persist deleted nested files');
 
+  const accessResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); fs.writeFileSync(\\"access.txt\\", \\"ok\\\\n\\"); fs.accessSync(\\"access.txt\\", fs.constants.R_OK | fs.constants.W_OK); console.log(fs.F_OK, fs.constants.R_OK, fs.constants.W_OK); await fsp.access(\\"access.txt\\", fsp.constants.R_OK); await new Promise((resolve, reject) => fs.access(\\"/dev/stdout\\", fs.constants.W_OK, (error) => error ? reject(error) : resolve())); try { fs.accessSync(\\"missing.txt\\"); } catch (error) { console.log(error.code); }"',
+  ].join(' '));
+  assertCondition(accessResult.exitCode === 0, `browser node fs access workflow should succeed: ${accessResult.stderr}`);
+  assertCondition(
+    accessResult.stdout === '0 4 2\nENOENT\n',
+    `browser node fs access APIs should expose constants and missing-file errors: ${accessResult.stdout}`
+  );
+
   const bufferResult = await workspace.runCommand([
     'node',
     '-e',
