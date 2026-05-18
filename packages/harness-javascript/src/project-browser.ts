@@ -23,6 +23,7 @@ import {
   runtimeKernelDirectoryErrorCode,
   runtimeKernelDirectoryTarget,
   runtimeKernelFileCopyTarget,
+  runtimeKernelFileCopyErrorCode,
   runtimeKernelFileReadTarget,
   runtimeKernelFileReadErrorCode,
   runtimeKernelLinkErrorCode,
@@ -3636,7 +3637,7 @@ async function runBrowserJavaScriptProjectRequest(
               : copyTarget.reason === 'device-directory'
                 ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
                 : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`;
-          throw Object.assign(new Error(message), { code: runtimeKernelWriteErrorCode(copyTarget.reason) });
+          throw Object.assign(new Error(message), { code: runtimeKernelFileCopyErrorCode(copyTarget) });
         }
         let sourceBytes: Uint8Array | undefined;
         const sourceTarget = copyTarget?.kind === 'virtual-source' || copyTarget?.kind === 'device-destination'
@@ -3650,7 +3651,7 @@ async function runBrowserJavaScriptProjectRequest(
             : copyTarget.reason === 'permission-denied'
               ? `EBADF: bad file descriptor, copyfile '${source}' -> '${destination}'`
             : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), {
-            code: runtimeKernelFileReadErrorCode(copyTarget.reason),
+            code: runtimeKernelFileCopyErrorCode(copyTarget),
           });
         } else if (sourceTarget?.kind === 'error') {
           throwRuntimeReadTargetError(sourceTarget, sourceTarget.reason === 'is-directory'

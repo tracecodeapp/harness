@@ -29,6 +29,7 @@ import {
   runtimeKernelDirectoryTarget,
   runtimeKernelDeviceOutputTarget,
   runtimeKernelFileCopyTarget,
+  runtimeKernelFileCopyErrorCode,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
@@ -139,6 +140,20 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     stableStringify(runtimeKernelFileCopyTarget('/proc/kernel/info', '/dev/tee', devices)) ===
       '{"device":"/dev/tee","kind":"device-destination","outputDevice":"/dev/capture","source":{"kind":"proc-file","path":"/proc/kernel/info"}}',
     'kernel file copy target should preserve manifest destination and output device aliases'
+  );
+  const copyToProcTarget = runtimeKernelFileCopyTarget('/proc/kernel/info', '/proc/kernel/version', devices);
+  assertCondition(
+    copyToProcTarget.kind === 'error' &&
+      copyToProcTarget.side === 'destination' &&
+      runtimeKernelFileCopyErrorCode(copyToProcTarget) === 'EROFS',
+    `kernel file copy error code should route destination errors through write policy: ${stableStringify(copyToProcTarget)}`
+  );
+  const copyFromStdoutTarget = runtimeKernelFileCopyTarget('/dev/stdout', 'stdout-copy.txt', devices);
+  assertCondition(
+    copyFromStdoutTarget.kind === 'error' &&
+      copyFromStdoutTarget.side === 'source' &&
+      runtimeKernelFileCopyErrorCode(copyFromStdoutTarget) === 'EBADF',
+    `kernel file copy error code should route source errors through file-read policy: ${stableStringify(copyFromStdoutTarget)}`
   );
   assertCondition(
     stableStringify(runtimeKernelOpenTarget('/dev/stdout', { readable: true }, devices)) ===

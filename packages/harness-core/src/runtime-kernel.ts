@@ -694,6 +694,14 @@ export function runtimeKernelFileCopyTarget(
   return { kind: 'workspace' };
 }
 
+export function runtimeKernelFileCopyErrorCode(
+  target: Extract<RuntimeKernelFileCopyTarget, { kind: 'error' }>
+): RuntimeKernelErrorCode {
+  return target.side === 'destination'
+    ? runtimeKernelWriteErrorCode(target.reason)
+    : runtimeKernelFileReadErrorCode(target.reason);
+}
+
 export function runtimeKernelLinkTarget(
   source: string,
   destination: string,
