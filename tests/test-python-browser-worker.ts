@@ -128,6 +128,21 @@ async function main(): Promise<void> {
             'print(os.environ.get("MODE", ""))',
             'print(",".join(sys.argv[1:]))',
             'print(os.getcwd())',
+            'stdin_fd = os.open("/dev/stdin", os.O_RDONLY)',
+            'try:',
+            '    print("dev-fd-stdin=" + os.read(stdin_fd, 64).decode("utf-8").strip())',
+            'finally:',
+            '    os.close(stdin_fd)',
+            'stdout_fd = os.open("/dev/stdout", os.O_WRONLY)',
+            'try:',
+            '    os.write(stdout_fd, b"dev-fd-out\\\\n")',
+            'finally:',
+            '    os.close(stdout_fd)',
+            'stderr_fd = os.open("/dev/stderr", os.O_WRONLY)',
+            'try:',
+            '    os.write(stderr_fd, b"dev-fd-err\\\\n")',
+            'finally:',
+            '    os.close(stderr_fd)',
             'print("stderr-line", file=sys.stderr)',
             'with open("/workspace/generated.txt", "w", encoding="utf-8") as handle:',
             '    handle.write(str(answer()) + "\\\\n")',
@@ -263,6 +278,12 @@ async function main(): Promise<void> {
             { path: '/proc/kernel/version', contents: 'tracekernel test\\n' },
             { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\\n' },
           ],
+          kernelDevices: [
+            { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+            { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+            { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+            { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+          ],
           files: [
             {
               path: 'app.py',
@@ -332,11 +353,11 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
-      results.fileRun.stderr === 'stderr-line\n',
+      results.fileRun.stderr === 'dev-fd-err\nstderr-line\n',
       `Python project file stderr should match workspace semantics: ${JSON.stringify(results.fileRun.stderr)}`
     );
     assertCondition(

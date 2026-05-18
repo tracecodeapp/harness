@@ -856,10 +856,10 @@ class _TraceDeviceFile:
         self.closed = False
 
     def readable(self):
-        return self._device in ("/dev/stdin", "/dev/tty") and "w" not in self._mode and "a" not in self._mode
+        return bool(_kernel_devices.get(self._device, {}).get("readable")) and "w" not in self._mode and "a" not in self._mode
 
     def writable(self):
-        return self._device in ("/dev/stdout", "/dev/stderr", "/dev/tty") and "r" not in self._mode
+        return bool(_kernel_devices.get(self._device, {}).get("writable")) and "r" not in self._mode
 
     def read(self, *args):
         if not self.readable():
@@ -872,7 +872,8 @@ class _TraceDeviceFile:
     def write(self, _value):
         if not self.writable():
             raise OSError("Kernel device is not writable: " + self._device)
-        _target = _stderr if self._device == "/dev/stderr" else _stdout
+        _output_device = str(_kernel_devices.get(self._device, {}).get("outputDevice") or self._device)
+        _target = _stderr if _output_device == "/dev/stderr" else _stdout
         return _target.write(_value)
 
     def flush(self):
@@ -1070,19 +1071,42 @@ def _map_workspace_path(_value):
             return os.path.join(_root, _relative_path)
     return _value
 
-def _normalize_device_path(_value):
-    if isinstance(_value, (str, bytes, os.PathLike)):
-        _original = os.fspath(_value)
-        if _original in ("/dev/stdin", "/dev/stdout", "/dev/stderr", "/dev/tty"):
-            return _original
-    return None
-
 _kernel_info = _project_info.get("kernel") if isinstance(_project_info.get("kernel"), dict) else {
     "name": "tracekernel",
     "version": "0.0.0",
     "workspaceRoot": _workspace_root,
     "workspace": {"name": _workspace_root.rstrip("/").split("/")[-1] or "workspace", "root": _workspace_root},
 }
+
+_kernel_devices = {}
+_kernel_device_entries = _project_info.get("kernelDevices", [])
+if not isinstance(_kernel_device_entries, list):
+    _kernel_device_entries = []
+for _entry in _kernel_device_entries:
+    if not isinstance(_entry, dict):
+        continue
+    _path = str(_entry.get("path", "")).replace("\\\\", "/").rstrip("/")
+    if _path.startswith("/dev/"):
+        _kernel_devices[_path] = {
+            "readable": bool(_entry.get("readable")),
+            "writable": bool(_entry.get("writable")),
+            "inputDevice": str(_entry.get("inputDevice") or ""),
+            "outputDevice": str(_entry.get("outputDevice") or ""),
+        }
+if not _kernel_devices:
+    _kernel_devices = {
+        "/dev/stdin": {"readable": True, "writable": False, "inputDevice": "/dev/stdin", "outputDevice": ""},
+        "/dev/stdout": {"readable": False, "writable": True, "inputDevice": "", "outputDevice": "/dev/stdout"},
+        "/dev/stderr": {"readable": False, "writable": True, "inputDevice": "", "outputDevice": "/dev/stderr"},
+        "/dev/tty": {"readable": True, "writable": True, "inputDevice": "/dev/stdin", "outputDevice": "/dev/stdout"},
+    }
+
+def _normalize_device_path(_value):
+    if isinstance(_value, (str, bytes, os.PathLike)):
+        _original = os.fspath(_value).replace("\\\\", "/").rstrip("/")
+        if _original in _kernel_devices:
+            return _original
+    return None
 
 def _normalize_proc_path(_value):
     if isinstance(_value, (str, bytes, os.PathLike)):
@@ -1252,8 +1276,9 @@ def _install_virtual_workspace_paths():
     _original_os_write = os.write
     _original_os_close = os.close
     _open_file_descriptors = {}
+    _device_file_descriptors = {}
     _proc_file_descriptors = {}
-    _next_proc_fd = 1000000
+    _next_virtual_fd = 1000000
     _patched = []
 
     def _absolute_mapped_path(_path):
@@ -1287,15 +1312,36 @@ def _install_virtual_workspace_paths():
         return _original_chdir(_map_workspace_path(_path))
 
     def _patched_os_open(_path, _flags, *args, **kwargs):
-        nonlocal _next_proc_fd
+        nonlocal _next_virtual_fd
+        _device = _normalize_device_path(_path)
+        if _device:
+            _mutating = _is_mutating_fd_flags(_flags)
+            _device_info = _kernel_devices.get(_device, {})
+            if bool(_device_info.get("writable")) and _mutating:
+                _fd = _next_virtual_fd
+                _next_virtual_fd += 1
+                _device_file_descriptors[_fd] = {"device": _device}
+                return _fd
+            if bool(_device_info.get("readable")) and not _mutating:
+                _fd = _next_virtual_fd
+                _next_virtual_fd += 1
+                _input_device = str(_device_info.get("inputDevice") or _device)
+                _device_file_descriptors[_fd] = {
+                    "device": _device,
+                    "inputDevice": _input_device,
+                    "contents": str(_request.get("stdin", "")).encode("utf-8"),
+                    "offset": 0,
+                }
+                return _fd
+            raise OSError("Kernel device mode is not supported: " + _device)
         _proc_path = _normalize_proc_path(_path)
         if _proc_path:
             if _is_mutating_fd_flags(_flags):
                 raise OSError("Kernel proc path is read-only: " + _proc_path)
             if _proc_entry_kind(_proc_path) == "directory":
                 raise IsADirectoryError(_proc_path)
-            _fd = _next_proc_fd
-            _next_proc_fd += 1
+            _fd = _next_virtual_fd
+            _next_virtual_fd += 1
             _proc_file_descriptors[_fd] = io.BytesIO(_proc_read_text(_proc_path).encode("utf-8"))
             return _fd
         _mapped_path = _map_workspace_path(_path)
@@ -1307,12 +1353,32 @@ def _install_virtual_workspace_paths():
         return _fd
 
     def _patched_os_read(_fd, _length):
+        _device_descriptor = _device_file_descriptors.get(_fd)
+        if _device_descriptor is not None:
+            if "contents" not in _device_descriptor:
+                raise OSError("Kernel device is not readable: " + str(_device_descriptor.get("device", "")))
+            _offset = int(_device_descriptor.get("offset", 0))
+            _contents = _device_descriptor.get("contents", b"")
+            _chunk = _contents[_offset:_offset + int(_length)]
+            _device_descriptor["offset"] = _offset + len(_chunk)
+            return _chunk
         _proc_handle = _proc_file_descriptors.get(_fd)
         if _proc_handle is not None:
             return _proc_handle.read(_length)
         return _original_os_read(_fd, _length)
 
     def _patched_os_write(_fd, _data):
+        _device_descriptor = _device_file_descriptors.get(_fd)
+        if _device_descriptor is not None:
+            _device = str(_device_descriptor.get("device", ""))
+            _device_info = _kernel_devices.get(_device, {})
+            _output_device = str(_device_info.get("outputDevice") or "")
+            if not _output_device:
+                raise OSError("Kernel device is not writable: " + _device)
+            _bytes = bytes(_data)
+            _target = _stderr if _output_device == "/dev/stderr" else _stdout
+            _target.write(_bytes.decode("utf-8", "replace"))
+            return len(_bytes)
         if _fd in _proc_file_descriptors:
             raise OSError("Kernel proc path is read-only")
         _result = _original_os_write(_fd, _data)
@@ -1322,6 +1388,9 @@ def _install_virtual_workspace_paths():
         return _result
 
     def _patched_os_close(_fd):
+        if _fd in _device_file_descriptors:
+            _device_file_descriptors.pop(_fd, None)
+            return None
         _proc_handle = _proc_file_descriptors.pop(_fd, None)
         if _proc_handle is not None:
             _proc_handle.close()

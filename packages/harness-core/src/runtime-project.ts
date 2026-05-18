@@ -89,6 +89,7 @@ export interface RuntimeKernelInfo {
 export interface RuntimeProjectSnapshot {
   files: RuntimeFile[];
   kernelFiles?: RuntimeFile[];
+  kernelDevices?: RuntimeKernelDeviceInfo[];
   directories?: string[];
   entrypoint?: string;
   cwd?: string;
@@ -120,6 +121,14 @@ export type RuntimeKernelDevicePath =
   | '/dev/stdout'
   | '/dev/stderr'
   | '/dev/tty';
+
+export interface RuntimeKernelDeviceInfo {
+  path: RuntimeKernelDevicePath;
+  readable: boolean;
+  writable: boolean;
+  inputDevice?: RuntimeKernelDevicePath;
+  outputDevice?: RuntimeKernelDevicePath;
+}
 
 export interface RuntimeCommandOutputEvent {
   type: 'output';
