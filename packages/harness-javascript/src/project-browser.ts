@@ -3727,7 +3727,17 @@ async function runBrowserJavaScriptProjectRequest(
         optionsOrCallback?: BrowserStatOptions | ((error: Error | null, stats?: { size: number | bigint; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void),
         callback?: (error: Error | null, stats?: { size: number | bigint; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void
       ) => {
-        fsApi.stat(path, optionsOrCallback as BrowserStatOptions, callback);
+        const options = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback;
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          const stats = fsApi.lstatSync(path, options);
+          if (stats === undefined && options?.throwIfNoEntry === false) {
+            throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: 'ENOENT' });
+          }
+          queueMicrotask(() => done?.(null, stats));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
       },
       statfs: (
         path: unknown,
@@ -4086,7 +4096,13 @@ async function runBrowserJavaScriptProjectRequest(
         return iterator;
       },
       stat: async (path: unknown, options?: BrowserStatOptions) => fsApi.statSync(path, options),
-      lstat: async (path: unknown, options?: BrowserStatOptions) => fsApi.lstatSync(path, options),
+      lstat: async (path: unknown, options?: BrowserStatOptions) => {
+        const stats = fsApi.lstatSync(path, options);
+        if (stats === undefined && options?.throwIfNoEntry === false) {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path}'`), { code: 'ENOENT' });
+        }
+        return stats;
+      },
       statfs: async (path: unknown, options?: { bigint?: boolean }) => fsApi.statfsSync(path, options),
       realpath: async (path: unknown, options?: string | { encoding?: string | null } | null) => fsApi.realpathSync(path, options),
       mkdir: async (path: unknown, options?: { recursive?: boolean }) => fsApi.mkdirSync(path, options),
