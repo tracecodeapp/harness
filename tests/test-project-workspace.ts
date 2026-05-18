@@ -5667,6 +5667,19 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   assertCondition(stdoutResult.stdout === 'device-out\n', `/dev/stdout writes should be command stdout: ${JSON.stringify(stdoutResult)}`);
   const stderrResult = await deviceWorkspace.runCommand('printf "device-err\\n" > /dev/stderr');
   assertCondition(stderrResult.stderr === 'device-err\n', `/dev/stderr writes should be command stderr: ${JSON.stringify(stderrResult)}`);
+  const shellCopyVirtualResult = await deviceWorkspace.runCommand(
+    'cp /proc/kernel/info shell-proc-info.json && cp shell-proc-info.json /dev/stdout',
+    { onEvent: (event) => deviceCommandEvents.push(event) }
+  );
+  assertCondition(shellCopyVirtualResult.exitCode === 0, `shell cp virtual files should succeed: ${shellCopyVirtualResult.stderr}`);
+  assertCondition(
+    JSON.parse(await deviceWorkspace.readFile('shell-proc-info.json')).name === 'tracekernel',
+    'shell cp should read /proc sources through the kernel copy target'
+  );
+  assertCondition(
+    shellCopyVirtualResult.stdout === await deviceWorkspace.readFile('shell-proc-info.json'),
+    `shell cp should write /dev/stdout destinations through the kernel copy target: ${JSON.stringify(shellCopyVirtualResult)}`
+  );
   assertCondition(
     deviceCommandEvents.some((event) =>
       event.type === 'output' &&

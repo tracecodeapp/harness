@@ -287,3 +287,16 @@ export function readRuntimeProcFile(path: string, info: RuntimeKernelInfo): stri
   }
   throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
 }
+
+export function runtimeProcStat(path: string, info: RuntimeKernelInfo): RuntimeKernelVirtualStat | null {
+  const kind = runtimeProcEntryKind(path);
+  if (!kind) return null;
+  const isDirectory = kind === 'directory';
+  return {
+    isFile: !isDirectory,
+    isDirectory,
+    isCharacterDevice: false,
+    mode: isDirectory ? 0o555 : 0o444,
+    size: isDirectory ? 0 : new TextEncoder().encode(readRuntimeProcFile(path, info)).byteLength,
+  };
+}

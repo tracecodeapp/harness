@@ -18,10 +18,12 @@ import {
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
   runtimeKernelAccessTarget,
+  runtimeKernelCopyTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
   runtimeKernelWriteTarget,
+  runtimeProcStat,
   readRuntimeProcFile,
   runtimeProcDirEntries,
 } from '../../harness-core/src/runtime-kernel';
@@ -294,6 +296,12 @@ function kernelAccessTarget(path: string): ReturnType<typeof runtimeKernelAccess
 function kernelReadTarget(path: string): ReturnType<typeof runtimeKernelReadTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelReadTarget(path);
+}
+
+function kernelCopyTarget(source: string, destination: string): ReturnType<typeof runtimeKernelCopyTarget> {
+  assertNoNul(source, 'Kernel path');
+  assertNoNul(destination, 'Kernel path');
+  return runtimeKernelCopyTarget(source, destination);
 }
 
 function throwKernelMetadataTargetError(
@@ -598,6 +606,7 @@ class KernelObservedFileSystem implements IFileSystem {
     private readonly base: IFileSystem,
     private readonly workspaceRoot: () => string,
     private readonly workspaceAlias: () => string | undefined,
+    private readonly kernelInfo: () => RuntimeKernelInfo,
     private readonly onFileChange: (change: RuntimeFileChange) => void,
     private readonly readDevice: (device: RuntimeKernelDevicePath) => string,
     private readonly writeDevice: (device: RuntimeKernelDevicePath, data: string) => void
@@ -614,6 +623,8 @@ class KernelObservedFileSystem implements IFileSystem {
     const devicePath = normalizeDevPath(path);
     if (devicePath !== null) return Promise.resolve(this.readDeviceFile(devicePath, options));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
+    const procPath = normalizeProcPath(path);
+    if (procPath !== null) return Promise.resolve(this.readProcFile(procPath, options));
     return this.base.readFile(this.mapPath(path), options);
   }
 
@@ -623,6 +634,10 @@ class KernelObservedFileSystem implements IFileSystem {
       return Promise.resolve(this.readDeviceFile(devicePath)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
+    const procPath = normalizeProcPath(path);
+    if (procPath !== null) {
+      return Promise.resolve(this.readProcFile(procPath)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+    }
     if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
     return this.base.readFileBytes(this.mapPath(path)) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
   }
@@ -631,6 +646,8 @@ class KernelObservedFileSystem implements IFileSystem {
     const devicePath = normalizeDevPath(path);
     if (devicePath !== null) return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(devicePath)));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
+    const procPath = normalizeProcPath(path);
+    if (procPath !== null) return Promise.resolve(new TextEncoder().encode(this.readProcFile(procPath)));
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
@@ -669,6 +686,8 @@ class KernelObservedFileSystem implements IFileSystem {
     const devicePath = normalizeDevPath(path);
     if (devicePath !== null) return Promise.resolve(this.deviceStat(devicePath));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
+    const procPath = normalizeProcPath(path);
+    if (procPath !== null) return Promise.resolve(this.procStat(procPath));
     return this.base.stat(this.mapPath(path));
   }
 
@@ -688,6 +707,10 @@ class KernelObservedFileSystem implements IFileSystem {
     if (deviceEntries) return Promise.resolve(deviceEntries);
     if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
+    const procPath = normalizeProcPath(path);
+    const procEntries = procPath ? runtimeProcDirEntries(procPath) : null;
+    if (procEntries) return Promise.resolve(procEntries);
+    if (procPath !== null) return Promise.reject(new Error(`Kernel proc path is not a directory: ${path}`));
     return this.base.readdir(this.mapPath(path));
   }
 
@@ -706,6 +729,21 @@ class KernelObservedFileSystem implements IFileSystem {
     }
     if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
+    const procPath = normalizeProcPath(path);
+    const procEntries = procPath ? runtimeProcDirEntries(procPath) : null;
+    if (procEntries) {
+      return Promise.resolve(procEntries.map((name) => {
+        const entryPath = `${procPath}/${name}`;
+        const stat = runtimeProcStat(entryPath, this.kernelInfo());
+        return {
+          name,
+          isFile: stat?.isFile ?? false,
+          isDirectory: stat?.isDirectory ?? false,
+          isSymbolicLink: false,
+        };
+      }));
+    }
+    if (procPath !== null) return Promise.reject(new Error(`Kernel proc path is not a directory: ${path}`));
     if (!this.base.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
     return this.base.readdirWithFileTypes(this.mapPath(path));
   }
@@ -722,30 +760,46 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
-    const sourceTarget = kernelReadTarget(src);
-    const writeTarget = kernelWriteTarget(dest);
-    if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
-    if (writeTarget.kind === 'device') {
-      if (sourceTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${src}`);
-      if (sourceTarget.kind === 'error') throw new Error('Kernel device path not found.');
-      const bytes = sourceTarget.kind === 'device-file'
-        ? new TextEncoder().encode(this.readDeviceFile(sourceTarget.path))
-        : await this.base.readFileBuffer(this.mapPath(src));
-      this.writeDevice(writeTarget.outputDevice, contentToText(bytes));
+    const copyTarget = kernelCopyTarget(src, dest);
+    if (copyTarget.kind === 'file-copy') {
+      await this.copyFileLike(src, dest);
       return;
     }
-    if (sourceTarget.kind === 'device-file') {
-      const mappedDestination = this.mapPath(dest);
-      await this.base.writeFile(mappedDestination, this.readDeviceFile(sourceTarget.path));
-      await this.emitFileWrite(mappedDestination);
-      return;
+    if (copyTarget.kind === 'error') {
+      throw new Error(
+        copyTarget.reason === 'source-directory'
+          ? `Kernel virtual path is a directory: ${src}`
+          : `Kernel virtual path not found: ${src}`
+      );
     }
-    if (sourceTarget.kind === 'device-directory') throw new Error(`Kernel device path is a directory: ${src}`);
-    if (sourceTarget.kind === 'error') throw new Error('Kernel device path not found.');
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
     await this.base.cp(mappedSource, mappedDestination, options);
     await this.emitExistingFiles(mappedDestination);
+  }
+
+  private async copyFileLike(src: string, dest: string): Promise<void> {
+    const sourceBytes = await this.readKernelCopySource(src);
+    const writeTarget = kernelWriteTarget(dest);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
+    if (writeTarget.kind === 'device') {
+      this.writeDevice(writeTarget.outputDevice, contentToText(sourceBytes));
+      return;
+    }
+    const mappedDestination = this.mapPath(dest);
+    await this.base.writeFile(mappedDestination, sourceBytes);
+    await this.emitFileWrite(mappedDestination);
+  }
+
+  private async readKernelCopySource(path: string): Promise<FileContent> {
+    const sourceTarget = kernelReadTarget(path);
+    if (sourceTarget.kind === 'device-file') return this.readDeviceFile(sourceTarget.path);
+    if (sourceTarget.kind === 'proc-file') return readRuntimeProcFile(sourceTarget.path, this.kernelInfo());
+    if (sourceTarget.kind === 'device-directory' || sourceTarget.kind === 'proc-directory') {
+      throw new Error(`Kernel virtual path is a directory: ${path}`);
+    }
+    if (sourceTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
+    return this.base.readFileBuffer(this.mapPath(path));
   }
 
   async mv(src: string, dest: string): Promise<void> {
@@ -764,7 +818,7 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   resolvePath(base: string, path: string): string {
-    if (path.startsWith('/dev') || base.startsWith('/dev')) {
+    if (path.startsWith('/dev') || base.startsWith('/dev') || path.startsWith('/proc') || base.startsWith('/proc')) {
       return this.base.resolvePath(base, path);
     }
     return this.mapPath(this.base.resolvePath(this.mapPath(base), path));
@@ -782,7 +836,8 @@ class KernelObservedFileSystem implements IFileSystem {
           return [path];
         });
     const devicePaths = ['/dev', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
-    return Array.from(new Set([...aliasPaths, ...devicePaths])).sort((left, right) => left.localeCompare(right));
+    const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/self', '/proc/self/mountinfo'];
+    return Array.from(new Set([...aliasPaths, ...devicePaths, ...procPaths])).sort((left, right) => left.localeCompare(right));
   }
 
   chmod(path: string, mode: number): Promise<void> {
@@ -813,11 +868,13 @@ class KernelObservedFileSystem implements IFileSystem {
     const devicePath = normalizeDevPath(path);
     if (devicePath !== null) return Promise.resolve(this.deviceStat(devicePath));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
+    const procPath = normalizeProcPath(path);
+    if (procPath !== null) return Promise.resolve(this.procStat(procPath));
     return this.base.lstat(this.mapPath(path));
   }
 
   realpath(path: string): Promise<string> {
-    if (isDevNamespacePath(path)) return Promise.resolve(path);
+    if (isDevNamespacePath(path) || normalizeProcPath(path) !== null) return Promise.resolve(path);
     return this.base.realpath(this.mapPath(path));
   }
 
@@ -875,6 +932,14 @@ class KernelObservedFileSystem implements IFileSystem {
     return '';
   }
 
+  private readProcFile(path: string, options?: FsReadFileOptions): string {
+    const content = readRuntimeProcFile(path, this.kernelInfo());
+    if (options === 'base64' || (typeof options === 'object' && options?.encoding === 'base64')) {
+      return base64FromBytes(new TextEncoder().encode(content));
+    }
+    return content;
+  }
+
   private writeDeviceFile(device: '/dev' | RuntimeKernelDevicePath, content: FileContent): void {
     if (device === '/dev') throw new Error('Kernel device path is a directory: /dev');
     const outputDevice = runtimeDeviceOutputTarget(device);
@@ -884,6 +949,19 @@ class KernelObservedFileSystem implements IFileSystem {
 
   private deviceStat(device: '/dev' | RuntimeKernelDevicePath): Awaited<ReturnType<IFileSystem['stat']>> {
     const stat = runtimeDeviceStat(device);
+    return {
+      isFile: stat.isFile,
+      isDirectory: stat.isDirectory,
+      isSymbolicLink: false,
+      mode: stat.mode,
+      size: stat.size,
+      mtime: new Date(0),
+    };
+  }
+
+  private procStat(path: string): Awaited<ReturnType<IFileSystem['stat']>> {
+    const stat = runtimeProcStat(path, this.kernelInfo());
+    if (!stat) throw new Error(`Kernel proc path not found: ${path}`);
     return {
       isFile: stat.isFile,
       isDirectory: stat.isDirectory,
@@ -2220,6 +2298,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       new InMemoryFs(),
       () => this.cwd,
       () => this.kernelInfo.workspaceAlias,
+      () => this.kernelInfo,
       (change) => {
         if (!this.activeCommandActor) return;
         this.emitRuntimeEvent({ type: 'file-change', change, phase: 'live' });

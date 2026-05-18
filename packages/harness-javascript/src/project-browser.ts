@@ -28,6 +28,7 @@ import {
   runtimeKernelReadTarget,
   runtimeKernelWriteTarget,
   runtimeProcCanMutate,
+  runtimeProcStat,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
   runtimeProcEntryKind as procEntryKind,
@@ -1617,24 +1618,23 @@ async function runBrowserJavaScriptProjectRequest(
       };
     };
     const statForProcPath = (procPath: string): BrowserFileStat | null => {
-      const kind = procEntryKind(procPath);
-      if (!kind) return null;
-      const size = kind === 'file' ? utf8Bytes(readProcFile(procPath, kernelInfo)).byteLength : 0;
-      const mode = kind === 'directory' ? 0o40555 : 0o100444;
+      const kernelStat = runtimeProcStat(procPath, kernelInfo);
+      if (!kernelStat) return null;
+      const mode = (kernelStat.isDirectory ? 0o40000 : 0o100000) | kernelStat.mode;
       return {
         atimeMs: fsTimestampMs,
         birthtimeMs: fsTimestampMs,
         blksize: 4096,
-        blocks: Math.ceil(size / 512),
+        blocks: Math.ceil(kernelStat.size / 512),
         ctimeMs: fsTimestampMs,
         dev: 1,
         gid: 0,
         ino: inodeForPath(procPath),
         mode,
         mtimeMs: fsTimestampMs,
-        nlink: kind === 'directory' ? 2 : 1,
+        nlink: kernelStat.isDirectory ? 2 : 1,
         rdev: 0,
-        size,
+        size: kernelStat.size,
         uid: 0,
         atime: new Date(fsTimestampMs),
         birthtime: new Date(fsTimestampMs),
@@ -1643,8 +1643,8 @@ async function runBrowserJavaScriptProjectRequest(
         isBlockDevice: () => false,
         isCharacterDevice: () => false,
         isFIFO: () => false,
-        isFile: () => kind === 'file',
-        isDirectory: () => kind === 'directory',
+        isFile: () => kernelStat.isFile,
+        isDirectory: () => kernelStat.isDirectory,
         isSocket: () => false,
         isSymbolicLink: () => false,
       };
