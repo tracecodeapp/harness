@@ -1,6 +1,7 @@
 import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
+  RuntimeFileChange,
   RuntimeFile,
   RuntimeFileEncoding,
   RuntimeProjectCommandRequest,
@@ -20,6 +21,7 @@ export type BrowserCSharpProjectCommandRunner = CSharpProjectCommandRunner;
 
 export interface BrowserCSharpProjectRunnerOptions {
   timeoutMs?: number;
+  applyFileChange?: (change: RuntimeFileChange) => Promise<void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -50,6 +52,7 @@ export function createBrowserCSharpProjectRunner(
       startDetail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage: request.source === 'compile' ? 'Finished C# browser compile' : 'Finished C# browser run',
+      applyFileChange: options.applyFileChange,
       run: (workerRequest, onEvent) => workerClient.executeProjectCSharp(workerRequest, timeoutMs, onEvent),
     });
   };

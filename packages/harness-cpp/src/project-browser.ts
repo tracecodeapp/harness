@@ -1,6 +1,7 @@
 import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
+  RuntimeFileChange,
   RuntimeFile,
   RuntimeFileEncoding,
   RuntimeProjectCommandRequest,
@@ -20,6 +21,7 @@ export type BrowserCppProjectCommandRunner = CppProjectCommandRunner;
 
 export interface BrowserCppProjectRunnerOptions {
   timeoutMs?: number;
+  applyFileChange?: (change: RuntimeFileChange) => Promise<void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -44,6 +46,7 @@ export function createBrowserCppProjectRunner(
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage: request.source === 'compile' ? 'Finished C++ browser compile' : 'Finished C++ browser executable',
       finishDetail: (result) => ({ source: request.source, exitCode: result.exitCode }),
+      applyFileChange: options.applyFileChange,
       run: (workerRequest, onEvent) => workerClient.executeProjectCpp(workerRequest, timeoutMs, onEvent),
     });
   };

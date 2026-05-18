@@ -1,6 +1,7 @@
 import type {
   RuntimeCommandEventHandler,
   RuntimeCommandResult,
+  RuntimeFileChange,
   RuntimeFile,
   RuntimeFileEncoding,
   RuntimeProjectCommandRequest,
@@ -20,6 +21,7 @@ export type BrowserJavaProjectCommandRunner = JavaProjectCommandRunner;
 
 export interface BrowserJavaProjectRunnerOptions {
   timeoutMs?: number;
+  applyFileChange?: (change: RuntimeFileChange) => Promise<void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -57,6 +59,7 @@ export function createBrowserJavaProjectRunner(
       startDetail: { source: request.source, scriptPath: request.scriptPath, args: request.args, cwd: request.cwd },
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage: request.source === 'compile' ? 'Finished Java browser compile' : 'Finished Java browser run',
+      applyFileChange: options.applyFileChange,
       run: (workerRequest, onEvent) => workerClient.executeProjectJava(workerRequest, timeoutMs, onEvent),
     });
   };

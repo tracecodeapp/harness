@@ -1,5 +1,6 @@
 import type {
   RuntimeCommandResult,
+  RuntimeFileChange,
   RuntimeFile,
   RuntimeFileEncoding,
   RuntimeCommandEventHandler,
@@ -23,6 +24,7 @@ export type PyodidePythonProjectCommandRunner = PythonProjectCommandRunner;
 
 export interface BrowserPythonProjectRunnerOptions {
   timeoutMs?: number;
+  applyFileChange?: (change: RuntimeFileChange) => Promise<void>;
 }
 
 export type CreatePyodidePythonProjectRunnerOptions = BrowserPythonProjectRunnerOptions;
@@ -54,6 +56,7 @@ export function createBrowserPythonProjectRunner(
       },
       finishPhase: 'process-exit',
       finishMessage: 'Finished Python browser project command',
+      applyFileChange: options.applyFileChange,
       run: (workerRequest, onEvent) => workerClient.executeProjectPython(workerRequest, options.timeoutMs, onEvent),
     });
 }

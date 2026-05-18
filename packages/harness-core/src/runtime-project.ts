@@ -241,6 +241,7 @@ export interface RuntimeProjectWorkerBridgeOptions<
   finishPhase: string;
   finishMessage: string;
   finishDetail?: (result: Result) => Record<string, unknown>;
+  applyFileChange?: (change: RuntimeFileChange) => Promise<void>;
   run(
     request: Omit<Request, 'onEvent'>,
     onEvent: RuntimeCommandEventHandler
@@ -252,17 +253,29 @@ export async function runRuntimeProjectWorkerBridge<
   Result extends RuntimeCommandResult = RuntimeCommandResult
 >(options: RuntimeProjectWorkerBridgeOptions<Request, Result>): Promise<Result> {
   const outputTracker = new RuntimeProjectOutputTracker();
+  const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
   const io = createRuntimeProjectIoBridge((event) => {
     outputTracker.observe(event);
     options.request.onEvent?.(event);
   });
-  const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
+  const emitWorkerEvent = (event: RuntimeCommandEvent): void => {
     outputTracker.observe(event);
     options.request.onEvent?.(event);
+  };
+  const forwardWorkerEvent = (event: RuntimeCommandEvent): void => {
+    if (eventQueue) {
+      eventQueue.enqueue(event, {
+        applyFileChange: options.applyFileChange as (change: RuntimeFileChange) => Promise<void>,
+        emit: emitWorkerEvent,
+      });
+      return;
+    }
+    emitWorkerEvent(event);
   };
   io.status(options.startPhase, options.startMessage, options.startDetail);
   const { onEvent: _onEvent, ...workerRequest } = options.request;
   const result = await options.run(workerRequest, forwardWorkerEvent);
+  await eventQueue?.flush();
   io.status(
     options.finishPhase,
     options.finishMessage,

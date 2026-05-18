@@ -4577,6 +4577,8 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
 async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
   let received: PythonProjectCommandRequest | null = null;
   const events: RuntimeCommandEvent[] = [];
+  const appliedChanges: string[] = [];
+  let fileChangeObservedAfterApply = false;
   const client = {
     async executeProjectPython(request, _timeoutMs, onEvent) {
       received = request;
@@ -4595,7 +4597,11 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
       onEvent?: (event: RuntimeCommandEvent) => void
     ): Promise<{ stdout: string; stderr: string; exitCode: number }>
   };
-  const runner = createBrowserPythonProjectRunner(client);
+  const runner = createBrowserPythonProjectRunner(client, {
+    applyFileChange: async (change) => {
+      appliedChanges.push(change.path);
+    },
+  });
 
   const result = await runner({
     code: 'print("hello")',
@@ -4608,7 +4614,12 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     project: {
       files: [{ path: 'main.py', contents: 'print("hello")\n' }],
     },
-    onEvent: (event) => events.push(event),
+    onEvent: (event) => {
+      if (event.type === 'file-change' && event.change.path === 'py-live.txt') {
+        fileChangeObservedAfterApply = appliedChanges.includes('py-live.txt');
+      }
+      events.push(event);
+    },
   });
 
   assertCondition(result.stdout === 'streamed\nmain.py:1', 'pyodide runner should delegate to worker client');
@@ -4624,6 +4635,10 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
       event.change.path === 'py-live.txt'
     ),
     `pyodide runner should forward worker live file-change events: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    fileChangeObservedAfterApply,
+    `pyodide runner should apply live file-change before forwarding it: ${JSON.stringify({ appliedChanges, events })}`
   );
   assertCondition(
     createPyodidePythonProjectRunner(client) !== runner,
