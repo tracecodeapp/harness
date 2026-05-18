@@ -349,6 +349,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('Kernel proc path is read-only'),
         '@tracecode/harness-python worker should ship virtual fd metadata guards'
       );
+      assertCondition(
+        worker.includes('_patched_os_readv') &&
+          worker.includes('_patched_os_writev') &&
+          worker.includes('os.readv = _patched_os_readv') &&
+          worker.includes('os.writev = _patched_os_writev'),
+        '@tracecode/harness-python worker should ship vectored fd I/O bridge hooks'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-javascript') {
       const projectBrowser = await readFile(join(packageDir, 'dist/project-browser.js'), 'utf8');
@@ -463,6 +470,21 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           helperApi.stdout.includes('size(java.nio.file.Path)'),
         '@tracecode/harness-java helper jar should expose NIO read/stat device bridge'
       );
+      const streamingOutputApi = spawnSync(
+        'javap',
+        ['-classpath', join(packageDir, 'workers/vendor/java-browser-helper.jar'), '-c', 'tracecode.browser.ProjectEvents$StreamingProjectOutputStream'],
+        { encoding: 'utf8' }
+      );
+      if (streamingOutputApi.status !== 0) {
+        throw new Error(streamingOutputApi.stderr || streamingOutputApi.stdout || '@tracecode/harness-java streaming output API listing failed');
+      }
+      assertCondition(
+        streamingOutputApi.stdout.includes('public void write(int) throws java.io.IOException;') &&
+          streamingOutputApi.stdout.includes('public void write(byte[], int, int) throws java.io.IOException;') &&
+          streamingOutputApi.stdout.includes('invokevirtual #') &&
+          streamingOutputApi.stdout.includes('// Method flush:()V'),
+        '@tracecode/harness-java helper jar should flush live stdio after unbuffered writes'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-csharp') {
       const worker = await readFile(join(packageDir, 'workers/csharp-worker.js'), 'utf8');
@@ -486,6 +508,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('fs.open = function openWithProjectEvents') &&
           worker.includes('emitProjectFileSnapshot(stream.path)'),
         '@tracecode/harness-csharp worker should ship live empty-open file mutation hooks'
+      );
+      assertCondition(
+        worker.includes("const CSHARP_PROJECT_WORKSPACE_ROOT = '/tmp/tracecode-csharp-project'") &&
+          worker.includes("const roots = ['/workspace', CSHARP_PROJECT_WORKSPACE_ROOT]"),
+        '@tracecode/harness-csharp worker should map provider-root live events back to project paths'
       );
       assertCondition(
         worker.includes('emitProjectDirectoryCreate(path)') &&
@@ -545,6 +572,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         worker.includes('isKernelVirtualNamespacePath(pathname)') &&
           worker.includes('this.isKernelVirtualNamespacePath(newPath)'),
         '@tracecode/harness-cpp worker should guard manifest kernel namespaces with shared read-only semantics'
+      );
+      assertCondition(
+        worker.includes('emitPathSnapshot(pathname)') &&
+          worker.includes('this.fs.emitPathSnapshot(pathname)'),
+        '@tracecode/harness-cpp worker should ship metadata-only live file snapshots'
       );
     }
 
