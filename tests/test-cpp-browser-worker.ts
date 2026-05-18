@@ -277,6 +277,8 @@ async function main(): Promise<void> {
             '  struct stat stdout_stat = {};',
             '  bool dev_stat_ok = stat("/dev", &dev_stat) == 0 && stat("/dev/stdout", &stdout_stat) == 0;',
             '  std::cout << (dev_stat_ok && S_ISDIR(dev_stat.st_mode) && !S_ISDIR(stdout_stat.st_mode) ? "dev-stat:ok" : "dev-stat:bad") << "\\\\n";',
+            '  std::ifstream stdout_read("/dev/stdout");',
+            '  std::cout << (stdout_read ? "dev-stdout-read:ok" : "dev-stdout-read:blocked") << "\\\\n";',
             '  std::cout << (std::remove("/dev/stdout") == 0 ? "dev-unlink:ok" : "dev-unlink:blocked") << "\\\\n";',
             '  std::ofstream("rename-device-source.txt") << "blocked\\\\n";',
             '  std::cout << (std::rename("rename-device-source.txt", "/dev/stdout") == 0 ? "dev-rename:ok" : "dev-rename:blocked") << "\\\\n";',
@@ -1100,7 +1102,7 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('42\n') === true &&
         projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
-        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );

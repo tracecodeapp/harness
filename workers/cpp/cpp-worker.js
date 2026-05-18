@@ -39,6 +39,7 @@ const OFLAGS_DIRECTORY = 2;
 const OFLAGS_EXCL = 4;
 const OFLAGS_TRUNC = 8;
 const FDFLAGS_APPEND = 1;
+const RIGHTS_FD_READ = 1n << 1n;
 const RIGHTS_FD_WRITE = 1n << 6n;
 const WHENCE_SET = 0;
 const WHENCE_CUR = 1;
@@ -676,6 +677,7 @@ class WasiProcess {
     if (!entry.device || !this.kernelDevices.has(normalizePath(pathname))) return null;
     if (options.create || options.truncate || options.append) return entry.writable ? entry : null;
     if (options.write && !entry.writable) return null;
+    if (!options.write && !entry.readable) return null;
     if (options.read && !entry.readable && !entry.writable) return null;
     return entry;
   }
@@ -1004,6 +1006,7 @@ class WasiProcess {
       exclusive: Boolean(oflags & OFLAGS_EXCL),
       truncate: Boolean(oflags & OFLAGS_TRUNC),
       append: Boolean(fdflags & FDFLAGS_APPEND),
+      read: (wasiRights(rightsBase) & RIGHTS_FD_READ) !== 0n,
       write: (wasiRights(rightsBase) & RIGHTS_FD_WRITE) !== 0n,
     });
     if (fd < 0) return -fd;
