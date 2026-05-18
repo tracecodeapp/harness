@@ -1,6 +1,14 @@
 import type { RuntimeKernelDevicePath, RuntimeKernelInfo } from './runtime-project';
 
 export type RuntimeKernelProcEntryKind = 'file' | 'directory';
+export type RuntimeKernelDeviceEntryKind = 'file' | 'directory';
+export interface RuntimeKernelVirtualStat {
+  isFile: boolean;
+  isDirectory: boolean;
+  isCharacterDevice: boolean;
+  mode: number;
+  size: number;
+}
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -80,6 +88,26 @@ export function runtimeDeviceInputSource(device: RuntimeKernelDevicePath): Runti
 export function runtimeDeviceOutputTarget(device: RuntimeKernelDevicePath): RuntimeKernelDevicePath | null {
   if (!runtimeDeviceCanWrite(device)) return null;
   return device === '/dev/tty' ? '/dev/stdout' : device;
+}
+
+export function runtimeDeviceDirEntries(path: '/dev' | RuntimeKernelDevicePath): string[] | null {
+  return path === '/dev' ? [...RUNTIME_KERNEL_DEVICE_ENTRIES] : null;
+}
+
+export function runtimeDeviceEntryKind(path: '/dev' | RuntimeKernelDevicePath): RuntimeKernelDeviceEntryKind {
+  return path === '/dev' ? 'directory' : 'file';
+}
+
+export function runtimeDeviceStat(path: '/dev' | RuntimeKernelDevicePath): RuntimeKernelVirtualStat {
+  const kind = runtimeDeviceEntryKind(path);
+  const isDirectory = kind === 'directory';
+  return {
+    isFile: !isDirectory,
+    isDirectory,
+    isCharacterDevice: !isDirectory,
+    mode: isDirectory ? 0o755 : 0o666,
+    size: 0,
+  };
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {

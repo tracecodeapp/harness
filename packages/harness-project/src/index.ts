@@ -14,8 +14,11 @@ import {
   normalizeRuntimeDevicePath,
   RUNTIME_KERNEL_DEVICE_ENTRIES,
   runtimeProcCanMutate,
+  runtimeDeviceDirEntries,
+  runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
+  runtimeDeviceStat,
   readRuntimeProcFile,
   runtimeProcDirEntries,
   runtimeProcEntryKind,
@@ -635,7 +638,8 @@ class KernelObservedFileSystem implements IFileSystem {
 
   readdir(path: string): Promise<string[]> {
     const devicePath = normalizeDevPath(path);
-    if (devicePath === '/dev') return Promise.resolve([...RUNTIME_KERNEL_DEVICE_ENTRIES]);
+    const deviceEntries = devicePath ? runtimeDeviceDirEntries(devicePath) : null;
+    if (deviceEntries) return Promise.resolve(deviceEntries);
     if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
     return this.base.readdir(this.mapPath(path));
@@ -644,12 +648,15 @@ class KernelObservedFileSystem implements IFileSystem {
   readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
     const devicePath = normalizeDevPath(path);
     if (devicePath === '/dev') {
-      return Promise.resolve(RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => ({
-        name,
-        isFile: true,
-        isDirectory: false,
-        isSymbolicLink: false,
-      })));
+      return Promise.resolve((runtimeDeviceDirEntries(devicePath) ?? []).map((name) => {
+        const kind = runtimeDeviceEntryKind(`/dev/${name}` as RuntimeKernelDevicePath);
+        return {
+          name,
+          isFile: kind === 'file',
+          isDirectory: kind === 'directory',
+          isSymbolicLink: false,
+        };
+      }));
     }
     if (devicePath !== null) return Promise.reject(new Error(`Kernel device path is not a directory: ${path}`));
     if (isDevNamespacePath(path)) return Promise.reject(new Error(`Kernel device path not found: ${path}`));
@@ -822,12 +829,13 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   private deviceStat(device: '/dev' | RuntimeKernelDevicePath): Awaited<ReturnType<IFileSystem['stat']>> {
+    const stat = runtimeDeviceStat(device);
     return {
-      isFile: device !== '/dev',
-      isDirectory: device === '/dev',
+      isFile: stat.isFile,
+      isDirectory: stat.isDirectory,
       isSymbolicLink: false,
-      mode: device === '/dev' ? 0o755 : 0o666,
-      size: 0,
+      mode: stat.mode,
+      size: stat.size,
       mtime: new Date(0),
     };
   }
@@ -2290,7 +2298,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
       return null;
     }
-    if (devicePath === '/dev') return [...RUNTIME_KERNEL_DEVICE_ENTRIES];
+    const entries = runtimeDeviceDirEntries(devicePath);
+    if (entries) return entries;
     throw new Error(`Kernel device path is not a directory: ${path}`);
   }
 

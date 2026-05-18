@@ -14,11 +14,13 @@ import {
   isRuntimeDeviceNamespacePath,
   normalizeRuntimeProcPath as normalizeRuntimeProcPathString,
   normalizeRuntimeDevicePath as normalizeRuntimeDevicePathString,
-  RUNTIME_KERNEL_DEVICE_ENTRIES,
   runtimeDeviceCanRead,
   runtimeDeviceCanWrite,
+  runtimeDeviceDirEntries,
+  runtimeDeviceEntryKind,
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
+  runtimeDeviceStat,
   runtimeProcCanMutate,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
@@ -1503,8 +1505,8 @@ async function runBrowserJavaScriptProjectRequest(
       };
     };
     const statForDevicePath = (devicePath: '/dev' | RuntimeKernelDevicePath): BrowserFileStat => {
-      const isDirectory = devicePath === '/dev';
-      const mode = isDirectory ? 0o40755 : 0o20666;
+      const kernelStat = runtimeDeviceStat(devicePath);
+      const mode = (kernelStat.isDirectory ? 0o40000 : 0o20000) | kernelStat.mode;
       return {
         atimeMs: fsTimestampMs,
         birthtimeMs: fsTimestampMs,
@@ -1516,19 +1518,19 @@ async function runBrowserJavaScriptProjectRequest(
         ino: inodeForPath(devicePath),
         mode,
         mtimeMs: fsTimestampMs,
-        nlink: isDirectory ? 2 : 1,
+        nlink: kernelStat.isDirectory ? 2 : 1,
         rdev: 0,
-        size: 0,
+        size: kernelStat.size,
         uid: 0,
         atime: new Date(fsTimestampMs),
         birthtime: new Date(fsTimestampMs),
         ctime: new Date(fsTimestampMs),
         mtime: new Date(fsTimestampMs),
         isBlockDevice: () => false,
-        isCharacterDevice: () => !isDirectory,
+        isCharacterDevice: () => kernelStat.isCharacterDevice,
         isFIFO: () => false,
-        isFile: () => !isDirectory,
-        isDirectory: () => isDirectory,
+        isFile: () => kernelStat.isFile,
+        isDirectory: () => kernelStat.isDirectory,
         isSocket: () => false,
         isSymbolicLink: () => false,
       };
@@ -3081,16 +3083,19 @@ async function runBrowserJavaScriptProjectRequest(
           if (devicePath !== '/dev') {
             throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
           }
-          const names = [...RUNTIME_KERNEL_DEVICE_ENTRIES];
+          const names = runtimeDeviceDirEntries(devicePath) ?? [];
           if (!withFileTypes) return names;
-          return names.map((name) => ({
-            name,
-            path: '/dev',
-            parentPath: '/dev',
-            isFile: () => true,
-            isDirectory: () => false,
-            isSymbolicLink: () => false,
-          }));
+          return names.map((name) => {
+            const kind = runtimeDeviceEntryKind(`/dev/${name}` as RuntimeKernelDevicePath);
+            return {
+              name,
+              path: '/dev',
+              parentPath: '/dev',
+              isFile: () => kind === 'file',
+              isDirectory: () => kind === 'directory',
+              isSymbolicLink: () => false,
+            };
+          });
         }
         const procPath = normalizeRuntimeProcPath(path);
         if (procPath) {
