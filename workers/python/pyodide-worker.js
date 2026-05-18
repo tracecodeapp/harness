@@ -713,7 +713,7 @@ function normalizePyodideFsProjectPath(path) {
   return normalized.startsWith('/') ? normalized : `/${normalized}`;
 }
 
-function installPyodideProjectFsMutationEvents(projectRoot) {
+function installPyodideProjectFsMutationEvents(projectRoot, kernelDevices) {
   const fs = pyodide?.FS;
   const normalizedRoot = normalizePyodideFsProjectPath(projectRoot);
   if (!fs || !normalizedRoot || typeof self.__tracecodeProjectEvent !== 'function') {
@@ -722,6 +722,8 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
 
   const patched = [];
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null;
+  const textDecoderLossy = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
+  const devices = normalizeProjectKernelDevices(kernelDevices);
 
   const kernelVirtualNamespacePath = (path) => {
     const normalized = normalizePyodideFsProjectPath(path);
@@ -729,6 +731,13 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     if (normalized === '/dev' || normalized.startsWith('/dev/')) return normalized;
     if (normalized === '/proc' || normalized.startsWith('/proc/')) return normalized;
     return null;
+  };
+
+  const kernelDeviceOutputTarget = (path) => {
+    const kernelPath = kernelVirtualNamespacePath(path);
+    if (!kernelPath || !kernelPath.startsWith('/dev/') || !devices[kernelPath]) return null;
+    const outputDevice = String(devices[kernelPath].outputDevice || '');
+    return outputDevice ? { device: kernelPath, outputDevice } : null;
   };
 
   const isCreateOrTruncateOpenFlags = (flags) => {
@@ -773,6 +782,28 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     } catch {
       // Live mutation events are best-effort; final file diff remains authoritative.
     }
+  };
+
+  const projectOutputText = (value) => {
+    if (typeof value === 'string') return value;
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    return textDecoderLossy ? textDecoderLossy.decode(bytes) : String.fromCharCode(...bytes);
+  };
+
+  const emitKernelDeviceWrite = (path, value) => {
+    const target = kernelDeviceOutputTarget(path);
+    if (!target) return false;
+    const data = projectOutputText(value);
+    if (data) {
+      emitProjectEvent({
+        type: 'output',
+        stream: target.outputDevice === '/dev/stderr' ? 'stderr' : 'stdout',
+        device: target.outputDevice,
+        ...(target.device !== target.outputDevice ? { sourceDevice: target.device } : {}),
+        data,
+      });
+    }
+    return true;
   };
 
   const bytesToBase64 = (bytes) => {
@@ -906,6 +937,9 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
   });
 
   patch('writeFile', (original) => function patchedWriteFile(path, ...args) {
+    if (emitKernelDeviceWrite(path, args[0])) {
+      return undefined;
+    }
     rejectKernelVirtualMutation(path, 'writeFile');
     const result = original.call(this, path, ...args);
     emitFileChange(path);
@@ -1170,7 +1204,7 @@ for _file in _request.get("project", {}).get("files", []):
 
 _restore_provider_fs_mutation_events = lambda: None
 try:
-    _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(_root)
+    _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(_root, json.dumps(_project_info.get("kernelDevices", [])))
 except Exception:
     _restore_provider_fs_mutation_events = lambda: None
 

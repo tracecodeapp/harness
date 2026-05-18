@@ -553,6 +553,7 @@ async function main(): Promise<void> {
           '    (\\'pyodide.FS.writeFile("/proc/kernel/info", "{}")\\', "proc-write"),',
           '    (\\'pyodide.FS.mkdir("/proc/kernel/new")\\', "proc-mkdir"),',
           '    (\\'pyodide.FS.writeFile("/dev/log", "leaked\\\\\\\\n", { encoding: "utf8" })\\', "dev-write"),',
+          '    (\\'pyodide.FS.writeFile("/dev/stdout", "provider-stdout\\\\\\\\n", { encoding: "utf8" })\\', "dev-stdout-write"),',
           '    (\\'pyodide.FS.open("/dev/stdout", "w")\\', "dev-open-write"),',
           '    (\\'pyodide.FS.open("/dev/stdout", 1)\\', "dev-open-numeric-write"),',
           '    (\\'pyodide.FS.rename("/tracecode_project/provider-source.txt", "/dev/log")\\', "dev-rename-dest"),',
@@ -1221,8 +1222,22 @@ async function main(): Promise<void> {
       `Python provider kernel virtual mutation run should succeed: ${results.providerKernelVirtualMutationRun.stderr}`
     );
     assertCondition(
-      results.providerKernelVirtualMutationRun.stdout === 'proc-write:blocked\nproc-mkdir:blocked\ndev-write:blocked\ndev-open-write:blocked\ndev-open-numeric-write:blocked\ndev-rename-dest:blocked\n',
-      `Python provider-level Pyodide FS should not mutate kernel virtual namespaces: ${JSON.stringify(results.providerKernelVirtualMutationRun.stdout)}`
+      results.providerKernelVirtualMutationRun.stdout === 'proc-write:blocked\nproc-mkdir:blocked\ndev-write:ok\nprovider-stdout\ndev-stdout-write:ok\ndev-open-write:blocked\ndev-open-numeric-write:blocked\ndev-rename-dest:blocked\n',
+      `Python provider-level Pyodide FS should route writable devices and block other kernel virtual mutations: ${JSON.stringify(results.providerKernelVirtualMutationRun.stdout)}`
+    );
+    assertCondition(
+      results.providerKernelVirtualMutationRun.stderr === 'leaked\n',
+      `Python provider-level Pyodide FS should route custom writable devices through stderr: ${JSON.stringify(results.providerKernelVirtualMutationRun.stderr)}`
+    );
+    assertCondition(
+      results.providerKernelVirtualMutationRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stderr' &&
+        event.device === '/dev/stderr' &&
+        event.sourceDevice === '/dev/log' &&
+        event.data === 'leaked\n'
+      )) === true,
+      `Python provider-level Pyodide FS should preserve routed source device events: ${JSON.stringify(results.providerKernelVirtualMutationRun.events)}`
     );
     assertCondition(
       findFile(results.providerKernelVirtualMutationRun, 'after-provider-guard.txt')?.contents === 'guarded\n',
