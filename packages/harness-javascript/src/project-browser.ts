@@ -2265,6 +2265,9 @@ async function runBrowserJavaScriptProjectRequest(
         if (!parsed.create && !fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
+        if (parsed.exclusive && fileStore.has(normalized)) {
+          throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST' });
+        }
       }
       if (normalized !== null && parsed.truncate) {
         setFileBytes(normalized, new Uint8Array());
