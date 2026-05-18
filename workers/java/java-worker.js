@@ -3297,10 +3297,17 @@ function projectKernelDeviceManifest(project) {
     .join('\n');
 }
 
-function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '') {
+function projectKernelFileManifest(project) {
+  return projectJavaKernelFiles(project)
+    .map(projectFileManifestEntry)
+    .join('\n');
+}
+
+function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '') {
   const argsSource = args.map((arg) => javaStringLiteral(arg)).join(', ');
   const stdinSource = javaStringLiteral(stdin);
   const kernelDeviceManifestSource = javaStringLiteral(kernelDeviceManifest);
+  const kernelFileManifestSource = javaStringLiteral(kernelFileManifest);
   const propertyKeysSource = systemProperties.map(([key]) => javaStringLiteral(key)).join(', ');
   const propertyValuesSource = systemProperties.map(([, value]) => javaStringLiteral(value)).join(', ');
   const invocation = compileOnly
@@ -3369,6 +3376,7 @@ public class ${exportsClassName} {
       ProjectEvents.setProjectEventBridgeEnabled(true);
       ProjectEvents.setProjectWorkspaceRoot(java.nio.file.Paths.get(System.getProperty("user.dir", ".")));
       ProjectEvents.setKernelDevices(${kernelDeviceManifestSource}, ${stdinSource});
+      ProjectEvents.setKernelFiles(${kernelFileManifestSource});
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
       System.setErr(new java.io.PrintStream(ProjectEvents.streamingOutput(stderrBytes, "stderr"), true, "UTF-8"));
       System.setIn(new java.io.ByteArrayInputStream(${stdinSource}.getBytes("UTF-8")));
@@ -3439,7 +3447,8 @@ function buildProjectJavaRunnableSource(payload, compileId) {
           false,
           String(payload.stdin ?? ''),
           javaProjectSystemProperties(payload),
-          projectKernelDeviceManifest(payload.project)
+          projectKernelDeviceManifest(payload.project),
+          projectKernelFileManifest(payload.project)
         ).trim(),
       };
 
@@ -3495,7 +3504,8 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
       false,
       String(payload.stdin ?? ''),
       javaProjectSystemProperties(payload),
-      projectKernelDeviceManifest(payload.project)
+      projectKernelDeviceManifest(payload.project),
+      projectKernelFileManifest(payload.project)
     ).trim(),
   };
 

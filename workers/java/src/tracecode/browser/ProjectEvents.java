@@ -48,6 +48,8 @@ public final class ProjectEvents {
   private static final ThreadLocal<Path> PROJECT_WORKSPACE_ROOT = new ThreadLocal<>();
   private static final ThreadLocal<Map<String, KernelDevice>> KERNEL_DEVICES =
       ThreadLocal.withInitial(HashMap::new);
+  private static final ThreadLocal<Set<String>> KERNEL_VIRTUAL_FILES =
+      ThreadLocal.withInitial(java.util.HashSet::new);
   private static final ThreadLocal<byte[]> KERNEL_STDIN =
       ThreadLocal.withInitial(() -> new byte[0]);
   private static final ThreadLocal<ByteArrayOutputStream> STDOUT_CAPTURE = new ThreadLocal<>();
@@ -68,8 +70,13 @@ public final class ProjectEvents {
     KERNEL_STDIN.set(stdin == null ? new byte[0] : stdin.getBytes(StandardCharsets.UTF_8));
   }
 
+  public static void setKernelFiles(String manifest) {
+    KERNEL_VIRTUAL_FILES.set(parseKernelFilePaths(manifest));
+  }
+
   public static void clearKernelDevices() {
     KERNEL_DEVICES.remove();
+    KERNEL_VIRTUAL_FILES.remove();
     KERNEL_STDIN.remove();
     STDOUT_CAPTURE.remove();
     STDERR_CAPTURE.remove();
@@ -758,6 +765,7 @@ public final class ProjectEvents {
       String normalized = normalizeVirtualPath(toPath());
       if (isVirtualDeviceDirectory(normalized)) return true;
       if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
+      if (isKernelVirtualDirectory(normalized) || isKernelVirtualFile(normalized)) return true;
       return super.exists();
     }
 
@@ -766,6 +774,8 @@ public final class ProjectEvents {
       String normalized = normalizeVirtualPath(toPath());
       if (isVirtualDeviceDirectory(normalized)) return true;
       if (isVirtualDevicePath(normalized)) return false;
+      if (isKernelVirtualDirectory(normalized)) return true;
+      if (isKernelVirtualFile(normalized)) return false;
       return super.isDirectory();
     }
 
@@ -774,6 +784,8 @@ public final class ProjectEvents {
       String normalized = normalizeVirtualPath(toPath());
       if (isVirtualDeviceDirectory(normalized)) return false;
       if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
+      if (isKernelVirtualDirectory(normalized)) return false;
+      if (isKernelVirtualFile(normalized)) return true;
       return super.isFile();
     }
 
@@ -785,6 +797,7 @@ public final class ProjectEvents {
         KernelDevice device = KERNEL_DEVICES.get().get(normalized);
         return device != null && device.readable;
       }
+      if (isKernelVirtualDirectory(normalized) || isKernelVirtualFile(normalized)) return true;
       return super.canRead();
     }
 
@@ -796,6 +809,7 @@ public final class ProjectEvents {
         KernelDevice device = KERNEL_DEVICES.get().get(normalized);
         return device != null && device.writable;
       }
+      if (isKernelVirtualNamespacePath(normalized)) return false;
       return super.canWrite();
     }
 
@@ -1212,6 +1226,22 @@ public final class ProjectEvents {
     return devices;
   }
 
+  private static Set<String> parseKernelFilePaths(String manifest) {
+    Set<String> paths = new java.util.HashSet<>();
+    if (manifest == null || manifest.isEmpty()) return paths;
+    String[] lines = manifest.split("\\n");
+    for (String line : lines) {
+      if (line.isEmpty()) continue;
+      String[] fields = line.split("\\t", -1);
+      if (fields.length < 2) continue;
+      String path = decodeManifestField(fields[0]);
+      String normalized = normalizeVirtualString(path);
+      if (normalized == null || !normalized.startsWith("/") || isVirtualDeviceNamespacePath(normalized)) continue;
+      paths.add(normalized);
+    }
+    return paths;
+  }
+
   private static String decodeManifestField(String field) {
     return new String(Base64.getDecoder().decode(field), StandardCharsets.UTF_8);
   }
@@ -1255,7 +1285,12 @@ public final class ProjectEvents {
 
   private static String normalizeVirtualPath(Path path) {
     if (path == null) return null;
-    String normalized = path.toString().replace('\\', '/');
+    return normalizeVirtualString(path.toString());
+  }
+
+  private static String normalizeVirtualString(String value) {
+    if (value == null) return null;
+    String normalized = value.replace('\\', '/');
     while (normalized.endsWith("/") && normalized.length() > 1) {
       normalized = normalized.substring(0, normalized.length() - 1);
     }
@@ -1272,6 +1307,29 @@ public final class ProjectEvents {
 
   private static boolean isVirtualDeviceNamespacePath(String normalized) {
     return isVirtualDeviceDirectory(normalized) || isVirtualDevicePath(normalized);
+  }
+
+  private static boolean isKernelVirtualFile(String normalized) {
+    return normalized != null && KERNEL_VIRTUAL_FILES.get().contains(normalized);
+  }
+
+  private static boolean isKernelVirtualDirectory(String normalized) {
+    if (normalized == null || "/".equals(normalized)) return false;
+    for (String filePath : KERNEL_VIRTUAL_FILES.get()) {
+      if (filePath.startsWith(normalized.endsWith("/") ? normalized : normalized + "/")) return true;
+    }
+    return false;
+  }
+
+  private static boolean isKernelVirtualNamespacePath(String normalized) {
+    if (isKernelVirtualFile(normalized) || isKernelVirtualDirectory(normalized)) return true;
+    if (normalized == null) return false;
+    for (String filePath : KERNEL_VIRTUAL_FILES.get()) {
+      int slash = filePath.indexOf('/', 1);
+      String root = slash < 0 ? filePath : filePath.substring(0, slash);
+      if (normalized.startsWith(root + "/")) return true;
+    }
+    return false;
   }
 
   private static void throwKernelDeviceNotDirectory(String normalized) throws IOException {
@@ -1529,7 +1587,8 @@ public final class ProjectEvents {
     if (normalized == null) return false;
     return normalized.equals("/proc") ||
         normalized.startsWith("/proc/") ||
-        isVirtualDeviceNamespacePath(normalized);
+        isVirtualDeviceNamespacePath(normalized) ||
+        isKernelVirtualNamespacePath(normalized);
   }
 
   private static void emitFileSnapshot(Path path) {

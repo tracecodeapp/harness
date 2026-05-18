@@ -278,6 +278,26 @@ public class ProjectWorkspaceDirectorySmoke {
         + ":" + String.join(",", listedDevices)
         + ":" + String.join(",", filteredDevices)
         + ":" + String.join(",", writableFileNames));
+      String kernelFileManifest = b64.apply("/tracekernel/custom") + "\t" + b64.apply("custom-kernel-file\\n");
+      ProjectEvents.setKernelFiles(kernelFileManifest);
+      var customKernelFile = new ProjectEvents.ProjectFile("/tracekernel/custom");
+      var customKernelDir = new ProjectEvents.ProjectFile("/tracekernel");
+      String customFileWriterResult = "ok";
+      try {
+        new ProjectEvents.ProjectFileWriter("/tracekernel/custom", StandardCharsets.UTF_8).close();
+      } catch (java.io.IOException ex) {
+        customFileWriterResult = ex.getClass().getSimpleName();
+      }
+      String customKernelMkdirResult = "ok";
+      try {
+        ProjectEvents.createDirectories(Paths.get("/tracekernel/new"));
+      } catch (java.io.IOException ex) {
+        customKernelMkdirResult = ex.getClass().getSimpleName();
+      }
+      System.out.println("kernel-file-api="
+        + customKernelDir.exists() + ":" + customKernelDir.isDirectory() + ":" + customKernelDir.canRead() + ":" + customKernelDir.canWrite()
+        + ":" + customKernelFile.exists() + ":" + customKernelFile.isFile() + ":" + customKernelFile.canRead() + ":" + customKernelFile.canWrite()
+        + ":" + customFileWriterResult + ":" + customKernelMkdirResult);
     } finally {
       ProjectEvents.clearKernelDevices();
     }
@@ -302,7 +322,7 @@ public class ProjectWorkspaceDirectorySmoke {
       ],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput, deviceWriterOutput, fileApiOutput] = output.trim().split('\n');
+    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput, deviceWriterOutput, fileApiOutput, kernelFileApiOutput] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
     assertCondition(
       Array.isArray(JSON.parse(changedFilesJson ?? 'null')) && JSON.parse(changedFilesJson ?? 'null').length === 0,
@@ -323,6 +343,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       fileApiOutput === 'file-api=true:true:true:false:true:true:false:true:true:false:false:false:0:log,stdin,stdout,tty:stdout:log,stdout,tty',
       `Java browser helper should route java.io.File metadata/listing through kernel devices: ${output}`
+    );
+    assertCondition(
+      kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:IOException:IOException',
+      `Java browser helper should expose manifest kernel files as read-only File API paths: ${output}`
     );
     const projectEventsSource = readFileSync(
       join(process.cwd(), 'workers', 'java', 'src', 'tracecode', 'browser', 'ProjectEvents.java'),
@@ -834,10 +858,12 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 .join('\n');
               const hasKernelDevices = decodedSourceManifest.includes('ProjectEvents.setKernelDevices("') &&
                 decodedSourceManifest.includes('/dev/stdout');
+              const hasKernelFiles = decodedSourceManifest.includes('ProjectEvents.setKernelFiles("') &&
+                workspaceManifest.includes('/tracekernel/custom\t');
               const hasCustomKernelDevices = hasKernelDevices &&
                 decodedSourceManifest.includes('/dev/log') &&
                 decodedSourceManifest.includes('/dev/custom-in');
-              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : ''}`;
+              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\npw_log\ndev_stderr\nps_stderr\n' : 'dev_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
@@ -1694,6 +1720,11 @@ async function main(): Promise<void> {
               '    try (var stream = new FileInputStream("/proc/kernel/version")) { System.out.println("proc-stream=" + new String(stream.readAllBytes(), StandardCharsets.UTF_8).trim()); }',
               '    try { Files.writeString(Path.of("/proc/kernel/info"), "{}\\\\n"); System.out.println("proc-write:ok"); } catch (IOException ex) { System.out.println("proc-write:" + ex.getClass().getSimpleName()); }',
               '    try (var paths = Files.list(Path.of("/proc/kernel"))) { System.out.println("proc-list=" + paths.map(path -> path.getFileName().toString()).sorted().collect(Collectors.joining(","))); }',
+              '    System.out.println("custom-kernel=" + Files.readString(Path.of("/tracekernel/custom")).trim());',
+              '    try { Files.writeString(Path.of("/tracekernel/custom"), "bad\\\\n"); System.out.println("custom-kernel-write:ok"); } catch (IOException ex) { System.out.println("custom-kernel-write:" + ex.getClass().getSimpleName()); }',
+              '    try { Files.createDirectories(Path.of("/tracekernel/new")); System.out.println("custom-kernel-mkdir:ok"); } catch (IOException ex) { System.out.println("custom-kernel-mkdir:" + ex.getClass().getSimpleName()); }',
+              '    var customKernelFile = new File("/tracekernel/custom");',
+              '    System.out.println("custom-kernel-file-api=" + new File("/tracekernel").isDirectory() + ":" + customKernelFile.isFile() + ":" + customKernelFile.canRead() + ":" + customKernelFile.canWrite());',
               '    try (var paths = Files.list(Path.of("/dev"))) { System.out.println("dev-list=" + paths.map(path -> path.getFileName().toString()).sorted().collect(Collectors.joining(","))); }',
               '    try (var paths = Files.newDirectoryStream(Path.of("/dev"))) { var names = new java.util.ArrayList<String>(); for (var path : paths) names.add(path.getFileName().toString()); java.util.Collections.sort(names); System.out.println("dev-stream=" + String.join(",", names)); }',
               '    try (var paths = Files.newDirectoryStream(Path.of("/dev"), "std*")) { var names = new java.util.ArrayList<String>(); for (var path : paths) names.add(path.getFileName().toString()); java.util.Collections.sort(names); System.out.println("dev-glob=" + String.join(",", names)); }',
@@ -1730,6 +1761,7 @@ async function main(): Promise<void> {
           { path: '/proc/kernel/info', contents: '{\n  "name": "tracekernel"\n}\n' },
           { path: '/proc/kernel/version', contents: 'tracekernel test\n' },
           { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\n' },
+          { path: '/tracekernel/custom', contents: 'custom-kernel-file\n' },
         ],
         kernelDevices: [
           { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
@@ -1743,7 +1775,7 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n',
+      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ncustom-kernel=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
     assertCondition(projectExecute.stderr === 'dev_log\npw_log\ndev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
@@ -2270,6 +2302,10 @@ async function main(): Promise<void> {
       'Java execute-project-java adapter should pass project kernelDevices into ProjectEvents'
     );
     assertCondition(
+      defaultAdapterSource.includes('ProjectEvents.setKernelFiles("'),
+      'Java execute-project-java adapter should pass project kernelFiles into ProjectEvents'
+    );
+    assertCondition(
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("generated.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.readString(Path.of("/dev/stdin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.list(Path.of("/dev")') === true &&
@@ -2311,6 +2347,7 @@ async function main(): Promise<void> {
         defaultWorkspaceManifest.includes('/proc/kernel/info\t') &&
         defaultWorkspaceManifest.includes('/proc/kernel/version\t') &&
         defaultWorkspaceManifest.includes('/proc/self/mountinfo\t') &&
+        defaultWorkspaceManifest.includes('/tracekernel/custom\t') &&
         defaultWorkspaceManifest.includes('\tdir\tempty/child') &&
         harness.projectCompileCalls.at(-1)?.workspaceRoot?.endsWith('/workspace') &&
         harness.projectCompileCalls.at(-1)?.workspaceCwd?.endsWith('/workspace'),
