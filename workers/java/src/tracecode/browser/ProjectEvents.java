@@ -378,66 +378,105 @@ public final class ProjectEvents {
 
   public static final class ProjectFileWriter extends FileWriter {
     private final Path path;
+    private final KernelDevice device;
+    private final Charset charset;
 
     public ProjectFileWriter(String fileName) throws IOException {
-      super(writableFileName(fileName));
+      super(outputFileTarget(Path.of(fileName)));
       this.path = Path.of(fileName);
+      this.device = kernelDevice(this.path);
+      this.charset = Charset.defaultCharset();
     }
 
     public ProjectFileWriter(String fileName, boolean append) throws IOException {
-      super(writableFileName(fileName), append);
+      super(outputFileTarget(Path.of(fileName)), append);
       this.path = Path.of(fileName);
+      this.device = kernelDevice(this.path);
+      this.charset = Charset.defaultCharset();
     }
 
     public ProjectFileWriter(String fileName, Charset charset) throws IOException {
-      super(writableFileName(fileName), charset);
+      super(outputFileTarget(Path.of(fileName)), charset);
       this.path = Path.of(fileName);
+      this.device = kernelDevice(this.path);
+      this.charset = charset == null ? Charset.defaultCharset() : charset;
     }
 
     public ProjectFileWriter(String fileName, Charset charset, boolean append) throws IOException {
-      super(writableFileName(fileName), charset, append);
+      super(outputFileTarget(Path.of(fileName)), charset, append);
       this.path = Path.of(fileName);
+      this.device = kernelDevice(this.path);
+      this.charset = charset == null ? Charset.defaultCharset() : charset;
     }
 
     public ProjectFileWriter(File file) throws IOException {
-      super(writableFile(file));
+      super(outputFileTarget(file == null ? null : file.toPath()));
       this.path = file.toPath();
+      this.device = kernelDevice(this.path);
+      this.charset = Charset.defaultCharset();
     }
 
     public ProjectFileWriter(File file, boolean append) throws IOException {
-      super(writableFile(file), append);
+      super(outputFileTarget(file == null ? null : file.toPath()), append);
       this.path = file.toPath();
+      this.device = kernelDevice(this.path);
+      this.charset = Charset.defaultCharset();
     }
 
     public ProjectFileWriter(File file, Charset charset) throws IOException {
-      super(writableFile(file), charset);
+      super(outputFileTarget(file == null ? null : file.toPath()), charset);
       this.path = file.toPath();
+      this.device = kernelDevice(this.path);
+      this.charset = charset == null ? Charset.defaultCharset() : charset;
     }
 
     public ProjectFileWriter(File file, Charset charset, boolean append) throws IOException {
-      super(writableFile(file), charset, append);
+      super(outputFileTarget(file == null ? null : file.toPath()), charset, append);
       this.path = file.toPath();
+      this.device = kernelDevice(this.path);
+      this.charset = charset == null ? Charset.defaultCharset() : charset;
     }
 
     private void emitAfterWrite() throws IOException {
+      if (device != null) return;
       super.flush();
       emitFileSnapshot(path);
     }
 
+    private void writeDeviceChars(char[] chars, int offset, int length) {
+      writeKernelDevice(device, new String(chars, offset, length).getBytes(charset));
+    }
+
+    private void writeDeviceString(String text, int offset, int length) {
+      writeKernelDevice(device, text.substring(offset, offset + length).getBytes(charset));
+    }
+
     @Override
     public void write(int value) throws IOException {
+      if (device != null) {
+        writeKernelDevice(device, String.valueOf((char) value).getBytes(charset));
+        return;
+      }
       super.write(value);
       emitAfterWrite();
     }
 
     @Override
     public void write(char[] chars, int offset, int length) throws IOException {
+      if (device != null) {
+        writeDeviceChars(chars, offset, length);
+        return;
+      }
       super.write(chars, offset, length);
       emitAfterWrite();
     }
 
     @Override
     public void write(String text, int offset, int length) throws IOException {
+      if (device != null) {
+        writeDeviceString(text, offset, length);
+        return;
+      }
       super.write(text, offset, length);
       emitAfterWrite();
     }
@@ -464,12 +503,17 @@ public final class ProjectEvents {
 
     @Override
     public void flush() throws IOException {
+      if (device != null) return;
       super.flush();
       emitFileSnapshot(path);
     }
 
     @Override
     public void close() throws IOException {
+      if (device != null) {
+        super.close();
+        return;
+      }
       super.close();
       emitFileSnapshot(path);
     }
@@ -909,32 +953,32 @@ public final class ProjectEvents {
     private final Path path;
 
     public ProjectPrintWriter(String fileName) throws IOException {
-      super(writableFileName(fileName));
+      super(printWriterOutput(Path.of(fileName), StandardCharsets.UTF_8));
       this.path = Path.of(fileName);
     }
 
     public ProjectPrintWriter(String fileName, String charsetName) throws IOException {
-      super(writableFileName(fileName), charsetName);
+      super(printWriterOutput(Path.of(fileName), Charset.forName(charsetName)));
       this.path = Path.of(fileName);
     }
 
     public ProjectPrintWriter(String fileName, Charset charset) throws IOException {
-      super(writableFileName(fileName), charset);
+      super(printWriterOutput(Path.of(fileName), charset));
       this.path = Path.of(fileName);
     }
 
     public ProjectPrintWriter(File file) throws IOException {
-      super(writableFile(file));
+      super(printWriterOutput(file == null ? null : file.toPath(), StandardCharsets.UTF_8));
       this.path = file.toPath();
     }
 
     public ProjectPrintWriter(File file, String charsetName) throws IOException {
-      super(writableFile(file), charsetName);
+      super(printWriterOutput(file == null ? null : file.toPath(), Charset.forName(charsetName)));
       this.path = file.toPath();
     }
 
     public ProjectPrintWriter(File file, Charset charset) throws IOException {
-      super(writableFile(file), charset);
+      super(printWriterOutput(file == null ? null : file.toPath(), charset));
       this.path = file.toPath();
     }
 
@@ -1343,6 +1387,10 @@ public final class ProjectEvents {
     if (device != null) return new KernelDeviceOutputStream(device);
     assertWritableProjectPath(path);
     return new ProjectOutputStream(new FileOutputStream(path.toFile()), path);
+  }
+
+  private static Writer printWriterOutput(Path path, Charset charset) throws IOException {
+    return new OutputStreamWriter(printStreamOutput(path), charset == null ? StandardCharsets.UTF_8 : charset);
   }
 
   private static File temporaryDeviceFile() throws IOException {

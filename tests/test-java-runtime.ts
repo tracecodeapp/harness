@@ -231,6 +231,35 @@ public class ProjectWorkspaceDirectorySmoke {
     } finally {
       ProjectEvents.clearKernelDevices();
     }
+    java.util.function.Function<String, String> b64 = (value) -> java.util.Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
+    java.util.function.Function<String[], String> device = (fields) ->
+      b64.apply(fields[0]) + "\t" + b64.apply(fields[1]) + "\t" + b64.apply(fields[2]) + "\t" + b64.apply(fields[3]) + "\t" + b64.apply(fields[4]);
+    ProjectEvents.setKernelDevices(String.join("\\n",
+      device.apply(new String[] { "/dev/stdout", "0", "1", "", "/dev/stdout" }),
+      device.apply(new String[] { "/dev/tty", "1", "1", "/dev/stdin", "/dev/stdout" }),
+      device.apply(new String[] { "/dev/log", "0", "1", "", "/dev/stderr" })
+    ), "from-device\\n");
+    try {
+      var stdoutCapture = new java.io.ByteArrayOutputStream();
+      var stderrCapture = new java.io.ByteArrayOutputStream();
+      ProjectEvents.streamingOutput(stdoutCapture, "stdout");
+      ProjectEvents.streamingOutput(stderrCapture, "stderr");
+      try (var writer = new ProjectEvents.ProjectFileWriter("/dev/stdout", StandardCharsets.UTF_8)) {
+        writer.write("file-writer-out\\n");
+      }
+      try (var writer = new ProjectEvents.ProjectPrintWriter("/dev/stdout", StandardCharsets.UTF_8)) {
+        writer.print("print-writer-out\\n");
+      }
+      try (var writer = new ProjectEvents.ProjectFileWriter("/dev/tty", StandardCharsets.UTF_8)) {
+        writer.write("tty-writer-out\\n");
+      }
+      try (var writer = new ProjectEvents.ProjectPrintWriter("/dev/log", StandardCharsets.UTF_8)) {
+        writer.print("print-writer-err\\n");
+      }
+      System.out.println(stdoutCapture.toString("UTF-8").replace("\\n", "|") + stderrCapture.toString("UTF-8").replace("\\n", "|"));
+    } finally {
+      ProjectEvents.clearKernelDevices();
+    }
   }
 }
 `,
@@ -252,7 +281,7 @@ public class ProjectWorkspaceDirectorySmoke {
       ],
       { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
     );
-    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput] = output.trim().split('\n');
+    const [isDirectory, changedFilesJson, kernelChangedFilesJson, deviceChannelInput, deviceWriterOutput] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
     assertCondition(
       Array.isArray(JSON.parse(changedFilesJson ?? 'null')) && JSON.parse(changedFilesJson ?? 'null').length === 0,
@@ -265,6 +294,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       deviceChannelInput === 'from-channel',
       `Java browser helper should read kernel stdin through newByteChannel: ${output}`
+    );
+    assertCondition(
+      deviceWriterOutput === 'file-writer-out|print-writer-out|tty-writer-out|print-writer-err|',
+      `Java browser helper should route FileWriter and PrintWriter through kernel devices: ${output}`
     );
     const projectEventsSource = readFileSync(
       join(process.cwd(), 'workers', 'java', 'src', 'tracecode', 'browser', 'ProjectEvents.java'),
@@ -779,8 +812,8 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               const hasCustomKernelDevices = hasKernelDevices &&
                 decodedSourceManifest.includes('/dev/log') &&
                 decodedSourceManifest.includes('/dev/custom-in');
-              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : ''}`;
-              const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\ndev_stderr\nps_stderr\n' : 'dev_stderr\nps_stderr\n' : '';
+              const stdout = `after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : 'dev-list=stderr,stdin,stdout,tty\ndev-stream=stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n' : ''}`;
+              const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\npw_log\ndev_stderr\nps_stderr\n' : 'dev_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
                 null,
                 'writer-before-output.txt',
@@ -911,6 +944,22 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
                   null,
                   'stdout',
+                  'dev_writer\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'pw_stdout\n'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
+                  'fw_tty\n',
+                  '/dev/tty'
+                );
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stdout',
                   'dev_tty\n',
                   '/dev/tty'
                 );
@@ -939,6 +988,12 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                     null,
                     'stderr',
                     'dev_log\n',
+                    '/dev/log'
+                  );
+                  cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                    null,
+                    'stderr',
+                    'pw_log\n',
                     '/dev/log'
                   );
                 }
@@ -1627,8 +1682,12 @@ async function main(): Promise<void> {
               '    try (var reader = new FileReader("/dev/custom-in")) { System.out.println("dev_reader_custom=" + new BufferedReader(reader).readLine()); }',
               '    Files.writeString(Path.of("/dev/stdout"), "dev_stdout\\\\n");',
               '    try (var stream = new FileOutputStream("/dev/stdout")) { stream.write("fos_stdout\\\\n".getBytes(StandardCharsets.UTF_8)); }',
+              '    try (var writer = new FileWriter("/dev/stdout", StandardCharsets.UTF_8)) { writer.write("dev_writer\\\\n"); }',
+              '    try (var writer = new PrintWriter("/dev/stdout", StandardCharsets.UTF_8)) { writer.print("pw_stdout\\\\n"); }',
+              '    try (var writer = new FileWriter("/dev/tty", StandardCharsets.UTF_8)) { writer.write("fw_tty\\\\n"); }',
               '    Files.writeString(Path.of("/dev/tty"), "dev_tty\\\\n");',
               '    Files.writeString(Path.of("/dev/log"), "dev_log\\\\n");',
+              '    try (var writer = new PrintWriter("/dev/log", StandardCharsets.UTF_8)) { writer.print("pw_log\\\\n"); }',
               '    Files.writeString(Path.of("/dev/stderr"), "dev_stderr\\\\n");',
               '    try (var stream = new PrintStream("/dev/stderr", "UTF-8")) { stream.print("ps_stderr\\\\n"); }',
               '    try { Files.readString(Path.of("/dev/stdout")); System.out.println("stdout-read:ok"); } catch (IOException ex) { System.out.println("stdout-read:" + ex.getClass().getSimpleName()); }',
@@ -1657,10 +1716,10 @@ async function main(): Promise<void> {
     });
     assertCondition(projectExecute.exitCode === 0, 'Java execute-project-java should succeed');
     assertCondition(
-      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n',
+      projectExecute.stdout === 'after-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\nproc-info\nproc-stream=tracekernel test\nproc-write:IOException\nproc-list=info,version\ndev-list=custom-in,log,stderr,stdin,stdout,tty\ndev-stream=custom-in,log,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-custom=from-stdin:true\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_channel_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\n',
       `Java execute-project-java should return captured stdout: ${JSON.stringify({ stdout: projectExecute.stdout, stderr: projectExecute.stderr })}`
     );
-    assertCondition(projectExecute.stderr === 'dev_log\ndev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
+    assertCondition(projectExecute.stderr === 'dev_log\npw_log\ndev_stderr\nps_stderr\n', 'Java execute-project-java should capture /dev/stderr writes');
     assertCondition(
       projectExecute.events?.some(
         (event) =>
@@ -1738,6 +1797,26 @@ async function main(): Promise<void> {
           (event) =>
             event.type === 'output' &&
             event.stream === 'stdout' &&
+            event.data === 'dev_writer\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.data === 'pw_stdout\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
+            event.device === '/dev/stdout' &&
+            event.sourceDevice === '/dev/tty' &&
+            event.data === 'fw_tty\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stdout' &&
             event.device === '/dev/stdout' &&
             event.sourceDevice === '/dev/tty' &&
             event.data === 'dev_tty\n'
@@ -1761,6 +1840,14 @@ async function main(): Promise<void> {
             event.device === '/dev/stderr' &&
             event.sourceDevice === '/dev/log' &&
             event.data === 'dev_log\n'
+        ) === true &&
+        projectExecute.events?.some(
+          (event) =>
+            event.type === 'output' &&
+            event.stream === 'stderr' &&
+            event.device === '/dev/stderr' &&
+            event.sourceDevice === '/dev/log' &&
+            event.data === 'pw_log\n'
         ) === true &&
         projectExecute.events?.some(
           (event) =>
@@ -2161,7 +2248,11 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.exists(Path.of("/dev/stdin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.writeString(Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("writer.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("/dev/stdout"') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileWriter("/dev/tty"') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("printed.txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("/dev/stdout"') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectPrintWriter("/dev/log"') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileInputStream("/dev/stdin")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileReader("/dev/stdin"') === true &&
         defaultManifestEntries.get('Main.java')?.includes('new tracecode.browser.ProjectEvents.ProjectFileReader("/dev/stdout")') === true &&
