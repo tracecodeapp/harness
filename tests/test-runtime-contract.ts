@@ -542,6 +542,43 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
       events.filter((event) => event.type === 'output' && event.stream === 'stderr').length === 1,
     `runtime worker bridge should not duplicate final stdout/stderr after streamed output: ${stableStringify(events)}`
   );
+
+  const partialOutputEvents: RuntimeCommandEvent[] = [];
+  const partialOutputResult = await runRuntimeProjectWorkerBridge({
+    request: { ...request, onEvent: (event) => partialOutputEvents.push(event) },
+    startPhase: 'process-start',
+    startMessage: 'Starting partial-output worker',
+    finishPhase: 'process-exit',
+    finishMessage: 'Finished partial-output worker',
+    run: async (_workerRequest, onEvent) => {
+      onEvent({ type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'line-one\n' });
+      onEvent({ type: 'output', stream: 'stderr', device: '/dev/stderr', data: 'err-one\n' });
+      return {
+        stdout: 'line-one\nline-two\n',
+        stderr: 'err-one\nerr-two\n',
+        exitCode: 0,
+      };
+    },
+  });
+
+  assertCondition(
+    partialOutputResult.stdout === 'line-one\nline-two\n' &&
+      partialOutputResult.stderr === 'err-one\nerr-two\n' &&
+      partialOutputResult.exitCode === 0,
+    `runtime worker bridge should preserve partial-output command results: ${stableStringify(partialOutputResult)}`
+  );
+  assertCondition(
+    partialOutputEvents
+      .filter((event) => event.type === 'output' && event.stream === 'stdout')
+      .map((event) => event.data)
+      .join('') === 'line-one\nline-two\n' &&
+      partialOutputEvents
+        .filter((event) => event.type === 'output' && event.stream === 'stderr')
+        .map((event) => event.data)
+        .join('') === 'err-one\nerr-two\n',
+    `runtime worker bridge should stream missing final stdout/stderr suffixes: ${stableStringify(partialOutputEvents)}`
+  );
+
   assertCondition(
     events.some((event) =>
       event.type === 'file-change' &&

@@ -5314,8 +5314,11 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   assertCondition(result.stdout === 'java-streamed\nrun:Main:1', 'browser java runner should delegate to worker client');
   assertCondition(received?.scriptPath === 'Main', 'browser java runner should pass through request');
   assertCondition(
-    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
-    `browser java runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+    events
+      .filter((event) => event.type === 'output' && event.stream === 'stdout')
+      .map((event) => event.data)
+      .join('') === result.stdout,
+    `browser java runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
   assertCondition(
     events.some((event) =>
@@ -5447,8 +5450,11 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
   assertCondition(result.stdout === 'streamed\nmain.py:1', 'pyodide runner should delegate to worker client');
   assertCondition(received?.scriptPath === 'main.py', 'pyodide runner should pass through request');
   assertCondition(
-    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
-    `pyodide runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+    events
+      .filter((event) => event.type === 'output' && event.stream === 'stdout')
+      .map((event) => event.data)
+      .join('') === result.stdout,
+    `pyodide runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
   assertCondition(
     events.some((event) =>
@@ -5585,8 +5591,11 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
   assertCondition(result.stdout === 'csharp-streamed\nrun:<project>:alpha,beta:1', 'browser C# runner should delegate to worker client');
   assertCondition(received?.scriptPath === '<project>', 'browser C# runner should pass through request');
   assertCondition(
-    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
-    `browser C# runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+    events
+      .filter((event) => event.type === 'output' && event.stream === 'stdout')
+      .map((event) => event.data)
+      .join('') === result.stdout,
+    `browser C# runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
   assertCondition(
     events.some((event) =>
@@ -5687,8 +5696,11 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
   assertCondition(result.stdout === 'cpp-streamed\ncompile:main.cpp:main.cpp,-o,a.out:1', 'browser C++ runner should delegate to worker client');
   assertCondition(received?.scriptPath === 'main.cpp', 'browser C++ runner should pass through request');
   assertCondition(
-    events.filter((event) => event.type === 'output' && event.stream === 'stdout').length === 1,
-    `browser C++ runner should not duplicate final stdout after streamed stdout events: ${JSON.stringify(events)}`
+    events
+      .filter((event) => event.type === 'output' && event.stream === 'stdout')
+      .map((event) => event.data)
+      .join('') === result.stdout,
+    `browser C++ runner should stream missing final stdout suffix after streamed stdout events: ${JSON.stringify(events)}`
   );
   assertCondition(
     events.some((event) =>

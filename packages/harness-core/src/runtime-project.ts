@@ -242,21 +242,38 @@ function runtimeErrorMessage(error: unknown): string {
 }
 
 export class RuntimeProjectOutputTracker {
-  private stdoutStreamed = false;
-  private stderrStreamed = false;
+  private stdoutStreamed = '';
+  private stderrStreamed = '';
 
   observe(event: RuntimeCommandEvent): void {
     if (event.type !== 'output') return;
-    if (event.stream === 'stdout') this.stdoutStreamed = true;
-    if (event.stream === 'stderr') this.stderrStreamed = true;
+    if (event.stream === 'stdout') this.stdoutStreamed += event.data;
+    if (event.stream === 'stderr') this.stderrStreamed += event.data;
   }
 
   emitMissingFinalOutput(
     result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>,
     output: (stream: RuntimeCommandEventStream, data: string) => void
   ): void {
-    if (result.stdout && !this.stdoutStreamed) output('stdout', result.stdout);
-    if (result.stderr && !this.stderrStreamed) output('stderr', result.stderr);
+    this.emitMissingStreamOutput('stdout', result.stdout, this.stdoutStreamed, output);
+    this.emitMissingStreamOutput('stderr', result.stderr, this.stderrStreamed, output);
+  }
+
+  private emitMissingStreamOutput(
+    stream: RuntimeCommandEventStream,
+    finalOutput: string,
+    streamedOutput: string,
+    output: (stream: RuntimeCommandEventStream, data: string) => void
+  ): void {
+    if (!finalOutput) return;
+    if (!streamedOutput) {
+      output(stream, finalOutput);
+      return;
+    }
+    if (finalOutput.startsWith(streamedOutput)) {
+      const suffix = finalOutput.slice(streamedOutput.length);
+      if (suffix) output(stream, suffix);
+    }
   }
 }
 
