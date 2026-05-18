@@ -1607,6 +1607,14 @@ for _entry in _kernel_device_entries:
             "outputDevice": str(_entry.get("outputDevice") or ""),
         }
 
+_device_directories = {"/dev"}
+for _device_path in _kernel_devices:
+    _parts = [part for part in _device_path.split("/") if part]
+    _current = ""
+    for _part in _parts[:-1]:
+        _current += "/" + _part
+        _device_directories.add(_current)
+
 def _normalize_device_path(_value):
     if isinstance(_value, (str, bytes, os.PathLike)):
         _original = os.fspath(_value).replace("\\\\", "/").rstrip("/")
@@ -1622,16 +1630,35 @@ def _normalize_device_namespace_path(_value):
     return None
 
 def _device_entry_kind(_path):
-    if _path == "/dev":
+    if _path in _device_directories:
         return "directory"
     if _path in _kernel_devices:
         return "file"
     return None
 
 def _device_dir_entries(_path):
-    if _path != "/dev":
+    if _path not in _device_directories:
         return None
-    return sorted([_entry[len("/dev/"):] for _entry in _kernel_devices if _entry.startswith("/dev/")])
+    _prefix = _path.rstrip("/") + "/"
+    _names = set()
+    for _directory in _device_directories:
+        if not _directory.startswith(_prefix) or _directory == _path:
+            continue
+        _rest = _directory[len(_prefix):]
+        if _rest and "/" not in _rest:
+            _names.add(_rest)
+    for _device_path in _kernel_devices:
+        if not _device_path.startswith(_prefix):
+            continue
+        _rest = _device_path[len(_prefix):]
+        if _rest and "/" not in _rest:
+            _names.add(_rest)
+    return sorted(_names)
+
+def _device_info_for_path(_path):
+    if _path in _kernel_devices:
+        return _kernel_devices.get(_path, {})
+    return {"readable": True, "writable": False}
 
 def _device_stat(_path):
     _kind = _device_entry_kind(_path)
@@ -2217,8 +2244,8 @@ def _install_virtual_workspace_paths():
                         return False
                     _mode = int(args[0]) if args else int(kwargs.get("mode", os.F_OK))
                     if _kind == "directory":
-                        return (_mode & os.W_OK) == 0 and (_mode & os.X_OK) == 0
-                    _device_info = _kernel_devices.get(_device_path, {})
+                        return (_mode & os.W_OK) == 0
+                    _device_info = _device_info_for_path(_device_path)
                     if (_mode & os.R_OK) and not bool(_device_info.get("readable")):
                         return False
                     if (_mode & os.W_OK) and not bool(_device_info.get("writable")):

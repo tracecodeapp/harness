@@ -392,6 +392,7 @@ async function main(): Promise<void> {
           '    print("custom-fd=" + os.read(custom_fd, 64).decode("utf-8").strip())',
           'finally:',
           '    os.close(custom_fd)',
+          'print("nested-dev-dir=" + str(os.path.isdir("/dev/pts")) + ":" + ",".join(os.listdir("/dev/pts")))',
           'with open("/dev/log", "w", encoding="utf-8") as log:',
           '    log.write("log-file\\\\n")',
           'log_fd = os.open("/dev/log", os.O_WRONLY)',
@@ -399,6 +400,13 @@ async function main(): Promise<void> {
           '    os.write(log_fd, b"log-fd\\\\n")',
           'finally:',
           '    os.close(log_fd)',
+          'with open("/dev/pts/0", "w", encoding="utf-8") as pts:',
+          '    pts.write("pts-file\\\\n")',
+          'pts_fd = os.open("/dev/pts/0", os.O_WRONLY)',
+          'try:',
+          '    os.write(pts_fd, b"pts-fd\\\\n")',
+          'finally:',
+          '    os.close(pts_fd)',
         ].join('\\n'),
         args: [],
         cwd: '/workspace',
@@ -410,6 +418,7 @@ async function main(): Promise<void> {
           kernelDevices: [
             { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
             { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
+            { path: '/dev/pts/0', readable: false, writable: true, outputDevice: '/dev/stdout' },
           ],
         },
       });
@@ -1082,7 +1091,7 @@ async function main(): Promise<void> {
     );
     assertCondition(results.manifestCustomDeviceRun.exitCode === 0, `Python project manifest custom device run should succeed: ${results.manifestCustomDeviceRun.stderr}`);
     assertCondition(
-      results.manifestCustomDeviceRun.stdout === 'custom-file=manifest-stdin\ncustom-fd=manifest-stdin\n',
+      results.manifestCustomDeviceRun.stdout === 'custom-file=manifest-stdin\ncustom-fd=manifest-stdin\nnested-dev-dir=True:0\npts-file\npts-fd\n',
       `Python project custom input device should read from stdin: ${JSON.stringify(results.manifestCustomDeviceRun.stdout)}`
     );
     assertCondition(
@@ -1100,6 +1109,18 @@ async function main(): Promise<void> {
         .map((event) => event.data)
         .join('') === 'log-file\nlog-fd\n',
       `Python project custom log device should preserve sourceDevice: ${JSON.stringify(results.manifestCustomDeviceRun.events)}`
+    );
+    assertCondition(
+      results.manifestCustomDeviceRun.events
+        ?.filter((event) =>
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          event.device === '/dev/stdout' &&
+          event.sourceDevice === '/dev/pts/0'
+        )
+        .map((event) => event.data)
+        .join('') === 'pts-file\npts-fd\n',
+      `Python project nested custom output device should preserve sourceDevice: ${JSON.stringify(results.manifestCustomDeviceRun.events)}`
     );
     assertCondition(results.fdReadlineRun.exitCode === 0, `Python project fd readline run should succeed: ${results.fdReadlineRun.stderr}`);
     assertCondition(
