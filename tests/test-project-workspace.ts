@@ -2158,6 +2158,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node metadata APIs should validate and preserve file contents: ${metadataResult.stdout}`
   );
 
+  const statsMetadataResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const flush = () => new Promise((resolve) => queueMicrotask(resolve)); fs.writeFileSync(\\"stats-meta.txt\\", \\"abcdef\\"); const changes = []; fs.watchFile(\\"stats-meta.txt\\", (curr, prev) => changes.push((prev.mode & 0o777).toString(8) + \\"->\\" + (curr.mode & 0o777).toString(8) + \\":\\" + prev.uid + \\"->\\" + curr.uid + \\":\\" + prev.mtimeMs + \\"->\\" + curr.mtimeMs)); fs.chmodSync(\\"stats-meta.txt\\", 0o751); await flush(); fs.chownSync(\\"stats-meta.txt\\", 12, 34); await flush(); fs.utimesSync(\\"stats-meta.txt\\", new Date(1000), new Date(2000)); await flush(); fs.unwatchFile(\\"stats-meta.txt\\"); const fd = fs.openSync(\\"stats-meta.txt\\", \\"r+\\"); fs.fchmodSync(fd, 0o640); fs.fchownSync(fd, 56, 78); fs.futimesSync(fd, 3, 4); const fstat = fs.fstatSync(fd); fs.closeSync(fd); const handle = await fsp.open(\\"stats-meta.txt\\", \\"r+\\"); await handle.chmod(0o600); await handle.chown(90, 91); await handle.utimes(5, 6); const hstat = await handle.stat(); await handle.close(); const stat = fs.statSync(\\"stats-meta.txt\\"); console.log(changes.join(\\"|\\")); console.log((fstat.mode & 0o777).toString(8), fstat.uid, fstat.gid, fstat.mtimeMs); console.log((stat.mode & 0o777).toString(8), stat.uid, stat.gid, stat.mtimeMs, stat.size, stat.blocks, stat.blksize, stat.nlink, stat.ino > 0); console.log(stat.isFile(), stat.isDirectory(), stat.isBlockDevice(), stat.isCharacterDevice(), stat.isFIFO(), stat.isSocket(), stat.isSymbolicLink()); console.log((hstat.mode & 0o777).toString(8), hstat.uid, hstat.gid, hstat.mtime.getTime());"',
+  ].join(' '));
+  assertCondition(statsMetadataResult.exitCode === 0, `browser node Stats metadata workflow should succeed: ${statsMetadataResult.stderr}`);
+  assertCondition(
+    statsMetadataResult.stdout === '644->751:0->0:2->2|751->751:0->12:2->2|751->751:12->12:2->2000\n640 56 78 4000\n600 90 91 6000 6 1 4096 1 true\ntrue false false false false false false\n600 90 91 6000\n',
+    `browser node Stats metadata should track mode, owner, times, and predicates: ${statsMetadataResult.stdout}`
+  );
+
   const watchResult = await workspace.runCommand([
     'node',
     '-e',

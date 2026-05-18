@@ -1066,22 +1066,53 @@ async function runBrowserJavaScriptProjectRequest(
         directoryStore.add(parts.slice(0, index).join('/'));
       }
     }
+    type BrowserEntryMetadata = {
+      atimeMs: number;
+      birthtimeMs: number;
+      ctimeMs: number;
+      gid: number;
+      mode?: number;
+      mtimeMs: number;
+      uid: number;
+    };
     let fsTimestampMs = 1;
-    const entryMetadata = new Map<string, { birthtimeMs: number; ctimeMs: number; mtimeMs: number }>(
-      Array.from(fileStore.keys()).map((filePath) => [filePath, { birthtimeMs: fsTimestampMs, ctimeMs: fsTimestampMs, mtimeMs: fsTimestampMs }])
+    const createEntryMetadata = (mode?: number): BrowserEntryMetadata => ({
+      atimeMs: fsTimestampMs,
+      birthtimeMs: fsTimestampMs,
+      ctimeMs: fsTimestampMs,
+      gid: 0,
+      mode,
+      mtimeMs: fsTimestampMs,
+      uid: 0,
+    });
+    const entryMetadata = new Map<string, BrowserEntryMetadata>(
+      Array.from(fileStore.keys()).map((filePath) => [filePath, createEntryMetadata(0o100644)])
     );
     for (const directoryPath of directoryStore) {
       if (!entryMetadata.has(directoryPath)) {
-        entryMetadata.set(directoryPath, { birthtimeMs: fsTimestampMs, ctimeMs: fsTimestampMs, mtimeMs: fsTimestampMs });
+        entryMetadata.set(directoryPath, createEntryMetadata(0o40755));
       }
     }
     const touchEntryMetadata = (path: string): void => {
       fsTimestampMs += 1;
       const previous = entryMetadata.get(path);
       entryMetadata.set(path, {
+        atimeMs: previous?.atimeMs ?? fsTimestampMs,
         birthtimeMs: previous?.birthtimeMs ?? fsTimestampMs,
         ctimeMs: fsTimestampMs,
+        gid: previous?.gid ?? 0,
+        mode: previous?.mode,
         mtimeMs: fsTimestampMs,
+        uid: previous?.uid ?? 0,
+      });
+    };
+    const updateEntryMetadata = (path: string, update: Partial<BrowserEntryMetadata>): void => {
+      fsTimestampMs += 1;
+      const previous = entryMetadata.get(path) ?? createEntryMetadata();
+      entryMetadata.set(path, {
+        ...previous,
+        ...update,
+        ctimeMs: fsTimestampMs,
       });
     };
     const deleteEntryMetadata = (path: string): void => {
@@ -1173,17 +1204,30 @@ async function runBrowserJavaScriptProjectRequest(
       listeners: Map<string, Array<(...args: unknown[]) => void>>;
     };
     type BrowserFileStat = {
-      size: number;
-      mtimeMs: number;
-      ctimeMs: number;
-      birthtimeMs: number;
-      atimeMs: number;
-      mtime: Date;
-      ctime: Date;
-      birthtime: Date;
       atime: Date;
+      atimeMs: number;
+      birthtime: Date;
+      birthtimeMs: number;
+      blksize: number;
+      blocks: number;
+      ctime: Date;
+      ctimeMs: number;
+      dev: number;
+      gid: number;
+      ino: number;
+      mode: number;
+      mtime: Date;
+      mtimeMs: number;
+      nlink: number;
+      rdev: number;
+      size: number;
+      uid: number;
+      isBlockDevice: () => boolean;
+      isCharacterDevice: () => boolean;
+      isFIFO: () => boolean;
       isFile: () => boolean;
       isDirectory: () => boolean;
+      isSocket: () => boolean;
       isSymbolicLink: () => boolean;
     };
     type BrowserFileWatcher = {
@@ -1193,6 +1237,14 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const fsWatchers = new Set<BrowserFsWatcher>();
     const fsFileWatchers = new Set<BrowserFileWatcher>();
+    const inodeForPath = (path: string): number => {
+      let hash = 2166136261;
+      for (let index = 0; index < path.length; index += 1) {
+        hash ^= path.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0) || 1;
+    };
     const statForNormalizedPath = (normalized: string): BrowserFileStat | null => {
       const isFile = fileStore.has(normalized);
       const prefix = normalized ? `${normalized}/` : '';
@@ -1201,34 +1253,62 @@ async function runBrowserJavaScriptProjectRequest(
         Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
       );
       if (!isFile && !isDirectory) return null;
-      const metadata = entryMetadata.get(normalized) ?? { birthtimeMs: 0, ctimeMs: 0, mtimeMs: 0 };
+      const metadata = entryMetadata.get(normalized) ?? createEntryMetadata(isDirectory ? 0o40755 : 0o100644);
+      const size = isFile ? fileStore.get(normalized)?.byteLength ?? 0 : 0;
+      const mode = metadata.mode ?? (isDirectory ? 0o40755 : 0o100644);
       return {
-        size: isFile ? fileStore.get(normalized)?.byteLength ?? 0 : 0,
-        mtimeMs: metadata.mtimeMs,
-        ctimeMs: metadata.ctimeMs,
+        atimeMs: metadata.atimeMs,
         birthtimeMs: metadata.birthtimeMs,
-        atimeMs: metadata.mtimeMs,
-        mtime: new Date(metadata.mtimeMs),
-        ctime: new Date(metadata.ctimeMs),
+        blksize: 4096,
+        blocks: Math.ceil(size / 512),
+        ctimeMs: metadata.ctimeMs,
+        dev: 1,
+        gid: metadata.gid,
+        ino: inodeForPath(normalized),
+        mode,
+        mtimeMs: metadata.mtimeMs,
+        nlink: isDirectory ? 2 : 1,
+        rdev: 0,
+        size,
+        uid: metadata.uid,
+        atime: new Date(metadata.atimeMs),
         birthtime: new Date(metadata.birthtimeMs),
-        atime: new Date(metadata.mtimeMs),
+        ctime: new Date(metadata.ctimeMs),
+        mtime: new Date(metadata.mtimeMs),
+        isBlockDevice: () => false,
+        isCharacterDevice: () => false,
+        isFIFO: () => false,
         isFile: () => isFile,
         isDirectory: () => isDirectory,
+        isSocket: () => false,
         isSymbolicLink: () => false,
       };
     };
     const missingFileStat = (): BrowserFileStat => ({
-      size: 0,
-      mtimeMs: 0,
-      ctimeMs: 0,
-      birthtimeMs: 0,
-      atimeMs: 0,
-      mtime: new Date(0),
-      ctime: new Date(0),
-      birthtime: new Date(0),
       atime: new Date(0),
+      atimeMs: 0,
+      birthtime: new Date(0),
+      birthtimeMs: 0,
+      blksize: 4096,
+      blocks: 0,
+      ctime: new Date(0),
+      ctimeMs: 0,
+      dev: 1,
+      gid: 0,
+      ino: 0,
+      mode: 0,
+      mtime: new Date(0),
+      mtimeMs: 0,
+      nlink: 0,
+      rdev: 0,
+      size: 0,
+      uid: 0,
+      isBlockDevice: () => false,
+      isCharacterDevice: () => false,
+      isFIFO: () => false,
       isFile: () => false,
       isDirectory: () => false,
+      isSocket: () => false,
       isSymbolicLink: () => false,
     });
     const watchedFilename = (watcher: BrowserFsWatcher, changedPath: string): string | null => {
@@ -1430,6 +1510,20 @@ async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
       }
     };
+    const metadataPathForEntry = (path: unknown): string | null => {
+      if (normalizeRuntimeDevicePath(path)) return null;
+      const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+      if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
+      }
+      return normalized;
+    };
+    const timeToMs = (value: unknown): number => {
+      if (value instanceof Date) return value.getTime();
+      if (typeof value === 'number') return Math.max(0, value * 1000);
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? Math.max(0, parsed * 1000) : fsTimestampMs;
+    };
     type BrowserFileDescriptor = {
       kind: 'file' | 'device';
       path?: string;
@@ -1580,8 +1674,14 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
-      chmodSync: (path: unknown, _mode: unknown) => {
-        assertFileSystemAccess(path);
+      chmodSync: (path: unknown, mode: unknown) => {
+        const normalized = metadataPathForEntry(path);
+        if (normalized !== null) {
+          const stats = statForNormalizedPath(normalized);
+          const typeMode = stats?.isDirectory() ? 0o40000 : 0o100000;
+          updateEntryMetadata(normalized, { mode: typeMode | (Number(mode) & 0o7777) });
+          notifyWatchFileWatchers(normalized);
+        }
         return undefined;
       },
       chmod: (path: unknown, mode: unknown, callback?: (error?: Error | null) => void) => {
@@ -1592,8 +1692,12 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      chownSync: (path: unknown, _uid: unknown, _gid: unknown) => {
-        assertFileSystemAccess(path);
+      chownSync: (path: unknown, uid: unknown, gid: unknown) => {
+        const normalized = metadataPathForEntry(path);
+        if (normalized !== null) {
+          updateEntryMetadata(normalized, { uid: Number(uid) || 0, gid: Number(gid) || 0 });
+          notifyWatchFileWatchers(normalized);
+        }
         return undefined;
       },
       chown: (path: unknown, uid: unknown, gid: unknown, callback?: (error?: Error | null) => void) => {
@@ -1604,8 +1708,12 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      utimesSync: (path: unknown, _atime: unknown, _mtime: unknown) => {
-        assertFileSystemAccess(path);
+      utimesSync: (path: unknown, atime: unknown, mtime: unknown) => {
+        const normalized = metadataPathForEntry(path);
+        if (normalized !== null) {
+          updateEntryMetadata(normalized, { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
+          notifyWatchFileWatchers(normalized);
+        }
         return undefined;
       },
       utimes: (path: unknown, atime: unknown, mtime: unknown, callback?: (error?: Error | null) => void) => {
@@ -1904,8 +2012,14 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback(error as Error));
         }
       },
-      fchmodSync: (fd: number, _mode: unknown) => {
-        fileDescriptor(fd);
+      fchmodSync: (fd: number, mode: unknown) => {
+        const entry = fileDescriptor(fd);
+        if (entry.kind === 'file') {
+          const stats = statForNormalizedPath(entry.path ?? '');
+          const typeMode = stats?.isDirectory() ? 0o40000 : 0o100000;
+          updateEntryMetadata(entry.path ?? '', { mode: typeMode | (Number(mode) & 0o7777) });
+          notifyWatchFileWatchers(entry.path ?? '');
+        }
         return undefined;
       },
       fchmod: (fd: number, mode: unknown, callback?: (error?: Error | null) => void) => {
@@ -1916,8 +2030,12 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      fchownSync: (fd: number, _uid: unknown, _gid: unknown) => {
-        fileDescriptor(fd);
+      fchownSync: (fd: number, uid: unknown, gid: unknown) => {
+        const entry = fileDescriptor(fd);
+        if (entry.kind === 'file') {
+          updateEntryMetadata(entry.path ?? '', { uid: Number(uid) || 0, gid: Number(gid) || 0 });
+          notifyWatchFileWatchers(entry.path ?? '');
+        }
         return undefined;
       },
       fchown: (fd: number, uid: unknown, gid: unknown, callback?: (error?: Error | null) => void) => {
@@ -1928,8 +2046,12 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback?.(error as Error));
         }
       },
-      futimesSync: (fd: number, _atime: unknown, _mtime: unknown) => {
-        fileDescriptor(fd);
+      futimesSync: (fd: number, atime: unknown, mtime: unknown) => {
+        const entry = fileDescriptor(fd);
+        if (entry.kind === 'file') {
+          updateEntryMetadata(entry.path ?? '', { atimeMs: timeToMs(atime), mtimeMs: timeToMs(mtime) });
+          notifyWatchFileWatchers(entry.path ?? '');
+        }
         return undefined;
       },
       futimes: (fd: number, atime: unknown, mtime: unknown, callback?: (error?: Error | null) => void) => {
