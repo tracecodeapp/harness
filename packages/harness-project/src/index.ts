@@ -8,8 +8,7 @@ import {
   createRuntimeProjectIoBridge,
   filterRuntimeCommandResultFiles,
   runtimeFileChangePath,
-  RuntimeProjectEventQueue,
-  RuntimeProjectOutputTracker,
+  RuntimeProjectLiveIoController,
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
@@ -2392,8 +2391,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private activeCommandStdin = '';
   private activeDeviceStdout = '';
   private activeDeviceStderr = '';
-  private activeOutputTracker = new RuntimeProjectOutputTracker();
-  private activeRuntimeEventQueue = new RuntimeProjectEventQueue();
+  private activeRuntimeIo = this.createRuntimeLiveIoController();
   private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
@@ -2409,7 +2407,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       () => this.kernelInfo,
       (change) => {
         if (!this.activeCommandActor) return;
-        this.emitRuntimeEvent({ type: 'file-change', change, phase: 'live' });
+        this.emitLocalRuntimeEvent({ type: 'file-change', change, phase: 'live' });
       },
       (device) => this.readDevice(device),
       (device, data) => this.writeDevice(device, data)
@@ -2436,7 +2434,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       }
     );
     const observeFileChange: RuntimeFileChangeObserver = (change, phase) => {
-      this.emitRuntimeEvent({ type: 'file-change', change, phase });
+      this.emitLocalRuntimeEvent({ type: 'file-change', change, phase });
     };
     const customCommands = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
@@ -2521,7 +2519,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       if (outputDevice === '/dev/stdout') this.activeDeviceStdout += data;
       if (outputDevice === '/dev/stderr') this.activeDeviceStderr += data;
     }
-    this.emitRuntimeEvent({
+    this.emitLocalRuntimeEvent({
       type: 'output',
       stream: outputDevice === '/dev/stderr' ? 'stderr' : 'stdout',
       device: outputDevice,
@@ -2557,7 +2555,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
     if (normalizedEncoding === 'base64') {
       await this.bash.fs.writeFile(absolutePath, bytesFromBase64(contents));
-      this.emitRuntimeEvent({
+      this.emitLocalRuntimeEvent({
         type: 'file-change',
         change: { path: toProjectPath(this.cwd, absolutePath), contents, encoding: 'base64' },
         phase,
@@ -2567,7 +2565,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
 
     await this.bash.fs.writeFile(absolutePath, contents);
-    this.emitRuntimeEvent({
+    this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: toProjectPath(this.cwd, absolutePath), contents },
       phase,
@@ -2605,7 +2603,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       : new Uint8Array();
     const bytes = concatBytes(previousBytes, nextBytes);
     await this.bash.fs.writeFile(absolutePath, bytes);
-    this.emitRuntimeEvent({
+    this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: normalizedEncoding === 'base64'
         ? { path: toProjectPath(this.cwd, absolutePath), contents: base64FromBytes(bytes), encoding: 'base64' }
@@ -2676,7 +2674,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
     await this.bash.fs.mkdir(absolutePath, { recursive: true });
     for (const relativePath of createdDirectories) {
-      this.emitRuntimeEvent({
+      this.emitLocalRuntimeEvent({
         type: 'file-change',
         change: { path: relativePath, directory: true },
         phase: 'live',
@@ -2703,7 +2701,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const sourceBytes = await this.bash.fs.readFileBuffer(absoluteSourcePath);
     await this.bash.fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
     await this.bash.fs.writeFile(absoluteDestinationPath, sourceBytes);
-    this.emitRuntimeEvent({
+    this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: toProjectPath(this.cwd, absoluteDestinationPath), contents: base64FromBytes(sourceBytes), encoding: 'base64' },
       phase: 'live',
@@ -2741,7 +2739,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
     await this.copyFile(sourcePath, destinationPath);
     await this.bash.fs.rm(this.toWorkspacePath(sourcePath), { force: true });
-    this.emitRuntimeEvent({
+    this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: this.toWorkspaceRelativePath(sourcePath), deleted: true },
       phase: 'live',
@@ -2753,7 +2751,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
-    this.emitRuntimeEvent({
+    this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: this.toWorkspaceRelativePath(path), deleted: true },
       phase: 'live',
@@ -2770,7 +2768,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       recursive: options.recursive,
     });
     for (const change of deletedChanges) {
-      this.emitRuntimeEvent({
+      this.emitLocalRuntimeEvent({
         type: 'file-change',
         change,
         phase: 'live',
@@ -2788,15 +2786,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const previousStdin = this.activeCommandStdin;
     const previousDeviceStdout = this.activeDeviceStdout;
     const previousDeviceStderr = this.activeDeviceStderr;
-    const previousOutputTracker = this.activeOutputTracker;
-    const previousRuntimeEventQueue = this.activeRuntimeEventQueue;
+    const previousRuntimeIo = this.activeRuntimeIo;
     this.activeCommandEventHandler = options.onEvent;
     this.activeCommandActor = this.createRuntimeActor();
     this.activeCommandStdin = options.stdin ?? '';
     this.activeDeviceStdout = '';
     this.activeDeviceStderr = '';
-    this.activeOutputTracker = new RuntimeProjectOutputTracker();
-    this.activeRuntimeEventQueue = new RuntimeProjectEventQueue();
+    this.activeRuntimeIo = this.createRuntimeLiveIoController();
     try {
       const directCppResult = await this.tryRunCppExecutable(command, options);
       if (directCppResult) {
@@ -2822,8 +2818,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.activeCommandStdin = previousStdin;
       this.activeDeviceStdout = previousDeviceStdout;
       this.activeDeviceStderr = previousDeviceStderr;
-      this.activeOutputTracker = previousOutputTracker;
-      this.activeRuntimeEventQueue = previousRuntimeEventQueue;
+      this.activeRuntimeIo = previousRuntimeIo;
     }
     return {
       stdout: `${result.stdout}${commandDeviceStdout}`,
@@ -2966,7 +2961,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       } else {
         await this.bash.fs.mkdir(absolutePath, { recursive: true });
       }
-      this.emitRuntimeEvent({
+      this.emitLocalRuntimeEvent({
         type: 'file-change',
         change: { path: relativePath, directory: true, ...(change.deleted === true ? { deleted: true } : {}) },
         phase,
@@ -2991,7 +2986,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const relativePath = this.toWorkspaceRelativePath(path);
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
-    this.emitRuntimeEvent({
+    this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: relativePath, deleted: true },
       phase,
@@ -3012,16 +3007,20 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private handleRuntimeCommandEvent(event: RuntimeCommandEvent): void {
-    this.activeRuntimeEventQueue.enqueue(event, {
+  private createRuntimeLiveIoController(): RuntimeProjectLiveIoController {
+    return new RuntimeProjectLiveIoController({
       actor: this.activeCommandActor ?? SYSTEM_ACTOR,
       applyFileChange: (change) => this.applyRuntimeFileChangeSilently(change),
-      emit: (nextEvent) => this.emitRuntimeEvent(nextEvent),
+      onEvent: (event) => this.emitRuntimeEvent(event),
     });
   }
 
+  private handleRuntimeCommandEvent(event: RuntimeCommandEvent): void {
+    this.activeRuntimeIo.handleRuntimeEvent(event);
+  }
+
   private async flushRuntimeEventQueue(): Promise<void> {
-    await this.activeRuntimeEventQueue.flush();
+    await this.activeRuntimeIo.flush();
   }
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {
@@ -3054,8 +3053,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     });
   }
 
+  private emitLocalRuntimeEvent(event: RuntimeCommandEvent): void {
+    if (this.activeCommandActor) {
+      this.activeRuntimeIo.emit(event);
+      return;
+    }
+    this.emitRuntimeEvent(event);
+  }
+
   private emitRuntimeEvent(event: RuntimeCommandEvent): void {
-    this.activeOutputTracker.observe(event);
     const actor = 'actor' in event && event.actor ? event.actor : this.activeCommandActor;
     const enriched = this.enrichRuntimeEvent(event, actor);
     this.activeCommandEventHandler?.(enriched);
@@ -3065,8 +3071,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private emitReturnedOutputEvents(result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>): void {
-    this.activeOutputTracker.emitMissingFinalOutput(result, (stream, data) => {
-      this.emitRuntimeEvent({
+    this.activeRuntimeIo.emitMissingFinalOutput(result, (stream, data) => {
+      this.emitLocalRuntimeEvent({
         type: 'output',
         stream,
         device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
