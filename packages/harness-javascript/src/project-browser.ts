@@ -36,6 +36,8 @@ import {
   runtimeKernelReadTarget,
   runtimeKernelRenameErrorCode,
   runtimeKernelRenameTarget,
+  runtimeKernelRemoveErrorCode,
+  runtimeKernelRemoveTarget,
   runtimeKernelStatTarget,
   runtimeKernelSymlinkErrorCode,
   runtimeKernelSymlinkTarget,
@@ -264,6 +266,15 @@ function runtimeSymlinkTarget(
   return runtimeKernelSymlinkTarget(raw, devices);
 }
 
+function runtimeRemoveTarget(
+  path: unknown,
+  devices?: readonly RuntimeKernelDeviceInfo[]
+): ReturnType<typeof runtimeKernelRemoveTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelRemoveTarget(raw, devices);
+}
+
 function runtimeDirectoryTarget(
   path: unknown,
   devices?: readonly RuntimeKernelDeviceInfo[]
@@ -330,6 +341,13 @@ function throwRuntimeSymlinkTargetError(
   message: string
 ): never {
   throw Object.assign(new Error(message), { code: runtimeKernelSymlinkErrorCode(target.reason) });
+}
+
+function throwRuntimeRemoveTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelRemoveTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: runtimeKernelRemoveErrorCode(target.reason) });
 }
 
 function throwRuntimeDirectoryTargetError(
@@ -2388,12 +2406,12 @@ async function runBrowserJavaScriptProjectRequest(
       return Number(value);
     };
     const deleteFile = (path: unknown): void => {
-      const mutationTarget = runtimeMutationTarget(path, kernelDevices);
-      if (mutationTarget?.kind === 'error') {
-        const message = mutationTarget.reason === 'device-not-found'
+      const removeTarget = runtimeRemoveTarget(path, kernelDevices);
+      if (removeTarget?.kind === 'error') {
+        const message = removeTarget.reason === 'device-not-found'
           ? `ENOENT: no such file or directory, unlink '${path}'`
           : `EROFS: read-only file system, unlink '${path}'`;
-        throwRuntimeMutationTargetError(mutationTarget, message);
+        throwRuntimeRemoveTargetError(removeTarget, message);
       }
       const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (!fileStore.delete(normalized)) {
@@ -3680,12 +3698,12 @@ async function runBrowserJavaScriptProjectRequest(
       },
       rmSync: (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         try {
-          const mutationTarget = runtimeMutationTarget(path, kernelDevices);
-          if (mutationTarget?.kind === 'error') {
-            const message = mutationTarget.reason === 'device-not-found'
+          const removeTarget = runtimeRemoveTarget(path, kernelDevices);
+          if (removeTarget?.kind === 'error') {
+            const message = removeTarget.reason === 'device-not-found'
               ? `ENOENT: no such file or directory, rm '${path}'`
               : `EROFS: read-only file system, rm '${path}'`;
-            throwRuntimeMutationTargetError(mutationTarget, message);
+            throwRuntimeRemoveTargetError(removeTarget, message);
           }
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           if (fileStore.has(normalized)) {
@@ -4093,9 +4111,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       rmdirSync: (path: unknown) => {
-        const mutationTarget = runtimeMutationTarget(path, kernelDevices);
-        if (mutationTarget?.kind === 'error') {
-          throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, rmdir '${path}'`);
+        const removeTarget = runtimeRemoveTarget(path, kernelDevices);
+        if (removeTarget?.kind === 'error') {
+          throwRuntimeRemoveTargetError(removeTarget, `EROFS: read-only file system, rmdir '${path}'`);
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         assertWorkspaceParentDirectoryPath(normalized, path, 'rmdir');

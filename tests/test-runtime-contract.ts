@@ -28,6 +28,7 @@ import {
   runtimeKernelMutationTarget,
   runtimeKernelOpenTarget,
   runtimeKernelRenameTarget,
+  runtimeKernelRemoveTarget,
   runtimeKernelStatTarget,
   runtimeKernelSymlinkTarget,
 } from '../packages/harness-core/src/runtime-kernel';
@@ -157,6 +158,15 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     stableStringify(runtimeKernelSymlinkTarget('link.txt', devices)) === '{"kind":"workspace"}',
     'kernel symlink target should allow workspace link paths'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelRemoveTarget('/dev/missing', devices)) ===
+      '{"kind":"error","path":"/dev/missing","reason":"device-not-found"}',
+    'kernel remove target should reject missing manifest devices through shared policy'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelRemoveTarget('stale.txt', devices)) === '{"kind":"workspace"}',
+    'kernel remove target should allow workspace removals'
   );
 }
 

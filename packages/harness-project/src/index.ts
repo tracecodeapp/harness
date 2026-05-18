@@ -28,6 +28,7 @@ import {
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
   runtimeKernelRenameTarget,
+  runtimeKernelRemoveTarget,
   runtimeKernelStatTarget,
   runtimeKernelSymlinkTarget,
   runtimeKernelVirtualDevices,
@@ -289,6 +290,11 @@ function kernelRenameTarget(sourcePath: string, destinationPath: string): Return
 function kernelSymlinkTarget(linkPath: string): ReturnType<typeof runtimeKernelSymlinkTarget> {
   assertNoNul(linkPath, 'Kernel path');
   return runtimeKernelSymlinkTarget(linkPath);
+}
+
+function kernelRemoveTarget(path: string): ReturnType<typeof runtimeKernelRemoveTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelRemoveTarget(path);
 }
 
 function throwKernelMutationTargetError(
@@ -810,8 +816,8 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async rm(path: string, options?: FsRmOptions): Promise<void> {
-    const mutationTarget = kernelMutationTarget(path);
-    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
+    const removeTarget = kernelRemoveTarget(path);
+    if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const mappedPath = this.mapPath(path);
     const deletedFiles = await this.collectExistingFiles(mappedPath);
     const deletedDirectories = await this.collectExistingDirectories(mappedPath);
@@ -2736,8 +2742,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async deleteFile(path: string): Promise<void> {
-    const mutationTarget = kernelMutationTarget(path);
-    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
+    const removeTarget = kernelRemoveTarget(path);
+    if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
       type: 'file-change',
@@ -2748,8 +2754,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
-    const mutationTarget = kernelMutationTarget(path);
-    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
+    const removeTarget = kernelRemoveTarget(path);
+    if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const deletedChanges = await this.collectDeletedChangesForRemove(path, options);
     await this.bash.fs.rm(this.toWorkspaceEntryPath(path), {
       force: options.force ?? true,
@@ -2973,8 +2979,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
-    const mutationTarget = kernelMutationTarget(path);
-    if (mutationTarget.kind === 'error') throwKernelMutationTargetError(path, mutationTarget);
+    const removeTarget = kernelRemoveTarget(path);
+    if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const relativePath = this.toWorkspaceRelativePath(path);
     await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
     this.emitRuntimeEvent({
