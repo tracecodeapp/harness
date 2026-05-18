@@ -2434,6 +2434,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node readdir withFileTypes should return Dirent-like entries: ${direntResult.stdout}`
   );
 
+  const recursiveReaddirResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, files) => error ? reject(error) : resolve(files))); fs.mkdirSync(\\"recursive/a/b\\", { recursive: true }); fs.writeFileSync(\\"recursive/root.txt\\", \\"root\\"); fs.writeFileSync(\\"recursive/a/value.txt\\", \\"a\\"); fs.writeFileSync(\\"recursive/a/b/deep.txt\\", \\"deep\\"); console.log(fs.readdirSync(\\"recursive\\", { recursive: true }).join(\\"|\\")); console.log((await call((done) => fs.readdir(\\"recursive\\", { recursive: true }, done))).join(\\"|\\")); console.log((await fsp.readdir(\\"recursive\\", { recursive: true })).join(\\"|\\")); const entries = fs.readdirSync(\\"recursive\\", { recursive: true, withFileTypes: true }).map((entry) => entry.name + \\":\\" + entry.isDirectory() + \\":\\" + entry.parentPath.replace(/^.*\\\\/recursive/, \\"recursive\\")).sort(); console.log(entries.join(\\"|\\"));"',
+  ].join(' '));
+  assertCondition(recursiveReaddirResult.exitCode === 0, `browser node recursive readdir workflow should succeed: ${recursiveReaddirResult.stderr}`);
+  assertCondition(
+    recursiveReaddirResult.stdout === 'a|a/b|a/b/deep.txt|a/value.txt|root.txt\na|a/b|a/b/deep.txt|a/value.txt|root.txt\na|a/b|a/b/deep.txt|a/value.txt|root.txt\na:true:recursive|b:true:recursive/a|deep.txt:false:recursive/a/b|root.txt:false:recursive|value.txt:false:recursive/a\n',
+    `browser node readdir recursive should walk virtual directories: ${recursiveReaddirResult.stdout}`
+  );
+
   const pathResult = await workspace.runCommand([
     'node',
     '-e',

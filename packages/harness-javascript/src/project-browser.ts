@@ -2207,9 +2207,47 @@ async function runBrowserJavaScriptProjectRequest(
       exists: (path: unknown, callback?: (exists: boolean) => void) => {
         queueMicrotask(() => callback?.(fsApi.existsSync(path)));
       },
-      readdirSync: (path: unknown, options?: { withFileTypes?: boolean } | string | null) => {
+      readdirSync: (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => {
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
+        const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
+        const recursive = typeof options === 'object' && options?.recursive === true;
+        const makeDirent = (name: string, type: 'file' | 'directory', parentPath = normalized) => ({
+          name,
+          path: workspaceFilename(parentPath, workspaceRoot),
+          parentPath: workspaceFilename(parentPath, workspaceRoot),
+          isFile: () => type === 'file',
+          isDirectory: () => type === 'directory',
+          isSymbolicLink: () => false,
+        });
+        if (recursive) {
+          const entries = new Map<string, 'file' | 'directory'>();
+          for (const directoryPath of directoryStore) {
+            if (directoryPath === normalized || !directoryPath.startsWith(prefix)) continue;
+            const rest = directoryPath.slice(prefix.length);
+            if (rest) entries.set(rest, 'directory');
+          }
+          for (const filePath of fileStore.keys()) {
+            if (!filePath.startsWith(prefix)) continue;
+            const rest = filePath.slice(prefix.length);
+            if (rest) entries.set(rest, 'file');
+          }
+          if (entries.size === 0 && !fileStore.has(normalized) && !directoryStore.has(normalized)) {
+            throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${path}'`), { code: 'ENOENT' });
+          }
+          const sortedEntries = Array.from(entries.entries()).sort(([left], [right]) => left.localeCompare(right));
+          if (!withFileTypes) return sortedEntries.map(([name]) => name);
+          return sortedEntries.map(([relativePath, type]) => {
+            const parts = relativePath.split('/');
+            const name = parts.pop() ?? relativePath;
+            const parentPath = parts.length === 0
+              ? normalized
+              : normalized
+                ? `${normalized}/${parts.join('/')}`
+                : parts.join('/');
+            return makeDirent(name, type, parentPath);
+          });
+        }
         const entries = new Map<string, 'file' | 'directory'>();
         for (const filePath of fileStore.keys()) {
           if (!filePath.startsWith(prefix)) continue;
@@ -2230,16 +2268,10 @@ async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, scandir '${path}'`), { code: 'ENOENT' });
         }
         const sortedEntries = Array.from(entries.entries()).sort(([left], [right]) => left.localeCompare(right));
-        const withFileTypes = typeof options === 'object' && options?.withFileTypes === true;
         if (!withFileTypes) return sortedEntries.map(([name]) => name);
-        return sortedEntries.map(([name, type]) => ({
-          name,
-          isFile: () => type === 'file',
-          isDirectory: () => type === 'directory',
-          isSymbolicLink: () => false,
-        }));
+        return sortedEntries.map(([name, type]) => makeDirent(name, type));
       },
-      readdir: (path: unknown, optionsOrCallback?: { withFileTypes?: boolean } | string | null | ((error: Error | null, files?: unknown) => void), callback?: (error: Error | null, files?: unknown) => void) => {
+      readdir: (path: unknown, optionsOrCallback?: { withFileTypes?: boolean; recursive?: boolean } | string | null | ((error: Error | null, files?: unknown) => void), callback?: (error: Error | null, files?: unknown) => void) => {
         const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
         try {
           const entries = fsApi.readdirSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
@@ -2539,7 +2571,7 @@ async function runBrowserJavaScriptProjectRequest(
       rm: async (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         fsApi.rmSync(path, options);
       },
-      readdir: async (path: unknown, options?: { withFileTypes?: boolean } | string | null) => fsApi.readdirSync(path, options),
+      readdir: async (path: unknown, options?: { withFileTypes?: boolean; recursive?: boolean } | string | null) => fsApi.readdirSync(path, options),
       opendir: async (path: unknown) => fsApi.opendirSync(path),
       stat: async (path: unknown) => fsApi.statSync(path),
       lstat: async (path: unknown) => fsApi.lstatSync(path),
