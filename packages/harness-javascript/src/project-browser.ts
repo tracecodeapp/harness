@@ -1190,6 +1190,10 @@ async function runBrowserJavaScriptProjectRequest(
     const createWritableDevice = (device: RuntimeKernelDevicePath, fd: number) => {
       const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
       let destroyed = false;
+      let closed = false;
+      let bytesWritten = 0;
+      let writableEnded = false;
+      let writableFinished = false;
       const on = (event: string, listener: (...args: unknown[]) => void): void => {
         const next = listeners.get(event) ?? [];
         next.push(listener);
@@ -1209,9 +1213,23 @@ async function runBrowserJavaScriptProjectRequest(
         fd,
         writable: true,
         isTTY: false,
+        get closed() {
+          return closed;
+        },
+        get bytesWritten() {
+          return bytesWritten;
+        },
+        get writableEnded() {
+          return writableEnded;
+        },
+        get writableFinished() {
+          return writableFinished;
+        },
         write: (value: unknown, encoding?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
-          const data = textFromBytes(bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined));
+          const bytes = bytesFromFsWriteValue(value, typeof encoding === 'string' ? encoding : undefined);
+          const data = textFromBytes(bytes);
           writeDevice(device, data);
+          bytesWritten += bytes.byteLength;
           const done = typeof encoding === 'function' ? encoding : callback;
           done?.(null);
           return true;
@@ -1220,10 +1238,13 @@ async function runBrowserJavaScriptProjectRequest(
           if (value !== undefined && value !== null) {
             stream.write(value, typeof encoding === 'string' ? encoding : undefined);
           }
+          writableEnded = true;
           const done = typeof encoding === 'function' ? encoding : callback;
           queueMicrotask(() => {
             done?.();
+            writableFinished = true;
             emit('finish');
+            closed = true;
             emit('close');
           });
           return stream;
@@ -1250,6 +1271,7 @@ async function runBrowserJavaScriptProjectRequest(
           destroyed = true;
           queueMicrotask(() => {
             if (error) emit('error', error);
+            closed = true;
             emit('close');
           });
           return stream;

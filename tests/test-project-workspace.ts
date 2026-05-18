@@ -2518,12 +2518,13 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const stdioEndResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const events = []; await new Promise((resolve) => { const removed = () => events.push(\\"removed-out\\"); process.stdout.addListener(\\"finish\\", removed); process.stdout.removeListener(\\"finish\\", removed); process.stdout.once(\\"finish\\", () => events.push(\\"out-finish\\")); process.stdout.end(\\"end-out\\\\n\\", resolve); }); await new Promise((resolve) => { const removed = () => events.push(\\"removed-err\\"); process.stderr.addListener(\\"finish\\", removed); process.stderr.off(\\"finish\\", removed); process.stderr.once(\\"finish\\", () => events.push(\\"err-finish\\")); process.stderr.end(\\"end-err\\\\n\\", resolve); }); console.log(events.join(\\"\\,\\"));"',
+    '"const events = []; await new Promise((resolve) => { const removed = () => events.push(\\"removed-out\\"); process.stdout.addListener(\\"finish\\", removed); process.stdout.removeListener(\\"finish\\", removed); process.stdout.once(\\"finish\\", () => events.push(\\"out-finish\\")); process.stdout.end(\\"end-out\\\\n\\", resolve); }); await new Promise((resolve) => { const removed = () => events.push(\\"removed-err\\"); process.stderr.addListener(\\"finish\\", removed); process.stderr.off(\\"finish\\", removed); process.stderr.once(\\"finish\\", () => events.push(\\"err-finish\\")); process.stderr.end(\\"end-err\\\\n\\", resolve); }); console.log(events.join(\\"\\,\\")); console.log(process.stdout.writableEnded + \\":\\" + process.stdout.writableFinished + \\":\\" + process.stdout.closed + \\":\\" + process.stdout.bytesWritten); console.log(process.stderr.writableEnded + \\":\\" + process.stderr.writableFinished + \\":\\" + process.stderr.closed + \\":\\" + process.stderr.bytesWritten);"',
   ].join(' '));
   assertCondition(stdioEndResult.exitCode === 0, `browser node stdio end workflow should succeed: ${stdioEndResult.stderr}`);
   assertCondition(
-    stdioEndResult.stdout === 'end-out\nout-finish,err-finish\n' && stdioEndResult.stderr === 'end-err\n',
-    `browser node process stdio end should stream and emit finish: ${JSON.stringify(stdioEndResult)}`
+    stdioEndResult.stdout === 'end-out\nout-finish,err-finish\ntrue:true:true:8\ntrue:true:true:8\n' &&
+      stdioEndResult.stderr === 'end-err\n',
+    `browser node process stdio end should stream, emit finish, and expose writable state: ${JSON.stringify(stdioEndResult)}`
   );
 
   const processStdinResult = await workspace.runCommand([
