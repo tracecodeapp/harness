@@ -411,6 +411,33 @@ public final class ProjectEvents {
     return result;
   }
 
+  public static Path createTempFile(Path dir, String prefix, String suffix, FileAttribute<?>... attrs)
+      throws IOException {
+    assertWritableProjectPath(dir);
+    Path result = Files.createTempFile(dir, prefix, suffix, attrs);
+    emitFileSnapshot(result);
+    return result;
+  }
+
+  public static Path createTempFile(String prefix, String suffix, FileAttribute<?>... attrs) throws IOException {
+    Path result = Files.createTempFile(prefix, suffix, attrs);
+    emitFileSnapshot(result);
+    return result;
+  }
+
+  public static Path createTempDirectory(Path dir, String prefix, FileAttribute<?>... attrs) throws IOException {
+    assertWritableProjectPath(dir);
+    Path result = Files.createTempDirectory(dir, prefix, attrs);
+    emitDirectoryCreate(result);
+    return result;
+  }
+
+  public static Path createTempDirectory(String prefix, FileAttribute<?>... attrs) throws IOException {
+    Path result = Files.createTempDirectory(prefix, attrs);
+    emitDirectoryCreate(result);
+    return result;
+  }
+
   public static void delete(Path path) throws IOException {
     assertWritableProjectPath(path);
     boolean directory = Files.isDirectory(path);

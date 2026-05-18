@@ -324,6 +324,14 @@ public class ProjectWorkspaceDirectorySmoke {
       } catch (java.io.IOException ex) {
         customKernelMkdirResult = ex.getClass().getSimpleName();
       }
+      Path tempRoot = root.resolve("temp-root");
+      ProjectEvents.createDirectories(tempRoot);
+      Path tempFile = ProjectEvents.createTempFile(tempRoot, "case", ".txt");
+      ProjectEvents.writeString(tempFile, "temp-created\\n");
+      Path tempDir = ProjectEvents.createTempDirectory(tempRoot, "child");
+      System.out.println("temp-api="
+        + tempFile.getParent().equals(tempRoot) + ":" + Files.exists(tempFile) + ":" + Files.readString(tempFile).replace("\\n", "|")
+        + ":" + tempDir.getParent().equals(tempRoot) + ":" + Files.isDirectory(tempDir));
       System.out.println("kernel-file-api="
         + customKernelDir.exists() + ":" + customKernelDir.isDirectory() + ":" + customKernelDir.canRead() + ":" + customKernelDir.canWrite()
         + ":" + customKernelFile.exists() + ":" + customKernelFile.isFile() + ":" + customKernelFile.canRead() + ":" + customKernelFile.canWrite()
@@ -366,6 +374,7 @@ public class ProjectWorkspaceDirectorySmoke {
       deviceWriterOutput,
       fileApiOutput,
       nioStatApiOutput,
+      tempApiOutput,
       kernelFileApiOutput,
     ] = output.trim().split('\n');
     assertCondition(isDirectory === 'true', `Java browser helper should materialize workspace directories: ${output}`);
@@ -394,6 +403,10 @@ public class ProjectWorkspaceDirectorySmoke {
       `Java browser helper should route NIO metadata probes through kernel virtual paths: ${output}`
     );
     assertCondition(
+      tempApiOutput === 'temp-api=true:true:temp-created|:true:true',
+      `Java browser helper should create temp files/directories through ProjectEvents: ${output}`
+    );
+    assertCondition(
       kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:19:custom:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:/tracekernel/custom:IOException:IOException',
       `Java browser helper should expose manifest kernel files as read-only File API paths: ${output}`
     );
@@ -402,10 +415,12 @@ public class ProjectWorkspaceDirectorySmoke {
       'utf8'
     );
     assertCondition(
-      /ProjectFileOutputStream[\s\S]*super\.write\(value\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
+        /ProjectFileOutputStream[\s\S]*super\.write\(value\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
         /ProjectFileOutputStream[\s\S]*super\.write\(bytes\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
         /ProjectOutputStream[\s\S]*delegate\.write\(bytes, offset, length\);\s*emitFileSnapshot\(path\);/.test(projectEventsSource) &&
-        /ProjectPrintWriter[\s\S]*super\.write\(text, offset, length\);\s*emitAfterWrite\(\);/.test(projectEventsSource),
+        /ProjectPrintWriter[\s\S]*super\.write\(text, offset, length\);\s*emitAfterWrite\(\);/.test(projectEventsSource) &&
+        /createTempFile[\s\S]*emitFileSnapshot\(result\);/.test(projectEventsSource) &&
+        /createTempDirectory[\s\S]*emitDirectoryCreate\(result\);/.test(projectEventsSource),
       'Java browser helper should emit live file snapshots from unbuffered file and PrintWriter writes'
     );
     console.log('PASS: Java browser helper materializes workspace directories');
@@ -1874,6 +1889,10 @@ async function main(): Promise<void> {
               '    try (var stream = new PrintStream("ps-file.txt")) { stream.println("ps-file"); }',
               '    Files.createFile(Path.of("nio-created.txt"));',
               '    Files.createDirectories(Path.of("live-dir/child"));',
+              '    Path tempRoot = Path.of("temp-root");',
+              '    Files.createDirectories(tempRoot);',
+              '    Files.createTempFile(tempRoot, "case", ".txt");',
+              '    Files.createTempDirectory(tempRoot, "child");',
               '    Files.move(Path.of("live-dir/child"), Path.of("live-dir/renamed-child"));',
               '    Files.delete(Path.of("live-dir/renamed-child"));',
               '    Files.delete(Path.of("live-dir"));',
@@ -2611,6 +2630,8 @@ async function main(): Promise<void> {
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.copy(Path.of("stdin-copy.txt"), Path.of("/dev/stdout")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createFile(Path.of("nio-created.txt")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createDirectories(Path.of("live-dir/child")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createTempFile(tempRoot, "case", ".txt")') === true &&
+        defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.createTempDirectory(tempRoot, "child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.move(Path.of("live-dir/child"), Path.of("live-dir/renamed-child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.delete(Path.of("live-dir/renamed-child")') === true &&
         defaultManifestEntries.get('Main.java')?.includes('tracecode.browser.ProjectEvents.newOutputStream(Path.of("nio-stream.bin")') === true &&

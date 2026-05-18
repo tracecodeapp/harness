@@ -109,6 +109,8 @@ async function main(): Promise<void> {
     'Files.writeString',
     'Files.newInputStream',
     'Files.newBufferedReader',
+    'Files.createTempFile',
+    'Files.createTempDirectory',
     'Files.readAllLines',
     'Files.lines',
     'Files.isReadable',
