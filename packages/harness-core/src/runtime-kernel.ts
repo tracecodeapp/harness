@@ -362,7 +362,7 @@ export function runtimeKernelOpenTarget(
     return {
       kind: 'device',
       device,
-      readable: info.readable || request.readable === true,
+      readable: info.readable && request.readable === true,
       writable: info.writable && request.writable === true,
     };
   }
@@ -375,7 +375,7 @@ export function runtimeKernelOpenTarget(
     return {
       kind: 'device',
       device: virtualPath.path,
-      readable: info ? info.readable || request.readable === true : runtimeDeviceCanRead(virtualPath.path) || request.readable === true,
+      readable: info ? info.readable && request.readable === true : runtimeDeviceCanRead(virtualPath.path) && request.readable === true,
       writable: info ? info.writable && request.writable === true : runtimeDeviceCanWrite(virtualPath.path) && request.writable === true,
     };
   }

@@ -20,6 +20,7 @@ import {
   javaTraceHooksEventsToRuntimeTrace,
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
+import { runtimeKernelOpenTarget } from '../packages/harness-core/src/runtime-kernel';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -52,6 +53,30 @@ function stableStringify(value: unknown): string {
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
   return '{' + keys.map((key) => JSON.stringify(key) + ':' + stableStringify(obj[key])).join(',') + '}';
+}
+
+function assertRuntimeKernelOpenDevicePermissions(): void {
+  const devices = [
+    { path: '/dev/stdin' as const, readable: true, writable: false, inputDevice: '/dev/stdin' as const },
+    { path: '/dev/stdout' as const, readable: false, writable: true, outputDevice: '/dev/stdout' as const },
+    { path: '/dev/tty' as const, readable: true, writable: true, inputDevice: '/dev/stdin' as const, outputDevice: '/dev/stdout' as const },
+  ];
+
+  assertCondition(
+    stableStringify(runtimeKernelOpenTarget('/dev/stdout', { readable: true }, devices)) ===
+      '{"device":"/dev/stdout","kind":"device","readable":false,"writable":false}',
+    'kernel open target should not grant reads on write-only devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelOpenTarget('/dev/stdin', { writable: true, create: true }, devices)) ===
+      '{"device":"/dev/stdin","kind":"device","readable":false,"writable":false}',
+    'kernel open target should not grant writes on read-only devices'
+  );
+  assertCondition(
+    stableStringify(runtimeKernelOpenTarget('/dev/tty', { readable: true, writable: true }, devices)) ===
+      '{"device":"/dev/tty","kind":"device","readable":true,"writable":true}',
+    'kernel open target should grant requested access only when the manifest allows it'
+  );
 }
 
 function collectEnabledCapabilityPaths(
@@ -383,6 +408,9 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  assertRuntimeKernelOpenDevicePermissions();
+  console.log('PASS: runtime kernel open device permissions');
+
   await testJavaSerializedResultNormalization();
   const profiles = getSupportedLanguageProfiles();
 
