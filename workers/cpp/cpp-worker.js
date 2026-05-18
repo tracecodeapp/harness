@@ -542,6 +542,7 @@ class InMemoryFileSystem {
   rename(oldPathname, newPathname) {
     const oldPath = normalizePath(oldPathname);
     const newPath = normalizePath(newPathname);
+    if (oldPath === newPath) return this.exists(oldPath) ? ESUCCESS : ENOENT;
     if (this.isReadOnly(oldPath) || this.isReadOnly(newPath)) {
       throw Object.assign(new Error(`Read-only file system: ${oldPath}`), { code: 'EROFS' });
     }

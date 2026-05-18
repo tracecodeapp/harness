@@ -448,6 +448,14 @@ async function main(): Promise<void> {
             '  mkdir("rename-dir", 0777);',
             '  std::rename("rename-dir", "renamed-dir");',
             '  rmdir("renamed-dir");',
+            '  int rename_self_file_result = std::rename("self-rename-file.txt", "self-rename-file.txt");',
+            '  std::ifstream self_rename_file("self-rename-file.txt");',
+            '  std::string self_rename_file_text((std::istreambuf_iterator<char>(self_rename_file)), std::istreambuf_iterator<char>());',
+            '  std::cout << (rename_self_file_result == 0 && self_rename_file_text == "self-file\\\\n" ? "rename-self-file:ok" : "rename-self-file:changed") << "\\\\n";',
+            '  int rename_self_dir_result = std::rename("self-rename-dir", "self-rename-dir");',
+            '  std::ifstream self_rename_dir_file("self-rename-dir/child.txt");',
+            '  std::string self_rename_dir_text((std::istreambuf_iterator<char>(self_rename_dir_file)), std::istreambuf_iterator<char>());',
+            '  std::cout << (rename_self_dir_result == 0 && self_rename_dir_text == "self-dir\\\\n" ? "rename-self-dir:ok" : "rename-self-dir:changed") << "\\\\n";',
             '  std::ofstream("rename-source.txt") << "moved\\\\n";',
             '  std::rename("rename-source.txt", "renamed.txt");',
             '  std::remove("stale.txt");',
@@ -547,6 +555,8 @@ async function main(): Promise<void> {
         },
         { path: 'build/.keep', contents: '' },
         { path: 'src/stale.txt', contents: 'delete me\\n' },
+        { path: 'src/self-rename-file.txt', contents: 'self-file\\n' },
+        { path: 'src/self-rename-dir/child.txt', contents: 'self-dir\\n' },
       ];
       const projectCompile = await send('execute-project-cpp', {
         source: 'compile',
@@ -1504,6 +1514,18 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.stdout?.includes('rmdir:gone\n') === true,
       `C++ browser project run should remove directories through WASI rmdir: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.stdout?.includes('rename-self-file:ok\nrename-self-dir:ok\n') === true,
+      `C++ browser project run should treat self-renames as no-op mutations: ${JSON.stringify(projectRun)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/self-rename-file.txt' || file.path.startsWith('src/self-rename-dir/')) !== true &&
+        projectRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          (event.change?.path === 'src/self-rename-file.txt' || event.change?.path?.startsWith('src/self-rename-dir/'))
+        )) !== true,
+      `C++ browser project run should not emit final or live mutations for self-renames: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
       projectRun.stdout?.includes('metadata-utime:ok\n') === true,
