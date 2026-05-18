@@ -2356,13 +2356,17 @@ async function runBrowserJavaScriptProjectRequest(
       const prefix = normalized ? `${normalized}/` : '';
       return directoryStore.has(normalized) || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix));
     };
-    const assertWorkspaceParentDirectoryPath = (normalized: string, path: unknown, syscall: string): void => {
+    const workspaceFileAncestor = (normalized: string): string | null => {
       const parts = normalized.split('/');
       for (let index = 1; index < parts.length; index += 1) {
         const directoryPath = parts.slice(0, index).join('/');
-        if (fileStore.has(directoryPath)) {
-          throw Object.assign(new Error(`ENOTDIR: not a directory, ${syscall} '${path}'`), { code: 'ENOTDIR' });
-        }
+        if (fileStore.has(directoryPath)) return directoryPath;
+      }
+      return null;
+    };
+    const assertWorkspaceParentDirectoryPath = (normalized: string, path: unknown, syscall: string): void => {
+      if (workspaceFileAncestor(normalized) !== null) {
+        throw Object.assign(new Error(`ENOTDIR: not a directory, ${syscall} '${path}'`), { code: 'ENOTDIR' });
       }
       const parent = dirname(normalized);
       const parentPath = parent === '' ? '' : parent;
@@ -3223,6 +3227,12 @@ async function runBrowserJavaScriptProjectRequest(
               : `ENOENT: no such file or directory, open '${path}'`);
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        if (workspaceFileAncestor(normalized) !== null) {
+          throw Object.assign(new Error(`ENOTDIR: not a directory, open '${path}'`), { code: 'ENOTDIR' });
+        }
+        if (isWorkspaceDirectoryPath(normalized)) {
+          throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
+        }
         const bytes = fileStore.get(normalized);
         if (!bytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
@@ -3659,6 +3669,9 @@ async function runBrowserJavaScriptProjectRequest(
             : `ENOENT: no such file or directory, scandir '${path}'`);
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+        if (workspaceFileAncestor(normalized) !== null || fileStore.has(normalized)) {
+          throw Object.assign(new Error(`ENOTDIR: not a directory, scandir '${path}'`), { code: 'ENOTDIR' });
+        }
         const prefix = normalized ? `${normalized}/` : '';
         const recursive = typeof options === 'object' && options?.recursive === true;
         const makeWorkspaceDirent = (name: string, type: 'file' | 'directory', parentPath = normalized) =>
@@ -3778,7 +3791,15 @@ async function runBrowserJavaScriptProjectRequest(
       statSync: (path: unknown, options?: BrowserStatOptions) => {
         const kernelStats = statForKernelTarget(path, options);
         if (kernelStats === undefined) return undefined;
-        const stats = kernelStats ?? statForNormalizedPath(normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext));
+        let stats = kernelStats;
+        if (stats === null) {
+          const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
+          if (workspaceFileAncestor(normalized) !== null) {
+            if (options?.throwIfNoEntry === false) return undefined;
+            throw Object.assign(new Error(`ENOTDIR: not a directory, stat '${path}'`), { code: 'ENOTDIR' });
+          }
+          stats = statForNormalizedPath(normalized);
+        }
         if (!stats) {
           if (options?.throwIfNoEntry === false) return undefined;
           throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });

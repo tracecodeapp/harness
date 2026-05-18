@@ -3211,6 +3211,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node file creation conflicts should match desktop semantics without corrupting entries: ${fileCreationConflictResult.stdout}`
   );
 
+  const readPathConflictResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const code = (fn) => { try { const value = fn(); return value === undefined ? \\"undefined\\" : \\"ok\\"; } catch (error) { return error.code; } }; fs.writeFileSync(\\"read-parent-file.txt\\", \\"file\\\\n\\"); fs.mkdirSync(\\"read-dir\\"); fs.writeFileSync(\\"read-dir/value.txt\\", \\"value\\\\n\\"); console.log(code(() => fs.statSync(\\"read-parent-file.txt/value.txt\\"))); console.log(code(() => fs.statSync(\\"read-parent-file.txt/value.txt\\", { throwIfNoEntry: false }))); console.log(code(() => fs.readdirSync(\\"read-parent-file.txt\\"))); console.log(code(() => fs.readdirSync(\\"read-parent-file.txt/value.txt\\"))); console.log(code(() => fs.readFileSync(\\"read-dir\\"))); console.log(code(() => fs.readFileSync(\\"read-parent-file.txt/value.txt\\"))); console.log(fs.existsSync(\\"read-parent-file.txt/value.txt\\")); console.log(fs.readdirSync(\\"read-dir\\").join(\\"\\,\\"));"',
+  ].join(' '));
+  assertCondition(readPathConflictResult.exitCode === 0, `browser node read path conflict workflow should succeed: ${readPathConflictResult.stderr}`);
+  assertCondition(
+    readPathConflictResult.stdout === 'ENOTDIR\nundefined\nENOTDIR\nENOTDIR\nEISDIR\nENOTDIR\nfalse\nvalue.txt\n',
+    `browser node read path conflicts should match desktop semantics: ${readPathConflictResult.stdout}`
+  );
+
   const rmConflictResult = await workspace.runCommand([
     'node',
     '-e',
