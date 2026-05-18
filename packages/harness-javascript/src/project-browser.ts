@@ -1508,16 +1508,35 @@ async function runBrowserJavaScriptProjectRequest(
       notifyWatchFileWatchers(path);
     };
     const createEventTarget = () => {
-      const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
-      const on = (event: string, listener: (...args: unknown[]) => void): void => {
+      type EventListener = (...args: unknown[]) => void;
+      type EventListenerWithOriginal = EventListener & { listener?: EventListener };
+      const listeners = new Map<string, EventListener[]>();
+      const listenerTarget = (listener: EventListener): EventListener => (
+        (listener as EventListenerWithOriginal).listener ?? listener
+      );
+      const on = (event: string, listener: EventListener): void => {
         const next = listeners.get(event) ?? [];
         next.push(listener);
         listeners.set(event, next);
       };
-      const removeListener = (event: string, listener: (...args: unknown[]) => void): void => {
-        const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== listener);
+      const prependListener = (event: string, listener: EventListener): void => {
+        const next = listeners.get(event) ?? [];
+        next.unshift(listener);
+        listeners.set(event, next);
+      };
+      const removeListener = (event: string, listener: EventListener): void => {
+        const next = (listeners.get(event) ?? []).filter((candidate) => candidate !== listener && listenerTarget(candidate) !== listener);
         if (next.length === 0) listeners.delete(event);
         else listeners.set(event, next);
+      };
+      const once = (event: string, listener: EventListener, prepend = false): void => {
+        const wrapped = (...args: unknown[]) => {
+          removeListener(event, wrapped);
+          listener(...args);
+        };
+        Object.defineProperty(wrapped, 'listener', { value: listener });
+        if (prepend) prependListener(event, wrapped);
+        else on(event, wrapped);
       };
       return {
         emit: (event: string, ...args: unknown[]) => {
@@ -1527,15 +1546,19 @@ async function runBrowserJavaScriptProjectRequest(
         },
         on,
         addListener: on,
+        prependListener,
         removeListener,
         off: removeListener,
-        once: (event: string, listener: (...args: unknown[]) => void) => {
-          const wrapped = (...args: unknown[]) => {
-            removeListener(event, wrapped);
-            listener(...args);
-          };
-          on(event, wrapped);
+        once: (event: string, listener: (...args: unknown[]) => void) => once(event, listener),
+        prependOnceListener: (event: string, listener: (...args: unknown[]) => void) => once(event, listener, true),
+        removeAllListeners: (event?: string) => {
+          if (typeof event === 'string') listeners.delete(event);
+          else listeners.clear();
         },
+        listenerCount: (event: string) => listeners.get(event)?.length ?? 0,
+        listeners: (event: string) => (listeners.get(event) ?? []).map(listenerTarget),
+        rawListeners: (event: string) => [...(listeners.get(event) ?? [])],
+        eventNames: () => [...listeners.keys()],
       };
     };
     const createReadableStream = (bytes: Uint8Array, encoding?: string, onClose?: () => void) => {
@@ -1633,6 +1656,16 @@ async function runBrowserJavaScriptProjectRequest(
           stream.on(event, listener);
           return stream;
         },
+        prependListener: (event: string, listener: (...args: unknown[]) => void) => {
+          events.prependListener(event, listener);
+          if (event === 'data') {
+            if (readableFlowing === null) readableFlowing = true;
+            scheduleRead();
+          } else if (event === 'end') {
+            scheduleRead();
+          }
+          return stream;
+        },
         removeListener: (event: string, listener: (...args: unknown[]) => void) => {
           events.removeListener(event, listener);
           return stream;
@@ -1652,6 +1685,24 @@ async function runBrowserJavaScriptProjectRequest(
           }
           return stream;
         },
+        prependOnceListener: (event: string, listener: (...args: unknown[]) => void) => {
+          events.prependOnceListener(event, listener);
+          if (event === 'data') {
+            if (readableFlowing === null) readableFlowing = true;
+            scheduleRead();
+          } else if (event === 'end') {
+            scheduleRead();
+          }
+          return stream;
+        },
+        removeAllListeners: (event?: string) => {
+          events.removeAllListeners(event);
+          return stream;
+        },
+        listenerCount: (event: string) => events.listenerCount(event),
+        listeners: (event: string) => events.listeners(event),
+        rawListeners: (event: string) => events.rawListeners(event),
+        eventNames: () => events.eventNames(),
         pause: () => {
           readableFlowing = false;
           return stream;
@@ -1792,6 +1843,10 @@ async function runBrowserJavaScriptProjectRequest(
           stream.on(event, listener);
           return stream;
         },
+        prependListener: (event: string, listener: (...args: unknown[]) => void) => {
+          events.prependListener(event, listener);
+          return stream;
+        },
         removeListener: (event: string, listener: (...args: unknown[]) => void) => {
           events.removeListener(event, listener);
           return stream;
@@ -1805,6 +1860,18 @@ async function runBrowserJavaScriptProjectRequest(
           events.once(event, listener);
           return stream;
         },
+        prependOnceListener: (event: string, listener: (...args: unknown[]) => void) => {
+          events.prependOnceListener(event, listener);
+          return stream;
+        },
+        removeAllListeners: (event?: string) => {
+          events.removeAllListeners(event);
+          return stream;
+        },
+        listenerCount: (event: string) => events.listenerCount(event),
+        listeners: (event: string) => events.listeners(event),
+        rawListeners: (event: string) => events.rawListeners(event),
+        eventNames: () => events.eventNames(),
         cork: () => {
           writableCorked += 1;
         },

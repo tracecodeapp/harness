@@ -2480,6 +2480,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node file streams should support EventEmitter listener aliases: ${streamListenerAliasResult.stdout}`
   );
 
+  const streamEmitterResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const out = fs.createWriteStream(\\"stream-emitter.txt\\"); const events = []; const first = function first() { events.push(\\"first\\"); }; const second = function second() { events.push(\\"second\\"); }; const removedOnce = function removedOnce() { events.push(\\"removed-once\\"); }; out.on(\\"finish\\", second); out.prependListener(\\"finish\\", first); out.once(\\"finish\\", removedOnce); out.removeListener(\\"finish\\", removedOnce); out.prependOnceListener(\\"close\\", function closeOnce() { events.push(\\"close-once\\"); }); console.log(out.listenerCount(\\"finish\\")); console.log(out.listeners(\\"finish\\").map((listener) => listener.name).join(\\"|\\")); console.log(out.rawListeners(\\"close\\").length + \\":\\" + out.listeners(\\"close\\")[0].name); console.log(out.eventNames().sort().join(\\"|\\")); out.removeAllListeners(\\"close\\"); out.on(\\"close\\", () => events.push(\\"close\\")); await new Promise((resolve) => out.end(\\"ok\\", () => { events.push(\\"callback\\"); resolve(); })); await new Promise((resolve) => queueMicrotask(resolve)); console.log(events.join(\\"|\\")); console.log(fs.readFileSync(\\"stream-emitter.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(streamEmitterResult.exitCode === 0, `browser node stream EventEmitter workflow should succeed: ${streamEmitterResult.stderr}`);
+  assertCondition(
+    streamEmitterResult.stdout === '2\nfirst|second\n1:closeOnce\nclose|finish\ncallback|first|second|close\nok\n',
+    `browser node streams should support EventEmitter introspection/removal helpers: ${streamEmitterResult.stdout}`
+  );
+
   const streamLifecycleResult = await workspace.runCommand([
     'node',
     '-e',
