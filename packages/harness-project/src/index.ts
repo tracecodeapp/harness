@@ -5,6 +5,7 @@ import {
 } from 'just-bash/browser';
 import {
   createRuntimeProjectIoBridge,
+  RuntimeProjectEventQueue,
   RuntimeProjectOutputTracker,
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
@@ -2287,7 +2288,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private activeDeviceStdout = '';
   private activeDeviceStderr = '';
   private activeOutputTracker = new RuntimeProjectOutputTracker();
-  private activeRuntimeEventQueue: Promise<void> = Promise.resolve();
+  private activeRuntimeEventQueue = new RuntimeProjectEventQueue();
   private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
@@ -2675,7 +2676,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.activeDeviceStdout = '';
     this.activeDeviceStderr = '';
     this.activeOutputTracker = new RuntimeProjectOutputTracker();
-    this.activeRuntimeEventQueue = Promise.resolve();
+    this.activeRuntimeEventQueue = new RuntimeProjectEventQueue();
     try {
       const directCppResult = await this.tryRunCppExecutable(command, options);
       if (directCppResult) {
@@ -2847,25 +2848,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private handleRuntimeCommandEvent(event: RuntimeCommandEvent): void {
-    this.activeRuntimeEventQueue = this.activeRuntimeEventQueue.then(async () => {
-      if (event.type !== 'file-change') {
-        this.emitRuntimeEvent(event);
-        return;
-      }
-
-      const actor = event.actor ?? this.activeCommandActor ?? SYSTEM_ACTOR;
-      const phase = event.phase ?? 'live';
-      await this.applyRuntimeFileChangeSilently(event.change);
-      this.emitRuntimeEvent({
-        ...event,
-        phase,
-        actor,
-      });
+    this.activeRuntimeEventQueue.enqueue(event, {
+      actor: this.activeCommandActor ?? SYSTEM_ACTOR,
+      applyFileChange: (change) => this.applyRuntimeFileChangeSilently(change),
+      emit: (nextEvent) => this.emitRuntimeEvent(nextEvent),
     });
   }
 
   private async flushRuntimeEventQueue(): Promise<void> {
-    await this.activeRuntimeEventQueue;
+    await this.activeRuntimeEventQueue.flush();
   }
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange): Promise<void> {

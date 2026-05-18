@@ -199,6 +199,37 @@ export class RuntimeProjectOutputTracker {
   }
 }
 
+export interface RuntimeProjectEventQueueOptions {
+  actor?: RuntimeWorkspaceActor;
+  applyFileChange(change: RuntimeFileChange): Promise<void>;
+  emit(event: RuntimeCommandEvent): void;
+}
+
+export class RuntimeProjectEventQueue {
+  private queue: Promise<void> = Promise.resolve();
+
+  enqueue(event: RuntimeCommandEvent, options: RuntimeProjectEventQueueOptions): void {
+    this.queue = this.queue.then(async () => {
+      if (event.type !== 'file-change') {
+        options.emit(event);
+        return;
+      }
+
+      const phase = event.phase ?? 'live';
+      await options.applyFileChange(event.change);
+      options.emit({
+        ...event,
+        phase,
+        actor: event.actor ?? options.actor,
+      });
+    });
+  }
+
+  flush(): Promise<void> {
+    return this.queue;
+  }
+}
+
 export interface RuntimeProjectWorkerBridgeOptions<
   Request extends RuntimeProjectCommandRequest<string>,
   Result extends RuntimeCommandResult = RuntimeCommandResult
