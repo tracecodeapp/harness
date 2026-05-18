@@ -791,6 +791,23 @@ export function runtimeKernelCopyTarget(
   return { kind: 'workspace' };
 }
 
+export function runtimeKernelCopyErrorCode(
+  reason: Extract<RuntimeKernelCopyTarget, { kind: 'error' }>['reason']
+): RuntimeKernelErrorCode {
+  return reason === 'source-directory' ? 'EISDIR' : 'ENOENT';
+}
+
+export function runtimeKernelCopyErrorMessage(
+  source: string,
+  destination: string,
+  target: Extract<RuntimeKernelCopyTarget, { kind: 'error' }>,
+  operation = 'cp'
+): string {
+  const code = runtimeKernelCopyErrorCode(target.reason);
+  if (code === 'EISDIR') return `EISDIR: illegal operation on a directory, ${operation} '${source}'`;
+  return `ENOENT: no such file or directory, ${operation} '${source}' -> '${destination}'`;
+}
+
 export function runtimeKernelFileCopyTarget(
   source: string,
   destination: string,

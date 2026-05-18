@@ -17,6 +17,8 @@ import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeKernelAccessTarget,
+  runtimeKernelCopyErrorCode,
+  runtimeKernelCopyErrorMessage,
   runtimeKernelCopyTarget,
   runtimeKernelDeviceInputRoute,
   runtimeKernelDeviceInputSource,
@@ -2843,11 +2845,10 @@ async function runBrowserJavaScriptProjectRequest(
         fsApi.copyFileSync(source, destination);
         return;
       }
-      if (copyTarget?.kind === 'error' && copyTarget.reason === 'source-directory') {
-        throw Object.assign(new Error(`EISDIR: illegal operation on a directory, cp '${source}'`), { code: 'EISDIR' });
-      }
-      if (copyTarget?.kind === 'error' && copyTarget.reason === 'source-not-found') {
-        throw Object.assign(new Error(`ENOENT: no such file or directory, cp '${source}' -> '${destination}'`), { code: 'ENOENT' });
+      if (copyTarget?.kind === 'error') {
+        throw Object.assign(new Error(runtimeKernelCopyErrorMessage(String(source), String(destination), copyTarget)), {
+          code: runtimeKernelCopyErrorCode(copyTarget.reason),
+        });
       }
 
       const normalizedSource = normalizeWorkspaceEntryPath(source, cwdPath, true, workspacePathContext);

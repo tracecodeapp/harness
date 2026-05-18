@@ -26,6 +26,8 @@ import {
 } from '../packages/harness-core/src/trace-adapters/java';
 import {
   runtimeKernelCopyTarget,
+  runtimeKernelCopyErrorCode,
+  runtimeKernelCopyErrorMessage,
   runtimeKernelDirectoryTarget,
   runtimeKernelDeviceInputRoute,
   runtimeKernelDeviceOutputRoute,
@@ -193,6 +195,22 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   assertCondition(
     stableStringify(runtimeKernelCopyTarget('/proc/kernel/info', '/dev/tee', devices)) === '{"kind":"file-copy"}',
     'kernel copy target should delegate virtual source-to-device copies to file copy policy'
+  );
+  const copyDirectoryTarget = runtimeKernelCopyTarget('/proc/kernel', 'kernel-copy', devices);
+  assertCondition(
+    copyDirectoryTarget.kind === 'error' &&
+      runtimeKernelCopyErrorCode(copyDirectoryTarget.reason) === 'EISDIR' &&
+      runtimeKernelCopyErrorMessage('/proc/kernel', 'kernel-copy', copyDirectoryTarget) ===
+        "EISDIR: illegal operation on a directory, cp '/proc/kernel'",
+    `kernel recursive copy errors should be shared: ${stableStringify(copyDirectoryTarget)}`
+  );
+  const copyMissingTarget = runtimeKernelCopyTarget('/proc/missing', 'missing-copy', devices);
+  assertCondition(
+    copyMissingTarget.kind === 'error' &&
+      runtimeKernelCopyErrorCode(copyMissingTarget.reason) === 'ENOENT' &&
+      runtimeKernelCopyErrorMessage('/proc/missing', 'missing-copy', copyMissingTarget) ===
+        "ENOENT: no such file or directory, cp '/proc/missing' -> 'missing-copy'",
+    `kernel missing copy errors should be shared: ${stableStringify(copyMissingTarget)}`
   );
   assertCondition(
     stableStringify(runtimeKernelFileCopyTarget('/proc/kernel/info', '/dev/tee', devices)) ===
