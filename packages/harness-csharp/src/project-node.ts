@@ -457,10 +457,12 @@ function runProcess(
       if (settled) return;
       settled = true;
       child.kill('SIGKILL');
+      const timeoutStderr = `${options.timeoutLabel}: execution timed out after ${options.timeoutMs}ms\n`;
+      emitRuntimeCommandOutput(options.onEvent, 'stderr', timeoutStderr);
       emitCommandStatus(options.onEvent, 'process-exit', `${command} timed out`, { command, exitCode: 124, timeoutMs: options.timeoutMs });
       resolveResult({
         stdout,
-        stderr: `${stderr}${options.timeoutLabel}: execution timed out after ${options.timeoutMs}ms\n`,
+        stderr: `${stderr}${timeoutStderr}`,
         exitCode: 124,
       });
     }, options.timeoutMs);
@@ -479,6 +481,7 @@ function runProcess(
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      emitRuntimeCommandOutput(options.onEvent, 'stderr', `${error.message}\n`);
       emitCommandStatus(options.onEvent, 'process-error', `${command} failed to start`, { command, error: error.message });
       resolveResult({
         stdout,

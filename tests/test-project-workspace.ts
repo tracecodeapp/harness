@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -4984,6 +4984,71 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
   assertCondition(
     noBuildRun.stdout.endsWith('42\nno-build-stdin\nnative-csharp-nobuild\nstale\n'),
     `native dotnet run --no-build should skip rebuilding changed sources: ${noBuildRun.stdout}`
+  );
+
+  const timeoutEvents: RuntimeCommandEvent[] = [];
+  const timeoutRoot = await mkdtemp(join(tmpdir(), 'tracecode-csharp-timeout-command-'));
+  try {
+    const timeoutCommand = join(timeoutRoot, 'dotnet-timeout');
+    await writeFile(timeoutCommand, '#!/bin/sh\nsleep 1\n', 'utf8');
+    await chmod(timeoutCommand, 0o755);
+    const timeoutRunner = createNativeCSharpProjectRunner({ dotnetCommand: timeoutCommand, timeoutMs: 5 });
+    const timeoutResult = await timeoutRunner({
+      code: '',
+      source: 'compile',
+      scriptPath: '<project>',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [{ path: 'Program.cs', contents: 'Console.WriteLine("timeout");\n' }],
+      },
+      onEvent: (event) => timeoutEvents.push(event),
+    });
+    assertCondition(
+      timeoutResult.exitCode === 124 && timeoutResult.stderr.includes('dotnet build: execution timed out after 5ms'),
+      `native C# timeout should return a timeout result: ${JSON.stringify(timeoutResult)}`
+    );
+    const csharpTimeoutStderrIndex = timeoutEvents.findIndex(
+      (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('dotnet build: execution timed out after 5ms')
+    );
+    const csharpTimeoutExitIndex = timeoutEvents.findIndex(
+      (event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124
+    );
+    assertCondition(
+      csharpTimeoutStderrIndex >= 0 && csharpTimeoutExitIndex > csharpTimeoutStderrIndex,
+      `native C# timeout should stream timeout stderr before process-exit: ${JSON.stringify(timeoutEvents)}`
+    );
+  } finally {
+    await rm(timeoutRoot, { recursive: true, force: true });
+  }
+
+  const startErrorEvents: RuntimeCommandEvent[] = [];
+  const startErrorRunner = createNativeCSharpProjectRunner({ dotnetCommand: 'tracecode-missing-dotnet-command' });
+  const startErrorResult = await startErrorRunner({
+    code: '',
+    source: 'compile',
+    scriptPath: '<project>',
+    args: [],
+    cwd: '/workspace',
+    env: {},
+    stdin: '',
+    project: {
+      files: [{ path: 'Program.cs', contents: 'Console.WriteLine("ok");\n' }],
+    },
+    onEvent: (event) => startErrorEvents.push(event),
+  });
+  assertCondition(startErrorResult.exitCode === 1, `native C# start error should return failure: ${JSON.stringify(startErrorResult)}`);
+  const csharpStartErrorStderrIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'output' && event.stream === 'stderr' && event.data.includes('tracecode-missing-dotnet-command')
+  );
+  const csharpStartErrorStatusIndex = startErrorEvents.findIndex(
+    (event) => event.type === 'status' && event.phase === 'process-error' && event.detail?.command === 'tracecode-missing-dotnet-command'
+  );
+  assertCondition(
+    csharpStartErrorStderrIndex >= 0 && csharpStartErrorStatusIndex > csharpStartErrorStderrIndex,
+    `native C# start error should stream stderr before process-error: ${JSON.stringify(startErrorEvents)}`
   );
 }
 
