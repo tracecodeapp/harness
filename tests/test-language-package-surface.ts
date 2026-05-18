@@ -571,6 +571,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           worker.includes('self.TraceRuntimeKernelPolicy') &&
           worker.includes('runtimeKernelVirtualOpenTarget(path, flags)') &&
           worker.includes('runtimeKernelVirtualMutationTarget(path)') &&
+          worker.includes('readOnlyPaths: kernelVirtualManifestPaths(request)') &&
           worker.includes('function isReadableOpenFlags(flags)') &&
           worker.includes('function isKernelDeviceNamespacePath(value)') &&
           worker.includes("runtimeKernelDeviceOutputTarget(kernelDeviceEntries(request), path)"),

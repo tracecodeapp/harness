@@ -222,7 +222,10 @@ function kernelVirtualProcEntryKind(path, request = activeProjectIo?.request) {
 function runtimeKernelVirtualPathTarget(path, request = activeProjectIo?.request) {
   const policy = self.TraceRuntimeKernelPolicy;
   if (typeof policy?.runtimeKernelVirtualPathTarget === 'function') {
-    return policy.runtimeKernelVirtualPathTarget(path, { devices: kernelDeviceEntries(request) });
+    return policy.runtimeKernelVirtualPathTarget(path, {
+      devices: kernelDeviceEntries(request),
+      readOnlyPaths: kernelVirtualManifestPaths(request),
+    });
   }
   if (isKernelDeviceDirectoryPath(path)) return { kind: 'device-directory', path: '/dev' };
   if (isKernelDeviceNamespacePath(path)) {
@@ -237,8 +240,10 @@ function runtimeKernelVirtualPathTarget(path, request = activeProjectIo?.request
 function runtimeKernelVirtualMutationTarget(path, request = activeProjectIo?.request) {
   const policy = self.TraceRuntimeKernelPolicy;
   if (typeof policy?.runtimeKernelVirtualMutationTarget === 'function') {
-    const target = policy.runtimeKernelVirtualMutationTarget(path, { devices: kernelDeviceEntries(request) });
-    if (target.kind !== 'workspace') return target;
+    return policy.runtimeKernelVirtualMutationTarget(path, {
+      devices: kernelDeviceEntries(request),
+      readOnlyPaths: kernelVirtualManifestPaths(request),
+    });
   }
   if (isKernelDeviceNamespacePath(path)) {
     return kernelDeviceInfo(path, request)
