@@ -2641,7 +2641,7 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace/src',
         env: { MODE: 'browser-csharp-project' },
-        stdin: 'from-stdin\n',
+        stdin: 'from-stdin\nfrom-device\n',
         project: {
           directories: ['src/empty/child'],
           kernelFiles: TRACE_KERNEL_PROC_FILES,
@@ -2654,11 +2654,15 @@ async function main(): Promise<void> {
                 'Console.WriteLine(Directory.Exists("empty/child") ? "dir" : "missing");',
                 'Console.WriteLine(Path.GetFileName(Directory.GetDirectories("empty").Single()));',
                 'Console.WriteLine(Console.ReadLine());',
+                'Console.WriteLine("dev-stdin=" + File.ReadAllText("/dev/stdin").Trim());',
                 'Console.WriteLine(Environment.GetEnvironmentVariable("MODE"));',
                 'Console.WriteLine(string.Join(",", args));',
                 'Console.WriteLine(File.ReadAllText("/proc/kernel/info").Contains("\\"name\\": \\"tracekernel\\"") ? "proc-info" : "proc-missing");',
                 'Console.WriteLine(Directory.GetFiles("/proc/kernel").Select(Path.GetFileName).Single());',
                 'try { File.WriteAllText("/proc/kernel/info", "{}\\n"); Console.WriteLine("proc-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-write:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/dev/stdout", "dev-stdout\\n"); Console.WriteLine("dev-stdout-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-write:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
                 'Console.Error.WriteLine("stderr-line");',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
@@ -2686,15 +2690,17 @@ async function main(): Promise<void> {
     );
     assertCondition(projectRun.exitCode === 0, `C# project worker should run multifile project: ${projectRun.stderr}`);
     assertCondition(
-      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\nbrowser-csharp-project\nalpha,beta\nproc-info\ninfo\n'),
-      `C# project worker should preserve stdout/stdin/env/args/proc reads: ${projectRun.stdout}`
+      projectRun.stdout.includes('42\ndir\nchild\nfrom-stdin\ndev-stdin=from-stdin\nfrom-device\nbrowser-csharp-project\nalpha,beta\nproc-info\ninfo\n') &&
+        projectRun.stdout.includes('dev-stdout\n') &&
+        projectRun.stdout.includes('dev-tty\n'),
+      `C# project worker should preserve stdout/stdin/env/args/proc reads: ${JSON.stringify({ stdout: projectRun.stdout, stderr: projectRun.stderr, events: projectRun.events })}`
     );
     assertCondition(
       projectRun.stdout.includes('proc-write:') && !projectRun.stdout.includes('proc-write:ok'),
       `C# project worker should expose /proc as read-only, received ${projectRun.stdout}`
     );
     assertCondition(
-      projectRun.stderr === 'stderr-line\n',
+      projectRun.stderr === 'dev-stderr\nstderr-line\n',
       `C# project worker should preserve stderr: ${JSON.stringify(projectRun.stderr)}`
     );
     assertCondition(
@@ -2711,7 +2717,7 @@ async function main(): Promise<void> {
       projectRun.events
         ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
         .map((event) => event.data)
-        .join('') === 'stderr-line\n',
+        .join('') === 'dev-stderr\nstderr-line\n',
       `C# project worker should stream stderr events, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(

@@ -223,6 +223,37 @@ function materializeKernelVirtualFiles(request) {
   }
 }
 
+function materializeKernelDevices(request) {
+  const fs = runtimeModule?.FS;
+  if (!fs || typeof fs.createDevice !== 'function') return;
+  ensureRuntimeDirectory(fs, '/dev');
+  for (const device of kernelDeviceEntries(request)) {
+    const devicePath = normalizeKernelDevicePath(device?.path);
+    if (!devicePath) continue;
+    const name = devicePath.slice('/dev/'.length);
+    try {
+      fs.unlink(devicePath);
+    } catch {
+      // The runtime may not have created this device yet.
+    }
+    fs.createDevice(
+      '/dev',
+      name,
+      device.readable
+        ? () => {
+            if (!kernelDeviceInputSource(devicePath, request)) return undefined;
+            return readProjectInputByte();
+          }
+        : undefined,
+      device.writable
+        ? (value) => {
+            writeProjectDeviceByte(devicePath, value);
+          }
+        : undefined
+    );
+  }
+}
+
 function projectRuntimeStdin(request) {
   return kernelDeviceInputSource('/dev/stdin', request) ? String(request?.stdin || '') : '';
 }
@@ -269,6 +300,10 @@ function encodeRuntimeFileChange(path, bytes) {
 
 function emitProjectEvent(payload) {
   if (!activeProjectIo?.messageId) return;
+  if (payload?.type === 'output' && typeof payload.data === 'string') {
+    const outputBuffer = payload.stream === 'stderr' ? activeProjectIo.eventStderr : activeProjectIo.eventStdout;
+    outputBuffer.push(payload.data);
+  }
   self.postMessage({ id: activeProjectIo.messageId, type: 'project-event', payload });
 }
 
@@ -317,7 +352,7 @@ function flushProjectOutput(stream) {
   emitProjectOutput(stream, decodeUtf8(bytes), stream === 'stdout' ? context.stdoutDevice : context.stderrDevice);
 }
 
-function writeProjectDeviceByte(device, value) {
+function writeProjectDeviceByte(device, value, options = {}) {
   const context = activeProjectIo;
   if (!context || typeof value !== 'number' || value < 0) return;
   const outputDevice = kernelDeviceOutputTarget(device, context.request);
@@ -326,7 +361,9 @@ function writeProjectDeviceByte(device, value) {
   const buffer = stream === 'stdout' ? context.stdoutBytes : context.stderrBytes;
   if (stream === 'stdout') context.stdoutDevice = outputDevice;
   else context.stderrDevice = outputDevice;
-  buffer.push(value & 0xff);
+  const byte = value & 0xff;
+  buffer.push(byte);
+  if (options.recordResult) context.directDeviceOutput = true;
   if (value === 10) flushProjectOutput(stream);
 }
 
@@ -369,6 +406,13 @@ function installRuntimeFsHooks(runtime) {
   const originalWrite = fs.write;
   if (typeof originalWrite === 'function') {
     fs.write = function writeWithProjectEvents(stream, buffer, offset, length, position, canOwn) {
+      const devicePath = normalizeKernelDevicePath(stream?.path);
+      if (activeProjectIo && devicePath && kernelDeviceOutputTarget(devicePath)) {
+        for (let index = 0; index < length; index += 1) {
+          writeProjectDeviceByte(devicePath, buffer[offset + index], { recordResult: true });
+        }
+        return length;
+      }
       const result = originalWrite.apply(this, arguments);
       if (activeProjectIo && stream?.path) emitProjectFileSnapshot(stream.path);
       return result;
@@ -665,12 +709,22 @@ async function handleMessage(message) {
       stdinIndex: 0,
       stdoutBytes: [],
       stderrBytes: [],
+      eventStdout: [],
+      eventStderr: [],
+      directDeviceOutput: false,
       stdoutDevice: '/dev/stdout',
       stderrDevice: '/dev/stderr',
     };
     let result;
     try {
+      materializeKernelDevices(request);
       result = JSON.parse(executeProjectExport(JSON.stringify(projectRuntimeRequest(request))));
+      flushProjectOutput('stdout');
+      flushProjectOutput('stderr');
+      if (activeProjectIo.directDeviceOutput) {
+        result.stdout = activeProjectIo.eventStdout.join('');
+        result.stderr = activeProjectIo.eventStderr.join('');
+      }
     } finally {
       flushProjectOutput('stdout');
       flushProjectOutput('stderr');
