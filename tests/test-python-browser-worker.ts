@@ -538,6 +538,43 @@ async function main(): Promise<void> {
         },
       });
 
+      const providerKernelVirtualMutationRun = await send('execute-project-python', {
+        source: 'argument',
+        scriptPath: '<string>',
+        code: [
+          'import js',
+          'for expression, label in [',
+          '    (\\'pyodide.FS.writeFile("/proc/kernel/info", "{}")\\', "proc-write"),',
+          '    (\\'pyodide.FS.mkdir("/proc/kernel/new")\\', "proc-mkdir"),',
+          '    (\\'pyodide.FS.writeFile("/dev/log", "leaked\\\\\\\\n", { encoding: "utf8" })\\', "dev-write"),',
+          '    (\\'pyodide.FS.open("/dev/stdout", "w")\\', "dev-open-write"),',
+          '    (\\'pyodide.FS.open("/dev/stdout", 1)\\', "dev-open-numeric-write"),',
+          '    (\\'pyodide.FS.rename("/tracecode_project/provider-source.txt", "/dev/log")\\', "dev-rename-dest"),',
+          ']:',
+          '    try:',
+          '        if label == "dev-rename-dest":',
+          '            js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-source.txt", "source\\\\\\\\n", { encoding: "utf8" })\\')',
+          '        js.eval(expression)',
+          '        print(label + ":ok")',
+          '    except Exception:',
+          '        print(label + ":blocked")',
+          'with open("/workspace/after-provider-guard.txt", "w", encoding="utf-8") as handle:',
+          '    handle.write("guarded\\\\n")',
+        ].join('\\n'),
+        args: [],
+        cwd: '/workspace',
+        env: {},
+        stdin: '',
+        project: {
+          cwd: '/workspace',
+          files: [],
+          kernelDevices: traceKernelDevices,
+          kernelFiles: [
+            { path: '/proc/kernel/info', contents: 'tracekernel\\n' },
+          ],
+        },
+      });
+
       const canonicalRootRun = await send('execute-project-python', {
         source: 'file',
         scriptPath: '/home/ada/weather-api/app.py',
@@ -669,7 +706,7 @@ async function main(): Promise<void> {
       }
 
       worker.terminate();
-      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, linkApiRun, statvfsRun, canonicalRootRun, outsideCwdError };
+      return { fileRun, moduleRun, cwdRelativeFileRun, workspaceRelativeFileRun, stdinRun, argumentRun, noDeviceManifestRun, manifestCustomDeviceRun, fdReadlineRun, directoryRun, linkApiRun, statvfsRun, providerKernelVirtualMutationRun, canonicalRootRun, outsideCwdError };
     })()`) as {
       fileRun: PythonProjectWorkerResponse;
       moduleRun: PythonProjectWorkerResponse;
@@ -683,6 +720,7 @@ async function main(): Promise<void> {
       directoryRun: PythonProjectWorkerResponse;
       linkApiRun: PythonProjectWorkerResponse;
       statvfsRun: PythonProjectWorkerResponse;
+      providerKernelVirtualMutationRun: PythonProjectWorkerResponse;
       canonicalRootRun: PythonProjectWorkerResponse;
       outsideCwdError: string;
     };
@@ -1171,6 +1209,26 @@ async function main(): Promise<void> {
     assertCondition(
       results.statvfsRun.stdout === 'True\nTrue\nTrue\nTrue\n/dev/missing:missing\n/proc/missing:missing\n',
       `Python project statvfs should route through workspace and kernel paths: ${JSON.stringify(results.statvfsRun.stdout)}`
+    );
+    assertCondition(
+      results.providerKernelVirtualMutationRun.exitCode === 0,
+      `Python provider kernel virtual mutation run should succeed: ${results.providerKernelVirtualMutationRun.stderr}`
+    );
+    assertCondition(
+      results.providerKernelVirtualMutationRun.stdout === 'proc-write:blocked\nproc-mkdir:blocked\ndev-write:blocked\ndev-open-write:blocked\ndev-open-numeric-write:blocked\ndev-rename-dest:blocked\n',
+      `Python provider-level Pyodide FS should not mutate kernel virtual namespaces: ${JSON.stringify(results.providerKernelVirtualMutationRun.stdout)}`
+    );
+    assertCondition(
+      findFile(results.providerKernelVirtualMutationRun, 'after-provider-guard.txt')?.contents === 'guarded\n',
+      'Python provider-level kernel guard should leave workspace writes functional'
+    );
+    assertCondition(
+      results.providerKernelVirtualMutationRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        (event.change?.path.startsWith('/dev') || event.change?.path.startsWith('/proc'))
+      )) !== true,
+      `Python provider-level kernel guard should not emit virtual namespace file mutations: ${JSON.stringify(results.providerKernelVirtualMutationRun.events)}`
     );
     assertCondition(results.canonicalRootRun.exitCode === 0, `Python project canonical root run should succeed: ${results.canonicalRootRun.stderr}`);
     assertCondition(

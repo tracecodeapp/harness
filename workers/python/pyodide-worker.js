@@ -723,6 +723,42 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
   const patched = [];
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null;
 
+  const kernelVirtualNamespacePath = (path) => {
+    const normalized = normalizePyodideFsProjectPath(path);
+    if (!normalized) return null;
+    if (normalized === '/dev' || normalized.startsWith('/dev/')) return normalized;
+    if (normalized === '/proc' || normalized.startsWith('/proc/')) return normalized;
+    return null;
+  };
+
+  const isCreateOrTruncateOpenFlags = (flags) => {
+    if (typeof flags === 'string') {
+      return flags.includes('w') || flags.includes('a');
+    }
+    const numericFlags = Number(flags);
+    if (!Number.isFinite(numericFlags)) return false;
+    return Boolean(numericFlags & 64) || Boolean(numericFlags & 512);
+  };
+
+  const isWritableOpenFlags = (flags) => {
+    if (typeof flags === 'string') {
+      return flags.includes('w') || flags.includes('a') || flags.includes('+');
+    }
+    const numericFlags = Number(flags);
+    if (!Number.isFinite(numericFlags)) return false;
+    return Boolean(numericFlags & 1) || Boolean(numericFlags & 2) || isCreateOrTruncateOpenFlags(numericFlags);
+  };
+
+  const rejectKernelVirtualMutation = (path, operation) => {
+    const kernelPath = kernelVirtualNamespacePath(path);
+    if (!kernelPath) return;
+    const error = new Error(`Kernel virtual namespace is not a provider FS mutation target: ${kernelPath}`);
+    error.code = kernelPath === '/proc' || kernelPath.startsWith('/proc/') ? 'EROFS' : 'EACCES';
+    error.operation = operation;
+    error.path = kernelPath;
+    throw error;
+  };
+
   const relativePath = (path) => {
     const normalized = normalizePyodideFsProjectPath(path);
     if (!normalized || normalized === normalizedRoot || !normalized.startsWith(`${normalizedRoot}/`)) {
@@ -851,17 +887,11 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     patched.push([name, original]);
   };
 
-  const isCreateOrTruncateOpenFlags = (flags) => {
-    if (typeof flags === 'string') {
-      return flags.includes('w') || flags.includes('a');
-    }
-    const numericFlags = Number(flags);
-    if (!Number.isFinite(numericFlags)) return false;
-    return Boolean(numericFlags & 64) || Boolean(numericFlags & 512);
-  };
-
   patch('open', (original) => function patchedOpen(path, flags, ...args) {
     const shouldEmitCreateSnapshot = isCreateOrTruncateOpenFlags(flags);
+    if (isWritableOpenFlags(flags)) {
+      rejectKernelVirtualMutation(path, 'open');
+    }
     const stream = original.call(this, path, flags, ...args);
     if (shouldEmitCreateSnapshot) {
       emitFileChange(streamPath(stream));
@@ -876,12 +906,14 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
   });
 
   patch('writeFile', (original) => function patchedWriteFile(path, ...args) {
+    rejectKernelVirtualMutation(path, 'writeFile');
     const result = original.call(this, path, ...args);
     emitFileChange(path);
     return result;
   });
 
   patch('truncate', (original) => function patchedTruncate(path, ...args) {
+    rejectKernelVirtualMutation(path, 'truncate');
     const result = original.call(this, path, ...args);
     emitFileChange(path);
     return result;
@@ -900,24 +932,29 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
   });
 
   patch('unlink', (original) => function patchedUnlink(path, ...args) {
+    rejectKernelVirtualMutation(path, 'unlink');
     const result = original.call(this, path, ...args);
     emitFileDelete(path);
     return result;
   });
 
   patch('mkdir', (original) => function patchedMkdir(path, ...args) {
+    rejectKernelVirtualMutation(path, 'mkdir');
     const result = original.call(this, path, ...args);
     emitDirectoryCreate(path);
     return result;
   });
 
   patch('rmdir', (original) => function patchedRmdir(path, ...args) {
+    rejectKernelVirtualMutation(path, 'rmdir');
     const result = original.call(this, path, ...args);
     emitDirectoryDelete(path);
     return result;
   });
 
   patch('rename', (original) => function patchedRename(oldPath, newPath, ...args) {
+    rejectKernelVirtualMutation(oldPath, 'rename');
+    rejectKernelVirtualMutation(newPath, 'rename');
     const oldIsDirectory = isDirectoryPath(oldPath);
     const result = original.call(this, oldPath, newPath, ...args);
     if (oldIsDirectory) {
@@ -931,6 +968,8 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
   });
 
   patch('symlink', (original) => function patchedSymlink(oldPath, newPath, ...args) {
+    rejectKernelVirtualMutation(oldPath, 'symlink');
+    rejectKernelVirtualMutation(newPath, 'symlink');
     if (relativePath(newPath)) {
       const error = new Error('Symbolic links are not supported by the project file manifest');
       error.code = 'ENOSYS';
