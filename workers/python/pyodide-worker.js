@@ -707,6 +707,150 @@ async function executeCode(code, functionName, inputs, executionStyle = 'functio
   );
 }
 
+function normalizePyodideFsProjectPath(path) {
+  if (typeof path !== 'string' || !path) return null;
+  const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
+}
+
+function installPyodideProjectFsMutationEvents(projectRoot) {
+  const fs = pyodide?.FS;
+  const normalizedRoot = normalizePyodideFsProjectPath(projectRoot);
+  if (!fs || !normalizedRoot || typeof self.__tracecodeProjectEvent !== 'function') {
+    return () => {};
+  }
+
+  const patched = [];
+  const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8', { fatal: true }) : null;
+
+  const relativePath = (path) => {
+    const normalized = normalizePyodideFsProjectPath(path);
+    if (!normalized || normalized === normalizedRoot || !normalized.startsWith(`${normalizedRoot}/`)) {
+      return null;
+    }
+    return normalized.slice(normalizedRoot.length + 1);
+  };
+
+  const emitProjectEvent = (event) => {
+    try {
+      self.__tracecodeProjectEvent(event);
+    } catch {
+      // Live mutation events are best-effort; final file diff remains authoritative.
+    }
+  };
+
+  const bytesToBase64 = (bytes) => {
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += 0x8000) {
+      const chunk = bytes.subarray(index, index + 0x8000);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
+  };
+
+  const runtimeFileChange = (path) => {
+    const relative = relativePath(path);
+    if (!relative || typeof fs.readFile !== 'function') return null;
+    try {
+      const rawContents = fs.readFile(path, { encoding: 'binary' });
+      const contents = rawContents instanceof Uint8Array ? rawContents : new Uint8Array(rawContents);
+      if (textDecoder) {
+        try {
+          return { path: relative, contents: textDecoder.decode(contents) };
+        } catch {
+          // Fall through to base64 for non-UTF-8 bytes.
+        }
+      }
+      return { path: relative, contents: bytesToBase64(contents), encoding: 'base64' };
+    } catch {
+      return null;
+    }
+  };
+
+  const emitFileChange = (path) => {
+    const change = runtimeFileChange(path);
+    if (change) {
+      emitProjectEvent({ type: 'file-change', phase: 'live', change });
+    }
+  };
+
+  const emitFileDelete = (path) => {
+    const relative = relativePath(path);
+    if (relative) {
+      emitProjectEvent({ type: 'file-change', phase: 'live', change: { path: relative, deleted: true } });
+    }
+  };
+
+  const streamPath = (stream) => {
+    if (!stream) return null;
+    if (typeof stream.path === 'string') return stream.path;
+    if (stream.node && typeof fs.getPath === 'function') {
+      try {
+        return fs.getPath(stream.node);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const patch = (name, replacement) => {
+    const original = fs[name];
+    if (typeof original !== 'function') return;
+    fs[name] = replacement(original);
+    patched.push([name, original]);
+  };
+
+  patch('write', (original) => function patchedWrite(stream, ...args) {
+    const result = original.call(this, stream, ...args);
+    emitFileChange(streamPath(stream));
+    return result;
+  });
+
+  patch('writeFile', (original) => function patchedWriteFile(path, ...args) {
+    const result = original.call(this, path, ...args);
+    emitFileChange(path);
+    return result;
+  });
+
+  patch('truncate', (original) => function patchedTruncate(path, ...args) {
+    const result = original.call(this, path, ...args);
+    emitFileChange(path);
+    return result;
+  });
+
+  patch('ftruncate', (original) => function patchedFtruncate(fd, ...args) {
+    let path = null;
+    try {
+      path = streamPath(fs.getStreamChecked(fd));
+    } catch {
+      path = null;
+    }
+    const result = original.call(this, fd, ...args);
+    emitFileChange(path);
+    return result;
+  });
+
+  patch('unlink', (original) => function patchedUnlink(path, ...args) {
+    const result = original.call(this, path, ...args);
+    emitFileDelete(path);
+    return result;
+  });
+
+  patch('rename', (original) => function patchedRename(oldPath, newPath, ...args) {
+    const result = original.call(this, oldPath, newPath, ...args);
+    emitFileDelete(oldPath);
+    emitFileChange(newPath);
+    return result;
+  });
+
+  return () => {
+    for (const [name, original] of patched.reverse()) {
+      fs[name] = original;
+    }
+  };
+}
+
 async function executeProjectPython(request, messageId) {
   await loadPyodideInstance();
 
@@ -715,6 +859,7 @@ async function executeProjectPython(request, messageId) {
     const payload = typeof event === 'string' ? JSON.parse(event) : event;
     self.postMessage({ id: messageId, type: 'project-event', payload });
   };
+  self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   const projectCode = `
 import base64
 import builtins
@@ -775,6 +920,12 @@ for _file in _request.get("project", {}).get("files", []):
     _original_file_bytes[_relative_path] = _contents
     with open(_target, "wb") as _handle:
         _handle.write(_contents)
+
+_restore_provider_fs_mutation_events = lambda: None
+try:
+    _restore_provider_fs_mutation_events = _js_self.__tracecodeInstallProjectFsMutationEvents(_root)
+except Exception:
+    _restore_provider_fs_mutation_events = lambda: None
 
 _source = _request.get("source")
 _script_path = str(_request.get("scriptPath") or "")
@@ -1502,6 +1653,7 @@ def _install_virtual_workspace_paths():
         os.getcwd = _original_getcwd
         os.chdir = _original_chdir
         os.open = _original_os_open
+        os.read = _original_os_read
         os.write = _original_os_write
         os.close = _original_os_close
         for _target, _name, _original in reversed(_patched):
@@ -1572,6 +1724,7 @@ try:
             traceback.print_exc(file=_stderr)
             _exit_code = 1
 finally:
+    _restore_provider_fs_mutation_events()
     _restore_workspace_paths()
     sys.argv = _previous_argv
     sys.stdin = _previous_stdin
@@ -1594,6 +1747,7 @@ json.dumps({
     return JSON.parse(resultJson);
   } finally {
     delete self.__tracecodeProjectEvent;
+    delete self.__tracecodeInstallProjectFsMutationEvents;
   }
 }
 

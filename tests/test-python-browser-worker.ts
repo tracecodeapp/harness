@@ -120,6 +120,7 @@ async function main(): Promise<void> {
           contents: [
             'import os',
             'import sys',
+            'import js',
             'from helpers.value import answer',
             '',
             'line = sys.stdin.readline().strip()',
@@ -148,6 +149,7 @@ async function main(): Promise<void> {
             '    handle.write(str(answer()) + "\\\\n")',
             'with open("bytes.bin", "wb") as handle:',
             '    handle.write(bytes([0, 255]))',
+            'js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-live.txt", "provider-live\\\\\\\\n", { encoding: "utf8" })\\')',
             'fd = os.open("/workspace/fd-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
             'try:',
             '    os.write(fd, b"fd-one\\\\n")',
@@ -384,6 +386,10 @@ async function main(): Promise<void> {
       'Python project file run should report generated binary files as base64'
     );
     assertCondition(
+      findFile(results.fileRun, 'provider-live.txt')?.contents === 'provider-live\n',
+      'Python project file run should report provider-level Pyodide FS writes'
+    );
+    assertCondition(
       findFile(results.fileRun, 'fd-live.txt')?.contents === 'fd-one\nfd-two\n',
       'Python project file run should report low-level fd side effects'
     );
@@ -406,6 +412,15 @@ async function main(): Promise<void> {
         event.change.encoding === 'base64'
       )) === true,
       `Python project worker should stream live binary file mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'provider-live.txt' &&
+        event.change.contents === 'provider-live\n'
+      )) === true,
+      `Python project worker should stream provider-level Pyodide FS mutations: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (
