@@ -1367,6 +1367,68 @@ async function runBrowserJavaScriptProjectRequest(
       }
       return workspaceFilename(normalized, workspaceRoot);
     };
+    const copyEntrySync = (
+      source: unknown,
+      destination: unknown,
+      options: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean } = {}
+    ): void => {
+      const sourceDevice = normalizeRuntimeDevicePath(source);
+      const destinationDevice = normalizeRuntimeDevicePath(destination);
+      if (sourceDevice || destinationDevice) {
+        fsApi.copyFileSync(source, destination);
+        return;
+      }
+
+      const normalizedSource = normalizeWorkspaceEntryPath(source, cwdPath, true, workspacePathContext);
+      const normalizedDestination = normalizeWorkspaceEntryPath(destination, cwdPath, true, workspacePathContext);
+      const sourcePath = workspaceFilename(normalizedSource, workspaceRoot);
+      const destinationPath = workspaceFilename(normalizedDestination, workspaceRoot);
+      if (options.filter && !options.filter(sourcePath, destinationPath)) return;
+
+      const destinationExists = fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination);
+      if (destinationExists && options.force === false) {
+        if (options.errorOnExist) {
+          throw Object.assign(new Error(`EEXIST: file already exists, cp '${destination}'`), { code: 'EEXIST' });
+        }
+        return;
+      }
+
+      const sourceBytes = fileStore.get(normalizedSource);
+      if (sourceBytes) {
+        setFileBytes(normalizedDestination, new Uint8Array(sourceBytes));
+        return;
+      }
+
+      const sourcePrefix = normalizedSource ? `${normalizedSource}/` : '';
+      const descendantFiles = Array.from(fileStore.entries()).filter(([filePath]) => filePath.startsWith(sourcePrefix));
+      const descendantDirectories = Array.from(directoryStore).filter((directoryPath) =>
+        directoryPath === normalizedSource || directoryPath.startsWith(sourcePrefix)
+      );
+      if (!directoryStore.has(normalizedSource) && descendantFiles.length === 0 && descendantDirectories.length === 0) {
+        throw Object.assign(new Error(`ENOENT: no such file or directory, cp '${source}' -> '${destination}'`), { code: 'ENOENT' });
+      }
+      if (!options.recursive) {
+        throw Object.assign(new Error(`EISDIR: illegal operation on a directory, cp '${source}'`), { code: 'EISDIR' });
+      }
+
+      directoryStore.add(normalizedDestination);
+      for (const directoryPath of descendantDirectories) {
+        const relative = directoryPath === normalizedSource ? '' : directoryPath.slice(sourcePrefix.length);
+        const nextDirectory = relative ? `${normalizedDestination}/${relative}` : normalizedDestination;
+        if (options.filter && !options.filter(workspaceFilename(directoryPath, workspaceRoot), workspaceFilename(nextDirectory, workspaceRoot))) {
+          continue;
+        }
+        directoryStore.add(nextDirectory);
+      }
+      for (const [filePath, bytes] of descendantFiles) {
+        const relative = filePath.slice(sourcePrefix.length);
+        const nextPath = normalizedDestination ? `${normalizedDestination}/${relative}` : relative;
+        if (options.filter && !options.filter(workspaceFilename(filePath, workspaceRoot), workspaceFilename(nextPath, workspaceRoot))) {
+          continue;
+        }
+        setFileBytes(nextPath, new Uint8Array(bytes));
+      }
+    };
     const fsApi = {
       constants: fsConstants,
       F_OK: fsConstants.F_OK,
@@ -1682,6 +1744,19 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
+      cpSync: (source: unknown, destination: unknown, options?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean }) => {
+        copyEntrySync(source, destination, options);
+        return undefined;
+      },
+      cp: (source: unknown, destination: unknown, optionsOrCallback?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean } | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          fsApi.cpSync(source, destination, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       renameSync: (oldPath: unknown, newPath: unknown) => {
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
@@ -1962,6 +2037,9 @@ async function runBrowserJavaScriptProjectRequest(
       },
       copyFile: async (source: unknown, destination: unknown) => {
         fsApi.copyFileSync(source, destination);
+      },
+      cp: async (source: unknown, destination: unknown, options?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean }) => {
+        fsApi.cpSync(source, destination, options);
       },
       rename: async (oldPath: unknown, newPath: unknown) => {
         fsApi.renameSync(oldPath, newPath);

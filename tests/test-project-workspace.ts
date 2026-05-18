@@ -2067,6 +2067,29 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   await assertRejectsAsync(() => workspace.readFile('copy-target.txt'), 'browser node renameSync should remove the old target path');
   await assertRejectsAsync(() => workspace.readFile('async-copy-target.txt'), 'browser node async rename should remove the old target path');
 
+  const cpEvents: RuntimeCommandEvent[] = [];
+  const cpResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error) => error ? reject(error) : resolve())); fs.mkdirSync(\\"cp-src/nested\\", { recursive: true }); fs.mkdirSync(\\"cp-src/empty\\", { recursive: true }); fs.writeFileSync(\\"cp-src/root.txt\\", \\"root\\\\n\\"); fs.writeFileSync(\\"cp-src/nested/value.txt\\", \\"nested\\\\n\\"); fs.cpSync(\\"cp-src\\", \\"cp-sync\\", { recursive: true }); await call((done) => fs.cp(\\"cp-sync/root.txt\\", \\"cp-callback.txt\\", done)); await fsp.cp(\\"cp-sync\\", \\"cp-async\\", { recursive: true, filter: (source) => !source.endsWith(\\"nested/value.txt\\") }); fs.cpSync(\\"cp-src/root.txt\\", \\"cp-skip.txt\\"); fs.cpSync(\\"cp-src/nested/value.txt\\", \\"cp-skip.txt\\", { force: false }); console.log(fs.readFileSync(\\"cp-sync/nested/value.txt\\", \\"utf8\\").trim()); console.log(fs.readFileSync(\\"cp-callback.txt\\", \\"utf8\\").trim()); console.log(fs.statSync(\\"cp-sync/empty\\").isDirectory()); console.log(fs.existsSync(\\"cp-async/nested/value.txt\\")); console.log(fs.readFileSync(\\"cp-skip.txt\\", \\"utf8\\").trim());"',
+  ].join(' '), { onEvent: (event) => cpEvents.push(event) });
+  assertCondition(cpResult.exitCode === 0, `browser node cp workflow should succeed: ${cpResult.stderr}`);
+  assertCondition(
+    cpResult.stdout === 'nested\nroot\ntrue\nfalse\nroot\n',
+    `browser node cp APIs should copy files, directories, filters, and force=false semantics: ${cpResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('cp-sync/nested/value.txt') === 'nested\n', 'browser node cpSync should persist recursive copied files');
+  assertCondition(await workspace.readFile('cp-callback.txt') === 'root\n', 'browser node cp callback should persist copied files');
+  assertCondition(
+    cpEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'cp-sync/nested/value.txt' &&
+      event.change.contents === 'nested\n'
+    ),
+    `browser node cp should emit live file changes: ${JSON.stringify(cpEvents)}`
+  );
+
   const inspectResult = await workspace.runCommand([
     'node',
     '-e',
