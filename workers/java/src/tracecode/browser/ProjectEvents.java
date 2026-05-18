@@ -169,7 +169,19 @@ public final class ProjectEvents {
   }
 
   public static Path copy(Path source, Path target, CopyOption... options) throws IOException {
+    KernelDevice sourceDevice = readableKernelDevice(source);
+    KernelDevice targetDevice = writableKernelDevice(target);
+    if (targetDevice != null) {
+      byte[] bytes = sourceDevice != null ? readKernelDevice(sourceDevice) : Files.readAllBytes(source);
+      writeKernelDevice(targetDevice, bytes);
+      return target;
+    }
     assertWritableProjectPath(target);
+    if (sourceDevice != null) {
+      Files.write(target, readKernelDevice(sourceDevice));
+      emitFileSnapshot(target);
+      return target;
+    }
     Path result = Files.copy(source, target, options);
     emitFileSnapshot(target);
     return result;
