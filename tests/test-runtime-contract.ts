@@ -52,6 +52,8 @@ import {
 import {
   normalizeRuntimeKernelManifestDevicePath as normalizeWorkerKernelManifestDevicePath,
   normalizeRuntimeKernelDeviceReference as normalizeWorkerKernelDeviceReference,
+  runtimeKernelDeviceDirEntries as workerRuntimeKernelDeviceDirEntries,
+  runtimeKernelDeviceEntryKind as workerRuntimeKernelDeviceEntryKind,
   runtimeKernelDeviceInputSource as workerRuntimeKernelDeviceInputSource,
   runtimeKernelDeviceOutputTarget as workerRuntimeKernelDeviceOutputTarget,
   runtimeKernelVirtualMutationTarget as workerRuntimeKernelVirtualMutationTarget,
@@ -400,8 +402,17 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
       workerRuntimeKernelDeviceOutputTarget(devices, '/dev/log') === '/dev/stderr' &&
       workerRuntimeKernelDeviceInputSource(devices, '/dev/custom-in') === '/dev/stdin' &&
       workerRuntimeKernelDeviceOutputTarget(devices, '/dev/pts/0') === '/dev/stdout' &&
+      stableStringify(workerRuntimeKernelDeviceDirEntries(devices, '/dev')) === stableStringify(['custom-in', 'log', 'null', 'pts', 'stdout']) &&
+      stableStringify(workerRuntimeKernelDeviceDirEntries(devices, '/dev/pts')) === stableStringify(['0']) &&
+      workerRuntimeKernelDeviceEntryKind(devices, '/dev/pts') === 'directory' &&
+      workerRuntimeKernelDeviceEntryKind(devices, '/dev/pts/0') === 'file' &&
       workerRuntimeKernelDeviceOutputTarget(devices, '/dev/null') === '/dev/null',
-    'shared worker kernel policy should classify and route manifest devices from device metadata'
+    'shared worker kernel policy should classify, list, and route manifest devices from device metadata'
+  );
+  assertCondition(
+    stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/pts', { devices, readOnlyPaths })) ===
+      stableStringify({ kind: 'device-directory', path: '/dev/pts' }),
+    'shared worker kernel policy should classify nested manifest device directories'
   );
   assertCondition(
     stableStringify(workerRuntimeKernelVirtualOpenTarget('/dev/log', { writable: true }, { devices })) ===
@@ -441,6 +452,9 @@ function assertWorkerRuntimeKernelPolicyContract(): void {
       stableStringify(classicPolicy.runtimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) ===
         stableStringify(workerRuntimeKernelVirtualPathTarget('/dev/log', { knownDevices, readOnlyPaths })) &&
       classicPolicy.normalizeRuntimeKernelManifestDevicePath('/dev/pts/0') === normalizeWorkerKernelManifestDevicePath('/dev/pts/0') &&
+      stableStringify(classicPolicy.runtimeKernelDeviceDirEntries(devices, '/dev/pts')) ===
+        stableStringify(workerRuntimeKernelDeviceDirEntries(devices, '/dev/pts')) &&
+      classicPolicy.runtimeKernelDeviceEntryKind(devices, '/dev/pts') === workerRuntimeKernelDeviceEntryKind(devices, '/dev/pts') &&
       stableStringify(classicPolicy.runtimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) ===
         stableStringify(workerRuntimeKernelVirtualMutationTarget('/tracekernel/new', { knownDevices, readOnlyPaths })) &&
       classicPolicy.runtimeKernelDeviceOutputTarget(devices, '/dev/log') === workerRuntimeKernelDeviceOutputTarget(devices, '/dev/log') &&

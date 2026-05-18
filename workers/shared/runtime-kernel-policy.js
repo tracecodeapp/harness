@@ -23,8 +23,8 @@ export function isRuntimeKernelDeviceNamespacePath(value) {
   return normalized === '/dev' || normalized.startsWith('/dev/');
 }
 
-export function isRuntimeKernelDeviceDirectory(value) {
-  return normalizeRuntimeKernelPath(value) === '/dev';
+export function isRuntimeKernelDeviceDirectory(value, options = {}) {
+  return runtimeKernelDeviceEntryKind(options.devices, value) === 'directory';
 }
 
 export function normalizeRuntimeKernelDeviceReference(value) {
@@ -78,6 +78,31 @@ export function runtimeKernelDeviceInfo(devices, device) {
   return normalizedDeviceInfos(devices).get(normalizeRuntimeKernelManifestDevicePath(device)) ?? null;
 }
 
+export function runtimeKernelDeviceDirEntries(devices, value = '/dev') {
+  const path = normalizeRuntimeKernelPath(value);
+  if (path !== '/dev' && !path.startsWith('/dev/')) return null;
+  const entries = normalizedDeviceInfos(devices);
+  const prefix = path === '/dev' ? '/dev/' : `${path}/`;
+  const names = new Set();
+  for (const devicePath of entries.keys()) {
+    if (!devicePath.startsWith(prefix)) continue;
+    const rest = devicePath.slice(prefix.length);
+    const slash = rest.indexOf('/');
+    const name = slash < 0 ? rest : rest.slice(0, slash);
+    if (name) names.add(name);
+  }
+  if (path !== '/dev' && names.size === 0) return null;
+  return Array.from(names).sort();
+}
+
+export function runtimeKernelDeviceEntryKind(devices, value) {
+  const path = normalizeRuntimeKernelPath(value);
+  if (path === '/dev') return 'directory';
+  if (!path.startsWith('/dev/')) return '';
+  if (runtimeKernelDeviceInfo(devices, path)) return 'file';
+  return runtimeKernelDeviceDirEntries(devices, path) ? 'directory' : '';
+}
+
 export function runtimeKernelDeviceInputSource(devices, device) {
   const info = runtimeKernelDeviceInfo(devices, device);
   if (!info?.readable) return '';
@@ -109,10 +134,11 @@ export function runtimeKernelVirtualPathTarget(value, options = {}) {
   if (isRuntimeKernelReadOnlyPath(path, options.readOnlyPaths)) {
     return { kind: 'read-only-file', path };
   }
-  if (isRuntimeKernelDeviceDirectory(path)) {
-    return { kind: 'device-directory', path };
-  }
   if (isRuntimeKernelDeviceNamespacePath(path)) {
+    const deviceEntryKind = runtimeKernelDeviceEntryKind(options.devices, path);
+    if (deviceEntryKind === 'directory') {
+      return { kind: 'device-directory', path };
+    }
     const knownDevices = knownDeviceSet(options);
     const device = normalizeRuntimeKernelManifestDevicePath(path);
     if (!device || !knownDevices.has(device)) {

@@ -16,6 +16,8 @@ const EXPORTED_POLICY_NAMES = [
   'normalizeRuntimeKernelDeviceReference',
   'normalizeRuntimeKernelManifestDevicePath',
   'runtimeKernelDeviceInfo',
+  'runtimeKernelDeviceDirEntries',
+  'runtimeKernelDeviceEntryKind',
   'runtimeKernelDeviceInputSource',
   'runtimeKernelDeviceOutputTarget',
   'runtimeKernelVirtualPathTarget',
