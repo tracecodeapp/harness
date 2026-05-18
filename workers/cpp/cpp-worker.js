@@ -1110,7 +1110,13 @@ class WasiProcess {
     return this.writeFilestat(pathname, outPtr);
   }
 
-  path_filestat_set_times() {
+  path_filestat_set_times(dirfd, _flags, pathPtr, pathLen) {
+    const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
+    if (!pathname) return EBADF;
+    if (isRuntimeProcPath(pathname) || this.fs.isReadOnly(pathname)) return EROFS;
+    const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
+    if (deviceErrno !== null) return deviceErrno;
+    if (!this.fs.exists(pathname)) return ENOENT;
     return ESUCCESS;
   }
 

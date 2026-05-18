@@ -250,6 +250,7 @@ async function main(): Promise<void> {
             '#include <iostream>',
             '#include <string>',
             '#include <sys/stat.h>',
+            '#include <time.h>',
             '#include <unistd.h>',
             'int main(int argc, char** argv) {',
             '  FILE* stdin_device = std::fopen("/dev/stdin", "r");',
@@ -282,6 +283,11 @@ async function main(): Promise<void> {
             '  std::cout << custom_kernel_text;',
             '  std::ofstream custom_kernel_write("/tracekernel/custom");',
             '  std::cout << (custom_kernel_write ? "custom-kernel-write:ok" : "custom-kernel-write:blocked") << "\\\\n";',
+            '  timespec blocked_times[2] = {};',
+            '  blocked_times[0].tv_nsec = UTIME_NOW;',
+            '  blocked_times[1].tv_nsec = UTIME_NOW;',
+            '  std::cout << (utimensat(AT_FDCWD, "/proc/kernel/info", blocked_times, 0) == 0 ? "proc-utime:ok" : "proc-utime:blocked") << "\\\\n";',
+            '  std::cout << (utimensat(AT_FDCWD, "/tracekernel/custom", blocked_times, 0) == 0 ? "custom-kernel-utime:ok" : "custom-kernel-utime:blocked") << "\\\\n";',
             '  DIR* dev_dir = opendir("/dev");',
             '  bool saw_stdin = false;',
             '  bool saw_stdout = false;',
@@ -296,6 +302,7 @@ async function main(): Promise<void> {
             '  std::ifstream stdout_read("/dev/stdout");',
             '  std::cout << (stdout_read ? "dev-stdout-read:ok" : "dev-stdout-read:blocked") << "\\\\n";',
             '  std::cout << (std::remove("/dev/stdout") == 0 ? "dev-unlink:ok" : "dev-unlink:blocked") << "\\\\n";',
+            '  std::cout << (utimensat(AT_FDCWD, "/dev/stdout", blocked_times, 0) == 0 ? "dev-utime:ok" : "dev-utime:blocked") << "\\\\n";',
             '  std::ofstream("rename-device-source.txt") << "blocked\\\\n";',
             '  std::cout << (std::rename("rename-device-source.txt", "/dev/stdout") == 0 ? "dev-rename:ok" : "dev-rename:blocked") << "\\\\n";',
             '  std::remove("rename-device-source.txt");',
@@ -1189,7 +1196,8 @@ async function main(): Promise<void> {
         projectRun.stdout?.includes('from-stdin\nbrowser-cpp-project\nalpha,beta\nfrom-stdin\nfrom-stdin\n') === true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\n') === true &&
-        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-rename:blocked\n') === true &&
+        projectRun.stdout?.includes('proc-utime:blocked\ncustom-kernel-utime:blocked\n') === true &&
+        projectRun.stdout?.includes('dev-list:ok\ndev-stat:ok\ndev-stdout-read:blocked\ndev-unlink:blocked\ndev-utime:blocked\ndev-rename:blocked\n') === true &&
         projectRun.stdout?.includes('readonly-fd-mutation:blocked\n') === true &&
         projectRun.stdout?.includes('missing-remove:blocked\nunlink-dir:blocked\n') === true &&
         projectRun.stdout?.includes('device-out\n') === true,
