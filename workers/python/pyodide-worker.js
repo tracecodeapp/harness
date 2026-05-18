@@ -804,6 +804,33 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     }
   };
 
+  const emitPathSnapshot = (path) => {
+    if (!path || typeof fs.stat !== 'function' || typeof fs.isDir !== 'function' || typeof fs.isFile !== 'function') return;
+    let stat;
+    try {
+      stat = fs.stat(path);
+    } catch {
+      return;
+    }
+    if (fs.isFile(stat.mode)) {
+      emitFileChange(path);
+      return;
+    }
+    if (!fs.isDir(stat.mode)) return;
+    emitDirectoryCreate(path);
+    if (typeof fs.readdir !== 'function') return;
+    let entries;
+    try {
+      entries = fs.readdir(path);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry === '.' || entry === '..') continue;
+      emitPathSnapshot(`${String(path).replace(/\/+$/, '')}/${entry}`);
+    }
+  };
+
   const streamPath = (stream) => {
     if (!stream) return null;
     if (typeof stream.path === 'string') return stream.path;
@@ -895,7 +922,7 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
     const result = original.call(this, oldPath, newPath, ...args);
     if (oldIsDirectory) {
       emitDirectoryDelete(oldPath);
-      emitDirectoryCreate(newPath);
+      emitPathSnapshot(newPath);
     } else {
       emitFileDelete(oldPath);
       emitFileChange(newPath);

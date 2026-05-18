@@ -198,6 +198,7 @@ async function main(): Promise<void> {
             '    handle.write(bytes([0, 255]))',
             'js.eval(\\'pyodide.FS.writeFile("/tracecode_project/provider-live.txt", "provider-live\\\\\\\\n", { encoding: "utf8" })\\')',
             'js.eval(\\'const providerEmpty = pyodide.FS.open("/tracecode_project/provider-empty.txt", "w"); pyodide.FS.close(providerEmpty)\\')',
+            'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-tree"); pyodide.FS.mkdir("/tracecode_project/provider-tree/nested"); pyodide.FS.writeFile("/tracecode_project/provider-tree/nested/value.txt", "provider-tree\\\\\\\\n", { encoding: "utf8" }); pyodide.FS.rename("/tracecode_project/provider-tree", "/tracecode_project/provider-tree-moved")\\')',
             'js.eval(\\'pyodide.FS.mkdir("/tracecode_project/provider-dir"); pyodide.FS.rename("/tracecode_project/provider-dir", "/tracecode_project/provider-renamed-dir"); pyodide.FS.rmdir("/tracecode_project/provider-renamed-dir")\\')',
             'fd = os.open("/workspace/fd-live.txt", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)',
             'try:',
@@ -566,6 +567,10 @@ async function main(): Promise<void> {
       'Python project file run should report provider-level zero-byte creates'
     );
     assertCondition(
+      findFile(results.fileRun, 'provider-tree-moved/nested/value.txt')?.contents === 'provider-tree\n',
+      'Python project file run should report provider-level moved directory children'
+    );
+    assertCondition(
       findFile(results.fileRun, 'fd-live.txt')?.contents === 'fd-one\nfd-two\n',
       'Python project file run should report low-level fd side effects'
     );
@@ -660,6 +665,34 @@ async function main(): Promise<void> {
           event.change.deleted === true
         )) === true,
       `Python project worker should stream provider-level directory mutations: ${JSON.stringify(results.fileRun.events)}`
+    );
+    assertCondition(
+      results.fileRun.events?.some((event) => (
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'provider-tree' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+      )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-tree-moved' &&
+          event.change.directory === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-tree-moved/nested' &&
+          event.change.directory === true
+        )) === true &&
+        results.fileRun.events?.some((event) => (
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'provider-tree-moved/nested/value.txt' &&
+          event.change.contents === 'provider-tree\n'
+        )) === true,
+      `Python project worker should stream provider-level moved directory subtrees: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(
       results.fileRun.events?.some((event) => (
