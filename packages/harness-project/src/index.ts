@@ -19,6 +19,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelWriteTarget,
   readRuntimeProcFile,
   runtimeProcDirEntries,
   runtimeProcEntryKind,
@@ -257,6 +258,18 @@ function assertProcMutablePath(path: string): void {
   if (!runtimeProcCanMutate(path)) {
     throw new Error(`Kernel proc path is read-only: ${path}`);
   }
+}
+
+function kernelWriteTarget(path: string): ReturnType<typeof runtimeKernelWriteTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelWriteTarget(path);
+}
+
+function throwKernelWriteTargetError(path: string, target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>): never {
+  if (target.reason === 'proc-read-only') throw new Error(`Kernel proc path is read-only: ${path}`);
+  if (target.reason === 'device-directory') throw new Error(`Kernel device path is a directory: ${path}`);
+  if (target.reason === 'device-read-only') throw new Error(`Kernel device is read-only: ${target.path}`);
+  throw new Error(`Kernel device path not found: ${path}`);
 }
 
 function isKernelVirtualPath(path: string): boolean {
@@ -595,24 +608,24 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) {
-      this.writeDeviceFile(devicePath, content);
+    const writeTarget = kernelWriteTarget(path);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
+    if (writeTarget.kind === 'device') {
+      this.writeDevice(writeTarget.outputDevice, contentToText(content));
       return;
     }
-    if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
     const mappedPath = this.mapPath(path);
     await this.base.writeFile(mappedPath, content, options);
     await this.emitFileWrite(mappedPath);
   }
 
   async appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) {
-      this.writeDeviceFile(devicePath, content);
+    const writeTarget = kernelWriteTarget(path);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
+    if (writeTarget.kind === 'device') {
+      this.writeDevice(writeTarget.outputDevice, contentToText(content));
       return;
     }
-    if (isDevNamespacePath(path)) throw new Error(`Kernel device path not found: ${path}`);
     const mappedPath = this.mapPath(path);
     await this.base.appendFile(mappedPath, content, options);
     await this.emitFileWrite(mappedPath);
@@ -2331,22 +2344,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     encoding?: RuntimeFileEncoding,
     phase: RuntimeFileMutationPhase = 'live'
   ): Promise<void> {
-    assertProcMutablePath(path);
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) {
-      if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
+    const writeTarget = kernelWriteTarget(path);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
+    if (writeTarget.kind === 'device') {
       const normalizedEncoding = assertSupportedEncoding(encoding);
       this.writeDevice(
-        devicePath,
+        writeTarget.outputDevice,
         normalizedEncoding === 'base64'
           ? new TextDecoder().decode(bytesFromBase64(contents))
           : contents,
         actor
       );
       return;
-    }
-    if (isDevNamespacePath(path)) {
-      throw new Error(`Kernel device path not found: ${path}`);
     }
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
@@ -2380,21 +2389,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
     const normalizedEncoding = assertSupportedEncoding(encoding);
-    assertProcMutablePath(path);
-    const devicePath = normalizeDevPath(path);
-    if (devicePath !== null) {
-      if (devicePath === '/dev') throw new Error(`Kernel device path is a directory: ${path}`);
+    const writeTarget = kernelWriteTarget(path);
+    if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
+    if (writeTarget.kind === 'device') {
       this.writeDevice(
-        devicePath,
+        writeTarget.outputDevice,
         normalizedEncoding === 'base64'
           ? new TextDecoder().decode(bytesFromBase64(contents))
           : contents,
         PRINCIPAL_ACTOR
       );
       return;
-    }
-    if (isDevNamespacePath(path)) {
-      throw new Error(`Kernel device path not found: ${path}`);
     }
     const absolutePath = this.toWorkspacePath(path);
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });

@@ -9,6 +9,10 @@ export interface RuntimeKernelVirtualStat {
   mode: number;
   size: number;
 }
+export type RuntimeKernelWriteTarget =
+  | { kind: 'workspace' }
+  | { kind: 'device'; device: RuntimeKernelDevicePath; outputDevice: RuntimeKernelDevicePath }
+  | { kind: 'error'; reason: 'proc-read-only' | 'device-directory' | 'device-read-only' | 'device-not-found'; path: string };
 export type RuntimeKernelVirtualPath =
   | { kind: 'proc'; path: string }
   | { kind: 'device'; path: RuntimeKernelDevicePath }
@@ -108,6 +112,25 @@ export function runtimeDeviceStat(path: '/dev' | RuntimeKernelDevicePath): Runti
     mode: isDirectory ? 0o755 : 0o666,
     size: 0,
   };
+}
+
+export function runtimeKernelWriteTarget(path: string): RuntimeKernelWriteTarget {
+  const virtualPath = classifyRuntimeKernelVirtualPath(path);
+  if (virtualPath === null) return { kind: 'workspace' };
+  if (virtualPath.kind === 'proc') {
+    return { kind: 'error', reason: 'proc-read-only', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device-directory') {
+    return { kind: 'error', reason: 'device-directory', path: virtualPath.path };
+  }
+  if (virtualPath.kind === 'device-namespace') {
+    return { kind: 'error', reason: 'device-not-found', path: virtualPath.path };
+  }
+  const outputDevice = runtimeDeviceOutputTarget(virtualPath.path);
+  if (!outputDevice) {
+    return { kind: 'error', reason: 'device-read-only', path: virtualPath.path };
+  }
+  return { kind: 'device', device: virtualPath.path, outputDevice };
 }
 
 export function runtimeProcInfoJson(info: RuntimeKernelInfo): string {

@@ -21,6 +21,7 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeDeviceStat,
+  runtimeKernelWriteTarget,
   runtimeProcCanMutate,
   readRuntimeProcFile as readProcFile,
   runtimeProcDirEntries as procDirEntries,
@@ -149,6 +150,28 @@ function assertRuntimeProcMutablePath(path: unknown, message: string): void {
   if (!runtimeProcCanMutate(raw)) {
     throw Object.assign(new Error(message), { code: 'EROFS' });
   }
+}
+
+function runtimeWriteTarget(path: unknown): ReturnType<typeof runtimeKernelWriteTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelWriteTarget(raw);
+}
+
+function throwRuntimeWriteTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelWriteTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  if (target.reason === 'proc-read-only') {
+    throw Object.assign(new Error(message), { code: 'EROFS' });
+  }
+  if (target.reason === 'device-directory') {
+    throw Object.assign(new Error(message), { code: 'EISDIR' });
+  }
+  if (target.reason === 'device-read-only') {
+    throw Object.assign(new Error(message), { code: 'EBADF' });
+  }
+  throw Object.assign(new Error(message), { code: 'ENOENT' });
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
@@ -2877,12 +2900,21 @@ async function runBrowserJavaScriptProjectRequest(
           writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options));
           return;
         }
-        const device = normalizeRuntimeDevicePath(path);
-        if (device) {
-          writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
+        const writeTarget = runtimeWriteTarget(path);
+        if (writeTarget?.kind === 'error') {
+          const message = writeTarget.reason === 'proc-read-only'
+            ? `EROFS: read-only file system, open '${path}'`
+            : writeTarget.reason === 'device-read-only'
+              ? 'EBADF: bad file descriptor, write'
+              : writeTarget.reason === 'device-directory'
+                ? `EISDIR: illegal operation on a directory, open '${path}'`
+                : `ENOENT: no such file or directory, open '${path}'`;
+          throwRuntimeWriteTargetError(writeTarget, message);
+        }
+        if (writeTarget?.kind === 'device') {
+          writeDevice(writeTarget.outputDevice, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
@@ -2900,12 +2932,21 @@ async function runBrowserJavaScriptProjectRequest(
           writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options), true);
           return;
         }
-        const device = normalizeRuntimeDevicePath(path);
-        if (device) {
-          writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
+        const writeTarget = runtimeWriteTarget(path);
+        if (writeTarget?.kind === 'error') {
+          const message = writeTarget.reason === 'proc-read-only'
+            ? `EROFS: read-only file system, open '${path}'`
+            : writeTarget.reason === 'device-read-only'
+              ? 'EBADF: bad file descriptor, write'
+              : writeTarget.reason === 'device-directory'
+                ? `EISDIR: illegal operation on a directory, open '${path}'`
+                : `ENOENT: no such file or directory, open '${path}'`;
+          throwRuntimeWriteTargetError(writeTarget, message);
+        }
+        if (writeTarget?.kind === 'device') {
+          writeDevice(writeTarget.outputDevice, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
-        assertRuntimeProcMutablePath(path, `EROFS: read-only file system, open '${path}'`);
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const previous = fileStore.get(normalized) ?? new Uint8Array();
         const next = bytesFromFsWriteValue(value, options);
