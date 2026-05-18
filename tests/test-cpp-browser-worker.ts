@@ -29,6 +29,7 @@ interface CppProjectWorkerResponse {
     type: string;
     stream?: 'stdout' | 'stderr';
     device?: string;
+    sourceDevice?: string;
     data?: string;
     phase?: string;
     change?: CppProjectWorkerFile;
@@ -1120,6 +1121,16 @@ async function main(): Promise<void> {
         .map((event) => event.data)
         .join('') === projectRun.stderr,
       `C++ browser project run should stream stderr events: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.events?.some((event) => (
+        event.type === 'output' &&
+        event.stream === 'stderr' &&
+        event.device === '/dev/stderr' &&
+        event.sourceDevice === '/dev/tty' &&
+        event.data === 'tty-device\n'
+      )) === true,
+      `C++ browser project run should preserve output source device: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/generated.txt' && file.contents === '42\n') === true,

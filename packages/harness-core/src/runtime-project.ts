@@ -134,6 +134,7 @@ export interface RuntimeCommandOutputEvent {
   type: 'output';
   stream: RuntimeCommandEventStream;
   device?: RuntimeKernelDevicePath;
+  sourceDevice?: RuntimeKernelDevicePath;
   data: string;
   actor?: RuntimeWorkspaceActor;
 }

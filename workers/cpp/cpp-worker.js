@@ -812,7 +812,7 @@ class WasiProcess {
       const stream = entry.outputDevice === '/dev/stderr' ? 'stderr' : 'stdout';
       if (stream === 'stdout') this.stdoutChunks.push(...chunks);
       if (stream === 'stderr') this.stderrChunks.push(...chunks);
-      this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)));
+      this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)), entry.device);
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -4590,12 +4590,13 @@ function diffProjectFs(before, fs) {
 
 function createProjectEventBridge(messageId) {
   return {
-    output(stream, data) {
+    output(stream, data, device) {
       if (!data) return;
       postProjectEvent(messageId, {
         type: 'output',
         stream,
         device: stream === 'stderr' ? '/dev/stderr' : '/dev/stdout',
+        ...(device ? { sourceDevice: device } : {}),
         data,
       });
     },
@@ -4656,7 +4657,7 @@ async function handleProjectCpp(request, messageId) {
     stdin: request?.stdin || '',
     env: request?.env || { USER: 'tracecode' },
     kernelDevices: projectKernelDevices(request?.project),
-    onOutput: (stream, data) => events.output(stream, data),
+    onOutput: (stream, data, device) => events.output(stream, data, device),
   });
   return {
     stdout: program.stdout,
