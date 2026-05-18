@@ -3427,7 +3427,12 @@ async function runBrowserJavaScriptProjectRequest(
       },
       open: async (path: unknown, flags: unknown = 'r') => {
         const fd = fsApi.openSync(path, flags);
+        let closed = false;
+        const assertFileHandleOpen = (): void => {
+          if (closed) throw Object.assign(new Error('file closed'), { code: 'EBADF' });
+        };
         const readFileFromHandle = (encoding?: string | { encoding?: string | null } | null): BrowserBuffer | string => {
+          assertFileHandleOpen();
           const entry = fileDescriptor(fd);
           const source = descriptorBytes(entry);
           const start = entry.kind === 'device' ? 0 : entry.offset;
@@ -3437,10 +3442,12 @@ async function runBrowserJavaScriptProjectRequest(
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         };
         const writeFileToHandle = (value: unknown, options?: string | { encoding?: string | null } | null): number => {
+          assertFileHandleOpen();
           const bytes = bytesFromFsWriteValue(value, options);
           return fsApi.writeSync(fd, bytes, 0, bytes.byteLength, null);
         };
         const appendFileToHandle = (value: unknown, options?: string | { encoding?: string | null } | null): number => {
+          assertFileHandleOpen();
           const entry = fileDescriptor(fd);
           const bytes = bytesFromFsWriteValue(value, options);
           const position = entry.kind === 'device' ? null : descriptorBytes(entry).byteLength;
@@ -3449,15 +3456,18 @@ async function runBrowserJavaScriptProjectRequest(
         return {
           fd,
           read: async (buffer: Uint8Array, offset = 0, length = buffer.byteLength - offset, position?: number | null) => {
+            assertFileHandleOpen();
             const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
             return { bytesRead, buffer };
           },
           readFile: async (encoding?: string | { encoding?: string | null } | null) => readFileFromHandle(encoding),
           readv: async (buffers: Uint8Array[], position?: number | null) => {
+            assertFileHandleOpen();
             const bytesRead = fsApi.readvSync(fd, buffers, position);
             return { bytesRead, buffers };
           },
           write: async (value: unknown, offsetOrPosition?: number, lengthOrEncoding?: number | string, position?: number | null) => {
+            assertFileHandleOpen();
             const bytesWritten = fsApi.writeSync(fd, value, offsetOrPosition, lengthOrEncoding, position);
             return {
               bytesWritten,
@@ -3468,36 +3478,48 @@ async function runBrowserJavaScriptProjectRequest(
             writeFileToHandle(value, options);
           },
           createReadStream: (options?: string | { autoClose?: boolean; encoding?: string; end?: number; start?: number } | null) =>
-            fsApi.createReadStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd }),
+            (assertFileHandleOpen(), fsApi.createReadStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd })),
           createWriteStream: (options?: string | { autoClose?: boolean; encoding?: string | null; flags?: string } | null) =>
-            fsApi.createWriteStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd }),
+            (assertFileHandleOpen(), fsApi.createWriteStream(null, typeof options === 'string' ? { encoding: options, fd } : { ...(options ?? {}), fd })),
           appendFile: async (value: unknown, options?: string | { encoding?: string | null } | null) => {
             appendFileToHandle(value, options);
           },
           writev: async (buffers: Uint8Array[], position?: number | null) => {
+            assertFileHandleOpen();
             const bytesWritten = fsApi.writevSync(fd, buffers, position);
             return { bytesWritten, buffers };
           },
-          stat: async () => fsApi.fstatSync(fd),
+          stat: async () => {
+            assertFileHandleOpen();
+            return fsApi.fstatSync(fd);
+          },
           chmod: async (mode: unknown) => {
+            assertFileHandleOpen();
             fsApi.fchmodSync(fd, mode);
           },
           chown: async (uid: unknown, gid: unknown) => {
+            assertFileHandleOpen();
             fsApi.fchownSync(fd, uid, gid);
           },
           utimes: async (atime: unknown, mtime: unknown) => {
+            assertFileHandleOpen();
             fsApi.futimesSync(fd, atime, mtime);
           },
           truncate: async (length = 0) => {
+            assertFileHandleOpen();
             fsApi.ftruncateSync(fd, length);
           },
           sync: async () => {
+            assertFileHandleOpen();
             fsApi.fsyncSync(fd);
           },
           datasync: async () => {
+            assertFileHandleOpen();
             fsApi.fdatasyncSync(fd);
           },
           close: async () => {
+            if (closed) return;
+            closed = true;
             fsApi.closeSync(fd);
           },
         };

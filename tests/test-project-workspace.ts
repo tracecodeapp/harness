@@ -2525,6 +2525,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('fd-streamed.txt') === 'fd-one\nfd-two\n', 'browser node fd createWriteStream should persist through kernel FS');
 
+  const fileHandleLifecycleResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fsp = require(\\"node:fs/promises\\"); const handle = await fsp.open(\\"handle-lifecycle.txt\\", \\"w+\\"); await handle.writeFile(\\"handle-data\\"); console.log((await handle.stat()).isFile()); await handle.close(); await handle.close(); for (const op of [\\"stat\\", \\"readFile\\", \\"writeFile\\", \\"truncate\\"]) { try { if (op === \\"stat\\") await handle.stat(); else if (op === \\"readFile\\") await handle.readFile(\\"utf8\\"); else if (op === \\"writeFile\\") await handle.writeFile(\\"after\\"); else await handle.truncate(0); console.log(op + \\":ok\\"); } catch (error) { console.log(op + \\":\\" + error.code); } } const proc = await fsp.open(\\"/proc/kernel/info\\", \\"r\\"); console.log(JSON.parse(await proc.readFile(\\"utf8\\")).name); await proc.close(); try { await proc.readFile(\\"utf8\\"); } catch (error) { console.log(error.code); }"',
+  ].join(' '));
+  assertCondition(fileHandleLifecycleResult.exitCode === 0, `browser node FileHandle lifecycle workflow should succeed: ${fileHandleLifecycleResult.stderr}`);
+  assertCondition(
+    fileHandleLifecycleResult.stdout === 'true\nstat:EBADF\nreadFile:EBADF\nwriteFile:EBADF\ntruncate:EBADF\ntracekernel\nEBADF\n',
+    `browser node FileHandle APIs should reject use-after-close and support /proc handles: ${fileHandleLifecycleResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('handle-lifecycle.txt') === 'handle-data', 'browser node FileHandle writes should persist through kernel FS');
+
   const watchFileResult = await workspace.runCommand([
     'node',
     '-e',
