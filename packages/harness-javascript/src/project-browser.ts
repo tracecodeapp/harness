@@ -58,6 +58,10 @@ export interface BrowserJavaScriptProjectRunnerOptions {
   timeoutMs?: number;
 }
 
+interface BrowserJavaScriptProjectExecutionState {
+  cancelled: boolean;
+}
+
 type ModuleRecord = {
   exports: unknown;
   id?: string;
@@ -1248,11 +1252,19 @@ export function createBrowserJavaScriptProjectRunner(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    const execution = runBrowserJavaScriptProjectRequest(request, options).finally(() => {
+    const executionState: BrowserJavaScriptProjectExecutionState = { cancelled: false };
+    const execution = runBrowserJavaScriptProjectRequest(request, options, executionState).finally(() => {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     });
     const timeout = new Promise<RuntimeCommandResult>((resolve) => {
       timeoutId = setTimeout(() => {
+        executionState.cancelled = true;
+        request.onEvent?.({
+          type: 'status',
+          phase: 'process-exit',
+          message: 'Browser Node timed out',
+          detail: { command: 'node', exitCode: 124, timeoutMs },
+        });
         resolve({
           stdout: '',
           stderr: `node: execution timed out after ${timeoutMs}ms\n`,
@@ -1266,7 +1278,8 @@ export function createBrowserJavaScriptProjectRunner(
 
 async function runBrowserJavaScriptProjectRequest(
   request: JavaScriptProjectCommandRequest,
-  options: BrowserJavaScriptProjectRunnerOptions
+  options: BrowserJavaScriptProjectRunnerOptions,
+  executionState: BrowserJavaScriptProjectExecutionState
 ): Promise<RuntimeCommandResult> {
     if (options.allowDynamicEval === false) {
       return {
@@ -1281,9 +1294,11 @@ async function runBrowserJavaScriptProjectRequest(
     const appliedFileChangePaths = new Set<string>();
     const eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
     const emitRuntimeEvent = (event: RuntimeCommandEvent): void => {
+      if (executionState.cancelled) return;
       if (eventQueue) {
         eventQueue.enqueue(event, {
           applyFileChange: async (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => {
+            if (executionState.cancelled) return false;
             const shouldEmit = await options.applyFileChange?.(change, phase);
             appliedFileChangePaths.add(runtimeFileChangePath(change));
             return shouldEmit;

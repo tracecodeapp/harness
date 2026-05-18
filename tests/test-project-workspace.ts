@@ -5168,10 +5168,23 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     },
   });
   try {
-    const timeout = await nodeTimeoutWorkspace.runCommand('node -e "await new Promise((resolve) => setTimeout(resolve, 25)); console.log(\\"late\\")"');
+    const timeoutEvents: RuntimeCommandEvent[] = [];
+    const timeout = await nodeTimeoutWorkspace.runCommand(
+      'node -e "await new Promise((resolve) => setTimeout(resolve, 25)); const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"late.txt\\", \\"late\\\\n\\"); console.log(\\"late\\")"',
+      { onEvent: (event) => timeoutEvents.push(event) }
+    );
     assertCondition(
       timeout.exitCode === 124 && timeout.stderr.includes('node: execution timed out after 5ms'),
       `browser project workspace should pass nodeProjectTimeoutMs to the JS runner: ${JSON.stringify(timeout)}`
+    );
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    assertCondition(!(await nodeTimeoutWorkspace.exists('late.txt')), 'browser Node timeout should suppress late filesystem mutations');
+    assertCondition(
+      timeoutEvents.some((event) => event.type === 'status' && event.phase === 'process-start') &&
+        timeoutEvents.some((event) => event.type === 'status' && event.phase === 'process-exit' && event.detail?.exitCode === 124) &&
+        !timeoutEvents.some((event) => event.type === 'output' && event.data.includes('late')) &&
+        !timeoutEvents.some((event) => event.type === 'file-change' && event.change.path === 'late.txt'),
+      `browser Node timeout should emit timeout status and suppress late runtime events: ${JSON.stringify(timeoutEvents)}`
     );
   } finally {
     nodeTimeoutWorkspace.dispose();
