@@ -478,22 +478,26 @@ export function runtimeProcMountInfo(info: RuntimeKernelInfo): string {
   ].filter((line): line is string => Boolean(line)).join('\n') + '\n';
 }
 
+export function runtimeProcKernelVersion(info: RuntimeKernelInfo): string {
+  return `${info.name} ${info.version}\n`;
+}
+
 export function runtimeProcDirEntries(path: string): string[] | null {
   if (path === '/proc') return ['kernel', 'self'];
-  if (path === '/proc/kernel') return ['info'];
+  if (path === '/proc/kernel') return ['info', 'version'];
   if (path === '/proc/self') return ['mountinfo'];
   return null;
 }
 
 export function runtimeProcEntryKind(path: string): RuntimeKernelProcEntryKind | null {
   if (runtimeProcDirEntries(path)) return 'directory';
-  if (path === '/proc/kernel/info' || path === '/proc/self/mountinfo') return 'file';
+  if (path === '/proc/kernel/info' || path === '/proc/kernel/version' || path === '/proc/self/mountinfo') return 'file';
   return null;
 }
 
 export function runtimeKernelVirtualPaths(): string[] {
   const devicePaths = ['/dev', ...RUNTIME_KERNEL_DEVICE_ENTRIES.map((name) => `/dev/${name}`)];
-  const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/self', '/proc/self/mountinfo'];
+  const procPaths = ['/proc', '/proc/kernel', '/proc/kernel/info', '/proc/kernel/version', '/proc/self', '/proc/self/mountinfo'];
   return [...devicePaths, ...procPaths];
 }
 
@@ -515,12 +519,14 @@ export function runtimeKernelVirtualDevices(): RuntimeKernelDeviceInfo[] {
 export function runtimeKernelVirtualFiles(info: RuntimeKernelInfo): RuntimeFile[] {
   return [
     { path: '/proc/kernel/info', contents: readRuntimeProcFile('/proc/kernel/info', info) },
+    { path: '/proc/kernel/version', contents: readRuntimeProcFile('/proc/kernel/version', info) },
     { path: '/proc/self/mountinfo', contents: readRuntimeProcFile('/proc/self/mountinfo', info) },
   ];
 }
 
 export function readRuntimeProcFile(path: string, info: RuntimeKernelInfo): string {
   if (path === '/proc/kernel/info') return runtimeProcInfoJson(info);
+  if (path === '/proc/kernel/version') return runtimeProcKernelVersion(info);
   if (path === '/proc/self/mountinfo') return runtimeProcMountInfo(info);
   if (runtimeProcDirEntries(path)) {
     throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: 'EISDIR' });

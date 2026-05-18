@@ -5121,6 +5121,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'console.log(value.answer);',
           'const procInfo = JSON.parse(fs.readFileSync("/proc/kernel/info", "utf8"));',
           'console.log(`${procInfo.user.username}:${procInfo.host.hostname}:${procInfo.workspace.root}`);',
+          'console.log(fs.readFileSync("/proc/kernel/version", "utf8").trim());',
           'console.log(fs.readdirSync("/proc").join(","));',
           'console.log(fs.readdirSync("/proc/kernel", { withFileTypes: true }).map((entry) => `${entry.name}:${entry.isFile()}`).join(","));',
           'console.log(`${fs.statSync("/proc").isDirectory()}:${fs.statSync("/proc/kernel/info").isFile()}`);',
@@ -5211,6 +5212,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     const procInfo = JSON.parse(await workspace.readFile('/proc/kernel/info')) as typeof workspace.kernel.info;
     assertCondition(procInfo.workspace.root === '/home/ada/weather-api', 'browser workspace /proc should expose canonical workspace root');
     assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self', 'browser workspace /proc should list virtual namespaces');
+    assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'browser workspace /proc/kernel should list info and version');
 
     const outputEvents: RuntimeCommandEvent[] = [];
     const stdout = await workspace.runCommand('printf "browser-out\\n" > /dev/stdout', {
@@ -5248,8 +5250,9 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         '/home/ada/weather-api/lib/value.js',
         '42',
         'ada:tracevm-browser:/home/ada/weather-api',
+        'tracekernel 0.7.0-beta6',
         'kernel,self',
-        'info:true',
+        'info:true,version:true',
         'true:true',
         'true:false',
         'EACCES',
@@ -5957,6 +5960,11 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     JSON.parse(await deviceWorkspace.readFile('copied-proc-info.json')).name === 'tracekernel',
     'copyFile should read /proc sources through kernel read target'
   );
+  await deviceWorkspace.copyFile('/proc/kernel/version', 'copied-proc-version.txt');
+  assertCondition(
+    (await deviceWorkspace.readFile('copied-proc-version.txt')).startsWith('tracekernel '),
+    'copyFile should read /proc/kernel/version through kernel read target'
+  );
   await assertRejectsAsync(() => deviceWorkspace.mkdir('/proc/new'), 'mkdir should reject /proc paths');
   await assertRejectsAsync(() => deviceWorkspace.remove('/dev/stdout'), 'remove should reject /dev paths');
   await assertRejectsAsync(() => deviceWorkspace.deleteFile('/dev/stdout'), 'deleteFile should reject /dev paths');
@@ -6032,10 +6040,16 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   assertCondition(mountInfo.includes('/home/obi/weather-api'), 'kernel /proc mountinfo should expose canonical workspace mountpoint');
   assertCondition(mountInfo.includes('/workspace'), 'kernel /proc mountinfo should expose compatibility alias mountpoint');
   assertCondition(mountInfo.includes('tracekernel:dev') && mountInfo.includes('tracekernel:proc'), 'kernel /proc mountinfo should expose dev and proc mounts');
+  const kernelVersion = await workspace.kernel.readFile('/proc/kernel/version');
+  assertCondition(kernelVersion === `tracekernel ${workspace.kernel.info.version}\n`, 'kernel /proc version should expose kernel version');
   assertCondition(await workspace.exists('/proc/kernel/info'), 'kernel /proc info should exist');
   const procInfoStat = await workspace.stat('/proc/kernel/info');
   assertCondition(procInfoStat.isFile && !procInfoStat.isDirectory, 'kernel /proc info should stat as file');
+  assertCondition(await workspace.exists('/proc/kernel/version'), 'kernel /proc version should exist');
+  const procVersionStat = await workspace.stat('/proc/kernel/version');
+  assertCondition(procVersionStat.isFile && !procVersionStat.isDirectory, 'kernel /proc version should stat as file');
   assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self', 'kernel /proc should list virtual namespaces');
+  assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'kernel /proc/kernel should list info and version');
   await assertRejectsAsync(() => workspace.writeFile('/proc/kernel/info', '{}\n'), 'kernel /proc should be read-only');
 
   const snapshot = await workspace.snapshot();
