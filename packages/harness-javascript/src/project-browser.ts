@@ -1635,6 +1635,32 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => callback(error as Error, undefined, buffer));
         }
       },
+      readvSync: (fd: number, buffers: Uint8Array[], position?: number | null) => {
+        let bytesRead = 0;
+        let nextPosition = typeof position === 'number' ? Math.max(0, position) : position;
+        for (const buffer of buffers) {
+          const count = fsApi.readSync(fd, buffer, 0, buffer.byteLength, nextPosition);
+          bytesRead += count;
+          if (typeof nextPosition === 'number') nextPosition += count;
+          if (count === 0) break;
+        }
+        return bytesRead;
+      },
+      readv: (
+        fd: number,
+        buffers: Uint8Array[],
+        positionOrCallback?: number | null | ((error: Error | null, bytesRead?: number, buffers?: Uint8Array[]) => void),
+        callback?: (error: Error | null, bytesRead?: number, buffers?: Uint8Array[]) => void
+      ) => {
+        const done = typeof positionOrCallback === 'function' ? positionOrCallback : callback;
+        const position = typeof positionOrCallback === 'function' ? undefined : positionOrCallback;
+        try {
+          const bytesRead = fsApi.readvSync(fd, buffers, position);
+          queueMicrotask(() => done?.(null, bytesRead, buffers));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error, undefined, buffers));
+        }
+      },
       writeSync: (fd: number, value: unknown, offsetOrPosition?: number, lengthOrEncoding?: number | string, position?: number | null) => {
         let bytes: Uint8Array;
         let writePosition: number | null | undefined = position;
@@ -1682,6 +1708,31 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(null, written, value));
         } catch (error) {
           queueMicrotask(() => done?.(error as Error, undefined, value));
+        }
+      },
+      writevSync: (fd: number, buffers: Uint8Array[], position?: number | null) => {
+        let bytesWritten = 0;
+        let nextPosition = typeof position === 'number' ? Math.max(0, position) : position;
+        for (const buffer of buffers) {
+          const written = fsApi.writeSync(fd, buffer, 0, buffer.byteLength, nextPosition);
+          bytesWritten += written;
+          if (typeof nextPosition === 'number') nextPosition += written;
+        }
+        return bytesWritten;
+      },
+      writev: (
+        fd: number,
+        buffers: Uint8Array[],
+        positionOrCallback?: number | null | ((error: Error | null, bytesWritten?: number, buffers?: Uint8Array[]) => void),
+        callback?: (error: Error | null, bytesWritten?: number, buffers?: Uint8Array[]) => void
+      ) => {
+        const done = typeof positionOrCallback === 'function' ? positionOrCallback : callback;
+        const position = typeof positionOrCallback === 'function' ? undefined : positionOrCallback;
+        try {
+          const bytesWritten = fsApi.writevSync(fd, buffers, position);
+          queueMicrotask(() => done?.(null, bytesWritten, buffers));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error, undefined, buffers));
         }
       },
       fstatSync: (fd: number) => {
@@ -2204,12 +2255,20 @@ async function runBrowserJavaScriptProjectRequest(
             const bytesRead = fsApi.readSync(fd, buffer, offset, length, position);
             return { bytesRead, buffer };
           },
+          readv: async (buffers: Uint8Array[], position?: number | null) => {
+            const bytesRead = fsApi.readvSync(fd, buffers, position);
+            return { bytesRead, buffers };
+          },
           write: async (value: unknown, offsetOrPosition?: number, lengthOrEncoding?: number | string, position?: number | null) => {
             const bytesWritten = fsApi.writeSync(fd, value, offsetOrPosition, lengthOrEncoding, position);
             return {
               bytesWritten,
               buffer: value,
             };
+          },
+          writev: async (buffers: Uint8Array[], position?: number | null) => {
+            const bytesWritten = fsApi.writevSync(fd, buffers, position);
+            return { bytesWritten, buffers };
           },
           stat: async () => fsApi.fstatSync(fd),
           chmod: async (mode: unknown) => {

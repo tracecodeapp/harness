@@ -2221,6 +2221,28 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('async-fd.txt') === 'callback\npromise\n', 'browser node async fd writes should persist through kernel FS');
 
+  const vectorEvents: RuntimeCommandEvent[] = [];
+  const vectorResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, count, buffers) => error ? reject(error) : resolve({ count, buffers }))); const fd = fs.openSync(\\"vector.txt\\", \\"w+\\"); const written = fs.writevSync(fd, [Buffer.from(\\"ab\\"), Buffer.from(\\"cd\\")]); const more = await call((done) => fs.writev(fd, [Buffer.from(\\"ef\\"), Buffer.from(\\"gh\\")], done)); const a = Buffer.alloc(3); const b = Buffer.alloc(5); const read = await call((done) => fs.readv(fd, [a, b], 0, done)); fs.closeSync(fd); const handle = await fsp.open(\\"vector.txt\\", \\"a+\\"); const promiseWrite = await handle.writev([Buffer.from(\\"ij\\"), Buffer.from(\\"kl\\")]); const c = Buffer.alloc(4); const d = Buffer.alloc(8); const promiseRead = await handle.readv([c, d], 0); await handle.close(); console.log(written + \\":\\" + more.count + \\":\\" + read.count + \\":\\" + promiseWrite.bytesWritten + \\":\\" + promiseRead.bytesRead); console.log(a.toString() + b.toString()); console.log(c.toString() + d.toString());"',
+  ].join(' '), { onEvent: (event) => vectorEvents.push(event) });
+  assertCondition(vectorResult.exitCode === 0, `browser node vector fd workflow should succeed: ${vectorResult.stderr}`);
+  assertCondition(
+    vectorResult.stdout === '4:4:8:4:12\nabcdefgh\nabcdefghijkl\n',
+    `browser node vector fd workflow stdout should match: ${vectorResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('vector.txt') === 'abcdefghijkl', 'browser node vector fd writes should persist through kernel FS');
+  assertCondition(
+    vectorEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'vector.txt' &&
+      event.change.contents === 'abcdefghijkl'
+    ),
+    `browser node vector fd writes should emit live file changes: ${JSON.stringify(vectorEvents)}`
+  );
+
   const truncateEvents: RuntimeCommandEvent[] = [];
   const truncateResult = await workspace.runCommand([
     'node',
