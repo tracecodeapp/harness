@@ -3210,6 +3210,72 @@ async function runBrowserJavaScriptProjectRequest(
           queueMicrotask(() => done?.(error as Error));
         }
       },
+      linkSync: (existingPath: unknown, newPath: unknown) => {
+        const sourceMutationTarget = runtimeMutationTarget(existingPath);
+        if (sourceMutationTarget?.kind === 'error') {
+          throwRuntimeMutationTargetError(sourceMutationTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
+        }
+        const destinationMutationTarget = runtimeMutationTarget(newPath);
+        if (destinationMutationTarget?.kind === 'error') {
+          throwRuntimeMutationTargetError(destinationMutationTarget, `EROFS: read-only file system, link '${existingPath}' -> '${newPath}'`);
+        }
+        const normalizedSource = assertSafeWorkspaceFilePath(existingPath, cwdPath, workspacePathContext);
+        const normalizedDestination = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
+        const bytes = fileStore.get(normalizedSource);
+        if (!bytes) {
+          const sourceIsDirectory = directoryStore.has(normalizedSource)
+            || Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(`${normalizedSource}/`));
+          if (sourceIsDirectory) {
+            throw Object.assign(new Error(`EPERM: operation not permitted, link '${existingPath}' -> '${newPath}'`), { code: 'EPERM' });
+          }
+          throw Object.assign(new Error(`ENOENT: no such file or directory, link '${existingPath}' -> '${newPath}'`), { code: 'ENOENT' });
+        }
+        if (fileStore.has(normalizedDestination) || directoryStore.has(normalizedDestination)) {
+          throw Object.assign(new Error(`EEXIST: file already exists, link '${existingPath}' -> '${newPath}'`), { code: 'EEXIST' });
+        }
+        setFileBytes(normalizedDestination, new Uint8Array(bytes));
+      },
+      link: (existingPath: unknown, newPath: unknown, callback?: (error?: Error | null) => void) => {
+        try {
+          fsApi.linkSync(existingPath, newPath);
+          queueMicrotask(() => callback?.(null));
+        } catch (error) {
+          queueMicrotask(() => callback?.(error as Error));
+        }
+      },
+      symlinkSync: (_target: unknown, linkPath: unknown) => {
+        const mutationTarget = runtimeMutationTarget(linkPath);
+        if (mutationTarget?.kind === 'error') {
+          throwRuntimeMutationTargetError(mutationTarget, `EROFS: read-only file system, symlink '${linkPath}'`);
+        }
+        throw Object.assign(new Error(`ENOSYS: function not implemented, symlink '${linkPath}'`), { code: 'ENOSYS' });
+      },
+      symlink: (target: unknown, linkPath: unknown, typeOrCallback?: string | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+        const done = typeof typeOrCallback === 'function' ? typeOrCallback : callback;
+        try {
+          fsApi.symlinkSync(target, linkPath);
+          queueMicrotask(() => done?.(null));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
+      readlinkSync: (path: unknown, _options?: string | { encoding?: string | null } | null) => {
+        const readTarget = runtimeReadTarget(path, kernelDevices);
+        if (readTarget?.kind && readTarget.kind !== 'workspace') {
+          throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: 'EINVAL' });
+        }
+        assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+        throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${path}'`), { code: 'EINVAL' });
+      },
+      readlink: (path: unknown, optionsOrCallback?: string | { encoding?: string | null } | null | ((error: Error | null, linkString?: unknown) => void), callback?: (error: Error | null, linkString?: unknown) => void) => {
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          const linkString = fsApi.readlinkSync(path, typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback);
+          queueMicrotask(() => done?.(null, linkString));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
+      },
       cpSync: (source: unknown, destination: unknown, options?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean }) => {
         copyEntrySync(source, destination, options);
         return undefined;
@@ -3823,6 +3889,13 @@ async function runBrowserJavaScriptProjectRequest(
       copyFile: async (source: unknown, destination: unknown, mode = 0) => {
         fsApi.copyFileSync(source, destination, mode);
       },
+      link: async (existingPath: unknown, newPath: unknown) => {
+        fsApi.linkSync(existingPath, newPath);
+      },
+      symlink: async (target: unknown, linkPath: unknown) => {
+        fsApi.symlinkSync(target, linkPath);
+      },
+      readlink: async (path: unknown, options?: string | { encoding?: string | null } | null) => fsApi.readlinkSync(path, options),
       cp: async (source: unknown, destination: unknown, options?: { recursive?: boolean; force?: boolean; errorOnExist?: boolean; filter?: (source: string, destination: string) => boolean }) => {
         fsApi.cpSync(source, destination, options);
       },

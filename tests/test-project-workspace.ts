@@ -2422,6 +2422,43 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node copyFile should support COPYFILE_EXCL modes: ${copyModeResult.stdout}`
   );
 
+  const linkEvents: RuntimeCommandEvent[] = [];
+  const linkResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, value) => error ? reject(error) : resolve(value))); fs.writeFileSync(\\"link-source.txt\\", \\"linked\\\\n\\"); fs.linkSync(\\"link-source.txt\\", \\"link-sync.txt\\"); await call((done) => fs.link(\\"link-source.txt\\", \\"link-callback.txt\\", done)); await fsp.link(\\"link-source.txt\\", \\"link-async.txt\\"); for (const op of [\\"readlink\\", \\"symlink\\", \\"symlink-dev\\", \\"link-proc\\"]) { try { if (op === \\"readlink\\") fs.readlinkSync(\\"link-source.txt\\"); else if (op === \\"symlink\\") fs.symlinkSync(\\"link-source.txt\\", \\"link-symlink.txt\\"); else if (op === \\"symlink-dev\\") await fsp.symlink(\\"link-source.txt\\", \\"/dev/stdout\\"); else await fsp.link(\\"/proc/kernel/info\\", \\"link-proc.txt\\"); console.log(op + \\":ok\\"); } catch (error) { console.log(op + \\":\\" + error.code); } } console.log(fs.readFileSync(\\"link-sync.txt\\", \\"utf8\\") + fs.readFileSync(\\"link-callback.txt\\", \\"utf8\\") + await fsp.readFile(\\"link-async.txt\\", \\"utf8\\"));"',
+  ].join(' '), { onEvent: (event) => linkEvents.push(event) });
+  assertCondition(linkResult.exitCode === 0, `browser node link workflow should succeed: ${linkResult.stderr}`);
+  assertCondition(
+    linkResult.stdout === 'readlink:EINVAL\nsymlink:ENOSYS\nsymlink-dev:EROFS\nlink-proc:EROFS\nlinked\nlinked\nlinked\n\n',
+    `browser node link/readlink/symlink APIs should have stable kernel-aligned semantics: ${linkResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('link-sync.txt') === 'linked\n', 'browser node linkSync should persist linked file contents');
+  assertCondition(await workspace.readFile('link-callback.txt') === 'linked\n', 'browser node callback link should persist linked file contents');
+  assertCondition(await workspace.readFile('link-async.txt') === 'linked\n', 'browser node fs.promises.link should persist linked file contents');
+  assertCondition(
+    linkEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'live' &&
+      event.change.path === 'link-sync.txt' &&
+      'contents' in event.change &&
+      event.change.contents === 'linked\n'
+    ) &&
+      linkEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'link-callback.txt' &&
+        'contents' in event.change
+      ) &&
+      linkEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change.path === 'link-async.txt' &&
+        'contents' in event.change
+      ),
+    `browser node link APIs should stream live file snapshots: ${JSON.stringify(linkEvents)}`
+  );
+
   const cpEvents: RuntimeCommandEvent[] = [];
   const cpResult = await workspace.runCommand([
     'node',
