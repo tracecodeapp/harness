@@ -590,11 +590,12 @@ class WasiProcess {
     this.stdoutChunks = [];
     this.stderrChunks = [];
     this.onOutput = options.onOutput;
+    this.kernelDevices = options.kernelDevices instanceof Map ? options.kernelDevices : projectKernelDevices();
     this.filestatSizeOffset = options.filestatSizeOffset || 32;
     this.fds = new Map([
-      [0, { kind: 'stdio', name: 'stdin', offset: 0, readable: true, writable: false }],
-      [1, { kind: 'stdio', name: 'stdout', offset: 0, readable: false, writable: true }],
-      [2, { kind: 'stdio', name: 'stderr', offset: 0, readable: false, writable: true }],
+      [0, this.stdioEntryForDevice('/dev/stdin')],
+      [1, this.stdioEntryForDevice('/dev/stdout')],
+      [2, this.stdioEntryForDevice('/dev/stderr')],
       [3, { kind: 'dir', path: this.cwd, offset: 0, readable: true, writable: false, preopen: '/' }],
     ]);
     this.nextFd = 4;
@@ -631,20 +632,27 @@ class WasiProcess {
     return resolveAt(base, path);
   }
 
+  stdioEntryForDevice(device) {
+    const info = this.kernelDevices.get(normalizePath(device));
+    if (!info) return { kind: 'stdio', device, offset: 0, readable: false, writable: false, inputDevice: '', outputDevice: '' };
+    return {
+      kind: 'stdio',
+      device: info.path,
+      offset: 0,
+      readable: info.readable,
+      writable: info.writable,
+      inputDevice: info.inputDevice || '',
+      outputDevice: info.outputDevice || '',
+    };
+  }
+
   stdioEntryForPath(pathname, options = {}) {
-    const normalized = normalizePath(pathname);
-    const isDevicePath = (device) => normalized === `/dev/${device}` || normalized.endsWith(`/dev/${device}`);
-    if (isDevicePath('stdin')) {
-      if (options.create || options.truncate || options.append) return null;
-      return { kind: 'stdio', name: 'stdin', offset: 0, readable: true, writable: false };
-    }
-    if (isDevicePath('stdout') || isDevicePath('tty')) {
-      return { kind: 'stdio', name: 'stdout', offset: 0, readable: false, writable: true };
-    }
-    if (isDevicePath('stderr')) {
-      return { kind: 'stdio', name: 'stderr', offset: 0, readable: false, writable: true };
-    }
-    return null;
+    const entry = this.stdioEntryForDevice(pathname);
+    if (!entry.device || !this.kernelDevices.has(normalizePath(pathname))) return null;
+    if (options.create || options.truncate || options.append) return entry.writable ? entry : null;
+    if (options.write && !entry.writable) return null;
+    if (options.read && !entry.readable && !entry.writable) return null;
+    return entry;
   }
 
   openFile(pathname, options = {}) {
@@ -757,10 +765,11 @@ class WasiProcess {
       total += len;
     }
 
-    if (entry.kind === 'stdio' && (entry.name === 'stdout' || entry.name === 'stderr')) {
-      if (entry.name === 'stdout') this.stdoutChunks.push(...chunks);
-      if (entry.name === 'stderr') this.stderrChunks.push(...chunks);
-      this.onOutput?.(entry.name, decodeUtf8(concatBytes(chunks)));
+    if (entry.kind === 'stdio' && entry.outputDevice) {
+      const stream = entry.outputDevice === '/dev/stderr' ? 'stderr' : 'stdout';
+      if (stream === 'stdout') this.stdoutChunks.push(...chunks);
+      if (stream === 'stderr') this.stderrChunks.push(...chunks);
+      this.onOutput?.(stream, decodeUtf8(concatBytes(chunks)));
     } else if (entry.kind === 'file') {
       const current = this.fs.exists(entry.path) ? this.fs.readFile(entry.path) : new Uint8Array();
       const offset = entry.append ? current.length : entry.offset;
@@ -782,12 +791,12 @@ class WasiProcess {
   fd_read(fd, iovs, iovsLen, nreadOut) {
     const entry = this.fds.get(fd);
     if (!entry || !entry.readable) return EBADF;
-    const source = entry.kind === 'stdio' && entry.name === 'stdin'
+    const source = entry.kind === 'stdio' && entry.inputDevice
       ? this.stdin
       : entry.kind === 'file'
         ? this.fs.readFile(entry.path)
         : new Uint8Array();
-    let sourceOffset = entry.kind === 'stdio' && entry.name === 'stdin' ? this.stdinOffset : entry.offset;
+    let sourceOffset = entry.kind === 'stdio' && entry.inputDevice ? this.stdinOffset : entry.offset;
     let total = 0;
     for (let index = 0; index < iovsLen; index += 1) {
       const ptr = this.mem.readU32(iovs + index * 8);
@@ -798,7 +807,7 @@ class WasiProcess {
       total += chunk.length;
       if (chunk.length < len) break;
     }
-    if (entry.kind === 'stdio' && entry.name === 'stdin') this.stdinOffset = sourceOffset;
+    if (entry.kind === 'stdio' && entry.inputDevice) this.stdinOffset = sourceOffset;
     else entry.offset = sourceOffset;
     this.mem.writeU32(nreadOut, total);
     return ESUCCESS;
@@ -1103,6 +1112,7 @@ async function runWasi(module, args, fs, options = {}) {
     cwd: options.cwd || '/',
     stdin: options.stdin || '',
     env: options.env || { USER: 'tracecode' },
+    kernelDevices: options.kernelDevices,
     filestatSizeOffset: options.filestatSizeOffset,
     onOutput: options.onOutput,
   });
@@ -4125,6 +4135,29 @@ function projectPathBytes(file) {
     : encodeUtf8(String(file?.contents || ''));
 }
 
+function projectKernelDevices(project) {
+  const entries = Array.isArray(project?.kernelDevices) ? project.kernelDevices : [];
+  const devices = new Map();
+  for (const entry of entries) {
+    const path = normalizePath(entry?.path || '');
+    if (!path.startsWith('/dev/')) continue;
+    devices.set(path, {
+      path,
+      readable: entry?.readable === true,
+      writable: entry?.writable === true,
+      inputDevice: typeof entry?.inputDevice === 'string' ? normalizePath(entry.inputDevice) : '',
+      outputDevice: typeof entry?.outputDevice === 'string' ? normalizePath(entry.outputDevice) : '',
+    });
+  }
+  if (devices.size === 0) {
+    devices.set('/dev/stdin', { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin', outputDevice: '' });
+    devices.set('/dev/stdout', { path: '/dev/stdout', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stdout' });
+    devices.set('/dev/stderr', { path: '/dev/stderr', readable: false, writable: true, inputDevice: '', outputDevice: '/dev/stderr' });
+    devices.set('/dev/tty', { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' });
+  }
+  return devices;
+}
+
 function projectKernelVirtualFiles(project) {
   const files = Array.isArray(project?.kernelFiles) ? project.kernelFiles : [];
   return files
@@ -4553,6 +4586,7 @@ async function handleProjectCpp(request, messageId) {
     cwd: `/${requestCwdRelative(request)}`,
     stdin: request?.stdin || '',
     env: request?.env || { USER: 'tracecode' },
+    kernelDevices: projectKernelDevices(request?.project),
     onOutput: (stream, data) => events.output(stream, data),
   });
   return {

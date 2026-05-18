@@ -66,6 +66,12 @@ async function main(): Promise<void> {
         { path: '/proc/kernel/info', contents: '{\\n  "name": "tracekernel"\\n}\\n' },
         { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\\n' },
       ];
+      const traceKernelDevices = [
+        { path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' },
+        { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+        { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+        { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stderr' },
+      ];
 
       const compileInFrame = (payload) =>
         new Promise((resolve, reject) => {
@@ -254,6 +260,8 @@ async function main(): Promise<void> {
             '  if (stdout_device) { std::fputs("device-out\\\\n", stdout_device); std::fclose(stdout_device); }',
             '  FILE* stderr_device = std::fopen("/dev/stderr", "w");',
             '  if (stderr_device) { std::fputs("device-err\\\\n", stderr_device); std::fclose(stderr_device); }',
+            '  FILE* tty_device = std::fopen("/dev/tty", "w");',
+            '  if (tty_device) { std::fputs("tty-device\\\\n", tty_device); std::fclose(tty_device); }',
             '  std::ofstream("generated.txt") << helper_value() << "\\\\n";',
             '  std::ofstream bytes("bytes.bin", std::ios::binary);',
             '  char raw[2] = {0, static_cast<char>(255)};',
@@ -329,7 +337,7 @@ async function main(): Promise<void> {
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-project' },
         stdin: 'from-stdin\\n',
-        project: { files: [...projectFiles, ...(projectCompile.files || [])], kernelFiles: traceKernelProcFiles },
+        project: { files: [...projectFiles, ...(projectCompile.files || [])], kernelFiles: traceKernelProcFiles, kernelDevices: traceKernelDevices },
       });
       const absoluteProjectCompile = await send('execute-project-cpp', {
         source: 'compile',
@@ -1049,7 +1057,7 @@ async function main(): Promise<void> {
       `C++ browser project run should preserve stdout/stdin/env/argv/proc reads: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
-      projectRun.stderr === 'device-err\n',
+      projectRun.stderr === 'device-err\ntty-device\n',
       `C++ browser project run should route /dev/stderr writes: ${JSON.stringify(projectRun)}`
     );
     assertCondition(
