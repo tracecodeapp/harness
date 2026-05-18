@@ -195,6 +195,18 @@ function ensureRuntimeDirectory(fs, path) {
   }
 }
 
+function runtimeAncestorDirectories(path) {
+  const normalized = String(path || '').replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  const parts = normalized.split('/').filter(Boolean);
+  const directories = [];
+  let current = '';
+  for (const part of parts.slice(0, -1)) {
+    current += `/${part}`;
+    directories.push(current);
+  }
+  return directories;
+}
+
 function runtimeDirectoryName(path) {
   const normalized = String(path || '').replace(/\\/g, '/');
   const index = normalized.lastIndexOf('/');
@@ -205,9 +217,23 @@ function materializeKernelVirtualFiles(request) {
   const fs = runtimeModule?.FS;
   const files = request?.project?.kernelFiles;
   if (!fs || !Array.isArray(files)) return;
+  const procDirectories = new Set();
   for (const file of files) {
     if (!file || typeof file.path !== 'string' || !file.path.startsWith('/proc/')) continue;
     ensureRuntimeDirectory(fs, runtimeDirectoryName(file.path));
+    const ancestors = runtimeAncestorDirectories(file.path).filter((directory) => directory.startsWith('/proc'));
+    if (typeof fs.chmod === 'function') {
+      for (const directory of ancestors) {
+        try {
+          fs.chmod(directory, 0o755);
+        } catch {
+          // The directory may not exist yet.
+        }
+      }
+    }
+    for (const directory of ancestors) {
+      if (directory.startsWith('/proc')) procDirectories.add(directory);
+    }
     try {
       fs.unlink(file.path);
     } catch {
@@ -219,6 +245,11 @@ function materializeKernelVirtualFiles(request) {
     fs.writeFile(file.path, contents);
     if (typeof fs.chmod === 'function') {
       fs.chmod(file.path, 0o444);
+    }
+  }
+  if (typeof fs.chmod === 'function') {
+    for (const directory of Array.from(procDirectories).sort((left, right) => right.length - left.length)) {
+      fs.chmod(directory, 0o555);
     }
   }
 }

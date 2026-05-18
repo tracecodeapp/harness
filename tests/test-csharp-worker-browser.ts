@@ -2660,6 +2660,8 @@ async function main(): Promise<void> {
                 'Console.WriteLine(File.ReadAllText("/proc/kernel/info").Contains("\\"name\\": \\"tracekernel\\"") ? "proc-info" : "proc-missing");',
                 'Console.WriteLine(Directory.GetFiles("/proc/kernel").Select(Path.GetFileName).Single());',
                 'try { File.WriteAllText("/proc/kernel/info", "{}\\n"); Console.WriteLine("proc-write:ok"); } catch (Exception ex) { Console.WriteLine("proc-write:" + ex.GetType().Name); }',
+                'try { Directory.CreateDirectory("/proc/kernel/new"); Console.WriteLine("proc-mkdir:ok"); } catch (Exception ex) { Console.WriteLine("proc-mkdir:" + ex.GetType().Name); }',
+                'try { File.Delete("/proc/kernel/info"); Console.WriteLine("proc-delete:ok"); } catch (Exception ex) { Console.WriteLine("proc-delete:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stdout", "dev-stdout\\n"); Console.WriteLine("dev-stdout-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
@@ -2698,6 +2700,11 @@ async function main(): Promise<void> {
     assertCondition(
       projectRun.stdout.includes('proc-write:') && !projectRun.stdout.includes('proc-write:ok'),
       `C# project worker should expose /proc as read-only, received ${projectRun.stdout}`
+    );
+    assertCondition(
+      projectRun.stdout.includes('proc-mkdir:') && !projectRun.stdout.includes('proc-mkdir:ok') &&
+        projectRun.stdout.includes('proc-delete:') && !projectRun.stdout.includes('proc-delete:ok'),
+      `C# project worker should reject /proc mkdir/delete mutations, received ${projectRun.stdout}`
     );
     assertCondition(
       projectRun.stderr === 'dev-stderr\nstderr-line\n',
