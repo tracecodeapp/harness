@@ -23,6 +23,7 @@ import {
   runtimeDeviceStat,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
+  runtimeKernelFileReadTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
@@ -187,6 +188,12 @@ function runtimeReadTarget(path: unknown): ReturnType<typeof runtimeKernelReadTa
   return runtimeKernelReadTarget(raw);
 }
 
+function runtimeFileReadTarget(path: unknown): ReturnType<typeof runtimeKernelFileReadTarget> | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return runtimeKernelFileReadTarget(raw);
+}
+
 function runtimeCopyTarget(source: unknown, destination: unknown): ReturnType<typeof runtimeKernelCopyTarget> | null {
   if (typeof source === 'number' || typeof destination === 'number') return null;
   const sourceRaw = workspacePathInputToString(source).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
@@ -231,6 +238,13 @@ function throwRuntimeMetadataTargetError(
     throw Object.assign(new Error(message), { code: 'EROFS' });
   }
   throw Object.assign(new Error(message), { code: 'ENOENT' });
+}
+
+function throwRuntimeReadTargetError(
+  target: Extract<ReturnType<typeof runtimeKernelFileReadTarget>, { kind: 'error' }>,
+  message: string
+): never {
+  throw Object.assign(new Error(message), { code: target.reason === 'is-directory' ? 'EISDIR' : 'ENOENT' });
 }
 
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
@@ -2894,15 +2908,15 @@ async function runBrowserJavaScriptProjectRequest(
       },
       createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
         const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
-        const readTarget = optionFd === null ? runtimeReadTarget(path) : null;
+        const readTarget = optionFd === null ? runtimeFileReadTarget(path) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
         let sourceBytes: Uint8Array | undefined;
         if (readTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(readTarget.path));
         else if (readTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(readTarget.path, kernelInfo));
-        else if (readTarget?.kind === 'device-directory' || readTarget?.kind === 'proc-directory') {
-          throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
-        } else if (readTarget?.kind === 'error') {
-          throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+        else if (readTarget?.kind === 'error') {
+          throwRuntimeReadTargetError(readTarget, readTarget.reason === 'is-directory'
+            ? `EISDIR: illegal operation on a directory, open '${path}'`
+            : `ENOENT: no such file or directory, open '${path}'`);
         } else if (optionFd !== null) sourceBytes = readDescriptorFileBytes(optionFd);
         else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
         if (!sourceBytes) {
@@ -2924,7 +2938,7 @@ async function runBrowserJavaScriptProjectRequest(
           const bytes = BrowserBuffer.from(readDescriptorFileBytes(path));
           return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
         }
-        const readTarget = runtimeReadTarget(path);
+        const readTarget = runtimeFileReadTarget(path);
         if (readTarget?.kind === 'device-file') {
           const contents = readDevice(readTarget.path);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
@@ -2935,11 +2949,10 @@ async function runBrowserJavaScriptProjectRequest(
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
         }
-        if (readTarget?.kind === 'device-directory' || readTarget?.kind === 'proc-directory') {
-          throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
-        }
         if (readTarget?.kind === 'error') {
-          throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+          throwRuntimeReadTargetError(readTarget, readTarget.reason === 'is-directory'
+            ? `EISDIR: illegal operation on a directory, open '${path}'`
+            : `ENOENT: no such file or directory, open '${path}'`);
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalized);
@@ -3041,14 +3054,14 @@ async function runBrowserJavaScriptProjectRequest(
                 : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`;
           throwRuntimeWriteTargetError(writeTarget, message);
         }
-        const sourceTarget = runtimeReadTarget(source);
+        const sourceTarget = runtimeFileReadTarget(source);
         let sourceBytes: Uint8Array | undefined;
         if (sourceTarget?.kind === 'device-file') sourceBytes = utf8Bytes(readDevice(sourceTarget.path));
         else if (sourceTarget?.kind === 'proc-file') sourceBytes = utf8Bytes(readProcFile(sourceTarget.path, kernelInfo));
-        else if (sourceTarget?.kind === 'device-directory' || sourceTarget?.kind === 'proc-directory') {
-          throw Object.assign(new Error(`EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`), { code: 'EISDIR' });
-        } else if (sourceTarget?.kind === 'error') {
-          throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
+        else if (sourceTarget?.kind === 'error') {
+          throwRuntimeReadTargetError(sourceTarget, sourceTarget.reason === 'is-directory'
+            ? `EISDIR: illegal operation on a directory, copyfile '${source}' -> '${destination}'`
+            : `ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`);
         } else sourceBytes = fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });

@@ -36,6 +36,11 @@ export type RuntimeKernelReadTarget =
   | { kind: 'device-file'; path: RuntimeKernelDevicePath }
   | { kind: 'device-directory'; path: '/dev' }
   | { kind: 'error'; reason: 'not-found'; path: string };
+export type RuntimeKernelFileReadTarget =
+  | { kind: 'workspace' }
+  | { kind: 'proc-file'; path: string }
+  | { kind: 'device-file'; path: RuntimeKernelDevicePath }
+  | { kind: 'error'; reason: 'is-directory' | 'not-found'; path: string };
 export type RuntimeKernelCopyTarget =
   | { kind: 'workspace' }
   | { kind: 'file-copy' }
@@ -222,6 +227,17 @@ export function runtimeKernelReadTarget(path: string): RuntimeKernelReadTarget {
   if (kind === 'file') return { kind: 'proc-file', path: virtualPath.path };
   if (kind === 'directory') return { kind: 'proc-directory', path: virtualPath.path };
   return { kind: 'error', reason: 'not-found', path: virtualPath.path };
+}
+
+export function runtimeKernelFileReadTarget(path: string): RuntimeKernelFileReadTarget {
+  const readTarget = runtimeKernelReadTarget(path);
+  if (readTarget.kind === 'device-file' || readTarget.kind === 'proc-file' || readTarget.kind === 'workspace') {
+    return readTarget;
+  }
+  if (readTarget.kind === 'device-directory' || readTarget.kind === 'proc-directory') {
+    return { kind: 'error', reason: 'is-directory', path: readTarget.path };
+  }
+  return readTarget;
 }
 
 export function runtimeKernelCopyTarget(source: string, destination: string): RuntimeKernelCopyTarget {

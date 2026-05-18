@@ -19,6 +19,7 @@ import {
   runtimeDeviceStat,
   runtimeKernelAccessTarget,
   runtimeKernelCopyTarget,
+  runtimeKernelFileReadTarget,
   runtimeKernelMetadataTarget,
   runtimeKernelMutationTarget,
   runtimeKernelReadTarget,
@@ -296,6 +297,11 @@ function kernelAccessTarget(path: string): ReturnType<typeof runtimeKernelAccess
 function kernelReadTarget(path: string): ReturnType<typeof runtimeKernelReadTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelReadTarget(path);
+}
+
+function kernelFileReadTarget(path: string): ReturnType<typeof runtimeKernelFileReadTarget> {
+  assertNoNul(path, 'Kernel path');
+  return runtimeKernelFileReadTarget(path);
 }
 
 function kernelCopyTarget(source: string, destination: string): ReturnType<typeof runtimeKernelCopyTarget> {
@@ -792,13 +798,16 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   private async readKernelCopySource(path: string): Promise<FileContent> {
-    const sourceTarget = kernelReadTarget(path);
+    const sourceTarget = kernelFileReadTarget(path);
     if (sourceTarget.kind === 'device-file') return this.readDeviceFile(sourceTarget.path);
     if (sourceTarget.kind === 'proc-file') return readRuntimeProcFile(sourceTarget.path, this.kernelInfo());
-    if (sourceTarget.kind === 'device-directory' || sourceTarget.kind === 'proc-directory') {
-      throw new Error(`Kernel virtual path is a directory: ${path}`);
+    if (sourceTarget.kind === 'error') {
+      throw new Error(
+        sourceTarget.reason === 'is-directory'
+          ? `Kernel virtual path is a directory: ${path}`
+          : `Kernel virtual path not found: ${path}`
+      );
     }
-    if (sourceTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
@@ -2595,13 +2604,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private async readKernelCopyBytes(sourcePath: string): Promise<Uint8Array> {
-    const sourceTarget = kernelReadTarget(sourcePath);
+    const sourceTarget = kernelFileReadTarget(sourcePath);
     if (sourceTarget.kind === 'device-file') return new TextEncoder().encode(this.readDevice(sourceTarget.path));
     if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readRuntimeProcFile(sourceTarget.path, this.kernelInfo));
-    if (sourceTarget.kind === 'device-directory' || sourceTarget.kind === 'proc-directory') {
-      throw new Error(`Kernel virtual path is a directory: ${sourcePath}`);
+    if (sourceTarget.kind === 'error') {
+      throw new Error(
+        sourceTarget.reason === 'is-directory'
+          ? `Kernel virtual path is a directory: ${sourcePath}`
+          : `Kernel virtual path not found: ${sourcePath}`
+      );
     }
-    if (sourceTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${sourcePath}`);
     return this.bash.fs.readFileBuffer(this.toWorkspacePath(sourcePath));
   }
 
