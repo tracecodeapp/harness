@@ -4,6 +4,7 @@ import {
   InMemoryFs,
 } from 'just-bash/browser';
 import {
+  applyRuntimeCommandResultFiles,
   createRuntimeProjectIoBridge,
   RuntimeProjectEventQueue,
   RuntimeProjectOutputTracker,
@@ -516,13 +517,13 @@ async function applyCommandResultFiles(
   result: RuntimeCommandResult,
   onFileChange?: RuntimeFileChangeObserver
 ): Promise<RuntimeCommandResult> {
-  await withSuspendedFsNotifications(ctx.fs, async () => {
-    for (const file of result.files ?? []) {
+  return applyRuntimeCommandResultFiles(result, async (file, phase) => {
+    await withSuspendedFsNotifications(ctx.fs, async () => {
       const absolutePath = toWorkspacePath(workspaceRoot, file.path);
       if ((file as { deleted?: boolean }).deleted === true) {
         await ctx.fs.rm(absolutePath, { force: true });
-        onFileChange?.(file, 'final-diff');
-        continue;
+        onFileChange?.(file, phase);
+        return;
       }
       const changedFile = file as RuntimeFile;
       await ctx.fs.mkdir(dirname(absolutePath), { recursive: true });
@@ -531,12 +532,9 @@ async function applyCommandResultFiles(
       } else {
         await ctx.fs.writeFile(absolutePath, changedFile.contents);
       }
-      onFileChange?.(changedFile, 'final-diff');
-    }
+      onFileChange?.(changedFile, phase);
+    });
   });
-
-  const { files: _files, ...commandResult } = result;
-  return commandResult;
 }
 
 async function withSuspendedFsNotifications<T>(fs: CommandContext['fs'], fn: () => Promise<T>): Promise<T> {
@@ -550,12 +548,9 @@ async function applyWorkspaceCommandResultFiles(
   workspace: JustBashRuntimeWorkspace,
   result: RuntimeCommandResult
 ): Promise<RuntimeCommandResult> {
-  for (const file of result.files ?? []) {
-    await workspace.applyKernelFileChange(file, 'final-diff');
-  }
-
-  const { files: _files, ...commandResult } = result;
-  return commandResult;
+  return applyRuntimeCommandResultFiles(result, async (file, phase) => {
+    await workspace.applyKernelFileChange(file, phase);
+  });
 }
 
 function assertSupportedEncoding(encoding: RuntimeFileEncoding | undefined): RuntimeFileEncoding {

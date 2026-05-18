@@ -231,6 +231,17 @@ export class RuntimeProjectEventQueue {
   }
 }
 
+export async function applyRuntimeCommandResultFiles(
+  result: RuntimeCommandResult,
+  applyFileChange: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<void>
+): Promise<RuntimeCommandResult> {
+  for (const file of result.files ?? []) {
+    await applyFileChange(file, 'final-diff');
+  }
+  const { files: _files, ...commandResult } = result;
+  return commandResult;
+}
+
 export interface RuntimeProjectWorkerBridgeOptions<
   Request extends RuntimeProjectCommandRequest<string>,
   Result extends RuntimeCommandResult = RuntimeCommandResult
