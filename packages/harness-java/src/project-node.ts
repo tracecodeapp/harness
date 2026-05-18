@@ -184,29 +184,54 @@ async function collectFileBytes(root: string, absolutePath: string, files: Map<s
   files.set(relativePath, await readFile(absolutePath));
 }
 
+async function collectDirectories(root: string, absolutePath: string, directories: Set<string>): Promise<void> {
+  const info = await stat(absolutePath);
+  if (!info.isDirectory()) return;
+
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (relativePath && !relativePath.startsWith('..')) directories.add(relativePath);
+  for (const entry of await readdir(absolutePath)) {
+    await collectDirectories(root, join(absolutePath, entry), directories);
+  }
+}
+
 async function snapshotFileBytes(root: string): Promise<Map<string, Buffer>> {
   const files = new Map<string, Buffer>();
   await collectFileBytes(root, root, files);
   return files;
 }
 
+async function snapshotDirectories(root: string): Promise<Set<string>> {
+  const directories = new Set<string>();
+  await collectDirectories(root, root, directories);
+  return directories;
+}
+
 async function collectChangedFiles(
   root: string,
   absolutePath: string,
   baselineFiles: Map<string, Buffer>,
+  baselineDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await stat(absolutePath);
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (info.isDirectory()) {
+    if (relativePath && !relativePath.startsWith('..')) {
+      if (baselineDirectories.has(relativePath)) {
+        baselineDirectories.delete(relativePath);
+      } else {
+        files.push({ path: relativePath, directory: true });
+      }
+    }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, files);
+      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, files);
     }
     return;
   }
 
   if (!info.isFile()) return;
 
-  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (!relativePath || relativePath.startsWith('..')) return;
 
   const contents = await readFile(absolutePath);
@@ -222,52 +247,21 @@ async function collectChangedFiles(
   );
 }
 
-async function changedProjectFiles(root: string, baselineFiles: Map<string, Buffer>): Promise<RuntimeFileChange[]> {
+async function changedProjectFiles(
+  root: string,
+  baselineFiles: Map<string, Buffer>,
+  baselineDirectories: Set<string>
+): Promise<RuntimeFileChange[]> {
   const files: RuntimeFileChange[] = [];
-  await collectChangedFiles(root, root, baselineFiles, files);
+  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, files);
   for (const path of baselineFiles.keys()) {
     files.push({ path, deleted: true });
   }
-  files.sort((left, right) => left.path.localeCompare(right.path));
-  return files;
-}
-
-async function collectGeneratedFiles(
-  root: string,
-  absolutePath: string,
-  originalFiles: Set<string>,
-  files: JavaProjectFile[]
-): Promise<void> {
-  const info = await stat(absolutePath);
-  if (info.isDirectory()) {
-    for (const entry of await readdir(absolutePath)) {
-      await collectGeneratedFiles(root, join(absolutePath, entry), originalFiles, files);
-    }
-    return;
+  for (const path of baselineDirectories) {
+    files.push({ path, directory: true, deleted: true });
   }
-
-  if (!info.isFile()) return;
-
-  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
-  if (!relativePath || relativePath.startsWith('..') || originalFiles.has(relativePath)) return;
-
-  files.push({
-    path: relativePath,
-    contents: (await readFile(absolutePath)).toString('base64'),
-    encoding: 'base64',
-  });
-}
-
-async function generatedProjectFiles(root: string, project: JavaProjectSnapshot): Promise<JavaProjectFile[]> {
-  const originalFiles = new Set(project.files.map((file) => assertSafeProjectPath(file.path)));
-  const files: JavaProjectFile[] = [];
-  await collectGeneratedFiles(root, root, originalFiles, files);
   files.sort((left, right) => left.path.localeCompare(right.path));
   return files;
-}
-
-function originalProjectFileBytes(project: JavaProjectSnapshot): Map<string, Buffer> {
-  return new Map(project.files.map((file) => [assertSafeProjectPath(file.path), fileBytes(file)]));
 }
 
 function mapJavaClasspath(root: string, cwd: string, classpath: string, project?: JavaProjectSnapshot): string {
@@ -599,7 +593,8 @@ export function createNativeJavaProjectRunner(
       await mkdir(cwd, { recursive: true });
       const jarPath = request.source === 'run' ? jarPathForRequest(request, root, cwd) : null;
       if (request.source === 'run' && jarPath) {
-        const baseline = originalProjectFileBytes(request.project);
+        const baseline = await snapshotFileBytes(root);
+        const baselineDirectories = await snapshotDirectories(root);
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-jar', jarPath, ...request.args], {
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -608,14 +603,15 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        const files = await changedProjectFiles(root, baseline);
+        const files = await changedProjectFiles(root, baseline, baselineDirectories);
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...run, files };
       }
       const mainClass = request.source === 'run' ? assertSafeMainClass(request.scriptPath) : null;
       const runClasspath = request.source === 'run' ? classpathEntriesForRequest(request, root, cwd).join(delimiter) : '';
       if (request.source === 'run' && effectiveJavaClasspath(request)) {
-        const baseline = originalProjectFileBytes(request.project);
+        const baseline = await snapshotFileBytes(root);
+        const baselineDirectories = await snapshotDirectories(root);
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -624,11 +620,13 @@ export function createNativeJavaProjectRunner(
           timeoutLabel: 'java',
           onEvent: request.onEvent,
         });
-        const files = await changedProjectFiles(root, baseline);
+        const files = await changedProjectFiles(root, baseline, baselineDirectories);
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...run, files };
       }
 
+      const compileBaseline = request.source === 'compile' ? await snapshotFileBytes(root) : null;
+      const compileBaselineDirectories = request.source === 'compile' ? await snapshotDirectories(root) : null;
       const compile = await runProcess(javacCommand, javacArgsForRequest(request, root, cwd), {
         cwd,
         env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -639,7 +637,7 @@ export function createNativeJavaProjectRunner(
       });
       if (request.source === 'compile') {
         if (compile.exitCode !== 0) return compile;
-        const files = await generatedProjectFiles(root, request.project);
+        const files = await changedProjectFiles(root, compileBaseline ?? new Map(), compileBaselineDirectories ?? new Set());
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...compile, files };
       }
@@ -648,6 +646,7 @@ export function createNativeJavaProjectRunner(
       }
 
       const baseline = await snapshotFileBytes(root);
+      const baselineDirectories = await snapshotDirectories(root);
       const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
         cwd,
         env: mapJavaEnv(root, cwd, request.env, request.project),
@@ -656,7 +655,7 @@ export function createNativeJavaProjectRunner(
         timeoutLabel: 'java',
         onEvent: request.onEvent,
       });
-      const files = await changedProjectFiles(root, baseline);
+      const files = await changedProjectFiles(root, baseline, baselineDirectories);
       emitRuntimeCommandFileChanges(request.onEvent, files);
       return {
         stdout: `${compile.stdout}${run.stdout}`,

@@ -102,29 +102,56 @@ async function collectFileBytes(root: string, absolutePath: string, files: Map<s
   files.set(relativePath, await readFile(absolutePath));
 }
 
+async function collectDirectories(root: string, absolutePath: string, directories: Set<string>): Promise<void> {
+  const info = await stat(absolutePath);
+  if (!info.isDirectory()) return;
+
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
+  if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('.tracecode-build/')) {
+    directories.add(relativePath);
+  }
+  for (const entry of await readdir(absolutePath)) {
+    await collectDirectories(root, join(absolutePath, entry), directories);
+  }
+}
+
 async function snapshotFileBytes(root: string): Promise<Map<string, Buffer>> {
   const files = new Map<string, Buffer>();
   await collectFileBytes(root, root, files);
   return files;
 }
 
+async function snapshotDirectories(root: string): Promise<Set<string>> {
+  const directories = new Set<string>();
+  await collectDirectories(root, root, directories);
+  return directories;
+}
+
 async function collectChangedFiles(
   root: string,
   absolutePath: string,
   baselineFiles: Map<string, Buffer>,
+  baselineDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await stat(absolutePath);
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (info.isDirectory()) {
+    if (relativePath && !relativePath.startsWith('..') && !relativePath.startsWith('.tracecode-build/')) {
+      if (baselineDirectories.has(relativePath)) {
+        baselineDirectories.delete(relativePath);
+      } else {
+        files.push({ path: relativePath, directory: true });
+      }
+    }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, files);
+      await collectChangedFiles(root, join(absolutePath, entry), baselineFiles, baselineDirectories, files);
     }
     return;
   }
 
   if (!info.isFile()) return;
 
-  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (!relativePath || relativePath.startsWith('..') || relativePath.startsWith('.tracecode-build/')) return;
 
   const contents = await readFile(absolutePath);
@@ -140,11 +167,18 @@ async function collectChangedFiles(
   );
 }
 
-async function changedProjectFiles(root: string, baselineFiles: Map<string, Buffer>): Promise<RuntimeFileChange[]> {
+async function changedProjectFiles(
+  root: string,
+  baselineFiles: Map<string, Buffer>,
+  baselineDirectories: Set<string>
+): Promise<RuntimeFileChange[]> {
   const files: RuntimeFileChange[] = [];
-  await collectChangedFiles(root, root, baselineFiles, files);
+  await collectChangedFiles(root, root, baselineFiles, baselineDirectories, files);
   for (const path of baselineFiles.keys()) {
     files.push({ path, deleted: true });
+  }
+  for (const path of baselineDirectories) {
+    files.push({ path, directory: true, deleted: true });
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
   return files;
@@ -511,6 +545,7 @@ export function createNativeCSharpProjectRunner(
 
       if (request.source === 'compile') {
         const baseline = await snapshotFileBytes(root);
+        const baselineDirectories = await snapshotDirectories(root);
         const result = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, request.args, request.project)], {
           cwd,
           env: request.env,
@@ -520,7 +555,7 @@ export function createNativeCSharpProjectRunner(
           onEvent: request.onEvent,
         });
         if (result.exitCode !== 0) return result;
-        const files = await changedProjectFiles(root, baseline);
+        const files = await changedProjectFiles(root, baseline, baselineDirectories);
         emitRuntimeCommandFileChanges(request.onEvent, files);
         return { ...result, files };
       }
@@ -538,6 +573,7 @@ export function createNativeCSharpProjectRunner(
       }
 
       const baseline = await snapshotFileBytes(root);
+      const baselineDirectories = await snapshotDirectories(root);
       const run = await runProcess(resolvedDotnetCommand, ['run', '--project', projectArg, '--no-build', '--no-launch-profile', '--', ...request.args], {
         cwd,
         env: request.env,
@@ -546,7 +582,7 @@ export function createNativeCSharpProjectRunner(
         timeoutLabel: 'dotnet run',
         onEvent: request.onEvent,
       });
-      const files = await changedProjectFiles(root, baseline);
+      const files = await changedProjectFiles(root, baseline, baselineDirectories);
       emitRuntimeCommandFileChanges(request.onEvent, files);
       return { ...run, files };
     } finally {

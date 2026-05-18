@@ -5732,7 +5732,21 @@ async function testNativeProjectWorkspaceFactory(): Promise<void> {
 async function testProjectWorkspaceCommandEvents(): Promise<void> {
   const events: RuntimeCommandEvent[] = [];
   const workspace = await createNativeProjectWorkspace({
-    files: [{ path: 'events.py', contents: 'import sys\nprint("event-out")\nprint("event-err", file=sys.stderr)\nopen("event-generated.txt", "w", encoding="utf-8").write("generated\\n")\n' }],
+    directories: ['initial-empty/deep'],
+    files: [{
+      path: 'events.py',
+      contents: [
+        'import os',
+        'import sys',
+        'print("event-out")',
+        'print("event-err", file=sys.stderr)',
+        'open("event-generated.txt", "w", encoding="utf-8").write("generated\\n")',
+        'os.makedirs("event-dir/nested")',
+        'os.rmdir("initial-empty/deep")',
+        'os.rmdir("initial-empty")',
+        '',
+      ].join('\n'),
+    }],
   });
   const result = await workspace.runCommand('python3 events.py', {
     onEvent: (event) => events.push(event),
@@ -5774,11 +5788,43 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
     ).length === 1,
     `project command should emit one final-diff event for native runner files: ${JSON.stringify(events)}`
   );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'event-dir' &&
+      event.change.directory === true
+    ) &&
+      events.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'final-diff' &&
+        event.change.path === 'event-dir/nested' &&
+        event.change.directory === true
+      ) &&
+      events.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'final-diff' &&
+        event.change.path === 'initial-empty/deep' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+      ),
+    `project command should emit final-diff directory changes for native runner directories: ${JSON.stringify(events)}`
+  );
   workspace.dispose();
 
   const directEvents: RuntimeCommandEvent[] = [];
   const direct = await createNativePythonProjectRunner()({
-    code: 'import sys\nprint("direct-out")\nprint("direct-err", file=sys.stderr)\nopen("direct-generated.txt", "w", encoding="utf-8").write("generated\\n")\n',
+    code: [
+      'import os',
+      'import sys',
+      'print("direct-out")',
+      'print("direct-err", file=sys.stderr)',
+      'open("direct-generated.txt", "w", encoding="utf-8").write("generated\\n")',
+      'os.makedirs("direct-dir/nested")',
+      'os.rmdir("direct-empty/deep")',
+      'os.rmdir("direct-empty")',
+      '',
+    ].join('\n'),
     source: 'argument',
     scriptPath: '-c',
     args: [],
@@ -5787,6 +5833,7 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
     stdin: '',
     project: {
       cwd: '/workspace',
+      directories: ['direct-empty/deep'],
       files: [],
     },
     onEvent: (event) => directEvents.push(event),
@@ -5817,6 +5864,22 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
       event.change.path === 'direct-generated.txt'
     ),
     `direct native project runner should emit final-diff file changes: ${JSON.stringify(directEvents)}`
+  );
+  assertCondition(
+    directEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'direct-dir/nested' &&
+      event.change.directory === true
+    ) &&
+      directEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.phase === 'final-diff' &&
+        event.change.path === 'direct-empty/deep' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+      ),
+    `direct native project runner should emit final-diff directory changes: ${JSON.stringify(directEvents)}`
   );
 }
 

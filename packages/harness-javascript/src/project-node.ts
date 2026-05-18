@@ -85,23 +85,52 @@ function originalProjectFiles(project: JavaScriptProjectSnapshot): Map<string, B
   return new Map(project.files.map((file) => [assertSafeProjectPath(file.path), fileBytes(file)]));
 }
 
+function addDirectoryAncestors(directories: Set<string>, path: string): void {
+  let current = dirname(path);
+  while (current && current !== '.') {
+    directories.add(current.replace(/\\/g, '/'));
+    current = dirname(current);
+  }
+}
+
+function originalProjectDirectories(project: JavaScriptProjectSnapshot): Set<string> {
+  const directories = new Set<string>();
+  for (const file of project.files) {
+    addDirectoryAncestors(directories, assertSafeProjectPath(file.path));
+  }
+  for (const directory of project.directories ?? []) {
+    const safeDirectory = assertSafeProjectPath(directory);
+    directories.add(safeDirectory);
+    addDirectoryAncestors(directories, safeDirectory);
+  }
+  return directories;
+}
+
 async function collectChangedFiles(
   root: string,
   absolutePath: string,
   originalFiles: Map<string, Buffer>,
+  originalDirectories: Set<string>,
   files: RuntimeFileChange[]
 ): Promise<void> {
   const info = await stat(absolutePath);
+  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (info.isDirectory()) {
+    if (relativePath && !relativePath.startsWith('..')) {
+      if (originalDirectories.has(relativePath)) {
+        originalDirectories.delete(relativePath);
+      } else {
+        files.push({ path: relativePath, directory: true });
+      }
+    }
     for (const entry of await readdir(absolutePath)) {
-      await collectChangedFiles(root, join(absolutePath, entry), originalFiles, files);
+      await collectChangedFiles(root, join(absolutePath, entry), originalFiles, originalDirectories, files);
     }
     return;
   }
 
   if (!info.isFile()) return;
 
-  const relativePath = relative(root, absolutePath).replace(/\\/g, '/');
   if (!relativePath || relativePath.startsWith('..')) return;
 
   const contents = await readFile(absolutePath);
@@ -120,9 +149,13 @@ async function collectChangedFiles(
 async function changedProjectFiles(root: string, project: JavaScriptProjectSnapshot): Promise<RuntimeFileChange[]> {
   const files: RuntimeFileChange[] = [];
   const originalFiles = originalProjectFiles(project);
-  await collectChangedFiles(root, root, originalFiles, files);
+  const originalDirectories = originalProjectDirectories(project);
+  await collectChangedFiles(root, root, originalFiles, originalDirectories, files);
   for (const path of originalFiles.keys()) {
     files.push({ path, deleted: true });
+  }
+  for (const path of originalDirectories) {
+    files.push({ path, directory: true, deleted: true });
   }
   files.sort((left, right) => left.path.localeCompare(right.path));
   return files;
