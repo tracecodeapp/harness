@@ -721,6 +721,24 @@ class WasiProcess {
     return entry;
   }
 
+  isKnownDevicePath(pathname) {
+    return this.kernelDevices.has(normalizePath(pathname));
+  }
+
+  deviceNamespaceMutationErrno(pathname, missingErrno = ENOENT) {
+    const normalized = normalizePath(pathname);
+    if (!isRuntimeDeviceNamespacePath(normalized)) return null;
+    return isRuntimeDeviceDirectory(normalized) || this.isKnownDevicePath(normalized) ? EROFS : missingErrno;
+  }
+
+  filetypeForPath(pathname) {
+    const normalized = normalizePath(pathname);
+    if (isRuntimeDeviceDirectory(normalized)) return FILETYPE_DIRECTORY;
+    if (this.isKnownDevicePath(normalized)) return FILETYPE_CHARACTER_DEVICE;
+    if (this.fs.isDirectory(normalized)) return FILETYPE_DIRECTORY;
+    return FILETYPE_REGULAR_FILE;
+  }
+
   openFile(pathname, options = {}) {
     const normalized = normalizePath(pathname);
     if (isRuntimeDeviceDirectory(normalized)) {
@@ -731,7 +749,7 @@ class WasiProcess {
       return this.allocateFd(stdioEntry);
     }
     if (isRuntimeDeviceNamespacePath(normalized)) {
-      return this.kernelDevices.has(normalized) ? -EBADF : -ENOENT;
+      return this.isKnownDevicePath(normalized) ? -EBADF : -ENOENT;
     }
     if (this.fs.isReadOnly(normalized) && (options.create || options.truncate || options.append || options.write)) {
       return -EROFS;
@@ -768,10 +786,10 @@ class WasiProcess {
 
   writeFilestat(pathname, outPtr) {
     const normalized = normalizePath(pathname);
-    if (isRuntimeDeviceDirectory(normalized) || this.kernelDevices.has(normalized)) {
+    if (isRuntimeDeviceDirectory(normalized) || this.isKnownDevicePath(normalized)) {
       this.mem.writeU64(outPtr, 1);
       this.mem.writeU64(outPtr + 8, inodeForPath(normalized));
-      this.mem.writeU8(outPtr + 16, isRuntimeDeviceDirectory(normalized) ? FILETYPE_DIRECTORY : FILETYPE_CHARACTER_DEVICE);
+      this.mem.writeU8(outPtr + 16, this.filetypeForPath(normalized));
       this.mem.writeU64(outPtr + 24, this.filestatSizeOffset === 24 ? 0n : 1n);
       this.mem.writeU64(outPtr + 32, 0);
       this.mem.writeU64(outPtr + 40, 0);
@@ -1040,7 +1058,7 @@ class WasiProcess {
       this.mem.writeU64(bufPtr + offset, BigInt(index + 1));
       this.mem.writeU64(bufPtr + offset + 8, BigInt(index + 1));
       this.mem.writeU32(bufPtr + offset + 16, nameBytes.length);
-      this.mem.writeU8(bufPtr + offset + 20, this.fs.isDirectory(childPath) ? FILETYPE_DIRECTORY : FILETYPE_REGULAR_FILE);
+      this.mem.writeU8(bufPtr + offset + 20, this.filetypeForPath(childPath));
       this.mem.writeBytes(bufPtr + offset + 24, nameBytes);
       offset += entrySize;
     }
@@ -1079,7 +1097,8 @@ class WasiProcess {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
     if (isRuntimeProcPath(pathname)) return EROFS;
-    if (isRuntimeDeviceNamespacePath(pathname)) return isRuntimeDeviceDirectory(pathname) || this.kernelDevices.has(pathname) ? EROFS : ENOENT;
+    const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
+    if (deviceErrno !== null) return deviceErrno;
     this.fs.addDirectory(pathname);
     return ESUCCESS;
   }
@@ -1088,7 +1107,8 @@ class WasiProcess {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
     if (this.fs.isReadOnly(pathname)) return EROFS;
-    if (isRuntimeDeviceNamespacePath(pathname)) return isRuntimeDeviceDirectory(pathname) || this.kernelDevices.has(pathname) ? EROFS : ENOENT;
+    const deviceErrno = this.deviceNamespaceMutationErrno(pathname);
+    if (deviceErrno !== null) return deviceErrno;
     this.fs.unlink(pathname);
     return ESUCCESS;
   }
@@ -1097,7 +1117,8 @@ class WasiProcess {
     const pathname = this.resolveFdPath(dirfd, pathPtr, pathLen);
     if (!pathname) return EBADF;
     if (isRuntimeProcPath(pathname)) return EROFS;
-    if (isRuntimeDeviceNamespacePath(pathname)) return isRuntimeDeviceDirectory(pathname) ? EROFS : ENOTDIR;
+    const deviceErrno = this.deviceNamespaceMutationErrno(pathname, ENOTDIR);
+    if (deviceErrno !== null) return deviceErrno;
     if (this.fs.isFile(pathname)) return ENOTDIR;
     return this.fs.removeDirectory(pathname);
   }
@@ -1107,8 +1128,10 @@ class WasiProcess {
     const newPath = this.resolveFdPath(newFd, newPathPtr, newPathLen);
     if (!oldPath || !newPath) return EBADF;
     if (this.fs.isReadOnly(oldPath) || isRuntimeProcPath(newPath)) return EROFS;
-    if (isRuntimeDeviceNamespacePath(oldPath)) return this.kernelDevices.has(oldPath) || isRuntimeDeviceDirectory(oldPath) ? EROFS : ENOENT;
-    if (isRuntimeDeviceNamespacePath(newPath)) return this.kernelDevices.has(newPath) || isRuntimeDeviceDirectory(newPath) ? EROFS : ENOENT;
+    const oldDeviceErrno = this.deviceNamespaceMutationErrno(oldPath);
+    if (oldDeviceErrno !== null) return oldDeviceErrno;
+    const newDeviceErrno = this.deviceNamespaceMutationErrno(newPath);
+    if (newDeviceErrno !== null) return newDeviceErrno;
     return this.fs.rename(oldPath, newPath);
   }
 

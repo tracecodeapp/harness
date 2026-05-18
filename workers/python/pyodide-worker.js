@@ -1656,6 +1656,20 @@ def _is_mutating_fd_flags(_flags):
         (_flag_value & getattr(os, "O_APPEND", 0))
     )
 
+def _fd_flags_want_write(_flags):
+    try:
+        _flag_value = int(_flags)
+    except Exception:
+        return False
+    return bool((_flag_value & getattr(os, "O_WRONLY", 0)) or (_flag_value & getattr(os, "O_RDWR", 0)))
+
+def _fd_flags_want_read(_flags):
+    try:
+        _flag_value = int(_flags)
+    except Exception:
+        return True
+    return bool(_flag_value & getattr(os, "O_RDWR", 0)) or not bool(_flag_value & getattr(os, "O_WRONLY", 0))
+
 def _virtual_workspace_path(_value):
     if isinstance(_value, str):
         _relative = os.path.relpath(_value, _root)
@@ -1721,25 +1735,24 @@ def _install_virtual_workspace_paths():
         nonlocal _next_virtual_fd
         _device = _normalize_device_path(_path)
         if _device:
-            _mutating = _is_mutating_fd_flags(_flags)
             _device_info = _kernel_devices.get(_device, {})
-            if bool(_device_info.get("writable")) and _mutating:
-                _fd = _next_virtual_fd
-                _next_virtual_fd += 1
-                _device_file_descriptors[_fd] = {"device": _device}
-                return _fd
-            if bool(_device_info.get("readable")) and not _mutating:
-                _fd = _next_virtual_fd
-                _next_virtual_fd += 1
-                _input_device = str(_device_info.get("inputDevice") or _device)
-                _device_file_descriptors[_fd] = {
-                    "device": _device,
-                    "inputDevice": _input_device,
+            _wants_read = _fd_flags_want_read(_flags)
+            _wants_write = _fd_flags_want_write(_flags) or _is_mutating_fd_flags(_flags)
+            if _wants_read and not bool(_device_info.get("readable")):
+                raise OSError("Kernel device is not readable: " + _device)
+            if _wants_write and not bool(_device_info.get("writable")):
+                raise OSError("Kernel device is not writable: " + _device)
+            _fd = _next_virtual_fd
+            _next_virtual_fd += 1
+            _device_descriptor = {"device": _device}
+            if _wants_read:
+                _device_descriptor.update({
+                    "inputDevice": str(_device_info.get("inputDevice") or _device),
                     "contents": str(_request.get("stdin", "")).encode("utf-8"),
                     "offset": 0,
-                }
-                return _fd
-            raise OSError("Kernel device mode is not supported: " + _device)
+                })
+            _device_file_descriptors[_fd] = _device_descriptor
+            return _fd
         _device_path = _normalize_device_namespace_path(_path)
         if _device_path:
             if _device_entry_kind(_device_path) == "directory":

@@ -76,11 +76,11 @@ type CSharpProjectWorkerRequest = {
     files: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     kernelFiles?: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     kernelDevices?: Array<{
-      path: '/dev/stdin' | '/dev/stdout' | '/dev/stderr' | '/dev/tty';
+      path: string;
       readable: boolean;
       writable: boolean;
-      inputDevice?: '/dev/stdin' | '/dev/stdout' | '/dev/stderr' | '/dev/tty';
-      outputDevice?: '/dev/stdin' | '/dev/stdout' | '/dev/stderr' | '/dev/tty';
+      inputDevice?: string;
+      outputDevice?: string;
     }>;
     directories?: string[];
   };
@@ -100,6 +100,7 @@ const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['k
   { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
   { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
   { path: '/dev/tty', readable: true, writable: true, inputDevice: '/dev/stdin', outputDevice: '/dev/stdout' },
+  { path: '/dev/log', readable: false, writable: true, outputDevice: '/dev/stderr' },
 ];
 
 function assertCondition(condition: boolean, message: string): void {
@@ -2740,6 +2741,7 @@ async function main(): Promise<void> {
                 'try { File.WriteAllText("/dev/stdout", "dev-stdout\\n"); Console.WriteLine("dev-stdout-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stdout-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/stderr", "dev-stderr\\n"); Console.WriteLine("dev-stderr-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-stderr-write:" + ex.GetType().Name); }',
                 'try { File.WriteAllText("/dev/tty", "dev-tty\\n"); Console.WriteLine("dev-tty-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-tty-write:" + ex.GetType().Name); }',
+                'try { File.WriteAllText("/dev/log", "dev-log\\n"); Console.WriteLine("dev-log-write:ok"); } catch (Exception ex) { Console.WriteLine("dev-log-write:" + ex.GetType().Name); }',
                 'Console.Error.WriteLine("stderr-line");',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
@@ -2789,6 +2791,17 @@ async function main(): Promise<void> {
       `C# project worker should preserve /dev/tty source device on routed output events: ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'output' &&
+          event.stream === 'stderr' &&
+          event.device === '/dev/stderr' &&
+          event.sourceDevice === '/dev/log' &&
+          event.data === 'dev-log\n'
+      ) === true,
+      `C# project worker should adapt manifest-provided custom devices: ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
       projectRun.stdout.includes('proc-write:') && !projectRun.stdout.includes('proc-write:ok'),
       `C# project worker should expose /proc as read-only, received ${projectRun.stdout}`
     );
@@ -2803,7 +2816,7 @@ async function main(): Promise<void> {
       `C# project worker should reject manifest-provided kernel virtual mutations outside /proc, received ${projectRun.stdout}`
     );
     assertCondition(
-      projectRun.stderr === 'dev-stderr\nstderr-line\n',
+      projectRun.stderr === 'dev-stderr\ndev-log\nstderr-line\n',
       `C# project worker should preserve stderr: ${JSON.stringify(projectRun.stderr)}`
     );
     assertCondition(
@@ -2820,7 +2833,7 @@ async function main(): Promise<void> {
       projectRun.events
         ?.filter((event) => event.type === 'output' && event.stream === 'stderr' && event.device === '/dev/stderr')
         .map((event) => event.data)
-        .join('') === 'dev-stderr\nstderr-line\n',
+        .join('') === 'dev-stderr\ndev-log\nstderr-line\n',
       `C# project worker should stream stderr events, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(

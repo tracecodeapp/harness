@@ -77,10 +77,7 @@ function elapsedMs(startedAt) {
 function normalizeKernelDevicePath(value) {
   if (typeof value !== 'string' || value.length === 0) return null;
   const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/';
-  return normalized === '/dev/stdin' ||
-    normalized === '/dev/stdout' ||
-    normalized === '/dev/stderr' ||
-    normalized === '/dev/tty'
+  return normalized.startsWith('/dev/') && normalized.length > '/dev/'.length && !normalized.slice('/dev/'.length).includes('/')
     ? normalized
     : null;
 }
@@ -361,6 +358,15 @@ function encodeRuntimeFileChange(path, bytes) {
   return { path, contents: encodeBase64(bytes), encoding: 'base64' };
 }
 
+function runtimeWriteFileBytes(data) {
+  if (typeof data === 'string') return encodeUtf8(data);
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  if (Array.isArray(data)) return Uint8Array.from(data);
+  return encodeUtf8(String(data ?? ''));
+}
+
 function emitProjectEvent(payload) {
   if (!activeProjectIo?.messageId) return;
   if (payload?.type === 'output' && typeof payload.data === 'string') {
@@ -537,7 +543,14 @@ function installRuntimeFsHooks(runtime) {
 
   const originalWriteFile = fs.writeFile;
   if (typeof originalWriteFile === 'function') {
-    fs.writeFile = function writeFileWithProjectEvents(path) {
+    fs.writeFile = function writeFileWithProjectEvents(path, data) {
+      const devicePath = normalizeKernelDevicePath(path);
+      if (activeProjectIo && devicePath && kernelDeviceOutputTarget(devicePath)) {
+        for (const byte of runtimeWriteFileBytes(data)) {
+          writeProjectDeviceByte(devicePath, byte, { recordResult: true });
+        }
+        return undefined;
+      }
       if (activeProjectIo && isKernelVirtualFsPath(path)) {
         throw Object.assign(new Error(`EROFS: read-only file system, write '${path}'`), { code: 'EROFS' });
       }

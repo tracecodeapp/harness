@@ -254,6 +254,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
           declarations.includes('type RuntimeFileChange = RuntimeFile | RuntimeFileDeletion | RuntimeDirectoryChange'),
         '@tracecode/harness-core declarations should ship directory file-change events'
       );
+      assertCondition(
+        declarations.includes('runtimeKernelWriteTarget') &&
+          declarations.includes('type RuntimeKernelWriteTarget') &&
+          declarations.includes('normalizeRuntimeDevicePath'),
+        '@tracecode/harness-core declarations should export shared tracekernel helpers'
+      );
     }
     if (packageCheck.name === '@tracecode/harness-project') {
       const projectDist = await readFile(join(packageDir, 'dist/index.js'), 'utf8');

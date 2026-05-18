@@ -152,6 +152,12 @@ async function main(): Promise<void> {
             '    os.write(tty_fd, b"dev-fd-tty\\\\n")',
             'finally:',
             '    os.close(tty_fd)',
+            'tty_rw_fd = os.open("/dev/tty", os.O_RDWR)',
+            'try:',
+            '    print("dev-fd-tty-rw-read=" + os.read(tty_rw_fd, 64).decode("utf-8").strip())',
+            '    os.write(tty_rw_fd, b"dev-fd-tty-rw-write\\\\n")',
+            'finally:',
+            '    os.close(tty_rw_fd)',
             'with open("/dev/tty", "w", encoding="utf-8") as tty:',
             '    tty.write("dev-file-tty\\\\n")',
             '    tty.writelines(["dev-file-tty-lines", "\\\\n"])',
@@ -440,7 +446,7 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-file-tty\ndev-file-tty-lines\nprovider-hook-out\nprovider-hook-lines\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\ndev-fd-tty\ndev-fd-tty-rw-read=from-stdin\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\nprovider-hook-out\nprovider-hook-lines\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
@@ -463,7 +469,7 @@ async function main(): Promise<void> {
           event.sourceDevice === '/dev/tty'
         )
         .map((event) => event.data)
-        .join('') === 'dev-fd-tty\ndev-file-tty\ndev-file-tty-lines\n',
+        .join('') === 'dev-fd-tty\ndev-fd-tty-rw-write\ndev-file-tty\ndev-file-tty-lines\n',
       `Python project worker should preserve /dev/tty source device on routed output events: ${JSON.stringify(results.fileRun.events)}`
     );
     assertCondition(

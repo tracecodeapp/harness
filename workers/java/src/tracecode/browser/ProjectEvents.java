@@ -101,68 +101,56 @@ public final class ProjectEvents {
 
   public static Stream<Path> list(Path path) throws IOException {
     String normalized = normalizeVirtualPath(path);
-    if ("/dev".equals(normalized)) {
+    if (isVirtualDeviceDirectory(normalized)) {
       return kernelDevicePaths().stream();
     }
-    if (normalized != null && normalized.startsWith("/dev/")) {
-      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
-      throw new NoSuchFileException(normalized);
-    }
+    if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     return Files.list(path);
   }
 
   public static DirectoryStream<Path> newDirectoryStream(Path dir) throws IOException {
     String normalized = normalizeVirtualPath(dir);
-    if ("/dev".equals(normalized)) return new KernelDirectoryStream(kernelDevicePaths());
-    if (normalized != null && normalized.startsWith("/dev/")) {
-      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
-      throw new NoSuchFileException(normalized);
-    }
+    if (isVirtualDeviceDirectory(normalized)) return new KernelDirectoryStream(kernelDevicePaths());
+    if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     return Files.newDirectoryStream(dir);
   }
 
   public static DirectoryStream<Path> newDirectoryStream(Path dir, String glob) throws IOException {
     String normalized = normalizeVirtualPath(dir);
-    if ("/dev".equals(normalized)) {
+    if (isVirtualDeviceDirectory(normalized)) {
       DirectoryStream.Filter<Path> filter = (entry) -> dir.getFileSystem()
           .getPathMatcher("glob:" + glob)
           .matches(entry.getFileName());
       return newDirectoryStream(dir, filter);
     }
-    if (normalized != null && normalized.startsWith("/dev/")) {
-      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
-      throw new NoSuchFileException(normalized);
-    }
+    if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     return Files.newDirectoryStream(dir, glob);
   }
 
   public static DirectoryStream<Path> newDirectoryStream(Path dir, DirectoryStream.Filter<? super Path> filter)
       throws IOException {
     String normalized = normalizeVirtualPath(dir);
-    if ("/dev".equals(normalized)) {
+    if (isVirtualDeviceDirectory(normalized)) {
       ArrayList<Path> entries = new ArrayList<>();
       for (Path entry : kernelDevicePaths()) {
         if (filter == null || filter.accept(entry)) entries.add(entry);
       }
       return new KernelDirectoryStream(entries);
     }
-    if (normalized != null && normalized.startsWith("/dev/")) {
-      if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
-      throw new NoSuchFileException(normalized);
-    }
+    if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     return Files.newDirectoryStream(dir, filter);
   }
 
   public static boolean exists(Path path, LinkOption... options) {
     String normalized = normalizeVirtualPath(path);
-    if ("/dev".equals(normalized)) return true;
-    if (normalized != null && normalized.startsWith("/dev/")) return KERNEL_DEVICES.get().containsKey(normalized);
+    if (isVirtualDeviceDirectory(normalized)) return true;
+    if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
     return Files.exists(path, options);
   }
 
   public static boolean notExists(Path path, LinkOption... options) {
     String normalized = normalizeVirtualPath(path);
-    if (normalized != null && ("/dev".equals(normalized) || normalized.startsWith("/dev/"))) {
+    if (isVirtualDeviceNamespacePath(normalized)) {
       return !exists(path, options);
     }
     return Files.notExists(path, options);
@@ -170,15 +158,15 @@ public final class ProjectEvents {
 
   public static boolean isDirectory(Path path, LinkOption... options) {
     String normalized = normalizeVirtualPath(path);
-    if ("/dev".equals(normalized)) return true;
-    if (normalized != null && normalized.startsWith("/dev/")) return false;
+    if (isVirtualDeviceDirectory(normalized)) return true;
+    if (isVirtualDevicePath(normalized)) return false;
     return Files.isDirectory(path, options);
   }
 
   public static boolean isRegularFile(Path path, LinkOption... options) {
     String normalized = normalizeVirtualPath(path);
-    if ("/dev".equals(normalized)) return false;
-    if (normalized != null && normalized.startsWith("/dev/")) return KERNEL_DEVICES.get().containsKey(normalized);
+    if (isVirtualDeviceDirectory(normalized)) return false;
+    if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
     return Files.isRegularFile(path, options);
   }
 
@@ -1066,8 +1054,7 @@ public final class ProjectEvents {
 
   private static KernelDevice kernelDevice(Path path) {
     String normalized = normalizeVirtualPath(path);
-    if (normalized == null) return null;
-    if (!normalized.startsWith("/dev/")) return null;
+    if (!isVirtualDevicePath(normalized)) return null;
     return KERNEL_DEVICES.get().get(normalized);
   }
 
@@ -1086,6 +1073,23 @@ public final class ProjectEvents {
       normalized = normalized.substring(0, normalized.length() - 1);
     }
     return normalized.isEmpty() ? "/" : normalized;
+  }
+
+  private static boolean isVirtualDeviceDirectory(String normalized) {
+    return "/dev".equals(normalized);
+  }
+
+  private static boolean isVirtualDevicePath(String normalized) {
+    return normalized != null && normalized.startsWith("/dev/");
+  }
+
+  private static boolean isVirtualDeviceNamespacePath(String normalized) {
+    return isVirtualDeviceDirectory(normalized) || isVirtualDevicePath(normalized);
+  }
+
+  private static void throwKernelDeviceNotDirectory(String normalized) throws IOException {
+    if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
+    throw new NoSuchFileException(normalized);
   }
 
   private static byte[] readKernelDevice(KernelDevice device) {
@@ -1290,8 +1294,7 @@ public final class ProjectEvents {
     if (normalized == null) return false;
     return normalized.equals("/proc") ||
         normalized.startsWith("/proc/") ||
-        normalized.equals("/dev") ||
-        normalized.startsWith("/dev/");
+        isVirtualDeviceNamespacePath(normalized);
   }
 
   private static void emitFileSnapshot(Path path) {
