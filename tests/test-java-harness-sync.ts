@@ -68,6 +68,7 @@ async function main(): Promise<void> {
     'workspaceManifest',
     'workspaceCwd',
     'ProjectEvents.streamingOutput',
+    'ProjectEvents.inputStream',
     'augmentJavaProjectFileMutations',
     'projectChangedFiles(report)',
     'runJavaProjectRequest',

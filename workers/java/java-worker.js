@@ -3409,7 +3409,7 @@ public class ${exportsClassName} {
       ProjectEvents.setKernelFiles(${kernelFileManifestSource});
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
       System.setErr(new java.io.PrintStream(ProjectEvents.streamingOutput(stderrBytes, "stderr"), true, "UTF-8"));
-      System.setIn(new java.io.ByteArrayInputStream(${stdinSource}.getBytes("UTF-8")));
+      System.setIn(ProjectEvents.inputStream());
 ${invocation}
     } catch (Throwable error) {
       exitCode = 1;

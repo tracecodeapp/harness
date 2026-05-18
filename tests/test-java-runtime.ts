@@ -240,6 +240,30 @@ public class ProjectWorkspaceDirectorySmoke {
     java.util.function.Function<String, String> b64 = (value) -> java.util.Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
     java.util.function.Function<String[], String> device = (fields) ->
       b64.apply(fields[0]) + "\t" + b64.apply(fields[1]) + "\t" + b64.apply(fields[2]) + "\t" + b64.apply(fields[3]) + "\t" + b64.apply(fields[4]);
+    java.io.InputStream previousIn = System.in;
+    ProjectEvents.setKernelDevices(String.join("\\n",
+      device.apply(new String[] { "/dev/stdin", "1", "0", "/dev/stdin", "" }),
+      device.apply(new String[] { "/dev/tty", "1", "1", "/dev/stdin", "/dev/stdout" }),
+      device.apply(new String[] { "/dev/custom-in", "1", "0", "/dev/stdin", "" })
+    ), "abcdef");
+    try {
+      System.setIn(ProjectEvents.inputStream());
+      int systemByte = System.in.read();
+      int streamByte;
+      try (var stream = new ProjectEvents.ProjectFileInputStream("/dev/stdin")) {
+        streamByte = stream.read();
+      }
+      int readerChar;
+      try (var reader = new ProjectEvents.ProjectFileReader("/dev/custom-in", StandardCharsets.UTF_8)) {
+        readerChar = reader.read();
+      }
+      String ttyRest = ProjectEvents.readString(Paths.get("/dev/tty"));
+      String customRest = ProjectEvents.readString(Paths.get("/dev/custom-in"));
+      System.out.println("shared-stdin=" + (char) systemByte + ":" + (char) streamByte + ":" + (char) readerChar + ":" + ttyRest + ":" + customRest);
+    } finally {
+      System.setIn(previousIn);
+      ProjectEvents.clearKernelDevices();
+    }
     ProjectEvents.setKernelDevices(String.join("\\n",
       device.apply(new String[] { "/dev/stdin", "1", "0", "/dev/stdin", "" }),
       device.apply(new String[] { "/dev/stdout", "0", "1", "", "/dev/stdout" }),
@@ -408,6 +432,7 @@ public class ProjectWorkspaceDirectorySmoke {
       kernelChangedFilesJson,
       deviceChannelInput,
       customDeviceInput,
+      sharedStdinOutput,
       deviceWriterOutput,
       fileDescriptorReaderOutput,
       fileApiOutput,
@@ -431,6 +456,10 @@ public class ProjectWorkspaceDirectorySmoke {
     assertCondition(
       customDeviceInput === 'from-custom-source',
       `Java browser helper should read custom input devices independently of /dev/stdin: ${output}`
+    );
+    assertCondition(
+      sharedStdinOutput === 'shared-stdin=a:b:c::',
+      `Java browser helper should share one kernel stdin cursor across System.in and device inputs: ${output}`
     );
     assertCondition(
       deviceWriterOutput === 'file-writer-out|print-writer-out|tty-writer-out|print-writer-err|',
@@ -2703,8 +2732,10 @@ async function main(): Promise<void> {
     );
     const defaultAdapterSource = Array.from(defaultManifestEntries.values()).find((source) => source.includes('public class Exports')) ?? '';
     assertCondition(
-      defaultAdapterSource.includes('System.setIn(new java.io.ByteArrayInputStream("from-stdin\\n".getBytes("UTF-8")))'),
-      'Java execute-project-java adapter should wire request stdin into System.in'
+      defaultAdapterSource.includes('ProjectEvents.setKernelDevices("') &&
+        defaultAdapterSource.includes('System.setIn(ProjectEvents.inputStream())') &&
+        !defaultAdapterSource.includes('System.setIn(new java.io.ByteArrayInputStream('),
+      'Java execute-project-java adapter should wire request stdin into shared ProjectEvents System.in'
     );
     assertCondition(
       defaultAdapterSource.includes('ProjectEvents.setKernelDevices("') &&
