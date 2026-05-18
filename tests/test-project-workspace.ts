@@ -6561,6 +6561,12 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     (await deviceWorkspace.readFile('copied-proc-version.txt')).startsWith('tracekernel '),
     'copyFile should read /proc/kernel/version through kernel read target'
   );
+  const observedFs = (deviceWorkspace as unknown as { fs: { readFileBytes?: (path: string) => Promise<unknown> } }).fs;
+  const procVersionBytes = await observedFs.readFileBytes?.('/proc/kernel/version');
+  assertCondition(
+    typeof procVersionBytes === 'string' && procVersionBytes.startsWith('tracekernel '),
+    `observed filesystem readFileBytes should return byte strings for /proc files: ${String(procVersionBytes)}`
+  );
   await assertRejectsAsync(() => deviceWorkspace.mkdir('/proc/new'), 'mkdir should reject /proc paths');
   await assertRejectsAsync(() => deviceWorkspace.remove('/dev/stdout'), 'remove should reject /dev paths');
   await assertRejectsAsync(() => deviceWorkspace.deleteFile('/dev/stdout'), 'deleteFile should reject /dev paths');

@@ -620,6 +620,15 @@ function base64FromBytes(bytes: Uint8Array): string {
   return globalThis.btoa(binary);
 }
 
+function textToByteString(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let byteString = '';
+  for (const byte of bytes) {
+    byteString += String.fromCharCode(byte);
+  }
+  return byteString;
+}
+
 function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
   const bytes = new Uint8Array(left.byteLength + right.byteLength);
   bytes.set(left, 0);
@@ -679,11 +688,11 @@ class KernelObservedFileSystem implements IFileSystem {
   readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'device-file') {
-      return Promise.resolve(this.readDeviceFile(readTarget.path)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+      return Promise.resolve(textToByteString(this.readDeviceFile(readTarget.path))) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') {
-      return Promise.resolve(this.readProcFile(readTarget.path)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+      return Promise.resolve(textToByteString(this.readProcFile(readTarget.path))) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
     }
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
