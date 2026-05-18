@@ -94,6 +94,10 @@ public sealed class CSharpProjectFileChange
     [JsonPropertyName("path")]
     public string Path { get; set; } = string.Empty;
 
+    [JsonPropertyName("directory")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Directory { get; set; }
+
     [JsonPropertyName("contents")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Contents { get; set; }

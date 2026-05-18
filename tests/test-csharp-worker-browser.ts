@@ -43,6 +43,7 @@ interface CSharpProjectWorkerResponse {
   exitCode: number;
   files?: Array<{
     path: string;
+    directory?: true;
     contents?: string;
     encoding?: 'utf8' | 'base64';
     deleted?: true;
@@ -56,6 +57,7 @@ interface CSharpProjectWorkerResponse {
     phase?: string;
     change?: {
       path: string;
+      directory?: true;
       contents?: string;
       encoding?: 'utf8' | 'base64';
       deleted?: true;
@@ -2753,6 +2755,10 @@ async function main(): Promise<void> {
                 'File.Copy("generated.txt", "copied.txt");',
                 'File.Move("copied.txt", "moved.txt");',
                 'File.Delete("stale.txt");',
+                'Directory.CreateDirectory("managed-dir/nested");',
+                'File.WriteAllText("managed-dir/nested/value.txt", "managed\\n");',
+                'Directory.Move("managed-dir", "managed-moved");',
+                'Directory.Delete("managed-moved", recursive: true);',
                 '',
               ].join('\n'),
             },
@@ -3020,6 +3026,65 @@ async function main(): Promise<void> {
         firstFinalDiffIndex > liveRenameSnapshotIndex &&
         firstFinalDiffIndex > liveDeleteIndex,
       `C# project worker should emit create/rename/delete live events before final-diff reconciliation, received ${JSON.stringify(projectRun.events)}`
+    );
+    const liveManagedDirectoryParentCreateIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/managed-dir' &&
+        event.change.directory === true
+    );
+    const liveManagedDirectoryCreateIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/managed-dir/nested' &&
+        event.change.directory === true
+    );
+    const liveManagedDirectoryMoveDeleteIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/managed-dir' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+    );
+    const liveManagedDirectoryMoveCreateIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/managed-moved' &&
+        event.change.directory === true
+    );
+    const liveManagedDirectoryMovedFileIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/managed-moved/nested/value.txt' &&
+        event.change.contents === 'managed\n'
+    );
+    const liveManagedDirectoryDeleteIndex = firstProjectEventIndex(
+      projectRun.events,
+      (event) =>
+        event.type === 'file-change' &&
+        event.phase === 'live' &&
+        event.change?.path === 'src/managed-moved' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+    );
+    assertCondition(
+      liveManagedDirectoryParentCreateIndex >= 0 &&
+        liveManagedDirectoryCreateIndex > liveManagedDirectoryParentCreateIndex &&
+        liveManagedDirectoryMoveDeleteIndex > liveManagedDirectoryCreateIndex &&
+        liveManagedDirectoryMoveCreateIndex > liveManagedDirectoryMoveDeleteIndex &&
+        liveManagedDirectoryMovedFileIndex > liveManagedDirectoryMoveCreateIndex &&
+        liveManagedDirectoryDeleteIndex > liveManagedDirectoryMovedFileIndex,
+      `C# project worker should stream managed Directory.CreateDirectory/Move/Delete live events, received ${JSON.stringify(projectRun.events)}`
     );
 
     const restrictedDeviceRun = await runProjectWorkerCase(

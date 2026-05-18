@@ -1101,6 +1101,15 @@ public static partial class CompilerHost
                         .WithTriviaFrom(node.Expression)
                 );
             }
+            if (node.Expression is MemberAccessExpressionSyntax directoryMemberAccess
+                && IsProjectDirectoryApi(directoryMemberAccess.Expression)
+                && IsProjectDirectoryMutationMethod(directoryMemberAccess.Name.Identifier.ValueText))
+            {
+                return node.WithExpression(
+                    SyntaxFactory.ParseExpression($"TraceCode.Project.ProjectDirectory.{directoryMemberAccess.Name.Identifier.ValueText}")
+                        .WithTriviaFrom(node.Expression)
+                );
+            }
 
             return base.VisitInvocationExpression(node);
         }
@@ -1149,6 +1158,14 @@ public static partial class CompilerHost
                 || string.Equals(text, "global::System.IO.File", StringComparison.Ordinal);
         }
 
+        private static bool IsProjectDirectoryApi(ExpressionSyntax expression)
+        {
+            string text = expression.ToString();
+            return string.Equals(text, "Directory", StringComparison.Ordinal)
+                || string.Equals(text, "System.IO.Directory", StringComparison.Ordinal)
+                || string.Equals(text, "global::System.IO.Directory", StringComparison.Ordinal);
+        }
+
         private static bool IsProjectFileMutationMethod(string method)
         {
             return method is
@@ -1163,6 +1180,11 @@ public static partial class CompilerHost
                 "Delete" or
                 "Move" or
                 "Copy";
+        }
+
+        private static bool IsProjectDirectoryMutationMethod(string method)
+        {
+            return method is "CreateDirectory" or "Delete" or "Move";
         }
     }
 
@@ -1295,6 +1317,42 @@ public static class ProjectFile
     {
         System.IO.File.Copy(sourceFileName, destFileName, overwrite);
         TraceCode.CSharpHost.CompilerHost.EmitLiveProjectFileSnapshot(destFileName);
+    }
+}
+
+public static class ProjectDirectory
+{
+    public static System.IO.DirectoryInfo CreateDirectory(string path)
+    {
+        string[] missingDirectories = TraceCode.CSharpHost.CompilerHost.MissingProjectDirectories(path);
+        System.IO.DirectoryInfo directory = System.IO.Directory.CreateDirectory(path);
+        foreach (string missingDirectory in missingDirectories)
+        {
+            if (System.IO.Directory.Exists(missingDirectory))
+            {
+                TraceCode.CSharpHost.CompilerHost.EmitLiveProjectDirectorySnapshot(missingDirectory);
+            }
+        }
+        return directory;
+    }
+
+    public static void Delete(string path)
+    {
+        System.IO.Directory.Delete(path);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectDirectoryDelete(path);
+    }
+
+    public static void Delete(string path, bool recursive)
+    {
+        System.IO.Directory.Delete(path, recursive);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectDirectoryDelete(path);
+    }
+
+    public static void Move(string sourceDirName, string destDirName)
+    {
+        System.IO.Directory.Move(sourceDirName, destDirName);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectDirectoryDelete(sourceDirName);
+        TraceCode.CSharpHost.CompilerHost.EmitLiveProjectPathSnapshot(destDirName);
     }
 }
 
@@ -1533,6 +1591,109 @@ public sealed class ProjectFileStream : System.IO.FileStream
         }
     }
 
+    public static void EmitLiveProjectPathSnapshot(string path)
+    {
+        string? relativePath = ProjectRelativePathForRuntimePath(path);
+        if (relativePath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            string absolutePath = Path.GetFullPath(path);
+            if (File.Exists(absolutePath))
+            {
+                EmitProjectFileChanges(new[] { EncodeProjectFileChange(relativePath, File.ReadAllBytes(absolutePath)) }, "live");
+                return;
+            }
+            if (!Directory.Exists(absolutePath))
+            {
+                return;
+            }
+
+            EmitProjectFileChanges(new[] { EncodeProjectDirectoryChange(relativePath) }, "live");
+            foreach (string directoryPath in Directory.EnumerateDirectories(absolutePath, "*", SearchOption.AllDirectories))
+            {
+                string? nestedRelativePath = ProjectRelativePathForRuntimePath(directoryPath);
+                if (nestedRelativePath is not null)
+                {
+                    EmitProjectFileChanges(new[] { EncodeProjectDirectoryChange(nestedRelativePath) }, "live");
+                }
+            }
+            foreach (string filePath in Directory.EnumerateFiles(absolutePath, "*", SearchOption.AllDirectories))
+            {
+                string? nestedRelativePath = ProjectRelativePathForRuntimePath(filePath);
+                if (nestedRelativePath is not null)
+                {
+                    EmitProjectFileChanges(new[] { EncodeProjectFileChange(nestedRelativePath, File.ReadAllBytes(filePath)) }, "live");
+                }
+            }
+        }
+        catch
+        {
+            // Live project events are best-effort and must not change user code behavior.
+        }
+    }
+
+    public static string[] MissingProjectDirectories(string path)
+    {
+        try
+        {
+            string absolutePath = Path.GetFullPath(path);
+            if (!absolutePath.StartsWith(ProjectWorkspaceRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !string.Equals(absolutePath, ProjectWorkspaceRoot, StringComparison.Ordinal))
+            {
+                return Array.Empty<string>();
+            }
+
+            List<string> candidates = new();
+            string? current = absolutePath;
+            while (!string.IsNullOrEmpty(current) && !string.Equals(current, ProjectWorkspaceRoot, StringComparison.Ordinal))
+            {
+                candidates.Add(current);
+                current = Path.GetDirectoryName(current);
+            }
+            candidates.Reverse();
+
+            List<string> missing = new();
+            foreach (string candidate in candidates)
+            {
+                if (!Directory.Exists(candidate))
+                {
+                    missing.Add(candidate);
+                }
+            }
+            return missing.ToArray();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    public static void EmitLiveProjectDirectorySnapshot(string path)
+    {
+        string? relativePath = ProjectRelativePathForRuntimePath(path);
+        if (relativePath is null)
+        {
+            return;
+        }
+
+        EmitProjectFileChanges(new[] { EncodeProjectDirectoryChange(relativePath) }, "live");
+    }
+
+    public static void EmitLiveProjectDirectoryDelete(string path)
+    {
+        string? relativePath = ProjectRelativePathForRuntimePath(path);
+        if (relativePath is null)
+        {
+            return;
+        }
+
+        EmitProjectFileChanges(new[] { EncodeProjectDirectoryChange(relativePath, deleted: true) }, "live");
+    }
+
     public static void EmitLiveProjectFileDelete(string path)
     {
         string? relativePath = ProjectRelativePathForRuntimePath(path);
@@ -1542,6 +1703,16 @@ public sealed class ProjectFileStream : System.IO.FileStream
         }
 
         EmitProjectFileChanges(new[] { new CSharpProjectFileChange { Path = relativePath, Deleted = true } }, "live");
+    }
+
+    private static CSharpProjectFileChange EncodeProjectDirectoryChange(string path, bool deleted = false)
+    {
+        return new CSharpProjectFileChange
+        {
+            Path = path,
+            Directory = true,
+            Deleted = deleted,
+        };
     }
 
     private static string? ProjectRelativePathForRuntimePath(string path)
