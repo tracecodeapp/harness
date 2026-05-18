@@ -1586,6 +1586,15 @@ async function runBrowserJavaScriptProjectRequest(
       if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
       return fileStore.get(entry.path ?? '') ?? new Uint8Array();
     };
+    const readDescriptorFileBytes = (fd: number): Uint8Array => {
+      const entry = fileDescriptor(fd);
+      if (!entry.readable) throw Object.assign(new Error('EBADF: bad file descriptor, read'), { code: 'EBADF' });
+      const source = descriptorBytes(entry);
+      const start = entry.kind === 'device' ? 0 : entry.offset;
+      const bytes = source.slice(start);
+      if (entry.kind !== 'device') entry.offset = source.byteLength;
+      return bytes;
+    };
     const writeDescriptorBytes = (entry: BrowserFileDescriptor, bytes: Uint8Array, position?: number | null): void => {
       if (!entry.writable) throw Object.assign(new Error('EBADF: bad file descriptor, write'), { code: 'EBADF' });
       if (entry.kind === 'device') {
@@ -1599,6 +1608,12 @@ async function runBrowserJavaScriptProjectRequest(
       next.set(bytes, start);
       setFileBytes(entry.path ?? '', next);
       if (position === undefined || position === null) entry.offset = start + bytes.byteLength;
+    };
+    const writeDescriptorFileBytes = (fd: number, bytes: Uint8Array, append = false): void => {
+      const entry = fileDescriptor(fd);
+      const position = append && entry.kind !== 'device' ? descriptorBytes(entry).byteLength : null;
+      writeDescriptorBytes(entry, bytes, position);
+      if (append && entry.kind !== 'device' && typeof position === 'number') entry.offset = position + bytes.byteLength;
     };
     const truncateFileBytes = (path: string, length = 0): void => {
       const previous = fileStore.get(path);
@@ -2146,9 +2161,13 @@ async function runBrowserJavaScriptProjectRequest(
       },
       createWriteStream: createWritableStream,
       readFileSync: (path: unknown, encoding?: string | { encoding?: string }) => {
+        const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
+        if (typeof path === 'number') {
+          const bytes = BrowserBuffer.from(readDescriptorFileBytes(path));
+          return typeof requestedEncoding === 'string' ? bytes.toString(requestedEncoding) : bytes;
+        }
         const device = normalizeRuntimeDevicePath(path);
         if (device) {
-          const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
           const contents = readDevice(device);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
@@ -2158,7 +2177,6 @@ async function runBrowserJavaScriptProjectRequest(
         if (!bytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
-        const requestedEncoding = typeof encoding === 'string' ? encoding : encoding?.encoding;
         if (typeof requestedEncoding === 'string') {
           return BrowserBuffer.from(bytes).toString(requestedEncoding);
         }
@@ -2174,6 +2192,10 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       writeFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
+        if (typeof path === 'number') {
+          writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options));
+          return;
+        }
         const device = normalizeRuntimeDevicePath(path);
         if (device) {
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
@@ -2192,6 +2214,10 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       appendFileSync: (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
+        if (typeof path === 'number') {
+          writeDescriptorFileBytes(path, bytesFromFsWriteValue(value, options), true);
+          return;
+        }
         const device = normalizeRuntimeDevicePath(path);
         if (device) {
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
