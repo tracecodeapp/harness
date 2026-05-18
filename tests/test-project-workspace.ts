@@ -2758,6 +2758,18 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   );
   assertCondition(await workspace.readFile('handle-options.txt') === 'aXYdef', 'browser node FileHandle options writes should persist through kernel FS');
 
+  const fileHandleTargetResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fsp = require(\\"node:fs/promises\\"); await fsp.writeFile(\\"handle-target.txt\\", \\"abcdef\\"); const handle = await fsp.open(\\"handle-target.txt\\", \\"r+\\"); const head = await handle.read({ length: 2 }); await fsp.writeFile(handle, \\"XY\\"); const after = await fsp.readFile(handle, \\"utf8\\"); await fsp.appendFile(handle, \\"Z\\"); await handle.close(); try { await fsp.readFile(handle, \\"utf8\\"); } catch (error) { console.log(error.code); } console.log(head.bytesRead + \\":\\" + head.buffer.subarray(0, head.bytesRead).toString()); console.log(after); console.log(await fsp.readFile(\\"handle-target.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(fileHandleTargetResult.exitCode === 0, `browser node FileHandle target workflow should succeed: ${fileHandleTargetResult.stderr}`);
+  assertCondition(
+    fileHandleTargetResult.stdout === 'EBADF\n2:ab\nef\nabXYefZ\n',
+    `browser node fs.promises readFile/writeFile/appendFile should accept FileHandle targets: ${fileHandleTargetResult.stdout}`
+  );
+  assertCondition(await workspace.readFile('handle-target.txt') === 'abXYefZ', 'browser node FileHandle target writes should persist through kernel FS');
+
   const fileHandleStreamResult = await workspace.runCommand([
     'node',
     '-e',

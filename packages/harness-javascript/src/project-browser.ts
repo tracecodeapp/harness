@@ -3906,6 +3906,14 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
     };
+    const fileHandleTarget = (path: unknown): unknown => (
+      typeof path === 'object' &&
+        path !== null &&
+        !(path instanceof URL) &&
+        typeof (path as { fd?: unknown }).fd === 'number'
+        ? (path as { fd: number }).fd
+        : path
+    );
     const fsPromisesApi = {
       constants: fsConstants,
       access: async (path: unknown, mode = fsConstants.F_OK) => {
@@ -4053,12 +4061,12 @@ async function runBrowserJavaScriptProjectRequest(
           },
         };
       },
-      readFile: async (path: unknown, encoding?: string | { encoding?: string }) => fsApi.readFileSync(path, encoding),
+      readFile: async (path: unknown, encoding?: string | { encoding?: string }) => fsApi.readFileSync(fileHandleTarget(path), encoding),
       writeFile: async (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
-        fsApi.writeFileSync(path, value, options);
+        fsApi.writeFileSync(fileHandleTarget(path), value, options);
       },
       appendFile: async (path: unknown, value: unknown, options?: string | { encoding?: string | null } | null) => {
-        fsApi.appendFileSync(path, value, options);
+        fsApi.appendFileSync(fileHandleTarget(path), value, options);
       },
       copyFile: async (source: unknown, destination: unknown, mode = 0) => {
         fsApi.copyFileSync(source, destination, mode);
