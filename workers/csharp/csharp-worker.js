@@ -89,6 +89,11 @@ function isKernelDeviceNamespacePath(value) {
   return normalized === '/dev' || normalized.startsWith('/dev/');
 }
 
+function isKernelDeviceDirectoryPath(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  return (value.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '') || '/') === '/dev';
+}
+
 function kernelDeviceEntries(request = activeProjectIo?.request) {
   const devices = request?.project?.kernelDevices;
   return Array.isArray(devices) ? devices : [];
@@ -408,17 +413,32 @@ function runtimeWriteFileBytes(data) {
   return encodeUtf8(String(data ?? ''));
 }
 
-function throwKernelDevicePathError(path, operation) {
-  const devicePath = normalizeKernelDevicePath(path);
-  const device = kernelDeviceInfo(devicePath);
-  const code = device ? 'EROFS' : 'ENOENT';
-  const errno = device ? 69 : 44;
+function kernelErrno(code) {
+  if (code === 'EBADF') return 8;
+  if (code === 'EISDIR') return 31;
+  if (code === 'ENOENT') return 44;
+  if (code === 'EROFS') return 69;
+  return 29;
+}
+
+function throwKernelFsError(path, operation, code, reason) {
   const fs = runtimeModule?.FS;
   if (typeof fs?.ErrnoError === 'function') {
-    throw new fs.ErrnoError(errno);
+    throw new fs.ErrnoError(kernelErrno(code));
   }
-  const reason = device ? 'read-only file system' : 'no such file or directory';
-  throw Object.assign(new Error(`${code}: ${reason}, ${operation} '${path}'`), { code, errno });
+  throw Object.assign(new Error(`${code}: ${reason}, ${operation} '${path}'`), { code, errno: kernelErrno(code) });
+}
+
+function throwKernelDevicePathError(path, operation, code = 'ENOENT') {
+  if (isKernelDeviceDirectoryPath(path)) {
+    throwKernelFsError(path, operation, 'EROFS', 'read-only file system');
+  }
+  const devicePath = normalizeKernelDevicePath(path);
+  const device = kernelDeviceInfo(devicePath);
+  if (!device) {
+    throwKernelFsError(path, operation, 'ENOENT', 'no such file or directory');
+  }
+  throwKernelFsError(path, operation, code, code === 'EBADF' ? 'bad file descriptor' : 'read-only file system');
 }
 
 function emitProjectEvent(payload) {
@@ -606,10 +626,10 @@ function installRuntimeFsHooks(runtime) {
         return undefined;
       }
       if (activeProjectIo && isKernelDeviceNamespacePath(path)) {
-        throwKernelDevicePathError(path, 'write');
+        throwKernelDevicePathError(path, 'write', 'EROFS');
       }
       if (activeProjectIo && isKernelVirtualFsPath(path)) {
-        throw Object.assign(new Error(`EROFS: read-only file system, write '${path}'`), { code: 'EROFS' });
+        throwKernelFsError(path, 'write', 'EROFS', 'read-only file system');
       }
       const result = originalWriteFile.apply(this, arguments);
       if (activeProjectIo) emitProjectFileSnapshot(path);
@@ -626,10 +646,10 @@ function installRuntimeFsHooks(runtime) {
           throwKernelDevicePathError(path, 'open');
         }
         if (isReadableOpenFlags(flags) && !kernelDeviceInputSource(devicePath)) {
-          throwKernelDevicePathError(path, 'open');
+          throwKernelDevicePathError(path, 'open', 'EROFS');
         }
         if (isWritableOpenFlags(flags) && !kernelDeviceOutputTarget(devicePath)) {
-          throwKernelDevicePathError(path, 'open');
+          throwKernelDevicePathError(path, 'open', 'EROFS');
         }
       }
       const shouldEmitCreateSnapshot = Boolean(activeProjectIo) && isCreateOrTruncateOpenFlags(flags);
