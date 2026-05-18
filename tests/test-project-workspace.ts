@@ -6000,9 +6000,11 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
         event.change.path === 'initial-empty/deep' &&
         event.change.directory === true &&
         event.change.deleted === true
-      ),
+    ),
     `project command should emit final-diff directory changes for native runner directories: ${JSON.stringify(events)}`
   );
+  assertCondition((await workspace.stat('event-dir/nested')).isDirectory, 'project command should persist final-diff directory creates');
+  assertCondition(!(await workspace.exists('initial-empty/deep')), 'project command should persist final-diff directory deletes');
   workspace.dispose();
 
   const directEvents: RuntimeCommandEvent[] = [];
@@ -6142,10 +6144,21 @@ async function testWorkspaceKernelEvents(): Promise<void> {
     { id: 'runtime:test', kind: 'runtime', capabilities: { write: ['/workspace/**'], execute: true } },
     'final-diff'
   );
+  await workspace.kernel.applyFileChange(
+    { path: 'runtime-dir/nested', directory: true },
+    { id: 'runtime:test', kind: 'runtime', capabilities: { write: ['/workspace/**'], execute: true } },
+    'final-diff'
+  );
+  await workspace.kernel.applyFileChange(
+    { path: 'runtime-dir/nested', directory: true, deleted: true },
+    { id: 'runtime:test', kind: 'runtime', capabilities: { write: ['/workspace/**'], delete: ['/workspace/**'], execute: true } },
+    'final-diff'
+  );
   await workspace.deleteFile('user.txt');
 
   assertCondition(await workspace.readFile('agent.txt') === 'agent\n', 'kernel writeFile should persist through workspace FS');
   assertCondition(await workspace.readFile('runtime.txt') === 'runtime\n', 'kernel final-diff application should persist files');
+  assertCondition(!(await workspace.exists('runtime-dir/nested')), 'kernel final-diff application should persist directory deletes');
   assertCondition(
     events.some((event) =>
       event.type === 'file-change' &&
@@ -6177,6 +6190,24 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   assertCondition(
     events.some((event) =>
       event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'runtime-dir/nested' &&
+      event.change.directory === true
+    ) &&
+      events.some((event) =>
+        event.type === 'file-change' &&
+        event.actor?.kind === 'runtime' &&
+        event.phase === 'final-diff' &&
+        event.change.path === 'runtime-dir/nested' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+      ),
+    `workspace watch should report runtime final-diff directory changes: ${JSON.stringify(events)}`
+  );
+  assertCondition(
+    events.some((event) =>
+      event.type === 'file-change' &&
       event.actor?.kind === 'principal' &&
       event.change.path === 'user.txt' &&
       'deleted' in event.change &&
@@ -6200,16 +6231,21 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       exitCode: 0,
       files: [
         { path: 'generated.txt', contents: 'generated\n' },
+        { path: 'generated-dir/nested', directory: true },
+        { path: 'stale-dir/nested', directory: true, deleted: true },
         { path: 'stale.txt', deleted: true },
       ],
     }),
   });
   await commandWorkspace.writeFile('stale.txt', 'stale\n');
+  await commandWorkspace.mkdir('stale-dir/nested');
   commandWorkspace.watch((event) => commandEvents.push(event));
   const commandResult = await commandWorkspace.runCommand('node index.js');
   assertCondition(commandResult.exitCode === 0, 'workspace command should succeed');
   assertCondition(await commandWorkspace.readFile('generated.txt') === 'generated\n', 'command final diff should persist generated files');
+  assertCondition((await commandWorkspace.stat('generated-dir/nested')).isDirectory, 'command final diff should persist generated directories');
   await assertRejectsAsync(() => commandWorkspace.readFile('stale.txt'), 'command final diff should persist deletions');
+  assertCondition(!(await commandWorkspace.exists('stale-dir/nested')), 'command final diff should persist directory deletions');
   assertCondition(
     commandEvents.some((event) =>
       event.type === 'file-change' &&
@@ -6218,6 +6254,24 @@ async function testWorkspaceKernelEvents(): Promise<void> {
       event.change.path === 'generated.txt'
     ),
     `workspace watch should report command final-diff writes: ${JSON.stringify(commandEvents)}`
+  );
+  assertCondition(
+    commandEvents.some((event) =>
+      event.type === 'file-change' &&
+      event.actor?.kind === 'runtime' &&
+      event.phase === 'final-diff' &&
+      event.change.path === 'generated-dir/nested' &&
+      event.change.directory === true
+    ) &&
+      commandEvents.some((event) =>
+        event.type === 'file-change' &&
+        event.actor?.kind === 'runtime' &&
+        event.phase === 'final-diff' &&
+        event.change.path === 'stale-dir/nested' &&
+        event.change.directory === true &&
+        event.change.deleted === true
+      ),
+    `workspace watch should report command final-diff directory changes: ${JSON.stringify(commandEvents)}`
   );
   assertCondition(
     commandEvents.some((event) =>
