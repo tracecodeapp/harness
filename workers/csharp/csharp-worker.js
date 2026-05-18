@@ -20,6 +20,7 @@ const WORKER_DEBUG = (() => {
 })();
 const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
+const CSHARP_PROJECT_WORKSPACE_ROOT = '/tmp/tracecode-csharp-project';
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
@@ -195,7 +196,7 @@ function normalizeProjectFsPath(path, request = activeProjectIo?.request) {
   const normalized = path.replace(/\\/g, '/').replace(/\/+/g, '/');
   if (normalized === '/dev/stdout' || normalized === '/dev/stderr' || isKernelVirtualFsPath(normalized, request)) return null;
 
-  const roots = ['/workspace'];
+  const roots = ['/workspace', CSHARP_PROJECT_WORKSPACE_ROOT];
   const project = request?.project;
   if (typeof project?.cwd === 'string' && project.cwd) roots.push(project.cwd);
   if (typeof project?.workspaceRoot === 'string' && project.workspaceRoot) roots.push(project.workspaceRoot);

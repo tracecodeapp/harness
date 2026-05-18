@@ -2732,6 +2732,7 @@ async function main(): Promise<void> {
             {
               path: 'src/Program.cs',
               contents: [
+                'using FsFile = System.IO.File;',
                 'Console.WriteLine(Helper.Value());',
                 'Console.WriteLine(Directory.Exists("empty/child") ? "dir" : "missing");',
                 'Console.WriteLine(Path.GetFileName(Directory.GetDirectories("empty").Single()));',
@@ -2775,6 +2776,7 @@ async function main(): Promise<void> {
                 'Console.Error.WriteLine("stderr-line");',
                 'File.WriteAllText("generated.txt", Helper.Value().ToString() + "\\n");',
                 'System.IO.File.AppendAllText("generated.txt", "appended\\n");',
+                'FsFile.WriteAllText("alias-live.txt", "alias\\n");',
                 'File.WriteAllBytes("bytes.bin", new byte[] { 0, 255 });',
                 'using (var writer = new StreamWriter("streamed.txt")) { writer.WriteLine("stream"); }',
                 'using (StreamWriter writer = File.AppendText("streamed.txt")) { writer.WriteLine("append"); }',
@@ -3000,6 +3002,20 @@ async function main(): Promise<void> {
             event.change.contents === '42\nappended\n'
       ) === true,
       `C# project worker should stream generated text file changes, received ${JSON.stringify(projectRun.events)}`
+    );
+    assertCondition(
+      projectRun.files?.some((file) => file.path === 'src/alias-live.txt' && file.contents === 'alias\n') === true,
+      `C# project worker should return alias-written text file changes, received ${JSON.stringify(projectRun.files)}`
+    );
+    assertCondition(
+      projectRun.events?.some(
+        (event) =>
+          event.type === 'file-change' &&
+          event.phase === 'live' &&
+          event.change?.path === 'src/alias-live.txt' &&
+          event.change.contents === 'alias\n'
+      ) === true,
+      `C# project worker should stream live events for System.IO.File aliases that bypass the C# shim, received ${JSON.stringify(projectRun.events)}`
     );
     assertCondition(
       projectRun.files?.some((file) => file.path === 'src/bytes.bin' && file.encoding === 'base64' && file.contents === 'AP8=') === true,
