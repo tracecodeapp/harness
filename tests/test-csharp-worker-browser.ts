@@ -3358,6 +3358,43 @@ async function main(): Promise<void> {
       `C# project worker should preserve sourceDevice for manifest /dev/log writes, received ${JSON.stringify(manifestCustomDeviceRun.events)}`
     );
 
+    const manifestCustomInputOnlyRun = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/workspace/src',
+        env: {},
+        stdin: 'custom-only-stdin\n',
+        project: {
+          kernelDevices: [
+            { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
+            { path: '/dev/stdout', readable: false, writable: true, outputDevice: '/dev/stdout' },
+            { path: '/dev/stderr', readable: false, writable: true, outputDevice: '/dev/stderr' },
+          ],
+          files: [
+            {
+              path: 'src/Program.cs',
+              contents: [
+                'try { Console.Write(File.ReadAllText("/dev/stdin")); } catch (Exception ex) { Console.WriteLine("stdin:" + ex.GetType().Name); }',
+                'Console.Write("custom:" + File.ReadAllText("/dev/custom-in"));',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(
+      manifestCustomInputOnlyRun.exitCode === 0,
+      `C# project worker should run manifest custom-input-only device case: ${manifestCustomInputOnlyRun.stderr}`
+    );
+    assertCondition(
+      manifestCustomInputOnlyRun.stdout === 'stdin:FileNotFoundException\ncustom:custom-only-stdin\n',
+      `C# project worker should read custom input devices without exposing /dev/stdin, received ${JSON.stringify(manifestCustomInputOnlyRun)}`
+    );
+
     const [deviceLeakFirstRun, deviceLeakSecondRun] = await runProjectWorkerSequenceCase(
       page,
       [

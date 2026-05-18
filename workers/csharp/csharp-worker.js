@@ -417,7 +417,7 @@ function materializeKernelDevices(request) {
       device.readable
         ? () => {
             if (!kernelDeviceInputSource(devicePath, request)) return undefined;
-            return readProjectInputByte();
+            return readProjectInputByte(devicePath);
           }
         : undefined,
       device.writable
@@ -618,10 +618,10 @@ function writeProjectDeviceByte(device, value, options = {}) {
   if (value === 10) flushProjectOutput(stream);
 }
 
-function readProjectInputByte() {
+function readProjectInputByte(devicePath = '/dev/stdin') {
   const context = activeProjectIo;
   if (!context) return null;
-  if (!kernelDeviceInputSource('/dev/stdin', context.request)) return null;
+  if (!kernelDeviceInputSource(devicePath, context.request)) return null;
   if (context.stdinIndex >= context.stdinBytes.length) return null;
   return context.stdinBytes[context.stdinIndex++];
 }
@@ -1174,7 +1174,7 @@ async function handleMessage(message) {
     const projectIo = {
       messageId: message.id,
       request,
-      stdinBytes: encodeUtf8(projectRuntimeStdin(request)),
+      stdinBytes: encodeUtf8(String(request?.stdin || '')),
       stdinIndex: 0,
       stdoutBytes: [],
       stderrBytes: [],
