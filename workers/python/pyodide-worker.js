@@ -851,15 +851,122 @@ function installPyodideProjectFsMutationEvents(projectRoot) {
   };
 }
 
+function normalizeProjectKernelDevices(value) {
+  let entries = value;
+  if (typeof entries === 'string') {
+    try {
+      entries = JSON.parse(entries);
+    } catch {
+      entries = [];
+    }
+  }
+  if (!Array.isArray(entries)) return {};
+
+  const devices = {};
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const path = String(entry.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!path.startsWith('/dev/')) continue;
+    devices[path] = {
+      readable: Boolean(entry.readable),
+      writable: Boolean(entry.writable),
+      inputDevice: String(entry.inputDevice || ''),
+      outputDevice: String(entry.outputDevice || ''),
+    };
+  }
+  return devices;
+}
+
+function installPyodideProjectStdioBridge(kernelDevices, stdin) {
+  if (!pyodide) return () => {};
+
+  const devices = normalizeProjectKernelDevices(kernelDevices);
+  const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
+  const encodeUtf8 = (value) => {
+    const text = String(value ?? '');
+    if (typeof TextEncoder === 'function') return new TextEncoder().encode(text);
+    return Uint8Array.from(unescape(encodeURIComponent(text)), (char) => char.charCodeAt(0));
+  };
+  const stdinBytes = encodeUtf8(stdin);
+  let stdinOffset = 0;
+
+  const emitProviderOutput = (stream, device, data) => {
+    if (!data) return;
+    try {
+      if (typeof self.__tracecodeProjectProviderOutput === 'function') {
+        self.__tracecodeProjectProviderOutput(stream, device, data);
+        return;
+      }
+      if (typeof self.__tracecodeProjectEvent === 'function') {
+        self.__tracecodeProjectEvent({ type: 'output', stream, device, data });
+      }
+    } catch {
+      // Provider stdio events are best-effort; Python-side capture remains authoritative where available.
+    }
+  };
+
+  const writeHandler = (stream, defaultDevice) => (buffer) => {
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const text = textDecoder ? textDecoder.decode(bytes) : String.fromCharCode(...bytes);
+    const deviceInfo = devices[defaultDevice] || {};
+    const outputDevice = String(deviceInfo.outputDevice || defaultDevice);
+    emitProviderOutput(outputDevice === '/dev/stderr' ? 'stderr' : stream, outputDevice, text);
+    return bytes.byteLength;
+  };
+
+  const restoreFns = [];
+  if (typeof pyodide.setStdin === 'function' && devices['/dev/stdin']?.readable) {
+    pyodide.setStdin({
+      read: (buffer) => {
+        const remaining = stdinBytes.byteLength - stdinOffset;
+        const count = Math.max(0, Math.min(buffer.byteLength, remaining));
+        if (count > 0) {
+          buffer.set(stdinBytes.subarray(stdinOffset, stdinOffset + count), 0);
+          stdinOffset += count;
+        }
+        return count;
+      },
+      isatty: false,
+    });
+    restoreFns.push(() => pyodide.setStdin({}));
+  }
+  if (typeof pyodide.setStdout === 'function' && devices['/dev/stdout']?.writable) {
+    pyodide.setStdout({ write: writeHandler('stdout', '/dev/stdout'), isatty: false });
+    restoreFns.push(() => pyodide.setStdout({}));
+  }
+  if (typeof pyodide.setStderr === 'function' && devices['/dev/stderr']?.writable) {
+    pyodide.setStderr({ write: writeHandler('stderr', '/dev/stderr'), isatty: false });
+    restoreFns.push(() => pyodide.setStderr({}));
+  }
+
+  return () => {
+    for (const restore of restoreFns.reverse()) {
+      try {
+        restore();
+      } catch {
+        // Restoring Pyodide stream defaults is best-effort.
+      }
+    }
+  };
+}
+
 async function executeProjectPython(request, messageId) {
   await loadPyodideInstance();
 
   const requestJson = JSON.stringify(request ?? {});
+  const projectOutputEvents = [];
   self.__tracecodeProjectEvent = (event) => {
     const payload = typeof event === 'string' ? JSON.parse(event) : event;
+    if (payload?.type === 'output' && (payload.stream === 'stdout' || payload.stream === 'stderr')) {
+      projectOutputEvents.push(payload);
+    }
     self.postMessage({ id: messageId, type: 'project-event', payload });
   };
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
+  const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
+    request?.project?.kernelDevices,
+    request?.stdin ?? ''
+  );
   const projectCode = `
 import base64
 import builtins
@@ -1904,8 +2011,20 @@ json.dumps({
 
   try {
     const resultJson = await pyodide.runPythonAsync(projectCode);
-    return JSON.parse(resultJson);
+    const result = JSON.parse(resultJson);
+    if (projectOutputEvents.length > 0) {
+      result.stdout = projectOutputEvents
+        .filter((event) => event.stream === 'stdout')
+        .map((event) => String(event.data ?? ''))
+        .join('');
+      result.stderr = projectOutputEvents
+        .filter((event) => event.stream === 'stderr')
+        .map((event) => String(event.data ?? ''))
+        .join('');
+    }
+    return result;
   } finally {
+    restoreProviderStdioBridge();
     delete self.__tracecodeProjectEvent;
     delete self.__tracecodeInstallProjectFsMutationEvents;
   }

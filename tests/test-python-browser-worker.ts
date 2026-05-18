@@ -146,11 +146,15 @@ async function main(): Promise<void> {
             '    os.write(stdout_fd, b"dev-fd-out\\\\n")',
             'finally:',
             '    os.close(stdout_fd)',
+            'sys.__stdout__.write("provider-hook-out\\\\n")',
+            'sys.__stdout__.flush()',
             'stderr_fd = os.open("/dev/stderr", os.O_WRONLY)',
             'try:',
             '    os.write(stderr_fd, b"dev-fd-err\\\\n")',
             'finally:',
             '    os.close(stderr_fd)',
+            'sys.__stderr__.write("provider-hook-err\\\\n")',
+            'sys.__stderr__.flush()',
             'print("stderr-line", file=sys.stderr)',
             'with open("/workspace/generated.txt", "w", encoding="utf-8") as handle:',
             '    handle.write(str(answer()) + "\\\\n")',
@@ -416,11 +420,11 @@ async function main(): Promise<void> {
 
     assertCondition(results.fileRun.exitCode === 0, `Python project file run should succeed: ${results.fileRun.stderr}`);
     assertCondition(
-      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\n',
+      results.fileRun.stdout === '42\nfrom-stdin\nbrowser-python-project\nalpha,beta\n/workspace\ndev-fd-stdin=from-stdin\ndev-fd-out\nprovider-hook-out\n',
       `Python project file stdout should match workspace semantics: ${JSON.stringify(results.fileRun.stdout)}`
     );
     assertCondition(
-      results.fileRun.stderr === 'dev-fd-err\nstderr-line\n',
+      results.fileRun.stderr === 'dev-fd-err\nprovider-hook-err\nstderr-line\n',
       `Python project file stderr should match workspace semantics: ${JSON.stringify(results.fileRun.stderr)}`
     );
     assertCondition(
