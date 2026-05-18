@@ -4927,6 +4927,18 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'console.log(require.resolve("./index.js"));',
           'console.log(require.resolve("/home/ada/weather-api/lib/value.js"));',
           'console.log(value.answer);',
+          'const procInfo = JSON.parse(fs.readFileSync("/proc/kernel/info", "utf8"));',
+          'console.log(`${procInfo.user.username}:${procInfo.host.hostname}:${procInfo.workspace.root}`);',
+          'console.log(fs.readdirSync("/proc").join(","));',
+          'console.log(fs.readdirSync("/proc/kernel", { withFileTypes: true }).map((entry) => `${entry.name}:${entry.isFile()}`).join(","));',
+          'console.log(`${fs.statSync("/proc").isDirectory()}:${fs.statSync("/proc/kernel/info").isFile()}`);',
+          'console.log(`${fs.existsSync("/proc/self/mountinfo")}:${fs.existsSync("/proc/missing")}`);',
+          'console.log(fs.readFileSync("/proc/self/mountinfo", "utf8").includes("tracekernel:proc"));',
+          'const procFd = fs.openSync("/proc/kernel/info", "r");',
+          'console.log(JSON.parse(fs.readFileSync(procFd, "utf8")).workspaceRoot);',
+          'console.log(fs.fstatSync(procFd).isFile());',
+          'fs.closeSync(procFd);',
+          'try { fs.writeFileSync("/proc/kernel/info", "{}\\n"); } catch (error) { console.log(error.code); }',
           'fs.writeFileSync("/home/ada/weather-api/node-canonical.txt", "node-canonical\\n");',
           'fs.appendFileSync("/workspace/node-alias.txt", "node-alias\\n");',
           '',
@@ -5012,6 +5024,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       `browser Python request should use canonical cwd and expose alias metadata: ${python.stdout}`
     );
     assertCondition(await workspace.readFile('python-browser.txt') === 'python-browser\n', 'browser Python final diff should persist through kernel FS');
+    assertCondition(pythonRequests[0]?.project.kernel?.user.username === 'ada', 'browser Python request should include kernel identity');
 
     const nodeEvents: RuntimeCommandEvent[] = [];
     const node = await workspace.runCommand('node /home/ada/weather-api/index.js', {
@@ -5029,12 +5042,22 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         '/home/ada/weather-api/index.js',
         '/home/ada/weather-api/lib/value.js',
         '42',
+        'ada:tracevm-browser:/home/ada/weather-api',
+        'kernel,self',
+        'info:true',
+        'true:true',
+        'true:false',
+        'true',
+        '/home/ada/weather-api',
+        'true',
+        'EROFS',
         '',
       ].join('\n'),
       `browser Node APIs should use canonical tracekernel paths: ${node.stdout}`
     );
     assertCondition(await workspace.readFile('node-canonical.txt') === 'node-canonical\n', 'browser Node should write canonical absolute paths');
     assertCondition(await workspace.readFile('node-alias.txt') === 'node-alias\n', 'browser Node should still map /workspace alias paths');
+    assertCondition(nodeEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout'), 'browser Node should stream stdout events');
     assertCondition(
       nodeEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'node-canonical.txt'),
       `browser Node should stream canonical absolute file mutations live: ${JSON.stringify(nodeEvents)}`

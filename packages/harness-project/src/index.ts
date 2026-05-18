@@ -443,7 +443,8 @@ async function snapshotCommandContext(
   ctx: CommandContext,
   workspaceRoot: string,
   entrypoint?: string,
-  workspaceAlias?: string
+  workspaceAlias?: string,
+  kernel?: RuntimeKernelInfo
 ): Promise<RuntimeProjectSnapshot> {
   const files: RuntimeFile[] = [];
   const directories: string[] = [];
@@ -454,6 +455,7 @@ async function snapshotCommandContext(
     cwd: workspaceRoot,
     workspaceRoot,
     ...(workspaceAlias ? { workspaceAlias } : {}),
+    ...(kernel ? { kernel } : {}),
     files,
     ...(directories.length > 0 ? { directories } : {}),
     ...(entrypoint ? { entrypoint } : {}),
@@ -1730,7 +1732,8 @@ export function createPythonProjectCommands(
   workspaceRoot: string = DEFAULT_CWD,
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
-  workspaceAlias?: string
+  workspaceAlias?: string,
+  kernel?: RuntimeKernelInfo
 ): ProjectWorkspaceCommand[] {
   const runPython = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parsePythonInvocation(args);
@@ -1803,7 +1806,7 @@ export function createPythonProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin,
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
     }), onFileChange);
   };
 
@@ -1818,7 +1821,8 @@ export function createNodeProjectCommands(
   workspaceRoot: string = DEFAULT_CWD,
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
-  workspaceAlias?: string
+  workspaceAlias?: string,
+  kernel?: RuntimeKernelInfo
 ): ProjectWorkspaceCommand[] {
   const runNode = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parseNodeInvocation(args);
@@ -1892,7 +1896,7 @@ export function createNodeProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin,
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
       ...(
         parsed.inputType || parsed.requireModules.length > 0
           ? {
@@ -1916,7 +1920,8 @@ export function createJavaProjectCommands(
   workspaceRoot: string = DEFAULT_CWD,
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
-  workspaceAlias?: string
+  workspaceAlias?: string,
+  kernel?: RuntimeKernelInfo
 ): ProjectWorkspaceCommand[] {
   const runJavac = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -1946,7 +1951,7 @@ export function createJavaProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
     }), onFileChange);
   };
 
@@ -1995,7 +2000,7 @@ export function createJavaProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
       options: {
         ...(jarPath ? { jarPath, classpath: jarPath } : parsed.classpath ? { classpath: parsed.classpath } : {}),
         ...(jarMainClass ? { jarMainClass } : {}),
@@ -2020,6 +2025,7 @@ export function createCppProjectCommands(
     entrypoint?: string;
     onFileChange?: RuntimeFileChangeObserver;
     workspaceAlias?: string;
+    kernel?: RuntimeKernelInfo;
   } = {}
 ): ProjectWorkspaceCommand[] {
   const runCompiler = (compilerCommand: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
@@ -2044,7 +2050,7 @@ export function createCppProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias),
+      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel),
       options: { compilerCommand },
     });
     const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result, options.onFileChange);
@@ -2074,7 +2080,7 @@ export function createCppProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias),
+      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel),
     }), options.onFileChange);
   };
 
@@ -2096,7 +2102,8 @@ export function createCSharpProjectCommands(
   workspaceRoot: string = DEFAULT_CWD,
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
-  workspaceAlias?: string
+  workspaceAlias?: string,
+  kernel?: RuntimeKernelInfo
 ): ProjectWorkspaceCommand[] {
   const runDotnet = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -2120,7 +2127,7 @@ export function createCSharpProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
       ...(parsed.buildArgs || parsed.noBuild
         ? {
             options: {
@@ -2190,16 +2197,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.emitRuntimeEvent({ type: 'file-change', change, phase });
     };
     const customCommands = [
-      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias) : []),
+      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
+      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.cppExecutablePaths.add(path),
         entrypoint: this.entrypoint,
         onFileChange: observeFileChange,
         workspaceAlias: this.kernelInfo.workspaceAlias,
+        kernel: this.kernelInfo,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
       ...(options.customCommands ?? []),
     ];
     this.bash = new Bash({

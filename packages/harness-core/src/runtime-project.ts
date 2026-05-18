@@ -93,6 +93,7 @@ export interface RuntimeProjectSnapshot {
   cwd?: string;
   workspaceRoot?: string;
   workspaceAlias?: string;
+  kernel?: RuntimeKernelInfo;
 }
 
 export interface RuntimeCommandOptions {

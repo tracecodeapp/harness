@@ -4,12 +4,14 @@ import type {
   RuntimeFileChange,
   RuntimeFileEncoding,
   RuntimeKernelDevicePath,
+  RuntimeKernelInfo,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
 import { createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import * as fflateModule from 'fflate/browser';
+import packageJson from '../package.json' with { type: 'json' };
 
 export type JavaScriptProjectFileEncoding = RuntimeFileEncoding;
 export type JavaScriptProjectFile = RuntimeFile;
@@ -120,6 +122,12 @@ function normalizeRuntimeDeviceNamespacePath(path: unknown): '/dev' | RuntimeKer
   return normalizeRuntimeDevicePath(raw);
 }
 
+function normalizeRuntimeProcPath(path: unknown): string | null {
+  if (typeof path === 'number') return null;
+  const raw = workspacePathInputToString(path).replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+  return raw === '/proc' || raw.startsWith('/proc/') ? raw : null;
+}
+
 function normalizeAbsoluteWorkspaceRoot(path: string): string {
   const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
   return normalized.startsWith('/') ? normalized || '/' : `/${normalized}`;
@@ -130,6 +138,82 @@ function createWorkspacePathContext(project: RuntimeProjectSnapshot): WorkspaceP
     root: normalizeAbsoluteWorkspaceRoot(project.workspaceRoot ?? project.cwd ?? '/workspace'),
     ...(project.workspaceAlias ? { alias: normalizeAbsoluteWorkspaceRoot(project.workspaceAlias) } : {}),
   };
+}
+
+function mountInfoField(value: string): string {
+  return value.replace(/\\/g, '\\134').replace(/ /g, '\\040').replace(/\t/g, '\\011').replace(/\n/g, '\\012');
+}
+
+function procInfoJson(info: RuntimeKernelInfo): string {
+  return `${JSON.stringify(info, null, 2)}\n`;
+}
+
+function procMountInfo(info: RuntimeKernelInfo): string {
+  const workspaceRoot = mountInfoField(info.workspaceRoot);
+  const workspaceName = mountInfoField(info.workspace.name);
+  const aliasLine = info.workspaceAlias
+    ? `27 24 0:1 / ${mountInfoField(info.workspaceAlias)} rw,relatime alias=${workspaceRoot} - tracefs tracekernel:workspace rw,name=${workspaceName}`
+    : null;
+  return [
+    `24 0 0:1 / ${workspaceRoot} rw,relatime - tracefs tracekernel:workspace rw,name=${workspaceName}`,
+    aliasLine,
+    '25 0 0:2 / /dev rw,nosuid - tracefs tracekernel:dev rw,mode=755',
+    '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw',
+  ].filter((line): line is string => Boolean(line)).join('\n') + '\n';
+}
+
+function fallbackKernelInfo(project: RuntimeProjectSnapshot, workspace: WorkspacePathContext): RuntimeKernelInfo {
+  const root = workspace.root;
+  const parts = root.split('/').filter(Boolean);
+  const workspaceName = parts.at(-1) ?? 'workspace';
+  const username = parts.length >= 2 && parts[0] === 'home' ? parts[1] ?? 'user' : 'user';
+  const home = parts.length >= 2 && parts[0] === 'home' ? `/${parts.slice(0, 2).join('/')}` : dirname(root) || root;
+  const startedAt = new Date(0).toISOString();
+  return {
+    name: 'tracekernel',
+    version: packageJson.version,
+    user: {
+      id: username,
+      username,
+      home,
+    },
+    host: {
+      hostname: 'tracevm',
+      osName: 'tracecode',
+    },
+    workspace: {
+      id: `${workspaceName}-${startedAt.replace(/[:.]/g, '-')}`,
+      name: workspaceName,
+      root,
+      startedAt,
+    },
+    home,
+    cwd: project.cwd ?? root,
+    workspaceRoot: root,
+    ...(workspace.alias ? { workspaceAlias: workspace.alias } : {}),
+  };
+}
+
+function readProcFile(path: string, info: RuntimeKernelInfo): string {
+  if (path === '/proc/kernel/info') return procInfoJson(info);
+  if (path === '/proc/self/mountinfo') return procMountInfo(info);
+  if (path === '/proc' || path === '/proc/kernel' || path === '/proc/self') {
+    throw Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${path}'`), { code: 'EISDIR' });
+  }
+  throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+}
+
+function procDirEntries(path: string): string[] | null {
+  if (path === '/proc') return ['kernel', 'self'];
+  if (path === '/proc/kernel') return ['info'];
+  if (path === '/proc/self') return ['mountinfo'];
+  return null;
+}
+
+function procEntryKind(path: string): 'file' | 'directory' | null {
+  if (procDirEntries(path)) return 'directory';
+  if (path === '/proc/kernel/info' || path === '/proc/self/mountinfo') return 'file';
+  return null;
 }
 
 function workspaceRelativeFromAbsolutePath(rawPath: string, workspace: WorkspacePathContext): string | null {
@@ -1108,6 +1192,7 @@ async function runBrowserJavaScriptProjectRequest(
     const io = createRuntimeProjectIoBridge(request.onEvent);
     const workspacePathContext = createWorkspacePathContext(request.project);
     const workspaceRoot = workspacePathContext.root;
+    const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
     const cwdPath = workspaceCwdPath(request);
     const fileStore = new Map(
       request.project.files.map((file) => [assertSafeWorkspaceFilePath(file.path, '', workspacePathContext), fileBytes(file)])
@@ -1471,6 +1556,39 @@ async function runBrowserJavaScriptProjectRequest(
         isSymbolicLink: () => false,
       };
     };
+    const statForProcPath = (procPath: string): BrowserFileStat | null => {
+      const kind = procEntryKind(procPath);
+      if (!kind) return null;
+      const size = kind === 'file' ? utf8Bytes(readProcFile(procPath, kernelInfo)).byteLength : 0;
+      const mode = kind === 'directory' ? 0o40555 : 0o100444;
+      return {
+        atimeMs: fsTimestampMs,
+        birthtimeMs: fsTimestampMs,
+        blksize: 4096,
+        blocks: Math.ceil(size / 512),
+        ctimeMs: fsTimestampMs,
+        dev: 1,
+        gid: 0,
+        ino: inodeForPath(procPath),
+        mode,
+        mtimeMs: fsTimestampMs,
+        nlink: kind === 'directory' ? 2 : 1,
+        rdev: 0,
+        size,
+        uid: 0,
+        atime: new Date(fsTimestampMs),
+        birthtime: new Date(fsTimestampMs),
+        ctime: new Date(fsTimestampMs),
+        mtime: new Date(fsTimestampMs),
+        isBlockDevice: () => false,
+        isCharacterDevice: () => false,
+        isFIFO: () => false,
+        isFile: () => kind === 'file',
+        isDirectory: () => kind === 'directory',
+        isSocket: () => false,
+        isSymbolicLink: () => false,
+      };
+    };
     const missingFileStat = (): BrowserFileStat => ({
       atime: new Date(0),
       atimeMs: 0,
@@ -1796,6 +1914,9 @@ async function runBrowserJavaScriptProjectRequest(
       const events = createEventTarget();
       const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
       const device = optionFd === null ? normalizeRuntimeDevicePath(path) : null;
+      if (optionFd === null && normalizeRuntimeProcPath(path)) {
+        throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
+      }
       const encoding = requestedEncodingFromOptions(options);
       const flags = typeof options === 'object' && typeof options?.flags === 'string' ? options.flags : 'w';
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
@@ -1952,6 +2073,9 @@ async function runBrowserJavaScriptProjectRequest(
       return stream;
     };
     const deleteFile = (path: unknown): void => {
+      if (normalizeRuntimeProcPath(path)) {
+        throw Object.assign(new Error(`EROFS: read-only file system, unlink '${path}'`), { code: 'EROFS' });
+      }
       const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (!fileStore.delete(normalized)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: 'ENOENT' });
@@ -1987,6 +2111,8 @@ async function runBrowserJavaScriptProjectRequest(
     const fileSystemEntryExists = (path: unknown): boolean => {
       const device = normalizeRuntimeDevicePath(path);
       if (device) return true;
+      const procPath = normalizeRuntimeProcPath(path);
+      if (procPath) return procEntryKind(procPath) !== null;
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       const prefix = normalized ? `${normalized}/` : '';
       return fileStore.has(normalized)
@@ -2000,6 +2126,18 @@ async function runBrowserJavaScriptProjectRequest(
         const readable = device === '/dev/stdin' || device === '/dev/tty';
         const writable = device === '/dev/stdout' || device === '/dev/stderr' || device === '/dev/tty';
         if (((requested & fsConstants.R_OK) !== 0 && !readable) || ((requested & fsConstants.W_OK) !== 0 && !writable)) {
+          throw Object.assign(new Error(`EACCES: permission denied, access '${path}'`), { code: 'EACCES' });
+        }
+        return;
+      }
+      const procPath = normalizeRuntimeProcPath(path);
+      if (procPath) {
+        const stats = statForProcPath(procPath);
+        if (!stats) {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, access '${path}'`), { code: 'ENOENT' });
+        }
+        const requested = Number(mode) || fsConstants.F_OK;
+        if ((requested & fsConstants.W_OK) !== 0) {
           throw Object.assign(new Error(`EACCES: permission denied, access '${path}'`), { code: 'EACCES' });
         }
         return;
@@ -2028,6 +2166,9 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const metadataPathForEntry = (path: unknown): string | null => {
       if (normalizeRuntimeDevicePath(path)) return null;
+      if (normalizeRuntimeProcPath(path)) {
+        throw Object.assign(new Error(`EROFS: read-only file system, metadata '${path}'`), { code: 'EROFS' });
+      }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
@@ -2041,7 +2182,7 @@ async function runBrowserJavaScriptProjectRequest(
       return Number.isFinite(parsed) ? Math.max(0, parsed * 1000) : fsTimestampMs;
     };
     type BrowserFileDescriptor = {
-      kind: 'file' | 'device';
+      kind: 'file' | 'device' | 'proc';
       path?: string;
       device?: RuntimeKernelDevicePath;
       offset: number;
@@ -2084,6 +2225,7 @@ async function runBrowserJavaScriptProjectRequest(
     };
     const descriptorBytes = (entry: BrowserFileDescriptor): Uint8Array => {
       if (entry.kind === 'device') return utf8Bytes(readDevice(entry.device ?? '/dev/stdin'));
+      if (entry.kind === 'proc') return utf8Bytes(readProcFile(entry.path ?? '', kernelInfo));
       return fileStore.get(entry.path ?? '') ?? new Uint8Array();
     };
     const readDescriptorFileBytes = (fd: number): Uint8Array => {
@@ -2100,6 +2242,9 @@ async function runBrowserJavaScriptProjectRequest(
       if (entry.kind === 'device') {
         writeDevice(entry.device ?? '/dev/stdout', textFromBytes(bytes));
         return;
+      }
+      if (entry.kind === 'proc') {
+        throw Object.assign(new Error(`EROFS: read-only file system, write '${entry.path ?? '/proc'}'`), { code: 'EROFS' });
       }
       const previous = fileStore.get(entry.path ?? '') ?? new Uint8Array();
       const start = entry.append ? previous.byteLength : typeof position === 'number' ? Math.max(0, position) : entry.offset;
@@ -2128,6 +2273,13 @@ async function runBrowserJavaScriptProjectRequest(
     const realpathForEntry = (path: unknown): string => {
       const device = normalizeRuntimeDevicePath(path);
       if (device) return device;
+      const procPath = normalizeRuntimeProcPath(path);
+      if (procPath) {
+        if (!procEntryKind(procPath)) {
+          throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
+        }
+        return procPath;
+      }
       const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
       if (!fileSystemEntryExists(workspaceFilename(normalized, workspaceRoot))) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: 'ENOENT' });
@@ -2382,6 +2534,28 @@ async function runBrowserJavaScriptProjectRequest(
           });
           return fd;
         }
+        const procPath = normalizeRuntimeProcPath(path);
+        if (procPath) {
+          const kind = procEntryKind(procPath);
+          if (!kind) {
+            throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
+          }
+          if (kind === 'directory') {
+            throw Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${path}'`), { code: 'EISDIR' });
+          }
+          if (parsed.writable || parsed.create || parsed.truncate || parsed.exclusive) {
+            throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
+          }
+          fileDescriptors.set(fd, {
+            kind: 'proc',
+            path: procPath,
+            offset: 0,
+            readable: true,
+            writable: false,
+            append: false,
+          });
+          return fd;
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         if (!fileStore.has(normalized)) {
           if (!parsed.create) {
@@ -2558,6 +2732,7 @@ async function runBrowserJavaScriptProjectRequest(
             isFile: () => true,
           };
         }
+        if (entry.kind === 'proc') return statForProcPath(entry.path ?? '') ?? missingFileStat();
         return statForNormalizedPath(entry.path ?? '') ?? missingFileStat();
       },
       fstat: (fd: number, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
@@ -2662,12 +2837,15 @@ async function runBrowserJavaScriptProjectRequest(
       createReadStream: (path: unknown, options?: string | { autoClose?: boolean; encoding?: string; end?: number; fd?: number; start?: number } | null) => {
         const optionFd = typeof options === 'object' && typeof options?.fd === 'number' ? options.fd : null;
         const device = optionFd === null ? normalizeRuntimeDevicePath(path) : null;
+        const procPath = optionFd === null ? normalizeRuntimeProcPath(path) : null;
         const requestedEncoding = typeof options === 'string' ? options : options?.encoding;
         const sourceBytes = device
           ? utf8Bytes(readDevice(device))
-          : optionFd !== null
-            ? readDescriptorFileBytes(optionFd)
-            : fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
+          : procPath
+            ? utf8Bytes(readProcFile(procPath, kernelInfo))
+            : optionFd !== null
+              ? readDescriptorFileBytes(optionFd)
+              : fileStore.get(assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
@@ -2690,6 +2868,12 @@ async function runBrowserJavaScriptProjectRequest(
         const device = normalizeRuntimeDevicePath(path);
         if (device) {
           const contents = readDevice(device);
+          if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
+          return BrowserBuffer.from(contents);
+        }
+        const procPath = normalizeRuntimeProcPath(path);
+        if (procPath) {
+          const contents = readProcFile(procPath, kernelInfo);
           if (typeof requestedEncoding === 'string') return BrowserBuffer.from(contents).toString(requestedEncoding);
           return BrowserBuffer.from(contents);
         }
@@ -2722,6 +2906,9 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
+        if (normalizeRuntimeProcPath(path)) {
+          throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
@@ -2744,6 +2931,9 @@ async function runBrowserJavaScriptProjectRequest(
           writeDevice(device, textFromBytes(bytesFromFsWriteValue(value, options)));
           return;
         }
+        if (normalizeRuntimeProcPath(path)) {
+          throw Object.assign(new Error(`EROFS: read-only file system, open '${path}'`), { code: 'EROFS' });
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         const previous = fileStore.get(normalized) ?? new Uint8Array();
         const next = bytesFromFsWriteValue(value, options);
@@ -2764,9 +2954,15 @@ async function runBrowserJavaScriptProjectRequest(
       copyFileSync: (source: unknown, destination: unknown, mode = 0) => {
         const sourceDevice = normalizeRuntimeDevicePath(source);
         const destinationDevice = normalizeRuntimeDevicePath(destination);
+        const sourceProc = normalizeRuntimeProcPath(source);
+        if (normalizeRuntimeProcPath(destination)) {
+          throw Object.assign(new Error(`EROFS: read-only file system, copyfile '${source}' -> '${destination}'`), { code: 'EROFS' });
+        }
         const sourceBytes = sourceDevice
           ? utf8Bytes(readDevice(sourceDevice))
-          : fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
+          : sourceProc
+            ? utf8Bytes(readProcFile(sourceProc, kernelInfo))
+            : fileStore.get(assertSafeWorkspaceFilePath(source, cwdPath, workspacePathContext));
         if (!sourceBytes) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
@@ -2803,6 +2999,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       renameSync: (oldPath: unknown, newPath: unknown) => {
+        if (normalizeRuntimeProcPath(oldPath) || normalizeRuntimeProcPath(newPath)) {
+          throw Object.assign(new Error(`EROFS: read-only file system, rename '${oldPath}' -> '${newPath}'`), { code: 'EROFS' });
+        }
         const normalizedOldPath = assertSafeWorkspaceFilePath(oldPath, cwdPath, workspacePathContext);
         const normalizedNewPath = assertSafeWorkspaceFilePath(newPath, cwdPath, workspacePathContext);
         const bytes = fileStore.get(normalizedOldPath);
@@ -2838,6 +3037,9 @@ async function runBrowserJavaScriptProjectRequest(
       },
       rmSync: (path: unknown, options?: { force?: boolean; recursive?: boolean }) => {
         try {
+          if (normalizeRuntimeProcPath(path)) {
+            throw Object.assign(new Error(`EROFS: read-only file system, rm '${path}'`), { code: 'EROFS' });
+          }
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           if (fileStore.has(normalized)) {
             deleteFile(path);
@@ -2893,6 +3095,8 @@ async function runBrowserJavaScriptProjectRequest(
       existsSync: (path: unknown) => {
         try {
           if (normalizeRuntimeDeviceNamespacePath(path)) return true;
+          const procPath = normalizeRuntimeProcPath(path);
+          if (procPath) return procEntryKind(procPath) !== null;
           const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
           const prefix = normalized ? `${normalized}/` : '';
           return fileStore.has(normalized)
@@ -2922,6 +3126,30 @@ async function runBrowserJavaScriptProjectRequest(
             isDirectory: () => false,
             isSymbolicLink: () => false,
           }));
+        }
+        const procPath = normalizeRuntimeProcPath(path);
+        if (procPath) {
+          const names = procDirEntries(procPath);
+          if (!names) {
+            const kind = procEntryKind(procPath);
+            throw Object.assign(
+              new Error(`${kind === 'file' ? 'ENOTDIR: not a directory' : 'ENOENT: no such file or directory'}, scandir '${path}'`),
+              { code: kind === 'file' ? 'ENOTDIR' : 'ENOENT' }
+            );
+          }
+          if (!withFileTypes) return names;
+          return names.map((name) => {
+            const childPath = `${procPath}/${name}`;
+            const kind = procEntryKind(childPath) ?? 'file';
+            return {
+              name,
+              path: procPath,
+              parentPath: procPath,
+              isFile: () => kind === 'file',
+              isDirectory: () => kind === 'directory',
+              isSymbolicLink: () => false,
+            };
+          });
         }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
@@ -3049,6 +3277,14 @@ async function runBrowserJavaScriptProjectRequest(
       statSync: (path: unknown) => {
         const devicePath = normalizeRuntimeDeviceNamespacePath(path);
         if (devicePath) return statForDevicePath(devicePath);
+        const procPath = normalizeRuntimeProcPath(path);
+        if (procPath) {
+          const stats = statForProcPath(procPath);
+          if (!stats) {
+            throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
+          }
+          return stats;
+        }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const stats = statForNormalizedPath(normalized);
         if (!stats) {
@@ -3083,6 +3319,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       truncateSync: (path: unknown, length = 0) => {
+        if (normalizeRuntimeProcPath(path)) {
+          throw Object.assign(new Error(`EROFS: read-only file system, truncate '${path}'`), { code: 'EROFS' });
+        }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
         truncateFileBytes(normalized, length);
         return undefined;
@@ -3097,6 +3336,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       mkdirSync: (path: unknown, options?: { recursive?: boolean }) => {
+        if (normalizeRuntimeProcPath(path)) {
+          throw Object.assign(new Error(`EROFS: read-only file system, mkdir '${path}'`), { code: 'EROFS' });
+        }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         if (!normalized) return undefined;
         const parent = dirname(normalized);
@@ -3153,6 +3395,9 @@ async function runBrowserJavaScriptProjectRequest(
         }
       },
       rmdirSync: (path: unknown) => {
+        if (normalizeRuntimeProcPath(path)) {
+          throw Object.assign(new Error(`EROFS: read-only file system, rmdir '${path}'`), { code: 'EROFS' });
+        }
         const normalized = normalizeWorkspaceEntryPath(path, cwdPath, true, workspacePathContext);
         const prefix = normalized ? `${normalized}/` : '';
         const hasChildren = Array.from(fileStore.keys()).some((filePath) => filePath.startsWith(prefix))
