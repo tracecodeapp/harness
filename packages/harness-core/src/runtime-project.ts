@@ -177,11 +177,12 @@ export interface RuntimeProjectIoBridge {
 export function createRuntimeProjectIoBridge(onEvent: RuntimeCommandEventHandler | undefined): RuntimeProjectIoBridge {
   return {
     output: (stream, data, device, sourceDevice) => {
+      const outputDevice = device ?? (stream === 'stdout' ? '/dev/stdout' : '/dev/stderr');
       onEvent?.({
         type: 'output',
         stream,
-        device: device ?? (stream === 'stdout' ? '/dev/stdout' : '/dev/stderr'),
-        ...(sourceDevice ? { sourceDevice } : {}),
+        device: outputDevice,
+        ...(sourceDevice && sourceDevice !== outputDevice ? { sourceDevice } : {}),
         data,
       });
     },

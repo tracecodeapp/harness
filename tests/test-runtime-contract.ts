@@ -21,6 +21,7 @@ import {
   normalizeJavaSerializedResult,
 } from '../packages/harness-core/src/trace-adapters/java';
 import { runtimeKernelFileReadTarget, runtimeKernelOpenTarget } from '../packages/harness-core/src/runtime-kernel';
+import { createRuntimeProjectIoBridge, type RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -86,6 +87,26 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
     stableStringify(runtimeKernelFileReadTarget('/dev/stdin', devices)) ===
       '{"kind":"device-file","path":"/dev/stdin"}',
     'kernel read target should allow high-level reads on readable devices'
+  );
+}
+
+function assertRuntimeProjectIoBridgeOutputDevices(): void {
+  const events: RuntimeCommandEvent[] = [];
+  const io = createRuntimeProjectIoBridge((event) => events.push(event));
+
+  io.output('stdout', 'direct\n', undefined, '/dev/stdout');
+  io.output('stdout', 'tty\n', '/dev/stdout', '/dev/tty');
+  io.output('stderr', 'direct-err\n', undefined, '/dev/stderr');
+  io.output('stderr', 'log\n', '/dev/stderr', '/dev/log');
+
+  assertCondition(
+    stableStringify(events) === stableStringify([
+      { type: 'output', stream: 'stdout', device: '/dev/stdout', data: 'direct\n' },
+      { type: 'output', stream: 'stdout', device: '/dev/stdout', sourceDevice: '/dev/tty', data: 'tty\n' },
+      { type: 'output', stream: 'stderr', device: '/dev/stderr', data: 'direct-err\n' },
+      { type: 'output', stream: 'stderr', device: '/dev/stderr', sourceDevice: '/dev/log', data: 'log\n' },
+    ]),
+    `runtime project bridge should suppress redundant sourceDevice values: ${stableStringify(events)}`
   );
 }
 
@@ -420,6 +441,8 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
 async function main(): Promise<void> {
   assertRuntimeKernelOpenDevicePermissions();
   console.log('PASS: runtime kernel open device permissions');
+  assertRuntimeProjectIoBridgeOutputDevices();
+  console.log('PASS: runtime project bridge output device metadata');
 
   await testJavaSerializedResultNormalization();
   const profiles = getSupportedLanguageProfiles();
