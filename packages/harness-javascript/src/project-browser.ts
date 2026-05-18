@@ -1612,6 +1612,15 @@ async function runBrowserJavaScriptProjectRequest(
       isSocket: () => boolean;
       isSymbolicLink: () => boolean;
     };
+    type BrowserFileSystemStat = {
+      type: number | bigint;
+      bsize: number | bigint;
+      blocks: number | bigint;
+      bfree: number | bigint;
+      bavail: number | bigint;
+      files: number | bigint;
+      ffree: number | bigint;
+    };
     type BrowserFileWatcher = {
       path: string;
       listener: (curr: BrowserFileStat, prev: BrowserFileStat) => void;
@@ -1704,6 +1713,21 @@ async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${path}'`), { code: 'ENOENT' });
       }
       return statForKernelPath(statTarget.path, statTarget.stat);
+    };
+    const browserFileSystemStat = (bigint = false): BrowserFileSystemStat => {
+      const stats = {
+        type: 0x74726365,
+        bsize: 4096,
+        blocks: 1_048_576,
+        bfree: 1_048_000,
+        bavail: 1_048_000,
+        files: 1_000_000,
+        ffree: 999_000,
+      };
+      if (!bigint) return stats;
+      return Object.fromEntries(
+        Object.entries(stats).map(([key, value]) => [key, BigInt(value)])
+      ) as BrowserFileSystemStat;
     };
     const missingFileStat = (): BrowserFileStat => ({
       atime: new Date(0),
@@ -3617,6 +3641,10 @@ async function runBrowserJavaScriptProjectRequest(
         return stats;
       },
       lstatSync: (path: unknown) => fsApi.statSync(path),
+      statfsSync: (path: unknown, options?: { bigint?: boolean }) => {
+        fsApi.statSync(path);
+        return browserFileSystemStat(Boolean(options?.bigint));
+      },
       stat: (path: unknown, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
         try {
           const stats = fsApi.statSync(path);
@@ -3627,6 +3655,20 @@ async function runBrowserJavaScriptProjectRequest(
       },
       lstat: (path: unknown, callback: (error: Error | null, stats?: { size: number; isFile: () => boolean; isDirectory: () => boolean; isSymbolicLink: () => boolean }) => void) => {
         fsApi.stat(path, callback);
+      },
+      statfs: (
+        path: unknown,
+        optionsOrCallback?: { bigint?: boolean } | ((error: Error | null, stats?: BrowserFileSystemStat) => void),
+        callback?: (error: Error | null, stats?: BrowserFileSystemStat) => void
+      ) => {
+        const options = typeof optionsOrCallback === 'function' ? undefined : optionsOrCallback;
+        const done = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback;
+        try {
+          const stats = fsApi.statfsSync(path, options);
+          queueMicrotask(() => done?.(null, stats));
+        } catch (error) {
+          queueMicrotask(() => done?.(error as Error));
+        }
       },
       realpathSync: (path: unknown, options?: string | { encoding?: string | null } | null) => {
         const resolved = realpathForEntry(path);
@@ -3972,6 +4014,7 @@ async function runBrowserJavaScriptProjectRequest(
       },
       stat: async (path: unknown) => fsApi.statSync(path),
       lstat: async (path: unknown) => fsApi.lstatSync(path),
+      statfs: async (path: unknown, options?: { bigint?: boolean }) => fsApi.statfsSync(path, options),
       realpath: async (path: unknown, options?: string | { encoding?: string | null } | null) => fsApi.realpathSync(path, options),
       mkdir: async (path: unknown, options?: { recursive?: boolean }) => fsApi.mkdirSync(path, options),
       mkdtemp: async (prefix: unknown, options?: string | { encoding?: string | null } | null) => fsApi.mkdtempSync(prefix, options),

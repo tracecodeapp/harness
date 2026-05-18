@@ -2583,6 +2583,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node Stats metadata should track mode, owner, times, and predicates: ${statsMetadataResult.stdout}`
   );
 
+  const statfsResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (path, options) => new Promise((resolve, reject) => fs.statfs(path, options, (error, stats) => error ? reject(error) : resolve(stats))); fs.writeFileSync(\\"statfs-file.txt\\", \\"x\\"); const root = fs.statfsSync(\\".\\"); const file = await fsp.statfs(\\"statfs-file.txt\\"); const proc = fs.statfsSync(\\"/proc/kernel/info\\", { bigint: true }); const dev = await call(\\"/dev/stdout\\"); for (const path of [\\"/proc/missing\\", \\"/dev/missing\\"]) { try { fs.statfsSync(path); console.log(path + \\":ok\\"); } catch (error) { console.log(path + \\":\\" + error.code); } } console.log(root.bsize === 4096 && root.blocks > 0 && root.bfree <= root.blocks && root.bavail <= root.bfree && root.files > 0 && root.ffree > 0 && Number.isInteger(root.type)); console.log(file.bsize === root.bsize && file.type === root.type); console.log(typeof proc.bsize + \\":\\" + proc.bsize.toString()); console.log(dev.bavail > 0);"',
+  ].join(' '));
+  assertCondition(statfsResult.exitCode === 0, `browser node statfs workflow should succeed: ${statfsResult.stderr}`);
+  assertCondition(
+    statfsResult.stdout === '/proc/missing:ENOENT\n/dev/missing:ENOENT\ntrue\ntrue\nbigint:4096\ntrue\n',
+    `browser node statfs APIs should expose kernel-backed filesystem stats: ${statfsResult.stdout}`
+  );
+
   const metadataWatchResult = await workspace.runCommand([
     'node',
     '-e',
