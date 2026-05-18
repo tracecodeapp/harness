@@ -3663,8 +3663,7 @@ async function runBrowserJavaScriptProjectRequest(
           throw Object.assign(new Error(`ENOENT: no such file or directory, copyfile '${source}' -> '${destination}'`), { code: 'ENOENT' });
         }
         if (copyTarget?.kind === 'device-destination') {
-          const destinationTarget = runtimeWriteTarget(destination, kernelDevices);
-          writeDevice(destinationTarget?.kind === 'device' ? destinationTarget.device : copyTarget.outputDevice, textFromBytes(sourceBytes));
+          writeDevice(copyTarget.device, textFromBytes(sourceBytes));
           return;
         }
         const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);

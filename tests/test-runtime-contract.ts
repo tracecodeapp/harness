@@ -137,8 +137,8 @@ function assertRuntimeKernelOpenDevicePermissions(): void {
   );
   assertCondition(
     stableStringify(runtimeKernelFileCopyTarget('/proc/kernel/info', '/dev/tee', devices)) ===
-      '{"kind":"device-destination","outputDevice":"/dev/capture","source":{"kind":"proc-file","path":"/proc/kernel/info"}}',
-    'kernel file copy target should preserve manifest output device aliases'
+      '{"device":"/dev/tee","kind":"device-destination","outputDevice":"/dev/capture","source":{"kind":"proc-file","path":"/proc/kernel/info"}}',
+    'kernel file copy target should preserve manifest destination and output device aliases'
   );
   assertCondition(
     stableStringify(runtimeKernelOpenTarget('/dev/stdout', { readable: true }, devices)) ===

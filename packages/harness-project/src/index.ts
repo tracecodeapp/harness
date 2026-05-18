@@ -17,8 +17,8 @@ import {
   runtimeDeviceInputSource,
   runtimeDeviceOutputTarget,
   runtimeKernelAccessTarget,
-  runtimeKernelCopyTarget,
   runtimeKernelDirectoryTarget,
+  runtimeKernelFileCopyTarget,
   runtimeKernelFileReadTarget,
   runtimeKernelLinkTarget,
   runtimeKernelMkdirTarget,
@@ -331,6 +331,12 @@ function kernelFileReadTarget(path: string): ReturnType<typeof runtimeKernelFile
   return runtimeKernelFileReadTarget(path);
 }
 
+function kernelFileCopyTarget(source: string, destination: string): ReturnType<typeof runtimeKernelFileCopyTarget> {
+  assertNoNul(source, 'Kernel path');
+  assertNoNul(destination, 'Kernel path');
+  return runtimeKernelFileCopyTarget(source, destination);
+}
+
 function kernelStatTarget(path: string, info: RuntimeKernelInfo): ReturnType<typeof runtimeKernelStatTarget> {
   assertNoNul(path, 'Kernel path');
   return runtimeKernelStatTarget(path, info);
@@ -351,12 +357,6 @@ function throwKernelFileReadTargetError(
   if (target.reason === 'is-directory') throw new Error(`Kernel virtual path is a directory: ${path}`);
   if (target.reason === 'permission-denied') throw new Error(`Kernel device is not readable: ${target.path}`);
   throw new Error(`Kernel virtual path not found: ${path}`);
-}
-
-function kernelCopyTarget(source: string, destination: string): ReturnType<typeof runtimeKernelCopyTarget> {
-  assertNoNul(source, 'Kernel path');
-  assertNoNul(destination, 'Kernel path');
-  return runtimeKernelCopyTarget(source, destination);
 }
 
 function kernelDirectoryTarget(path: string): ReturnType<typeof runtimeKernelDirectoryTarget> {
@@ -835,16 +835,18 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
-    const copyTarget = kernelCopyTarget(src, dest);
-    if (copyTarget.kind === 'file-copy') {
-      await this.copyFileLike(src, dest);
+    const copyTarget = kernelFileCopyTarget(src, dest);
+    if (copyTarget.kind === 'virtual-source' || copyTarget.kind === 'device-destination') {
+      await this.copyFileLike(src, dest, copyTarget);
       return;
     }
     if (copyTarget.kind === 'error') {
       throw new Error(
-        copyTarget.reason === 'source-directory'
+        copyTarget.reason === 'is-directory'
           ? `Kernel virtual path is a directory: ${src}`
-          : `Kernel virtual path not found: ${src}`
+          : copyTarget.side === 'destination'
+            ? `Kernel virtual destination is not writable: ${dest}`
+            : `Kernel virtual path not found: ${src}`
       );
     }
     const mappedSource = this.mapPath(src);
@@ -854,12 +856,14 @@ class KernelObservedFileSystem implements IFileSystem {
     await this.emitExistingFiles(mappedDestination);
   }
 
-  private async copyFileLike(src: string, dest: string): Promise<void> {
-    const sourceBytes = await this.readKernelCopySource(src);
-    const writeTarget = kernelWriteTarget(dest);
-    if (writeTarget.kind === 'error') throwKernelWriteTargetError(dest, writeTarget);
-    if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.device, contentToText(sourceBytes));
+  private async copyFileLike(
+    src: string,
+    dest: string,
+    copyTarget: Exclude<ReturnType<typeof runtimeKernelFileCopyTarget>, { kind: 'workspace' | 'error' }>
+  ): Promise<void> {
+    const sourceBytes = await this.readKernelCopySource(src, copyTarget.source);
+    if (copyTarget.kind === 'device-destination') {
+      this.writeDevice(copyTarget.device, contentToText(sourceBytes));
       return;
     }
     const mappedDestination = this.mapPath(dest);
@@ -867,8 +871,10 @@ class KernelObservedFileSystem implements IFileSystem {
     await this.emitFileWrite(mappedDestination);
   }
 
-  private async readKernelCopySource(path: string): Promise<FileContent> {
-    const sourceTarget = kernelFileReadTarget(path);
+  private async readKernelCopySource(
+    path: string,
+    sourceTarget: ReturnType<typeof runtimeKernelFileReadTarget> = kernelFileReadTarget(path)
+  ): Promise<FileContent> {
     if (sourceTarget.kind === 'device-file') return this.readDeviceFile(sourceTarget.path);
     if (sourceTarget.kind === 'proc-file') return readRuntimeProcFile(sourceTarget.path, this.kernelInfo());
     if (sourceTarget.kind === 'error') throwKernelFileReadTargetError(path, sourceTarget);
@@ -2676,16 +2682,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
-    const copyTarget = kernelCopyTarget(sourcePath, destinationPath);
-    if (copyTarget.kind === 'file-copy') {
-      await this.copyFileLike(sourcePath, destinationPath);
+    const copyTarget = kernelFileCopyTarget(sourcePath, destinationPath);
+    if (copyTarget.kind === 'virtual-source' || copyTarget.kind === 'device-destination') {
+      await this.copyFileLike(sourcePath, destinationPath, copyTarget);
       return;
     }
     if (copyTarget.kind === 'error') {
       throw new Error(
-        copyTarget.reason === 'source-directory'
+        copyTarget.reason === 'is-directory'
           ? `Kernel virtual path is a directory: ${sourcePath}`
-          : `Kernel virtual path not found: ${sourcePath}`
+          : copyTarget.side === 'destination'
+            ? `Kernel virtual destination is not writable: ${destinationPath}`
+            : `Kernel virtual path not found: ${sourcePath}`
       );
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
@@ -2701,19 +2709,23 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     });
   }
 
-  private async copyFileLike(sourcePath: string, destinationPath: string): Promise<void> {
-    const sourceBytes = await this.readKernelCopyBytes(sourcePath);
-    const writeTarget = kernelWriteTarget(destinationPath);
-    if (writeTarget.kind === 'error') throwKernelWriteTargetError(destinationPath, writeTarget);
-    if (writeTarget.kind === 'device') {
-      this.writeDevice(writeTarget.device, contentToText(sourceBytes), PRINCIPAL_ACTOR);
+  private async copyFileLike(
+    sourcePath: string,
+    destinationPath: string,
+    copyTarget: Exclude<ReturnType<typeof runtimeKernelFileCopyTarget>, { kind: 'workspace' | 'error' }>
+  ): Promise<void> {
+    const sourceBytes = await this.readKernelCopyBytes(sourcePath, copyTarget.source);
+    if (copyTarget.kind === 'device-destination') {
+      this.writeDevice(copyTarget.device, contentToText(sourceBytes), PRINCIPAL_ACTOR);
       return;
     }
     await this.writeFileAs(destinationPath, base64FromBytes(sourceBytes), PRINCIPAL_ACTOR, 'base64', 'live');
   }
 
-  private async readKernelCopyBytes(sourcePath: string): Promise<Uint8Array> {
-    const sourceTarget = kernelFileReadTarget(sourcePath);
+  private async readKernelCopyBytes(
+    sourcePath: string,
+    sourceTarget: ReturnType<typeof runtimeKernelFileReadTarget> = kernelFileReadTarget(sourcePath)
+  ): Promise<Uint8Array> {
     if (sourceTarget.kind === 'device-file') return new TextEncoder().encode(this.readDevice(sourceTarget.path));
     if (sourceTarget.kind === 'proc-file') return new TextEncoder().encode(readRuntimeProcFile(sourceTarget.path, this.kernelInfo));
     if (sourceTarget.kind === 'error') {

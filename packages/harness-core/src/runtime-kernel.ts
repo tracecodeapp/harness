@@ -72,7 +72,7 @@ export type RuntimeKernelCopyTarget =
 export type RuntimeKernelFileCopyTarget =
   | { kind: 'workspace' }
   | { kind: 'virtual-source'; source: Extract<RuntimeKernelFileReadTarget, { kind: 'device-file' | 'proc-file' }> }
-  | { kind: 'device-destination'; outputDevice: RuntimeKernelDevicePath; source: RuntimeKernelFileReadTarget }
+  | { kind: 'device-destination'; device: RuntimeKernelDevicePath; outputDevice: RuntimeKernelDevicePath; source: RuntimeKernelFileReadTarget }
   | {
       kind: 'error';
       side: 'source';
@@ -684,7 +684,7 @@ export function runtimeKernelFileCopyTarget(
   }
 
   if (writeTarget.kind === 'device') {
-    return { kind: 'device-destination', outputDevice: writeTarget.outputDevice, source: sourceTarget };
+    return { kind: 'device-destination', device: writeTarget.device, outputDevice: writeTarget.outputDevice, source: sourceTarget };
   }
 
   if (sourceTarget.kind === 'device-file' || sourceTarget.kind === 'proc-file') {
