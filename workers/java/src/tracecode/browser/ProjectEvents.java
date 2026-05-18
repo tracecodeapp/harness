@@ -25,6 +25,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.Charset;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.CopyOption;
 import java.nio.file.DirectoryStream;
@@ -52,8 +53,8 @@ public final class ProjectEvents {
   private static final ThreadLocal<Path> PROJECT_WORKSPACE_ROOT = new ThreadLocal<>();
   private static final ThreadLocal<Map<String, KernelDevice>> KERNEL_DEVICES =
       ThreadLocal.withInitial(HashMap::new);
-  private static final ThreadLocal<Set<String>> KERNEL_VIRTUAL_FILES =
-      ThreadLocal.withInitial(java.util.HashSet::new);
+  private static final ThreadLocal<Map<String, byte[]>> KERNEL_VIRTUAL_FILES =
+      ThreadLocal.withInitial(HashMap::new);
   private static final ThreadLocal<byte[]> KERNEL_STDIN =
       ThreadLocal.withInitial(() -> new byte[0]);
   private static final ThreadLocal<ByteArrayOutputStream> STDOUT_CAPTURE = new ThreadLocal<>();
@@ -98,24 +99,32 @@ public final class ProjectEvents {
   public static String readString(Path path) throws IOException {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return new String(readKernelDevice(device), StandardCharsets.UTF_8);
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) return new String(kernelFile, StandardCharsets.UTF_8);
     return Files.readString(path);
   }
 
   public static String readString(Path path, Charset charset) throws IOException {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return new String(readKernelDevice(device), charset);
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) return new String(kernelFile, charset);
     return Files.readString(path, charset);
   }
 
   public static byte[] readAllBytes(Path path) throws IOException {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return readKernelDevice(device);
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) return kernelFile;
     return Files.readAllBytes(path);
   }
 
   public static InputStream newInputStream(Path path, OpenOption... options) throws IOException {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return new ByteArrayInputStream(readKernelDevice(device));
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) return new ByteArrayInputStream(kernelFile);
     return Files.newInputStream(path, options);
   }
 
@@ -128,6 +137,11 @@ public final class ProjectEvents {
     if (device != null) {
       Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
       return new BufferedReader(new InputStreamReader(new ByteArrayInputStream(readKernelDevice(device)), effectiveCharset));
+    }
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) {
+      Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
+      return new BufferedReader(new InputStreamReader(new ByteArrayInputStream(kernelFile), effectiveCharset));
     }
     return Files.newBufferedReader(path, charset);
   }
@@ -144,6 +158,13 @@ public final class ProjectEvents {
           .lines()
           .collect(java.util.stream.Collectors.toList());
     }
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) {
+      Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
+      return new BufferedReader(new InputStreamReader(new ByteArrayInputStream(kernelFile), effectiveCharset))
+          .lines()
+          .collect(java.util.stream.Collectors.toList());
+    }
     return Files.readAllLines(path, charset);
   }
 
@@ -157,6 +178,11 @@ public final class ProjectEvents {
       Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
       return new String(readKernelDevice(device), effectiveCharset).lines();
     }
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) {
+      Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
+      return new String(kernelFile, effectiveCharset).lines();
+    }
     return Files.lines(path, charset);
   }
 
@@ -166,6 +192,8 @@ public final class ProjectEvents {
       return kernelDevicePaths().stream();
     }
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
+    if (isKernelVirtualDirectory(normalized)) return kernelVirtualDirectoryPaths(normalized).stream();
+    if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
     return Files.list(path);
   }
 
@@ -173,6 +201,8 @@ public final class ProjectEvents {
     String normalized = normalizeVirtualPath(dir);
     if (isVirtualDeviceDirectory(normalized)) return new KernelDirectoryStream(kernelDevicePaths());
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
+    if (isKernelVirtualDirectory(normalized)) return new KernelDirectoryStream(kernelVirtualDirectoryPaths(normalized));
+    if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
     return Files.newDirectoryStream(dir);
   }
 
@@ -185,6 +215,13 @@ public final class ProjectEvents {
       return newDirectoryStream(dir, filter);
     }
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
+    if (isKernelVirtualDirectory(normalized)) {
+      DirectoryStream.Filter<Path> filter = (entry) -> dir.getFileSystem()
+          .getPathMatcher("glob:" + glob)
+          .matches(entry.getFileName());
+      return newDirectoryStream(dir, filter);
+    }
+    if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
     return Files.newDirectoryStream(dir, glob);
   }
 
@@ -199,6 +236,14 @@ public final class ProjectEvents {
       return new KernelDirectoryStream(entries);
     }
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
+    if (isKernelVirtualDirectory(normalized)) {
+      ArrayList<Path> entries = new ArrayList<>();
+      for (Path entry : kernelVirtualDirectoryPaths(normalized)) {
+        if (filter == null || filter.accept(entry)) entries.add(entry);
+      }
+      return new KernelDirectoryStream(entries);
+    }
+    if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
     return Files.newDirectoryStream(dir, filter);
   }
 
@@ -206,12 +251,13 @@ public final class ProjectEvents {
     String normalized = normalizeVirtualPath(path);
     if (isVirtualDeviceDirectory(normalized)) return true;
     if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
+    if (isKernelVirtualDirectory(normalized) || isKernelVirtualFile(normalized)) return true;
     return Files.exists(path, options);
   }
 
   public static boolean notExists(Path path, LinkOption... options) {
     String normalized = normalizeVirtualPath(path);
-    if (isVirtualDeviceNamespacePath(normalized)) {
+    if (isVirtualDeviceNamespacePath(normalized) || isKernelVirtualNamespacePath(normalized)) {
       return !exists(path, options);
     }
     return Files.notExists(path, options);
@@ -221,6 +267,8 @@ public final class ProjectEvents {
     String normalized = normalizeVirtualPath(path);
     if (isVirtualDeviceDirectory(normalized)) return true;
     if (isVirtualDevicePath(normalized)) return false;
+    if (isKernelVirtualDirectory(normalized)) return true;
+    if (isKernelVirtualFile(normalized)) return false;
     return Files.isDirectory(path, options);
   }
 
@@ -228,6 +276,8 @@ public final class ProjectEvents {
     String normalized = normalizeVirtualPath(path);
     if (isVirtualDeviceDirectory(normalized)) return false;
     if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
+    if (isKernelVirtualDirectory(normalized)) return false;
+    if (isKernelVirtualFile(normalized)) return true;
     return Files.isRegularFile(path, options);
   }
 
@@ -354,14 +404,20 @@ public final class ProjectEvents {
   public static Path copy(Path source, Path target, CopyOption... options) throws IOException {
     KernelDevice sourceDevice = readableKernelDevice(source);
     KernelDevice targetDevice = writableKernelDevice(target);
+    byte[] sourceKernelFile = sourceDevice == null ? readableKernelFile(source) : null;
     if (targetDevice != null) {
-      byte[] bytes = sourceDevice != null ? readKernelDevice(sourceDevice) : Files.readAllBytes(source);
+      byte[] bytes = sourceDevice != null ? readKernelDevice(sourceDevice) : sourceKernelFile != null ? sourceKernelFile : Files.readAllBytes(source);
       writeKernelDevice(targetDevice, bytes);
       return target;
     }
     assertWritableProjectPath(target);
     if (sourceDevice != null) {
       Files.write(target, readKernelDevice(sourceDevice));
+      emitFileSnapshot(target);
+      return target;
+    }
+    if (sourceKernelFile != null) {
+      Files.write(target, sourceKernelFile);
       emitFileSnapshot(target);
       return target;
     }
@@ -418,6 +474,8 @@ public final class ProjectEvents {
   public static SeekableByteChannel newByteChannel(Path path, OpenOption... options) throws IOException {
     SeekableByteChannel deviceChannel = kernelDeviceByteChannel(path, options);
     if (deviceChannel != null) return deviceChannel;
+    SeekableByteChannel kernelFileChannel = kernelFileByteChannel(path, options);
+    if (kernelFileChannel != null) return kernelFileChannel;
     boolean writable = byteChannelCanWrite(options);
     if (writable) assertWritableProjectPath(path);
     return new ProjectSeekableByteChannel(Files.newByteChannel(path, options), path, writable);
@@ -431,6 +489,8 @@ public final class ProjectEvents {
     OpenOption[] optionArray = options == null ? null : options.toArray(new OpenOption[0]);
     SeekableByteChannel deviceChannel = kernelDeviceByteChannel(path, optionArray);
     if (deviceChannel != null) return deviceChannel;
+    SeekableByteChannel kernelFileChannel = kernelFileByteChannel(path, optionArray);
+    if (kernelFileChannel != null) return kernelFileChannel;
     boolean writable = byteChannelCanWrite(optionArray);
     if (writable) assertWritableProjectPath(path);
     return new ProjectSeekableByteChannel(Files.newByteChannel(path, options, attrs), path, writable);
@@ -867,6 +927,7 @@ public final class ProjectEvents {
     @Override
     public long length() {
       String normalized = normalizeVirtualPath(toPath());
+      if (isKernelVirtualFile(normalized)) return KERNEL_VIRTUAL_FILES.get().get(normalized).length;
       if (isVirtualDeviceNamespacePath(normalized)) return 0L;
       return super.length();
     }
@@ -876,6 +937,8 @@ public final class ProjectEvents {
       String normalized = normalizeVirtualPath(toPath());
       if (isVirtualDeviceDirectory(normalized)) return kernelDeviceNames();
       if (isVirtualDevicePath(normalized)) return null;
+      if (isKernelVirtualDirectory(normalized)) return kernelVirtualDirectoryNames(normalized);
+      if (isKernelVirtualFile(normalized)) return null;
       return super.list();
     }
 
@@ -890,6 +953,14 @@ public final class ProjectEvents {
         return names.toArray(new String[0]);
       }
       if (isVirtualDevicePath(normalized)) return null;
+      if (isKernelVirtualDirectory(normalized)) {
+        ArrayList<String> names = new ArrayList<>();
+        for (String name : kernelVirtualDirectoryNames(normalized)) {
+          if (filter == null || filter.accept(this, name)) names.add(name);
+        }
+        return names.toArray(new String[0]);
+      }
+      if (isKernelVirtualFile(normalized)) return null;
       return super.list(filter);
     }
 
@@ -1299,9 +1370,9 @@ public final class ProjectEvents {
     return devices;
   }
 
-  private static Set<String> parseKernelFilePaths(String manifest) {
-    Set<String> paths = new java.util.HashSet<>();
-    if (manifest == null || manifest.isEmpty()) return paths;
+  private static Map<String, byte[]> parseKernelFilePaths(String manifest) {
+    Map<String, byte[]> files = new HashMap<>();
+    if (manifest == null || manifest.isEmpty()) return files;
     String[] lines = manifest.split("\\n");
     for (String line : lines) {
       if (line.isEmpty()) continue;
@@ -1310,9 +1381,9 @@ public final class ProjectEvents {
       String path = decodeManifestField(fields[0]);
       String normalized = normalizeVirtualString(path);
       if (normalized == null || !normalized.startsWith("/") || isVirtualDeviceNamespacePath(normalized)) continue;
-      paths.add(normalized);
+      files.put(normalized, Base64.getDecoder().decode(fields[1]));
     }
-    return paths;
+    return files;
   }
 
   private static String decodeManifestField(String field) {
@@ -1383,12 +1454,12 @@ public final class ProjectEvents {
   }
 
   private static boolean isKernelVirtualFile(String normalized) {
-    return normalized != null && KERNEL_VIRTUAL_FILES.get().contains(normalized);
+    return normalized != null && KERNEL_VIRTUAL_FILES.get().containsKey(normalized);
   }
 
   private static boolean isKernelVirtualDirectory(String normalized) {
     if (normalized == null || "/".equals(normalized)) return false;
-    for (String filePath : KERNEL_VIRTUAL_FILES.get()) {
+    for (String filePath : KERNEL_VIRTUAL_FILES.get().keySet()) {
       if (filePath.startsWith(normalized.endsWith("/") ? normalized : normalized + "/")) return true;
     }
     return false;
@@ -1397,7 +1468,7 @@ public final class ProjectEvents {
   private static boolean isKernelVirtualNamespacePath(String normalized) {
     if (isKernelVirtualFile(normalized) || isKernelVirtualDirectory(normalized)) return true;
     if (normalized == null) return false;
-    for (String filePath : KERNEL_VIRTUAL_FILES.get()) {
+    for (String filePath : KERNEL_VIRTUAL_FILES.get().keySet()) {
       int slash = filePath.indexOf('/', 1);
       String root = slash < 0 ? filePath : filePath.substring(0, slash);
       if (normalized.startsWith(root + "/")) return true;
@@ -1408,6 +1479,38 @@ public final class ProjectEvents {
   private static void throwKernelDeviceNotDirectory(String normalized) throws IOException {
     if (KERNEL_DEVICES.get().containsKey(normalized)) throw new NotDirectoryException(normalized);
     throw new NoSuchFileException(normalized);
+  }
+
+  private static byte[] readableKernelFile(Path path) throws IOException {
+    String normalized = normalizeVirtualPath(path);
+    byte[] contents = normalized == null ? null : KERNEL_VIRTUAL_FILES.get().get(normalized);
+    if (contents != null) return contents;
+    if (isKernelVirtualDirectory(normalized)) throw new IOException("Kernel virtual path is a directory: " + normalized);
+    if (isKernelVirtualNamespacePath(normalized)) throw new NoSuchFileException(normalized);
+    return null;
+  }
+
+  private static ArrayList<Path> kernelVirtualDirectoryPaths(String normalized) {
+    ArrayList<Path> paths = new ArrayList<>();
+    for (String name : kernelVirtualDirectoryNames(normalized)) {
+      paths.add(Path.of(("/".equals(normalized) ? "" : normalized) + "/" + name));
+    }
+    return paths;
+  }
+
+  private static String[] kernelVirtualDirectoryNames(String normalized) {
+    String prefix = normalized.endsWith("/") ? normalized : normalized + "/";
+    ArrayList<String> names = new ArrayList<>();
+    for (String filePath : KERNEL_VIRTUAL_FILES.get().keySet()) {
+      if (!filePath.startsWith(prefix)) continue;
+      String remaining = filePath.substring(prefix.length());
+      if (remaining.isEmpty()) continue;
+      int slash = remaining.indexOf('/');
+      String name = slash < 0 ? remaining : remaining.substring(0, slash);
+      if (!names.contains(name)) names.add(name);
+    }
+    Collections.sort(names);
+    return names.toArray(new String[0]);
   }
 
   private static byte[] readKernelDevice(KernelDevice device) {
@@ -1553,6 +1656,68 @@ public final class ProjectEvents {
     }
   }
 
+  private static final class KernelFileByteChannel implements SeekableByteChannel {
+    private final byte[] contents;
+    private int position = 0;
+    private boolean open = true;
+
+    KernelFileByteChannel(byte[] contents) {
+      this.contents = contents;
+    }
+
+    @Override
+    public int read(ByteBuffer dst) throws IOException {
+      if (!open) throw new ClosedChannelException();
+      if (position >= contents.length) return -1;
+      int length = Math.min(dst.remaining(), contents.length - position);
+      dst.put(contents, position, length);
+      position += length;
+      return length;
+    }
+
+    @Override
+    public int write(ByteBuffer src) throws IOException {
+      throw new IOException("Read-only kernel virtual file");
+    }
+
+    @Override
+    public long position() throws IOException {
+      if (!open) throw new ClosedChannelException();
+      return position;
+    }
+
+    @Override
+    public SeekableByteChannel position(long newPosition) throws IOException {
+      if (!open) throw new ClosedChannelException();
+      if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
+        throw new IllegalArgumentException("Invalid kernel file channel position: " + newPosition);
+      }
+      position = (int) newPosition;
+      return this;
+    }
+
+    @Override
+    public long size() throws IOException {
+      if (!open) throw new ClosedChannelException();
+      return contents.length;
+    }
+
+    @Override
+    public SeekableByteChannel truncate(long size) throws IOException {
+      throw new IOException("Read-only kernel virtual file");
+    }
+
+    @Override
+    public boolean isOpen() {
+      return open;
+    }
+
+    @Override
+    public void close() {
+      open = false;
+    }
+  }
+
   private static String writableFileName(String fileName) throws IOException {
     assertWritableProjectPath(Path.of(fileName));
     return fileName;
@@ -1573,15 +1738,17 @@ public final class ProjectEvents {
   private static File inputFileTarget(Path path) throws IOException {
     KernelDevice device = readableKernelDevice(path);
     if (device != null) return temporaryDeviceFile();
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) return temporaryFileWithContents(kernelFile);
     return path.toFile();
   }
 
   private static File inputReaderTarget(Path path) throws IOException {
     KernelDevice device = readableKernelDevice(path);
-    if (device == null) return path.toFile();
-    File file = temporaryDeviceFile();
-    Files.write(file.toPath(), readKernelDevice(device));
-    return file;
+    if (device != null) return temporaryFileWithContents(readKernelDevice(device));
+    byte[] kernelFile = readableKernelFile(path);
+    if (kernelFile != null) return temporaryFileWithContents(kernelFile);
+    return path.toFile();
   }
 
   private static File randomAccessFileTarget(Path path, String mode) throws IOException {
@@ -1627,6 +1794,15 @@ public final class ProjectEvents {
     return new KernelDeviceByteChannel(device, readable, writable);
   }
 
+  private static SeekableByteChannel kernelFileByteChannel(Path path, OpenOption... options) throws IOException {
+    String normalized = normalizeVirtualPath(path);
+    if (!isKernelVirtualNamespacePath(normalized)) return null;
+    if (byteChannelCanWrite(options)) throw new IOException("Read-only kernel virtual path: " + normalized);
+    byte[] contents = readableKernelFile(path);
+    if (contents == null) throw new NoSuchFileException(normalized);
+    return new KernelFileByteChannel(contents);
+  }
+
   private static byte[] kernelInputBytes(Path path) throws IOException {
     KernelDevice device = readableKernelDevice(path);
     return device == null ? null : readKernelDevice(device);
@@ -1646,6 +1822,12 @@ public final class ProjectEvents {
   private static File temporaryDeviceFile() throws IOException {
     File file = File.createTempFile("tracecode-device-", ".tmp");
     file.deleteOnExit();
+    return file;
+  }
+
+  private static File temporaryFileWithContents(byte[] contents) throws IOException {
+    File file = temporaryDeviceFile();
+    Files.write(file.toPath(), contents);
     return file;
   }
 

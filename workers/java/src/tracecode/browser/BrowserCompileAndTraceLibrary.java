@@ -770,6 +770,7 @@ public final class BrowserCompileAndTraceLibrary {
     resetDirectory(resourceRoot);
     Files.createDirectories(resourceRoot);
     for (ProjectManifestEntry entry : parseProjectManifest(resourceManifest)) {
+      if (isKernelVirtualManifestPath(entry.path)) continue;
       Path target = safeProjectResourcePath(resourceRoot, entry.path);
       if (entry.directory) {
         Files.createDirectories(target);

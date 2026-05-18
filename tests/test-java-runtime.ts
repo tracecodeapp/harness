@@ -282,6 +282,27 @@ public class ProjectWorkspaceDirectorySmoke {
       ProjectEvents.setKernelFiles(kernelFileManifest);
       var customKernelFile = new ProjectEvents.ProjectFile("/tracekernel/custom");
       var customKernelDir = new ProjectEvents.ProjectFile("/tracekernel");
+      var customKernelRootEntries = customKernelDir.list();
+      java.util.Arrays.sort(customKernelRootEntries);
+      String customKernelReadString = ProjectEvents.readString(Paths.get("/tracekernel/custom"));
+      String customKernelReadBytes = new String(ProjectEvents.readAllBytes(Paths.get("/tracekernel/custom")), StandardCharsets.UTF_8);
+      String customKernelReader;
+      try (var reader = new ProjectEvents.ProjectFileReader("/tracekernel/custom", StandardCharsets.UTF_8)) {
+        char[] buffer = new char[64];
+        customKernelReader = new String(buffer, 0, reader.read(buffer));
+      }
+      String customKernelChannel;
+      try (var channel = ProjectEvents.newByteChannel(Paths.get("/tracekernel/custom"), StandardOpenOption.READ)) {
+        ByteBuffer buffer = ByteBuffer.allocate(64);
+        channel.read(buffer);
+        buffer.flip();
+        customKernelChannel = StandardCharsets.UTF_8.decode(buffer).toString();
+      }
+      java.util.ArrayList<String> listedKernelPaths = new java.util.ArrayList<>();
+      try (var stream = ProjectEvents.list(Paths.get("/tracekernel"))) {
+        stream.forEach(path -> listedKernelPaths.add(path.toString()));
+      }
+      java.util.Collections.sort(listedKernelPaths);
       String customFileWriterResult = "ok";
       try {
         new ProjectEvents.ProjectFileWriter("/tracekernel/custom", StandardCharsets.UTF_8).close();
@@ -297,6 +318,12 @@ public class ProjectWorkspaceDirectorySmoke {
       System.out.println("kernel-file-api="
         + customKernelDir.exists() + ":" + customKernelDir.isDirectory() + ":" + customKernelDir.canRead() + ":" + customKernelDir.canWrite()
         + ":" + customKernelFile.exists() + ":" + customKernelFile.isFile() + ":" + customKernelFile.canRead() + ":" + customKernelFile.canWrite()
+        + ":" + customKernelFile.length() + ":" + String.join(",", customKernelRootEntries)
+        + ":" + customKernelReadString.replace("\\n", "|")
+        + ":" + customKernelReadBytes.replace("\\n", "|")
+        + ":" + customKernelReader.replace("\\n", "|")
+        + ":" + customKernelChannel.replace("\\n", "|")
+        + ":" + String.join(",", listedKernelPaths)
         + ":" + customFileWriterResult + ":" + customKernelMkdirResult);
     } finally {
       ProjectEvents.clearKernelDevices();
@@ -345,7 +372,7 @@ public class ProjectWorkspaceDirectorySmoke {
       `Java browser helper should route java.io.File metadata/listing through kernel devices: ${output}`
     );
     assertCondition(
-      kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:IOException:IOException',
+      kernelFileApiOutput === 'kernel-file-api=true:true:true:false:true:true:true:false:19:custom:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:custom-kernel-file|:/tracekernel/custom:IOException:IOException',
       `Java browser helper should expose manifest kernel files as read-only File API paths: ${output}`
     );
     const projectEventsSource = readFileSync(
