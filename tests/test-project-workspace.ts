@@ -7719,13 +7719,29 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
         check: {
           steps: [
             'python3 main.py',
-            { command: 'python3 -m unittest discover tests', cwd: '.', env: { TEST_MODE: 'visible' } },
+            { command: 'python3 -m unittest discover tests', cwd: '.', env: { TEST_MODE: 'visible' }, stdin: 'step-input\n' },
+          ],
+        },
+        persist: {
+          steps: [
+            'python3 write_generated.py',
+            'python3 read_generated.py',
+          ],
+        },
+        fail: {
+          steps: [
+            'python3 main.py',
+            'python3 fail.py',
+            'python3 read_generated.py',
           ],
         },
       },
       directories: ['tests'],
       files: [
         { path: 'src/main.py', contents: 'import os\nprint(os.getcwd())\nprint(os.environ["MODE"])\n' },
+        { path: 'src/write_generated.py', contents: 'open("generated.txt", "w").write("from-step-one\\n")\n' },
+        { path: 'src/read_generated.py', contents: 'print(open("generated.txt").read())\n' },
+        { path: 'src/fail.py', contents: 'raise SystemExit(9)\n' },
         { path: 'src/mutate_readonly.py', contents: 'print("mutate")\n' },
         { path: 'tests/test_sample.py', contents: '' },
         { path: 'README.md', contents: 'protected\n', readonly: true },
@@ -7734,14 +7750,39 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
         consumer: 'test-harness',
       },
     },
-    pythonRunner: async (request) => ({
-      stdout: `${request.scriptPath}:${request.cwd}:${request.env.MODE}:${request.env.TEST_MODE ?? ''}\n`,
-      stderr: '',
-      exitCode: 0,
-      ...(request.scriptPath.endsWith('mutate_readonly.py')
-        ? { files: [{ path: 'README.md', contents: 'runtime overwrite\n' }] }
-        : {}),
-    }),
+    pythonRunner: async (request) => {
+      if (request.scriptPath.endsWith('write_generated.py')) {
+        return {
+          stdout: 'wrote-generated\n',
+          stderr: '',
+          exitCode: 0,
+          files: [{ path: 'src/generated.txt', contents: 'from-step-one\n' }],
+        };
+      }
+      if (request.scriptPath.endsWith('read_generated.py')) {
+        const generated = request.project.files.find((file) => file.path === 'src/generated.txt')?.contents ?? 'missing\n';
+        return {
+          stdout: `read-generated:${generated}`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (request.scriptPath.endsWith('fail.py')) {
+        return {
+          stdout: 'before-fail\n',
+          stderr: 'failed-step\n',
+          exitCode: 9,
+        };
+      }
+      return {
+        stdout: `${request.scriptPath}:${request.cwd}:${request.env.MODE}:${request.env.TEST_MODE ?? ''}${request.stdin ? `:${request.stdin}` : '\n'}`,
+        stderr: '',
+        exitCode: 0,
+        ...(request.scriptPath.endsWith('mutate_readonly.py')
+          ? { files: [{ path: 'README.md', contents: 'runtime overwrite\n' }] }
+          : {}),
+      };
+    },
   });
 
   assertCondition(workspace.cwd === '/home/user/weather-api', `project session should derive neutral workspace root: ${workspace.cwd}`);
@@ -7770,10 +7811,51 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
     test.stdout === 'unittest:/home/user/weather-api:session:visible\n',
     `project session object command should use command cwd/env overlays: ${JSON.stringify(test)}`
   );
-  const check = await workspace.runProjectCommand('check');
+  const stepEvents: RuntimeCommandEvent[] = [];
+  const check = await workspace.runProjectCommand('check', {
+    onEvent: (event) => stepEvents.push(event),
+  });
   assertCondition(
-    check.stdout === 'src/main.py:/home/user/weather-api/src:session:\nunittest:/home/user/weather-api:session:visible\n',
+    check.stdout === 'src/main.py:/home/user/weather-api/src:session:\nunittest:/home/user/weather-api:session:visible:step-input\n',
     `project session command steps should preserve ordered native commands with per-step cwd/env: ${JSON.stringify(check)}`
+  );
+  const stepStatuses = stepEvents.filter((event): event is Extract<RuntimeCommandEvent, { type: 'status' }> => event.type === 'status');
+  assertCondition(
+    stepStatuses.map((event) => event.phase).join(',') === 'project-step-start,project-step-end,project-step-start,project-step-end',
+    `project session command steps should emit explicit step lifecycle events: ${JSON.stringify(stepStatuses)}`
+  );
+  assertCondition(
+    stepStatuses[0]?.detail?.step === 1 &&
+      stepStatuses[0]?.detail?.stepCount === 2 &&
+      stepStatuses[0]?.detail?.shellCommand === 'python3 main.py' &&
+      stepStatuses[2]?.detail?.cwd === '/home/user/weather-api',
+    `project session step status details should expose command/cwd metadata: ${JSON.stringify(stepStatuses)}`
+  );
+
+  const persist = await workspace.runProjectCommand('persist');
+  assertCondition(
+    persist.stdout === 'wrote-generated\nread-generated:from-step-one\n' &&
+      await workspace.readFile('src/generated.txt') === 'from-step-one\n',
+    `project session step file changes should persist into later steps: ${JSON.stringify(persist)}`
+  );
+
+  const failEvents: RuntimeCommandEvent[] = [];
+  const fail = await workspace.runProjectCommand('fail', {
+    onEvent: (event) => failEvents.push(event),
+  });
+  assertCondition(
+    fail.exitCode === 9 &&
+      fail.stdout === 'src/main.py:/home/user/weather-api/src:session:\nbefore-fail\n' &&
+      fail.stderr === 'failed-step\n' &&
+      !fail.stdout.includes('read-generated'),
+    `project session failing steps should stop later steps and preserve accumulated output: ${JSON.stringify(fail)}`
+  );
+  assertCondition(
+    failEvents
+      .filter((event): event is Extract<RuntimeCommandEvent, { type: 'status' }> => event.type === 'status')
+      .map((event) => `${event.phase}:${event.detail?.step}:${event.detail?.exitCode ?? ''}`)
+      .join(',') === 'project-step-start:1:,project-step-end:1:0,project-step-start:2:,project-step-end:2:9',
+    `project session failing steps should emit lifecycle through the failed step only: ${JSON.stringify(failEvents)}`
   );
 
   const manual = await workspace.runCommand('python3 main.py', { cwd: 'src', env: { MODE: 'manual' } });

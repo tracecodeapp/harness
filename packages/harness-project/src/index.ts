@@ -3312,11 +3312,37 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const files: RuntimeFileChange[] = [];
     let stdout = '';
     let stderr = '';
-    for (const step of command.steps) {
+    for (const [stepIndex, step] of command.steps.entries()) {
+      options.onEvent?.({
+        type: 'status',
+        phase: 'project-step-start',
+        message: `Starting project command step ${stepIndex + 1}/${command.steps.length}`,
+        detail: {
+          command: name,
+          step: stepIndex + 1,
+          stepCount: command.steps.length,
+          shellCommand: step.command,
+          ...(step.cwd ? { cwd: this.resolveTerminalPath(this.cwd, step.cwd) } : {}),
+        },
+        actor: SYSTEM_ACTOR,
+      });
       const result = await runStep(step);
       stdout += result.stdout;
       stderr += result.stderr;
       if (result.files) files.push(...result.files);
+      options.onEvent?.({
+        type: 'status',
+        phase: 'project-step-end',
+        message: `Finished project command step ${stepIndex + 1}/${command.steps.length}`,
+        detail: {
+          command: name,
+          step: stepIndex + 1,
+          stepCount: command.steps.length,
+          shellCommand: step.command,
+          exitCode: result.exitCode,
+        },
+        actor: SYSTEM_ACTOR,
+      });
       if (result.exitCode !== 0) {
         return {
           stdout,
