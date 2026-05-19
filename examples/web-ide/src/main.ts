@@ -219,6 +219,8 @@ async function bootDevTerminal(): Promise<void> {
             <button id="dev-menu-run-project-start" type="button">Run Project Start</button>
             <button id="dev-menu-run-project-test" type="button">Run Project Test</button>
             <button id="dev-menu-run-project-build" type="button">Run Project Build</button>
+            <div class="dev-menu-separator" role="separator"></div>
+            <div id="dev-menu-session-commands" class="dev-menu-session-commands"></div>
             <button id="dev-menu-run-mvp" type="button">Run MVP Checks</button>
           </div>
         </div>
@@ -238,6 +240,11 @@ async function bootDevTerminal(): Promise<void> {
           </div>
           <div class="dev-explorer-root-label">/home/user/weather-api</div>
           <div class="dev-file-tree" id="dev-file-tree"></div>
+          <section class="dev-session-card">
+            <div class="dev-session-title">Project Session</div>
+            <div class="dev-session-meta" id="dev-session-meta">loading</div>
+            <div class="dev-command-list" id="dev-session-command-list"></div>
+          </section>
         </aside>
         <section class="dev-editor-shell">
           <div class="dev-editor-tabs">
@@ -296,6 +303,9 @@ async function bootDevTerminal(): Promise<void> {
   const runProjectTestButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-project-test')!;
   const runProjectBuildButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-project-build')!;
   const runMvpButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-mvp')!;
+  const sessionCommandMenu = document.querySelector<HTMLDivElement>('#dev-menu-session-commands')!;
+  const sessionCommandList = document.querySelector<HTMLDivElement>('#dev-session-command-list')!;
+  const sessionMeta = document.querySelector<HTMLDivElement>('#dev-session-meta')!;
 
   output.replaceChildren(form);
 
@@ -349,8 +359,25 @@ async function bootDevTerminal(): Promise<void> {
       language: 'mixed',
       commands: {
         start: 'python3 main.py',
-        test: 'python3 -m app.main session-test',
-        build: 'javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
+        test: {
+          steps: [
+            'python3 takehome/python/main.py',
+            'node takehome/js/main.js',
+            'javac -d takehome/java/out takehome/java/stressjava/Main.java takehome/java/stressjava/Order.java takehome/java/stressjava/OrderParser.java takehome/java/stressjava/ReportWriter.java',
+            'java --class-path takehome/java/out stressjava.Main',
+            { command: 'clang++ -std=c++17 main.cpp order.cpp -o ../analyzer', cwd: 'takehome/cpp/src' },
+            { command: './analyzer', cwd: 'takehome/cpp' },
+            'dotnet run --project takehome/csharp/app/App.csproj',
+          ],
+        },
+        build: {
+          steps: [
+            'javac Main.java',
+            'clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
+            'dotnet build WeatherApi.csproj --nologo',
+            'dotnet build takehome/csharp/app/App.csproj --nologo',
+          ],
+        },
         mvp: 'mvp',
         python: 'python3 main.py',
         node: 'node index.js',
@@ -509,6 +536,309 @@ print(value())
       {
         path: 'data/b.txt',
         contents: 'b\n',
+      },
+      {
+        path: 'takehome/data/orders.csv',
+        contents: [
+          'customer,sku,quantity,price',
+          'Acme,widget,2,19.50',
+          'Beacon,gadget,1,29.00',
+          'Acme,gadget,3,29.00',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'takehome/python/orders.py',
+        contents: `from dataclasses import dataclass
+from pathlib import Path
+
+@dataclass
+class Order:
+    customer: str
+    sku: str
+    quantity: int
+    price: float
+
+    @property
+    def total(self):
+        return self.quantity * self.price
+
+def load_orders(path):
+    rows = Path(path).read_text().strip().splitlines()[1:]
+    orders = []
+    for row in rows:
+        customer, sku, quantity, price = row.split(",")
+        orders.append(Order(customer, sku, int(quantity), float(price)))
+    return orders
+`,
+      },
+      {
+        path: 'takehome/python/report.py',
+        contents: `from collections import defaultdict
+from pathlib import Path
+
+def write_summary(orders, output_path):
+    totals = defaultdict(float)
+    for order in orders:
+        totals[order.customer] += order.total
+    top_customer = max(totals.items(), key=lambda item: item[1])[0]
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(f"top={top_customer}\\ncount={len(orders)}\\n")
+    return top_customer
+`,
+      },
+      {
+        path: 'takehome/python/main.py',
+        contents: `from pathlib import Path
+from orders import load_orders
+from report import write_summary
+
+ROOT = Path(__file__).resolve().parents[1]
+orders = load_orders(ROOT / "data" / "orders.csv")
+top = write_summary(orders, ROOT / "python" / "reports" / "summary.txt")
+print(f"python:{top}:takehome")
+print(Path.cwd())
+`,
+      },
+      {
+        path: 'takehome/js/orders.js',
+        contents: `const fs = require("fs");
+
+function loadOrders(path) {
+  return fs.readFileSync(path, "utf8").trim().split("\\n").slice(1).map((row) => {
+    const [customer, sku, quantity, price] = row.split(",");
+    return { customer, sku, quantity: Number(quantity), price: Number(price), total: Number(quantity) * Number(price) };
+  });
+}
+
+module.exports = { loadOrders };
+`,
+      },
+      {
+        path: 'takehome/js/report.js',
+        contents: `const fs = require("fs");
+const path = require("path");
+
+function writeSummary(orders, outputPath) {
+  const totals = new Map();
+  for (const order of orders) {
+    totals.set(order.customer, (totals.get(order.customer) ?? 0) + order.total);
+  }
+  const [topCustomer] = [...totals.entries()].sort((left, right) => right[1] - left[1])[0];
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, \`top=\${topCustomer}\\ncount=\${orders.length}\\n\`);
+  return topCustomer;
+}
+
+module.exports = { writeSummary };
+`,
+      },
+      {
+        path: 'takehome/js/main.js',
+        contents: `const path = require("path");
+const { loadOrders } = require("./orders");
+const { writeSummary } = require("./report");
+
+const root = path.resolve(__dirname, "..");
+const orders = loadOrders(path.join(root, "data", "orders.csv"));
+const top = writeSummary(orders, path.join(root, "js", "reports", "summary.txt"));
+console.log(\`node:\${top}:takehome\`);
+console.log(process.cwd());
+`,
+      },
+      {
+        path: 'takehome/java/stressjava/Order.java',
+        contents: `package stressjava;
+
+class Order {
+  final String customer;
+  final int quantity;
+  final double price;
+  Order(String customer, int quantity, double price) {
+    this.customer = customer;
+    this.quantity = quantity;
+    this.price = price;
+  }
+  double total() { return quantity * price; }
+}
+`,
+      },
+      {
+        path: 'takehome/java/stressjava/OrderParser.java',
+        contents: `package stressjava;
+
+import java.nio.file.*;
+import java.util.*;
+
+class OrderParser {
+  static List<Order> load(Path path) throws Exception {
+    List<Order> orders = new ArrayList<>();
+    for (String row : Files.readAllLines(path).subList(1, Files.readAllLines(path).size())) {
+      String[] parts = row.split(",");
+      orders.add(new Order(parts[0], Integer.parseInt(parts[2]), Double.parseDouble(parts[3])));
+    }
+    return orders;
+  }
+}
+`,
+      },
+      {
+        path: 'takehome/java/stressjava/ReportWriter.java',
+        contents: `package stressjava;
+
+import java.nio.file.*;
+import java.util.*;
+
+class ReportWriter {
+  static String write(List<Order> orders, Path output) throws Exception {
+    Map<String, Double> totals = new HashMap<>();
+    for (Order order : orders) totals.merge(order.customer, order.total(), Double::sum);
+    String top = Collections.max(totals.entrySet(), Map.Entry.comparingByValue()).getKey();
+    Files.createDirectories(output.getParent());
+    Files.writeString(output, "top=" + top + "\\ncount=" + orders.size() + "\\n");
+    return top;
+  }
+}
+`,
+      },
+      {
+        path: 'takehome/java/stressjava/Main.java',
+        contents: `package stressjava;
+
+import java.nio.file.*;
+import java.util.*;
+
+public class Main {
+  public static void main(String[] args) throws Exception {
+    List<Order> orders = OrderParser.load(Path.of("takehome/data/orders.csv"));
+    String top = ReportWriter.write(orders, Path.of("takehome/java/reports/summary.txt"));
+    System.out.println("java:" + top + ":takehome");
+    System.out.println(System.getProperty("user.dir"));
+  }
+}
+`,
+      },
+      {
+        path: 'takehome/cpp/src/order.hpp',
+        contents: `#pragma once
+
+#include <string>
+#include <vector>
+
+struct Order {
+  std::string customer;
+  int quantity;
+  double price;
+  double total() const;
+};
+
+std::vector<Order> load_orders(const std::string& path);
+std::string write_summary(const std::vector<Order>& orders, const std::string& output_path);
+`,
+      },
+      {
+        path: 'takehome/cpp/src/order.cpp',
+        contents: `#include "order.hpp"
+
+#include <fstream>
+#include <map>
+#include <sstream>
+
+double Order::total() const {
+  return quantity * price;
+}
+
+std::vector<Order> load_orders(const std::string& path) {
+  std::ifstream input(path);
+  std::string row;
+  std::getline(input, row);
+  std::vector<Order> orders;
+  while (std::getline(input, row)) {
+    std::stringstream stream(row);
+    std::string customer, sku, quantity, price;
+    std::getline(stream, customer, ',');
+    std::getline(stream, sku, ',');
+    std::getline(stream, quantity, ',');
+    std::getline(stream, price, ',');
+    orders.push_back({customer, std::stoi(quantity), std::stod(price)});
+  }
+  return orders;
+}
+
+std::string write_summary(const std::vector<Order>& orders, const std::string& output_path) {
+  std::map<std::string, double> totals;
+  for (const auto& order : orders) totals[order.customer] += order.total();
+  std::string top;
+  double top_total = -1;
+  for (const auto& entry : totals) {
+    if (entry.second > top_total) {
+      top = entry.first;
+      top_total = entry.second;
+    }
+  }
+  std::ofstream output(output_path);
+  output << "top=" << top << "\\ncount=" << orders.size() << "\\n";
+  return top;
+}
+`,
+      },
+      {
+        path: 'takehome/cpp/src/main.cpp',
+        contents: `#include "order.hpp"
+
+#include <iostream>
+
+int main() {
+  auto orders = load_orders("../data/orders.csv");
+  auto top = write_summary(orders, "summary.txt");
+  std::cout << "cpp:" << top << ":takehome\\n";
+  return 0;
+}
+`,
+      },
+      {
+        path: 'takehome/csharp/app/App.csproj',
+        contents: [
+          '<Project Sdk="Microsoft.NET.Sdk">',
+          '  <PropertyGroup>',
+          '    <OutputType>Exe</OutputType>',
+          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <ImplicitUsings>enable</ImplicitUsings>',
+          '    <Nullable>disable</Nullable>',
+          '  </PropertyGroup>',
+          '</Project>',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'takehome/csharp/app/Order.cs',
+        contents: 'record Order(string Customer, string Sku, int Quantity, double Price) { public double Total => Quantity * Price; }\n',
+      },
+      {
+        path: 'takehome/csharp/app/Parser.cs',
+        contents: `static class Parser
+{
+  public static List<Order> Load(string path) =>
+    File.ReadAllLines(path).Skip(1).Select(row => {
+      var parts = row.Split(',');
+      return new Order(parts[0], parts[1], int.Parse(parts[2]), double.Parse(parts[3]));
+    }).ToList();
+}
+`,
+      },
+      {
+        path: 'takehome/csharp/app/Program.cs',
+        contents: `var orders = Parser.Load("takehome/data/orders.csv");
+var top = orders.GroupBy(order => order.Customer).OrderByDescending(group => group.Sum(order => order.Total)).First().Key;
+Directory.CreateDirectory("takehome/csharp/reports");
+File.WriteAllText("takehome/csharp/reports/summary.txt", $"top={top}\\ncount={orders.Count}\\n");
+Console.WriteLine($"csharp:{top}:takehome");
+try {
+  System.Diagnostics.Process.Start("echo", "child");
+} catch (Exception error) {
+  Console.WriteLine("process-error=" + error.GetType().Name);
+}
+`,
       },
       {
         path: 'globpy/run.py',
@@ -699,6 +1029,25 @@ if (args.Length > 0) {
 `,
       },
       {
+        path: 'WeatherApi.csproj',
+        contents: [
+          '<Project Sdk="Microsoft.NET.Sdk">',
+          '  <PropertyGroup>',
+          '    <OutputType>Exe</OutputType>',
+          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <ImplicitUsings>enable</ImplicitUsings>',
+          '    <Nullable>disable</Nullable>',
+          '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
+          '  </PropertyGroup>',
+          '  <ItemGroup>',
+          '    <Compile Include="Program.cs" />',
+          '    <Compile Include="Helper.cs" />',
+          '  </ItemGroup>',
+          '</Project>',
+          '',
+        ].join('\n'),
+      },
+      {
         path: 'Helper.cs',
         contents: `static class Helper
 {
@@ -753,6 +1102,10 @@ int main(int argc, char** argv) {
     runProjectStartButton.disabled = !commands.start;
     runProjectTestButton.disabled = !commands.test;
     runProjectBuildButton.disabled = !commands.build;
+    const session = workspace.projectSession;
+    sessionMeta.textContent = session
+      ? `${session.name ?? session.projectSlug ?? session.id} · ${session.language ?? 'project'} · ${session.workspaceRoot}`
+      : 'No project session';
   };
   const updatePrompt = (): void => {
     prompt.textContent = terminalSession.prompt.text;
@@ -1101,7 +1454,7 @@ int main(int argc, char** argv) {
     void projectEditor.getAction('editor.action.formatDocument')?.run();
   });
   clearTerminalButton.addEventListener('click', () => {
-    output.replaceChildren();
+    output.replaceChildren(form);
   });
   focusTerminalButton.addEventListener('click', () => {
     input.focus();
@@ -1113,10 +1466,16 @@ int main(int argc, char** argv) {
     void saveActiveFile().then(() => runTerminalCommand(commandForActiveFile()));
   });
   const runProjectCommand = async (name: string): Promise<void> => {
+    const commandLabel = (command: NonNullable<typeof workspace.projectSession>['commands'][string]): string => {
+      return 'steps' in command
+        ? command.steps.map((step) => step.command).join(' && ')
+        : command.command;
+    };
     input.value = '';
     input.disabled = true;
     status.textContent = 'tracekernel running';
-    appendCommandLine(workspace.projectSession?.commands[name]?.command ?? name);
+    const projectCommand = workspace.projectSession?.commands[name];
+    appendCommandLine(projectCommand ? commandLabel(projectCommand) : name);
     try {
       const streamedOutput = { stdout: '', stderr: '' };
       const result = await workspace.runProjectCommand(name, {
@@ -1144,6 +1503,40 @@ int main(int argc, char** argv) {
       updatePrompt();
     }
   };
+  const renderProjectCommandActions = (): void => {
+    const commands = workspace.projectSession?.commands ?? {};
+    const commandNames = Object.keys(commands).sort((left, right) => {
+      const rank = (name: string): number => ({ start: 0, test: 1, build: 2, mvp: 3 }[name] ?? 10);
+      return rank(left) - rank(right) || left.localeCompare(right);
+    });
+    sessionCommandList.replaceChildren();
+    sessionCommandMenu.replaceChildren();
+    for (const name of commandNames) {
+      const command = commands[name];
+      const sidebarButton = document.createElement('button');
+      sidebarButton.type = 'button';
+      sidebarButton.className = 'dev-command-button';
+      sidebarButton.textContent = name;
+      sidebarButton.title = 'steps' in command
+        ? command.steps.map((step) => step.command).join('\n')
+        : command.command;
+      sidebarButton.addEventListener('click', () => {
+        void saveActiveFile().then(() => runProjectCommand(name));
+      });
+      sessionCommandList.append(sidebarButton);
+
+      if (!['start', 'test', 'build'].includes(name)) {
+        const menuButton = document.createElement('button');
+        menuButton.type = 'button';
+        menuButton.textContent = `Run ${name}`;
+        menuButton.title = sidebarButton.title;
+        menuButton.addEventListener('click', () => {
+          void saveActiveFile().then(() => runProjectCommand(name));
+        });
+        sessionCommandMenu.append(menuButton);
+      }
+    }
+  };
   runProjectStartButton.addEventListener('click', () => {
     void saveActiveFile().then(() => runProjectCommand('start'));
   });
@@ -1167,6 +1560,7 @@ int main(int argc, char** argv) {
     }
   ).__tracecodeProjectWorkspace = workspace;
   setProjectCommandButtons();
+  renderProjectCommandActions();
 
   window.addEventListener('beforeunload', disposeTerminal);
   if (import.meta.hot) {

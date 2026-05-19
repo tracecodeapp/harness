@@ -7716,6 +7716,12 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
           cwd: '.',
           env: { TEST_MODE: 'visible' },
         },
+        check: {
+          steps: [
+            'python3 main.py',
+            { command: 'python3 -m unittest discover tests', cwd: '.', env: { TEST_MODE: 'visible' } },
+          ],
+        },
       },
       directories: ['tests'],
       files: [
@@ -7763,6 +7769,11 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(
     test.stdout === 'unittest:/home/user/weather-api:session:visible\n',
     `project session object command should use command cwd/env overlays: ${JSON.stringify(test)}`
+  );
+  const check = await workspace.runProjectCommand('check');
+  assertCondition(
+    check.stdout === 'src/main.py:/home/user/weather-api/src:session:\nunittest:/home/user/weather-api:session:visible\n',
+    `project session command steps should preserve ordered native commands with per-step cwd/env: ${JSON.stringify(check)}`
   );
 
   const manual = await workspace.runCommand('python3 main.py', { cwd: 'src', env: { MODE: 'manual' } });

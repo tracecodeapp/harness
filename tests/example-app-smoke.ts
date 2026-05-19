@@ -553,13 +553,25 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runProjectButton(
     '#dev-menu-run-project-test',
-    'module_args=session-test',
-    (text) => text.includes('weather-api % python3 -m app.main session-test') && text.includes('module_args=session-test')
+    'csharp:Acme:takehome',
+    (text) =>
+      text.includes('weather-api % python3 takehome/python/main.py') &&
+      text.includes('python:Acme:takehome') &&
+      text.includes('node:Acme:takehome') &&
+      text.includes('java:Acme:takehome') &&
+      text.includes('cpp:Acme:takehome') &&
+      text.includes('csharp:Acme:takehome'),
+    360_000
   );
   await runProjectButton(
     '#dev-menu-run-project-build',
-    'weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
-    (text) => text.includes('weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp') && !text.includes('Java compilation failed') && !text.includes('C++ compilation failed')
+    'weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp && dotnet build WeatherApi.csproj --nologo && dotnet build takehome/csharp/app/App.csproj --nologo',
+    (text) =>
+      text.includes('weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp && dotnet build WeatherApi.csproj --nologo && dotnet build takehome/csharp/app/App.csproj --nologo') &&
+      !text.includes('Java compilation failed') &&
+      !text.includes('C++ compilation failed') &&
+      !text.includes('C# compilation failed'),
+    360_000
   );
 
   const externalJar = await createExternalJavaJarBase64();

@@ -82,6 +82,7 @@ import type {
   RuntimeProjectSession,
   RuntimeProjectSessionCommand,
   RuntimeProjectSessionCommandDefinition,
+  RuntimeProjectSessionCommandStep,
   RuntimeProjectSessionFile,
   RuntimeProjectSessionInfo,
   RuntimeProjectIoBridge,
@@ -339,9 +340,17 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
 function normalizeProjectSessionCommand(
   command: RuntimeProjectSessionCommandDefinition
 ): RuntimeProjectSessionCommand {
-  return typeof command === 'string'
-    ? { command }
-    : { ...command, ...(command.env ? { env: { ...command.env } } : {}) };
+  if (typeof command === 'string') {
+    return { command };
+  }
+  if ('steps' in command) {
+    const steps = command.steps.flatMap((step): RuntimeProjectSessionCommandStep[] => {
+      const normalized = normalizeProjectSessionCommand(step);
+      return 'steps' in normalized ? [...normalized.steps] : [normalized];
+    });
+    return { steps };
+  }
+  return { ...command, ...(command.env ? { env: { ...command.env } } : {}) };
 }
 
 function normalizeProjectSessionCommands(
@@ -351,7 +360,16 @@ function normalizeProjectSessionCommands(
   for (const [name, command] of Object.entries(commands ?? {})) {
     if (!name.trim()) throw new Error('Project session command names must not be empty.');
     const normalizedCommand = normalizeProjectSessionCommand(command);
-    if (!normalizedCommand.command.trim()) {
+    if ('steps' in normalizedCommand) {
+      if (normalizedCommand.steps.length === 0) {
+        throw new Error(`Project session command "${name}" must include at least one step.`);
+      }
+      for (const step of normalizedCommand.steps) {
+        if (!step.command.trim()) {
+          throw new Error(`Project session command "${name}" must not include an empty step.`);
+        }
+      }
+    } else if (!normalizedCommand.command.trim()) {
       throw new Error(`Project session command "${name}" must not be empty.`);
     }
     normalized[name] = normalizedCommand;
@@ -3273,19 +3291,47 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         exitCode: 127,
       };
     }
-    const commandCwd = options.cwd ?? command.cwd;
-    return this.runCommand(command.command, {
-      ...options,
-      cwd: commandCwd
-        ? this.resolveTerminalPath(this.cwd, commandCwd)
-        : this.projectSession?.cwd,
-      env: {
-        ...(this.projectSession?.env ?? {}),
-        ...(command.env ?? {}),
-        ...(options.env ?? {}),
-      },
-      stdin: options.stdin ?? command.stdin,
-    });
+    const runStep = (step: RuntimeProjectSessionCommandStep): Promise<RuntimeCommandResult> => {
+      const commandCwd = options.cwd ?? step.cwd;
+      return this.runCommand(step.command, {
+        ...options,
+        cwd: commandCwd
+          ? this.resolveTerminalPath(this.cwd, commandCwd)
+          : this.projectSession?.cwd,
+        env: {
+          ...(this.projectSession?.env ?? {}),
+          ...(step.env ?? {}),
+          ...(options.env ?? {}),
+        },
+        stdin: options.stdin ?? step.stdin,
+      });
+    };
+    if (!('steps' in command)) {
+      return runStep(command);
+    }
+    const files: RuntimeFileChange[] = [];
+    let stdout = '';
+    let stderr = '';
+    for (const step of command.steps) {
+      const result = await runStep(step);
+      stdout += result.stdout;
+      stderr += result.stderr;
+      if (result.files) files.push(...result.files);
+      if (result.exitCode !== 0) {
+        return {
+          stdout,
+          stderr,
+          exitCode: result.exitCode,
+          ...(files.length ? { files } : {}),
+        };
+      }
+    }
+    return {
+      stdout,
+      stderr,
+      exitCode: 0,
+      ...(files.length ? { files } : {}),
+    };
   }
 
   createTerminalSession(options: RuntimeProjectTerminalSessionOptions = {}): RuntimeProjectTerminalSession {

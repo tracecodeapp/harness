@@ -545,6 +545,10 @@ body {
   background: #3a404a;
 }
 
+.dev-menu-session-commands:empty {
+  display: none;
+}
+
 .dev-menu-spacer {
   flex: 1;
 }
@@ -893,6 +897,38 @@ body {
   color: var(--text-muted);
   font-family: var(--font-ui);
   font-size: 12px;
+}
+
+.dev-session-card {
+  border-top: 1px solid #343841;
+  background: #191c21;
+  padding: 10px;
+  flex-shrink: 0;
+}
+
+.dev-session-title {
+  color: #d7dce5;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.dev-session-meta {
+  color: #929cab;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dev-session-card .dev-command-list {
+  padding: 8px 0 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .dev-event-line {

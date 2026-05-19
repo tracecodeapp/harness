@@ -109,16 +109,25 @@ export interface RuntimeProjectSessionFile extends RuntimeFile {
   readonly?: boolean;
 }
 
-export interface RuntimeProjectSessionCommand {
+export interface RuntimeProjectSessionCommandStep {
   command: string;
   cwd?: string;
   env?: Record<string, string>;
   stdin?: string;
 }
 
+export interface RuntimeProjectSessionCommandGroup {
+  steps: readonly RuntimeProjectSessionCommandStep[];
+}
+
+export type RuntimeProjectSessionCommand =
+  | RuntimeProjectSessionCommandStep
+  | RuntimeProjectSessionCommandGroup;
+
 export type RuntimeProjectSessionCommandDefinition =
   | string
-  | RuntimeProjectSessionCommand;
+  | RuntimeProjectSessionCommandStep
+  | { steps: readonly RuntimeProjectSessionCommandDefinition[] };
 
 export interface RuntimeProjectSession {
   id: string;
