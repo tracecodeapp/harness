@@ -7956,6 +7956,31 @@ async function testTypeScriptProjectCommands(): Promise<void> {
     `stepped TypeScript project command should compile then run emitted JS: ${JSON.stringify(stepped)}`
   );
 
+  await workspace.writeFile('takehome/ts/tsconfig.json', JSON.stringify({
+    compilerOptions: {
+      outDir: 'dist',
+      rootDir: '.',
+      module: 'commonjs',
+      target: 'es2020',
+      strict: true,
+    },
+    files: ['index.ts', 'math.ts'],
+  }, null, 2));
+  await workspace.writeFile('takehome/ts/math.ts', 'export function add(left: number, right: number): number { return left + right; }\n');
+  await workspace.writeFile('takehome/ts/index.ts', 'import { add } from "./math";\nconsole.log("subdir-ts=" + add(4, 5));\n');
+  const subdirCompile = await workspace.runCommand('tsc --project takehome/ts/tsconfig.json');
+  assertCondition(subdirCompile.exitCode === 0, `subdirectory tsconfig should compile cleanly: ${JSON.stringify(subdirCompile)}`);
+  assertCondition(
+    (await workspace.readFile('takehome/ts/dist/index.js')).includes('require("./math")') &&
+      (await workspace.readFile('takehome/ts/dist/math.js')).includes('function add'),
+    'subdirectory tsconfig should emit dist files relative to the tsconfig directory'
+  );
+  const subdirRun = await workspace.runCommand('node takehome/ts/dist/index.js');
+  assertCondition(
+    subdirRun.exitCode === 0 && subdirRun.stdout === 'subdir-ts=9\n',
+    `node should run subdirectory TypeScript output: ${JSON.stringify(subdirRun)}`
+  );
+
   workspace.dispose();
 }
 

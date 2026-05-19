@@ -131,18 +131,7 @@ function compilerOptionsFromArgs(
   args: readonly string[],
   project: RuntimeProjectSnapshot
 ): TypeScript.CompilerOptions {
-  const options: TypeScript.CompilerOptions = {
-    target: compiler.ScriptTarget.ES2020,
-    module: compiler.ModuleKind.CommonJS,
-    moduleResolution: compiler.ModuleResolutionKind.Node10,
-    strict: true,
-    esModuleInterop: true,
-    skipLibCheck: true,
-    noLib: true,
-    types: [],
-    rootDir: projectRoot(project),
-    outDir: `${projectRoot(project)}/dist`,
-  };
+  const options: TypeScript.CompilerOptions = {};
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     const value = args[index + 1];
@@ -219,6 +208,16 @@ function mergeConfigOptions(
   project: RuntimeProjectSnapshot
 ): TypeScript.CompilerOptions {
   const configDirectory = configPath.slice(0, Math.max(0, configPath.lastIndexOf('/'))) || projectRoot(project);
+  const defaultOptions: TypeScript.CompilerOptions = {
+    target: compiler.ScriptTarget.ES2020,
+    module: compiler.ModuleKind.CommonJS,
+    moduleResolution: compiler.ModuleResolutionKind.Node10,
+    strict: true,
+    esModuleInterop: true,
+    skipLibCheck: true,
+    rootDir: projectRoot(project),
+    outDir: `${projectRoot(project)}/dist`,
+  };
   const parsedConfig = config
     ? compiler.parseJsonConfigFileContent(config, {
         useCaseSensitiveFileNames: true,
@@ -228,6 +227,7 @@ function mergeConfigOptions(
       }, configDirectory)
     : { options: {} as TypeScript.CompilerOptions };
   return {
+    ...defaultOptions,
     ...parsedConfig.options,
     ...cliOptions,
     noLib: true,
