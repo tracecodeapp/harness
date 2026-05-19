@@ -443,8 +443,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
-    '$ javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
-    (text) => text.includes('$ javac -d out src/app/PackageMain.java src/app/PackageHelper.java') && !text.includes('Java compilation failed'),
+    'weather-api % javac -d out src/app/PackageMain.java src/app/PackageHelper.java',
+    (text) => text.includes('weather-api % javac -d out src/app/PackageMain.java src/app/PackageHelper.java') && !text.includes('Java compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -461,8 +461,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'javac -d glob-out src/app/*.java',
-    '$ javac -d glob-out src/app/*.java',
-    (text) => text.includes('$ javac -d glob-out src/app/*.java') && !text.includes('Java compilation failed'),
+    'weather-api % javac -d glob-out src/app/*.java',
+    (text) => text.includes('weather-api % javac -d glob-out src/app/*.java') && !text.includes('Java compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -479,8 +479,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'java right.Main',
-    '$ java right.Main',
-    (text) => text.includes('$ java right.Main') && text.includes('5'),
+    'weather-api % java right.Main',
+    (text) => text.includes('weather-api % java right.Main') && text.includes('5'),
     240_000
   );
   await runTerminalCommand(
@@ -497,8 +497,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'clang++ -std=c++17 main.cpp helper.cpp',
-    '$ clang++ -std=c++17 main.cpp helper.cpp',
-    (text) => text.includes('$ clang++ -std=c++17 main.cpp helper.cpp') && !text.includes('C++ compilation failed'),
+    'weather-api % clang++ -std=c++17 main.cpp helper.cpp',
+    (text) => text.includes('weather-api % clang++ -std=c++17 main.cpp helper.cpp') && !text.includes('C++ compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -509,8 +509,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   await runTerminalCommand(
     'clang++ -std=c++17 *.cpp -o glob-app',
-    '$ clang++ -std=c++17 *.cpp -o glob-app',
-    (text) => text.includes('$ clang++ -std=c++17 *.cpp -o glob-app') && !text.includes('C++ compilation failed'),
+    'weather-api % clang++ -std=c++17 *.cpp -o glob-app',
+    (text) => text.includes('weather-api % clang++ -std=c++17 *.cpp -o glob-app') && !text.includes('C++ compilation failed'),
     240_000
   );
   await runTerminalCommand(
@@ -548,18 +548,18 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   };
   await runProjectButton(
     '#dev-menu-run-project-start',
-    '$ python3 main.py',
-    (text) => text.includes('$ python3 main.py') && text.includes('5')
+    'weather-api % python3 main.py',
+    (text) => text.includes('weather-api % python3 main.py') && text.includes('5')
   );
   await runProjectButton(
     '#dev-menu-run-project-test',
     'module_args=session-test',
-    (text) => text.includes('$ python3 -m app.main session-test') && text.includes('module_args=session-test')
+    (text) => text.includes('weather-api % python3 -m app.main session-test') && text.includes('module_args=session-test')
   );
   await runProjectButton(
     '#dev-menu-run-project-build',
-    '$ javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
-    (text) => text.includes('$ javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp') && !text.includes('Java compilation failed') && !text.includes('C++ compilation failed')
+    'weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
+    (text) => text.includes('weather-api % javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp') && !text.includes('Java compilation failed') && !text.includes('C++ compilation failed')
   );
 
   const externalJar = await createExternalJavaJarBase64();

@@ -183,7 +183,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   get prompt(): RuntimeProjectTerminalPrompt {
     const user = this.options.kernelInfo.user.username;
     const host = this.options.kernelInfo.host.hostname;
-    const label = terminalCwdLabel(this.options.workspaceRoot, this.currentCwd);
+    const label = terminalCwdLabel(this.options.workspaceRoot, this.currentCwd, this.options.kernelInfo.home);
     return {
       user,
       host,
@@ -1027,6 +1027,7 @@ class KernelObservedFileSystem implements IFileSystem {
     ));
     const mappedPath = this.mapPath(path);
     const createdDirectories = await this.collectMissingDirectories(mappedPath);
+    this.assertWritable(mappedPath, 'mkdir');
     await this.base.mkdir(mappedPath, options);
     for (const directoryPath of createdDirectories) {
       this.emitDirectoryCreate(directoryPath);
@@ -1943,11 +1944,12 @@ function normalizeTerminalAbsolutePath(path: string): string {
   return `/${parts.join('/')}`;
 }
 
-function terminalCwdLabel(workspaceRoot: string, cwd: string): string {
+function terminalCwdLabel(workspaceRoot: string, cwd: string, home: string): string {
   if (cwd === workspaceRoot) {
     const workspaceName = workspaceRoot.split('/').filter(Boolean).at(-1);
     return workspaceName || '/';
   }
+  if (cwd === home) return '~';
   const cwdName = cwd.split('/').filter(Boolean).at(-1);
   return cwdName || '/';
 }
@@ -2826,12 +2828,28 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return [...this.readonlyFiles].some((path) => path.startsWith(prefix));
   }
 
+  private isHomePathOutsideWorkspace(absolutePath: string): boolean {
+    return isWithinWorkspace(this.kernelInfo.home, absolutePath) && !isWithinWorkspace(this.cwd, absolutePath);
+  }
+
   private assertWorkspacePathWritable(absolutePath: string, operation: string): void {
+    if (this.isHomePathOutsideWorkspace(absolutePath)) {
+      throw Object.assign(
+        new Error(`EROFS: project workspace is read-only outside '${this.cwd}', ${operation} '${absolutePath}'`),
+        { code: 'EROFS' }
+      );
+    }
     if (this.isReadonlyPolicySuspended() || !this.isWorkspacePathReadOnly(absolutePath)) return;
     throw createRuntimeKernelReadonlyFileError(toProjectPath(this.cwd, absolutePath), operation);
   }
 
   private assertWorkspaceSubtreeWritable(absolutePath: string, operation: string): void {
+    if (this.isHomePathOutsideWorkspace(absolutePath)) {
+      throw Object.assign(
+        new Error(`EROFS: project workspace is read-only outside '${this.cwd}', ${operation} '${absolutePath}'`),
+        { code: 'EROFS' }
+      );
+    }
     if (this.isReadonlyPolicySuspended() || !this.isWorkspaceSubtreeReadOnly(absolutePath)) return;
     throw Object.assign(
       new Error(`EROFS: readonly project subtree, ${operation} '${toProjectDirectoryPath(this.cwd, absolutePath)}'`),
@@ -2848,21 +2866,38 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
   }
 
-  private resolveTerminalPath(currentCwd: string, target: string): string {
+  private resolveTerminalPathInRoot(currentCwd: string, target: string, root: string, rootLabel: string): string {
     const rawTarget = target.trim() || this.cwd;
     const normalizedTarget = rawTarget === '~' ? this.kernelInfo.home : rawTarget;
     const absolutePath = normalizedTarget.startsWith('/')
       ? normalizeTerminalAbsolutePath(mapWorkspaceAlias(this.cwd, this.kernelInfo.workspaceAlias, normalizedTarget))
       : normalizeTerminalAbsolutePath(`${currentCwd}/${normalizedTarget}`);
-    if (!isWithinWorkspace(this.cwd, absolutePath)) {
-      throw new Error(`Project path must stay inside the workspace: ${target}`);
+    if (!isWithinWorkspace(root, absolutePath)) {
+      throw new Error(`path must stay inside ${rootLabel}: ${target}`);
     }
     return absolutePath;
   }
 
+  private resolveTerminalPath(currentCwd: string, target: string): string {
+    return this.resolveTerminalPathInRoot(currentCwd, target, this.cwd, 'the workspace');
+  }
+
+  private resolveTerminalNavigationPath(currentCwd: string, target: string): string {
+    return this.resolveTerminalPathInRoot(currentCwd, target, this.kernelInfo.home, 'home');
+  }
+
+  private resolveCommandCwd(target: string): string {
+    return isWithinWorkspace(this.kernelInfo.home, this.cwd)
+      ? this.resolveTerminalNavigationPath(this.cwd, target)
+      : this.toWorkspacePath(target);
+  }
+
   private async resolveTerminalCwd(currentCwd: string, target: string): Promise<string> {
-    const absolutePath = this.resolveTerminalPath(currentCwd, target);
-    const stat = await this.stat(absolutePath);
+    const absolutePath = this.resolveTerminalNavigationPath(currentCwd, target);
+    const statTarget = kernelStatTarget(absolutePath, this.kernelInfo);
+    const stat = statTarget.kind === 'stat'
+      ? { isDirectory: statTarget.stat.isDirectory }
+      : await this.bash.fs.stat(absolutePath);
     if (!stat.isDirectory) {
       throw new Error(`not a directory: ${target}`);
     }
@@ -3204,7 +3239,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       }
 
       result = await this.bash.exec(command, {
-        cwd: options.cwd ? this.toWorkspacePath(options.cwd) : this.cwd,
+        cwd: options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd,
         env: options.env,
         stdin: options.stdin,
         signal: options.signal,
@@ -3277,7 +3312,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const words = parseSimpleCommandWords(command);
     if (!words || words.length === 0) return null;
 
-    const cwd = options.cwd ? this.toWorkspacePath(options.cwd) : this.cwd;
+    const cwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
+    if (!isWithinWorkspace(this.cwd, cwd)) return null;
     const env = {
       ...this.bash.getEnv(),
       ...(options.env ?? {}),

@@ -7672,12 +7672,27 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 
   const cdParent = await session.run('cd ..');
   assertCondition(cdParent.exitCode === 0 && session.cwd === '/home/obi/weather-api', `terminal cd .. should return to root: ${session.cwd}`);
+  const cdHome = await session.run('cd ..');
+  assertCondition(cdHome.exitCode === 0 && session.cwd === '/home/obi', `terminal cd .. should allow read-only home navigation: ${session.cwd}`);
+  assertCondition(session.prompt.text === 'obi@tracevm ~ %', `terminal prompt should label home cwd: ${session.prompt.text}`);
+  const homePwd = await session.run('pwd');
+  assertCondition(homePwd.stdout === '/home/obi\n', `terminal pwd should allow home cwd: ${JSON.stringify(homePwd)}`);
+  const homeLs = await session.run('ls');
+  assertCondition(homeLs.stdout.includes('weather-api'), `terminal ls from home should show workspace directory: ${JSON.stringify(homeLs)}`);
+  const homeWrite = await session.run('mkdir outside-project');
+  assertCondition(
+    homeWrite.exitCode !== 0 &&
+      homeWrite.stderr.includes('EROFS: project workspace is read-only outside'),
+    `terminal writes outside the project should fail at kernel boundary: ${JSON.stringify(homeWrite)}`
+  );
+  const cdBackToWorkspace = await session.run('cd weather-api');
+  assertCondition(cdBackToWorkspace.exitCode === 0 && session.cwd === '/home/obi/weather-api', `terminal should return from home to workspace: ${session.cwd}`);
   const aliasCd = await session.run('cd /workspace/src/nested');
   assertCondition(aliasCd.exitCode === 0, `terminal cd should accept workspace alias: ${aliasCd.stderr}`);
   assertCondition(session.cwd === '/home/obi/weather-api/src/nested', `terminal alias cd should canonicalize cwd: ${session.cwd}`);
 
-  const escape = await session.run('cd ../../..');
-  assertCondition(escape.exitCode !== 0, 'terminal cd should reject workspace escapes');
+  const escape = await session.run('cd ../../../..');
+  assertCondition(escape.exitCode !== 0, 'terminal cd should reject home escapes');
   assertCondition(session.cwd === '/home/obi/weather-api/src/nested', 'failed terminal cd should preserve cwd');
 
   workspace.dispose();
