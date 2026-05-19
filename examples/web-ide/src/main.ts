@@ -774,6 +774,10 @@ int main(int argc, char** argv) {
   };
 
   const saveActiveFile = async (): Promise<void> => {
+    if (workspace.isReadOnly(activeFilePath)) {
+      status.textContent = 'readonly';
+      throw new Error(`Readonly project file: ${activeFilePath}`);
+    }
     await workspace.writeFile(activeFilePath, projectEditor.getValue());
     markClean();
   };
@@ -793,11 +797,13 @@ int main(int argc, char** argv) {
 
   const openFile = async (path: string): Promise<void> => {
     activeFilePath = path;
-    currentFileLabel.textContent = path;
+    const readonly = workspace.isReadOnly(path);
+    currentFileLabel.textContent = readonly ? `${path} (readonly)` : path;
     const contents = await workspace.readFile(path);
     suppressEditorChange = true;
     projectEditor.getModel()?.setValue(contents);
     monaco.editor.setModelLanguage(projectEditor.getModel()!, inferMonacoLanguage(path));
+    projectEditor.updateOptions({ readOnly: readonly });
     suppressEditorChange = false;
     markClean();
     document.querySelectorAll('.dev-file-entry.active').forEach((entry) => entry.classList.remove('active'));
@@ -836,7 +842,8 @@ int main(int argc, char** argv) {
         row.className = `dev-file-entry ${isDirectory ? 'directory' : 'file'} ${path === activeFilePath ? 'active' : ''}`.trim();
         row.dataset.devFile = path;
         row.style.setProperty('--depth', String(depth));
-        row.textContent = `${isDirectory ? `${collapsed ? '▸' : '▾'} ` : ''}${entry}${isDirectory ? '/' : ''}`;
+        const readonly = !isDirectory && workspace.isReadOnly(path);
+        row.textContent = `${isDirectory ? `${collapsed ? '▸' : '▾'} ` : ''}${entry}${isDirectory ? '/' : readonly ? ' (readonly)' : ''}`;
         row.addEventListener('click', () => {
           if (isDirectory) {
             if (collapsed) {

@@ -72,6 +72,11 @@ interface BrowserProjectSmokeResults {
     workspaceRoot: string;
     testRun: BrowserCommandResult;
     report: string;
+    readonly: {
+      isReadOnly: boolean;
+      read: string;
+      writeRejected: boolean;
+    };
   };
   takehome: {
     pythonRun: BrowserCommandResult;
@@ -949,12 +954,24 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
               '',
             ].join('\\n'),
           },
+          {
+            path: 'README.md',
+            readonly: true,
+            contents: 'session protected\\n',
+          },
         ],
         metadata: { source: 'browser-smoke' },
       },
     });
     const projectSessionTestRun = await sessionWorkspace.runProjectCommand('test');
     const projectSessionReport = await sessionWorkspace.readFile('app/reports/summary.txt');
+    let projectSessionReadonlyWriteRejected = false;
+    try {
+      await sessionWorkspace.writeFile('README.md', 'overwrite\\n');
+    } catch {
+      projectSessionReadonlyWriteRejected = true;
+    }
+    const projectSessionReadonlyRead = await sessionWorkspace.readFile('README.md');
     const projectSessionInfo = sessionWorkspace.projectSession;
     sessionWorkspace.dispose();
     return {
@@ -1011,6 +1028,11 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
         workspaceRoot: projectSessionInfo?.workspaceRoot ?? '',
         testRun: projectSessionTestRun,
         report: projectSessionReport,
+        readonly: {
+          isReadOnly: sessionWorkspace.isReadOnly('README.md'),
+          read: projectSessionReadonlyRead,
+          writeRejected: projectSessionReadonlyWriteRejected,
+        },
       },
       takehome: {
         pythonRun: takehomePythonRun,
@@ -1169,7 +1191,10 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectResults.projectSession.workspaceRoot === '/home/user/session-takehome' &&
       projectResults.projectSession.testRun.exitCode === 0 &&
       projectResults.projectSession.testRun.stdout === 'session:Acme:session:visible\n/home/user/session-takehome/app\n' &&
-      projectResults.projectSession.report === 'top=Acme\ncount=3\n',
+      projectResults.projectSession.report === 'top=Acme\ncount=3\n' &&
+      projectResults.projectSession.readonly.isReadOnly &&
+      projectResults.projectSession.readonly.writeRejected &&
+      projectResults.projectSession.readonly.read === 'session protected\n',
     `Browser ProjectSession takehome mismatch: ${JSON.stringify(projectResults.projectSession)}`
   );
   assertCondition(

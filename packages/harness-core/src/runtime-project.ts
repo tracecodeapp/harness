@@ -146,6 +146,7 @@ export interface RuntimeProjectSessionInfo {
   entrypoint?: string;
   env?: Record<string, string>;
   commands: Record<string, RuntimeProjectSessionCommand>;
+  readonlyFiles: readonly string[];
   metadata?: Record<string, unknown>;
 }
 
@@ -561,6 +562,7 @@ export interface RuntimeWorkspace {
   moveFile(sourcePath: string, destinationPath: string): Promise<void>;
   deleteFile(path: string): Promise<void>;
   remove(path: string, options?: RuntimeWorkspaceRemoveOptions): Promise<void>;
+  isReadOnly(path: string): boolean;
   runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
   runProjectCommand(name: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
   createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;

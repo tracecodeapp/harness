@@ -421,6 +421,9 @@ function createProjectSessionInfo(session: RuntimeProjectSession, kernelInfo: Ru
     ...(session.entrypoint ? { entrypoint: normalizeRuntimeProjectPath(session.entrypoint) } : {}),
     ...(session.env ? { env: { ...session.env } } : {}),
     commands: normalizeProjectSessionCommands(session.commands),
+    readonlyFiles: [...new Set((session.files ?? [])
+      .filter((file) => file.readonly === true)
+      .map((file) => normalizeRuntimeProjectPath(file.path)))].sort((left, right) => left.localeCompare(right)),
     ...(session.metadata ? { metadata: { ...session.metadata } } : {}),
   };
 }
@@ -835,6 +838,18 @@ function contentToText(content: FileContent): string {
   return decodeUtf8(content) ?? Array.from(content, (byte) => String.fromCharCode(byte)).join('');
 }
 
+function contentToBytes(content: FileContent): Uint8Array {
+  return typeof content === 'string' ? new TextEncoder().encode(content) : content;
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
 type FsReadFileOptions = Parameters<IFileSystem['readFile']>[1];
 type FsWriteFileOptions = Parameters<IFileSystem['writeFile']>[2];
 type FsMkdirOptions = Parameters<IFileSystem['mkdir']>[1];
@@ -849,6 +864,8 @@ class KernelObservedFileSystem implements IFileSystem {
     private readonly workspaceRoot: () => string,
     private readonly workspaceAlias: () => string | undefined,
     private readonly kernelInfo: () => RuntimeKernelInfo,
+    private readonly assertWritable: (absolutePath: string, operation: string) => void,
+    private readonly assertSubtreeWritable: (absolutePath: string, operation: string) => void,
     private readonly onFileChange: (change: RuntimeFileChange) => void,
     private readonly readDevice: (device: RuntimeKernelDevicePath) => string,
     private readonly writeDevice: (device: RuntimeKernelDevicePath, data: string) => void
@@ -904,6 +921,12 @@ class KernelObservedFileSystem implements IFileSystem {
       return;
     }
     const mappedPath = this.mapPath(path);
+    try {
+      this.assertWritable(mappedPath, 'write');
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 'EROFS' && await this.fileContentEquals(mappedPath, content)) return;
+      throw error;
+    }
     await this.base.writeFile(mappedPath, content, options);
     await this.emitFileWrite(mappedPath);
   }
@@ -916,6 +939,7 @@ class KernelObservedFileSystem implements IFileSystem {
       return;
     }
     const mappedPath = this.mapPath(path);
+    this.assertWritable(mappedPath, 'append');
     await this.base.appendFile(mappedPath, content, options);
     await this.emitFileWrite(mappedPath);
   }
@@ -989,6 +1013,8 @@ class KernelObservedFileSystem implements IFileSystem {
     const mappedPath = this.mapPath(path);
     const deletedFiles = await this.collectExistingFiles(mappedPath);
     const deletedDirectories = await this.collectExistingDirectories(mappedPath);
+    this.assertWritable(mappedPath, 'remove');
+    this.assertWritableFiles(deletedFiles, 'remove');
     await this.base.rm(mappedPath, options);
     for (const deletedPath of deletedFiles) {
       this.emitFileDelete(deletedPath);
@@ -1015,6 +1041,7 @@ class KernelObservedFileSystem implements IFileSystem {
     }
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
+    this.assertWritable(mappedDestination, 'copy');
     await this.base.cp(mappedSource, mappedDestination, options);
     await this.emitExistingDirectories(mappedDestination);
     await this.emitExistingFiles(mappedDestination);
@@ -1031,6 +1058,7 @@ class KernelObservedFileSystem implements IFileSystem {
       return;
     }
     const mappedDestination = this.mapPath(dest);
+    this.assertWritable(mappedDestination, 'copy');
     await this.base.writeFile(mappedDestination, sourceBytes);
     await this.emitFileWrite(mappedDestination);
   }
@@ -1045,6 +1073,20 @@ class KernelObservedFileSystem implements IFileSystem {
     return this.base.readFileBuffer(this.mapPath(path));
   }
 
+  private assertWritableFiles(paths: readonly string[], operation: string): void {
+    for (const path of paths) {
+      this.assertWritable(path, operation);
+    }
+  }
+
+  private async fileContentEquals(path: string, content: FileContent): Promise<boolean> {
+    try {
+      return bytesEqual(await this.base.readFileBuffer(path), contentToBytes(content));
+    } catch {
+      return false;
+    }
+  }
+
   async mv(src: string, dest: string): Promise<void> {
     const sourceMutationTarget = kernelMutationTarget(src);
     if (sourceMutationTarget.kind === 'error') throwKernelMutationTargetError(src, sourceMutationTarget, 'Kernel device namespace is read-only.');
@@ -1054,6 +1096,9 @@ class KernelObservedFileSystem implements IFileSystem {
     const mappedDestination = this.mapPath(dest);
     const deletedFiles = await this.collectExistingFiles(mappedSource);
     const deletedDirectories = await this.collectExistingDirectories(mappedSource);
+    this.assertWritableFiles(deletedFiles, 'move');
+    this.assertWritable(mappedDestination, 'move');
+    this.assertSubtreeWritable(mappedDestination, 'move');
     await this.base.mv(mappedSource, mappedDestination);
     await this.emitExistingDirectories(mappedDestination);
     await this.emitExistingFiles(mappedDestination);
@@ -1090,19 +1135,25 @@ class KernelObservedFileSystem implements IFileSystem {
     const metadataTarget = kernelMetadataTarget(path);
     if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
     if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
-    return this.base.chmod(this.mapPath(path), mode);
+    const mappedPath = this.mapPath(path);
+    this.assertWritable(mappedPath, 'chmod');
+    return this.base.chmod(mappedPath, mode);
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
     const symlinkTarget = kernelSymlinkTarget(linkPath);
     if (symlinkTarget.kind === 'error') throwKernelMutationTargetError(linkPath, symlinkTarget);
-    return this.base.symlink(target, this.mapPath(linkPath));
+    const mappedPath = this.mapPath(linkPath);
+    this.assertWritable(mappedPath, 'symlink');
+    return this.base.symlink(target, mappedPath);
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
     const linkTarget = kernelLinkTarget(existingPath, newPath);
     if (linkTarget.kind === 'error') throwKernelMutationTargetError(linkTarget.side === 'source' ? existingPath : newPath, linkTarget);
-    return this.base.link(this.mapPath(existingPath), this.mapPath(newPath));
+    const mappedNewPath = this.mapPath(newPath);
+    this.assertWritable(mappedNewPath, 'link');
+    return this.base.link(this.mapPath(existingPath), mappedNewPath);
   }
 
   readlink(path: string): Promise<string> {
@@ -2579,6 +2630,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly entrypoint?: string;
   private readonly cppRunner?: CppProjectCommandRunner;
   private readonly cppExecutablePaths = new Set<string>();
+  private readonly readonlyFiles = new Set<string>();
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private activeCommandEventHandler?: RuntimeCommandEventHandler;
   private activeCommandActor?: RuntimeWorkspaceActor;
@@ -2586,12 +2638,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private activeDeviceStdout = '';
   private activeDeviceStderr = '';
   private activeRuntimeIo = this.createRuntimeLiveIoController();
+  private readonlySuspendDepth = 0;
   private nextCommandId = 1;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
     this.cwd = this.kernelInfo.workspaceRoot;
     this.projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
+    for (const path of this.projectSession?.readonlyFiles ?? []) {
+      this.readonlyFiles.add(path);
+    }
     this.entrypoint = options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : undefined;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
@@ -2600,6 +2656,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       () => this.cwd,
       () => this.kernelInfo.workspaceAlias,
       () => this.kernelInfo,
+      (absolutePath, operation) => this.assertWorkspacePathWritable(absolutePath, operation),
+      (absolutePath, operation) => this.assertWorkspaceSubtreeWritable(absolutePath, operation),
       (change) => {
         if (!this.activeCommandActor) return;
         this.emitLocalRuntimeEvent({ type: 'file-change', change, phase: 'live' });
@@ -2668,6 +2726,52 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private toWorkspaceRelativePath(path: string): string {
     return toWorkspaceRelativePath(this.cwd, path, this.kernelInfo.workspaceAlias);
+  }
+
+  isReadOnly(path: string): boolean {
+    return this.isWorkspacePathReadOnly(this.toWorkspacePath(path));
+  }
+
+  private isReadonlyPolicySuspended(): boolean {
+    return this.readonlySuspendDepth > 0;
+  }
+
+  private isWorkspacePathReadOnly(absolutePath: string): boolean {
+    if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return false;
+    return this.readonlyFiles.has(toProjectPath(this.cwd, absolutePath));
+  }
+
+  private isWorkspaceSubtreeReadOnly(absolutePath: string): boolean {
+    if (!isWithinWorkspace(this.cwd, absolutePath)) return false;
+    if (this.isWorkspacePathReadOnly(absolutePath)) return true;
+    const relativePath = absolutePath === this.cwd ? '' : toProjectDirectoryPath(this.cwd, absolutePath);
+    const prefix = relativePath ? `${relativePath}/` : '';
+    return [...this.readonlyFiles].some((path) => path.startsWith(prefix));
+  }
+
+  private assertWorkspacePathWritable(absolutePath: string, operation: string): void {
+    if (this.isReadonlyPolicySuspended() || !this.isWorkspacePathReadOnly(absolutePath)) return;
+    throw Object.assign(
+      new Error(`EROFS: readonly project file, ${operation} '${toProjectPath(this.cwd, absolutePath)}'`),
+      { code: 'EROFS' }
+    );
+  }
+
+  private assertWorkspaceSubtreeWritable(absolutePath: string, operation: string): void {
+    if (this.isReadonlyPolicySuspended() || !this.isWorkspaceSubtreeReadOnly(absolutePath)) return;
+    throw Object.assign(
+      new Error(`EROFS: readonly project subtree, ${operation} '${toProjectDirectoryPath(this.cwd, absolutePath)}'`),
+      { code: 'EROFS' }
+    );
+  }
+
+  async withSuspendedReadonlyPolicy<T>(fn: () => Promise<T>): Promise<T> {
+    this.readonlySuspendDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      this.readonlySuspendDepth -= 1;
+    }
   }
 
   private resolveTerminalPath(currentCwd: string, target: string): string {
@@ -2760,6 +2864,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
+    this.assertWorkspacePathWritable(absolutePath, 'write');
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
 
     if (normalizedEncoding === 'base64') {
@@ -2803,6 +2908,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       return;
     }
     const absolutePath = this.toWorkspacePath(path);
+    this.assertWorkspacePathWritable(absolutePath, 'append');
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
     const nextBytes = normalizedEncoding === 'base64'
       ? bytesFromBase64(contents)
@@ -2909,6 +3015,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
+    this.assertWorkspacePathWritable(absoluteDestinationPath, 'copy');
     const sourceBytes = await this.bash.fs.readFileBuffer(absoluteSourcePath);
     await this.bash.fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
     await this.bash.fs.writeFile(absoluteDestinationPath, sourceBytes);
@@ -2952,6 +3059,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
     const renameTarget = kernelRenameTarget(sourcePath, destinationPath);
     if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
+    this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(sourcePath), 'move');
+    this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(destinationPath), 'move');
+    this.assertWorkspacePathWritable(this.toWorkspacePath(destinationPath), 'move');
     await this.copyFile(sourcePath, destinationPath);
     await this.bash.fs.rm(this.toWorkspacePath(sourcePath), { force: true });
     this.emitLocalRuntimeEvent({
@@ -2965,7 +3075,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async deleteFile(path: string): Promise<void> {
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
-    await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
+    const absolutePath = this.toWorkspacePath(path);
+    this.assertWorkspacePathWritable(absolutePath, 'delete');
+    await this.bash.fs.rm(absolutePath, { force: true });
     this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: this.toWorkspaceRelativePath(path), deleted: true },
@@ -2978,6 +3090,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const deletedChanges = await this.collectDeletedChangesForRemove(path, options);
+    this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(path), 'remove');
     await this.bash.fs.rm(this.toWorkspaceEntryPath(path), {
       force: options.force ?? true,
       recursive: options.recursive,
@@ -3207,7 +3320,9 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const relativePath = this.toWorkspaceRelativePath(path);
-    await this.bash.fs.rm(this.toWorkspacePath(path), { force: true });
+    const absolutePath = this.toWorkspacePath(path);
+    this.assertWorkspacePathWritable(absolutePath, 'delete');
+    await this.bash.fs.rm(absolutePath, { force: true });
     this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: relativePath, deleted: true },
@@ -3266,6 +3381,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (isRuntimeDirectoryChange(change)) {
       const absolutePath = this.toWorkspaceEntryPath(change.path);
       if (change.deleted === true) {
+        this.assertWorkspaceSubtreeWritable(absolutePath, 'delete');
         await this.bash.fs.rm(absolutePath, { force: true, recursive: true });
       } else {
         await this.bash.fs.mkdir(absolutePath, { recursive: true });
@@ -3283,6 +3399,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
     if ((change as RuntimeFileDeletion).deleted === true) {
       const absolutePath = this.toWorkspacePath(change.path);
+      this.assertWorkspacePathWritable(absolutePath, 'delete');
       await this.bash.fs.rm(absolutePath, { force: true });
       if (emit) {
         this.emitLocalRuntimeEvent({
@@ -3298,6 +3415,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const changedFile = change as RuntimeFile;
     const normalizedEncoding = assertSupportedEncoding(changedFile.encoding);
     const absolutePath = this.toWorkspacePath(changedFile.path);
+    if (this.isWorkspacePathReadOnly(absolutePath) && await this.runtimeFileChangeContentEquals(absolutePath, changedFile, normalizedEncoding)) {
+      return;
+    }
+    this.assertWorkspacePathWritable(absolutePath, 'write');
     await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
     if (normalizedEncoding === 'base64') {
       await this.bash.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
@@ -3311,6 +3432,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         phase,
         actor,
       });
+    }
+  }
+
+  private async runtimeFileChangeContentEquals(
+    absolutePath: string,
+    changedFile: RuntimeFile,
+    encoding: RuntimeFileEncoding
+  ): Promise<boolean> {
+    try {
+      const current = await this.bash.fs.readFileBuffer(absolutePath);
+      const next = encoding === 'base64'
+        ? bytesFromBase64(changedFile.contents)
+        : new TextEncoder().encode(changedFile.contents);
+      return bytesEqual(current, next);
+    } catch {
+      return false;
     }
   }
 
@@ -3424,7 +3561,7 @@ export async function createRuntimeWorkspace(
     }
   }
   if (options.files) {
-    await workspace.writeFiles(options.files);
+    await workspace.withSuspendedReadonlyPolicy(() => workspace.writeFiles(options.files ?? []));
   }
   return workspace;
 }

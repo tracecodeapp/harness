@@ -7705,7 +7705,9 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
       directories: ['tests'],
       files: [
         { path: 'src/main.py', contents: 'import os\nprint(os.getcwd())\nprint(os.environ["MODE"])\n' },
+        { path: 'src/mutate_readonly.py', contents: 'print("mutate")\n' },
         { path: 'tests/test_sample.py', contents: '' },
+        { path: 'README.md', contents: 'protected\n', readonly: true },
       ],
       metadata: {
         consumer: 'test-harness',
@@ -7715,6 +7717,9 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
       stdout: `${request.scriptPath}:${request.cwd}:${request.env.MODE}:${request.env.TEST_MODE ?? ''}\n`,
       stderr: '',
       exitCode: 0,
+      ...(request.scriptPath.endsWith('mutate_readonly.py')
+        ? { files: [{ path: 'README.md', contents: 'runtime overwrite\n' }] }
+        : {}),
     }),
   });
 
@@ -7726,8 +7731,12 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(workspace.projectSession?.workspaceRoot === '/home/user/weather-api', 'project session should expose canonical root');
   assertCondition(workspace.projectSession?.cwd === '/home/user/weather-api/src', 'project session should normalize relative session cwd');
   assertCondition(workspace.projectSession?.metadata?.consumer === 'test-harness', 'project session should preserve opaque metadata');
+  assertCondition(workspace.projectSession?.readonlyFiles.join(',') === 'README.md', 'project session should expose readonly file policy');
   assertCondition(await workspace.exists('src/main.py'), 'project session starter files should be written into workspace');
   assertCondition(await workspace.exists('tests'), 'project session directories should be written into workspace');
+  assertCondition(await workspace.readFile('README.md') === 'protected\n', 'project session readonly starter file should be seeded');
+  assertCondition(workspace.isReadOnly('README.md'), 'workspace should report readonly files');
+  assertCondition(!workspace.isReadOnly('src/main.py'), 'workspace should not report editable files as readonly');
 
   const start = await workspace.runProjectCommand('start');
   assertCondition(
@@ -7749,6 +7758,19 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
 
   const missing = await workspace.runProjectCommand('missing');
   assertCondition(missing.exitCode === 127 && missing.stderr.includes('Project command not found'), 'missing project command should fail clearly');
+  const readonlyRead = await workspace.runCommand('cat README.md');
+  assertCondition(readonlyRead.stdout === 'protected\n', `commands should read readonly files: ${JSON.stringify(readonlyRead)}`);
+  await assertRejectsAsync(() => workspace.writeFile('README.md', 'principal overwrite\n'), 'principal writes should reject readonly files');
+  await assertRejectsAsync(() => workspace.appendFile('README.md', 'principal append\n'), 'principal appends should reject readonly files');
+  await assertRejectsAsync(() => workspace.copyFile('src/main.py', 'README.md'), 'copy destination should reject readonly files');
+  await assertRejectsAsync(() => workspace.deleteFile('README.md'), 'delete should reject readonly files');
+  await assertRejectsAsync(() => workspace.remove('.', { recursive: true }), 'recursive remove should reject readonly descendants');
+  const runtimeReadonlyWrite = await workspace.runCommand('python3 mutate_readonly.py', { cwd: 'src', env: { MODE: 'runtime' } });
+  assertCondition(
+    runtimeReadonlyWrite.exitCode !== 0 && runtimeReadonlyWrite.stderr.includes('readonly project file'),
+    `runtime final-diff writes should reject readonly files: ${JSON.stringify(runtimeReadonlyWrite)}`
+  );
+  assertCondition(await workspace.readFile('README.md') === 'protected\n', 'readonly file contents should remain unchanged after rejected writes');
 
   workspace.dispose();
 }
