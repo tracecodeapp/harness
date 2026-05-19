@@ -1,6 +1,12 @@
-import type { RuntimeWorkspace } from '../../harness-core/src/runtime-project';
+import type {
+  RuntimeDirectoryChange,
+  RuntimeFileChange,
+  RuntimeFileDeletion,
+  RuntimeWorkspace,
+} from '../../harness-core/src/runtime-project';
 import {
   createRuntimeWorkspace,
+  normalizeRuntimeProjectPath,
   type CreateRuntimeWorkspaceOptions,
 } from '../../harness-project/src/index';
 import { createBrowserCSharpProjectRunner } from '../../harness-csharp/src/project-browser';
@@ -36,6 +42,23 @@ export {
 
 export type BrowserProjectWorkspace = RuntimeWorkspace;
 export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptions, 'applyFileChange'>;
+
+function readonlySessionFiles(options: CreateRuntimeWorkspaceOptions): string[] {
+  return [...new Set((options.projectSession?.files ?? [])
+    .filter((file) => file.readonly === true)
+    .map((file) => normalizeRuntimeProjectPath(file.path)))];
+}
+
+function isReadonlyDeletion(change: RuntimeFileChange, readonlyFiles: readonly string[]): boolean {
+  if ((change as RuntimeFileDeletion | RuntimeDirectoryChange).deleted !== true) return false;
+  const path = normalizeRuntimeProjectPath(change.path);
+  const omittedReadonlyFiles = readonlyFiles.filter((readonlyPath) => readonlyPath.includes('/'));
+  if (omittedReadonlyFiles.length === 0) return false;
+  if ((change as RuntimeDirectoryChange).directory === true) {
+    return omittedReadonlyFiles.some((readonlyPath) => readonlyPath === path || readonlyPath.startsWith(`${path}/`));
+  }
+  return omittedReadonlyFiles.includes(path);
+}
 
 export interface CreateBrowserProjectWorkspaceOptions
   extends Omit<CreateRuntimeWorkspaceOptions, 'pythonRunner' | 'nodeRunner' | 'javaRunner' | 'csharpRunner' | 'cppRunner'> {
@@ -125,8 +148,15 @@ export async function createBrowserProjectWorkspace(
   if (!providedCppWorkerClient) ownedWorkers.push(cppWorkerClient);
 
   let workspace: BrowserProjectWorkspace;
+  const sessionReadonlyFiles = readonlySessionFiles(workspaceOptions);
   const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
     async (change, phase) => {
+      await workspace.kernel.applyFileChange(change, undefined, phase);
+      return false;
+    };
+  const applyCSharpWorkerFileChange: NonNullable<Parameters<typeof createBrowserCSharpProjectRunner>[1]>['applyFileChange'] =
+    async (change, phase) => {
+      if (isReadonlyDeletion(change, sessionReadonlyFiles)) return false;
       await workspace.kernel.applyFileChange(change, undefined, phase);
       return false;
     };
@@ -169,7 +199,7 @@ export async function createBrowserProjectWorkspace(
     }),
     csharpRunner: createBrowserCSharpProjectRunner(csharpWorkerClient, {
       timeoutMs: csharpProjectTimeoutMs,
-      applyFileChange: applyWorkerFileChange,
+      applyFileChange: applyCSharpWorkerFileChange,
     }),
     cppRunner: createBrowserCppProjectRunner(cppWorkerClient, {
       timeoutMs: cppProjectTimeoutMs,

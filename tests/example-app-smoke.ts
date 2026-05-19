@@ -74,6 +74,13 @@ interface BrowserProjectSmokeResults {
   javaJarCompile: BrowserCommandResult;
   javaJarClass: string;
   javaJarRun: BrowserCommandResult;
+  devReadonly: {
+    isReadOnly: boolean;
+    read: string;
+    writeRejected: boolean;
+    nodeAppend: BrowserCommandResult;
+    after: string;
+  };
   projectSession: {
     id: string;
     workspaceRoot: string;
@@ -567,6 +574,15 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
         return '__missing__:' + String(error);
       }
     };
+    const devReadonlyRead = await safeReadFile('instructions/brief.md');
+    let devReadonlyWriteRejected = false;
+    try {
+      await workspace.writeFile('instructions/brief.md', 'changed\\\\n');
+    } catch {
+      devReadonlyWriteRejected = true;
+    }
+    const devReadonlyNodeAppend = await workspace.runCommand('node -e "require(\\\\\\"node:fs\\\\\\").appendFileSync(\\\\\\"instructions/brief.md\\\\\\", \\\\\\"changed\\\\\\\\n\\\\\\")"');
+    const devReadonlyAfter = await safeReadFile('instructions/brief.md');
     const pythonCwd = await workspace.runCommand('python3 main.py', { cwd: 'src/py' });
     const pythonGenerated = await safeReadFile('src/py/generated.txt');
     const pythonGeneratedAtRoot = await safeReadFile('generated.txt');
@@ -1131,6 +1147,13 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       javaJarCompile,
       javaJarClass,
       javaJarRun,
+      devReadonly: {
+        isReadOnly: workspace.isReadOnly('instructions/brief.md'),
+        read: devReadonlyRead,
+        writeRejected: devReadonlyWriteRejected,
+        nodeAppend: devReadonlyNodeAppend,
+        after: devReadonlyAfter,
+      },
       projectSession: {
         id: projectSessionInfo?.id ?? '',
         workspaceRoot: projectSessionInfo?.workspaceRoot ?? '',
@@ -1295,6 +1318,16 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectResults.javaJarRun.exitCode === 0 &&
       projectResults.javaJarRun.stdout === '42\nalpha,beta\n',
     `Browser Java project jar/classpath mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.devReadonly.isReadOnly &&
+      projectResults.devReadonly.read === 'readonly project brief\n' &&
+      projectResults.devReadonly.writeRejected &&
+      projectResults.devReadonly.nodeAppend.exitCode !== 0 &&
+      projectResults.devReadonly.nodeAppend.stdout === '' &&
+      projectResults.devReadonly.nodeAppend.stderr === "EROFS: readonly project file, append 'instructions/brief.md'\n" &&
+      projectResults.devReadonly.after === projectResults.devReadonly.read,
+    `Browser /dev readonly file mismatch: ${JSON.stringify(projectResults.devReadonly)}`
   );
   assertCondition(
     projectResults.projectSession.id === 'browser-session-takehome-1' &&

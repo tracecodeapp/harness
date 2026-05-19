@@ -730,6 +730,42 @@ async function snapshotCommandContext(
   };
 }
 
+function filterReadonlySnapshotFiles(
+  snapshot: RuntimeProjectSnapshot,
+  readonlyFiles?: readonly string[]
+): RuntimeProjectSnapshot {
+  if (!readonlyFiles || readonlyFiles.length === 0) return snapshot;
+  const readonly = new Set(readonlyFiles
+    .map((path) => normalizeRuntimeProjectPath(path))
+    .filter((path) => path.includes('/')));
+  if (readonly.size === 0) return snapshot;
+  const files = snapshot.files.filter((file) => !readonly.has(normalizeRuntimeProjectPath(file.path)));
+  return files.length === snapshot.files.length ? snapshot : { ...snapshot, files };
+}
+
+function filterReadonlySnapshotDeletions(
+  result: RuntimeCommandResult,
+  readonlyFiles?: readonly string[]
+): RuntimeCommandResult {
+  if (!result.files?.length || !readonlyFiles || readonlyFiles.length === 0) return result;
+  const readonly = new Set(readonlyFiles
+    .map((path) => normalizeRuntimeProjectPath(path))
+    .filter((path) => path.includes('/')));
+  if (readonly.size === 0) return result;
+  const files = result.files.filter((change) => {
+    if ((change as RuntimeFileDeletion | RuntimeDirectoryChange).deleted !== true) return true;
+    const path = normalizeRuntimeProjectPath(change.path);
+    if (isRuntimeDirectoryChange(change)) {
+      return ![...readonly].some((readonlyPath) => readonlyPath === path || readonlyPath.startsWith(`${path}/`));
+    }
+    return !readonly.has(path);
+  });
+  if (files.length === result.files.length) return result;
+  if (files.length > 0) return { ...result, files };
+  const { files: _files, ...rest } = result;
+  return rest;
+}
+
 type RuntimeFileChangeObserver = (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => void;
 
 function isKernelReadonlyError(error: unknown): boolean {
@@ -2624,7 +2660,12 @@ export function createCSharpProjectCommands(
       return { stdout: 'C# project command adapter\n', stderr: '', exitCode: 0 };
     }
 
-    return applyCommandResultFiles(ctx, workspaceRoot, await runner({
+    const project = filterReadonlySnapshotFiles(
+      await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      readonlyFiles
+    );
+
+    const result = await runner({
       code: '',
       source: parsed.source,
       scriptPath: parsed.scriptPath,
@@ -2632,7 +2673,7 @@ export function createCSharpProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      project,
       ...(parsed.buildArgs || parsed.noBuild
         ? {
             options: {
@@ -2641,7 +2682,13 @@ export function createCSharpProjectCommands(
             },
           }
         : {}),
-    }), onFileChange);
+    });
+    return applyCommandResultFiles(
+      ctx,
+      workspaceRoot,
+      filterReadonlySnapshotDeletions(result, readonlyFiles),
+      onFileChange
+    );
   };
 
   return [

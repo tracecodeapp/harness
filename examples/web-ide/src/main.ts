@@ -484,6 +484,11 @@ print(value())
         contents: 'Try: ls, cat main.py, python3 main.py alpha beta, python3 globpy/*.py data/*.txt, python3 -m app.main alpha beta, node index.js alpha beta, node globjs/*.js data/*.txt, javac -d out src/app/PackageMain.java src/app/PackageHelper.java, javac -d glob-out src/app/*.java, java --class-path out app.PackageMain alpha beta, java --class-path glob-out app.PackageMain alpha beta, java Main alpha beta, java app.PackageMain alpha beta, java right.Main, dotnet run -- alpha beta, dotnet run -- data/*.txt, clang++ -std=c++17 main.cpp helper.cpp, clang++ -std=c++17 *.cpp -o glob-app, ./a.out alpha beta, ./glob-app alpha beta, ./glob-app data/*.txt\\n',
       },
       {
+        path: 'instructions/brief.md',
+        readonly: true,
+        contents: 'readonly project brief\n',
+      },
+      {
         path: 'data/a.txt',
         contents: 'a\n',
       },
