@@ -1281,27 +1281,66 @@ function normalizeCppUserSource(source, options = {}) {
 }
 
 function splitTopLevelCommaList(source) {
+  return splitTopLevel(source, ',').map((part) => part.trim()).filter(Boolean);
+}
+
+function splitTopLevel(source, separator, options = {}) {
+  const trackAngleBrackets = options.trackAngleBrackets !== false;
   const parts = [];
   let current = '';
   let depth = 0;
+  let quote = null;
+  let escaped = false;
   for (const ch of source) {
-    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
-    if (ch === ',' && depth === 0) {
-      parts.push(current.trim());
+    if (quote) {
+      current += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if ((trackAngleBrackets && ch === '<') || ch === '(' || ch === '[' || ch === '{') depth += 1;
+    if ((trackAngleBrackets && ch === '>') || ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    if (ch === separator && depth === 0) {
+      parts.push(current);
       current = '';
       continue;
     }
     current += ch;
   }
-  if (current.trim()) parts.push(current.trim());
+  parts.push(current);
   return parts;
 }
 
 function findMatchingSquareBracket(source, openIndex) {
   let depth = 0;
+  let quote = null;
+  let escaped = false;
   for (let index = openIndex; index < source.length; index += 1) {
     const ch = source[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
     if (ch === '[') depth += 1;
     if (ch === ']') {
       depth -= 1;
@@ -1313,8 +1352,24 @@ function findMatchingSquareBracket(source, openIndex) {
 
 function findMatchingParen(source, openIndex) {
   let depth = 0;
+  let quote = null;
+  let escaped = false;
   for (let index = openIndex; index < source.length; index += 1) {
     const ch = source[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
     if (ch === '(') depth += 1;
     if (ch === ')') {
       depth -= 1;
@@ -1513,6 +1568,20 @@ function buildTracecodeFallbackAliases(source) {
   return aliases.join('\n');
 }
 
+function buildCppLexicalAccessVariables(frameStack) {
+  const activeFrame = frameStack.at(-1) || null;
+  if (!activeFrame?.signature?.lambda) {
+    return activeFrame?.variables || new Map();
+  }
+  const variables = new Map();
+  for (const frame of frameStack) {
+    for (const [name, variable] of frame.variables || []) {
+      variables.set(name, variable);
+    }
+  }
+  return variables;
+}
+
 function sourceDeclaresSolutionClass(source) {
   return /\b(?:class|struct)\s+Solution\b/.test(stripComments(source));
 }
@@ -1529,19 +1598,28 @@ function cppJsonExpressionForValue(expression, type, source) {
 
 function collectTraceContainerMemberNames(source, aliases = new Map(), className = 'Solution') {
   const names = new Set();
+  const members = collectTraceContainerMemberVariables(source, aliases, className);
+  for (const [name, member] of members) {
+    const normalizedType = normalizeCppType(member.type, aliases);
+    const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
+    if (isVectorCppType(member.type, aliases) && !innerType.startsWith('vector<') && innerType !== 'string') names.add(name);
+  }
+  return names;
+}
+
+function collectTraceContainerMemberVariables(source, aliases = new Map(), className = 'Solution') {
+  const members = new Map();
   const cleaned = stripComments(source);
   const classMatch = cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escapeRegExp(className)}\\b[\\s\\S]*?\\{([\\s\\S]*?)\\n\\s*public\\s*:`)) ||
     cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escapeRegExp(className)}\\b[\\s\\S]*?\\{([\\s\\S]*?)\\n\\s*\\};`));
-  if (!classMatch) return names;
+  if (!classMatch) return members;
   for (const line of classMatch[1].split(/\r?\n/)) {
     const variables = extractDeclaredSnapshotVariables(`${line.trim().replace(/^(?:public|private|protected)\s*:\s*/, '')}`, aliases);
     for (const variable of variables) {
-      const normalizedType = normalizeCppType(variable.type, aliases);
-      const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
-      if (isVectorCppType(variable.type, aliases) && !innerType.startsWith('vector<') && innerType !== 'string') names.add(variable.name);
+      if (isTraceWrappedCppType(variable.type, aliases)) members.set(variable.name, { type: variable.type, scopeDepth: 0 });
     }
   }
-  return names;
+  return members;
 }
 
 function isScriptExecutionRequest(functionName, options = {}) {
@@ -1621,42 +1699,87 @@ function parseCppFunctionSignatures(source) {
   return signatures.sort((left, right) => left.line - right.line || left.bodyLine - right.bodyLine);
 }
 
+function cppStdFunctionReturnType(type) {
+  const normalized = String(type || '').trim().replace(/^std::/, '');
+  const match = normalized.match(/^function\s*<([\s\S]+)>\s*$/);
+  if (!match) return null;
+  const signature = match[1].trim();
+  let depth = 0;
+  for (let index = 0; index < signature.length; index += 1) {
+    const ch = signature[index];
+    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    if (ch === '(' && depth === 1) {
+      return cleanCppReturnType(signature.slice(0, index).trim()) || null;
+    }
+  }
+  return null;
+}
+
 function parseCppLambdaSignatures(source) {
   const signatures = [];
   const lines = source.split(/\r?\n/);
-  const lambdaPattern = /\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+([A-Za-z_]\w*)\s*=\s*\[[^\]]*\]\s*\(([^)]*)\)\s*(?:->\s*([^{]+))?\s*\{/;
+  const lambdaPattern = /\b(auto|(?:std::)?function\s*<[^=;]+>)\s+([A-Za-z_]\w*)\s*=\s*\[[^\]]*\]\s*\(([^)]*)\)\s*(?:->\s*([^{]+))?\s*\{/;
   const inlineLambdaPattern = /\[[^\]]*\]\s*\(([^)]*)\)\s*(?:->\s*([^{]+))?\s*\{/g;
+  const lambdaHeaderStartPattern = /\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+([A-Za-z_]\w*)\s*=\s*\[[^\]]*\]\s*\(([^)]*)\)\s*$/;
 
   lines.forEach((line, index) => {
     const match = line.match(lambdaPattern);
     if (match) {
-      const [, name, parameterText, returnType] = match;
+      const [, declarationType, name, parameterText, returnType] = match;
       signatures.push({
         name,
-        returnType: (returnType || 'auto').trim(),
+        returnType: (returnType || cppStdFunctionReturnType(declarationType) || 'auto').trim(),
         parameters: parseCppParameters(parameterText),
         line: index + 1,
         bodyLine: index + 1,
         lambda: true,
-        skipInstrumentation: /\bvector\s*<\s*bool\s*>/.test(parameterText),
       });
+    } else {
+      const multilineStart = line.match(lambdaHeaderStartPattern);
+      if (multilineStart) {
+        let header = line;
+        let bodyLine = index + 1;
+        for (let nextIndex = index + 1; nextIndex < lines.length && nextIndex <= index + 6; nextIndex += 1) {
+          header += `\n${lines[nextIndex]}`;
+          bodyLine = nextIndex + 1;
+          if (stripCppStringsAndComments(lines[nextIndex]).includes('{') || /;\s*$/.test(lines[nextIndex].trim())) {
+            break;
+          }
+        }
+        const flattenedHeader = header.replace(/\s+/g, ' ');
+        const multilineMatch = flattenedHeader.match(lambdaPattern);
+        if (multilineMatch) {
+          const [, declarationType, name, parameterText, returnType] = multilineMatch;
+          signatures.push({
+            name,
+            returnType: (returnType || cppStdFunctionReturnType(declarationType) || 'auto').trim(),
+            parameters: parseCppParameters(parameterText),
+            line: index + 1,
+            bodyLine,
+            lambda: true,
+          });
+        }
+      }
     }
 
     inlineLambdaPattern.lastIndex = 0;
     let inlineMatch;
     while ((inlineMatch = inlineLambdaPattern.exec(line))) {
       const assignmentPrefix = line.slice(0, inlineMatch.index);
-      const assignedName = assignmentPrefix.match(/\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+([A-Za-z_]\w*)\s*=\s*$/)?.[1];
+      const assignedLambda = assignmentPrefix.match(/(\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+)?([A-Za-z_]\w*)\s*=\s*$/);
+      const hasDeclaration = Boolean(assignedLambda?.[1]);
+      const assignedName = assignedLambda?.[2];
+      if (!assignedName) continue;
       if (assignedName && match?.[1] === assignedName) continue;
       const [, parameterText, returnType] = inlineMatch;
       signatures.push({
-        name: assignedName || `<lambda:${index + 1}>`,
+        name: hasDeclaration ? assignedName : `<lambda:${index + 1}>`,
         returnType: (returnType || 'auto').trim(),
         parameters: parseCppParameters(parameterText),
         line: index + 1,
         bodyLine: index + 1,
         lambda: true,
-        skipInstrumentation: /\bvector\s*<\s*bool\s*>/.test(parameterText),
       });
     }
   });
@@ -1771,25 +1894,47 @@ function cppTraceType(type, aliases = new Map()) {
 function isVectorCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   if (!normalized.startsWith('vector<') || !normalized.endsWith('>')) return false;
-  if (normalized === 'vector<bool>') return false;
   if (normalized.includes('any') || normalized.includes('variant<')) return false;
   if (normalized.startsWith('vector<vector<vector<')) return false;
-  if (normalized.includes('*')) return false;
   if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
   const inner = normalized.slice('vector<'.length, -1).trim().replace(/^std::/, '');
+  if (/^(?:TreeNode|ListNode|Node)\s*\*$/.test(inner)) return true;
+  if (normalized.includes('*')) return false;
   if (/^[A-Z]/.test(inner)) return false;
   return true;
 }
 
+function isStringCppType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  return normalized === 'string' || normalized === 'std::string';
+}
+
+function vectorElementCppType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  if (!normalized.startsWith('vector<') || !normalized.endsWith('>')) return null;
+  return normalized.slice('vector<'.length, -1).trim();
+}
+
+function rangeForElementSnapshotType(rangeName, knownVariables, aliases = new Map()) {
+  const rangeType = knownVariables?.get(rangeName)?.type;
+  if (!rangeType) return null;
+  const elementType = vectorElementCppType(rangeType, aliases);
+  if (elementType && isSnapshotSerializableCppType(elementType, aliases)) {
+    return elementType;
+  }
+  if (isStringCppType(rangeType, aliases)) {
+    return 'char';
+  }
+  return null;
+}
+
 function isDequeCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
-  if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
   return normalized.startsWith('deque<') && normalized.endsWith('>');
 }
 
 function isAdapterCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
-  if (normalized.includes('pair<') || normalized.includes('tuple<')) return false;
   return (
     (normalized.startsWith('queue<') && normalized.endsWith('>')) ||
     (normalized.startsWith('priority_queue<') && normalized.endsWith('>')) ||
@@ -2341,7 +2486,6 @@ function buildTraceArgsJsonExpression(signature, variableNameForParameter = (_pa
     const normalizedType = normalizeCppType(parameter.type);
     if (
       normalizedType === 'auto' ||
-      normalizedType === 'vector<bool>' ||
       /\bauto\b/.test(parameter.type) ||
       /\bauto\b/.test(normalizedType) ||
       !isSnapshotSerializableCppType(parameter.type, aliases)
@@ -2358,6 +2502,32 @@ function stripCppStringsAndComments(line) {
     .replace(/"(?:\\.|[^"\\])*"/g, '""')
     .replace(/'(?:\\.|[^'\\])*'/g, "''")
     .replace(/\/\/.*$/, '');
+}
+
+function stripCppLineCommentPreservingStrings(line) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < line.length - 1; index += 1) {
+    const ch = line[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '/' && line[index + 1] === '/') {
+      return line.slice(0, index);
+    }
+  }
+  return line;
 }
 
 function braceDeltaForLine(line) {
@@ -2415,12 +2585,77 @@ function buildCurrentLineInstrumentation(lineNumber) {
   return `tracecode::TraceHooks::setCurrentLine(${lineNumber});`;
 }
 
+function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(), aliases = new Map()) {
+  if (line.includes('tracecode::with_trace_line')) {
+    const wrapperPattern = /tracecode::with_trace_line\((\d+),\s*\[[^\]]*\]\(\)\s*\{\s*return\s+static_cast<bool>\(([\s\S]*?)\);\s*\}\)/;
+    const match = line.match(wrapperPattern);
+    if (!match) return line;
+    const condition = match[2].trim();
+    const rewrittenCondition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
+    if (rewrittenCondition === condition) return line;
+    return line.replace(condition, rewrittenCondition);
+  }
+  const controlMatch = line.match(/^(\s*)(else\s+if|if|while|for)\s*\(/);
+  if (!controlMatch) return line;
+  const keywordEnd = controlMatch[0].length - 1;
+  const openIndex = line.indexOf('(', keywordEnd);
+  if (openIndex < 0) return line;
+  const closeIndex = findMatchingParen(line, openIndex);
+  if (closeIndex < 0) return line;
+
+  const keyword = controlMatch[2];
+  const source = line.slice(openIndex + 1, closeIndex);
+  let rewrittenSource = source;
+  if (keyword === 'for') {
+    const parts = splitTopLevel(source, ';', { trackAngleBrackets: false });
+    if (parts.length !== 3 || !parts[1].trim()) return line;
+    const condition = rewriteIndexReadInstrumentation(parts[1].trim(), variables, aliases, lineNumber);
+    rewrittenSource = `${parts[0]}; tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); }); ${parts[2]}`;
+  } else {
+    const condition = rewriteIndexReadInstrumentation(source.trim(), variables, aliases, lineNumber);
+    if (!condition) return line;
+    rewrittenSource = `tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); })`;
+  }
+  return `${line.slice(0, openIndex + 1)}${rewrittenSource}${line.slice(closeIndex)}`;
+}
+
+function rewriteRangeForIndexedReads(line, lineNumber, variables, aliases = new Map()) {
+  const stripped = stripCppStringsAndComments(line);
+  const structuredMapMatch = stripped.match(/^(\s*for\s*\(\s*[^:;]+?\[\s*([A-Za-z_]\w*)\s*,\s*(?:[A-Za-z_]\w*|_)\s*\]\s*:\s*)([A-Za-z_]\w*)(\s*\).*)$/);
+  if (structuredMapMatch) {
+    const [, prefix, keyBindingName, rangeName, suffix] = structuredMapMatch;
+    const variable = variables?.get(rangeName);
+    if (variable && (isUnorderedMapCppType(variable.type, aliases) || isMapCppType(variable.type, aliases))) {
+      const rewritten = `${prefix}tracecode::keyed_range_readable(${rangeName}, ${lineNumber}, ${cppStringLiteral(keyBindingName)})${suffix}`;
+      return line.replace(stripped, rewritten);
+    }
+  }
+  const indexedMatch = stripped.match(/^(\s*for\s*\(\s*[^;]+?[*&]*\s+[*&]*\s*([A-Za-z_]\w*)\s*:\s*)([A-Za-z_]\w*)\s*\[(.+)\](\s*\).*)$/);
+  if (indexedMatch) {
+    const [, prefix, bindingName, rangeName, indexSource, suffix] = indexedMatch;
+    const variable = variables?.get(rangeName);
+    if (variable && isVectorCppType(variable.type, aliases)) {
+      const indexExpression = indexSource.trim();
+      if (indexExpression) {
+        const rewritten = `${prefix}tracecode::indexed_nested_range_readable(${rangeName}, ${cppStringLiteral(rangeName)}, ${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}, ${lineNumber}, ${cppStringLiteral(bindingName)})${suffix}`;
+        return line.replace(stripped, rewritten);
+      }
+    }
+  }
+  const match = stripped.match(/^(\s*for\s*\(\s*[^;]+?[*&]*\s+[*&]*\s*([A-Za-z_]\w*)\s*:\s*)([A-Za-z_]\w*)(\s*\).*)$/);
+  if (!match) return line;
+  const [, prefix, bindingName, rangeName, suffix] = match;
+  const variable = variables?.get(rangeName);
+  if (!variable || (!isVectorCppType(variable.type, aliases) && !isStringCppType(variable.type, aliases))) return line;
+  const rewritten = `${prefix}tracecode::indexed_range_readable(${rangeName}, ${lineNumber}, ${cppStringLiteral(bindingName)}, ${cppStringLiteral(rangeName)})${suffix}`;
+  return line.replace(stripped, rewritten);
+}
+
 function isSnapshotSerializableCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   if (!normalized || normalized === 'void') return false;
-  if (normalized === 'vector<bool>') return false;
   if (normalized === 'auto' || normalized.includes('auto&&') || normalized.includes('function<')) return false;
-  if (normalized === 'TreeNode*' || normalized === 'ListNode*') return true;
+  if (normalized === 'TreeNode' || normalized === 'TreeNode*' || normalized === 'ListNode' || normalized === 'ListNode*') return true;
   if (/^(?:bool|char|string|size_t|std::size_t|(?:unsigned)?(?:short|int|long|longlong|longlongint)|float|double|longdouble)$/.test(normalized)) {
     return true;
   }
@@ -2450,12 +2685,27 @@ function buildSnapshotInstrumentation(lineNumber, variables, currentDepth) {
     .join('\n');
 }
 
+function buildScalarWriteInstrumentation(name, lineNumber, indent = '') {
+  return `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"write","line":${lineNumber},"target":{"variable":${jsonStringLiteral(name)}},"value":`)}) + tracecode::to_json(${name}) + "}", ${lineNumber});`;
+}
+
+function buildDeclarationWriteInstrumentation(lineNumber, variables, currentDepth, indent = '') {
+  return [...variables.entries()]
+    .filter(([, variable]) => variable.declarationLine === lineNumber && variable.scopeDepth <= currentDepth)
+    .map(([name]) => buildScalarWriteInstrumentation(name, lineNumber, indent))
+    .join('\n');
+}
+
 function buildOpaqueObjectSnapshotInstrumentation(name, lineNumber, indent = '') {
-  return `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"snapshot","line":${lineNumber},"target":{"variable":${jsonStringLiteral(name)}},"value":{}}`)}), ${lineNumber});`;
+  return `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"snapshot","line":${lineNumber},"target":{"variable":${jsonStringLiteral(name)}},"value":`)}) + tracecode::to_json(${name}) + "}", ${lineNumber});`;
 }
 
 function buildFieldTargetJsonExpression(objectName, fieldName, keyExpression) {
   if (keyExpression) {
+    const indexSource = cppIndexSourceForExpression(keyExpression);
+    if (indexSource !== 'nullptr') {
+      return `std::string(${cppStringLiteral(`{"variable":${jsonStringLiteral(objectName)},"path":[${jsonStringLiteral(fieldName)},`)}) + tracecode::to_json(${keyExpression}) + ${cppStringLiteral(`],"indexSources":`)} + tracecode::index_sources_json(nullptr, ${indexSource}) + "}"`;
+    }
     return `std::string(${cppStringLiteral(`{"variable":${jsonStringLiteral(objectName)},"path":[${jsonStringLiteral(fieldName)},`)}) + tracecode::to_json(${keyExpression}) + "]}"`;
   }
   return `std::string(${cppStringLiteral(`{"variable":${jsonStringLiteral(objectName)},"path":[${jsonStringLiteral(fieldName)}]}`)})`;
@@ -2497,13 +2747,63 @@ function rewriteFieldWriteInstrumentation(line, lineNumber) {
   ].join('\n');
 }
 
+function isCppPointerVariable(variable) {
+  return typeof variable?.type === 'string' && /\*\s*$/.test(variable.type.trim());
+}
+
+function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = new Map()) {
+  if (!line.includes('->')) return line;
+  if (/^\s*[A-Za-z_]\w*(?:\.|->)[A-Za-z_]\w*(?:\s*\[[^\[\]]+?\])?\s*=/.test(line)) return line;
+  const stripped = stripCppStringsAndComments(line);
+  const reads = [];
+  const seen = new Set();
+  const fieldAccessPattern = /\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\b/g;
+  for (const match of stripped.matchAll(fieldAccessPattern)) {
+    const objectName = match[1];
+    const fieldName = match[2];
+    if (!objectName || !fieldName) continue;
+    if (!isCppPointerVariable(variables?.get(objectName))) continue;
+    const accessStart = match.index ?? 0;
+    const accessEnd = accessStart + match[0].length;
+    const before = stripped.slice(0, accessStart);
+    const after = stripped.slice(accessEnd);
+    if (/\b(?:new|delete)\s+$/.test(before)) continue;
+    if (/^\s*=/.test(after)) continue;
+    if (/^\s*\(/.test(after)) continue;
+    const expression = `${objectName}->${fieldName}`;
+    if (seen.has(expression)) continue;
+    seen.add(expression);
+    const indent = line.match(/^(\s*)/)?.[1] ?? '';
+    const readInstrumentation = buildFieldReadInstrumentation(expression, expression, lineNumber, `${indent}  `);
+    if (readInstrumentation) reads.push(`${indent}if (${objectName}) {\n${readInstrumentation}\n${indent}}`);
+  }
+  const instrumentation = reads.filter(Boolean).join('\n');
+  return instrumentation ? `${instrumentation}\n${line}` : line;
+}
+
 function buildCallInstrumentation(lineNumber, signature) {
-  const callEventPrefix = `{"kind":"call","line":${lineNumber},"function":${jsonStringLiteral(signature.name)},"args":`;
+  const callLine = signature.callLine ?? lineNumber;
+  const callEventPrefix = `{"kind":"call","line":${callLine},"function":${jsonStringLiteral(signature.name)},"args":`;
   const argsExpression = buildTraceArgsJsonExpression(signature, (parameter) => parameter.name);
   return [
     `std::string __tc_args_json_${lineNumber} = std::string("{") + ${argsExpression} + "}";`,
-    `tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${lineNumber} + "}", ${lineNumber});`,
+    `tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${lineNumber} + "}", ${callLine});`,
   ].join('\n');
+}
+
+function buildScopedTraceNameInstrumentation(lineNumber, signature, aliases = new Map()) {
+  if (signature.skipScopedTraceNames) return '';
+  const skipNames = signature.skipTraceParameterNames || new Set();
+  return signature.parameters
+    .filter((parameter) =>
+      !skipNames.has(parameter.name) &&
+      isVectorCppType(parameter.type, aliases) &&
+      !/\bconst\b/.test(parameter.type)
+    )
+    .map((parameter) =>
+      `auto __tc_trace_name_scope_${parameter.name}_${lineNumber} = tracecode::scoped_trace_name(${parameter.name}, ${cppStringLiteral(parameter.name)});`
+    )
+    .join('\n');
 }
 
 function buildReturnInstrumentation(lineNumber, signature) {
@@ -2544,6 +2844,10 @@ function buildPostLineInstrumentation(lineNumber, functionName, variables, curre
   const pieces = [
     `${indent}${buildLineInstrumentation(lineNumber, functionName)}`,
   ];
+  const declarationWrites = buildDeclarationWriteInstrumentation(lineNumber, variables, currentDepth, indent);
+  if (declarationWrites) {
+    pieces.push(declarationWrites);
+  }
   const snapshots = includeSnapshots ? buildSnapshotInstrumentation(lineNumber, variables, currentDepth) : '';
   if (snapshots) {
     pieces.push(snapshots
@@ -2557,6 +2861,19 @@ function buildPostLineInstrumentation(lineNumber, functionName, variables, curre
 
 function shouldEmitCppFrameSnapshots(activeSignature, insideLocalLambdaBody) {
   return Boolean(activeSignature) && (!insideLocalLambdaBody || Boolean(activeSignature.lambda));
+}
+
+function startsCppLocalLambdaDeclaration(line) {
+  const stripped = stripCppStringsAndComments(line).trim();
+  return (
+    /\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+[A-Za-z_]\w*\s*=\s*\[[^\]]*\]/.test(stripped) &&
+    !stripped.includes('{') &&
+    !stripped.includes(';')
+  );
+}
+
+function startsCppLocalLambdaBodyLine(line) {
+  return stripCppStringsAndComments(line).includes('{');
 }
 
 function buildValueReturnInstrumentation(expression, lineNumber, signature, indent = '', postLineInstrumentation = '') {
@@ -2652,7 +2969,6 @@ function rewriteControlTransferInstrumentation(line, lineNumber, postLineInstrum
   if (!match) return line;
   const [, indent, control] = match;
   return [
-    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"control","line":${lineNumber},"control":"${control}"}`)}), ${lineNumber});`,
     postLineInstrumentation,
     `${indent}${control};`,
   ].filter(Boolean).join('\n');
@@ -2691,30 +3007,64 @@ function rewriteTraceContainerParameters(line, signature, aliases = new Map(), s
   return rewritten;
 }
 
-function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineInstrumentation = '', emitInsideBody = false) {
+function rewriteControlConditionSource(control, lineNumber, accessVariables = new Map(), aliases = new Map()) {
+  if (control === 'else') return control;
+  const openIndex = control.indexOf('(');
+  if (openIndex < 0) return control;
+  const closeIndex = findMatchingParen(control, openIndex);
+  if (closeIndex < 0) return control;
+  const condition = control.slice(openIndex + 1, closeIndex).trim();
+  if (!condition) return control;
+  const rewrittenCondition = rewriteIndexReadInstrumentation(condition, accessVariables, aliases, lineNumber);
+  if (rewrittenCondition === condition) return control;
+  return `${control.slice(0, openIndex + 1)}${rewrittenCondition}${control.slice(closeIndex)}`;
+}
+
+function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineInstrumentation = '', emitInsideBody = false, variables = new Map(), accessVariables = new Map(), aliases = new Map()) {
   const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s+([^{}].*;\s*)$/);
   if (!match) return line;
-  const [, indent, control, statement] = match;
+  const [, indent, rawControl, statement] = match;
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
+  const control = rewriteControlConditionSource(rawControl, lineNumber, accessVariables, aliases);
   if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
   const controlTransfer = statement.trim().match(/^(break|continue)\s*;$/);
   if (controlTransfer) {
     const transfer = controlTransfer[1];
-    return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"control","line":${lineNumber},"control":"${transfer}"}`)}), ${lineNumber}); ${postLineInstrumentation} ${transfer}; }`;
+    return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${postLineInstrumentation} ${transfer}; }`;
   }
   if (emitInsideBody) {
-    return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statement.trim()} ${postLineInstrumentation} }`;
+    const scalarWrite = buildInlineScalarWriteInstrumentation(statement, lineNumber, variables);
+    return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statement.trim()} ${scalarWrite} ${postLineInstrumentation} }`;
   }
   return `${indent}${control} { ${statement.trim()} }`;
 }
 
-function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrumentation = '') {
+function buildInlineScalarWriteInstrumentation(statement, lineNumber, variables) {
+  const stripped = stripCppStringsAndComments(statement).trim();
+  if (!stripped) return '';
+  const assignment = stripped.match(/^([A-Za-z_]\w*)\s*(?:[+\-*/%]?=)\s*.+;\s*$/);
+  if (assignment && variables?.has(assignment[1])) {
+    return buildScalarWriteInstrumentation(assignment[1], lineNumber);
+  }
+  const postfix = stripped.match(/^([A-Za-z_]\w*)\s*(?:\+\+|--)\s*;\s*$/);
+  if (postfix && variables?.has(postfix[1])) {
+    return buildScalarWriteInstrumentation(postfix[1], lineNumber);
+  }
+  const prefix = stripped.match(/^(?:\+\+|--)\s*([A-Za-z_]\w*)\s*;\s*$/);
+  if (prefix && variables?.has(prefix[1])) {
+    return buildScalarWriteInstrumentation(prefix[1], lineNumber);
+  }
+  return '';
+}
+
+function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrumentation = '', variables = new Map()) {
   const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s*\{\s*([^{}].*;\s*)\}\s*$/);
   if (!match) return line;
   const [, indent, control, statement] = match;
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
   if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
-  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statement.trim()} ${postLineInstrumentation} }`;
+  const scalarWrite = buildInlineScalarWriteInstrumentation(statement, lineNumber, variables);
+  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statement.trim()} ${scalarWrite} ${postLineInstrumentation} }`;
 }
 
 function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), extraTraceContainerNames = new Set()) {
@@ -2754,17 +3104,75 @@ function nextNonWhitespace(source, index) {
   return { ch: '', index: source.length };
 }
 
+function isInsideCppStringOrCharLiteral(source, index) {
+  let quote = '';
+  let escaped = false;
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    const ch = source[cursor];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = Boolean(quote);
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+  }
+  return Boolean(quote);
+}
+
 function isIndexReadInstrumentableCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   return (
     normalized.startsWith('vector<') ||
+    normalized.startsWith('tracecode::Vector<') ||
     normalized.startsWith('array<') ||
     normalized.startsWith('deque<') ||
+    normalized.startsWith('tracecode::Deque<') ||
     normalized === 'string'
   );
 }
 
+function isStdArrayCppType(type, aliases = new Map()) {
+  return normalizeCppType(type, aliases).startsWith('array<');
+}
+
+function cppIndexSourceForExpression(expression) {
+  const trimmed = expression.trim();
+  const normalized = trimmed.replace(/\s+/g, ' ');
+  if (/^[A-Za-z_]\w*$/.test(normalized)) return cppStringLiteral(normalized);
+  if (/^(?:\+\+|--)\s*[A-Za-z_]\w*$/.test(normalized) || /^[A-Za-z_]\w*\s*(?:\+\+|--)$/.test(normalized)) {
+    return cppStringLiteral(normalized.replace(/\s+/g, ''));
+  }
+  if (/^[A-Za-z_]\w*\s*\[[^\]]+\]\s*$/.test(normalized)) return cppStringLiteral(normalized.replace(/\s+/g, ''));
+  if (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*\(\))+(?:\s*[+\-*/%]\s*\d+)?$/.test(normalized)) {
+    return cppStringLiteral(normalized);
+  }
+  const indexedArithmeticTerm = String.raw`(?:[A-Za-z_]\w*\s*\[[^\]]+\]|[A-Za-z_]\w*|\d+|'(?:\\.|[^'\\])')`;
+  const indexedArithmeticPattern = new RegExp(`^${indexedArithmeticTerm}(?:\\s*(?:[+\\-*/%]|<<|>>|&|\\||\\^)\\s*${indexedArithmeticTerm})*$`);
+  if (indexedArithmeticPattern.test(trimmed) && /\b[A-Za-z_]\w*\b/.test(trimmed)) {
+    return cppStringLiteral(normalized);
+  }
+  const identifiers = new Set(trimmed.match(/\b[A-Za-z_]\w*\b/g) || []);
+  const literalsAndOperatorsOnly = /^(?:[A-Za-z_]\w*|\d+)(?:\s*(?:[+\-*/%]|<<|>>|&|\||\^)\s*(?:[A-Za-z_]\w*|\d+))*$/.test(trimmed);
+  if (literalsAndOperatorsOnly && identifiers.size > 0) {
+    return cppStringLiteral(normalized);
+  }
+  return 'nullptr';
+}
+
 function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), lineNumber = 1) {
+  if (line.includes('tracecode::trace_index_read') || line.includes('tracecode::trace_nested_index_read')) {
+    return line;
+  }
+  if (/\b(?:std::)?swap\s*\(/.test(stripCppStringsAndComments(line))) {
+    return line;
+  }
   const candidateNames = [...(variables || []).entries()]
     .filter(([, variable]) => isIndexReadInstrumentableCppType(variable.type, aliases))
     .map(([name]) => name)
@@ -2778,14 +3186,39 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
       const nameIndex = rewritten.indexOf(name, cursor);
       if (nameIndex < 0) break;
       const before = nameIndex > 0 ? rewritten[nameIndex - 1] : '';
+      const beforeTwo = nameIndex >= 2 ? rewritten.slice(nameIndex - 2, nameIndex) : '';
       const afterName = rewritten[nameIndex + name.length] || '';
-      if (/[A-Za-z0-9_]/.test(before) || /[A-Za-z0-9_]/.test(afterName)) {
+      if (
+        /[A-Za-z0-9_]/.test(before) ||
+        /[A-Za-z0-9_]/.test(afterName) ||
+        before === '.' ||
+        beforeTwo === '->' ||
+        beforeTwo === '::' ||
+        isInsideCppStringOrCharLiteral(rewritten, nameIndex)
+      ) {
         cursor = nameIndex + name.length;
         continue;
       }
       let bracketIndex = nameIndex + name.length;
       while (/\s/.test(rewritten[bracketIndex] || '')) bracketIndex += 1;
       if (rewritten[bracketIndex] !== '[') {
+        let memberIndex = nameIndex + name.length;
+        while (/\s/.test(rewritten[memberIndex] || '')) memberIndex += 1;
+        if (rewritten[memberIndex] === '.') {
+          const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*find\s*\(/);
+          if (methodMatch) {
+            const openIndex = memberIndex + methodMatch[0].lastIndexOf('(');
+            const closeIndex = findMatchingParen(rewritten, openIndex);
+            if (closeIndex >= 0) {
+              const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
+              const indexSource = cppIndexSourceForExpression(keyExpression);
+              const replacement = `.find_with_index_source(${keyExpression}, ${indexSource})`;
+              rewritten = `${rewritten.slice(0, memberIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+              cursor = memberIndex + replacement.length;
+              continue;
+            }
+          }
+        }
         cursor = nameIndex + name.length;
         continue;
       }
@@ -2795,12 +3228,55 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         continue;
       }
       const previous = previousNonWhitespace(rewritten, nameIndex);
+      const prefixBeforeName = rewritten.slice(0, nameIndex).replace(/\s+$/g, '');
+      const previousIsAddressOf = previous === '&' && !prefixBeforeName.endsWith('&&');
       const next = nextNonWhitespace(rewritten, closeIndex + 1);
       const twoCharNext = rewritten.slice(next.index, next.index + 2);
+      if (next.ch === '.') {
+        if (previousIsAddressOf) {
+          cursor = closeIndex + 1;
+          continue;
+        }
+        const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
+        const indexSource = cppIndexSourceForExpression(indexExpression);
+        const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource})`;
+        rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+        cursor = nameIndex + replacement.length;
+        continue;
+      }
+      if (next.ch === '[') {
+        const secondBracketIndex = next.index;
+        const secondCloseIndex = findMatchingSquareBracket(rewritten, secondBracketIndex);
+        if (secondCloseIndex < 0) {
+          cursor = closeIndex + 1;
+          continue;
+        }
+        const afterNested = nextNonWhitespace(rewritten, secondCloseIndex + 1);
+        const twoCharAfterNested = rewritten.slice(afterNested.index, afterNested.index + 2);
+        if (
+          previousIsAddressOf ||
+          afterNested.ch === '[' ||
+          afterNested.ch === '.' ||
+          twoCharAfterNested === '->' ||
+          twoCharAfterNested === '++' ||
+          twoCharAfterNested === '--' ||
+          (/^[+\-*/%]?=$/.test(twoCharAfterNested) && twoCharAfterNested !== '==') ||
+          (afterNested.ch === '=' && rewritten[afterNested.index + 1] !== '=')
+        ) {
+          cursor = secondCloseIndex + 1;
+          continue;
+        }
+        const outerExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
+        const innerExpression = rewritten.slice(secondBracketIndex + 1, secondCloseIndex).trim();
+        const outerSource = cppIndexSourceForExpression(outerExpression);
+        const innerSource = cppIndexSourceForExpression(innerExpression);
+        const replacement = `tracecode::trace_nested_index_read(${name}, ${cppStringLiteral(name)}, ${outerExpression}, ${innerExpression}, ${lineNumber}, ${outerSource}, ${innerSource})`;
+        rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(secondCloseIndex + 1)}`;
+        cursor = nameIndex + replacement.length;
+        continue;
+      }
       if (
-        previous === '&' ||
-        next.ch === '[' ||
-        next.ch === '.' ||
+        previousIsAddressOf ||
         twoCharNext === '->' ||
         twoCharNext === '++' ||
         twoCharNext === '--' ||
@@ -2811,12 +3287,407 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         continue;
       }
       const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
-      const replacement = `tracecode::trace_index_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber})`;
+      const indexSource = cppIndexSourceForExpression(indexExpression);
+      const replacement = `tracecode::trace_index_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
     }
   }
   return rewritten;
+}
+
+function isKeyedIndexSourceInstrumentableCppType(type, aliases = new Map()) {
+  return isUnorderedMapCppType(type, aliases) || isMapCppType(type, aliases);
+}
+
+function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new Map(), lineNumber = 0) {
+  const candidateNames = [...(variables || []).entries()]
+    .filter(([, variable]) => isKeyedIndexSourceInstrumentableCppType(variable.type, aliases))
+    .map(([name]) => name)
+    .sort((left, right) => right.length - left.length);
+  if (candidateNames.length === 0) return line;
+
+  let rewritten = line;
+  for (const name of candidateNames) {
+    let cursor = 0;
+    while (cursor < rewritten.length) {
+      const nameIndex = rewritten.indexOf(name, cursor);
+      if (nameIndex < 0) break;
+      const before = nameIndex > 0 ? rewritten[nameIndex - 1] : '';
+      const beforeTwo = nameIndex >= 2 ? rewritten.slice(nameIndex - 2, nameIndex) : '';
+      const afterName = rewritten[nameIndex + name.length] || '';
+      if (
+        /[A-Za-z0-9_]/.test(before) ||
+        /[A-Za-z0-9_]/.test(afterName) ||
+        before === '.' ||
+        beforeTwo === '->' ||
+        beforeTwo === '::' ||
+        isInsideCppStringOrCharLiteral(rewritten, nameIndex)
+      ) {
+        cursor = nameIndex + name.length;
+        continue;
+      }
+      let bracketIndex = nameIndex + name.length;
+      while (/\s/.test(rewritten[bracketIndex] || '')) bracketIndex += 1;
+      if (rewritten[bracketIndex] !== '[') {
+        if (rewritten[bracketIndex] === '.') {
+          const methodMatch = rewritten.slice(bracketIndex).match(/^\.\s*find\s*\(/);
+          if (methodMatch) {
+            const openIndex = bracketIndex + methodMatch[0].lastIndexOf('(');
+            const closeIndex = findMatchingParen(rewritten, openIndex);
+            if (closeIndex >= 0) {
+              const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
+              const indexSource = cppIndexSourceForExpression(keyExpression);
+              const replacement = `.find_with_index_source(${keyExpression}, ${indexSource})`;
+              rewritten = `${rewritten.slice(0, bracketIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+              cursor = bracketIndex + replacement.length;
+              continue;
+            }
+          }
+        }
+        cursor = nameIndex + name.length;
+        continue;
+      }
+      const closeIndex = findMatchingSquareBracket(rewritten, bracketIndex);
+      if (closeIndex < 0) {
+        cursor = nameIndex + name.length;
+        continue;
+      }
+      const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
+      const indexSource = cppIndexSourceForExpression(indexExpression);
+      const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource})`;
+      rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+      cursor = nameIndex + replacement.length;
+    }
+  }
+  return rewritten;
+}
+
+function findIndexedStatementAccess(line, name) {
+  let cursor = 0;
+  while (cursor < line.length) {
+    const nameIndex = line.indexOf(name, cursor);
+    if (nameIndex < 0) return null;
+    const before = nameIndex > 0 ? line[nameIndex - 1] : '';
+    const afterName = line[nameIndex + name.length] || '';
+    if (/[A-Za-z0-9_]/.test(before) || /[A-Za-z0-9_]/.test(afterName)) {
+      cursor = nameIndex + name.length;
+      continue;
+    }
+    let bracketIndex = nameIndex + name.length;
+    while (/\s/.test(line[bracketIndex] || '')) bracketIndex += 1;
+    if (line[bracketIndex] !== '[') {
+      cursor = nameIndex + name.length;
+      continue;
+    }
+    const closeIndex = findMatchingSquareBracket(line, bracketIndex);
+    if (closeIndex < 0) return null;
+    return { nameIndex, bracketIndex, closeIndex };
+  }
+  return null;
+}
+
+function findNestedIndexedStatementAccess(line, name) {
+  const outer = findIndexedStatementAccess(line, name);
+  if (!outer) return null;
+  const next = nextNonWhitespace(line, outer.closeIndex + 1);
+  if (next.ch !== '[') return null;
+  const innerCloseIndex = findMatchingSquareBracket(line, next.index);
+  if (innerCloseIndex < 0) return null;
+  return {
+    nameIndex: outer.nameIndex,
+    outerBracketIndex: outer.bracketIndex,
+    outerCloseIndex: outer.closeIndex,
+    innerBracketIndex: next.index,
+    innerCloseIndex,
+  };
+}
+
+function rewriteNestedIndexedWriteInstrumentation(line, lineNumber, variables, aliases = new Map()) {
+  const stripped = stripCppStringsAndComments(line).trim();
+  if (!stripped || /^(?:if|for|while|switch|return|break|continue)\b/.test(stripped)) return line;
+  if (line.includes('tracecode::')) return line;
+
+  const candidateNames = [...(variables || []).entries()]
+    .filter(([, variable]) => isVectorCppType(variable.type, aliases))
+    .map(([name]) => name)
+    .sort((left, right) => right.length - left.length);
+  if (candidateNames.length === 0) return line;
+
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  for (const name of candidateNames) {
+    const access = findNestedIndexedStatementAccess(line, name);
+    if (!access) continue;
+    const beforeAccess = line.slice(indent.length, access.nameIndex).trim();
+    const afterAccess = line.slice(access.innerCloseIndex + 1).trim();
+    const outerExpression = line.slice(access.outerBracketIndex + 1, access.outerCloseIndex).trim();
+    const innerExpression = line.slice(access.innerBracketIndex + 1, access.innerCloseIndex).trim();
+    if (!outerExpression || !innerExpression) continue;
+
+    let rewrittenStatement = null;
+    const nestedRef = `tracecode::trace_nested_index_ref(${name}, ${cppStringLiteral(name)}, ${outerExpression}, ${innerExpression}, ${cppIndexSourceForExpression(outerExpression)}, ${cppIndexSourceForExpression(innerExpression)})`;
+    if ((beforeAccess === '++' || beforeAccess === '--') && afterAccess === ';') {
+      rewrittenStatement = `${beforeAccess}${nestedRef};`;
+    } else if (beforeAccess === '') {
+      if (/^(?:\+\+|--)\s*;\s*$/.test(afterAccess)) {
+        rewrittenStatement = `${nestedRef}${afterAccess}`;
+      } else {
+        const assignment = afterAccess.match(/^((?:[+\-*/%&|^]|<<|>>)?=)\s*(.+;\s*)$/);
+        if (assignment && assignment[1] !== '==') {
+          rewrittenStatement = `${nestedRef} ${assignment[1]} ${assignment[2]}`;
+        }
+      }
+    }
+    if (!rewrittenStatement) continue;
+    return `${indent}${rewrittenStatement.trim()}`;
+  }
+  return line;
+}
+
+function rewriteVectorIndexedWriteInstrumentation(line, lineNumber, variables, aliases = new Map()) {
+  const stripped = stripCppStringsAndComments(line).trim();
+  if (!stripped || /^(?:if|for|while|switch|return|break|continue)\b/.test(stripped)) return line;
+  if (line.includes('tracecode::')) return line;
+
+  const candidateNames = [...(variables || []).entries()]
+    .filter(([, variable]) => isVectorCppType(variable.type, aliases))
+    .map(([name]) => name)
+    .sort((left, right) => right.length - left.length);
+  if (candidateNames.length === 0) return line;
+
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  for (const name of candidateNames) {
+    const access = findIndexedStatementAccess(line, name);
+    if (!access) continue;
+    const beforeAccess = line.slice(indent.length, access.nameIndex).trim();
+    const afterAccess = line.slice(access.closeIndex + 1).trim();
+    const indexExpression = line.slice(access.bracketIndex + 1, access.closeIndex).trim();
+    if (!indexExpression) continue;
+
+    const indexedRef = `tracecode::trace_index_ref(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppIndexSourceForExpression(indexExpression)})`;
+    let rewrittenStatement = null;
+    if ((beforeAccess === '++' || beforeAccess === '--') && afterAccess === ';') {
+      rewrittenStatement = `${beforeAccess}${indexedRef};`;
+    } else if (beforeAccess === '') {
+      if (/^(?:\+\+|--)\s*;\s*$/.test(afterAccess)) {
+        rewrittenStatement = `${indexedRef}${afterAccess}`;
+      } else {
+        const assignment = afterAccess.match(/^((?:[+\-*/%&|^]|<<|>>)?=)\s*(.+;\s*)$/);
+        if (assignment && assignment[1] !== '==') {
+          rewrittenStatement = `${indexedRef} ${assignment[1]} ${assignment[2]}`;
+        }
+      }
+    }
+    if (!rewrittenStatement) continue;
+    return `${indent}${rewrittenStatement.trim()}`;
+  }
+  return line;
+}
+
+function rewritePlainIndexedWriteInstrumentation(line, lineNumber, variables, aliases = new Map()) {
+  const stripped = stripCppStringsAndComments(line).trim();
+  if (!stripped || /^(?:if|for|while|switch|return|break|continue)\b/.test(stripped)) return line;
+  if (line.includes('tracecode::')) return line;
+
+  const candidateNames = [...(variables || []).entries()]
+    .filter(([, variable]) => isStdArrayCppType(variable.type, aliases))
+    .map(([name]) => name)
+    .sort((left, right) => right.length - left.length);
+  if (candidateNames.length === 0) return line;
+
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  for (const name of candidateNames) {
+    const access = findIndexedStatementAccess(line, name);
+    if (!access) continue;
+    const beforeAccess = line.slice(indent.length, access.nameIndex).trim();
+    const afterAccess = line.slice(access.closeIndex + 1).trim();
+    const indexExpression = line.slice(access.bracketIndex + 1, access.closeIndex).trim();
+    if (!indexExpression) continue;
+
+    let rewrittenStatement = null;
+    if ((beforeAccess === '++' || beforeAccess === '--') && afterAccess === ';') {
+      rewrittenStatement = `${beforeAccess}${name}[__tc_index_${lineNumber}];`;
+    } else if (beforeAccess === '') {
+      if (/^(?:\+\+|--)\s*;\s*$/.test(afterAccess)) {
+        rewrittenStatement = `${name}[__tc_index_${lineNumber}]${afterAccess}`;
+      } else {
+        const assignment = afterAccess.match(/^((?:[+\-*/%&|^]|<<|>>)?=)\s*(.+;\s*)$/);
+        if (assignment && assignment[1] !== '==') {
+          rewrittenStatement = `${name}[__tc_index_${lineNumber}] ${assignment[1]} ${assignment[2]}`;
+        }
+      }
+    }
+    if (!rewrittenStatement) continue;
+    const indexSource = cppIndexSourceForExpression(indexExpression);
+    return [
+      `${indent}{`,
+      `${indent}  auto __tc_index_${lineNumber} = static_cast<std::size_t>(${indexExpression});`,
+      `${indent}  (void)tracecode::trace_index_read(${name}, ${cppStringLiteral(name)}, __tc_index_${lineNumber}, ${lineNumber}, ${indexSource});`,
+      `${indent}  ${rewrittenStatement.trim()}`,
+      `${indent}  tracecode::emit_index_write_value(${cppStringLiteral(name)}, ${name}, __tc_index_${lineNumber}, ${lineNumber}, ${indexSource});`,
+      `${indent}}`,
+    ].join('\n');
+  }
+  return line;
+}
+
+function shouldEmitPlainContainerMutation(variable, name, aliases = new Map(), source = '') {
+  if (!variable || !isSnapshotSerializableCppType(variable.type, aliases)) return false;
+  if (variable.parameter && /\bstd::/.test(variable.type)) return true;
+  if (!isTraceWrappedCppType(variable.type, aliases)) return true;
+  const normalized = normalizeCppType(variable.type, aliases);
+  return normalized === 'vector<string>' && !localVectorStringFeedsTraceWrappedParameter(source, name, aliases);
+}
+
+function cppValueTypeTempInitialization(containerName, tempName, argumentSource) {
+  const trimmedArgument = argumentSource.trim();
+  const initializer = trimmedArgument.startsWith('{') ? trimmedArgument : `(${trimmedArgument})`;
+  return `std::decay_t<decltype(${containerName})>::value_type ${tempName} = ${initializer};`;
+}
+
+function rewritePlainContainerMutationInstrumentation(line, lineNumber, variables, aliases = new Map(), source = '') {
+  if (line.includes('tracecode::')) return line;
+  const stripped = stripCppStringsAndComments(line).trim();
+  if (!stripped || /^(?:if|for|while|switch|return|break|continue)\b/.test(stripped)) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+
+  const fillMatch = stripped.match(/^([A-Za-z_]\w*)\s*\.\s*fill\s*\((.*)\)\s*;\s*$/);
+  if (fillMatch) {
+    const [, name, argsSource] = fillMatch;
+    const variable = variables?.get(name);
+    if (variable && (isStdArrayCppType(variable.type, aliases) || shouldEmitPlainContainerMutation(variable, name, aliases, source))) {
+      const args = splitTopLevelCommaList(argsSource).filter((arg) => arg.trim());
+      return [
+        line,
+        `${indent}tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "fill", ${lineNumber}, tracecode::mutation_args_json(${args.join(', ')}));`,
+      ].join('\n');
+    }
+  }
+
+  const sortMatch = stripped.match(/^(?:std::)?sort\s*\(\s*([A-Za-z_]\w*)\s*\.\s*begin\s*\(\s*\)\s*,\s*\1\s*\.\s*end\s*\(\s*\)(?:\s*,\s*.*)?\)\s*;\s*$/);
+  if (sortMatch) {
+    const [, name] = sortMatch;
+    const variable = variables?.get(name);
+    if (variable && isSnapshotSerializableCppType(variable.type, aliases)) {
+      return [
+        line,
+        `${indent}tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "sort", ${lineNumber}, tracecode::mutation_args_json());`,
+      ].join('\n');
+    }
+  }
+
+  const plainMethodMatch = stripped.match(/^([A-Za-z_]\w*)\s*\.\s*(push_back|insert|pop_back|clear)\s*\((.*)\)\s*;\s*$/);
+  if (plainMethodMatch) {
+    const [, name, method, argsSource] = plainMethodMatch;
+    const variable = variables?.get(name);
+    if (shouldEmitPlainContainerMutation(variable, name, aliases, source)) {
+      const args = splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
+      if ((method === 'push_back' || method === 'insert') && args.length === 1) {
+        const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
+        return [
+          `${indent}{`,
+          `${indent}  ${cppValueTypeTempInitialization(name, tempName, args[0])}`,
+          `${indent}  ${name}.${method}(${tempName});`,
+          `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, tracecode::mutation_args_json(${tempName}));`,
+          `${indent}}`,
+        ].join('\n');
+      }
+      if ((method === 'pop_back' || method === 'clear') && args.length === 0) {
+        return [
+          line,
+          `${indent}tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, tracecode::mutation_args_json());`,
+        ].join('\n');
+      }
+    }
+  }
+
+  return line;
+}
+
+function rewriteTraceContainerProxyReferences(line, variables, aliases = new Map()) {
+  if (!/\bauto\s*&\s+[A-Za-z_]\w*\s*=/.test(line)) {
+    return line;
+  }
+  const candidateNames = [...(variables || []).entries()]
+    .filter(([, variable]) => isIndexReadInstrumentableCppType(variable.type, aliases))
+    .map(([name]) => name)
+    .sort((left, right) => right.length - left.length);
+  if (candidateNames.length === 0) {
+    return line;
+  }
+  const accessPattern = new RegExp(`\\b(?:${candidateNames.map(escapeRegExp).join('|')})\\s*(?:\\[[^\\]]+\\]|\\.\\s*(?:front|back)\\s*\\()`);
+  if (!accessPattern.test(line)) {
+    return line;
+  }
+  return line.replace(/\bauto\s*&(\s+[A-Za-z_]\w*\s*=)/, 'auto$1');
+}
+
+function rewriteTraceContainerAliasNames(line, lineNumber, variables, aliases = new Map()) {
+  const match = line.match(/^(\s*)(?:const\s+)?auto\s*&\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;\s*$/);
+  if (!match) return line;
+  const [, indent, aliasName, sourceName] = match;
+  const sourceVariable = variables?.get(sourceName);
+  if (!sourceVariable || !isIndexReadInstrumentableCppType(sourceVariable.type, aliases)) {
+    return line;
+  }
+  return `${indent}auto __tc_trace_name_scope_${aliasName}_${lineNumber} = tracecode::scoped_trace_name(${sourceName}, ${cppStringLiteral(aliasName)});\n${line}`;
+}
+
+function rewriteTraceMutatingCallLineScope(line, lineNumber) {
+  if (line.includes('tracecode::with_trace_line')) return line;
+  const match = line.match(/^(\s*)(.+\.(?:assign|push_back|emplace_back|push|emplace|insert|erase|clear|pop|pop_back|pop_front)\s*\(.*\)\s*;)\s*$/);
+  if (!match) return line;
+  const [, indent, statement] = match;
+  if (/^\s*(?:if|for|while|switch|return)\b/.test(statement)) return line;
+  if (/^\s*(?:const\s+)?(?:auto|[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?(?:\s*<[^;]+>)?(?:\s*[*&])?)\s+[A-Za-z_]\w*\s*=/.test(statement)) return line;
+  if (/^[^;=]+=[^=]/.test(statement)) return line;
+  return `${indent}tracecode::with_scoped_trace_line(${lineNumber}, [&]() { ${statement.trim()} });`;
+}
+
+function rewriteScalarWriteInstrumentation(line, lineNumber, variables) {
+  const stripped = stripCppStringsAndComments(line).trim();
+  if (!stripped) return line;
+
+  const forDeclaration = line.match(/^(\s*)for\s*\(\s*(?:const\s+)?(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?(?:\s*<[^;]+>)?(?:\s*[*&])?)\s+([A-Za-z_]\w*)\s*=([^;]+);.*\)\s*\{\s*$/);
+  if (forDeclaration && variables?.has(forDeclaration[2])) {
+    return `${line}\n${buildScalarWriteInstrumentation(forDeclaration[2], lineNumber, `${forDeclaration[1]}  `)}`;
+  }
+
+  if (/^(?:if|for|while|switch|return|break|continue)\b/.test(stripped)) return line;
+
+  const assignment = line.match(/^(\s*)([A-Za-z_]\w*)\s*(?:[+\-*/%]?=)\s*.+;\s*$/);
+  if (assignment && variables?.has(assignment[2])) {
+    return `${line}\n${buildScalarWriteInstrumentation(assignment[2], lineNumber, assignment[1])}`;
+  }
+
+  const postfix = line.match(/^(\s*)([A-Za-z_]\w*)\s*(?:\+\+|--)\s*;\s*$/);
+  if (postfix && variables?.has(postfix[2])) {
+    return `${line}\n${buildScalarWriteInstrumentation(postfix[2], lineNumber, postfix[1])}`;
+  }
+
+  const prefix = line.match(/^(\s*)(?:\+\+|--)\s*([A-Za-z_]\w*)\s*;\s*$/);
+  if (prefix && variables?.has(prefix[2])) {
+    return `${line}\n${buildScalarWriteInstrumentation(prefix[2], lineNumber, prefix[1])}`;
+  }
+
+  const updateNames = [];
+  const seenUpdateNames = new Set();
+  const updatePattern = /(?:\+\+|--)\s*([A-Za-z_]\w*)|\b([A-Za-z_]\w*)\s*(?:\+\+|--)/g;
+  for (const match of stripped.matchAll(updatePattern)) {
+    const name = match[1] || match[2];
+    if (!name || !variables?.has(name) || seenUpdateNames.has(name)) continue;
+    seenUpdateNames.add(name);
+    updateNames.push(name);
+  }
+  if (updateNames.length > 0) {
+    const indent = line.match(/^(\s*)/)?.[1] ?? '';
+    return [
+      line,
+      ...updateNames.map((name) => buildScalarWriteInstrumentation(name, lineNumber, indent)),
+    ].join('\n');
+  }
+
+  return line;
 }
 
 function findContainerDeclarationSemicolon(lines, startIndex) {
@@ -2835,7 +3706,7 @@ function findContainerDeclarationSemicolon(lines, startIndex) {
 }
 
 function rewriteTraceMultipleContainerLocals(line, lineNumber, aliases = new Map(), source = '') {
-  const collapsed = line.replace(/\s*\n\s*/g, ' ');
+  const collapsed = stripCppLineCommentPreservingStrings(line).replace(/\s*\n\s*/g, ' ');
   const match = collapsed.match(/^(\s*)((?:(?:std::)?(?:vector|deque|queue|priority_queue|stack|unordered_map|map|unordered_set|set)\s*<.+>|[A-Za-z_]\w*))\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)+)\s*;\s*$/);
   if (!match) return line;
   const [, indent, declaredType, namesSource] = match;
@@ -2881,8 +3752,14 @@ function localNestedVectorUsedInMinMaxInitializerList(source, name) {
   return pattern.test(stripComments(source || ''));
 }
 
+function localDequeUsedWithStructuredFrontBackBinding(source, name) {
+  const escapedName = escapeRegExp(name);
+  const pattern = new RegExp(`\\bauto\\s*\\[[^\\]]+\\]\\s*=\\s*${escapedName}\\s*\\.\\s*(?:front|back)\\s*\\(`);
+  return pattern.test(stripComments(source || ''));
+}
+
 function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map(), source = '') {
-  const collapsed = line.replace(/\s*\n\s*/g, ' ');
+  const collapsed = stripCppLineCommentPreservingStrings(line).replace(/\s*\n\s*/g, ' ');
   const multiple = rewriteTraceMultipleContainerLocals(collapsed, lineNumber, aliases, source);
   if (multiple !== collapsed) return multiple;
   const declarationParts = collapsed.match(/^(\s*)((?:(?:std::)?(?:vector|deque|queue|priority_queue|stack|unordered_map|map|unordered_set|set)\s*<.+>|[A-Za-z_]\w*))\s+(.+);\s*$/);
@@ -2899,6 +3776,10 @@ function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map(), sourc
     normalizeCppType(declaredType, aliases).startsWith('vector<vector<') &&
     localNestedVectorUsedInMinMaxInitializerList(source, name)
   ) return line;
+  if (
+    normalizeCppType(declaredType, aliases).startsWith('deque<') &&
+    localDequeUsedWithStructuredFrontBackBinding(source, name)
+  ) return line;
   if (hasUnsafeMapProxyAutoReferenceBinding(declaredType, source, name, aliases)) return line;
   const normalized = normalizeCppType(declaredType, aliases);
   const kind = normalized.slice(0, normalized.indexOf('<'));
@@ -2908,19 +3789,22 @@ function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map(), sourc
     .replace(/\s+/g, ' ')
     .trim();
   const initializer = constructorArgs ? `${initializerType}(${constructorArgs})` : assignedValue || bracedValue;
+  const traceInitializer = bracedValue && (kind === 'set' || kind === 'unordered_set')
+    ? `${initializerType}${bracedValue}`
+    : initializer;
   const type = cppTraceType(declaredType, aliases);
-  if ((kind === 'queue' || kind === 'priority_queue' || kind === 'stack') && initializer && initializer.trim() !== '{}') {
+  if ((kind === 'queue' || kind === 'priority_queue' || kind === 'stack') && traceInitializer && traceInitializer.trim() !== '{}') {
     return line;
   }
-  if (!initializer || initializer.trim() === '{}') {
+  if (!traceInitializer || traceInitializer.trim() === '{}') {
     return `${indent}${type} ${name}(${cppStringLiteral(name)}, ${lineNumber});`;
   }
-  return `${indent}${type} ${name}(${initializer.trim()}, ${cppStringLiteral(name)}, ${lineNumber});`;
+  return `${indent}${type} ${name}(${traceInitializer.trim()}, ${cppStringLiteral(name)}, ${lineNumber});`;
 }
 
 function rewriteTraceContainerMember(line, lineNumber, aliases = new Map(), activeClassName = null, traceMemberClassName = null) {
   if (!activeClassName || activeClassName !== traceMemberClassName) return line;
-  const collapsed = line.replace(/\s*\n\s*/g, ' ');
+  const collapsed = stripCppLineCommentPreservingStrings(line).replace(/\s*\n\s*/g, ' ');
   const match = collapsed.match(/^(\s*)((?:(?:std::)?(?:vector|deque|queue|priority_queue|stack|unordered_map|map|unordered_set|set)\s*<.+>|[A-Za-z_]\w*))\s+([A-Za-z_]\w*)\s*(?:=\s*(.+)|(\{.*\}))?\s*;\s*$/);
   if (!match) return line;
   const [, indent, declaredType, name, assignedValue, bracedValue] = match;
@@ -3104,14 +3988,23 @@ function inferAutoSnapshotVariableType(initializer, knownVariables, aliases = ne
 
 function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariables = null) {
   const variables = [];
-  const collapsed = line.replace(/\s*\n\s*/g, ' ').trim();
+  const collapsed = stripCppLineCommentPreservingStrings(line).replace(/\s*\n\s*/g, ' ').trim();
   if (!collapsed || collapsed.startsWith('//')) return variables;
 
-  const rangeMatch = collapsed.match(/^(?:for)\s*\(\s*([^:;]+?)\s+([A-Za-z_]\w*)\s*:\s*.+\)/);
+  const rangeMatch = collapsed.match(/^(?:for)\s*\(\s*([^;]+?[*&]*)\s+[*&]*\s*([A-Za-z_]\w*)\s*:\s*([A-Za-z_]\w*)\s*\)/);
   if (rangeMatch) {
     if (!collapsed.includes('{')) return variables;
-    const [, type, name] = rangeMatch;
-    if (isSnapshotSerializableCppType(type, aliases)) variables.push({ name, type, sameLineVisible: true });
+    const [, type, name, rangeName] = rangeMatch;
+    const normalizedType = normalizeCppType(type, aliases);
+    const normalizedAutoType = normalizedType
+      .replace(/\bconst\b/g, '')
+      .replace(/[&*]/g, '')
+      .trim();
+    const inferredType = normalizedAutoType === 'auto'
+      ? rangeForElementSnapshotType(rangeName, knownVariables, aliases)
+      : null;
+    const snapshotType = inferredType ?? type;
+    if (isSnapshotSerializableCppType(snapshotType, aliases)) variables.push({ name, type: snapshotType, sameLineVisible: true });
     return variables;
   }
 
@@ -3125,7 +4018,7 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariab
     return variables;
   }
 
-  const declarationMatch = collapsed.match(/^((?:(?:const|unsigned|long|short|signed)\s+)*(?:(?:std::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?(?:\s*<.+>)?(?:\s*\*)?))\s+(.+);\s*$/);
+  const declarationMatch = collapsed.match(/^((?:(?:const|unsigned|long|short|signed)\s+)*(?:(?:std::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?(?:\s*<.+>)?(?:\s*[*&])?))\s+(.+);\s*$/);
   if (!declarationMatch) return variables;
   const [, rawType, declaratorsSource] = declarationMatch;
   const rawTypeSerializable = isSnapshotSerializableCppType(rawType, aliases);
@@ -3134,8 +4027,13 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariab
   for (const declarator of splitTopLevelCommaList(declaratorsSource)) {
     const trimmedDeclarator = declarator.trim();
     const nameMatch = trimmedDeclarator.match(/^([A-Za-z_]\w*)\b/);
+    const rawArrayDeclarator = nameMatch
+      ? new RegExp(`^${escapeRegExp(nameMatch[1])}\\s*\\[`).test(trimmedDeclarator)
+      : false;
     const variableType = rawTypeSerializable
-      ? rawType
+      ? rawArrayDeclarator
+        ? `array<${rawType}>`
+        : rawType
       : inferAutoSnapshotVariableType(trimmedDeclarator.replace(/^([A-Za-z_]\w*)\s*=\s*/, ''), knownVariables, aliases);
     if (nameMatch) {
       if (!variableType) continue;
@@ -3152,6 +4050,7 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariab
 function instrumentCppSourceForTracing(source, functionName, options = {}) {
   const aliases = collectCppTypeAliases(source);
   const traceMemberNames = collectTraceContainerMemberNames(source, aliases, options.traceMemberClassName || 'Solution');
+  const traceMemberVariables = collectTraceContainerMemberVariables(source, aliases, options.traceMemberClassName || 'Solution');
   const targetSignature = parseMethodSignature(source, functionName);
   const skipTraceParameterNames = new Set(
     targetSignature.parameters
@@ -3172,6 +4071,23 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     );
   }
   targetSignature.customJsonReturn = sourceDeclaresCustomToJson(source, targetSignature.returnType);
+  if (options.traceMemberClassName) {
+    const constructorSignature = parseConstructorSignature(source, options.traceMemberClassName, aliases);
+    if (
+      constructorSignature &&
+      !signatures.some((signature) => signature.line === constructorSignature.line && signature.name === options.traceMemberClassName)
+    ) {
+      signatures.push({
+        ...constructorSignature,
+        name: options.traceMemberClassName,
+        bodyLine: constructorSignature.line,
+        customJsonReturn: false,
+        skipTraceParameterNames: new Set(),
+        skipScopedTraceNames: true,
+      });
+      signatures.sort((left, right) => left.line - right.line || left.bodyLine - right.bodyLine);
+    }
+  }
   if (!signatures.some((signature) => signature.line === targetSignature.line && signature.name === functionName)) {
     signatures.push({
       ...targetSignature,
@@ -3190,6 +4106,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   let multilineStatementDepth = 0;
   let multilineStatementContinuation = false;
   let localLambdaDepth = 0;
+  let pendingLocalLambdaBody = false;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
@@ -3221,7 +4138,10 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     const includeSnapshotsForActiveFrame = shouldEmitCppFrameSnapshots(activeSignature, insideLocalLambdaBody);
     const startsLocalLambdaBody =
       inFunctionBodyBeforeLine &&
-      /\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+[A-Za-z_]\w*\s*=\s*\[[^\]]*\]\s*\([^)]*\)\s*(?:->\s*[^{]+)?\{/.test(strippedLine);
+      (
+        /\b(?:auto|(?:std::)?function\s*<[^=;]+>)\s+[A-Za-z_]\w*\s*=\s*\[[^\]]*\]\s*\([^)]*\)\s*(?:->\s*[^{]+)?\{/.test(strippedLine) ||
+        (pendingLocalLambdaBody && startsCppLocalLambdaBodyLine(line))
+      );
     const unbracedControlHeaderLine = isUnbracedControlHeader(line, lines[index + 1] || '');
     const unbracedControlBodyLine = index > 0 && isUnbracedControlHeader(lines[index - 1] || '', line);
     const lineParenDelta = parenDeltaForLine(line);
@@ -3246,6 +4166,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     const startsMultilineStatement =
       inFunctionBodyBeforeLine &&
       multilineStatementDepth === 0 &&
+      multilineControlConditionDepth === 0 &&
       !multilineStatementContinuation &&
       !startsMultilineControlCondition &&
       (lineParenDelta > 0 || startsContinuationStatement) &&
@@ -3254,13 +4175,18 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       inFunctionBodyBeforeLine && (multilineStatementDepth > 0 || multilineStatementContinuation || startsMultilineStatement);
     const shouldInstrumentLine = inFunctionBodyBeforeLine &&
       !skipActiveInstrumentation &&
-      !unbracedControlHeaderLine &&
       !unbracedControlBodyLine &&
       !inMultilineControlCondition &&
       !inMultilineStatement &&
       !lineStartsElse &&
       shouldInstrumentCppLine(line);
-    if (shouldInstrumentLine) {
+    const shouldAnchorMultilineStatement =
+      startsMultilineStatement &&
+      (
+        shouldInstrumentCppLine(line) ||
+        (!strippedTrimmedLine.startsWith('{') && strippedTrimmedLine.includes('='))
+      );
+    if (shouldInstrumentLine || startsMultilineControlCondition || shouldAnchorMultilineStatement) {
       output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
       output.push(buildCurrentLineInstrumentation(lineNumber));
     }
@@ -3273,7 +4199,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     }
     if (inFunctionBodyBeforeLine && !skipActiveInstrumentation && !unbracedControlHeaderLine && !unbracedControlBodyLine && !inMultilineControlCondition && !inMultilineStatement) {
       const declaration = findContainerDeclarationSemicolon(lines, index);
-      if (declaration) {
+      if (strippedTrimmedLine && declaration) {
         const rewrittenDeclaration = rewriteTraceContainerLocal(declaration.text, lineNumber, aliases, source);
         if (rewrittenDeclaration !== declaration.text) {
           output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
@@ -3295,6 +4221,8 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         }
       }
       lineForDriver = rewriteTraceContainerLocal(line, lineNumber, aliases, source);
+      let lexicalAccessVariables = buildCppLexicalAccessVariables(frameStack);
+      lineForDriver = rewriteRangeForIndexedReads(lineForDriver, lineNumber, lexicalAccessVariables, aliases);
       const lineDelta = braceDeltaForLine(line);
       const declaredScopeDepth = activeFrame.depth + Math.max(0, lineDelta, /^\s*for\s*\(/.test(trimmedLine) ? 1 : 0);
       const postLineDepth = activeFrame.depth + Math.min(0, lineDelta);
@@ -3307,6 +4235,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
             sameLineVisible: Boolean(variable.sameLineVisible),
           });
         }
+        lexicalAccessVariables = buildCppLexicalAccessVariables(frameStack);
       }
       if (/\b(?:destroy|cleanup|deleteTree|deleteList)\s*\(/i.test(trimmedLine)) {
         for (const [name, variable] of activeFrame.variables) {
@@ -3327,7 +4256,11 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         lineForDriver = rewrittenControlLine;
       }
       let rewrittenControlLine;
-      rewrittenControlLine = rewriteBracedSingleLineControlBody(lineForDriver, lineNumber, postLineInstrumentation);
+      const preControlAccessVariables =
+        activeClassName === (options.traceMemberClassName || 'Solution')
+          ? new Map([...traceMemberVariables, ...lexicalAccessVariables])
+          : lexicalAccessVariables;
+      rewrittenControlLine = rewriteBracedSingleLineControlBody(lineForDriver, lineNumber, postLineInstrumentation, activeFrame.variables);
       postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
       lineForDriver = rewrittenControlLine;
       rewrittenControlLine = rewriteSingleLineControlBody(
@@ -3335,7 +4268,10 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         lineNumber,
         activeSignature.name,
         postLineInstrumentation,
-        lineStartsElse || nextSourceLine.startsWith('else') || /^(?:for|while)\s*\(/.test(trimmedLine)
+        lineStartsElse || nextSourceLine.startsWith('else') || /^(?:for|while)\s*\(/.test(trimmedLine),
+        activeFrame.variables,
+        preControlAccessVariables,
+        aliases
       );
       postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
       lineForDriver = rewrittenControlLine;
@@ -3344,10 +4280,23 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       if (allowReturnInstrumentation) {
         lineForDriver = rewriteReturnInstrumentation(lineForDriver, lineNumber, activeSignature, postLineInstrumentation);
       }
-      lineForDriver = rewriteVectorElementMemberAccess(lineForDriver, activeFrame.variables, aliases, traceMemberNames);
-      if (activeSignature.lambda) {
-        lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, activeFrame.variables, aliases, lineNumber);
-      }
+      lineForDriver = rewriteTraceContainerAliasNames(lineForDriver, lineNumber, activeFrame.variables, aliases);
+      lineForDriver = rewriteTraceContainerProxyReferences(lineForDriver, lexicalAccessVariables, aliases);
+      const accessVariables =
+        activeClassName === (options.traceMemberClassName || 'Solution')
+          ? new Map([...traceMemberVariables, ...lexicalAccessVariables])
+          : lexicalAccessVariables;
+      lineForDriver = rewriteVectorElementMemberAccess(lineForDriver, lexicalAccessVariables, aliases, traceMemberNames);
+      lineForDriver = rewriteKeyedIndexSourceInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
+      lineForDriver = rewriteNestedIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
+      lineForDriver = rewriteVectorIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
+      lineForDriver = rewritePlainIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
+      lineForDriver = rewritePlainContainerMutationInstrumentation(lineForDriver, lineNumber, accessVariables, aliases, source);
+      lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
+      lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
+      lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
+      lineForDriver = rewriteScalarWriteInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
+      lineForDriver = rewritePointerFieldReadInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
       const externalPostLineIsScopeSafe = /^\s*for\s*\([^;:]+:/.test(trimmedLine) && !trimmedLine.includes('{');
       if (postLineHandledInline && !externalPostLineIsScopeSafe) {
         lineForDriver = `${lineForDriver}\n#define __TC_POST_LINE_HANDLED_${lineNumber} 1`;
@@ -3376,6 +4325,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     output.push(lineForDriver);
     if (
       shouldInstrumentLine &&
+      !unbracedControlHeaderLine &&
       !lineForDriver.includes(`__TC_POST_LINE_HANDLED_${lineNumber}`) &&
       !nextSourceLine.startsWith('else') &&
       !/^\s*(?:return|break|continue)\b/.test(trimmedLine)
@@ -3404,6 +4354,13 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       localLambdaDepth += braceDeltaForLine(line);
       if (localLambdaDepth < 0) localLambdaDepth = 0;
     }
+    if (startsLocalLambdaBody) {
+      pendingLocalLambdaBody = false;
+    } else if (pendingLocalLambdaBody && /;\s*$/.test(strippedTrimmedLine)) {
+      pendingLocalLambdaBody = false;
+    } else if (inFunctionBodyBeforeLine && !insideLocalLambdaBody && startsCppLocalLambdaDeclaration(line)) {
+      pendingLocalLambdaBody = true;
+    }
 
     if (pendingSignature || frameStack.length > 0) {
       const delta = braceDeltaForLine(line);
@@ -3413,7 +4370,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         const variables = new Map();
         for (const parameter of nextSignature.parameters) {
           if (isSnapshotSerializableCppType(parameter.type, aliases)) {
-            variables.set(parameter.name, { type: parameter.type, scopeDepth: 1 });
+            variables.set(parameter.name, { type: parameter.type, scopeDepth: 1, parameter: true });
           }
         }
         frameStack.push({ signature: nextSignature, depth: delta, variables });
@@ -3422,10 +4379,18 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           (nextSignature.name !== functionName || nextSignature.line !== targetSignature.line) &&
           !nextSignature.skipInstrumentation
         ) {
+          if (functionName === CPP_SCRIPT_FUNCTION_NAME && nextSignature.lambda) {
+            nextSignature.callLine = nextSignature.line;
+          }
           output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
           output.push(buildCallInstrumentation(lineNumber, nextSignature));
         }
-      } else if (pendingSignature?.lambda && lineNumber >= pendingSignature.line && delta <= 0) {
+        const scopedTraceNames = buildScopedTraceNameInstrumentation(lineNumber, nextSignature, aliases);
+        if (scopedTraceNames) {
+          output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
+          output.push(scopedTraceNames);
+        }
+      } else if (pendingSignature && lineNumber >= pendingSignature.bodyLine && delta <= 0) {
         pendingSignature = null;
       } else if (frameStack.length > 0) {
         const frame = frameStack[frameStack.length - 1];
@@ -3480,7 +4445,7 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
       !skipTraceParameterNames.has(parameter.name) &&
       isTraceWrappedCppType(parameter.type, aliases) &&
       !hasUnsafeMapProxyAutoReferenceBinding(parameter.type, userCode, parameter.name, aliases);
-    const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : localCppType(parameter.type);
+    const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : materializedCppType(parameter.type, aliases);
     const dynamicInput = cppDynamicInputExpression(parameter, index, aliases);
     const value = dynamicInput ?? toCppLiteral(inputValueForParameter(inputs, parameter, index), parameter.type, aliases);
     usesDynamicInputs ||= dynamicInput !== null;
@@ -3679,17 +4644,56 @@ function parseProgramStdout(stdout, options = {}) {
 }
 
 function normalizeScriptTraceEvents(events, userLineCount) {
-  return events.flatMap((event) => {
+  const normalizeLine = (line) => {
+    if (typeof line !== 'number') return line;
+    // Script tracing wraps user code in `auto __tracecode_script_main() {`
+    // followed by a `#line` directive before instrumentation. Runtime events
+    // are emitted from the generated wrapper's physical source, so user code is
+    // shifted by two lines unless we map it back here.
+    return line > 2 ? line - 2 : line;
+  };
+  const normalizedEvents = events.flatMap((event) => {
     const normalized = { ...event };
     if (normalized.function === CPP_SCRIPT_FUNCTION_NAME) {
       normalized.function = '<script>';
     }
     if (typeof normalized.line === 'number') {
-      if (normalized.line > 1) normalized.line -= 1;
+      normalized.line = normalizeLine(normalized.line);
       if (normalized.line > userLineCount) return [];
+    }
+    if (Array.isArray(normalized.callStack)) {
+      normalized.callStack = normalized.callStack.map((frame) => ({
+        ...frame,
+        function: frame.function === CPP_SCRIPT_FUNCTION_NAME ? '<script>' : frame.function,
+        line: normalizeLine(frame.line),
+      }));
     }
     return [normalized];
   });
+  return reorderScriptCallSiteLines(normalizedEvents);
+}
+
+function reorderScriptCallSiteLines(events) {
+  const firstNestedCallIndex = events.findIndex((event) => event.kind === 'call' && event.function && event.function !== '<script>');
+  if (firstNestedCallIndex < 0) return events;
+  const nestedFunction = events[firstNestedCallIndex].function;
+  const returnIndex = events.findIndex((event, index) => index > firstNestedCallIndex && event.kind === 'return' && event.function === nestedFunction);
+  if (returnIndex < 0) return events;
+  const callSiteIndex = events.findIndex((event, index) => (
+    index > returnIndex &&
+    event.kind === 'line' &&
+    event.function === '<script>' &&
+    typeof event.line === 'number'
+  ));
+  if (callSiteIndex < 0) return events;
+  const callSiteLine = events[callSiteIndex].line;
+  const movedCallSite = { ...events[callSiteIndex] };
+  return [
+    ...events.slice(0, firstNestedCallIndex).filter((event) => !(event.kind === 'line' && event.function === '<script>' && event.line !== callSiteLine)),
+    movedCallSite,
+    ...events.slice(firstNestedCallIndex, callSiteIndex),
+    ...events.slice(callSiteIndex + 1),
+  ];
 }
 
 function cloneCppCallStack(stack) {

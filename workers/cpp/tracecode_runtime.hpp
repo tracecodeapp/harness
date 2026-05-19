@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <deque>
@@ -25,6 +26,45 @@
 #include <vector>
 
 namespace tracecode {
+
+template <typename T, typename = void>
+struct HasTraceNameAccessors : std::false_type {};
+
+template <typename T>
+struct HasTraceNameAccessors<
+    T,
+    std::void_t<
+        decltype(std::declval<const T&>().trace_name()),
+        decltype(std::declval<T&>().set_trace_name(std::declval<const char*>()))>> : std::true_type {};
+
+template <typename T>
+class ScopedTraceName {
+ public:
+  ScopedTraceName(T& value, const char* name) : value_(value) {
+    if constexpr (HasTraceNameAccessors<T>::value) {
+      previous_ = value_.trace_name();
+      value_.set_trace_name(name);
+    }
+  }
+
+  ScopedTraceName(const ScopedTraceName&) = delete;
+  ScopedTraceName& operator=(const ScopedTraceName&) = delete;
+
+  ~ScopedTraceName() {
+    if constexpr (HasTraceNameAccessors<T>::value) {
+      value_.set_trace_name(previous_.c_str());
+    }
+  }
+
+ private:
+  T& value_;
+  std::string previous_;
+};
+
+template <typename T>
+ScopedTraceName<T> scoped_trace_name(T& value, const char* name) {
+  return ScopedTraceName<T>(value, name);
+}
 
 inline int& trace_event_count() {
   static int value = 0;
@@ -84,6 +124,52 @@ inline bool& minimal_trace_enabled() {
 inline int& current_trace_line() {
   static int value = 1;
   return value;
+}
+
+inline int& scoped_trace_line() {
+  static int value = 0;
+  return value;
+}
+
+inline int trace_event_line() {
+  return scoped_trace_line() > 0 ? scoped_trace_line() : current_trace_line();
+}
+
+struct TraceLineScope {
+  int previous;
+
+  explicit TraceLineScope(int line) : previous(current_trace_line()) {
+    current_trace_line() = line;
+  }
+
+  ~TraceLineScope() {
+    current_trace_line() = previous;
+  }
+};
+
+template <typename Fn>
+inline auto with_trace_line(int line, Fn&& fn) -> decltype(fn()) {
+  TraceLineScope scope(line);
+  return fn();
+}
+
+struct ScopedTraceLineScope {
+  int previous;
+
+  explicit ScopedTraceLineScope(int line) : previous(scoped_trace_line()) {
+    scoped_trace_line() = line;
+  }
+
+  ~ScopedTraceLineScope() {
+    scoped_trace_line() = previous;
+  }
+};
+
+template <typename Fn>
+inline auto with_scoped_trace_line(int line, Fn&& fn) -> decltype(fn()) {
+  TraceLineScope line_scope(line);
+  ScopedTraceLineScope scoped_line_scope(line);
+  return fn();
 }
 
 struct TreeNode {
@@ -414,6 +500,26 @@ struct json_has_list_node_shape : std::false_type {};
 template <typename Node>
 struct json_has_list_node_shape<Node, std::void_t<decltype(std::declval<Node>().val), decltype(std::declval<Node>().next)>> : std::true_type {};
 
+template <typename Node, typename = void>
+struct json_has_member_val : std::false_type {};
+template <typename Node>
+struct json_has_member_val<Node, std::void_t<decltype(std::declval<Node>().val)>> : std::true_type {};
+
+template <typename Node, typename = void>
+struct json_has_member_is_end : std::false_type {};
+template <typename Node>
+struct json_has_member_is_end<Node, std::void_t<decltype(std::declval<Node>().isEnd)>> : std::true_type {};
+
+template <typename Node, typename = void>
+struct json_has_member_index : std::false_type {};
+template <typename Node>
+struct json_has_member_index<Node, std::void_t<decltype(std::declval<Node>().index)>> : std::true_type {};
+
+template <typename Node, typename = void>
+struct json_has_member_word : std::false_type {};
+template <typename Node>
+struct json_has_member_word<Node, std::void_t<decltype(std::declval<Node>().word)>> : std::true_type {};
+
 template <typename K>
 K json_key_to(const std::string& key) {
   if constexpr (std::is_same_v<K, std::string>) {
@@ -643,6 +749,20 @@ inline std::string to_json(const char* value) {
   return to_json(std::string(value));
 }
 
+inline std::string no_arg_mutation_args_json(const char* method) {
+  if (method == nullptr) return "";
+  std::string name(method);
+  if (
+    name == "clear" ||
+    name == "pop" ||
+    name == "pop_back" ||
+    name == "pop_front"
+  ) {
+    return ",\"args\":[]";
+  }
+  return "";
+}
+
 inline std::string to_json(char value) {
   return to_json(std::string(1, value));
 }
@@ -714,13 +834,19 @@ inline std::string tracecode_ref_id(std::unordered_map<const void*, std::string>
   return std::string("ref-") + std::to_string(refs.size());
 }
 
+inline std::string tracecode_pointer_ref_id(const void* ptr) {
+  std::ostringstream stream;
+  stream << "ptr-" << reinterpret_cast<std::uintptr_t>(ptr);
+  return stream.str();
+}
+
 inline std::string to_json_tree_node(TreeNode* node, std::unordered_map<const void*, std::string>& refs) {
   if (node == nullptr) return "null";
   const auto found = refs.find(node);
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_ref_id(refs);
+  const std::string id = tracecode_pointer_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"TreeNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -737,6 +863,14 @@ inline std::string to_json(const TreeNode* node) {
   return to_json(const_cast<TreeNode*>(node));
 }
 
+inline std::string to_json(TreeNode& node) {
+  return to_json(&node);
+}
+
+inline std::string to_json(const TreeNode& node) {
+  return to_json(&node);
+}
+
 template <typename Node>
 auto to_json_tree_like_node(Node* node, std::unordered_map<const void*, std::string>& refs) ->
   decltype(node->val, node->left, node->right, std::string()) {
@@ -745,7 +879,7 @@ auto to_json_tree_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_ref_id(refs);
+  const std::string id = tracecode_pointer_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"TreeNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -760,6 +894,16 @@ auto to_json(Node* node) -> decltype(node->val, node->left, node->right, std::st
 }
 
 template <typename Node>
+auto to_json(Node& node) -> decltype(node.val, node.left, node.right, std::string()) {
+  return to_json(&node);
+}
+
+template <typename Node>
+auto to_json(const Node& node) -> decltype(node.val, node.left, node.right, std::string()) {
+  return to_json(const_cast<Node*>(&node));
+}
+
+template <typename Node>
 auto to_json_quad_like_node(Node* node, std::unordered_map<const void*, std::string>& refs) ->
   decltype(node->val, node->isLeaf, node->topLeft, node->topRight, node->bottomLeft, node->bottomRight, std::string()) {
   if (node == nullptr) return "null";
@@ -767,7 +911,7 @@ auto to_json_quad_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_ref_id(refs);
+  const std::string id = tracecode_pointer_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"Node\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -792,7 +936,7 @@ auto to_json_nary_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_ref_id(refs);
+  const std::string id = tracecode_pointer_ref_id(node);
   refs[node] = id;
   std::string children_json = "[";
   bool first = true;
@@ -813,13 +957,78 @@ auto to_json(Node* node) -> decltype(node->val, node->children, std::string()) {
   return to_json_nary_like_node(node, refs);
 }
 
+template <typename Node>
+std::string to_json_trie_like_node(Node* node, std::unordered_map<const void*, std::string>& refs);
+
+template <typename Node>
+std::string to_json_trie_children(const std::unordered_map<char, Node*>& children, std::unordered_map<const void*, std::string>& refs) {
+  std::string json = "{";
+  bool first = true;
+  for (const auto& entry : children) {
+    if (entry.second == nullptr) continue;
+    if (!first) json += ",";
+    first = false;
+    json += to_json(std::string(1, entry.first)) + ":" + to_json_trie_like_node(entry.second, refs);
+  }
+  json += "}";
+  return json;
+}
+
+template <typename Node, std::size_t Size>
+std::string to_json_trie_children(const std::array<Node*, Size>& children, std::unordered_map<const void*, std::string>& refs) {
+  std::string json = "{";
+  bool first = true;
+  for (std::size_t index = 0; index < children.size(); ++index) {
+    if (children[index] == nullptr) continue;
+    if (!first) json += ",";
+    first = false;
+    const std::string key = Size == 26 ? std::string(1, static_cast<char>('a' + index)) : std::to_string(index);
+    json += to_json(key) + ":" + to_json_trie_like_node(children[index], refs);
+  }
+  json += "}";
+  return json;
+}
+
+template <typename Node>
+std::string to_json_trie_like_node(Node* node, std::unordered_map<const void*, std::string>& refs) {
+  if (node == nullptr) return "null";
+  const auto found = refs.find(node);
+  if (found != refs.end()) {
+    return std::string("{\"__ref__\":") + to_json(found->second) + "}";
+  }
+  const std::string id = tracecode_pointer_ref_id(node);
+  refs[node] = id;
+  std::string json = std::string("{\"__type__\":\"TrieNode\",\"__id__\":") + to_json(id) +
+    ",\"children\":" + to_json_trie_children(node->children, refs);
+  if constexpr (json_has_member_is_end<Node>::value) {
+    json += std::string(",\"isEnd\":") + to_json(node->isEnd);
+  }
+  if constexpr (json_has_member_index<Node>::value) {
+    json += std::string(",\"index\":") + to_json(node->index);
+  }
+  if constexpr (json_has_member_word<Node>::value) {
+    json += std::string(",\"word\":") + to_json(node->word);
+  }
+  json += "}";
+  return json;
+}
+
+template <typename Node>
+auto to_json(Node* node) -> std::enable_if_t<
+  !json_has_member_val<Node>::value,
+  decltype(node->children, std::string())
+> {
+  std::unordered_map<const void*, std::string> refs;
+  return to_json_trie_like_node(node, refs);
+}
+
 inline std::string to_json_list_node(ListNode* node, std::unordered_map<const void*, std::string>& refs) {
   if (node == nullptr) return "null";
   const auto found = refs.find(node);
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_ref_id(refs);
+  const std::string id = tracecode_pointer_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"ListNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -835,6 +1044,14 @@ inline std::string to_json(const ListNode* node) {
   return to_json(const_cast<ListNode*>(node));
 }
 
+inline std::string to_json(ListNode& node) {
+  return to_json(&node);
+}
+
+inline std::string to_json(const ListNode& node) {
+  return to_json(&node);
+}
+
 template <typename Node>
 auto to_json_list_like_node(Node* node, std::unordered_map<const void*, std::string>& refs) ->
   decltype(node->val, node->next, std::string()) {
@@ -843,7 +1060,7 @@ auto to_json_list_like_node(Node* node, std::unordered_map<const void*, std::str
   if (found != refs.end()) {
     return std::string("{\"__ref__\":") + to_json(found->second) + "}";
   }
-  const std::string id = tracecode_ref_id(refs);
+  const std::string id = tracecode_pointer_ref_id(node);
   refs[node] = id;
   return std::string("{\"__type__\":\"ListNode\",\"__id__\":") + to_json(id) +
     ",\"val\":" + to_json(node->val) +
@@ -854,6 +1071,16 @@ template <typename Node>
 auto to_json(Node* node) -> decltype(node->val, node->next, std::string()) {
   std::unordered_map<const void*, std::string> refs;
   return to_json_list_like_node(node, refs);
+}
+
+template <typename Node>
+auto to_json(Node& node) -> decltype(node.val, node.next, std::string()) {
+  return to_json(&node);
+}
+
+template <typename Node>
+auto to_json(const Node& node) -> decltype(node.val, node.next, std::string()) {
+  return to_json(const_cast<Node*>(&node));
 }
 
 template <typename T>
@@ -875,7 +1102,13 @@ template <typename T>
 std::string to_json(const std::vector<T>& values);
 
 template <typename T>
-std::enable_if_t<!std::is_arithmetic_v<T> && !std::is_pointer_v<T> && !std::is_convertible_v<T, std::string>, std::string>
+std::enable_if_t<
+  !std::is_arithmetic_v<T> &&
+  !std::is_pointer_v<T> &&
+  !std::is_convertible_v<T, std::string> &&
+  !json_has_tree_node_shape<T>::value &&
+  !json_has_list_node_shape<T>::value,
+  std::string>
 to_json(const T&);
 
 template <typename A, typename B>
@@ -901,10 +1134,6 @@ template <typename... Values>
 std::string to_json(const std::variant<Values...>& value) {
   return std::visit([](const auto& item) { return to_json(item); }, value);
 }
-
-template <typename T>
-std::enable_if_t<!std::is_arithmetic_v<T> && !std::is_pointer_v<T> && !std::is_convertible_v<T, std::string>, std::string>
-to_json(const T&);
 
 template <typename T>
 std::string to_json(const std::optional<T>& value) {
@@ -938,9 +1167,28 @@ std::string to_json(const std::priority_queue<T, Container, Compare>& values) {
 }
 
 template <typename T>
-std::enable_if_t<!std::is_arithmetic_v<T> && !std::is_pointer_v<T> && !std::is_convertible_v<T, std::string>, std::string>
+std::enable_if_t<
+  !std::is_arithmetic_v<T> &&
+  !std::is_pointer_v<T> &&
+  !std::is_convertible_v<T, std::string> &&
+  !json_has_tree_node_shape<T>::value &&
+  !json_has_list_node_shape<T>::value,
+  std::string>
 to_json(const T&) {
   return "{}";
+}
+
+inline std::string mutation_args_json() {
+  return "[]";
+}
+
+template <typename First, typename... Rest>
+std::string mutation_args_json(const First& first, const Rest&... rest) {
+  std::string json = "[";
+  json += to_json(first);
+  ((json += "," + to_json(rest)), ...);
+  json += "]";
+  return json;
 }
 
 template <typename T, typename Hash, typename Equal, typename Allocator>
@@ -954,6 +1202,9 @@ std::string to_json(const std::map<K, V, Compare, Allocator>& values);
 
 template <typename T, std::size_t Size>
 std::string to_json(const std::array<T, Size>& values);
+
+template <typename T, std::size_t Size>
+std::string to_json(const T (&values)[Size]);
 
 template <typename T>
 std::string to_json(const std::deque<T>& values);
@@ -973,6 +1224,17 @@ template <typename T, std::size_t Size>
 std::string to_json(const std::array<T, Size>& values) {
   std::string json = "[";
   for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index > 0) json += ",";
+    json += to_json(values[index]);
+  }
+  json += "]";
+  return json;
+}
+
+template <typename T, std::size_t Size>
+std::string to_json(const T (&values)[Size]) {
+  std::string json = "[";
+  for (std::size_t index = 0; index < Size; ++index) {
     if (index > 0) json += ",";
     json += to_json(values[index]);
   }
@@ -1024,8 +1286,31 @@ inline std::string target_json(const std::string& name, std::size_t index) {
   return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + std::to_string(index) + "]}";
 }
 
+inline std::string index_sources_json(const char* source) {
+  if (source && *source) {
+    return std::string("[") + to_json(std::string(source)) + "]";
+  }
+  return "[null]";
+}
+
+inline std::string index_sources_json(const char* outer_source, const char* inner_source) {
+  return std::string("[") +
+    ((outer_source && *outer_source) ? to_json(std::string(outer_source)) : "null") +
+    "," +
+    ((inner_source && *inner_source) ? to_json(std::string(inner_source)) : "null") +
+    "]";
+}
+
+inline std::string target_json_with_index_source(const std::string& name, std::size_t index, const char* source) {
+  return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + std::to_string(index) + "],\"indexSources\":" + index_sources_json(source) + "}";
+}
+
 inline std::string target_json(const std::string& name, std::size_t outer, std::size_t inner) {
   return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + std::to_string(outer) + "," + std::to_string(inner) + "]}";
+}
+
+inline std::string target_json_with_index_sources(const std::string& name, std::size_t outer, std::size_t inner, const char* outer_source, const char* inner_source) {
+  return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + std::to_string(outer) + "," + std::to_string(inner) + "],\"indexSources\":" + index_sources_json(outer_source, inner_source) + "}";
 }
 
 template <typename K>
@@ -1033,14 +1318,171 @@ inline std::string target_json_key(const std::string& name, const K& key) {
   return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + to_json(key) + "]}";
 }
 
+template <typename K>
+inline std::string target_json_key_with_index_source(const std::string& name, const K& key, const char* source) {
+  return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + to_json(key) + "],\"indexSources\":" + index_sources_json(source) + "}";
+}
+
 template <typename Container, typename Index>
-inline auto trace_index_read(const Container& container, const std::string& name, Index index, int line) {
-  const auto& value = container[index];
+inline decltype(auto) trace_index_read_value(const Container& container, Index index) {
+  if constexpr (requires { container.at(index); }) {
+    return container.at(index);
+  } else {
+    return container[index];
+  }
+}
+
+template <typename Container, typename Index>
+inline auto trace_index_read(const Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
+  auto value = trace_index_read_value(container, index);
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
     trace_event_count() += 1;
     write_trace_event_json_raw(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(name, index) +
+      ",\"target\":" + target_json_key_with_index_source(name, index, index_source) +
+      ",\"value\":" + to_json(value) + "}"
+    );
+  }
+  return value;
+}
+
+template <typename Container, typename Index>
+inline void emit_index_write_value(const std::string& name, const Container& container, Index index, int line, const char* index_source = nullptr) {
+  if (minimal_trace_enabled() || !check_trace_budget(line)) return;
+  auto value = trace_index_read_value(container, index);
+  trace_event_count() += 1;
+  write_trace_event_json_raw(
+    std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
+    ",\"target\":" + target_json_key_with_index_source(name, index, index_source) +
+    ",\"value\":" + to_json(value) + "}"
+  );
+  emit_snapshot_value(name, container, line);
+}
+
+template <typename Container>
+inline void emit_container_mutate_value(const std::string& name, const Container& container, const char* method, int line, const std::string& args_json = "") {
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json(name) +
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? std::string(",\"args\":[]") : std::string(",\"args\":") + args_json) +
+      "}"
+    );
+  }
+  emit_snapshot_value(name, container, line);
+}
+
+template <typename Container>
+class StdIndexElementRef {
+ public:
+  using value_type = typename Container::value_type;
+
+  StdIndexElementRef(Container& owner, std::string name, std::size_t index, const char* source)
+      : owner_(owner), name_(std::move(name)), index_(index), source_(source) {}
+
+  operator value_type() const {
+    emit_read();
+    return static_cast<value_type>(owner_[index_]);
+  }
+
+  StdIndexElementRef& operator=(const value_type& value) {
+    owner_[index_] = value;
+    emit_write();
+    return *this;
+  }
+
+  StdIndexElementRef& operator=(const StdIndexElementRef& other) {
+    value_type value = other;
+    return (*this = value);
+  }
+
+  StdIndexElementRef& operator+=(const value_type& value) {
+    emit_read();
+    owner_[index_] += value;
+    emit_write();
+    return *this;
+  }
+
+  StdIndexElementRef& operator-=(const value_type& value) {
+    emit_read();
+    owner_[index_] -= value;
+    emit_write();
+    return *this;
+  }
+
+  StdIndexElementRef& operator++() {
+    emit_read();
+    ++owner_[index_];
+    emit_write();
+    return *this;
+  }
+
+  value_type operator++(int) {
+    emit_read();
+    value_type old = static_cast<value_type>(owner_[index_]);
+    owner_[index_] = static_cast<value_type>(old + 1);
+    emit_write();
+    return old;
+  }
+
+  StdIndexElementRef& operator--() {
+    emit_read();
+    --owner_[index_];
+    emit_write();
+    return *this;
+  }
+
+  value_type operator--(int) {
+    emit_read();
+    value_type old = static_cast<value_type>(owner_[index_]);
+    owner_[index_] = static_cast<value_type>(old - 1);
+    emit_write();
+    return old;
+  }
+
+ private:
+  void emit_read() const {
+    const int line = trace_event_line();
+    if (!minimal_trace_enabled() && check_trace_budget(line)) {
+      trace_event_count() += 1;
+      write_trace_event_json_raw(
+        std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+        ",\"target\":" + target_json_with_index_source(name_, index_, source_) +
+        ",\"value\":" + to_json(static_cast<value_type>(owner_[index_])) + "}"
+      );
+    }
+  }
+
+  void emit_write() {
+    const int line = trace_event_line();
+    if (!minimal_trace_enabled() && check_trace_budget(line)) {
+      trace_event_count() += 1;
+      write_trace_event_json_raw(
+        std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
+        ",\"target\":" + target_json_with_index_source(name_, index_, source_) +
+        ",\"value\":" + to_json(static_cast<value_type>(owner_[index_])) + "}"
+      );
+    }
+    emit_snapshot_value(name_, owner_, line);
+  }
+
+  Container& owner_;
+  std::string name_;
+  std::size_t index_;
+  const char* source_ = nullptr;
+};
+
+template <typename Container, typename OuterIndex, typename InnerIndex>
+inline auto trace_nested_index_read(const Container& container, const std::string& name, OuterIndex outer, InnerIndex inner, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) {
+  const auto& row = trace_index_read_value(container, outer);
+  const auto& value = row[inner];
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_with_index_sources(name, outer, inner, outer_source, inner_source) +
       ",\"value\":" + to_json(value) + "}"
     );
   }
@@ -1079,6 +1521,419 @@ class NestedVectorElementRef;
 
 template <typename Map>
 class NestedMapElementRef;
+
+template <typename Container>
+class IndexedRangeReadIterator {
+ public:
+  using RawIterator = decltype(std::declval<Container&>().raw().begin());
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = typename std::iterator_traits<RawIterator>::value_type;
+  using reference = typename std::iterator_traits<RawIterator>::reference;
+  using pointer = typename std::iterator_traits<RawIterator>::pointer;
+  using iterator_category = std::input_iterator_tag;
+
+  IndexedRangeReadIterator(Container& container, RawIterator iterator, std::size_t index, int line, const char* binding_name)
+      : container_(container), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name) {}
+
+  reference operator*() const {
+    if (binding_name_ && *binding_name_) {
+      container_.emit_iteration_bind_read(index_, line_, binding_name_);
+    } else {
+      container_.emit_read(index_, line_);
+    }
+    return *iterator_;
+  }
+
+  pointer operator->() const {
+    if (binding_name_ && *binding_name_) {
+      container_.emit_iteration_bind_read(index_, line_, binding_name_);
+    } else {
+      container_.emit_read(index_, line_);
+    }
+    return &(*iterator_);
+  }
+
+  IndexedRangeReadIterator& operator++() {
+    ++iterator_;
+    ++index_;
+    return *this;
+  }
+
+  IndexedRangeReadIterator operator++(int) {
+    IndexedRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const IndexedRangeReadIterator& other) const {
+    return iterator_ == other.iterator_;
+  }
+
+  bool operator!=(const IndexedRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  Container& container_;
+  RawIterator iterator_;
+  std::size_t index_;
+  int line_;
+  const char* binding_name_;
+};
+
+template <typename Container>
+class IndexedRangeReadable {
+ public:
+  explicit IndexedRangeReadable(Container& container, int line, const char* binding_name = nullptr)
+      : container_(container), line_(line), binding_name_(binding_name) {}
+
+  auto begin() {
+    return IndexedRangeReadIterator<Container>(container_, container_.raw().begin(), 0, line_, binding_name_);
+  }
+
+  auto end() {
+    return IndexedRangeReadIterator<Container>(container_, container_.raw().end(), container_.raw().size(), line_, binding_name_);
+  }
+
+ private:
+  Container& container_;
+  int line_;
+  const char* binding_name_;
+};
+
+template <typename T>
+class IndexedNestedRangeReadIterator {
+ public:
+  using Row = std::vector<T>;
+  using RawIterator = typename Row::iterator;
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = typename std::iterator_traits<RawIterator>::value_type;
+  using reference = typename std::iterator_traits<RawIterator>::reference;
+  using pointer = typename std::iterator_traits<RawIterator>::pointer;
+  using iterator_category = std::input_iterator_tag;
+
+  IndexedNestedRangeReadIterator(Row& row, RawIterator iterator, const std::string& name, std::size_t outer, std::size_t inner, int line, const char* outer_source, const char* binding_name)
+      : row_(row), iterator_(iterator), name_(name), outer_(outer), inner_(inner), line_(line), outer_source_(outer_source), binding_name_(binding_name) {}
+
+  reference operator*() const {
+    emit_iteration_bind_read();
+    return *iterator_;
+  }
+
+  pointer operator->() const {
+    emit_iteration_bind_read();
+    return &(*iterator_);
+  }
+
+  IndexedNestedRangeReadIterator& operator++() {
+    ++iterator_;
+    ++inner_;
+    return *this;
+  }
+
+  IndexedNestedRangeReadIterator operator++(int) {
+    IndexedNestedRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const IndexedNestedRangeReadIterator& other) const {
+    return iterator_ == other.iterator_;
+  }
+
+  bool operator!=(const IndexedNestedRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  void emit_iteration_bind_read() const {
+    if (minimal_trace_enabled() || !check_trace_budget(line_)) return;
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line_) +
+      ",\"target\":" + target_json_with_index_sources(name_, outer_, inner_, outer_source_, nullptr) +
+      ",\"value\":" + to_json(*iterator_) +
+      ((binding_name_ && *binding_name_)
+        ? std::string(",\"binding\":{\"kind\":\"iteration\",\"variable\":") + to_json(binding_name_) + "}"
+        : std::string("")) +
+      "}"
+    );
+  }
+
+  Row& row_;
+  RawIterator iterator_;
+  std::string name_;
+  std::size_t outer_;
+  mutable std::size_t inner_;
+  int line_;
+  const char* outer_source_;
+  const char* binding_name_;
+};
+
+template <typename T>
+class IndexedNestedRangeReadable {
+ public:
+  IndexedNestedRangeReadable(std::vector<T>& row, const std::string& name, std::size_t outer, int line, const char* outer_source = nullptr, const char* binding_name = nullptr)
+      : row_(row), name_(name), outer_(outer), line_(line), outer_source_(outer_source), binding_name_(binding_name) {}
+
+  auto begin() {
+    return IndexedNestedRangeReadIterator<T>(row_, row_.begin(), name_, outer_, 0, line_, outer_source_, binding_name_);
+  }
+
+  auto end() {
+    return IndexedNestedRangeReadIterator<T>(row_, row_.end(), name_, outer_, row_.size(), line_, outer_source_, binding_name_);
+  }
+
+ private:
+  std::vector<T>& row_;
+  std::string name_;
+  std::size_t outer_;
+  int line_;
+  const char* outer_source_;
+  const char* binding_name_;
+};
+
+template <typename Container>
+class KeyedRangeReadIterator {
+ public:
+  using RawIterator = decltype(std::declval<Container&>().raw().begin());
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = typename std::iterator_traits<RawIterator>::value_type;
+  using reference = typename std::iterator_traits<RawIterator>::reference;
+  using pointer = typename std::iterator_traits<RawIterator>::pointer;
+  using iterator_category = std::input_iterator_tag;
+
+  KeyedRangeReadIterator(Container& container, RawIterator iterator, int line, const char* key_binding_name)
+      : container_(container), iterator_(iterator), line_(line), key_binding_name_(key_binding_name) {}
+
+  reference operator*() const {
+    emit_iteration_bind_read();
+    return *iterator_;
+  }
+
+  pointer operator->() const {
+    emit_iteration_bind_read();
+    return &(*iterator_);
+  }
+
+  KeyedRangeReadIterator& operator++() {
+    ++iterator_;
+    return *this;
+  }
+
+  KeyedRangeReadIterator operator++(int) {
+    KeyedRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const KeyedRangeReadIterator& other) const {
+    return iterator_ == other.iterator_;
+  }
+
+  bool operator!=(const KeyedRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  void emit_iteration_bind_read() const {
+    if (key_binding_name_ && *key_binding_name_) {
+      container_.emit_iteration_bind_read(iterator_->first, iterator_->second, line_, key_binding_name_);
+    } else {
+      container_.emit_read(iterator_->first, line_, to_json(iterator_->second));
+    }
+  }
+
+  Container& container_;
+  RawIterator iterator_;
+  int line_;
+  const char* key_binding_name_;
+};
+
+template <typename Container>
+class KeyedRangeReadable {
+ public:
+  KeyedRangeReadable(Container& container, int line, const char* key_binding_name = nullptr)
+      : container_(container), line_(line), key_binding_name_(key_binding_name) {}
+
+  auto begin() {
+    return KeyedRangeReadIterator<Container>(container_, container_.raw().begin(), line_, key_binding_name_);
+  }
+
+  auto end() {
+    return KeyedRangeReadIterator<Container>(container_, container_.raw().end(), line_, key_binding_name_);
+  }
+
+ private:
+  Container& container_;
+  int line_;
+  const char* key_binding_name_;
+};
+
+class IndexedStringRangeReadIterator {
+ public:
+  using RawIterator = std::string::iterator;
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = typename std::iterator_traits<RawIterator>::value_type;
+  using reference = typename std::iterator_traits<RawIterator>::reference;
+  using pointer = typename std::iterator_traits<RawIterator>::pointer;
+  using iterator_category = std::input_iterator_tag;
+
+  IndexedStringRangeReadIterator(std::string& value, RawIterator iterator, std::size_t index, int line, const char* binding_name, const char* source_name)
+      : value_(value), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+
+  reference operator*() const {
+    emit_read();
+    return *iterator_;
+  }
+
+  pointer operator->() const {
+    emit_read();
+    return &(*iterator_);
+  }
+
+  IndexedStringRangeReadIterator& operator++() {
+    ++iterator_;
+    ++index_;
+    return *this;
+  }
+
+  IndexedStringRangeReadIterator operator++(int) {
+    IndexedStringRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const IndexedStringRangeReadIterator& other) const {
+    return iterator_ == other.iterator_;
+  }
+
+  bool operator!=(const IndexedStringRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  std::string& value_;
+  RawIterator iterator_;
+  std::size_t index_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+
+  void emit_read() const {
+    const char item = *iterator_;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line_) +
+      ",\"target\":" + target_json_with_index_source(source_name_ ? source_name_ : "", index_, nullptr) +
+      ",\"value\":" + to_json(std::string(1, item)) +
+      ((binding_name_ && *binding_name_)
+        ? std::string(",\"binding\":{\"kind\":\"iteration\",\"variable\":") + to_json(binding_name_) + "}"
+        : std::string("")) +
+      "}",
+      line_
+    );
+  }
+};
+
+class IndexedStringRangeReadable {
+ public:
+  explicit IndexedStringRangeReadable(std::string& value, int line, const char* binding_name = nullptr, const char* source_name = nullptr)
+      : value_(value), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+
+  auto begin() {
+    return IndexedStringRangeReadIterator(value_, value_.begin(), 0, line_, binding_name_, source_name_);
+  }
+
+  auto end() {
+    return IndexedStringRangeReadIterator(value_, value_.end(), value_.size(), line_, binding_name_, source_name_);
+  }
+
+ private:
+  std::string& value_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+};
+
+class IndexedConstStringRangeReadIterator {
+ public:
+  using RawIterator = std::string::const_iterator;
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = char;
+  using reference = char;
+  using pointer = const char*;
+  using iterator_category = std::input_iterator_tag;
+
+  IndexedConstStringRangeReadIterator(const std::string& value, RawIterator iterator, std::size_t index, int line, const char* binding_name, const char* source_name)
+      : value_(value), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+
+  char operator*() const {
+    emit_read();
+    return *iterator_;
+  }
+
+  IndexedConstStringRangeReadIterator& operator++() {
+    ++iterator_;
+    ++index_;
+    return *this;
+  }
+
+  IndexedConstStringRangeReadIterator operator++(int) {
+    IndexedConstStringRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const IndexedConstStringRangeReadIterator& other) const {
+    return iterator_ == other.iterator_;
+  }
+
+  bool operator!=(const IndexedConstStringRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  const std::string& value_;
+  RawIterator iterator_;
+  std::size_t index_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+
+  void emit_read() const {
+    const char item = *iterator_;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line_) +
+      ",\"target\":" + target_json_with_index_source(source_name_ ? source_name_ : "", index_, nullptr) +
+      ",\"value\":" + to_json(std::string(1, item)) +
+      ((binding_name_ && *binding_name_)
+        ? std::string(",\"binding\":{\"kind\":\"iteration\",\"variable\":") + to_json(binding_name_) + "}"
+        : std::string("")) +
+      "}",
+      line_
+    );
+  }
+};
+
+class IndexedConstStringRangeReadable {
+ public:
+  explicit IndexedConstStringRangeReadable(const std::string& value, int line, const char* binding_name = nullptr, const char* source_name = nullptr)
+      : value_(value), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+
+  auto begin() const {
+    return IndexedConstStringRangeReadIterator(value_, value_.begin(), 0, line_, binding_name_, source_name_);
+  }
+
+  auto end() const {
+    return IndexedConstStringRangeReadIterator(value_, value_.end(), value_.size(), line_, binding_name_, source_name_);
+  }
+
+ private:
+  const std::string& value_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+};
 
 template <typename T>
 class Vector : public std::vector<T> {
@@ -1144,49 +1999,53 @@ class Vector : public std::vector<T> {
 
   Vector& operator=(const std::vector<T>& values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Vector& operator=(const Vector<T>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Vector& operator=(Vector<T>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Vector& operator=(std::initializer_list<T> values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
-  std::size_t size() const { return values_.size(); }
+  std::size_t size() const {
+    const auto result = values_.size();
+    emit_metadata_read("size", result, trace_event_line());
+    return result;
+  }
   bool empty() const { return values_.empty(); }
   std::size_t capacity() const { return values_.capacity(); }
 
   void reserve(std::size_t count) {
     values_.reserve(count);
-    emit_mutate("reserve", current_trace_line());
   }
 
   template <typename... Args>
   T& emplace_back(Args&&... args) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
+    auto args_json = mutation_args_json(args...);
     T& result = values_.emplace_back(std::forward<Args>(args)...);
-    emit_mutate("emplace_back", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("emplace_back", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
     return result;
   }
 
@@ -1194,18 +2053,22 @@ class Vector : public std::vector<T> {
     return VectorElementRef<T>(*this, index);
   }
 
+  VectorElementRef<T> with_index_source(std::size_t index, const char* source) {
+    return VectorElementRef<T>(*this, index, source);
+  }
+
   const T& operator[](std::size_t index) const {
-    emit_read(index, current_trace_line());
+    emit_read(index, trace_event_line());
     return values_[index];
   }
 
   T& at(std::size_t index) {
-    emit_read(index, current_trace_line());
+    emit_read(index, trace_event_line());
     return values_.at(index);
   }
 
   const T& at(std::size_t index) const {
-    emit_read(index, current_trace_line());
+    emit_read(index, trace_event_line());
     return values_.at(index);
   }
 
@@ -1214,7 +2077,7 @@ class Vector : public std::vector<T> {
   }
 
   const T& front() const {
-    emit_read(0, current_trace_line());
+    emit_read(0, trace_event_line());
     return values_.front();
   }
 
@@ -1223,129 +2086,131 @@ class Vector : public std::vector<T> {
   }
 
   const T& back() const {
-    emit_read(values_.size() - 1, current_trace_line());
+    emit_read(values_.size() - 1, trace_event_line());
     return values_.back();
   }
 
   void push_back(const T& value) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.push_back(value);
-    emit_mutate("push_back", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push_back", trace_event_line(), mutation_args_json(value));
+    emit_snapshot(trace_event_line());
   }
 
   void push_back(T&& value) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
+    auto args_json = mutation_args_json(value);
     values_.push_back(std::move(value));
-    emit_mutate("push_back", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push_back", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
   }
 
   void pop_back() {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.pop_back();
-    emit_mutate("pop_back", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("pop_back", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void resize(std::size_t count) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.resize(count);
-    emit_mutate("resize", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("resize", trace_event_line(), mutation_args_json(count));
+    emit_snapshot(trace_event_line());
   }
 
   void resize(std::size_t count, const T& value) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.resize(count, value);
-    emit_mutate("resize", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("resize", trace_event_line(), mutation_args_json(count, value));
+    emit_snapshot(trace_event_line());
   }
 
   void clear() {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.clear();
-    emit_mutate("clear", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("clear", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void swap(Vector<T>& other) {
-    emit_receiver_read(current_trace_line());
-    other.emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
+    other.emit_receiver_read(trace_event_line());
     values_.swap(other.values_);
-    emit_mutate("swap", current_trace_line());
-    other.emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
-    other.emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    other.emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
+    other.emit_snapshot(trace_event_line());
   }
 
   void swap(std::vector<T>& other) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.swap(other);
-    emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void assign(std::size_t count, const T& value) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.assign(count, value);
-    emit_mutate("assign", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("assign", trace_event_line(), mutation_args_json(count, value));
+    emit_snapshot(trace_event_line());
   }
 
   void assign(std::initializer_list<T> values) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     values_.assign(values);
-    emit_mutate("assign", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("assign", trace_event_line(), mutation_args_json(std::vector<T>(values)));
+    emit_snapshot(trace_event_line());
   }
 
   iterator insert(const_iterator position, const T& value) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     auto result = values_.insert(position, value);
-    emit_mutate("insert", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("insert", trace_event_line(), mutation_args_json(value));
+    emit_snapshot(trace_event_line());
     return result;
   }
 
   iterator insert(const_iterator position, T&& value) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
+    auto args_json = mutation_args_json(value);
     auto result = values_.insert(position, std::move(value));
-    emit_mutate("insert", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("insert", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
     return result;
   }
 
   iterator insert(const_iterator position, std::size_t count, const T& value) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     auto result = values_.insert(position, count, value);
-    emit_mutate("insert", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("insert", trace_event_line(), mutation_args_json(count, value));
+    emit_snapshot(trace_event_line());
     return result;
   }
 
   template <typename InputIt>
   iterator insert(const_iterator position, InputIt first, InputIt last) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     auto result = values_.insert(position, first, last);
-    emit_mutate("insert", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("insert", trace_event_line());
+    emit_snapshot(trace_event_line());
     return result;
   }
 
   iterator erase(const_iterator position) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     auto result = values_.erase(position);
-    emit_mutate("erase", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("erase", trace_event_line());
+    emit_snapshot(trace_event_line());
     return result;
   }
 
   iterator erase(const_iterator first, const_iterator last) {
-    emit_receiver_read(current_trace_line());
+    emit_receiver_read(trace_event_line());
     auto result = values_.erase(first, last);
-    emit_mutate("erase", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("erase", trace_event_line());
+    emit_snapshot(trace_event_line());
     return result;
   }
 
@@ -1360,12 +2225,23 @@ class Vector : public std::vector<T> {
   operator std::vector<T>&() { return values_; }
   operator const std::vector<T>&() const { return values_; }
 
-  void emit_read(std::size_t index, int line) const {
+  void emit_read(std::size_t index, int line, const char* source = nullptr) const {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json(index) +
+      ",\"target\":" + (source && *source ? target_json_with_index_source(index, source) : target_json(index)) +
       ",\"value\":" + to_json(values_[index]) + "}",
+      line
+    );
+  }
+
+  void emit_iteration_bind_read(std::size_t index, int line, const char* binding_name) const {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_with_index_source(index, nullptr) +
+      ",\"value\":" + to_json(values_[index]) +
+      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name) + "}}",
       line
     );
   }
@@ -1380,13 +2256,26 @@ class Vector : public std::vector<T> {
     );
   }
 
-  template <typename U = T>
-  std::enable_if_t<is_std_vector<U>::value, void>
-  emit_nested_read(std::size_t outer, std::size_t inner, int line) const {
+  template <typename Value>
+  void emit_metadata_read(const char* field, const Value& value, int line) const {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json(outer, inner) +
+      ",\"target\":" + target_json(field) +
+      ",\"value\":" + to_json(value) + "}",
+      line
+    );
+  }
+
+  template <typename U = T>
+  std::enable_if_t<is_std_vector<U>::value, void>
+  emit_nested_read(std::size_t outer, std::size_t inner, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) const {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + ((outer_source && *outer_source) || (inner_source && *inner_source)
+        ? target_json_with_index_sources(name_, outer, inner, outer_source, inner_source)
+        : target_json(outer, inner)) +
       ",\"value\":" + to_json(values_[outer][inner]) + "}",
       line
     );
@@ -1404,11 +2293,11 @@ class Vector : public std::vector<T> {
     );
   }
 
-  void emit_write(std::size_t index, const T& value, int line) {
+  void emit_write(std::size_t index, const T& value, int line, const char* source = nullptr) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json(index) +
+      ",\"target\":" + (source && *source ? target_json_with_index_source(index, source) : target_json(index)) +
       ",\"value\":" + to_json(value) + "}",
       line
     );
@@ -1417,11 +2306,13 @@ class Vector : public std::vector<T> {
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, void>
-  emit_nested_write(std::size_t outer, std::size_t inner, const typename U::value_type& value, int line) {
+  emit_nested_write(std::size_t outer, std::size_t inner, const typename U::value_type& value, int line, const char* outer_source = nullptr, const char* inner_source = nullptr) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json(outer, inner) +
+      ",\"target\":" + ((outer_source && *outer_source) || (inner_source && *inner_source)
+        ? target_json_with_index_sources(name_, outer, inner, outer_source, inner_source)
+        : target_json(outer, inner)) +
       ",\"value\":" + to_json(value) + "}",
       line
     );
@@ -1452,22 +2343,29 @@ class Vector : public std::vector<T> {
     emit_snapshot(line);
   }
 
-  void emit_indexed_mutate(std::size_t index, const char* method, int line) {
+  void emit_indexed_mutate(std::size_t index, const char* method, int line, const char* source = nullptr, const std::string& args_json = "") {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json(index) +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"target\":" + (source && *source ? target_json_with_index_source(index, source) : target_json(index)) +
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? std::string("") : std::string(",\"args\":") + args_json) +
+      "}",
       line
     );
   }
 
   void emit_mutate(const char* method, int line) {
+    emit_mutate(method, line, "");
+  }
+
+  void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
     );
   }
@@ -1481,6 +2379,9 @@ class Vector : public std::vector<T> {
       line
     );
   }
+
+  const std::string& trace_name() const { return name_; }
+  void set_trace_name(const char* name) { name_ = name; }
 
  private:
   Base& values_;
@@ -1496,6 +2397,16 @@ class Vector : public std::vector<T> {
   std::string target_json(std::size_t index) const {
     if (path_prefix_json_.empty()) return tracecode::target_json(name_, index);
     return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + std::to_string(index) + "]}";
+  }
+
+  std::string target_json(const char* field) const {
+    if (path_prefix_json_.empty()) return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + to_json(field) + "]}";
+    return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + to_json(field) + "]}";
+  }
+
+  std::string target_json_with_index_source(std::size_t index, const char* source) const {
+    if (path_prefix_json_.empty()) return tracecode::target_json_with_index_source(name_, index, source);
+    return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + std::to_string(index) + "],\"indexSources\":" + tracecode::index_sources_json(nullptr, source) + "}";
   }
 
   std::string target_json(std::size_t outer, std::size_t inner) const {
@@ -1526,31 +2437,69 @@ class Vector : public std::vector<T> {
   friend class NestedVectorElementRef;
   template <typename U>
   friend class NestedMapElementRef;
+  template <typename U>
+  friend class IndexedRangeReadIterator;
 };
+
+template <typename T>
+inline IndexedRangeReadable<Vector<T>> indexed_range_readable(Vector<T>& container, int line, const char* binding_name = nullptr, const char* = nullptr) {
+  return IndexedRangeReadable<Vector<T>>(container, line, binding_name);
+}
+
+template <typename T, typename OuterIndex>
+inline IndexedNestedRangeReadable<T> indexed_nested_range_readable(Vector<std::vector<T>>& container, const std::string& name, OuterIndex outer, const char* outer_source, int line, const char* binding_name = nullptr) {
+  auto concrete_outer = static_cast<std::size_t>(outer);
+  auto& raw_container = static_cast<std::vector<std::vector<T>>&>(container);
+  return IndexedNestedRangeReadable<T>(raw_container[concrete_outer], name, concrete_outer, line, outer_source, binding_name);
+}
+
+template <typename T, typename Allocator>
+inline std::vector<T, Allocator>& indexed_range_readable(std::vector<T, Allocator>& container, int, const char* = nullptr, const char* = nullptr) {
+  return container;
+}
+
+template <typename T, typename Allocator>
+inline const std::vector<T, Allocator>& indexed_range_readable(const std::vector<T, Allocator>& container, int, const char* = nullptr, const char* = nullptr) {
+  return container;
+}
+
+inline IndexedStringRangeReadable indexed_range_readable(std::string& value, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return IndexedStringRangeReadable(value, line, binding_name, source_name);
+}
+
+inline IndexedConstStringRangeReadable indexed_range_readable(const std::string& value, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return IndexedConstStringRangeReadable(value, line, binding_name, source_name);
+}
+
+template <typename T, typename Index>
+inline decltype(auto) trace_index_read_value(const Vector<T>& container, Index index) {
+  return container.raw()[index];
+}
 
 template <typename T>
 class VectorElementRef {
  public:
   VectorElementRef(Vector<T>& owner, std::size_t index) : owner_(owner), index_(index) {}
+  VectorElementRef(Vector<T>& owner, std::size_t index, const char* source) : owner_(owner), index_(index), source_(source) {}
 
   T& get() {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     return owner_.values_[index_];
   }
 
   const T& get() const {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     return owner_.values_[index_];
   }
 
   operator T() const {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     return owner_.values_[index_];
   }
 
   VectorElementRef& operator=(const T& value) {
     owner_.values_[index_] = value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
@@ -1560,86 +2509,86 @@ class VectorElementRef {
   }
 
   VectorElementRef& operator+=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] += value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator-=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] -= value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator*=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] *= value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator/=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] /= value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator%=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] %= value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator^=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] ^= value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator|=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] |= value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator&=(const T& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_] &= value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   VectorElementRef& operator++() {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     ++owner_.values_[index_];
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   T operator++(int) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     T old = owner_.values_[index_]++;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return old;
   }
 
   VectorElementRef& operator--() {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     --owner_.values_[index_];
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return *this;
   }
 
   T operator--(int) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     T old = owner_.values_[index_]--;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line(), source_);
     return old;
   }
 
@@ -1673,36 +2622,37 @@ class VectorElementRef {
 
   template <typename Value, typename U = T>
   auto insert(Value&& value) -> decltype(std::declval<U&>().insert(std::forward<Value>(value))) {
+    auto args_json = std::string("[") + to_json(value) + "]";
     auto result = owner_.values_[index_].insert(std::forward<Value>(value));
-    owner_.emit_indexed_mutate(index_, "insert", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_indexed_mutate(index_, "insert", trace_event_line(), source_, args_json);
+    owner_.emit_snapshot(trace_event_line());
     return result;
   }
 
   template <typename... Args, typename U = T>
   std::enable_if_t<is_std_vector<U>::value, void>
   assign(Args&&... args) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_].assign(std::forward<Args>(args)...);
-    owner_.emit_indexed_mutate(index_, "assign", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_indexed_mutate(index_, "assign", trace_event_line(), source_);
+    owner_.emit_snapshot(trace_event_line());
   }
 
   template <typename Value, typename U = T>
   auto contains(const Value& value) const -> decltype(std::declval<const U&>().contains(value)) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].contains(value);
   }
 
   template <typename Value, typename U = T>
   auto count(const Value& value) const -> decltype(std::declval<const U&>().count(value)) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].count(value);
   }
 
   template <typename Value, typename U = T>
   auto find(const Value& value) -> decltype(std::declval<U&>().find(value)) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].find(value);
   }
 
@@ -1712,21 +2662,23 @@ class VectorElementRef {
     return NestedVectorElementRef<typename U::value_type>(
       reinterpret_cast<Vector<std::vector<typename U::value_type>>&>(owner_),
       index_,
-      innerIndex
+      innerIndex,
+      source_,
+      nullptr
     );
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, typename U::const_reference>
   operator[](std::size_t innerIndex) const {
-    owner_.emit_nested_read(index_, innerIndex, current_trace_line());
+    owner_.emit_nested_read(index_, innerIndex, trace_event_line());
     return owner_.values_[index_][innerIndex];
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_string<U>::value, char>
   operator[](std::size_t innerIndex) {
-    owner_.emit_string_char_read(index_, innerIndex, current_trace_line());
+    owner_.emit_string_char_read(index_, innerIndex, trace_event_line());
     return owner_.values_[index_][innerIndex];
   }
 
@@ -1745,67 +2697,68 @@ class VectorElementRef {
   template <typename Key, typename U = T>
   std::enable_if_t<!is_std_vector<U>::value && !is_std_string<U>::value && !is_std_unordered_map<U>::value && !is_std_map<U>::value, decltype(std::declval<U&>()[std::declval<Key>()])>
   operator[](const Key& key) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_][key];
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, void>
   push_back(const typename U::value_type& value) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_].push_back(value);
-    owner_.emit_indexed_mutate(index_, "push_back", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_indexed_mutate(index_, "push_back", trace_event_line(), source_, std::string("[") + to_json(value) + "]");
+    owner_.emit_snapshot(trace_event_line());
   }
 
   template <typename Value, typename U = T>
   auto push_back(Value&& value) -> std::enable_if_t<!is_std_vector<U>::value, decltype(std::declval<U&>().push_back(std::forward<Value>(value)), void())> {
-    owner_.emit_read(index_, current_trace_line());
+    auto args_json = std::string("[") + to_json(value) + "]";
+    owner_.emit_read(index_, trace_event_line(), source_);
     owner_.values_[index_].push_back(std::forward<Value>(value));
-    owner_.emit_indexed_mutate(index_, "push_back", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_indexed_mutate(index_, "push_back", trace_event_line(), source_, args_json);
+    owner_.emit_snapshot(trace_event_line());
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, void>
   pop_back() {
     owner_.values_[index_].pop_back();
-    owner_.emit_indexed_mutate(index_, "pop_back", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_indexed_mutate(index_, "pop_back", trace_event_line(), source_);
+    owner_.emit_snapshot(trace_event_line());
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, typename U::reference>
   front() {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].front();
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, typename U::const_reference>
   front() const {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].front();
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, typename U::reference>
   back() {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].back();
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, typename U::const_reference>
   back() const {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].back();
   }
 
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, typename U::iterator>
   begin() {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].begin();
   }
 
@@ -1817,7 +2770,7 @@ class VectorElementRef {
 
   template <typename U = T>
   auto begin() -> std::enable_if_t<!is_std_vector<U>::value, decltype(std::declval<U&>().begin())> {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].begin();
   }
 
@@ -1829,7 +2782,7 @@ class VectorElementRef {
   template <typename U = T>
   std::enable_if_t<is_std_vector<U>::value, typename U::const_iterator>
   begin() const {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].begin();
   }
 
@@ -1841,7 +2794,7 @@ class VectorElementRef {
 
   template <typename U = T>
   auto begin() const -> std::enable_if_t<!is_std_vector<U>::value, decltype(std::declval<const U&>().begin())> {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].begin();
   }
 
@@ -1852,25 +2805,26 @@ class VectorElementRef {
 
   template <typename U = T>
   auto has_value() const -> decltype(std::declval<const U&>().has_value()) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].has_value();
   }
 
   template <typename U = T>
   auto value() -> decltype(std::declval<U&>().value()) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].value();
   }
 
   template <typename U = T>
   auto value() const -> decltype(std::declval<const U&>().value()) {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_].value();
   }
 
  private:
   Vector<T>& owner_;
   std::size_t index_;
+  const char* source_ = nullptr;
 };
 
 inline std::istream& getline(std::istream& input, VectorElementRef<std::string> target, char delimiter) {
@@ -1892,15 +2846,17 @@ class NestedVectorElementRef {
  public:
   NestedVectorElementRef(Vector<std::vector<T>>& owner, std::size_t outer, std::size_t inner)
       : owner_(owner), outer_(outer), inner_(inner) {}
+  NestedVectorElementRef(Vector<std::vector<T>>& owner, std::size_t outer, std::size_t inner, const char* outer_source, const char* inner_source)
+      : owner_(owner), outer_(outer), inner_(inner), outer_source_(outer_source), inner_source_(inner_source) {}
 
   operator T() const {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_];
   }
 
   NestedVectorElementRef& operator=(const T& value) {
     owner_.values_[outer_][inner_] = value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
@@ -1910,137 +2866,137 @@ class NestedVectorElementRef {
   }
 
   NestedVectorElementRef& operator+=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] += value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator-=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] -= value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator*=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] *= value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator/=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] /= value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator%=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] %= value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator^=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] ^= value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator|=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] |= value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator&=(const T& value) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     owner_.values_[outer_][inner_] &= value;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   NestedVectorElementRef& operator++() {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     ++owner_.values_[outer_][inner_];
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   T operator++(int) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     T old = owner_.values_[outer_][inner_]++;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return old;
   }
 
   NestedVectorElementRef& operator--() {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     --owner_.values_[outer_][inner_];
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return *this;
   }
 
   T operator--(int) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     T old = owner_.values_[outer_][inner_]--;
-    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], current_trace_line());
+    emit_write();
     return old;
   }
 
   template <typename Index, typename U = T>
   auto operator[](Index index) -> decltype(std::declval<U&>()[index]) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_][index];
   }
 
   template <typename Value, typename U = T>
   auto insert(Value&& value) -> decltype(std::declval<U&>().insert(std::forward<Value>(value))) {
     auto result = owner_.values_[outer_][inner_].insert(std::forward<Value>(value));
-    owner_.emit_indexed_mutate(outer_, "insert", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_indexed_mutate(outer_, "insert", trace_event_line());
+    owner_.emit_snapshot(trace_event_line());
     return result;
   }
 
   template <typename InputIt, typename U = T>
   auto insert(InputIt first, InputIt last) -> decltype(std::declval<U&>().insert(first, last), void()) {
     owner_.values_[outer_][inner_].insert(first, last);
-    owner_.emit_indexed_mutate(outer_, "insert", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_indexed_mutate(outer_, "insert", trace_event_line());
+    owner_.emit_snapshot(trace_event_line());
   }
 
   template <typename Value, typename U = T>
   auto contains(const Value& value) const -> decltype(std::declval<const U&>().contains(value)) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_].contains(value);
   }
 
   template <typename Value, typename U = T>
   auto count(const Value& value) const -> decltype(std::declval<const U&>().count(value)) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_].count(value);
   }
 
   template <typename Value, typename U = T>
   auto find(const Value& value) -> decltype(std::declval<U&>().find(value)) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_].find(value);
   }
 
   template <typename Value, typename U = T>
   auto find(const Value& value) const -> decltype(std::declval<const U&>().find(value)) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_].find(value);
   }
 
   template <typename U = T>
   auto begin() -> decltype(std::declval<U&>().begin()) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_].begin();
   }
 
@@ -2051,7 +3007,7 @@ class NestedVectorElementRef {
 
   template <typename U = T>
   auto begin() const -> decltype(std::declval<const U&>().begin()) {
-    owner_.emit_nested_read(outer_, inner_, current_trace_line());
+    emit_read();
     return owner_.values_[outer_][inner_].begin();
   }
 
@@ -2061,10 +3017,239 @@ class NestedVectorElementRef {
   }
 
  private:
+  void emit_read() const {
+    owner_.emit_nested_read(outer_, inner_, trace_event_line(), outer_source_, inner_source_);
+  }
+
+  void emit_write() {
+    owner_.emit_nested_write(outer_, inner_, owner_.values_[outer_][inner_], trace_event_line(), outer_source_, inner_source_);
+  }
+
   Vector<std::vector<T>>& owner_;
   std::size_t outer_;
   std::size_t inner_;
+  const char* outer_source_ = nullptr;
+  const char* inner_source_ = nullptr;
 };
+
+template <typename T>
+class StdNestedVectorElementRef {
+ public:
+  StdNestedVectorElementRef(std::vector<std::vector<T>>& owner, std::string name, std::size_t outer, std::size_t inner, const char* outer_source, const char* inner_source)
+      : owner_(owner), name_(std::move(name)), outer_(outer), inner_(inner), outer_source_(outer_source), inner_source_(inner_source) {}
+
+  operator T() const {
+    emit_read();
+    return owner_[outer_][inner_];
+  }
+
+  StdNestedVectorElementRef& operator=(const T& value) {
+    owner_[outer_][inner_] = value;
+    emit_write();
+    return *this;
+  }
+
+  StdNestedVectorElementRef& operator=(const StdNestedVectorElementRef& other) {
+    T value = other;
+    return (*this = value);
+  }
+
+  StdNestedVectorElementRef& operator+=(const T& value) {
+    emit_read();
+    owner_[outer_][inner_] += value;
+    emit_write();
+    return *this;
+  }
+
+  StdNestedVectorElementRef& operator-=(const T& value) {
+    emit_read();
+    owner_[outer_][inner_] -= value;
+    emit_write();
+    return *this;
+  }
+
+  StdNestedVectorElementRef& operator*=(const T& value) {
+    emit_read();
+    owner_[outer_][inner_] *= value;
+    emit_write();
+    return *this;
+  }
+
+  StdNestedVectorElementRef& operator/=(const T& value) {
+    emit_read();
+    owner_[outer_][inner_] /= value;
+    emit_write();
+    return *this;
+  }
+
+  StdNestedVectorElementRef& operator%=(const T& value) {
+    emit_read();
+    owner_[outer_][inner_] %= value;
+    emit_write();
+    return *this;
+  }
+
+  StdNestedVectorElementRef& operator++() {
+    emit_read();
+    ++owner_[outer_][inner_];
+    emit_write();
+    return *this;
+  }
+
+  T operator++(int) {
+    emit_read();
+    T old = owner_[outer_][inner_]++;
+    emit_write();
+    return old;
+  }
+
+  StdNestedVectorElementRef& operator--() {
+    emit_read();
+    --owner_[outer_][inner_];
+    emit_write();
+    return *this;
+  }
+
+  T operator--(int) {
+    emit_read();
+    T old = owner_[outer_][inner_]--;
+    emit_write();
+    return old;
+  }
+
+ private:
+  void emit_read() const {
+    const int line = trace_event_line();
+    if (!minimal_trace_enabled() && check_trace_budget(line)) {
+      trace_event_count() += 1;
+      write_trace_event_json_raw(
+        std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+        ",\"target\":" + target_json_with_index_sources(name_, outer_, inner_, outer_source_, inner_source_) +
+        ",\"value\":" + to_json(owner_[outer_][inner_]) + "}"
+      );
+    }
+  }
+
+  void emit_write() {
+    const int line = trace_event_line();
+    if (!minimal_trace_enabled() && check_trace_budget(line)) {
+      trace_event_count() += 1;
+      write_trace_event_json_raw(
+        std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
+        ",\"target\":" + target_json_with_index_sources(name_, outer_, inner_, outer_source_, inner_source_) +
+        ",\"value\":" + to_json(owner_[outer_][inner_]) + "}"
+      );
+    }
+    emit_snapshot_value(name_, owner_, line);
+  }
+
+  std::vector<std::vector<T>>& owner_;
+  std::string name_;
+  std::size_t outer_;
+  std::size_t inner_;
+  const char* outer_source_ = nullptr;
+  const char* inner_source_ = nullptr;
+};
+
+template <typename T, typename OuterIndex, typename InnerIndex>
+inline NestedVectorElementRef<T> trace_nested_index_ref(Vector<std::vector<T>>& container, OuterIndex outer, InnerIndex inner, const char* outer_source = nullptr, const char* inner_source = nullptr) {
+  return NestedVectorElementRef<T>(
+    container,
+    static_cast<std::size_t>(outer),
+    static_cast<std::size_t>(inner),
+    outer_source,
+    inner_source
+  );
+}
+
+template <typename T, typename OuterIndex, typename InnerIndex>
+inline NestedVectorElementRef<T> trace_nested_index_ref(Vector<std::vector<T>>& container, const std::string&, OuterIndex outer, InnerIndex inner, const char* outer_source = nullptr, const char* inner_source = nullptr) {
+  return trace_nested_index_ref(container, outer, inner, outer_source, inner_source);
+}
+
+template <typename T, typename OuterIndex, typename InnerIndex>
+inline StdNestedVectorElementRef<T> trace_nested_index_ref(std::vector<std::vector<T>>& container, const std::string& name, OuterIndex outer, InnerIndex inner, const char* outer_source = nullptr, const char* inner_source = nullptr) {
+  return StdNestedVectorElementRef<T>(
+    container,
+    name,
+    static_cast<std::size_t>(outer),
+    static_cast<std::size_t>(inner),
+    outer_source,
+    inner_source
+  );
+}
+
+template <typename T, typename Index>
+inline VectorElementRef<T> trace_index_ref(Vector<T>& container, const std::string&, Index index, const char* source = nullptr) {
+  return container.with_index_source(static_cast<std::size_t>(index), source);
+}
+
+template <typename T, typename Index>
+inline StdIndexElementRef<std::vector<T>> trace_index_ref(std::vector<T>& container, const std::string& name, Index index, const char* source = nullptr) {
+  return StdIndexElementRef<std::vector<T>>(container, name, static_cast<std::size_t>(index), source);
+}
+
+class StdNestedStringElementRef {
+ public:
+  StdNestedStringElementRef(std::vector<std::string>& owner, std::string name, std::size_t outer, std::size_t inner, const char* outer_source, const char* inner_source)
+      : owner_(owner), name_(std::move(name)), outer_(outer), inner_(inner), outer_source_(outer_source), inner_source_(inner_source) {}
+
+  operator char() const {
+    emit_read();
+    return owner_[outer_][inner_];
+  }
+
+  StdNestedStringElementRef& operator=(char value) {
+    owner_[outer_][inner_] = value;
+    emit_write();
+    return *this;
+  }
+
+ private:
+  void emit_read() const {
+    const int line = trace_event_line();
+    if (!minimal_trace_enabled() && check_trace_budget(line)) {
+      trace_event_count() += 1;
+      write_trace_event_json_raw(
+        std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+        ",\"target\":" + target_json_with_index_sources(name_, outer_, inner_, outer_source_, inner_source_) +
+        ",\"value\":" + to_json(std::string(1, owner_[outer_][inner_])) + "}"
+      );
+    }
+  }
+
+  void emit_write() {
+    const int line = trace_event_line();
+    if (!minimal_trace_enabled() && check_trace_budget(line)) {
+      trace_event_count() += 1;
+      write_trace_event_json_raw(
+        std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
+        ",\"target\":" + target_json_with_index_sources(name_, outer_, inner_, outer_source_, inner_source_) +
+        ",\"value\":" + to_json(std::string(1, owner_[outer_][inner_])) + "}"
+      );
+    }
+    emit_snapshot_value(name_, owner_, line);
+  }
+
+  std::vector<std::string>& owner_;
+  std::string name_;
+  std::size_t outer_;
+  std::size_t inner_;
+  const char* outer_source_ = nullptr;
+  const char* inner_source_ = nullptr;
+};
+
+template <typename OuterIndex, typename InnerIndex>
+inline StdNestedStringElementRef trace_nested_index_ref(std::vector<std::string>& container, const std::string& name, OuterIndex outer, InnerIndex inner, const char* outer_source = nullptr, const char* inner_source = nullptr) {
+  return StdNestedStringElementRef(
+    container,
+    name,
+    static_cast<std::size_t>(outer),
+    static_cast<std::size_t>(inner),
+    outer_source,
+    inner_source
+  );
+}
 
 template <typename Map>
 class NestedMapElementRef {
@@ -2076,20 +3261,20 @@ class NestedMapElementRef {
       : owner_(owner), outer_(outer), key_(key) {}
 
   operator mapped_type() const {
-    owner_.emit_nested_key_read(outer_, key_, current_trace_line());
+    owner_.emit_nested_key_read(outer_, key_, trace_event_line());
     return owner_.values_[outer_][key_];
   }
 
   NestedMapElementRef& operator=(const mapped_type& value) {
     owner_.values_[outer_][key_] = value;
-    owner_.emit_nested_key_write(outer_, key_, owner_.values_[outer_][key_], current_trace_line());
+    owner_.emit_nested_key_write(outer_, key_, owner_.values_[outer_][key_], trace_event_line());
     return *this;
   }
 
   NestedMapElementRef& operator+=(const mapped_type& value) {
-    owner_.emit_nested_key_read(outer_, key_, current_trace_line());
+    owner_.emit_nested_key_read(outer_, key_, trace_event_line());
     owner_.values_[outer_][key_] += value;
-    owner_.emit_nested_key_write(outer_, key_, owner_.values_[outer_][key_], current_trace_line());
+    owner_.emit_nested_key_write(outer_, key_, owner_.values_[outer_][key_], trace_event_line());
     return *this;
   }
 
@@ -2286,31 +3471,31 @@ class Deque : public std::deque<T> {
 
   Deque& operator=(const std::deque<T>& values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Deque& operator=(const Deque<T>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Deque& operator=(Deque<T>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Deque& operator=(std::initializer_list<T> values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -2320,64 +3505,66 @@ class Deque : public std::deque<T> {
   DequeElementRef<T> operator[](std::size_t index) { return DequeElementRef<T>(*this, index); }
 
   const T& operator[](std::size_t index) const {
-    emit_read(index, current_trace_line());
+    emit_read(index, trace_event_line());
     return values_[index];
   }
 
   DequeElementRef<T> front() { return DequeElementRef<T>(*this, 0); }
 
   const T& front() const {
-    emit_read(0, current_trace_line());
+    emit_read(0, trace_event_line());
     return values_.front();
   }
 
   DequeElementRef<T> back() { return DequeElementRef<T>(*this, values_.size() - 1); }
 
   const T& back() const {
-    emit_read(values_.size() - 1, current_trace_line());
+    emit_read(values_.size() - 1, trace_event_line());
     return values_.back();
   }
 
   void push_back(const T& value) {
     values_.push_back(value);
-    emit_mutate("push_back", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push_back", trace_event_line(), mutation_args_json(value));
+    emit_snapshot(trace_event_line());
   }
 
   void push_back(T&& value) {
+    auto args_json = mutation_args_json(value);
     values_.push_back(std::move(value));
-    emit_mutate("push_back", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push_back", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
   }
 
   void push_front(const T& value) {
     values_.push_front(value);
-    emit_mutate("push_front", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push_front", trace_event_line(), mutation_args_json(value));
+    emit_snapshot(trace_event_line());
   }
 
   void push_front(T&& value) {
+    auto args_json = mutation_args_json(value);
     values_.push_front(std::move(value));
-    emit_mutate("push_front", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push_front", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
   }
 
   void pop_back() {
     values_.pop_back();
-    emit_mutate("pop_back", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("pop_back", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void pop_front() {
     values_.pop_front();
-    emit_mutate("pop_front", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("pop_front", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void clear() {
     values_.clear();
-    emit_mutate("clear", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("clear", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   iterator begin() { return values_.begin(); }
@@ -2412,11 +3599,16 @@ class Deque : public std::deque<T> {
   }
 
   void emit_mutate(const char* method, int line) {
+    emit_mutate(method, line, "");
+  }
+
+  void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
     );
   }
@@ -2466,13 +3658,13 @@ class DequeElementRef {
   DequeElementRef(Deque<T>& owner, std::size_t index) : owner_(owner), index_(index) {}
 
   operator T() const {
-    owner_.emit_read(index_, current_trace_line());
+    owner_.emit_read(index_, trace_event_line());
     return owner_.values_[index_];
   }
 
   DequeElementRef& operator=(const T& value) {
     owner_.values_[index_] = value;
-    owner_.emit_write(index_, owner_.values_[index_], current_trace_line());
+    owner_.emit_write(index_, owner_.values_[index_], trace_event_line());
     return *this;
   }
 
@@ -2517,14 +3709,14 @@ class Queue : public std::queue<T> {
   Queue& operator=(const Queue<T>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_snapshot(current_trace_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Queue& operator=(Queue<T>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_snapshot(current_trace_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -2532,57 +3724,59 @@ class Queue : public std::queue<T> {
   bool empty() const { return values_.empty(); }
 
   T& front() {
-    emit_read("front", values_.front(), current_trace_line());
+    emit_read("front", values_.front(), trace_event_line());
     return values_.front();
   }
 
   const T& front() const {
-    emit_read("front", values_.front(), current_trace_line());
+    emit_read("front", values_.front(), trace_event_line());
     return values_.front();
   }
 
   T& back() {
-    emit_read("back", values_.back(), current_trace_line());
+    emit_read("back", values_.back(), trace_event_line());
     return values_.back();
   }
 
   const T& back() const {
-    emit_read("back", values_.back(), current_trace_line());
+    emit_read("back", values_.back(), trace_event_line());
     return values_.back();
   }
 
   void push(const T& value) {
     values_.push_back(value);
-    emit_mutate("push", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push", trace_event_line(), mutation_args_json(value));
+    emit_snapshot(trace_event_line());
   }
 
   void push(T&& value) {
+    auto args_json = mutation_args_json(value);
     values_.push_back(std::move(value));
-    emit_mutate("push", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
   }
 
   template <typename... Args>
   T& emplace(Args&&... args) {
+    auto args_json = mutation_args_json(args...);
     T& result = values_.emplace_back(std::forward<Args>(args)...);
-    emit_mutate("emplace", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("emplace", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
     return result;
   }
 
   void pop() {
     values_.pop_front();
-    emit_mutate("pop", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("pop", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void swap(Queue<T>& other) {
     Base::swap(other);
-    emit_mutate("swap", current_trace_line());
-    other.emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
-    other.emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    other.emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
+    other.emit_snapshot(trace_event_line());
   }
 
   std::deque<T>& raw() { return values_; }
@@ -2599,11 +3793,16 @@ class Queue : public std::queue<T> {
   }
 
   void emit_mutate(const char* method, int line) {
+    emit_mutate(method, line, "");
+  }
+
+  void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
     );
   }
@@ -2676,14 +3875,14 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   PriorityQueue& operator=(const PriorityQueue<T, Container, Compare>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_snapshot(current_trace_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   PriorityQueue& operator=(PriorityQueue<T, Container, Compare>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_snapshot(current_trace_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -2691,41 +3890,43 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   bool empty() const { return values_.empty(); }
 
   const T& top() const {
-    emit_read("top", values_.top(), current_trace_line());
+    emit_read("top", values_.top(), trace_event_line());
     return values_.top();
   }
 
   void push(const T& value) {
     values_.push(value);
-    emit_mutate("push", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push", trace_event_line(), mutation_args_json(value));
+    emit_snapshot(trace_event_line());
   }
 
   void push(T&& value) {
+    auto args_json = mutation_args_json(value);
     values_.push(std::move(value));
-    emit_mutate("push", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
   }
 
   template <typename... Args>
   void emplace(Args&&... args) {
+    auto args_json = mutation_args_json(args...);
     values_.emplace(std::forward<Args>(args)...);
-    emit_mutate("emplace", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("emplace", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
   }
 
   void pop() {
     values_.pop();
-    emit_mutate("pop", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("pop", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void swap(PriorityQueue<T, Container, Compare>& other) {
     Base::swap(other);
-    emit_mutate("swap", current_trace_line());
-    other.emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
-    other.emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    other.emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
+    other.emit_snapshot(trace_event_line());
   }
 
   std::vector<T> snapshot_values() const {
@@ -2749,11 +3950,16 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   }
 
   void emit_mutate(const char* method, int line) {
+    emit_mutate(method, line, "");
+  }
+
+  void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
     );
   }
@@ -2823,14 +4029,14 @@ class Stack : public std::stack<T> {
   Stack& operator=(const Stack<T>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_snapshot(current_trace_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Stack& operator=(Stack<T>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_snapshot(current_trace_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -2838,47 +4044,49 @@ class Stack : public std::stack<T> {
   bool empty() const { return values_.empty(); }
 
   T& top() {
-    emit_read("top", values_.back(), current_trace_line());
+    emit_read("top", values_.back(), trace_event_line());
     return values_.back();
   }
 
   const T& top() const {
-    emit_read("top", values_.back(), current_trace_line());
+    emit_read("top", values_.back(), trace_event_line());
     return values_.back();
   }
 
   void push(const T& value) {
     values_.push_back(value);
-    emit_mutate("push", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push", trace_event_line(), mutation_args_json(value));
+    emit_snapshot(trace_event_line());
   }
 
   void push(T&& value) {
+    auto args_json = mutation_args_json(value);
     values_.push_back(std::move(value));
-    emit_mutate("push", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("push", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
   }
 
   template <typename... Args>
   T& emplace(Args&&... args) {
+    auto args_json = mutation_args_json(args...);
     T& result = values_.emplace_back(std::forward<Args>(args)...);
-    emit_mutate("emplace", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("emplace", trace_event_line(), args_json);
+    emit_snapshot(trace_event_line());
     return result;
   }
 
   void pop() {
     values_.pop_back();
-    emit_mutate("pop", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("pop", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void swap(Stack<T>& other) {
     Base::swap(other);
-    emit_mutate("swap", current_trace_line());
-    other.emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
-    other.emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    other.emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
+    other.emit_snapshot(trace_event_line());
   }
 
   std::deque<T>& raw() { return values_; }
@@ -2895,11 +4103,16 @@ class Stack : public std::stack<T> {
   }
 
   void emit_mutate(const char* method, int line) {
+    emit_mutate(method, line, "");
+  }
+
+  void emit_mutate(const char* method, int line, const std::string& args_json) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
     );
   }
@@ -3023,31 +4236,31 @@ class UnorderedMap : public std::unordered_map<K, V> {
 
   UnorderedMap& operator=(const std::unordered_map<K, V>& values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   UnorderedMap& operator=(const UnorderedMap<K, V>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   UnorderedMap& operator=(UnorderedMap<K, V>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   UnorderedMap& operator=(std::initializer_list<std::pair<const K, V>> values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -3055,12 +4268,11 @@ class UnorderedMap : public std::unordered_map<K, V> {
   bool empty() const { return values_.empty(); }
   void reserve(std::size_t count) {
     values_.reserve(count);
-    emit_mutate("reserve", current_trace_line());
   }
 
   void max_load_factor(float value) {
     values_.max_load_factor(value);
-    emit_mutate("max_load_factor", current_trace_line());
+    emit_mutate("max_load_factor", trace_event_line());
   }
 
   float max_load_factor() const {
@@ -3068,7 +4280,7 @@ class UnorderedMap : public std::unordered_map<K, V> {
   }
 
   std::size_t count(const K& key) const {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
     return values_.count(key);
   }
 
@@ -3077,12 +4289,22 @@ class UnorderedMap : public std::unordered_map<K, V> {
   }
 
   iterator find(const K& key) {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
     return values_.find(key);
   }
 
   const_iterator find(const K& key) const {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    return values_.find(key);
+  }
+
+  iterator find_with_index_source(const K& key, const char* source) {
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null", source);
+    return values_.find(key);
+  }
+
+  const_iterator find_with_index_source(const K& key, const char* source) const {
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null", source);
     return values_.find(key);
   }
 
@@ -3090,15 +4312,19 @@ class UnorderedMap : public std::unordered_map<K, V> {
     return UnorderedMapValueRef<K, V>(*this, key);
   }
 
+  UnorderedMapValueRef<K, V> with_index_source(const K& key, const char* source) {
+    return UnorderedMapValueRef<K, V>(*this, key, source);
+  }
+
   V at(const K& key) const {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
     return values_.at(key);
   }
 
   std::pair<iterator, bool> insert(const typename Base::value_type& value) {
     auto result = values_.insert(value);
     if (result.second) {
-      emit_write(value.first, result.first->second, current_trace_line());
+      emit_write(value.first, result.first->second, trace_event_line());
     }
     return result;
   }
@@ -3107,7 +4333,7 @@ class UnorderedMap : public std::unordered_map<K, V> {
     auto key = value.first;
     auto result = values_.insert(std::move(value));
     if (result.second) {
-      emit_write(key, result.first->second, current_trace_line());
+      emit_write(key, result.first->second, trace_event_line());
     }
     return result;
   }
@@ -3116,7 +4342,7 @@ class UnorderedMap : public std::unordered_map<K, V> {
   std::pair<iterator, bool> emplace(Args&&... args) {
     auto result = values_.emplace(std::forward<Args>(args)...);
     if (result.second) {
-      emit_write(result.first->first, result.first->second, current_trace_line());
+      emit_write(result.first->first, result.first->second, trace_event_line());
     }
     return result;
   }
@@ -3124,37 +4350,37 @@ class UnorderedMap : public std::unordered_map<K, V> {
   std::size_t erase(const K& key) {
     const auto erased = values_.erase(key);
     if (erased > 0) {
-      emit_mutate("erase", current_trace_line());
-      emit_snapshot(current_trace_line());
+      emit_mutate("erase", trace_event_line());
+      emit_snapshot(trace_event_line());
     }
     return erased;
   }
 
   iterator erase(iterator position) {
     auto next = values_.erase(position);
-    emit_mutate("erase", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("erase", trace_event_line());
+    emit_snapshot(trace_event_line());
     return next;
   }
 
   void clear() {
     values_.clear();
-    emit_mutate("clear", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("clear", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void swap(UnorderedMap<K, V>& other) {
     values_.swap(other.values_);
-    emit_mutate("swap", current_trace_line());
-    other.emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
-    other.emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    other.emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
+    other.emit_snapshot(trace_event_line());
   }
 
   void swap(std::unordered_map<K, V>& other) {
     values_.swap(other);
-    emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   iterator begin() { return values_.begin(); }
@@ -3169,21 +4395,41 @@ class UnorderedMap : public std::unordered_map<K, V> {
   operator const std::unordered_map<K, V>&() const { return values_; }
 
   void emit_read(const K& key, int line, const std::string& value_json) const {
+    emit_read(key, line, value_json, nullptr);
+  }
+
+  void emit_read(const K& key, int line, const std::string& value_json, const char* source) const {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
+      ",\"target\":" + target_json_key(key, source) +
       ",\"value\":" + value_json + "}",
       line
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
+  void emit_iteration_bind_read(const K& key, const V& value, int line, const char* binding_name) const {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key(key) +
+      ",\"value\":" + to_json(value) +
+      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name) + "}}",
+      line
+    );
+    if (!path_prefix_json_.empty()) emit_snapshot(line);
+  }
+
   void emit_write(const K& key, const V& value, int line) {
+    emit_write(key, value, line, nullptr);
+  }
+
+  void emit_write(const K& key, const V& value, int line, const char* source) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
+      ",\"target\":" + target_json_key(key, source) +
       ",\"value\":" + to_json(value) + "}",
       line
     );
@@ -3195,17 +4441,26 @@ class UnorderedMap : public std::unordered_map<K, V> {
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) + no_arg_mutation_args_json(method) + "}",
       line
     );
   }
 
   void emit_keyed_mutate(const K& key, const char* method, int line) {
+    emit_keyed_mutate(key, method, line, "");
+  }
+
+  void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json) {
+    emit_keyed_mutate(key, method, line, args_json, nullptr);
+  }
+
+  void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json, const char* source) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"target\":" + target_json_key(key, source) +
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? "" : ",\"args\":" + args_json) + "}",
       line
     );
   }
@@ -3232,6 +4487,14 @@ class UnorderedMap : public std::unordered_map<K, V> {
   }
 
   std::string target_json_key(const K& key) const {
+    return target_json_key(key, nullptr);
+  }
+
+  std::string target_json_key(const K& key, const char* source) const {
+    if (source && *source) {
+      if (path_prefix_json_.empty()) return tracecode::target_json_key_with_index_source(name_, key, source);
+      return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + to_json(key) + "],\"indexSources\":" + tracecode::index_sources_json(nullptr, source) + "}";
+    }
     if (path_prefix_json_.empty()) return tracecode::target_json_key(name_, key);
     return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + to_json(key) + "]}";
   }
@@ -3252,17 +4515,17 @@ class UnorderedMap : public std::unordered_map<K, V> {
 template <typename K, typename V>
 class UnorderedMapValueRef {
  public:
-  UnorderedMapValueRef(UnorderedMap<K, V>& owner, K key) : owner_(owner), key_(key) {}
+  UnorderedMapValueRef(UnorderedMap<K, V>& owner, K key, const char* source = nullptr) : owner_(owner), key_(key), source_(source) {}
 
   V& get() {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     return owner_.values_[key_];
   }
 
   const V& get() const {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     return owner_.values_.at(key_);
   }
 
@@ -3276,55 +4539,55 @@ class UnorderedMapValueRef {
 
   UnorderedMapValueRef& operator=(const V& value) {
     owner_.values_[key_] = value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator+=(const V& value) {
     owner_.values_[key_] += value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator-=(const V& value) {
     owner_.values_[key_] -= value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator*=(const V& value) {
     owner_.values_[key_] *= value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator/=(const V& value) {
     owner_.values_[key_] /= value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator--() {
     --owner_.values_[key_];
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator--(int) {
     V old = owner_.values_[key_]--;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
   UnorderedMapValueRef& operator++() {
     ++owner_.values_[key_];
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator++(int) {
     V old = owner_.values_[key_]++;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
@@ -3332,25 +4595,25 @@ class UnorderedMapValueRef {
   std::enable_if_t<is_std_vector<U>::value, void>
   push_back(const typename U::value_type& value) {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     owner_.values_[key_].push_back(value);
-    owner_.emit_keyed_mutate(key_, "push_back", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_keyed_mutate(key_, "push_back", trace_event_line(), std::string("[") + to_json(value) + "]", source_);
+    owner_.emit_snapshot(trace_event_line());
   }
 
   template <typename... Args>
   decltype(auto) emplace_back(Args&&... args) {
     using Result = decltype(std::declval<V&>().emplace_back(std::forward<Args>(args)...));
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     if constexpr (std::is_void_v<Result>) {
       owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
-      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
-      owner_.emit_snapshot(current_trace_line());
+      owner_.emit_keyed_mutate(key_, "emplace_back", trace_event_line(), "", source_);
+      owner_.emit_snapshot(trace_event_line());
     } else {
       decltype(auto) result = owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
-      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
-      owner_.emit_snapshot(current_trace_line());
+      owner_.emit_keyed_mutate(key_, "emplace_back", trace_event_line(), "", source_);
+      owner_.emit_snapshot(trace_event_line());
       return result;
     }
   }
@@ -3358,22 +4621,23 @@ class UnorderedMapValueRef {
   template <typename Index, typename U = V>
   auto operator[](Index&& index) -> decltype(std::declval<U&>()[std::forward<Index>(index)]) {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     return owner_.values_[key_][std::forward<Index>(index)];
   }
 
   template <typename Index, typename U = V>
   auto operator[](Index&& index) const -> decltype(std::declval<const U&>()[std::forward<Index>(index)]) {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null");
     return owner_.values_.at(key_)[std::forward<Index>(index)];
   }
 
   template <typename Value, typename U = V>
   auto insert(Value&& value) -> decltype(std::declval<U&>().insert(std::forward<Value>(value))) {
+    auto args_json = std::string("[") + to_json(value) + "]";
     auto result = owner_.values_[key_].insert(std::forward<Value>(value));
-    owner_.emit_keyed_mutate(key_, "insert", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_keyed_mutate(key_, "insert", trace_event_line(), args_json, source_);
+    owner_.emit_snapshot(trace_event_line());
     return result;
   }
 
@@ -3430,6 +4694,7 @@ class UnorderedMapValueRef {
  private:
   UnorderedMap<K, V>& owner_;
   K key_;
+  const char* source_;
 };
 
 template <typename K, typename V>
@@ -3507,16 +4772,16 @@ class Map : public std::map<K, V> {
   Map& operator=(const Map& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Map& operator=(Map&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -3553,15 +4818,15 @@ class Map : public std::map<K, V> {
 
   Map& operator=(const std::map<K, V>& values) {
     values_ = values;
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Map& operator=(std::initializer_list<std::pair<const K, V>> values) {
     values_ = values;
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -3569,7 +4834,7 @@ class Map : public std::map<K, V> {
   bool empty() const { return values_.empty(); }
 
   std::size_t count(const K& key) const {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
     return values_.count(key);
   }
 
@@ -3578,12 +4843,22 @@ class Map : public std::map<K, V> {
   }
 
   iterator find(const K& key) {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
     return values_.find(key);
   }
 
   const_iterator find(const K& key) const {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    return values_.find(key);
+  }
+
+  iterator find_with_index_source(const K& key, const char* source) {
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null", source);
+    return values_.find(key);
+  }
+
+  const_iterator find_with_index_source(const K& key, const char* source) const {
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null", source);
     return values_.find(key);
   }
 
@@ -3615,15 +4890,19 @@ class Map : public std::map<K, V> {
     return MapValueRef<K, V>(*this, key);
   }
 
+  MapValueRef<K, V> with_index_source(const K& key, const char* source) {
+    return MapValueRef<K, V>(*this, key, source);
+  }
+
   V at(const K& key) const {
-    emit_read(key, current_trace_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
     return values_.at(key);
   }
 
   std::pair<iterator, bool> insert(const typename Base::value_type& value) {
     auto result = values_.insert(value);
     if (result.second) {
-      emit_write(value.first, result.first->second, current_trace_line());
+      emit_write(value.first, result.first->second, trace_event_line());
     }
     return result;
   }
@@ -3632,7 +4911,7 @@ class Map : public std::map<K, V> {
     auto key = value.first;
     auto result = values_.insert(std::move(value));
     if (result.second) {
-      emit_write(key, result.first->second, current_trace_line());
+      emit_write(key, result.first->second, trace_event_line());
     }
     return result;
   }
@@ -3641,7 +4920,7 @@ class Map : public std::map<K, V> {
   std::pair<iterator, bool> emplace(Args&&... args) {
     auto result = values_.emplace(std::forward<Args>(args)...);
     if (result.second) {
-      emit_write(result.first->first, result.first->second, current_trace_line());
+      emit_write(result.first->first, result.first->second, trace_event_line());
     }
     return result;
   }
@@ -3649,37 +4928,37 @@ class Map : public std::map<K, V> {
   std::size_t erase(const K& key) {
     const auto erased = values_.erase(key);
     if (erased > 0) {
-      emit_mutate("erase", current_trace_line());
-      emit_snapshot(current_trace_line());
+      emit_mutate("erase", trace_event_line());
+      emit_snapshot(trace_event_line());
     }
     return erased;
   }
 
   iterator erase(iterator position) {
     auto next = values_.erase(position);
-    emit_mutate("erase", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("erase", trace_event_line());
+    emit_snapshot(trace_event_line());
     return next;
   }
 
   void clear() {
     values_.clear();
-    emit_mutate("clear", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("clear", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   void swap(Map<K, V>& other) {
     values_.swap(other.values_);
-    emit_mutate("swap", current_trace_line());
-    other.emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
-    other.emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    other.emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
+    other.emit_snapshot(trace_event_line());
   }
 
   void swap(std::map<K, V>& other) {
     values_.swap(other);
-    emit_mutate("swap", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("swap", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   iterator begin() { return values_.begin(); }
@@ -3694,21 +4973,41 @@ class Map : public std::map<K, V> {
   operator const std::map<K, V>&() const { return values_; }
 
   void emit_read(const K& key, int line, const std::string& value_json) const {
+    emit_read(key, line, value_json, nullptr);
+  }
+
+  void emit_read(const K& key, int line, const std::string& value_json, const char* source) const {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
+      ",\"target\":" + target_json_key(key, source) +
       ",\"value\":" + value_json + "}",
       line
     );
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
+  void emit_iteration_bind_read(const K& key, const V& value, int line, const char* binding_name) const {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key(key) +
+      ",\"value\":" + to_json(value) +
+      ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name) + "}}",
+      line
+    );
+    if (!path_prefix_json_.empty()) emit_snapshot(line);
+  }
+
   void emit_write(const K& key, const V& value, int line) {
+    emit_write(key, value, line, nullptr);
+  }
+
+  void emit_write(const K& key, const V& value, int line, const char* source) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
+      ",\"target\":" + target_json_key(key, source) +
       ",\"value\":" + to_json(value) + "}",
       line
     );
@@ -3720,17 +5019,26 @@ class Map : public std::map<K, V> {
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) + no_arg_mutation_args_json(method) + "}",
       line
     );
   }
 
   void emit_keyed_mutate(const K& key, const char* method, int line) {
+    emit_keyed_mutate(key, method, line, "");
+  }
+
+  void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json) {
+    emit_keyed_mutate(key, method, line, args_json, nullptr);
+  }
+
+  void emit_keyed_mutate(const K& key, const char* method, int line, const std::string& args_json, const char* source) {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key(key) +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"target\":" + target_json_key(key, source) +
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? "" : ",\"args\":" + args_json) + "}",
       line
     );
   }
@@ -3757,6 +5065,14 @@ class Map : public std::map<K, V> {
   }
 
   std::string target_json_key(const K& key) const {
+    return target_json_key(key, nullptr);
+  }
+
+  std::string target_json_key(const K& key, const char* source) const {
+    if (source && *source) {
+      if (path_prefix_json_.empty()) return tracecode::target_json_key_with_index_source(name_, key, source);
+      return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + to_json(key) + "],\"indexSources\":" + tracecode::index_sources_json(nullptr, source) + "}";
+    }
     if (path_prefix_json_.empty()) return tracecode::target_json_key(name_, key);
     return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + to_json(key) + "]}";
   }
@@ -3777,17 +5093,17 @@ class Map : public std::map<K, V> {
 template <typename K, typename V>
 class MapValueRef {
  public:
-  MapValueRef(Map<K, V>& owner, K key) : owner_(owner), key_(key) {}
+  MapValueRef(Map<K, V>& owner, K key, const char* source = nullptr) : owner_(owner), key_(key), source_(source) {}
 
   V& get() {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     return owner_.values_[key_];
   }
 
   const V& get() const {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     return owner_.values_.at(key_);
   }
 
@@ -3801,55 +5117,55 @@ class MapValueRef {
 
   MapValueRef& operator=(const V& value) {
     owner_.values_[key_] = value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator+=(const V& value) {
     owner_.values_[key_] += value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator-=(const V& value) {
     owner_.values_[key_] -= value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator*=(const V& value) {
     owner_.values_[key_] *= value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator/=(const V& value) {
     owner_.values_[key_] /= value;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator--() {
     --owner_.values_[key_];
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator--(int) {
     V old = owner_.values_[key_]--;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
   MapValueRef& operator++() {
     ++owner_.values_[key_];
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator++(int) {
     V old = owner_.values_[key_]++;
-    owner_.emit_write(key_, owner_.values_[key_], current_trace_line());
+    owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
@@ -3857,25 +5173,25 @@ class MapValueRef {
   std::enable_if_t<is_std_vector<U>::value, void>
   push_back(const typename U::value_type& value) {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     owner_.values_[key_].push_back(value);
-    owner_.emit_keyed_mutate(key_, "push_back", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_keyed_mutate(key_, "push_back", trace_event_line(), std::string("[") + to_json(value) + "]", source_);
+    owner_.emit_snapshot(trace_event_line());
   }
 
   template <typename... Args>
   decltype(auto) emplace_back(Args&&... args) {
     using Result = decltype(std::declval<V&>().emplace_back(std::forward<Args>(args)...));
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     if constexpr (std::is_void_v<Result>) {
       owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
-      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
-      owner_.emit_snapshot(current_trace_line());
+      owner_.emit_keyed_mutate(key_, "emplace_back", trace_event_line(), "", source_);
+      owner_.emit_snapshot(trace_event_line());
     } else {
       decltype(auto) result = owner_.values_[key_].emplace_back(std::forward<Args>(args)...);
-      owner_.emit_keyed_mutate(key_, "emplace_back", current_trace_line());
-      owner_.emit_snapshot(current_trace_line());
+      owner_.emit_keyed_mutate(key_, "emplace_back", trace_event_line(), "", source_);
+      owner_.emit_snapshot(trace_event_line());
       return result;
     }
   }
@@ -3883,22 +5199,23 @@ class MapValueRef {
   template <typename Index, typename U = V>
   auto operator[](Index&& index) -> decltype(std::declval<U&>()[std::forward<Index>(index)]) {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null", source_);
     return owner_.values_[key_][std::forward<Index>(index)];
   }
 
   template <typename Index, typename U = V>
   auto operator[](Index&& index) const -> decltype(std::declval<const U&>()[std::forward<Index>(index)]) {
     const bool present = owner_.values_.count(key_) > 0;
-    owner_.emit_read(key_, current_trace_line(), present ? to_json(owner_.values_.at(key_)) : "null");
+    owner_.emit_read(key_, trace_event_line(), present ? to_json(owner_.values_.at(key_)) : "null");
     return owner_.values_.at(key_)[std::forward<Index>(index)];
   }
 
   template <typename Value, typename U = V>
   auto insert(Value&& value) -> decltype(std::declval<U&>().insert(std::forward<Value>(value))) {
+    auto args_json = std::string("[") + to_json(value) + "]";
     auto result = owner_.values_[key_].insert(std::forward<Value>(value));
-    owner_.emit_keyed_mutate(key_, "insert", current_trace_line());
-    owner_.emit_snapshot(current_trace_line());
+    owner_.emit_keyed_mutate(key_, "insert", trace_event_line(), args_json, source_);
+    owner_.emit_snapshot(trace_event_line());
     return result;
   }
 
@@ -3955,11 +5272,22 @@ class MapValueRef {
  private:
   Map<K, V>& owner_;
   K key_;
+  const char* source_;
 };
 
 template <typename K, typename V>
 std::string to_json(const Map<K, V>& values) {
   return to_json(values.raw());
+}
+
+template <typename K, typename V>
+inline KeyedRangeReadable<UnorderedMap<K, V>> keyed_range_readable(UnorderedMap<K, V>& container, int line, const char* key_binding_name = nullptr) {
+  return KeyedRangeReadable<UnorderedMap<K, V>>(container, line, key_binding_name);
+}
+
+template <typename K, typename V>
+inline KeyedRangeReadable<Map<K, V>> keyed_range_readable(Map<K, V>& container, int line, const char* key_binding_name = nullptr) {
+  return KeyedRangeReadable<Map<K, V>>(container, line, key_binding_name);
 }
 
 template <typename K, typename V>
@@ -4051,31 +5379,31 @@ class Set : public std::set<T> {
 
   Set& operator=(const std::set<T>& values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Set& operator=(const Set<T>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Set& operator=(Set<T>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   Set& operator=(std::initializer_list<T> values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -4084,7 +5412,7 @@ class Set : public std::set<T> {
 
   std::size_t count(const T& value) const {
     const auto present = values_.count(value) > 0;
-    emit_read(value, present, current_trace_line());
+    emit_read(value, present, trace_event_line());
     return values_.count(value);
   }
 
@@ -4094,62 +5422,68 @@ class Set : public std::set<T> {
 
   iterator find(const T& value) {
     const auto present = values_.count(value) > 0;
-    emit_read(value, present, current_trace_line());
+    emit_read(value, present, trace_event_line());
     return values_.find(value);
   }
 
   const_iterator find(const T& value) const {
     const auto present = values_.count(value) > 0;
-    emit_read(value, present, current_trace_line());
+    emit_read(value, present, trace_event_line());
     return values_.find(value);
   }
 
   std::pair<iterator, bool> insert(const T& value) {
+    auto args_json = mutation_args_json(value);
     auto result = values_.insert(value);
-    if (result.second) emit_write(value, current_trace_line());
+    emit_mutate("insert", trace_event_line(), args_json);
+    if (result.second) emit_write(value, trace_event_line());
     return result;
   }
 
   std::pair<iterator, bool> insert(T&& value) {
+    auto args_json = mutation_args_json(value);
     auto result = values_.insert(std::move(value));
-    if (result.second) emit_write(*result.first, current_trace_line());
+    emit_mutate("insert", trace_event_line(), args_json);
+    if (result.second) emit_write(*result.first, trace_event_line());
     return result;
   }
 
   template <typename InputIt>
   void insert(InputIt first, InputIt last) {
     values_.insert(first, last);
-    emit_mutate("insert", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("insert", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   template <typename... Args>
   std::pair<iterator, bool> emplace(Args&&... args) {
+    auto args_json = mutation_args_json(args...);
     auto result = values_.emplace(std::forward<Args>(args)...);
-    if (result.second) emit_write(*result.first, current_trace_line());
+    emit_mutate("emplace", trace_event_line(), args_json);
+    if (result.second) emit_write(*result.first, trace_event_line());
     return result;
   }
 
   std::size_t erase(const T& value) {
     const auto erased = values_.erase(value);
     if (erased > 0) {
-      emit_mutate("erase", current_trace_line());
-      emit_snapshot(current_trace_line());
+      emit_mutate("erase", trace_event_line());
+      emit_snapshot(trace_event_line());
     }
     return erased;
   }
 
   iterator erase(iterator position) {
     auto next = values_.erase(position);
-    emit_mutate("erase", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("erase", trace_event_line());
+    emit_snapshot(trace_event_line());
     return next;
   }
 
   void clear() {
     values_.clear();
-    emit_mutate("clear", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("clear", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   iterator begin() { return values_.begin(); }
@@ -4188,12 +5522,13 @@ class Set : public std::set<T> {
     emit_snapshot(line);
   }
 
-  void emit_mutate(const char* method, int line) {
+  void emit_mutate(const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
     );
   }
@@ -4292,31 +5627,31 @@ class UnorderedSet : public std::unordered_set<T> {
 
   UnorderedSet& operator=(const std::unordered_set<T>& values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   UnorderedSet& operator=(const UnorderedSet<T>& other) {
     if (this == &other) return *this;
     Base::operator=(static_cast<const Base&>(other));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   UnorderedSet& operator=(UnorderedSet<T>&& other) {
     if (this == &other) return *this;
     Base::operator=(std::move(static_cast<Base&>(other)));
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
   UnorderedSet& operator=(std::initializer_list<T> values) {
     Base::operator=(values);
-    emit_write_field(current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_write_field(trace_event_line());
+    emit_snapshot(trace_event_line());
     return *this;
   }
 
@@ -4324,12 +5659,11 @@ class UnorderedSet : public std::unordered_set<T> {
   bool empty() const { return values_.empty(); }
   void reserve(std::size_t count) {
     values_.reserve(count);
-    emit_mutate("reserve", current_trace_line());
   }
 
   std::size_t count(const T& value) const {
     const auto present = values_.count(value) > 0;
-    emit_read(value, present, current_trace_line());
+    emit_read(value, present, trace_event_line());
     return values_.count(value);
   }
 
@@ -4339,62 +5673,68 @@ class UnorderedSet : public std::unordered_set<T> {
 
   iterator find(const T& value) {
     const auto present = values_.count(value) > 0;
-    emit_read(value, present, current_trace_line());
+    emit_read(value, present, trace_event_line());
     return values_.find(value);
   }
 
   const_iterator find(const T& value) const {
     const auto present = values_.count(value) > 0;
-    emit_read(value, present, current_trace_line());
+    emit_read(value, present, trace_event_line());
     return values_.find(value);
   }
 
   std::pair<iterator, bool> insert(const T& value) {
+    auto args_json = mutation_args_json(value);
     auto result = values_.insert(value);
-    if (result.second) emit_write(value, current_trace_line());
+    emit_mutate("insert", trace_event_line(), args_json);
+    if (result.second) emit_write(value, trace_event_line());
     return result;
   }
 
   std::pair<iterator, bool> insert(T&& value) {
+    auto args_json = mutation_args_json(value);
     auto result = values_.insert(std::move(value));
-    if (result.second) emit_write(*result.first, current_trace_line());
+    emit_mutate("insert", trace_event_line(), args_json);
+    if (result.second) emit_write(*result.first, trace_event_line());
     return result;
   }
 
   template <typename InputIt>
   void insert(InputIt first, InputIt last) {
     values_.insert(first, last);
-    emit_mutate("insert", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("insert", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   template <typename... Args>
   std::pair<iterator, bool> emplace(Args&&... args) {
+    auto args_json = mutation_args_json(args...);
     auto result = values_.emplace(std::forward<Args>(args)...);
-    if (result.second) emit_write(*result.first, current_trace_line());
+    emit_mutate("emplace", trace_event_line(), args_json);
+    if (result.second) emit_write(*result.first, trace_event_line());
     return result;
   }
 
   std::size_t erase(const T& value) {
     const auto erased = values_.erase(value);
     if (erased > 0) {
-      emit_mutate("erase", current_trace_line());
-      emit_snapshot(current_trace_line());
+      emit_mutate("erase", trace_event_line());
+      emit_snapshot(trace_event_line());
     }
     return erased;
   }
 
   iterator erase(iterator position) {
     auto next = values_.erase(position);
-    emit_mutate("erase", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("erase", trace_event_line());
+    emit_snapshot(trace_event_line());
     return next;
   }
 
   void clear() {
     values_.clear();
-    emit_mutate("clear", current_trace_line());
-    emit_snapshot(current_trace_line());
+    emit_mutate("clear", trace_event_line());
+    emit_snapshot(trace_event_line());
   }
 
   iterator begin() { return values_.begin(); }
@@ -4429,12 +5769,13 @@ class UnorderedSet : public std::unordered_set<T> {
     emit_snapshot(line);
   }
 
-  void emit_mutate(const char* method, int line) {
+  void emit_mutate(const char* method, int line, const std::string& args_json = "") {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
-      ",\"method\":" + to_json(method) + "}",
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
     );
   }
@@ -4590,8 +5931,7 @@ inline bool minimal_trace_suppresses_event(const std::string& event_json) {
   return event_json.find("\"kind\":\"snapshot\"") != std::string::npos ||
     event_json.find("\"kind\":\"read\"") != std::string::npos ||
     event_json.find("\"kind\":\"write\"") != std::string::npos ||
-    event_json.find("\"kind\":\"mutate\"") != std::string::npos ||
-    event_json.find("\"kind\":\"control\"") != std::string::npos;
+    event_json.find("\"kind\":\"mutate\"") != std::string::npos;
 }
 
 inline void write_trace_event_json(const std::string& event_json, int line) {

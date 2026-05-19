@@ -122,6 +122,43 @@ assertCondition(lambdaDriver.includes('\\"node\\":'), 'self-recursive lambda tra
 assertCondition(!lambdaDriver.includes('\\"self\\":'), 'self-recursive lambda tracing should not serialize callable self');
 assertCondition(lambdaDriver.includes('tracecode::Vector<int> seen'), 'driver should trace-wrap local vector declarations');
 
+const multilineNoCaptureLambdaSource = [
+  'struct ListNode { int val; ListNode* next; };',
+  'class Solution {',
+  'public:',
+  '  ListNode* solve(ListNode* head, int k) {',
+  '    auto reverseK = [](ListNode* groupHead, int count)',
+  '      -> tuple<ListNode*, ListNode*> {',
+  '      ListNode* curr = groupHead;',
+  '      ListNode* nxt = curr->next;',
+  '      curr->next = nullptr;',
+  '      return {curr, nxt};',
+  '    };',
+  '    auto [first, rest] = reverseK(head, k);',
+  '    return first;',
+  '  }',
+  '};',
+].join('\n');
+const multilineNoCaptureLambdaDriver = rewriter.buildDriverSource(
+  multilineNoCaptureLambdaSource,
+  'solve',
+  { head: [1, 2], k: 2 },
+  { tracing: true }
+);
+const lambdaBodyStart = multilineNoCaptureLambdaDriver.indexOf('ListNode* curr = groupHead;');
+const lambdaBodyEnd = multilineNoCaptureLambdaDriver.indexOf('auto [first, rest] = reverseK(head, k);');
+const lambdaBodyInstrumentation = multilineNoCaptureLambdaDriver.slice(lambdaBodyStart, lambdaBodyEnd);
+assertCondition(lambdaBodyStart >= 0 && lambdaBodyEnd > lambdaBodyStart, 'multiline no-capture lambda body should remain in rewritten driver');
+assertCondition(
+  multilineNoCaptureLambdaDriver.includes('\\"function\\":\\"reverseK\\"'),
+  'multiline no-capture lambda should be traced as its own lambda frame'
+);
+assertCondition(
+  !lambdaBodyInstrumentation.includes('emit_snapshot_value("head", head') &&
+    !lambdaBodyInstrumentation.includes('emit_snapshot_value("k", k'),
+  'multiline no-capture lambda body must not snapshot outer method parameters'
+);
+
 const controlSource = [
   'class Solution {',
   'public:',
@@ -137,9 +174,13 @@ const controlSource = [
   '};',
 ].join('\n');
 const controlDriver = rewriter.buildDriverSource(controlSource, 'score', { nums: [1] }, { tracing: true });
-assertCondition(controlDriver.includes('\\"kind\\":\\"control\\"'), 'control transfers should emit native control events');
-assertCondition(controlDriver.includes('\\"control\\":\\"continue\\"'), 'continue should be captured as a control event');
-assertCondition(controlDriver.includes('\\"control\\":\\"break\\"'), 'break should be captured as a control event');
+assertCondition(!controlDriver.includes('\\"kind\\":\\"control\\"'), 'control transfers should not emit language-specific control events');
+assertCondition(controlDriver.includes('continue;'), 'continue should remain source-equivalent after instrumentation');
+assertCondition(controlDriver.includes('break;'), 'break should remain source-equivalent after instrumentation');
+assertCondition(
+  controlDriver.includes('tracecode::with_trace_line(6') && controlDriver.includes('tracecode::with_trace_line(7'),
+  'control conditions should evaluate under the control header source line'
+);
 
 const exceptionSource = [
   'class Solution {',
@@ -190,6 +231,59 @@ assertCondition(
   classFieldDriver.includes('tracecode::Vector<vector<int>> graph{"this", "graph"'),
   'class vector fields should be trace-wrapped with a this.field target'
 );
-assertCondition(classFieldDriver.includes('this->graph[0].push_back(1);'), 'class field mutation should stay on the traced member wrapper');
+assertCondition(
+  classFieldDriver.includes('this->graph.with_index_source(0, nullptr).push_back(1);'),
+  'class field mutation should preserve indexed receiver provenance on the traced member wrapper'
+);
+
+const classMapFieldSource = [
+  'class Solution {',
+  '  unordered_map<string, string> parent;',
+  'public:',
+  '  void solve(string email) {',
+  '    if (parent.find(email) == parent.end()) {',
+  '      parent[email] = email;',
+  '    }',
+  '  }',
+  '};',
+].join('\n');
+const classMapFieldDriver = rewriter.buildDriverSource(classMapFieldSource, 'solve', { email: 'a' }, { tracing: true });
+assertCondition(
+  classMapFieldDriver.includes('parent.find_with_index_source(email, "email")'),
+  'class map field find should preserve key provenance'
+);
+assertCondition(
+  classMapFieldDriver.includes('parent.with_index_source(email, "email") = email;'),
+  'class map field keyed write should preserve key provenance'
+);
+
+const pairQueueSource = [
+  'class Solution {',
+  'public:',
+  '  int traverse() {',
+  '    queue<pair<int, int>> q;',
+  '    q.push({0, 1});',
+  '    auto [row, col] = q.front();',
+  '    q.pop();',
+  '    return row + col;',
+  '  }',
+  '};',
+].join('\n');
+const pairQueueDriver = rewriter.buildDriverSource(pairQueueSource, 'traverse', {}, { tracing: true });
+assertCondition(
+  pairQueueDriver.includes('tracecode::Queue<pair<int, int>> q'),
+  'pair-backed C++ queues should be trace-wrapped as indexed frontier state'
+);
+assertCondition(
+  pairQueueDriver.includes('tracecode::with_scoped_trace_line(5') &&
+    pairQueueDriver.includes('q.push({0, 1});') &&
+    pairQueueDriver.includes('tracecode::with_scoped_trace_line(7') &&
+    pairQueueDriver.includes('q.pop();'),
+  'pair-backed C++ queue mutations should execute through traced queue wrappers on the source line'
+);
+assertCondition(
+  !pairQueueDriver.includes('RawTraceStep') && !pairQueueDriver.includes('visualization'),
+  'pair-backed C++ queue tracing must stay v4-native'
+);
 
 console.log('PASS: C++ rewriter source snapshots');
