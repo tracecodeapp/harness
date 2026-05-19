@@ -21,7 +21,8 @@ interface CSharpWorkerResponse {
     args?: unknown[];
     reason?: string;
     callStack?: Array<{ function?: string; line?: number; args?: unknown[] }>;
-    target?: { variable: string; path?: unknown[] };
+    target?: { variable: string; path?: unknown[]; indexSources?: Array<string | null> };
+    binding?: { kind?: string; variable?: string };
   }>;
   traceLimitExceeded?: boolean;
   timeoutReason?: string;
@@ -276,6 +277,365 @@ async function main(): Promise<void> {
     assertCondition(
       defaultUsings.output === 'abc:9007199254741000:9:2:3:2',
       `C# worker default usings case should return expected summary, received ${JSON.stringify(defaultUsings.output)}`
+    );
+
+    const queueForIncrementLine = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int QueueForIncrementLine(int value) {',
+        '    var queue = new Queue<int>();',
+        '    for (int i = 0; i < 1; queue.Enqueue(value), i++) {',
+        '      value++;',
+        '    }',
+        '    return queue.Dequeue();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'QueueForIncrementLine',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      queueForIncrementLine.success,
+      `C# worker queue for-increment line case should succeed: ${queueForIncrementLine.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      queueForIncrementLine.output === 5,
+      `C# worker queue for-increment line case should return 5, received ${JSON.stringify(queueForIncrementLine.output)}`
+    );
+    assertCondition(
+      queueForIncrementLine.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.target?.variable === 'queue'
+        && event.method === 'Enqueue'
+        && event.line === 5) === true,
+      `C# worker Queue.Enqueue in for increment should use invocation line 5, received ${JSON.stringify(queueForIncrementLine.events)}`
+    );
+    assertCondition(
+      queueForIncrementLine.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.target?.variable === 'queue'
+        && event.method === 'Enqueue'
+        && event.line === 1) !== true,
+      `C# worker Queue.Enqueue should not fall back to stale line 1, received ${JSON.stringify(queueForIncrementLine.events)}`
+    );
+
+    const unbracedLoopBodyLine = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int UnbracedLoopBodyLine(int n) {',
+        '    int[] values = new int[n];',
+        '    for (int i = 0; i < n; i++)',
+        '      values[i] = i;',
+        '    int total = 0;',
+        '    while (total < 1)',
+        '      total++;',
+        '    return values[1] + total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UnbracedLoopBodyLine',
+      { n: 3 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      unbracedLoopBodyLine.success && unbracedLoopBodyLine.output === 2,
+      `C# worker unbraced loop body line case should succeed, received ${JSON.stringify(unbracedLoopBodyLine)}`
+    );
+    assertCondition(
+      unbracedLoopBodyLine.events?.some((event) =>
+        event.kind === 'write'
+        && event.target?.variable === 'values'
+        && event.target.path?.[0] === 1
+        && event.value === 1
+        && event.line === 5) === true,
+      `C# worker unbraced for body indexed write should stay on source line 5, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+    );
+    assertCondition(
+      unbracedLoopBodyLine.events?.some((event) =>
+        event.kind === 'write'
+        && event.target?.variable === 'total'
+        && event.value === 1
+        && event.line === 8) === true,
+      `C# worker unbraced while body scalar write should stay on source line 8, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+    );
+    assertCondition(
+      unbracedLoopBodyLine.events?.some((event) =>
+        event.kind === 'write'
+        && event.target?.variable === 'values'
+        && Array.isArray(event.target.path)
+        && event.line === 3) !== true,
+      `C# worker unbraced indexed writes should not fall back to generated method line, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+    );
+    assertCondition(
+      (unbracedLoopBodyLine.events?.filter((event) => event.kind === 'line' && event.line === 4).length ?? 0) >= 4,
+      `C# worker for loop should emit header line for each condition evaluation including loop exit, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+    );
+    assertCondition(
+      (unbracedLoopBodyLine.events?.filter((event) => event.kind === 'line' && event.line === 7).length ?? 0) >= 2,
+      `C# worker while loop should emit header line for true and false condition evaluations, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+    );
+    const countSnapshotsAfterLastLine = (events: CSharpWorkerResponse['events'], line: number): number => {
+      const traceEvents = events ?? [];
+      let lineIndex = -1;
+      for (let index = 0; index < traceEvents.length; index++) {
+        if (traceEvents[index]?.kind === 'line' && traceEvents[index]?.line === line) {
+          lineIndex = index;
+        }
+      }
+      if (lineIndex < 0) {
+        return 0;
+      }
+
+      let snapshots = 0;
+      for (let index = lineIndex + 1; index < traceEvents.length && traceEvents[index]?.kind !== 'line'; index++) {
+        if (traceEvents[index]?.kind === 'snapshot') {
+          snapshots++;
+        }
+      }
+      return snapshots;
+    };
+    assertCondition(
+      countSnapshotsAfterLastLine(unbracedLoopBodyLine.events, 4) > 0,
+      `C# worker terminal for-loop condition frame should include snapshots, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+    );
+    assertCondition(
+      countSnapshotsAfterLastLine(unbracedLoopBodyLine.events, 7) > 0,
+      `C# worker terminal while-loop condition frame should include snapshots, received ${JSON.stringify(unbracedLoopBodyLine.events)}`
+    );
+
+    const loopControlLineCoverage = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int LoopControlLineCoverage() {',
+        '    var values = new List<int>();',
+        '    foreach (int value in values) {',
+        '      return value;',
+        '    }',
+        '    return values.Count;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'LoopControlLineCoverage',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      loopControlLineCoverage.success && loopControlLineCoverage.output === 0,
+      `C# worker empty foreach line coverage case should succeed, received ${JSON.stringify(loopControlLineCoverage)}`
+    );
+    assertCondition(
+      loopControlLineCoverage.events?.some((event) => event.kind === 'line' && event.line === 5) === true,
+      `C# worker empty foreach should still emit its source line before exiting the loop, received ${JSON.stringify(loopControlLineCoverage.events)}`
+    );
+    assertCondition(
+      countSnapshotsAfterLastLine(loopControlLineCoverage.events, 5) > 0,
+      `C# worker empty foreach line frame should include snapshots, received ${JSON.stringify(loopControlLineCoverage.events)}`
+    );
+    assertCondition(
+      loopControlLineCoverage.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 8
+        && event.target?.variable === 'values'
+        && JSON.stringify(event.target.path) === JSON.stringify(['Count'])
+        && event.value === 0) === true,
+      `C# worker collection metadata access should emit a V4 read, received ${JSON.stringify(loopControlLineCoverage.events)}`
+    );
+
+    const nestedCollectionMetadataRead = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int NestedCollectionMetadataRead(char[][] grid) {',
+        '    if (grid[0].Length == 0) return -1;',
+        '    return grid[0].Length;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'NestedCollectionMetadataRead',
+      { grid: [['1', '0', '1']] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      nestedCollectionMetadataRead.success && nestedCollectionMetadataRead.output === 3,
+      `C# worker nested collection metadata read should succeed, received ${JSON.stringify(nestedCollectionMetadataRead)}`
+    );
+    assertCondition(
+      nestedCollectionMetadataRead.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 3
+        && event.target?.variable === 'grid'
+        && JSON.stringify(event.target.path) === JSON.stringify([0, 'Length'])
+        && event.value === 3) === true,
+      `C# worker grid[0].Length should emit a nested V4 read, received ${JSON.stringify(nestedCollectionMetadataRead.events)}`
+    );
+
+    const queueWhileHeaderRead = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int QueueWhileHeaderRead() {',
+        '    var queue = new Queue<int>();',
+        '    queue.Enqueue(1);',
+        '    int total = 0;',
+        '    while (queue.Count > 0) {',
+        '      total += queue.Dequeue();',
+        '    }',
+        '    return total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'QueueWhileHeaderRead',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      queueWhileHeaderRead.success && queueWhileHeaderRead.output === 1,
+      `C# worker queue while-header read case should succeed, received ${JSON.stringify(queueWhileHeaderRead)}`
+    );
+    assertCondition(
+      queueWhileHeaderRead.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'queue'
+        && JSON.stringify(event.target.path) === JSON.stringify(['Count'])
+        && event.value === 1) === true,
+      `C# worker while condition should emit a queue.Count read on the header line, received ${JSON.stringify(queueWhileHeaderRead.events)}`
+    );
+
+    const memberDictionaryContainsRead = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private Dictionary<int, int> cache = new Dictionary<int, int>();',
+        '  public int MemberDictionaryContainsRead(int key) {',
+        '    cache[1] = 7;',
+        '    if (this.cache.ContainsKey(key)) return this.cache[key];',
+        '    return -1;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'MemberDictionaryContainsRead',
+      { key: 1 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      memberDictionaryContainsRead.success && memberDictionaryContainsRead.output === 7,
+      `C# worker member dictionary contains case should succeed, received ${JSON.stringify(memberDictionaryContainsRead)}`
+    );
+    assertCondition(
+      memberDictionaryContainsRead.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 6
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['cache', 1])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'key'])
+        && event.value === true) === true,
+      `C# worker this.cache.ContainsKey(key) should emit a keyed V4 read, received ${JSON.stringify(memberDictionaryContainsRead.events)}`
+    );
+
+    const nestedMemberFieldAccess = await runWorkerCase(
+      page,
+      [
+        'public class Node {',
+        '  public int value;',
+        '  public Node prev;',
+        '  public Node next;',
+        '}',
+        'public class Solution {',
+        '  private Node head = new Node();',
+        '  public int NestedMemberFieldAccess(int value) {',
+        '    Node node = new Node { value = value };',
+        '    this.head.next = new Node { value = value + 1 };',
+        '    node.next = this.head.next;',
+        '    this.head.next.prev = node;',
+        '    return this.head.next.prev.value;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'NestedMemberFieldAccess',
+      { value: 4 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      nestedMemberFieldAccess.success && nestedMemberFieldAccess.output === 4,
+      `C# worker nested member field access case should succeed, received ${JSON.stringify(nestedMemberFieldAccess)}`
+    );
+    assertCondition(
+      nestedMemberFieldAccess.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 11
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['head', 'next'])) === true,
+      `C# worker nested member field read should preserve the full field path, received ${JSON.stringify(nestedMemberFieldAccess.events)}`
+    );
+    assertCondition(
+      nestedMemberFieldAccess.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 12
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['head', 'next', 'prev'])) === true,
+      `C# worker nested member field write should preserve the full field path, received ${JSON.stringify(nestedMemberFieldAccess.events)}`
+    );
+
+    const nestedForeachBinding = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int NestedForeachBinding() {',
+        '    var graph = new List<int>[] { new List<int> { 7 }, new List<int>() };',
+        '    int course = 0;',
+        '    int total = 0;',
+        '    foreach (int next in graph[course]) {',
+        '      total += next;',
+        '    }',
+        '    return total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'NestedForeachBinding',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      nestedForeachBinding.success && nestedForeachBinding.output === 7,
+      `C# worker nested foreach binding case should succeed, received ${JSON.stringify(nestedForeachBinding)}`
+    );
+    assertCondition(
+      nestedForeachBinding.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'graph'
+        && JSON.stringify(event.target.path) === JSON.stringify([0, 0])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['course', null])
+        && event.value === 7
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'next') === true,
+      `C# worker nested foreach should emit an element binding read at graph[course][0], received ${JSON.stringify(nestedForeachBinding.events)}`
+    );
+    assertCondition(
+      nestedForeachBinding.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 7
+        && event.target?.variable === 'next'
+        && event.value === 7) === true,
+      `C# worker nested foreach should emit the bound loop variable write on the header line, received ${JSON.stringify(nestedForeachBinding.events)}`
     );
 
     const interviewAdd = await runWorkerCase(
@@ -606,6 +966,75 @@ async function main(): Promise<void> {
       `C# worker traced collection field case should include seen read, received ${JSON.stringify(tracedCollectionField.events)}`
     );
 
+    const tracedNestedHelperCollectionField = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private sealed class Bag {',
+        '    private readonly List<int> items = new List<int>();',
+        '    public void Add(int value) {',
+        '      items.Add(value);',
+        '    }',
+        '    public void ReplaceFirst(int value) {',
+        '      items[0] = value;',
+        '    }',
+        '    public int First() {',
+        '      return items[0];',
+        '    }',
+        '  }',
+        '  public int NestedBackingList(int value) {',
+        '    Bag bag = new Bag();',
+        '    bag.Add(value);',
+        '    bag.ReplaceFirst(value + 4);',
+        '    return bag.First();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'NestedBackingList',
+      { value: 5 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedNestedHelperCollectionField.success,
+      `C# worker traced nested helper collection field case should compile: ${tracedNestedHelperCollectionField.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedNestedHelperCollectionField.output === 9,
+      `C# worker traced nested helper collection field case should return 9, received ${JSON.stringify(tracedNestedHelperCollectionField.output)}`
+    );
+    assertCondition(
+      tracedNestedHelperCollectionField.events?.some((event) =>
+        event.kind === 'snapshot'
+        && event.target?.variable === 'items'
+        && Array.isArray(event.value)) === true,
+      `C# worker traced nested helper collection field case should include items snapshots, received ${JSON.stringify(tracedNestedHelperCollectionField.events)}`
+    );
+    assertCondition(
+      tracedNestedHelperCollectionField.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.target?.variable === 'items'
+        && event.method === 'Add') === true,
+      `C# worker traced nested helper collection field case should include items Add mutation, received ${JSON.stringify(tracedNestedHelperCollectionField.events)}`
+    );
+    assertCondition(
+      tracedNestedHelperCollectionField.events?.some((event) =>
+        event.kind === 'write'
+        && event.target?.variable === 'items'
+        && event.target.path?.[0] === 0
+        && event.value === 9) === true,
+      `C# worker traced nested helper collection field case should include items[0] write, received ${JSON.stringify(tracedNestedHelperCollectionField.events)}`
+    );
+    assertCondition(
+      tracedNestedHelperCollectionField.events?.some((event) =>
+        event.kind === 'read'
+        && event.target?.variable === 'items'
+        && event.target.path?.[0] === 0
+        && event.value === 9) === true,
+      `C# worker traced nested helper collection field case should include items[0] read, received ${JSON.stringify(tracedNestedHelperCollectionField.events)}`
+    );
+
     const tracedCollectionReassignment = await runWorkerCase(
       page,
       [
@@ -923,7 +1352,7 @@ async function main(): Promise<void> {
     assertCondition(minimalTrace.success, `C# worker minimalTrace should succeed: ${minimalTrace.error ?? 'unknown error'}`);
     assertCondition(minimalTrace.output === 5, `C# worker minimalTrace should preserve output, received ${JSON.stringify(minimalTrace.output)}`);
     assertCondition(
-      minimalTrace.events?.every((event) => !['snapshot', 'read', 'write', 'mutate', 'control'].includes(event.kind)) === true,
+      minimalTrace.events?.every((event) => !['snapshot', 'read', 'write', 'mutate'].includes(event.kind)) === true,
       `C# worker minimalTrace should suppress detail events, received ${JSON.stringify(minimalTrace.events)}`
     );
 
@@ -996,6 +1425,86 @@ async function main(): Promise<void> {
       `C# worker traced array case should include nums[1] write, received ${JSON.stringify(tracedArray.events)}`
     );
 
+    const tracedJaggedArrayWrite = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int[][] Paint(int[][] image, int row, int col, int color) {',
+        '    image[row][col] = color;',
+        '    return image;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Paint',
+      { image: [[1, 1], [1, 0]], row: 1, col: 0, color: 2 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedJaggedArrayWrite.success,
+      `C# worker traced jagged-array write case should succeed: ${tracedJaggedArrayWrite.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(tracedJaggedArrayWrite.output) === JSON.stringify([[1, 1], [2, 0]]),
+      `C# worker traced jagged-array write case should return mutated image, received ${JSON.stringify(tracedJaggedArrayWrite.output)}`
+    );
+    assertCondition(
+      tracedJaggedArrayWrite.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 3
+        && event.target?.variable === 'image'
+        && JSON.stringify(event.target.path) === JSON.stringify([1, 0])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['row', 'col'])
+        && event.value === 2
+      ) === true,
+      `C# worker traced jagged-array write case should include image[row][col] write, received ${JSON.stringify(tracedJaggedArrayWrite.events)}`
+    );
+
+    const tracedTupleDequeueBinding = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int DequeuePoint() {',
+        '    var queue = new Queue<(int r, int c)>();',
+        '    queue.Enqueue((1, 2));',
+        '    var (r, c) = queue.Dequeue();',
+        '    return r + c;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'DequeuePoint',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedTupleDequeueBinding.success,
+      `C# worker traced tuple dequeue binding case should succeed: ${tracedTupleDequeueBinding.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedTupleDequeueBinding.output === 3,
+      `C# worker traced tuple dequeue binding case should return 3, received ${JSON.stringify(tracedTupleDequeueBinding.output)}`
+    );
+    assertCondition(
+      tracedTupleDequeueBinding.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 6
+        && event.target?.variable === 'r'
+        && event.value === 1
+      ) === true,
+      `C# worker traced tuple dequeue binding should write r on line 6, received ${JSON.stringify(tracedTupleDequeueBinding.events)}`
+    );
+    assertCondition(
+      tracedTupleDequeueBinding.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 6
+        && event.target?.variable === 'c'
+        && event.value === 2
+      ) === true,
+      `C# worker traced tuple dequeue binding should write c on line 6, received ${JSON.stringify(tracedTupleDequeueBinding.events)}`
+    );
+
     const tracedCompoundArray = await runWorkerCase(
       page,
       [
@@ -1028,6 +1537,83 @@ async function main(): Promise<void> {
     assertCondition(
       tracedCompoundArray.events?.some((event) => event.kind === 'write' && event.target?.variable === 'nums' && event.target.path?.[0] === 1 && event.value === 5) === true,
       `C# worker traced compound array case should include nums[1] increment write, received ${JSON.stringify(tracedCompoundArray.events)}`
+    );
+    const tracedVariableIndexUnaryArray = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int MutateAt(int[] nums, int index) {',
+        '    nums[index]--;',
+        '    return nums[index];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'MutateAt',
+      { nums: [3, 4], index: 1 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedVariableIndexUnaryArray.success,
+      `C# worker traced variable-index unary array case should succeed: ${tracedVariableIndexUnaryArray.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedVariableIndexUnaryArray.output === 3,
+      `C# worker traced variable-index unary array case should return 3, received ${JSON.stringify(tracedVariableIndexUnaryArray.output)}`
+    );
+    assertCondition(
+      tracedVariableIndexUnaryArray.events?.some((event) =>
+        event.kind === 'read'
+        && event.target?.variable === 'nums'
+        && event.target.path?.[0] === 1
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['index'])
+      ) === true,
+      `C# worker traced variable-index unary array case should include read indexSources, received ${JSON.stringify(tracedVariableIndexUnaryArray.events)}`
+    );
+    assertCondition(
+      tracedVariableIndexUnaryArray.events?.some((event) =>
+        event.kind === 'write'
+        && event.target?.variable === 'nums'
+        && event.target.path?.[0] === 1
+        && event.value === 3
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['index'])
+      ) === true,
+      `C# worker traced variable-index unary array case should include write indexSources, received ${JSON.stringify(tracedVariableIndexUnaryArray.events)}`
+    );
+
+    const tracedArraySort = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class Solution {',
+        '  public string SortChars(string input) {',
+        '    char[] chars = input.ToCharArray();',
+        '    Array.Sort(chars);',
+        '    return new string(chars);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortChars',
+      { input: 'tea' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedArraySort.success,
+      `C# worker traced Array.Sort case should succeed: ${tracedArraySort.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedArraySort.output === 'aet',
+      `C# worker traced Array.Sort case should return sorted string, received ${JSON.stringify(tracedArraySort.output)}`
+    );
+    assertCondition(
+      tracedArraySort.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 5
+        && event.target?.variable === 'chars'
+        && event.method === 'Array.Sort'
+      ) === true,
+      `C# worker traced Array.Sort case should include chars mutation, received ${JSON.stringify(tracedArraySort.events)}`
     );
 
     const tracedCollections = await runWorkerCase(
@@ -1845,7 +2431,8 @@ async function main(): Promise<void> {
         '    PriorityQueue<int, int> heap = new PriorityQueue<int, int>(4, comparer);',
         '    heap.Enqueue(value + 1, value + 1);',
         '    heap.Enqueue(value, value);',
-        '    return heap.Dequeue();',
+        '    int peeked = heap.Peek();',
+        '    return peeked + heap.Dequeue();',
         '  }',
         '}',
       ].join('\n'),
@@ -1859,16 +2446,79 @@ async function main(): Promise<void> {
       `C# worker traced priority-queue constructor case should succeed: ${tracedPriorityQueueConstructors.error ?? 'unknown error'}`
     );
     assertCondition(
-      tracedPriorityQueueConstructors.output === 4,
-      `C# worker traced priority-queue constructor case should return 4, received ${JSON.stringify(tracedPriorityQueueConstructors.output)}`
+      tracedPriorityQueueConstructors.output === 8,
+      `C# worker traced priority-queue constructor case should return 8, received ${JSON.stringify(tracedPriorityQueueConstructors.output)}`
+    );
+    const heapSnapshots = tracedPriorityQueueConstructors.events?.filter(
+      (event) => event.kind === 'snapshot' && event.target?.variable === 'heap'
+    ) ?? [];
+    assertCondition(
+      heapSnapshots.length > 0,
+      `C# worker traced priority-queue constructor case should include heap constructor snapshot, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
     );
     assertCondition(
-      tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'snapshot' && event.target?.variable === 'heap') === true,
-      `C# worker traced priority-queue constructor case should include heap constructor snapshot, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+      heapSnapshots.every((event) => Array.isArray(event.value)),
+      `C# worker traced priority-queue snapshots should serialize as indexed state, received ${JSON.stringify(heapSnapshots)}`
+    );
+    assertCondition(
+      heapSnapshots.some((event) => Array.isArray(event.value) && event.value.length === 2),
+      `C# worker traced priority-queue snapshots should show both enqueued values, received ${JSON.stringify(heapSnapshots)}`
+    );
+    assertCondition(
+      heapSnapshots.some((event) => Array.isArray(event.value) && event.value.length === 1),
+      `C# worker traced priority-queue snapshots should shrink after Dequeue, received ${JSON.stringify(heapSnapshots)}`
     );
     assertCondition(
       tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'Enqueue') === true,
       `C# worker traced priority-queue constructor case should include heap Enqueue mutate, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'read' && event.target?.variable === 'heap' && event.target.path?.[0] === 0) === true,
+      `C# worker traced priority-queue Peek should emit a read, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'Peek') !== true,
+      `C# worker traced priority-queue Peek should not emit a mutation, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+
+    const tracedQueueStackPeekReads = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int PeekCollections(int value) {',
+        '    Queue<int> queue = new Queue<int>();',
+        '    queue.Enqueue(value);',
+        '    Stack<int> stack = new Stack<int>();',
+        '    stack.Push(value + 1);',
+        '    return queue.Peek() + stack.Peek();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'PeekCollections',
+      { value: 2 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedQueueStackPeekReads.success,
+      `C# worker traced queue/stack Peek case should succeed: ${tracedQueueStackPeekReads.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedQueueStackPeekReads.output === 5,
+      `C# worker traced queue/stack Peek case should return 5, received ${JSON.stringify(tracedQueueStackPeekReads.output)}`
+    );
+    assertCondition(
+      tracedQueueStackPeekReads.events?.some((event) => event.kind === 'read' && event.target?.variable === 'queue' && event.target.path?.[0] === 0) === true,
+      `C# worker traced Queue.Peek should emit a read, received ${JSON.stringify(tracedQueueStackPeekReads.events)}`
+    );
+    assertCondition(
+      tracedQueueStackPeekReads.events?.some((event) => event.kind === 'read' && event.target?.variable === 'stack' && event.target.path?.[0] === 0) === true,
+      `C# worker traced Stack.Peek should emit a read, received ${JSON.stringify(tracedQueueStackPeekReads.events)}`
+    );
+    assertCondition(
+      tracedQueueStackPeekReads.events?.some((event) => event.kind === 'mutate' && event.method === 'Peek') !== true,
+      `C# worker traced Queue.Peek/Stack.Peek should not emit mutations, received ${JSON.stringify(tracedQueueStackPeekReads.events)}`
     );
 
     const twoSum = await runWorkerCase(page, fixture('two-sum.cs'), 'TwoSum', { nums: [2, 7, 11, 15], target: 9 }, assetBaseUrl);
@@ -2089,8 +2739,12 @@ async function main(): Promise<void> {
     );
     assertCondition(listNodeOutput.success, `C# worker ListNode output case should succeed: ${listNodeOutput.error ?? 'unknown error'}`);
     assertCondition(
-      JSON.stringify(listNodeOutput.output) === JSON.stringify({ val: 4, next: { val: 5, next: null } }),
-      `C# worker ListNode output case should serialize node fields, received ${JSON.stringify(listNodeOutput.output)}`
+      JSON.stringify(listNodeOutput.output) === JSON.stringify({
+        val: 4,
+        value: 4,
+        next: { val: 5, value: 5, next: null },
+      }),
+      `C# worker ListNode output case should serialize node fields with value alias, received ${JSON.stringify(listNodeOutput.output)}`
     );
 
     const treeNodeOutput = await runWorkerCase(
@@ -2110,10 +2764,11 @@ async function main(): Promise<void> {
     assertCondition(
       JSON.stringify(treeNodeOutput.output) === JSON.stringify({
         val: 4,
-        left: { val: 5, left: null, right: null },
-        right: { val: 6, left: null, right: null },
+        value: 4,
+        left: { val: 5, value: 5, left: null, right: null },
+        right: { val: 6, value: 6, left: null, right: null },
       }),
-      `C# worker TreeNode output case should serialize node fields, received ${JSON.stringify(treeNodeOutput.output)}`
+      `C# worker TreeNode output case should serialize node fields with value alias, received ${JSON.stringify(treeNodeOutput.output)}`
     );
 
     const listNodeCycleOutput = await runWorkerCase(
@@ -2262,6 +2917,57 @@ async function main(): Promise<void> {
         && event.target.path?.[0] === 'next') === true,
       `C# worker traced ListNode field writes case should include curr.next write, received ${JSON.stringify(tracedListNodeFieldWrites.events)}`
     );
+
+    const tracedStableObjectIds = await runWorkerCase(
+      page,
+      [
+        'public class Node {',
+        '  public int val;',
+        '  public Node next;',
+        '}',
+        'public class Solution {',
+        '  public int StableObjectIds() {',
+        '    Node a = new Node { val = 1 };',
+        '    Node b = new Node { val = 2 };',
+        '    a.next = b;',
+        '    b.next = a;',
+        '    Node current = a;',
+        '    current = b;',
+        '    return current.val;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'StableObjectIds',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedStableObjectIds.success,
+      `C# worker traced stable object id case should succeed: ${tracedStableObjectIds.error ?? 'unknown error'}`
+    );
+    {
+      const idsByValue = new Map<number, Set<string>>();
+      const visit = (value: unknown) => {
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+          return;
+        }
+        const record = value as { __type__?: string; __id__?: string; val?: number; next?: unknown };
+        if (record.__type__ === 'Node' && typeof record.__id__ === 'string' && typeof record.val === 'number') {
+          const ids = idsByValue.get(record.val) ?? new Set<string>();
+          ids.add(record.__id__);
+          idsByValue.set(record.val, ids);
+        }
+        visit(record.next);
+      };
+      for (const event of tracedStableObjectIds.events ?? []) {
+        visit(event.value);
+      }
+      assertCondition(
+        idsByValue.get(1)?.size === 1 && idsByValue.get(2)?.size === 1,
+        `C# worker traced stable object id case should keep one trace id per object value, received ${JSON.stringify(tracedStableObjectIds.events)}`
+      );
+    }
 
     const tracedTreeNodeValues = await runWorkerCase(
       page,

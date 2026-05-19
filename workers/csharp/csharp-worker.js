@@ -178,6 +178,30 @@ function normalizeCSharpFile(file) {
 
 function normalizeCSharpResult(result) {
   if (!result || typeof result !== 'object') return result;
+  const normalizedEvents = Array.isArray(result.events)
+    ? result.events.map((event) => {
+        const normalizedFile = normalizeCSharpFile(event.file);
+        return normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile };
+      })
+    : null;
+  const normalizedTrace =
+    result.trace && typeof result.trace === 'object' && Array.isArray(result.trace.events)
+      ? {
+          ...result.trace,
+          events: result.trace.events.map((event) => {
+            const normalizedFile = normalizeCSharpFile(event.file);
+            return normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile };
+          }),
+        }
+      : normalizedEvents
+        ? {
+            schemaVersion: result.schemaVersion,
+            language: 'csharp',
+            events: normalizedEvents,
+            lineEventCount: result.lineEventCount,
+            traceStepCount: result.traceStepCount,
+          }
+        : null;
   return {
     ...result,
     ...(Array.isArray(result.diagnostics)
@@ -188,14 +212,8 @@ function normalizeCSharpResult(result) {
           })),
         }
       : {}),
-    ...(Array.isArray(result.events)
-      ? {
-          events: result.events.map((event) => {
-            const normalizedFile = normalizeCSharpFile(event.file);
-            return normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile };
-          }),
-        }
-      : {}),
+    ...(normalizedEvents ? { events: normalizedEvents } : {}),
+    ...(normalizedTrace ? { trace: normalizedTrace } : {}),
   };
 }
 

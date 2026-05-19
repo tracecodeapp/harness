@@ -1398,9 +1398,81 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, value, line);
         }
 
+        public static void SetCurrentLine(int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.SetCurrentLine(line);
+        }
+
+        public static void WithSourceLine(int line, Action action)
+        {
+            int previousLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine;
+            int previousScopedLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.SetCurrentLine(line);
+            TraceCode.CSharpHost.RuntimeTraceSink.SetScopedSourceLine(line);
+            try
+            {
+                action();
+            }
+            finally
+            {
+                TraceCode.CSharpHost.RuntimeTraceSink.SetScopedSourceLine(previousScopedLine);
+                TraceCode.CSharpHost.RuntimeTraceSink.SetCurrentLine(previousLine);
+            }
+        }
+
+        public static bool LoopCondition(int line, string? function, Func<bool> action)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
+            return WithSourceLine(line, action);
+        }
+
+        public static bool LoopCondition(int line, string? function, Func<bool> action, Action snapshot)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
+            bool result = WithSourceLine(line, action);
+            snapshot();
+            return result;
+        }
+
+        public static IEnumerable<T> EnumerableSource<T>(int line, string? function, Func<IEnumerable<T>> action)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
+            return WithSourceLine(line, action);
+        }
+
+        public static IEnumerable<T> EnumerableSource<T>(int line, string? function, Func<IEnumerable<T>> action, Action snapshot)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);
+            IEnumerable<T> result = WithSourceLine(line, action);
+            snapshot();
+            return result;
+        }
+
+        public static T WithSourceLine<T>(int line, Func<T> action)
+        {
+            int previousLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine;
+            int previousScopedLine = TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.SetCurrentLine(line);
+            TraceCode.CSharpHost.RuntimeTraceSink.SetScopedSourceLine(line);
+            try
+            {
+                return action();
+            }
+            finally
+            {
+                TraceCode.CSharpHost.RuntimeTraceSink.SetScopedSourceLine(previousScopedLine);
+                TraceCode.CSharpHost.RuntimeTraceSink.SetCurrentLine(previousLine);
+            }
+        }
+
         public static void Mutate(string variable, string method, IReadOnlyList<object?> args)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, method, args);
+        }
+
+        public static void Mutate(string variable, string method, IReadOnlyList<object?> args, int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, method, args, line);
         }
 
         public static void Mutate(string variable, object index, string method, IReadOnlyList<object?> args)
@@ -1408,9 +1480,24 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, new object?[] { index }, method, args);
         }
 
+        public static void Mutate(string variable, object index, string method, IReadOnlyList<object?> args, int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, new object?[] { index }, method, args, line);
+        }
+
+        public static void Mutate(string variable, object index, string method, IReadOnlyList<object?> args, int line, IReadOnlyList<string?>? indexSources)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, new object?[] { index }, method, args, line, indexSources);
+        }
+
         public static void Mutate(string variable, string[] path, string method, IReadOnlyList<object?> args)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, path, method, args);
+        }
+
+        public static void Mutate(string variable, string[] path, string method, IReadOnlyList<object?> args, int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, path, method, args, line);
         }
 
         public static void Mutate(string variable, object?[] path, string method, IReadOnlyList<object?> args)
@@ -1418,48 +1505,58 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, path, method, args);
         }
 
-        public static void IndexedRead(string variable, object index, object? value, int line)
+        public static void Mutate(string variable, object?[] path, string method, IReadOnlyList<object?> args, int line)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, path, method, args, line);
         }
 
-        public static T IndexedRead<T>(string variable, object?[] path, T value, int line)
+        public static void Mutate(string variable, object?[] path, string method, IReadOnlyList<object?> args, int line, IReadOnlyList<string?>? indexSources)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, path, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, path, method, args, line, indexSources);
+        }
+
+        public static void IndexedRead(string variable, object index, object? value, int line, IReadOnlyList<string?>? indexSources = null)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line, null, indexSources);
+        }
+
+        public static T IndexedRead<T>(string variable, object?[] path, T value, int line, IReadOnlyList<string?>? indexSources = null)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, path, value, line, null, indexSources);
             return value;
         }
 
-        public static bool ContainsRead(bool contains, string variable, object? key, int line)
+        public static bool ContainsRead(bool contains, string variable, object? key, int line, IReadOnlyList<string?>? indexSources = null)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key!, contains, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key!, contains, line, null, indexSources);
             return contains;
         }
 
-        public static bool ContainsRead(bool contains, string variable, object?[] path, int line)
+        public static bool ContainsRead(bool contains, string variable, object?[] path, int line, IReadOnlyList<string?>? indexSources = null)
         {
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, path, contains, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, path, contains, line, null, indexSources);
             return contains;
         }
 
-        public static T ArrayRead<T>(T[] array, int index, string variable, int line)
+        public static T ArrayRead<T>(T[] array, int index, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = array[index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(IList<T> list, int index, string variable, int line)
+        public static T ArrayRead<T>(IList<T> list, int index, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = list[index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line, null, indexSources);
             return value;
         }
 
-        public static TValue ArrayRead<TKey, TValue>(IDictionary<TKey, TValue> dictionary, TKey key, string variable, int line)
+        public static TValue ArrayRead<TKey, TValue>(IDictionary<TKey, TValue> dictionary, TKey key, string variable, int line, IReadOnlyList<string?>? indexSources = null)
             where TKey : notnull
         {
             TValue value = dictionary[key];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, value, line, null, indexSources);
             return value;
         }
 
@@ -1468,11 +1565,12 @@ public class TreeNode
             TKey key,
             int index,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             TValue value = dictionary[key][index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line, null, indexSources);
             return value;
         }
 
@@ -1481,11 +1579,12 @@ public class TreeNode
             TKey key,
             int index,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             TValue value = dictionary[key][index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line, null, indexSources);
             return value;
         }
 
@@ -1494,75 +1593,76 @@ public class TreeNode
             TKey key,
             int index,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             TValue value = dictionary[key][index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line, null, indexSources);
             return value;
         }
 
-        public static char ArrayRead<TKey>(IDictionary<TKey, string> dictionary, TKey key, int index, string variable, int line)
+        public static char ArrayRead<TKey>(IDictionary<TKey, string> dictionary, TKey key, int index, string variable, int line, IReadOnlyList<string?>? indexSources = null)
             where TKey : notnull
         {
             char value = dictionary[key][index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { key, index }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(T[][] array, int row, int column, string variable, int line)
+        public static T ArrayRead<T>(T[][] array, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = array[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(T[,] array, int row, int column, string variable, int line)
+        public static T ArrayRead<T>(T[,] array, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = array[row, column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(T[,,] array, int first, int second, int third, string variable, int line)
+        public static T ArrayRead<T>(T[,,] array, int first, int second, int third, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = array[first, second, third];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { first, second, third }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { first, second, third }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(TraceCodeList<T[]> list, int row, int column, string variable, int line)
+        public static T ArrayRead<T>(TraceCodeList<T[]> list, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = list[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(IList<T[]> list, int row, int column, string variable, int line)
+        public static T ArrayRead<T>(IList<T[]> list, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = list[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(IList<T>[] array, int row, int column, string variable, int line)
+        public static T ArrayRead<T>(IList<T>[] array, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = array[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(List<List<T>> list, int row, int column, string variable, int line)
+        public static T ArrayRead<T>(List<List<T>> list, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = list[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
-        public static T ArrayRead<T>(IList<IList<T>> list, int row, int column, string variable, int line)
+        public static T ArrayRead<T>(IList<IList<T>> list, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = list[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
@@ -1571,11 +1671,12 @@ public class TreeNode
             int row,
             TKey key,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             TValue value = list[row][key];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line, null, indexSources);
             return value;
         }
 
@@ -1584,39 +1685,40 @@ public class TreeNode
             int row,
             TKey key,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             TValue value = list[row][key];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line, null, indexSources);
             return value;
         }
 
-        public static char ArrayRead(string text, int index, string variable, int line)
+        public static char ArrayRead(string text, int index, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             char value = text[index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line, null, indexSources);
             return value;
         }
 
-        public static char ArrayRead(StringBuilder text, int index, string variable, int line)
+        public static char ArrayRead(StringBuilder text, int index, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             char value = text[index];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, line, null, indexSources);
             return value;
         }
 
-        public static char ArrayRead(IList<string> list, int row, int column, string variable, int line)
+        public static char ArrayRead(IList<string> list, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             char value = list[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
-        public static char ArrayRead(string[] array, int row, int column, string variable, int line)
+        public static char ArrayRead(string[] array, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             char value = array[row][column];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }
 
@@ -1625,11 +1727,12 @@ public class TreeNode
             int row,
             TKey key,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             TValue value = array[row][key];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line, null, indexSources);
             return value;
         }
 
@@ -1638,44 +1741,45 @@ public class TreeNode
             int row,
             TKey key,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             TValue value = array[row][key];
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, key }, value, line, null, indexSources);
             return value;
         }
 
-        public static void ArrayWrite<T>(T[] array, int index, T value, string variable, int line)
+        public static void ArrayWrite<T>(T[] array, int index, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             array[index] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line, indexSources);
         }
 
-        public static void ArrayWrite(char[] array, int index, int value, string variable, int line)
+        public static void ArrayWrite(char[] array, int index, int value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             char charValue = (char)value;
             array[index] = charValue;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, charValue, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, charValue, line, indexSources);
         }
 
-        public static void ArrayWrite(StringBuilder text, int index, char value, string variable, int line)
+        public static void ArrayWrite(StringBuilder text, int index, char value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             text[index] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line, indexSources);
         }
 
-        public static void ArrayWrite(StringBuilder text, int index, int value, string variable, int line)
+        public static void ArrayWrite(StringBuilder text, int index, int value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             char charValue = (char)value;
             text[index] = charValue;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, charValue, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, charValue, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(IList<T> list, int index, T value, string variable, int line)
+        public static void ArrayWrite<T>(IList<T> list, int index, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             list[index] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1683,11 +1787,12 @@ public class TreeNode
             TKey key,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             dictionary[key] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, key, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, key, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1696,11 +1801,12 @@ public class TreeNode
             int index,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             dictionary[key][index] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { key, index }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { key, index }, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1709,11 +1815,12 @@ public class TreeNode
             int index,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             dictionary[key][index] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { key, index }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { key, index }, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1722,53 +1829,54 @@ public class TreeNode
             int index,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             dictionary[key][index] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { key, index }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { key, index }, value, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(T[][] array, int row, int column, T value, string variable, int line)
+        public static void ArrayWrite<T>(T[][] array, int row, int column, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             array[row][column] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(T[,] array, int row, int column, T value, string variable, int line)
+        public static void ArrayWrite<T>(T[,] array, int row, int column, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             array[row, column] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(T[,,] array, int first, int second, int third, T value, string variable, int line)
+        public static void ArrayWrite<T>(T[,,] array, int first, int second, int third, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             array[first, second, third] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { first, second, third }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { first, second, third }, value, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(IList<T[]> list, int row, int column, T value, string variable, int line)
+        public static void ArrayWrite<T>(IList<T[]> list, int row, int column, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             list[row][column] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(IList<T>[] array, int row, int column, T value, string variable, int line)
+        public static void ArrayWrite<T>(IList<T>[] array, int row, int column, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             array[row][column] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(List<List<T>> list, int row, int column, T value, string variable, int line)
+        public static void ArrayWrite<T>(List<List<T>> list, int row, int column, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             list[row][column] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line, indexSources);
         }
 
-        public static void ArrayWrite<T>(IList<IList<T>> list, int row, int column, T value, string variable, int line)
+        public static void ArrayWrite<T>(IList<IList<T>> list, int row, int column, T value, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             list[row][column] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, column }, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1777,11 +1885,12 @@ public class TreeNode
             TKey key,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             list[row][key] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1790,11 +1899,12 @@ public class TreeNode
             TKey key,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             list[row][key] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1803,11 +1913,12 @@ public class TreeNode
             TKey key,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             array[row][key] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line, indexSources);
         }
 
         public static void ArrayWrite<TKey, TValue>(
@@ -1816,11 +1927,12 @@ public class TreeNode
             TKey key,
             TValue value,
             string variable,
-            int line
+            int line,
+            IReadOnlyList<string?>? indexSources = null
         ) where TKey : notnull
         {
             array[row][key] = value;
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, new object?[] { row, key }, value, line, indexSources);
         }
 
         public static T FieldRead<T>(T value, string variable, string field, int line)
@@ -1838,6 +1950,12 @@ public class TreeNode
         public static T FieldRead<T>(T value, string variable, object?[] path, int line)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.FieldRead(variable, path, value, line);
+            return value;
+        }
+
+        public static T FieldRead<T>(T value, string variable, object?[] path, int line, IReadOnlyList<string?>? indexSources)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.FieldRead(variable, path, value, line, indexSources);
             return value;
         }
 
@@ -1859,9 +1977,25 @@ public class TreeNode
             return value;
         }
 
+        public static T FieldWrite<T>(T value, string variable, object?[] path, int line, IReadOnlyList<string?>? indexSources)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.FieldWrite(variable, path, value, line, indexSources);
+            return value;
+        }
+
         public static void CheckTimeout()
         {
             TraceCode.CSharpHost.RuntimeTraceSink.CheckTimeout();
+        }
+
+        public static void WithVariableAlias(string actualVariable, string sourceVariable, Action action)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.WithVariableAlias(actualVariable, sourceVariable, action);
+        }
+
+        public static T WithVariableAlias<T>(string actualVariable, string sourceVariable, Func<T> action)
+        {
+            return TraceCode.CSharpHost.RuntimeTraceSink.WithVariableAlias(actualVariable, sourceVariable, action);
         }
     }
 
@@ -1869,7 +2003,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeList(string variable, int line)
+        public TraceCodeList(string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -1908,14 +2042,21 @@ public class TreeNode
         public new void Add(T item)
         {
             base.Add(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
         public new void RemoveAt(int index)
         {
             base.RemoveAt(index);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "RemoveAt", new object?[] { index });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "RemoveAt", new object?[] { index }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
+        public new void Clear()
+        {
+            base.Clear();
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Clear", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
     }
@@ -1925,7 +2066,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeDictionary(string variable, int line)
+        public TraceCodeDictionary(string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2003,23 +2144,28 @@ public class TreeNode
         public new void Add(TKey key, TValue value)
         {
             base.Add(key, value);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { key, value });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { key, value }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
         public new bool Remove(TKey key)
         {
             bool removed = base.Remove(key);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Remove", new object?[] { key });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Remove", new object?[] { key }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return removed;
         }
 
+        public new void Clear()
+        {
+            base.Clear();
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Clear", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+        }
+
         public new bool ContainsKey(TKey key)
         {
-            bool contains = base.ContainsKey(key);
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, contains, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
-            return contains;
+            return base.ContainsKey(key);
         }
 
         public new bool TryGetValue(TKey key, out TValue value)
@@ -2034,7 +2180,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeHashSet(string variable, int line)
+        public TraceCodeHashSet(string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2078,7 +2224,7 @@ public class TreeNode
         public new bool Add(T item)
         {
             bool added = base.Add(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return added;
         }
@@ -2093,9 +2239,16 @@ public class TreeNode
         public new bool Remove(T item)
         {
             bool removed = base.Remove(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Remove", new object?[] { item });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Remove", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return removed;
+        }
+
+        public new void Clear()
+        {
+            base.Clear();
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Clear", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
     }
 
@@ -2103,7 +2256,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeQueue(string variable, int line)
+        public TraceCodeQueue(string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2126,14 +2279,14 @@ public class TreeNode
         public new void Enqueue(T item)
         {
             base.Enqueue(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { item });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
         public new T Dequeue()
         {
             T item = base.Dequeue();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>());
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return item;
         }
@@ -2141,7 +2294,7 @@ public class TreeNode
         public new T Peek()
         {
             T item = base.Peek();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Peek", Array.Empty<object?>());
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, 0, item, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
             return item;
         }
     }
@@ -2150,7 +2303,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodePriorityQueue(string variable, int line)
+        public TraceCodePriorityQueue(string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2198,15 +2351,22 @@ public class TreeNode
         public new void Enqueue(TElement element, TPriority priority)
         {
             base.Enqueue(element, priority);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { element });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { element }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
         public new TElement Dequeue()
         {
             TElement item = base.Dequeue();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>());
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
+            return item;
+        }
+
+        public new TElement Peek()
+        {
+            TElement item = base.Peek();
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, 0, item, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
             return item;
         }
     }
@@ -2215,7 +2375,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeLinkedList(string variable, int line)
+        public TraceCodeLinkedList(string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2231,7 +2391,7 @@ public class TreeNode
         public new LinkedListNode<T> AddLast(T value)
         {
             LinkedListNode<T> node = base.AddLast(value);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "append", new object?[] { value });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "append", new object?[] { value }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return node;
         }
@@ -2239,7 +2399,7 @@ public class TreeNode
         public new LinkedListNode<T> AddFirst(T value)
         {
             LinkedListNode<T> node = base.AddFirst(value);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "appendleft", new object?[] { value });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "appendleft", new object?[] { value }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return node;
         }
@@ -2247,14 +2407,14 @@ public class TreeNode
         public new void RemoveFirst()
         {
             base.RemoveFirst();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "popleft", Array.Empty<object?>());
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "popleft", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
         public new void RemoveLast()
         {
             base.RemoveLast();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "pop", Array.Empty<object?>());
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "pop", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
     }
@@ -2263,7 +2423,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeStack(string variable, int line)
+        public TraceCodeStack(string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2286,14 +2446,14 @@ public class TreeNode
         public new void Push(T item)
         {
             base.Push(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Push", new object?[] { item });
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Push", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
         public new T Pop()
         {
             T item = base.Pop();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Pop", Array.Empty<object?>());
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Pop", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return item;
         }
@@ -2301,7 +2461,7 @@ public class TreeNode
         public new T Peek()
         {
             T item = base.Peek();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Peek", Array.Empty<object?>());
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, 0, item, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
             return item;
         }
     }

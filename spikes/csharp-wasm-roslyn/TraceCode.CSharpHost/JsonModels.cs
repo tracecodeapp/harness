@@ -103,6 +103,10 @@ public sealed class RuntimeTraceEvent
     [JsonPropertyName("args")]
     public List<object?>? Args { get; set; }
 
+    [JsonPropertyName("binding")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RuntimeTraceBinding? Binding { get; set; }
+
     [JsonPropertyName("message")]
     public string? Message { get; set; }
 
@@ -115,6 +119,15 @@ public sealed class RuntimeTraceEvent
     public List<RuntimeTraceCallFrame>? CallStack { get; set; }
 }
 
+public sealed class RuntimeTraceBinding
+{
+    [JsonPropertyName("kind")]
+    public string? Kind { get; set; }
+
+    [JsonPropertyName("variable")]
+    public string Variable { get; set; } = string.Empty;
+}
+
 public sealed class RuntimeTraceTarget
 {
     [JsonPropertyName("variable")]
@@ -122,6 +135,10 @@ public sealed class RuntimeTraceTarget
 
     [JsonPropertyName("path")]
     public List<object?>? Path { get; set; }
+
+    [JsonPropertyName("indexSources")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string?>? IndexSources { get; set; }
 }
 
 public sealed class RuntimeTraceCallFrame
