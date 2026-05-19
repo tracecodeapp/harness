@@ -363,6 +363,8 @@ async function bootDevTerminal(): Promise<void> {
           steps: [
             'python3 takehome/python/main.py',
             'node takehome/js/main.js',
+            'tsc --project takehome/ts/tsconfig.json',
+            'node takehome/ts/dist/index.js',
             'javac -d takehome/java/out takehome/java/stressjava/Main.java takehome/java/stressjava/Order.java takehome/java/stressjava/OrderParser.java takehome/java/stressjava/ReportWriter.java',
             'java --class-path takehome/java/out stressjava.Main',
             { command: 'clang++ -std=c++17 main.cpp order.cpp -o ../analyzer', cwd: 'takehome/cpp/src' },
@@ -381,6 +383,12 @@ async function bootDevTerminal(): Promise<void> {
         mvp: 'mvp',
         python: 'python3 main.py',
         node: 'node index.js',
+        typescript: {
+          steps: [
+            'tsc --project takehome/ts/tsconfig.json',
+            'node takehome/ts/dist/index.js',
+          ],
+        },
         java: 'javac Main.java && java Main',
         csharp: 'dotnet run -- alpha beta',
         cpp: 'clang++ -std=c++17 main.cpp helper.cpp && ./a.out',
@@ -644,6 +652,76 @@ const orders = loadOrders(path.join(root, "data", "orders.csv"));
 const top = writeSummary(orders, path.join(root, "js", "reports", "summary.txt"));
 console.log(\`node:\${top}:takehome\`);
 console.log(process.cwd());
+`,
+      },
+      {
+        path: 'takehome/ts/tsconfig.json',
+        contents: JSON.stringify({
+          compilerOptions: {
+            outDir: 'dist',
+            rootDir: '.',
+            module: 'commonjs',
+            target: 'es2020',
+            strict: true,
+          },
+          files: ['index.ts', 'orders.ts', 'report.ts'],
+        }, null, 2),
+      },
+      {
+        path: 'takehome/ts/orders.ts',
+        contents: `export interface Order {
+  customer: string;
+  sku: string;
+  quantity: number;
+  price: number;
+  total: number;
+}
+
+export function parseOrders(csv: string): Order[] {
+  return csv.trim().split("\\n").slice(1).map((row) => {
+    const [customer, sku, quantity, price] = row.split(",");
+    const parsedQuantity = Number(quantity);
+    const parsedPrice = Number(price);
+    return { customer, sku, quantity: parsedQuantity, price: parsedPrice, total: parsedQuantity * parsedPrice };
+  });
+}
+`,
+      },
+      {
+        path: 'takehome/ts/report.ts',
+        contents: `import type { Order } from "./orders";
+
+export function summarize(orders: Order[]): { top: string; count: number } {
+  const totals: Record<string, number> = {};
+  for (const order of orders) {
+    totals[order.customer] = (totals[order.customer] ?? 0) + order.total;
+  }
+  let top = "";
+  let topTotal = -1;
+  for (const customer in totals) {
+    const total = totals[customer];
+    if (total > topTotal) {
+      top = customer;
+      topTotal = total;
+    }
+  }
+  return { top, count: orders.length };
+}
+`,
+      },
+      {
+        path: 'takehome/ts/index.ts',
+        contents: `import { parseOrders } from "./orders";
+import { summarize } from "./report";
+
+const fs = require("fs");
+const path = require("path");
+const root = path.resolve("takehome");
+const orders = parseOrders(fs.readFileSync(path.join(root, "data", "orders.csv"), "utf8"));
+const summary = summarize(orders);
+fs.mkdirSync(path.join(root, "ts", "reports"), { recursive: true });
+fs.writeFileSync(path.join(root, "ts", "reports", "summary.txt"), \`top=\${summary.top}\\ncount=\${summary.count}\\n\`);
+console.log(\`ts:\${summary.top}:takehome\`);
 `,
       },
       {

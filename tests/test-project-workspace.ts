@@ -24,7 +24,7 @@ import {
   createPyodidePythonProjectRunner,
 } from '../packages/harness-python/src/project-browser';
 import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
-import { createNativeJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
+import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
 import { createBrowserJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-browser';
 import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
 import { createBrowserJavaProjectRunner } from '../packages/harness-java/src/project-browser';
@@ -7883,6 +7883,82 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   workspace.dispose();
 }
 
+async function testTypeScriptProjectCommands(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    typescriptRunner: createTypeScriptProjectRunner(),
+    nodeRunner: createNativeJavaScriptProjectRunner(),
+    projectSession: {
+      id: 'ts-session',
+      projectSlug: 'ts-project',
+      commands: {
+        test: {
+          steps: [
+            'tsc',
+            'node dist/src/index.js',
+          ],
+        },
+        typecheck: 'tsc --noEmit',
+      },
+      files: [
+        {
+          path: 'tsconfig.json',
+          contents: JSON.stringify({
+            compilerOptions: {
+              outDir: 'dist',
+              rootDir: '.',
+              module: 'commonjs',
+              target: 'es2020',
+              strict: true,
+            },
+            files: ['src/index.ts', 'src/math.ts'],
+          }, null, 2),
+        },
+        {
+          path: 'src/math.ts',
+          contents: 'export function add(left: number, right: number): number { return left + right; }\n',
+        },
+        {
+          path: 'src/index.ts',
+          contents: 'import { add } from "./math";\nconsole.log("ts=" + add(2, 3));\n',
+        },
+      ],
+    },
+  });
+
+  const typecheck = await workspace.runProjectCommand('typecheck');
+  assertCondition(typecheck.exitCode === 0 && typecheck.files === undefined, `tsc --noEmit should typecheck without emitting files: ${JSON.stringify(typecheck)}`);
+  assertCondition(!(await workspace.exists('dist/src/index.js')), 'tsc --noEmit should not write dist files');
+
+  const compile = await workspace.runCommand('tsc');
+  assertCondition(compile.exitCode === 0, `tsc should compile cleanly: ${JSON.stringify(compile)}`);
+  assertCondition(
+    (await workspace.readFile('dist/src/index.js')).includes('require("./math")') &&
+      (await workspace.readFile('dist/src/math.js')).includes('function add'),
+    'tsc should emit multi-file CommonJS output into the kernel filesystem'
+  );
+  const run = await workspace.runCommand('node dist/src/index.js');
+  assertCondition(run.exitCode === 0 && run.stdout === 'ts=5\n', `node should run emitted TypeScript output: ${JSON.stringify(run)}`);
+
+  await workspace.writeFile('src/index.ts', 'import { add } from "./math";\nconst value: number = "bad";\nconsole.log(add(value, 3));\n');
+  const badTypecheck = await workspace.runCommand('tsc --noEmit');
+  assertCondition(
+    badTypecheck.exitCode !== 0 &&
+      badTypecheck.stderr.includes('/home/user/ts-project/src/index.ts:2:7') &&
+      badTypecheck.stderr.includes("Type 'string' is not assignable to type 'number'"),
+    `tsc --noEmit should surface project-path diagnostics: ${JSON.stringify(badTypecheck)}`
+  );
+
+  await workspace.writeFile('src/index.ts', 'import { add } from "./math";\nconsole.log("ts=" + add(2, 3));\n');
+  await workspace.remove('dist', { recursive: true, force: true });
+  const stepped = await workspace.runProjectCommand('test');
+  assertCondition(
+    stepped.exitCode === 0 && stepped.stdout === 'ts=5\n',
+    `stepped TypeScript project command should compile then run emitted JS: ${JSON.stringify(stepped)}`
+  );
+
+  workspace.dispose();
+}
+
 async function testTraceKernelInfoConfig(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     kernel: {
@@ -8291,6 +8367,7 @@ async function main(): Promise<void> {
   await testWorkspaceKernelEvents();
   await testWorkspaceTerminalSessionCwd();
   await testProjectSessionMetadataAndCommands();
+  await testTypeScriptProjectCommands();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
   await testConfiguredKernelNativeCompiledRunners();

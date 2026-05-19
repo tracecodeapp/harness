@@ -13,6 +13,16 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
+export {
+  createTypeScriptProjectRunner,
+  type TypeScriptProjectCommandRequest,
+  type TypeScriptProjectCommandResult,
+  type TypeScriptProjectCommandRunner,
+  type TypeScriptProjectFile,
+  type TypeScriptProjectFileEncoding,
+  type TypeScriptProjectRunnerOptions,
+  type TypeScriptProjectSnapshot,
+} from './typescript-project';
 
 export type JavaScriptProjectFileEncoding = RuntimeFileEncoding;
 export type JavaScriptProjectFile = RuntimeFile;

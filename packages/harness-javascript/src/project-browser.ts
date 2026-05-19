@@ -12,6 +12,20 @@ import type {
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
+import {
+  createTypeScriptProjectRunner,
+  type TypeScriptProjectCompiler,
+} from './typescript-project';
+export {
+  createTypeScriptProjectRunner,
+  type TypeScriptProjectCommandRequest,
+  type TypeScriptProjectCommandResult,
+  type TypeScriptProjectCommandRunner,
+  type TypeScriptProjectFile,
+  type TypeScriptProjectFileEncoding,
+  type TypeScriptProjectRunnerOptions,
+  type TypeScriptProjectSnapshot,
+} from './typescript-project';
 import { RuntimeProjectLiveIoController, createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import {
   runtimeDeviceDirEntries,
@@ -79,6 +93,52 @@ export interface BrowserJavaScriptProjectRunnerOptions {
   applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   allowDynamicEval?: boolean;
   timeoutMs?: number;
+}
+
+export interface BrowserTypeScriptProjectRunnerOptions {
+  compilerUrl?: string;
+}
+
+const browserTypeScriptCompilerPromises = new Map<string, Promise<TypeScriptProjectCompiler>>();
+
+async function loadBrowserTypeScriptCompiler(compilerUrl = 'workers/vendor/typescript.js'): Promise<TypeScriptProjectCompiler> {
+  const globalRecord = globalThis as typeof globalThis & { ts?: TypeScriptProjectCompiler };
+  if (globalRecord.ts) return globalRecord.ts;
+  if (typeof document === 'undefined') {
+    const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+      specifier: string
+    ) => Promise<TypeScriptProjectCompiler>;
+    return dynamicImport('typescript');
+  }
+  let compilerPromise = browserTypeScriptCompilerPromises.get(compilerUrl);
+  if (!compilerPromise) {
+    compilerPromise = new Promise<TypeScriptProjectCompiler>((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = compilerUrl;
+      script.async = true;
+      script.onload = () => {
+        if (globalRecord.ts) {
+          resolve(globalRecord.ts);
+        } else {
+          reject(new Error(`TypeScript compiler did not initialize from ${compilerUrl}`));
+        }
+      };
+      script.onerror = () => {
+        reject(new Error(`Failed to load TypeScript compiler from ${compilerUrl}`));
+      };
+      document.head.appendChild(script);
+    });
+    browserTypeScriptCompilerPromises.set(compilerUrl, compilerPromise);
+  }
+  return compilerPromise;
+}
+
+export function createBrowserTypeScriptProjectRunner(
+  options: BrowserTypeScriptProjectRunnerOptions = {}
+) {
+  return createTypeScriptProjectRunner({
+    loadCompiler: () => loadBrowserTypeScriptCompiler(options.compilerUrl),
+  });
 }
 
 interface BrowserJavaScriptProjectExecutionState {

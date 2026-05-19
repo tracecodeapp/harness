@@ -8,13 +8,13 @@ import {
 import { createNativeCppProjectRunner } from '../packages/harness-cpp/src/project-node';
 import { createNativeCSharpProjectRunner } from '../packages/harness-csharp/src/project-node';
 import { createNativeJavaProjectRunner } from '../packages/harness-java/src/project-node';
-import { createNativeJavaScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
+import { createNativeJavaScriptProjectRunner, createTypeScriptProjectRunner } from '../packages/harness-javascript/src/project-node';
 import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
 
 export interface CreateNativeProjectWorkspaceOptions
   extends Omit<
     CreateRuntimeWorkspaceOptions,
-    'pythonRunner' | 'nodeRunner' | 'javaRunner' | 'cppRunner' | 'csharpRunner'
+    'pythonRunner' | 'nodeRunner' | 'typescriptRunner' | 'javaRunner' | 'cppRunner' | 'csharpRunner'
   > {
   pythonCommand?: string;
   nodeCommand?: string;
@@ -61,6 +61,7 @@ export async function createNativeProjectWorkspace(
       timeoutMs: nodeProjectTimeoutMs,
       keepTempDir: keepNativeTempDirs,
     }),
+    typescriptRunner: createTypeScriptProjectRunner(),
     javaRunner: createNativeJavaProjectRunner({
       javacCommand,
       javaCommand,

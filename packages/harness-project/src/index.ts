@@ -128,6 +128,10 @@ export type JavaScriptProjectCommandRequest = RuntimeProjectCommandRequest<
 
 export type JavaScriptProjectCommandRunner = RuntimeProjectCommandRunner<JavaScriptProjectCommandRequest>;
 
+export type TypeScriptProjectCommandRequest = RuntimeProjectCommandRequest<'compile'>;
+
+export type TypeScriptProjectCommandRunner = RuntimeProjectCommandRunner<TypeScriptProjectCommandRequest>;
+
 export type JavaProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 
 export type JavaProjectCommandRunner = RuntimeProjectCommandRunner<JavaProjectCommandRequest>;
@@ -152,6 +156,7 @@ export interface CreateRuntimeWorkspaceOptions {
   pythonRunner?: PythonProjectCommandRunner;
   nodeRunner?: JavaScriptProjectCommandRunner;
   javaRunner?: JavaProjectCommandRunner;
+  typescriptRunner?: TypeScriptProjectCommandRunner;
   cppRunner?: CppProjectCommandRunner;
   csharpRunner?: CSharpProjectCommandRunner;
   python?: boolean;
@@ -1614,6 +1619,25 @@ function isNodeCommandResult(value: NodeParseResult): value is RuntimeCommandRes
   return typeof (value as RuntimeCommandResult).exitCode === 'number';
 }
 
+function parseTscInvocation(args: string[]): RuntimeCommandResult | { args: string[]; showVersion: boolean } {
+  if (args.some((arg) => arg === '--version' || arg === '-v')) {
+    return { args: [], showVersion: true };
+  }
+  const unsupported = args.find((arg) => arg === '--watch' || arg === '-w' || arg === '--build' || arg === '-b');
+  if (unsupported) {
+    return {
+      stdout: '',
+      stderr: `tsc: unsupported project command option '${unsupported}'\n`,
+      exitCode: 2,
+    };
+  }
+  return { args, showVersion: false };
+}
+
+function isTscCommandResult(value: ReturnType<typeof parseTscInvocation>): value is RuntimeCommandResult {
+  return typeof (value as RuntimeCommandResult).exitCode === 'number';
+}
+
 function findBytes(haystack: Uint8Array, needle: Uint8Array, start = 0): number {
   if (needle.length === 0) return start;
   for (let index = start; index <= haystack.length - needle.length; index += 1) {
@@ -2473,6 +2497,38 @@ export function createNodeProjectCommands(
   ];
 }
 
+export function createTypeScriptProjectCommands(
+  runner: TypeScriptProjectCommandRunner,
+  workspaceRoot: string = DEFAULT_CWD,
+  entrypoint?: string,
+  onFileChange?: RuntimeFileChangeObserver,
+  workspaceAlias?: string,
+  kernel?: RuntimeKernelInfo,
+  readonlyFiles?: readonly string[]
+): ProjectWorkspaceCommand[] {
+  const runTsc = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
+    const parsed = parseTscInvocation(args);
+    if (isTscCommandResult(parsed)) return parsed;
+    if (parsed.showVersion) {
+      return { stdout: 'TypeScript project command adapter\n', stderr: '', exitCode: 0 };
+    }
+    return applyCommandResultFiles(ctx, workspaceRoot, await runner({
+      code: '',
+      source: 'compile',
+      scriptPath: 'tsconfig.json',
+      args: parsed.args,
+      cwd: ctx.cwd,
+      env: commandEnv(ctx),
+      stdin: decodeCommandStdin(ctx.stdin),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+    }), onFileChange);
+  };
+
+  return [
+    defineCommand('tsc', runTsc),
+  ];
+}
+
 export function createJavaProjectCommands(
   runner: JavaProjectCommandRunner,
   workspaceRoot: string = DEFAULT_CWD,
@@ -2781,6 +2837,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const customCommands = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
+      ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.cppExecutablePaths.add(path),

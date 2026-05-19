@@ -558,6 +558,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       text.includes('weather-api % python3 takehome/python/main.py') &&
       text.includes('python:Acme:takehome') &&
       text.includes('node:Acme:takehome') &&
+      text.includes('ts:Acme:takehome') &&
       text.includes('java:Acme:takehome') &&
       text.includes('cpp:Acme:takehome') &&
       text.includes('csharp:Acme:takehome'),

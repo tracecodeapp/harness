@@ -48,6 +48,27 @@ const BRIDGED_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['p
   },
 };
 
+const FINAL_DIFF_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
+  workspace: {
+    supported: true,
+    kernelFs: true,
+    virtualDevices: true,
+    virtualProc: true,
+  },
+  filesystem: {
+    finalDiff: true,
+    liveMutationEvents: false,
+    providerLiveInterception: false,
+    binaryFiles: false,
+    directories: true,
+  },
+  stdio: {
+    stdin: false,
+    outputEvents: true,
+    deviceFiles: false,
+  },
+};
+
 const NO_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['project'] = {
   workspace: {
     supported: false,
@@ -224,7 +245,7 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
         runtimeTimeouts: false,
       },
     },
-    project: NO_PROJECT_IO_CAPABILITIES,
+    project: FINAL_DIFF_PROJECT_IO_CAPABILITIES,
     tracing: {
       supported: true,
       events: {
@@ -526,9 +547,6 @@ export function getRuntimeProjectIoSupport(profileOrLanguage: LanguageRuntimePro
 }
 
 function getNodeRuntimeProjectIoSupport(language: Language): RuntimeProjectIoSupport {
-  if (language === 'typescript') {
-    return UNSUPPORTED_PROJECT_IO_SUPPORT;
-  }
   return NODE_FINAL_DIFF_PROJECT_IO_SUPPORT;
 }
 
@@ -540,7 +558,7 @@ const PROJECT_IO_LIMITATIONS: Record<Language, readonly string[]> = {
     'Browser project mode is the reference live tracekernel path; node project mode uses host filesystem execution with final-diff reconciliation.',
   ],
   typescript: [
-    'Project mode is not advertised until a TypeScript project command runner exists.',
+    'Project mode supports tsc compile/typecheck commands through tracekernel snapshots; package installation and watch/build mode are not implemented.',
   ],
   java: [
     'Browser project mode emits bridged live events through TraceCode-owned runtime instrumentation, not provider-native filesystem hooks.',

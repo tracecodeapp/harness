@@ -293,7 +293,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       }
       const jsProjectIo = root.getRuntimeProjectIoSupport('javascript');
       const tsProjectIo = browser.getRuntimeProjectIoSupport('typescript');
-      if (jsProjectIo.tier !== 'native-live' || tsProjectIo.tier !== 'unsupported') {
+      if (jsProjectIo.tier !== 'native-live' || tsProjectIo.tier !== 'final-diff') {
         throw new Error('Project I/O support helper returned unexpected tiers');
       }
       const projectIoMatrix = root.getRuntimeProjectIoCapabilityMatrix();

@@ -51,6 +51,9 @@ importers:
       lodash:
         specifier: 4.17.21
         version: 4.17.21
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
     devDependencies:
       '@types/node':
         specifier: ^20.0.0
@@ -67,9 +70,6 @@ importers:
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
-      typescript:
-        specifier: ^5.0.0
-        version: 5.9.3
 
   examples/web-ide:
     dependencies:
@@ -145,7 +145,7 @@ importers:
         specifier: 4.17.21
         version: 4.17.21
       typescript:
-        specifier: '>=5.0.0'
+        specifier: ^5.0.0
         version: 5.9.3
 
   packages/harness-project:

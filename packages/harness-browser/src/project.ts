@@ -14,6 +14,7 @@ import { createBrowserCppProjectRunner } from '../../harness-cpp/src/project-bro
 import { createBrowserJavaProjectRunner } from '../../harness-java/src/project-browser';
 import {
   createBrowserJavaScriptProjectRunner,
+  createBrowserTypeScriptProjectRunner,
   type BrowserJavaScriptProjectRunnerOptions,
 } from '../../harness-javascript/src/project-browser';
 import { createBrowserPythonProjectRunner } from '../../harness-python/src/project-browser';
@@ -192,6 +193,9 @@ export async function createBrowserProjectWorkspace(
       timeoutMs: nodeProjectTimeoutMs,
       ...nodeProject,
       applyFileChange: applyWorkerFileChange,
+    }),
+    typescriptRunner: createBrowserTypeScriptProjectRunner({
+      compilerUrl: assets.typescriptCompiler,
     }),
     javaRunner: createBrowserJavaProjectRunner(javaWorkerClient, {
       timeoutMs: javaProjectTimeoutMs,

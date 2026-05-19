@@ -1,5 +1,6 @@
 export * from './javascript-executor';
 export * from './typescript-runtime-declarations';
+export * from './typescript-project';
 export { createJavaScriptRuntimeClient } from '../../harness-browser/src/javascript-runtime-client';
 export {
   JavaScriptWorkerClient,
