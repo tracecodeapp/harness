@@ -10,13 +10,45 @@
     return Number.isFinite(lineNumber) && lineNumber > 0 ? lineNumber : null;
   }
 
-  function braceDelta(line) {
-    let delta = 0;
-    for (const ch of line) {
-      if (ch === '{') delta += 1;
-      if (ch === '}') delta -= 1;
+  function javaBraceCounts(line) {
+    let open = 0;
+    let close = 0;
+    let quote = null;
+    let escaped = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const ch = line[index];
+      const next = line[index + 1] ?? '';
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (quote) {
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '/' && next === '/') break;
+      if (ch === '/' && next === '*') {
+        const end = line.indexOf('*/', index + 2);
+        if (end === -1) break;
+        index = end + 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        continue;
+      }
+      if (ch === '{') open += 1;
+      if (ch === '}') close += 1;
     }
-    return delta;
+    return { open, close, delta: open - close };
+  }
+
+  function braceDelta(line) {
+    return javaBraceCounts(line).delta;
   }
 
   function collectJavaCollectionDeclarations(line) {
@@ -24,10 +56,12 @@
       maps: [],
       sets: [],
       lists: [],
+      queues: [],
       adjacencyLists: [],
+      arrays: [],
     };
     const declarationPattern =
-      /\b((?:java\.util\.)?(?:HashMap|LinkedHashMap|TreeMap|Map|HashSet|LinkedHashSet|TreeSet|Set|ArrayList|LinkedList|List)(?!\.)\s*(?:<[^;=(){}]+?>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
+      /\b((?:java\.util\.)?(?:HashMap|LinkedHashMap|TreeMap|Map|HashSet|LinkedHashSet|TreeSet|Set|ArrayList|LinkedList|List|ArrayDeque|Deque|Queue)(?!\.)\s*(?:<[^;=(){}]+?>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
     for (const match of line.matchAll(declarationPattern)) {
       const rawType = match[1] ?? '';
       const typeSource = rawType.replace(/\s+/g, '');
@@ -43,9 +77,18 @@
         /<\s*(?:java\.util\.)?(?:List|ArrayList|LinkedList)\s*</.test(rawType)
       ) {
         collections.adjacencyLists.push(name);
+      } else if (/^(?:ArrayDeque|Deque|Queue)$/.test(outerType)) {
+        collections.lists.push(name);
+        collections.queues.push(name);
       } else if (/^(?:ArrayList|LinkedList|List)$/.test(outerType)) {
         collections.lists.push(name);
       }
+    }
+    const arrayDeclarationPattern =
+      /\b(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*)\s*(?:\[\s*\]\s*)+\s+([A-Za-z_][A-Za-z0-9_]*)\b/g;
+    for (const match of line.matchAll(arrayDeclarationPattern)) {
+      const name = match[1];
+      if (name) collections.arrays.push(name);
     }
     return collections;
   }
@@ -54,6 +97,131 @@
     const normalized = String(source).replace(/\s+/g, '');
     const escaped = escapeRegExp(receiverName);
     return new RegExp(`^${escaped}\\.size\\(\\)-1$`).test(normalized);
+  }
+
+  function isSimpleIdentifierExpression(source) {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(source).trim());
+  }
+
+  function singleIdentifierIndexSource(source) {
+    const identifiers = Array.from(String(source).matchAll(/[A-Za-z_][A-Za-z0-9_]*/g), (match) => match[0]);
+    const unique = Array.from(new Set(identifiers.filter((name) => name !== 'TraceHooks')));
+    if (unique.length !== 1) return null;
+    const stripped = String(source)
+      .replace(/[A-Za-z_][A-Za-z0-9_]*/g, '')
+      .replace(/[0-9]+/g, '')
+      .replace(/[+\-*/%() \t]/g, '');
+    return stripped.length === 0 ? unique[0] : null;
+  }
+
+  function safeIndexSourceExpression(source) {
+    const value = String(source).trim().replace(/\s+/g, ' ');
+    if (!value) return null;
+    if (!/[A-Za-z_][A-Za-z0-9_]*/.test(value)) return null;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) return value;
+    if (/^[A-Za-z_][A-Za-z0-9_]*\s*\[[^\]]+\]\s*$/.test(value)) return value.replace(/\s+/g, '');
+    if (/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*\(\))+(?:\s*[+\-*/%]\s*[0-9]+)?$/.test(value)) {
+      return value;
+    }
+    const stripped = value
+      .replace(/[A-Za-z_][A-Za-z0-9_]*/g, '')
+      .replace(/[0-9]+/g, '')
+      .replace(/[+\-*/%() \t]/g, '');
+    return stripped.length === 0 ? value : null;
+  }
+
+  function indexSourceArgument(source) {
+    const value = String(source).trim();
+    const charAtIndexMatch = value.match(/^[A-Za-z_][A-Za-z0-9_]*\.charAt\(\s*([\s\S]+)\s*\)$/);
+    if (charAtIndexMatch?.[1]) {
+      const charAtSource = safeIndexSourceExpression(charAtIndexMatch[1]) ?? singleIdentifierIndexSource(charAtIndexMatch[1]);
+      if (charAtSource) return JSON.stringify(charAtSource);
+    }
+    const tracedReadSourceMatch = value.match(/^TraceHooks\.read[A-Za-z0-9_]*AtLine\([\s\S]*,\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\)$/);
+    if (tracedReadSourceMatch?.[1]) return `"${tracedReadSourceMatch[1]}"`;
+    const expressionSource = safeIndexSourceExpression(value) ?? singleIdentifierIndexSource(value);
+    if (expressionSource) return JSON.stringify(expressionSource);
+    return isSimpleIdentifierExpression(value) ? JSON.stringify(value) : 'null';
+  }
+
+  function indexSourceArgumentSourceFirst(source) {
+    const value = String(source).trim();
+    const tracedIndexedRead = value.match(/^TraceHooks\.read[A-Za-z0-9_]*AtLine\(\s*\d+\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,[\s\S]*,\s*"([^"]+)"\s*\)$/);
+    if (tracedIndexedRead?.[1] && tracedIndexedRead?.[2]) {
+      return JSON.stringify(`${tracedIndexedRead[1]}[${tracedIndexedRead[2]}]`);
+    }
+    return indexSourceArgument(value);
+  }
+
+  function rewriteEnhancedForIterationBind(line, lineNumber, currentMethod) {
+    const typePattern = '((?:final\\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\\s*<[^,;=(){}:]+>)?)\\s*(?:\\[\\s*\\])*)';
+    const tracedListReadPattern = new RegExp(
+      `\\bfor\\s*\\(\\s*${typePattern}\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*(TraceHooks\\.read(?:Object)?ListAtLine\\(\\s*\\d+\\s*,\\s*"([A-Za-z_][A-Za-z0-9_]*)"\\s*,\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*,\\s*([^,]+)\\s*,\\s*([^)]+)\\))\\s*\\)`,
+      'g'
+    );
+    const withTracedListBindings = String(line).replace(
+      tracedListReadPattern,
+      (match, typeSource, bindingName, source, sourceName, receiverName, indexExpression, indexSource) => {
+        if (sourceName !== receiverName) return match;
+        if (
+          currentMethod.lists.has(sourceName) ||
+          currentMethod.adjacencyLists.has(sourceName)
+        ) {
+          return `for (${typeSource} ${bindingName} : TraceHooks.iterationBindAtLine(${lineNumber}, "${sourceName}", ${String(indexExpression).trim()}, ${source}, "${bindingName}", ${String(indexSource).trim()}))`;
+        }
+        return match;
+      }
+    );
+    return withTracedListBindings.replace(
+      /\bfor\s*\(\s*((?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Za-z_][A-Za-z0-9_<>.?]*(?:\s*<[^,;=(){}:]+>)?)\s*(?:\[\s*\])*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([^)]+?)\s*\)/g,
+      (match, typeSource, bindingName, sourceExpression) => {
+        const source = String(sourceExpression).trim();
+        if (!bindingName || !source || source.startsWith('__tracecode')) return match;
+        const indexedSource = source.match(/^([A-Za-z_][A-Za-z0-9_]*)\.get\(([^()]+)\)$/);
+        if (indexedSource) {
+          const sourceName = indexedSource[1];
+          const indexExpression = String(indexedSource[2]).trim();
+          if (
+            currentMethod.lists.has(sourceName) ||
+            currentMethod.adjacencyLists.has(sourceName)
+          ) {
+            return `for (${typeSource} ${bindingName} : TraceHooks.iterationBindAtLine(${lineNumber}, "${sourceName}", ${indexExpression}, ${source}, "${bindingName}", ${indexSourceArgument(indexExpression)}))`;
+          }
+        }
+        const tracedListRead = source.match(/^TraceHooks\.readListAtLine\(\s*\d+\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*,\s*\1\s*,\s*([^,]+)\s*,\s*([^)]+)\)$/);
+        if (tracedListRead) {
+          const sourceName = tracedListRead[1];
+          const indexExpression = String(tracedListRead[2]).trim();
+          const indexSource = String(tracedListRead[3]).trim();
+          if (
+            currentMethod.lists.has(sourceName) ||
+            currentMethod.adjacencyLists.has(sourceName)
+          ) {
+            return `for (${typeSource} ${bindingName} : TraceHooks.iterationBindAtLine(${lineNumber}, "${sourceName}", ${indexExpression}, ${source}, "${bindingName}", ${indexSource}))`;
+          }
+        }
+        const sourceName = source;
+        if (
+          !currentMethod.lists.has(sourceName) &&
+          !currentMethod.adjacencyLists.has(sourceName) &&
+          !currentMethod.sets.has(sourceName) &&
+          !currentMethod.maps.has(sourceName) &&
+          !currentMethod.arrays.has(sourceName)
+        ) {
+          return match;
+        }
+        return `for (${typeSource} ${bindingName} : TraceHooks.iterationBindAtLine(${lineNumber}, "${sourceName}", ${sourceName}, "${bindingName}"))`;
+      }
+    );
+  }
+
+  function escapedIndexSourcesTargetSegment(...sources) {
+    return `,\\"indexSources\\":[${sources
+      .map((source) => {
+        const value = String(source).trim();
+        return isSimpleIdentifierExpression(value) ? `\\"${value}\\"` : 'null';
+      })
+      .join(',')}]`;
   }
 
   function splitFirstTopLevelJavaArgument(argsSource) {
@@ -263,36 +431,99 @@
     );
   }
 
+  function appendJavaScalarDeclarationWrites(line, lineNumber) {
+    if (line.includes('TraceHooks.emitScalarWriteAtLine(')) return line;
+    if (/TraceHooks\.read[A-Za-z0-9_]*AtLine\(/.test(line)) return line;
+    if (/^\s*(?:for|if|while|switch|catch)\s*\(/.test(line)) return line;
+    if (!/;\s*$/.test(line)) return line;
+    const declarations = collectJavaLocalDeclarations(line);
+    if (declarations.length === 0) return line;
+    const indent = line.match(/^(\s*)/)?.[1] ?? '';
+    const writes = declarations
+      .map((name) => `${indent}TraceHooks.emitScalarWriteAtLine(${lineNumber}, "${name}", ${name});`)
+      .join('\n');
+    return `${line}\n${writes}`;
+  }
+
+  function appendJavaPendingScalarDeclarationWrites(line, lineNumber, declarations) {
+    if (!Array.isArray(declarations) || declarations.length === 0) return line;
+    if (!/;\s*$/.test(line)) return line;
+    const indent = line.match(/^(\s*)/)?.[1] ?? '';
+    const writes = declarations
+      .map((name) => `${indent}TraceHooks.emitScalarWriteAtLine(${lineNumber}, "${name}", ${name});`)
+      .join('\n');
+    return writes ? `${line}\n${writes}` : line;
+  }
+
   function augmentJavaLocalSnapshots(source) {
     const lines = source.split('\n');
     const output = [];
     const scopeStack = [];
+    let currentTraceLine = null;
+    let pendingScalarDeclarationWrites = null;
+    let methodDepth = 0;
     const methodStartPattern =
       /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
 
     for (const line of lines) {
+      if (methodDepth <= 0) {
+        const methodMatch = line.match(methodStartPattern);
+        if (methodMatch) {
+          methodDepth = Math.max(0, braceDelta(line));
+          scopeStack.length = 0;
+          scopeStack.push({ names: parseJavaParameterNames(methodMatch[3] ?? '') });
+          output.push(line);
+          if (methodDepth <= 0) {
+            scopeStack.length = 0;
+            pendingScalarDeclarationWrites = null;
+          }
+          continue;
+        }
+        output.push(line);
+        continue;
+      }
+
       const leadingClosingCount = line.match(/^\s*}+/)?.[0].replace(/\s/g, '').length ?? 0;
       for (let index = 0; index < leadingClosingCount; index += 1) {
         if (scopeStack.length > 0) scopeStack.pop();
       }
 
-      const methodMatch = line.match(methodStartPattern);
-      if (methodMatch) {
-        scopeStack.push({ names: parseJavaParameterNames(methodMatch[3] ?? '') });
-        output.push(line);
-        continue;
-      }
-
       output.push(guardJavaLineEmit(appendJavaLocalSnapshotsToEmitLine(line, scopeStack)));
+      const emittedTraceLine = parseNativeTraceLine(output[output.length - 1]);
+      if (emittedTraceLine !== null) currentTraceLine = emittedTraceLine;
       const declarations = collectJavaLocalDeclarations(line);
+      if (declarations.length > 0) {
+        const lastIndex = output.length - 1;
+        const lineNumber = parseNativeTraceLine(output[lastIndex]) ?? currentTraceLine;
+        if (
+          lineNumber !== null &&
+          !isControlHeaderDeclarationLine(line) &&
+          line.includes('=') &&
+          !/;\s*$/.test(line)
+        ) {
+          pendingScalarDeclarationWrites = {
+            lineNumber,
+            declarations: [...declarations],
+          };
+        }
+      } else if (pendingScalarDeclarationWrites && /;\s*$/.test(line)) {
+        const lastIndex = output.length - 1;
+        output[lastIndex] = appendJavaPendingScalarDeclarationWrites(
+          output[lastIndex],
+          pendingScalarDeclarationWrites.lineNumber,
+          pendingScalarDeclarationWrites.declarations
+        );
+        pendingScalarDeclarationWrites = null;
+      }
       const declarationsBelongToCurrentScope =
         declarations.length > 0 && !isControlHeaderDeclarationLine(line);
       if (declarationsBelongToCurrentScope) {
         const currentScope = scopeStack[scopeStack.length - 1];
         if (currentScope) currentScope.names.push(...declarations);
       }
-      const openingCount = (line.match(/{/g) ?? []).length;
-      const closingCount = Math.max(0, (line.match(/}/g) ?? []).length - leadingClosingCount);
+      const braceCounts = javaBraceCounts(line);
+      const openingCount = braceCounts.open;
+      const closingCount = Math.max(0, braceCounts.close - leadingClosingCount);
       for (let index = 0; index < openingCount; index += 1) {
         scopeStack.push({ names: index === 0 && !declarationsBelongToCurrentScope ? declarations : [] });
       }
@@ -307,6 +538,12 @@
       }
       for (let index = 0; index < closingCount; index += 1) {
         if (scopeStack.length > 0) scopeStack.pop();
+      }
+      methodDepth += braceCounts.delta;
+      if (methodDepth <= 0) {
+        methodDepth = 0;
+        scopeStack.length = 0;
+        pendingScalarDeclarationWrites = null;
       }
     }
 
@@ -371,6 +608,53 @@
     return output + source.slice(cursor);
   }
 
+  function rewriteJavaArraysFillStatement(line, lineNumber, currentMethod) {
+    const match = String(line).match(/^(\s*)(?:java\.util\.)?Arrays\.fill\(([\s\S]*)\);\s*$/);
+    if (!match) return line;
+    const indent = match[1] ?? '';
+    const argsSource = match[2] ?? '';
+    const args = splitTopLevelJavaList(argsSource);
+    if (args.length !== 2) return line;
+    const arrayName = String(args[0]).trim();
+    if (!isSimpleIdentifierExpression(arrayName) || !currentMethod.arrays.has(arrayName)) return line;
+    return `${indent}TraceHooks.fillArrayAtLine(${lineNumber}, "${arrayName}", ${arrayName}, ${args[1]});`;
+  }
+
+  function rewriteJavaArraysSortStatement(line, lineNumber, currentMethod) {
+    const match = String(line).match(/^(\s*)(?:java\.util\.)?Arrays\.sort\(([\s\S]*)\);\s*$/);
+    if (!match) return line;
+    const indent = match[1] ?? '';
+    const argsSource = match[2] ?? '';
+    const args = splitTopLevelJavaList(argsSource);
+    if (args.length < 1 || args.length > 2) return line;
+    const arrayName = String(args[0]).trim();
+    if (!isSimpleIdentifierExpression(arrayName) || !currentMethod.arrays.has(arrayName)) return line;
+    const suffix = args.length === 2 ? `, ${args[1]}` : '';
+    return `${indent}TraceHooks.sortArrayAtLine(${lineNumber}, "${arrayName}", ${arrayName}${suffix});`;
+  }
+
+  function rewriteJavaArrayLengthReads(line, lineNumber, currentMethod) {
+    let nextLine = line;
+    for (const name of currentMethod.arrays) {
+      const tracedArrayElementLengthPattern = new RegExp(
+        `TraceHooks\\.read(?:Object)?ArrayAtLine\\(\\s*${lineNumber}\\s*,\\s*"${escapeRegExp(name)}"\\s*,\\s*${escapeRegExp(name)}\\s*,\\s*([^,]+)\\s*,\\s*([^\\)]+)\\)\\.length\\b(?!\\s*\\()`,
+        'g'
+      );
+      nextLine = nextLine.replace(tracedArrayElementLengthPattern, (match, indexExpression, indexSource) => {
+        const readCall = match.slice(0, match.lastIndexOf('.length'));
+        return `TraceHooks.readArrayLengthAtLine(${lineNumber}, "${name}", ${readCall}, ${String(indexExpression).trim()}, ${String(indexSource).trim()})`;
+      });
+      const nestedLengthPattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\[([^\\]]+)\\]\\.length\\b(?!\\s*\\()`, 'g');
+      nextLine = nextLine.replace(nestedLengthPattern, (_match, indexExpression) => {
+        const indexSource = String(indexExpression).trim();
+        return `TraceHooks.readArrayLengthAtLine(${lineNumber}, "${name}", ${name}[${indexSource}], ${indexSource}, ${indexSourceArgument(indexSource)})`;
+      });
+      const lengthPattern = new RegExp(`\\b${escapeRegExp(name)}\\.length\\b(?!\\s*\\()`, 'g');
+      nextLine = nextLine.replace(lengthPattern, `TraceHooks.readArrayLengthAtLine(${lineNumber}, "${name}", ${name})`);
+    }
+    return nextLine;
+  }
+
   function buildOriginalLineResolver(sourceText) {
     if (typeof sourceText !== 'string' || sourceText.trim().length === 0) {
       return () => null;
@@ -421,13 +705,17 @@
           maps: new Set(),
           sets: new Set(),
           lists: new Set(),
+          queues: new Set(),
           adjacencyLists: new Set(),
+          arrays: new Set(),
         });
         const params = collectJavaCollectionDeclarations(methodMatch[3] ?? '');
         params.maps.forEach((name) => methodStack[methodStack.length - 1].maps.add(name));
         params.sets.forEach((name) => methodStack[methodStack.length - 1].sets.add(name));
         params.lists.forEach((name) => methodStack[methodStack.length - 1].lists.add(name));
+        params.queues.forEach((name) => methodStack[methodStack.length - 1].queues.add(name));
         params.adjacencyLists.forEach((name) => methodStack[methodStack.length - 1].adjacencyLists.add(name));
+        params.arrays.forEach((name) => methodStack[methodStack.length - 1].arrays.add(name));
         return line;
       }
 
@@ -439,26 +727,38 @@
       declarations.maps.forEach((name) => currentMethod.maps.add(name));
       declarations.sets.forEach((name) => currentMethod.sets.add(name));
       declarations.lists.forEach((name) => currentMethod.lists.add(name));
+      declarations.queues.forEach((name) => currentMethod.queues.add(name));
       declarations.adjacencyLists.forEach((name) => currentMethod.adjacencyLists.add(name));
+      declarations.arrays.forEach((name) => currentMethod.arrays.add(name));
 
       const traceLine = parseNativeTraceLine(line);
       if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
 
       const lineNumber = resolveOriginalLine(line) ?? currentMethod.currentTraceLine ?? (lineIndex + 1);
       if (lineNumber !== null) {
+        nextLine = rewriteEnhancedForIterationBind(nextLine, lineNumber, currentMethod);
+        nextLine = rewriteJavaArraysFillStatement(nextLine, lineNumber, currentMethod);
+        nextLine = rewriteJavaArraysSortStatement(nextLine, lineNumber, currentMethod);
+        nextLine = rewriteJavaArrayLengthReads(nextLine, lineNumber, currentMethod);
+
         for (const name of currentMethod.adjacencyLists) {
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'add', (valueSource) =>
+            `TraceHooks.addCollectionAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
+
           const indexedAddPattern = new RegExp(
             `\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)\\.add\\(([^;\\n]+)\\);`,
             'g'
           );
           nextLine = nextLine.replace(indexedAddPattern, (_match, indexSource, valueSource) => {
             const indexExpression = String(indexSource).trim();
-            return `{ TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}).add(${String(valueSource).trim()}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add"); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
+            const value = String(valueSource).trim();
+            return `{ TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}, ${indexSourceArgument(indexExpression)}).add(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add", ${indexSourceArgument(indexExpression)}, ${value}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
 
           const listGetPattern = new RegExp(`\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)`, 'g');
           nextLine = nextLine.replace(listGetPattern, (_match, indexSource) =>
-            `TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${String(indexSource).trim()})`
+            `TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${String(indexSource).trim()}, ${indexSourceArgument(indexSource)})`
           );
         }
 
@@ -472,29 +772,36 @@
             const method = String(methodSource).trim();
             const value = String(valueSource).trim();
             const target = `((java.util.Collection) (${name}).get(${keyExpression}))`;
-            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyExpression}) + "]},\\"value\\":null}"); ${target}.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}"); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
+            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyExpression}) + "]${escapedIndexSourcesTargetSegment(keyExpression)}},\\"value\\":null}"); ${target}.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}", ${indexSourceArgument(keyExpression)}, ${value}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'containsKey', (key) =>
-            `TraceHooks.containsMapKeyAtLine(${lineNumber}, "${name}", ${name}, ${key})`
+            `TraceHooks.containsMapKeyAtLine(${lineNumber}, "${name}", ${name}, ${key}, ${indexSourceArgument(key)})`
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'get', (key) =>
-            `TraceHooks.readMapAtLine(${lineNumber}, "${name}", ${name}, ${key})`
+            `TraceHooks.readMapAtLine(${lineNumber}, "${name}", ${name}, ${key}, ${indexSourceArgument(key)})`
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'getOrDefault', (argsSource) => {
             const parts = splitFirstTopLevelJavaArgument(argsSource);
             if (!parts) return `${name}.getOrDefault(${argsSource})`;
-            return `TraceHooks.readMapOrDefaultAtLine(${lineNumber}, "${name}", ${name}, ${parts[0]}, ${parts[1]})`;
+            return `TraceHooks.readMapOrDefaultAtLine(${lineNumber}, "${name}", ${name}, ${parts[0]}, ${parts[1]}, ${indexSourceArgument(parts[0])})`;
           });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'put', (argsSource) => {
             const parts = splitFirstTopLevelJavaArgument(argsSource);
             if (!parts) return `${name}.put(${argsSource})`;
-            return `TraceHooks.writeMapAtLine(${lineNumber}, "${name}", ${name}, ${parts[0]}, ${parts[1]})`;
+            const keySource = indexSourceArgumentSourceFirst(parts[0]);
+            return `TraceHooks.writeMapAtLine(${lineNumber}, "${name}", ${name}, ${parts[0]}, ${parts[1]}, ${keySource})`;
+          });
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'putIfAbsent', (argsSource) => {
+            const parts = splitFirstTopLevelJavaArgument(argsSource);
+            if (!parts) return `${name}.putIfAbsent(${argsSource})`;
+            const keySource = indexSourceArgumentSourceFirst(parts[0]);
+            return `TraceHooks.putMapIfAbsentAtLine(${lineNumber}, "${name}", ${name}, ${parts[0]}, ${parts[1]}, ${keySource})`;
           });
         }
 
         for (const name of currentMethod.sets) {
           nextLine = replaceJavaReceiverCall(nextLine, name, 'contains', (key) =>
-            `TraceHooks.readSetAtLine(${lineNumber}, "${name}", ${name}, ${key})`
+            `TraceHooks.readSetAtLine(${lineNumber}, "${name}", ${name}, ${key}, ${indexSourceArgument(key)})`
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'add', (key) =>
             `TraceHooks.addSetAtLine(${lineNumber}, "${name}", ${name}, ${key})`
@@ -505,17 +812,35 @@
         }
 
         for (const name of currentMethod.lists) {
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'get', (indexSource) =>
+            `TraceHooks.readListAtLine(${lineNumber}, "${name}", ${name}, ${indexSource}, ${indexSourceArgument(indexSource)})`
+          );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'add', (valueSource) =>
+            `TraceHooks.addCollectionAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'offer', (valueSource) =>
+            `TraceHooks.offerQueueAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'remove', (indexSource) => {
+            if (currentMethod.queues.has(name) && String(indexSource).trim() === '') {
+              return `TraceHooks.pollQueueAtLine(${lineNumber}, "${name}", ${name})`;
+            }
             if (isLastListIndexExpression(indexSource, name)) {
               return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name})`;
             }
             return `TraceHooks.popListAtLine(${lineNumber}, "${name}", ${name}, ${indexSource})`;
           });
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'poll', (indexSource) => {
+            if (currentMethod.queues.has(name) && String(indexSource).trim() === '') {
+              return `TraceHooks.pollQueueAtLine(${lineNumber}, "${name}", ${name})`;
+            }
+            return `${name}.poll(${indexSource})`;
+          });
         }
 
-        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(get|put|set|add|remove)"\);\s*/g;
+        const staleMutationPattern = /TraceHooks\.emitMutatingCallAtLine\(\d+,\s*"([A-Za-z_][A-Za-z0-9_]*)",\s*"(get|put|putIfAbsent|set|add|offer|remove)"(?:\s*,[^;]+?)?\);\s*/g;
         nextLine = nextLine.replace(staleMutationPattern, (match, name, method) => {
-          if (currentMethod.maps.has(name) && (method === 'get' || method === 'put' || method === 'set')) {
+          if (currentMethod.maps.has(name) && (method === 'get' || method === 'put' || method === 'putIfAbsent' || method === 'set')) {
             return '';
           }
           if (currentMethod.sets.has(name) && (method === 'add'  || method === 'remove')) {
@@ -524,7 +849,7 @@
           if (currentMethod.adjacencyLists.has(name) && (method === 'add' )) {
             return '';
           }
-          if (currentMethod.lists.has(name) && method === 'remove') {
+          if (currentMethod.lists.has(name) && (method === 'add' || method === 'offer' || method === 'remove')) {
             return '';
           }
           return match;

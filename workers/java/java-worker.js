@@ -1642,25 +1642,62 @@ function guardJavaLineEmit(line) {
   );
 }
 
+function appendJavaScalarDeclarationWrites(line, lineNumber) {
+  if (line.includes('TraceHooks.emitScalarWriteAtLine(')) return line;
+  if (/TraceHooks\.read[A-Za-z0-9_]*AtLine\(/.test(line)) return line;
+  if (/^\s*(?:for|if|while|switch|catch)\s*\(/.test(line)) return line;
+  if (!/;\s*$/.test(line)) return line;
+  const declarations = collectJavaLocalDeclarations(line);
+  if (declarations.length === 0) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  const writes = declarations
+    .map((name) => `${indent}TraceHooks.emitScalarWriteAtLine(${lineNumber}, "${name}", ${name});`)
+    .join('\n');
+  return `${line}\n${writes}`;
+}
+
+function appendJavaPendingScalarDeclarationWrites(line, lineNumber, declarations) {
+  if (!Array.isArray(declarations) || declarations.length === 0) return line;
+  if (!/;\s*$/.test(line)) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  const writes = declarations
+    .map((name) => `${indent}TraceHooks.emitScalarWriteAtLine(${lineNumber}, "${name}", ${name});`)
+    .join('\n');
+  return writes ? `${line}\n${writes}` : line;
+}
+
 function augmentJavaLocalSnapshots(source) {
   const lines = source.split('\n');
   const output = [];
   const scopeStack = [];
+  let currentTraceLine = null;
+  let pendingScalarDeclarationWrites = null;
+  let methodDepth = 0;
   const methodStartPattern =
     /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
 
   for (const line of lines) {
+    if (methodDepth <= 0) {
+      const methodMatch = line.match(methodStartPattern);
+      if (methodMatch) {
+        methodDepth = Math.max(0, braceDelta(line));
+        const params = parseJavaParameterNames(methodMatch[3] ?? '');
+        scopeStack.length = 0;
+        scopeStack.push({ names: params });
+        output.push(line);
+        if (methodDepth <= 0) {
+          scopeStack.length = 0;
+          pendingScalarDeclarationWrites = null;
+        }
+        continue;
+      }
+      output.push(line);
+      continue;
+    }
+
     const leadingClosingCount = line.match(/^\s*}+/)?.[0].replace(/\s/g, '').length ?? 0;
     for (let index = 0; index < leadingClosingCount; index += 1) {
       if (scopeStack.length > 0) scopeStack.pop();
-    }
-
-    const methodMatch = line.match(methodStartPattern);
-    if (methodMatch) {
-      const params = parseJavaParameterNames(methodMatch[3] ?? '');
-      scopeStack.push({ names: params });
-      output.push(line);
-      continue;
     }
 
     const transformedLine = guardJavaLineEmit(appendJavaLocalSnapshotsAfterMutations(
@@ -1668,8 +1705,32 @@ function augmentJavaLocalSnapshots(source) {
       scopeStack
     ));
     output.push(transformedLine);
+    const emittedTraceLine = parseNativeTraceLine(output[output.length - 1]);
+    if (emittedTraceLine !== null) currentTraceLine = emittedTraceLine;
 
     const declarations = collectJavaLocalDeclarations(line);
+    if (declarations.length > 0 && currentTraceLine !== null) {
+      const lastIndex = output.length - 1;
+      output[lastIndex] = appendJavaScalarDeclarationWrites(output[lastIndex], currentTraceLine);
+      if (
+        !isControlHeaderDeclarationLine(line) &&
+        line.includes('=') &&
+        !/;\s*$/.test(line)
+      ) {
+        pendingScalarDeclarationWrites = {
+          lineNumber: currentTraceLine,
+          declarations: [...declarations],
+        };
+      }
+    } else if (pendingScalarDeclarationWrites && /;\s*$/.test(line)) {
+      const lastIndex = output.length - 1;
+      output[lastIndex] = appendJavaPendingScalarDeclarationWrites(
+        output[lastIndex],
+        pendingScalarDeclarationWrites.lineNumber,
+        pendingScalarDeclarationWrites.declarations
+      );
+      pendingScalarDeclarationWrites = null;
+    }
     const declarationsBelongToCurrentScope =
       declarations.length > 0 && !isControlHeaderDeclarationLine(line);
     if (declarationsBelongToCurrentScope) {
@@ -1680,8 +1741,9 @@ function augmentJavaLocalSnapshots(source) {
         }
       }
     }
-    const openingCount = (line.match(/{/g) ?? []).length;
-    const closingCount = Math.max(0, (line.match(/}/g) ?? []).length - leadingClosingCount);
+    const braceCounts = javaBraceCounts(line);
+    const openingCount = braceCounts.open;
+    const closingCount = Math.max(0, braceCounts.close - leadingClosingCount);
     for (let index = 0; index < openingCount; index += 1) {
       scopeStack.push({ names: index === 0 && !declarationsBelongToCurrentScope ? declarations : [] });
     }
@@ -1700,6 +1762,12 @@ function augmentJavaLocalSnapshots(source) {
     }
     for (let index = 0; index < closingCount; index += 1) {
       if (scopeStack.length > 0) scopeStack.pop();
+    }
+    methodDepth += braceCounts.delta;
+    if (methodDepth <= 0) {
+      methodDepth = 0;
+      scopeStack.length = 0;
+      pendingScalarDeclarationWrites = null;
     }
   }
 
@@ -1953,7 +2021,7 @@ function augmentTraceReturnValueSnapshots(source) {
         const returnExpression = returnMatch[2].trim();
         output.push(`${indent}${currentMethod.returnType} ${tempName} = ${returnExpression};`);
         output.push(
-          `${indent}TraceHooks.emitReturnAtLine(${returnEmitMatch[2]}, "${currentMethod.name}", ${tempName});`
+          `${indent}TraceHooks.emitSerializedReturnAtLine(${returnEmitMatch[2]}, "${currentMethod.name}", TraceHooks.serializeResult(${tempName}));`
         );
         output.push(`${returnMatch[1] ?? indent}return ${tempName};`);
         currentMethod.depth += braceDelta(line) + braceDelta(nextLine);
@@ -2030,24 +2098,54 @@ function isTopLevelMethodStart(line) {
   return /^(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:[\w<>\[\], ?]+\s+)+[A-Za-z_][A-Za-z0-9_]*\s*\([^;]*\)\s*\{/.test(trimmed);
 }
 
-function braceDelta(line) {
-  let delta = 0;
+function isTopLevelTypeStart(line) {
+  const trimmed = line.trim();
+  return /^(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:final\s+|abstract\s+)?(?:class|interface|enum|record)\s+[A-Za-z_][A-Za-z0-9_]*\b/.test(trimmed);
+}
+
+function isTopLevelMemberStart(line) {
+  return isTopLevelMethodStart(line) || isTopLevelTypeStart(line);
+}
+
+function javaBraceCounts(line) {
+  let open = 0;
+  let close = 0;
   let quote = null;
+  let escaped = false;
   for (let index = 0; index < line.length; index += 1) {
     const ch = line[index];
-    const prev = index > 0 ? line[index - 1] : '';
+    const next = line[index + 1] ?? '';
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
     if (quote) {
-      if (ch === quote && prev !== '\\') quote = null;
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '/' && next === '/') break;
+    if (ch === '/' && next === '*') {
+      const end = line.indexOf('*/', index + 2);
+      if (end === -1) break;
+      index = end + 1;
       continue;
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
       continue;
     }
-    if (ch === '{') delta += 1;
-    if (ch === '}') delta -= 1;
+    if (ch === '{') open += 1;
+    if (ch === '}') close += 1;
   }
-  return delta;
+  return { open, close, delta: open - close };
+}
+
+function braceDelta(line) {
+  return javaBraceCounts(line).delta;
 }
 
 function splitScriptMembersAndStatements(lines) {
@@ -2057,7 +2155,7 @@ function splitScriptMembersAndStatements(lines) {
   for (let index = 0; index < lines.length; index += 1) {
     const entry = lines[index];
     const line = typeof entry === 'string' ? entry : entry.line;
-    if (statementDepth !== 0 || !isTopLevelMethodStart(line)) {
+    if (statementDepth !== 0 || !isTopLevelMemberStart(line)) {
       statementLines.push(entry);
       statementDepth += braceDelta(line);
       if (statementDepth < 0) statementDepth = 0;
