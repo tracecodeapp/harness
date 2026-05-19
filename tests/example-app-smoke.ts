@@ -67,6 +67,12 @@ interface BrowserProjectSmokeResults {
   javaJarCompile: BrowserCommandResult;
   javaJarClass: string;
   javaJarRun: BrowserCommandResult;
+  projectSession: {
+    id: string;
+    workspaceRoot: string;
+    testRun: BrowserCommandResult;
+    report: string;
+  };
   takehome: {
     pythonRun: BrowserCommandResult;
     pythonReport: string;
@@ -498,6 +504,42 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
     (text) => text.includes('5') && text.includes('cpp_args=data/a.txt,data/b.txt'),
     240_000
   );
+  const runProjectButton = async (
+    buttonId: string,
+    expectedOutput: string,
+    predicate: (text: string) => boolean,
+    timeoutMs = 240_000
+  ): Promise<void> => {
+    await page.evaluate((id) => {
+      document.querySelector<HTMLButtonElement>(id)?.click();
+    }, buttonId);
+    await page.waitForFunction(
+      (expected) => {
+        const text = document.querySelector('#dev-terminal-output')?.textContent ?? '';
+        const status = document.querySelector('#dev-terminal-status')?.textContent ?? '';
+        return status.endsWith('ready') && text.includes(expected);
+      },
+      expectedOutput,
+      { timeout: timeoutMs }
+    );
+    const output = await page.textContent('#dev-terminal-output');
+    assertCondition(typeof output === 'string' && predicate(output), `Unexpected project command output for ${buttonId}`);
+  };
+  await runProjectButton(
+    '#dev-menu-run-project-start',
+    '$ python3 main.py',
+    (text) => text.includes('$ python3 main.py') && text.includes('5')
+  );
+  await runProjectButton(
+    '#dev-menu-run-project-test',
+    'module_args=session-test',
+    (text) => text.includes('$ python3 -m app.main session-test') && text.includes('module_args=session-test')
+  );
+  await runProjectButton(
+    '#dev-menu-run-project-build',
+    '$ javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
+    (text) => text.includes('$ javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp') && !text.includes('Java compilation failed') && !text.includes('C++ compilation failed')
+  );
 
   const externalJar = await createExternalJavaJarBase64();
   const projectResults = (await page.evaluate(`(async () => {
@@ -849,6 +891,72 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
     ].join('\\n'));
     const takehomeCsharpRun = await workspace.runCommand('dotnet run --project app/App.csproj', { cwd: 'takehome/csharp', env: { MODE: 'takehome' } });
     const takehomeCsharpReport = await safeReadFile('takehome/csharp/reports/summary.txt');
+    const createBrowserProjectWorkspace = window.__tracecodeCreateBrowserProjectWorkspace;
+    if (!createBrowserProjectWorkspace) throw new Error('Missing browser project workspace factory test handle');
+    const sessionWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/workers',
+      pythonProjectTimeoutMs: 120000,
+      projectSession: {
+        id: 'browser-session-takehome-1',
+        projectId: 'browser-session-takehome',
+        projectSlug: 'session-takehome',
+        language: 'python',
+        cwd: 'app',
+        env: { MODE: 'session' },
+        commands: {
+          test: {
+            command: 'python3 main.py',
+            env: { CHECK: 'visible' },
+          },
+        },
+        files: [
+          {
+            path: 'data/orders.csv',
+            contents: [
+              'customer,sku,quantity,price',
+              'Acme,A-100,2,19.50',
+              'Beta,B-200,5,7.25',
+              'Acme,C-300,1,100.00',
+              'Delta,A-100,3,19.50',
+              '',
+            ].join('\\n'),
+          },
+          {
+            path: 'app/orders.py',
+            contents: [
+              'from pathlib import Path',
+              'def read_orders(path):',
+              '    rows = Path(path).read_text().splitlines()[1:]',
+              '    return [row.split(",") for row in rows if row]',
+              '',
+            ].join('\\n'),
+          },
+          {
+            path: 'app/main.py',
+            contents: [
+              'import os',
+              'from pathlib import Path',
+              'from orders import read_orders',
+              'orders = read_orders("../data/orders.csv")',
+              'totals = {}',
+              'for customer, sku, quantity, price in orders:',
+              '    totals[customer] = totals.get(customer, 0) + int(quantity) * float(price)',
+              'top = max(totals.items(), key=lambda item: item[1])[0]',
+              'Path("reports").mkdir(exist_ok=True)',
+              'Path("reports/summary.txt").write_text(f"top={top}\\\\ncount={len(totals)}\\\\n")',
+              'print(f"session:{top}:{os.environ.get(\\'MODE\\')}:{os.environ.get(\\'CHECK\\')}")',
+              'print(os.getcwd())',
+              '',
+            ].join('\\n'),
+          },
+        ],
+        metadata: { source: 'browser-smoke' },
+      },
+    });
+    const projectSessionTestRun = await sessionWorkspace.runProjectCommand('test');
+    const projectSessionReport = await sessionWorkspace.readFile('app/reports/summary.txt');
+    const projectSessionInfo = sessionWorkspace.projectSession;
+    sessionWorkspace.dispose();
     return {
       pythonCwd,
       pythonGenerated,
@@ -898,6 +1006,12 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       javaJarCompile,
       javaJarClass,
       javaJarRun,
+      projectSession: {
+        id: projectSessionInfo?.id ?? '',
+        workspaceRoot: projectSessionInfo?.workspaceRoot ?? '',
+        testRun: projectSessionTestRun,
+        report: projectSessionReport,
+      },
       takehome: {
         pythonRun: takehomePythonRun,
         pythonReport: takehomePythonReport,
@@ -1049,6 +1163,14 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectResults.javaJarRun.exitCode === 0 &&
       projectResults.javaJarRun.stdout === '42\nalpha,beta\n',
     `Browser Java project jar/classpath mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.projectSession.id === 'browser-session-takehome-1' &&
+      projectResults.projectSession.workspaceRoot === '/home/user/session-takehome' &&
+      projectResults.projectSession.testRun.exitCode === 0 &&
+      projectResults.projectSession.testRun.stdout === 'session:Acme:session:visible\n/home/user/session-takehome/app\n' &&
+      projectResults.projectSession.report === 'top=Acme\ncount=3\n',
+    `Browser ProjectSession takehome mismatch: ${JSON.stringify(projectResults.projectSession)}`
   );
   assertCondition(
     projectResults.takehome.pythonRun.exitCode === 0 &&

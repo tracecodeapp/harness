@@ -212,6 +212,9 @@ async function bootDevTerminal(): Promise<void> {
           <button class="dev-menu-trigger" type="button">Run</button>
           <div class="dev-menu-popover">
             <button id="dev-menu-run-current" type="button">Run Current File</button>
+            <button id="dev-menu-run-project-start" type="button">Run Project Start</button>
+            <button id="dev-menu-run-project-test" type="button">Run Project Test</button>
+            <button id="dev-menu-run-project-build" type="button">Run Project Build</button>
             <button id="dev-menu-run-mvp" type="button">Run MVP Checks</button>
           </div>
         </div>
@@ -283,6 +286,9 @@ async function bootDevTerminal(): Promise<void> {
   const focusTerminalButton = document.querySelector<HTMLButtonElement>('#dev-menu-focus-terminal')!;
   const focusExplorerButton = document.querySelector<HTMLButtonElement>('#dev-menu-focus-explorer')!;
   const runCurrentButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-current')!;
+  const runProjectStartButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-project-start')!;
+  const runProjectTestButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-project-test')!;
+  const runProjectBuildButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-project-build')!;
   const runMvpButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-mvp')!;
 
   const appendLine = (text: string, className = ''): void => {
@@ -303,6 +309,11 @@ async function bootDevTerminal(): Promise<void> {
   appendLine('Loading project workspace...');
 
   const { createBrowserProjectWorkspace, createIndexedDbKernelStorage } = await import('@tracecode/harness/browser/project');
+  (
+    window as Window & {
+      __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserProjectWorkspace;
+    }
+  ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
@@ -323,6 +334,9 @@ async function bootDevTerminal(): Promise<void> {
       name: 'Weather API',
       language: 'mixed',
       commands: {
+        start: 'python3 main.py',
+        test: 'python3 -m app.main session-test',
+        build: 'javac Main.java && clang++ -std=c++17 main.cpp helper.cpp -o session-cpp',
         mvp: 'mvp',
         python: 'python3 main.py',
         node: 'node index.js',
@@ -715,6 +729,12 @@ int main(int argc, char** argv) {
   });
 
   const terminalSession = workspace.createTerminalSession();
+  const setProjectCommandButtons = (): void => {
+    const commands = workspace.projectSession?.commands ?? {};
+    runProjectStartButton.disabled = !commands.start;
+    runProjectTestButton.disabled = !commands.test;
+    runProjectBuildButton.disabled = !commands.build;
+  };
   const updatePrompt = (): void => {
     prompt.textContent = terminalSession.prompt.text;
   };
@@ -1052,6 +1072,47 @@ int main(int argc, char** argv) {
   runCurrentButton.addEventListener('click', () => {
     void saveActiveFile().then(() => runTerminalCommand(commandForActiveFile()));
   });
+  const runProjectCommand = async (name: string): Promise<void> => {
+    input.value = '';
+    input.disabled = true;
+    status.textContent = 'tracekernel running';
+    appendLine(`$ ${workspace.projectSession?.commands[name]?.command ?? name}`, 'command');
+    try {
+      const streamedOutput = { stdout: '', stderr: '' };
+      const result = await workspace.runProjectCommand(name, {
+        onEvent: (event: RuntimeCommandEvent) => {
+          if (event.type === 'output') {
+            streamedOutput[event.stream] += event.data;
+            appendBlock(event.data, event.stream);
+          } else if (event.type === 'status') {
+            appendLine(`[${event.phase}] ${event.message}`, 'status');
+          } else if (event.type === 'file-change') {
+            void renderFileTree();
+          }
+        },
+      });
+      if (result.stdout.startsWith(streamedOutput.stdout)) appendBlock(result.stdout.slice(streamedOutput.stdout.length), 'stdout');
+      if (result.stderr.startsWith(streamedOutput.stderr)) appendBlock(result.stderr.slice(streamedOutput.stderr.length), 'stderr');
+      if (result.exitCode !== 0) appendLine(`exit ${result.exitCode}`, 'stderr');
+      await renderFileTree();
+    } catch (error) {
+      appendLine(error instanceof Error ? error.message : String(error), 'stderr');
+    } finally {
+      status.textContent = 'tracekernel ready';
+      input.disabled = false;
+      input.focus();
+      updatePrompt();
+    }
+  };
+  runProjectStartButton.addEventListener('click', () => {
+    void saveActiveFile().then(() => runProjectCommand('start'));
+  });
+  runProjectTestButton.addEventListener('click', () => {
+    void saveActiveFile().then(() => runProjectCommand('test'));
+  });
+  runProjectBuildButton.addEventListener('click', () => {
+    void saveActiveFile().then(() => runProjectCommand('build'));
+  });
   runMvpButton.addEventListener('click', () => {
     void runTerminalCommand('mvp');
   });
@@ -1065,6 +1126,7 @@ int main(int argc, char** argv) {
       __tracecodeProjectWorkspace?: typeof workspace;
     }
   ).__tracecodeProjectWorkspace = workspace;
+  setProjectCommandButtons();
 
   window.addEventListener('beforeunload', disposeTerminal);
   if (import.meta.hot) {
