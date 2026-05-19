@@ -1,0 +1,63 @@
+{
+  "id": "offset-index-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      10,
+      20,
+      30
+    ]
+  },
+  "anchors": {
+    "read": {
+      "python": "return nums[i - 1] + nums[i]",
+      "javascript": "return nums[i - 1] + nums[i];",
+      "typescript": "return nums[i - 1] + nums[i];",
+      "java": "return nums[i - 1] + nums[i];",
+      "csharp": "return nums[i - 1] + nums[i];",
+      "cpp": "return nums[i - 1] + nums[i];"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "read": [
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "indexSources": [
+          "i - 1"
+        ]
+      },
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "indexSources": [
+          "i"
+        ]
+      }
+    ]
+  }
+}

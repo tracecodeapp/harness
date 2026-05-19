@@ -1,0 +1,78 @@
+{
+  "id": "empty-map-clear-mutate",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "clear": {
+      "python": "seen.clear()",
+      "javascript": "seen.clear();",
+      "typescript": "seen.clear();",
+      "java": "seen.clear();",
+      "csharp": "seen.Clear();",
+      "cpp": "seen.clear();"
+    }
+  },
+  "expect": {
+    "clear": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "clear"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "clear": [
+      {
+        "kind": "mutate",
+        "variable": "seen",
+        "method": "clear",
+        "args": []
+      }
+    ]
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "clear": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "method": "Clear"
+          }
+        ]
+      }
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "csharp": {
+      "clear": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "method": "Clear",
+          "args": []
+        }
+      ]
+    }
+  }
+}

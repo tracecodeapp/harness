@@ -1,0 +1,93 @@
+{
+  "id": "cpp-script-two-pointer-line-anchors",
+  "functionName": "",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "callSite": {
+      "cpp": "bool result = two_pointers_converging"
+    },
+    "lambdaEntry": {
+      "cpp": "two_pointers_converging = [&]( vector<string> arr ) -> bool {"
+    },
+    "leftMove": {
+      "cpp": "left += 1;"
+    },
+    "rightMove": {
+      "cpp": "right -= 1;"
+    }
+  },
+  "expectLineSequence": [
+    "callSite",
+    "leftMove",
+    "rightMove",
+    "leftMove",
+    "rightMove",
+    "leftMove",
+    "rightMove"
+  ],
+  "expect": {
+    "callSite": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "result"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "result"
+        }
+      ]
+    },
+    "lambdaEntry": {
+      "eventKinds": [
+        "call"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    },
+    "leftMove": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "arr",
+        "left",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "left"
+        }
+      ]
+    },
+    "rightMove": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "arr",
+        "left",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "right"
+        }
+      ]
+    }
+  }
+}

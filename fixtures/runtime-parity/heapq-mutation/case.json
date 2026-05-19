@@ -99,7 +99,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "heap",
@@ -111,6 +112,10 @@
             "kind": "mutate",
             "variable": "heap",
             "method": "pop"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
           }
         ]
       }
@@ -131,7 +136,10 @@
           {
             "kind": "mutate",
             "variable": "heap",
-            "method": "append"
+            "method": "append",
+            "args": [
+              3
+            ]
           },
           {
             "kind": "read",
@@ -144,7 +152,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "heap",
@@ -154,7 +163,12 @@
           {
             "kind": "mutate",
             "variable": "heap",
-            "method": "pop"
+            "method": "pop",
+            "args": []
+          },
+          {
+            "kind": "write",
+            "variable": "value"
           }
         ]
       }
@@ -175,7 +189,10 @@
           {
             "kind": "mutate",
             "variable": "heap",
-            "method": "append"
+            "method": "append",
+            "args": [
+              3
+            ]
           },
           {
             "kind": "read",
@@ -188,13 +205,19 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "accessTargets": [
           {
             "kind": "mutate",
             "variable": "heap",
-            "method": "pop"
+            "method": "pop",
+            "args": []
+          },
+          {
+            "kind": "write",
+            "variable": "value"
           }
         ],
         "variableSnapshots": [
@@ -209,13 +232,18 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "accessTargets": [
           {
             "kind": "mutate",
             "variable": "heap",
             "method": "pop"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
           }
         ],
         "variableSnapshots": [
@@ -230,13 +258,18 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "accessTargets": [
           {
             "kind": "mutate",
             "variable": "heap",
             "method": "pop"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
           }
         ],
         "variableSnapshots": [
@@ -245,6 +278,28 @@
           "value"
         ]
       }
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "push": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "heappush",
+          "args": [
+            3
+          ]
+        }
+      ],
+      "pop": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "heappop",
+          "args": []
+        }
+      ]
     }
   }
 }

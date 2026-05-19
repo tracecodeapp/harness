@@ -45,34 +45,5 @@
         }
       ]
     }
-  },
-  "expectByLanguage": {
-    "cpp": {
-      "body": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "grid",
-          "i",
-          "j",
-          "total"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "grid",
-            "pathDepth": 1
-          },
-          {
-            "kind": "read",
-            "variable": "grid",
-            "pathDepth": 2
-          }
-        ]
-      }
-    }
   }
 }

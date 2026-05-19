@@ -65,13 +65,25 @@
       ]
     }
   },
+  "expectEventAssertions": {
+    "append": [
+      {
+        "kind": "mutate",
+        "variable": "queue",
+        "args": [
+          1
+        ]
+      }
+    ]
+  },
   "expectByLanguage": {
     "python": {
       "popleft": {
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -84,6 +96,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }
@@ -93,7 +109,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "nums",
@@ -104,6 +121,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }
@@ -113,7 +134,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -125,6 +147,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }
@@ -134,7 +160,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -146,6 +173,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }
@@ -158,6 +189,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "num",
           "nums",
           "queue"
         ],
@@ -173,7 +205,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -185,6 +218,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }

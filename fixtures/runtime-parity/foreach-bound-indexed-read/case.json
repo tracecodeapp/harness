@@ -1,0 +1,205 @@
+{
+  "id": "foreach-bound-indexed-read",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "accounts": [
+      [
+        "John",
+        "john@example.com"
+      ]
+    ]
+  },
+  "anchors": {
+    "bind": {
+      "python": "for account in accounts:",
+      "javascript": "for (const account of accounts) {",
+      "typescript": "for (const account of accounts) {",
+      "java": "for (List<String> account : accounts) {",
+      "csharp": "foreach (var account in accounts)",
+      "cpp": "for (const auto& account : accounts) {"
+    },
+    "read": {
+      "python": "email = account[i]",
+      "javascript": "const email = account[i];",
+      "typescript": "const email = account[i];",
+      "java": "String email = account.get(i);",
+      "csharp": "string email = account[i];",
+      "cpp": "string email = account[i];"
+    }
+  },
+  "expect": {
+    "bind": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "account",
+        "accounts"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "accounts",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "account"
+        }
+      ]
+    },
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "account",
+        "accounts",
+        "email",
+        "i"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "account",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "email"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "bind": [
+        {
+          "kind": "read",
+          "variable": "accounts",
+          "pathDepth": 1,
+          "bindingVariable": "account"
+        },
+        {
+          "kind": "write",
+          "variable": "account",
+          "value": [
+            "John",
+            "john@example.com"
+          ]
+        }
+      ],
+    "read": [
+      {
+        "kind": "read",
+        "variable": "account",
+        "pathDepth": 1,
+        "indexSources": [
+          "i"
+        ],
+        "value": "john@example.com"
+      },
+      {
+        "kind": "write",
+        "variable": "email",
+        "value": "john@example.com"
+      }
+    ]
+  },
+  "expectByLanguage": {
+    "javascript": {
+      "bind": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "accounts"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "accounts",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "account",
+          "accounts",
+          "email",
+          "i"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "account",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "email"
+          }
+        ]
+      }
+    },
+    "typescript": {
+      "bind": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "accounts"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "accounts",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "account",
+          "accounts",
+          "email",
+          "i"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "account",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "email"
+          }
+        ]
+      }
+    }
+  }
+}

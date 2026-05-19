@@ -52,12 +52,20 @@
         {
           "kind": "read",
           "variable": "this",
-          "pathDepth": 2
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
         },
         {
           "kind": "write",
           "variable": "this",
-          "pathDepth": 2
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
         }
       ]
     },
@@ -76,7 +84,11 @@
         {
           "kind": "read",
           "variable": "this",
-          "pathDepth": 2
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
         }
       ]
     }
@@ -98,12 +110,20 @@
           {
             "kind": "read",
             "variable": "self",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
           },
           {
             "kind": "write",
             "variable": "self",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
           }
         ]
       },
@@ -122,7 +142,11 @@
           {
             "kind": "read",
             "variable": "self",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
           }
         ]
       }
@@ -147,7 +171,11 @@
           {
             "kind": "write",
             "variable": "this",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
           }
         ]
       },
@@ -165,7 +193,11 @@
           {
             "kind": "read",
             "variable": "this",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
           }
         ]
       }
@@ -212,6 +244,214 @@
           }
         ]
       }
+    },
+    "javascript": {
+      "bump": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "key",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          },
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          }
+        ]
+      },
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "key",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          }
+        ]
+      }
+    },
+    "typescript": {
+      "bump": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "key",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          },
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          }
+        ]
+      },
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "key",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "this",
+            "pathDepth": 2,
+            "indexSources": [
+              null,
+              "key"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "javascript": {
+      "bump": [
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
+        },
+        {
+          "kind": "mutate",
+          "variable": "this",
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ],
+          "method": "set",
+          "args": [
+            "a",
+            1
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "bump": [
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
+        },
+        {
+          "kind": "mutate",
+          "variable": "this",
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ],
+          "method": "set",
+          "args": [
+            "a",
+            1
+          ]
+        }
+      ]
     }
   }
 }

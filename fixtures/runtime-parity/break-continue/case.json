@@ -81,54 +81,5 @@
         }
       ]
     }
-  },
-  "expectByLanguage": {
-    "cpp": {
-      "continue": {
-        "eventKinds": [
-          "control",
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "nums",
-          "total"
-        ],
-        "accessTargets": []
-      },
-      "break": {
-        "eventKinds": [
-          "control",
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "nums",
-          "total"
-        ],
-        "accessTargets": []
-      },
-      "add": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "nums",
-          "total"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "nums",
-            "pathDepth": 1
-          }
-        ]
-      }
-    }
   }
 }
