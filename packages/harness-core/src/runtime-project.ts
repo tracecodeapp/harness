@@ -97,6 +97,7 @@ export interface RuntimeProjectSnapshot {
   kernelFiles?: RuntimeFile[];
   kernelDevices?: RuntimeKernelDeviceInfo[];
   directories?: string[];
+  readonlyFiles?: readonly string[];
   entrypoint?: string;
   cwd?: string;
   workspaceRoot?: string;

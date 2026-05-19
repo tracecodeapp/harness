@@ -1275,7 +1275,8 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
         write.before === 'session protected\n' &&
         write.after === 'session protected\n' &&
         write.result.exitCode !== 0 &&
-        write.result.stderr.includes('readonly project file')
+        write.result.stdout === '' &&
+        write.result.stderr === "EROFS: readonly project file, write 'README.md'\n"
       ),
     `Browser readonly runtime writes should fail at kernel boundary: ${JSON.stringify(projectResults.projectSession.readonlyRuntimeWrites)}`
   );

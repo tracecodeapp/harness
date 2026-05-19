@@ -41,6 +41,7 @@ import {
   runtimeKernelWriteErrorMessage,
   runtimeKernelWriteTarget,
   readRuntimeProcFile,
+  createRuntimeKernelReadonlyFileError,
   type RuntimeKernelVirtualStat,
 } from '../../harness-core/src/runtime-kernel';
 import type {
@@ -707,7 +708,8 @@ async function snapshotCommandContext(
   workspaceRoot: string,
   entrypoint?: string,
   workspaceAlias?: string,
-  kernel?: RuntimeKernelInfo
+  kernel?: RuntimeKernelInfo,
+  readonlyFiles?: readonly string[]
 ): Promise<RuntimeProjectSnapshot> {
   const files: RuntimeFile[] = [];
   const directories: string[] = [];
@@ -723,11 +725,23 @@ async function snapshotCommandContext(
     ...(kernel ? { kernelFiles: runtimeKernelVirtualFiles(kernel) } : {}),
     files,
     ...(directories.length > 0 ? { directories } : {}),
+    ...(readonlyFiles && readonlyFiles.length > 0 ? { readonlyFiles: [...readonlyFiles] } : {}),
     ...(entrypoint ? { entrypoint } : {}),
   };
 }
 
 type RuntimeFileChangeObserver = (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => void;
+
+function isKernelReadonlyError(error: unknown): boolean {
+  return (error as { code?: unknown }).code === 'EROFS'
+    && error instanceof Error
+    && error.message.startsWith('EROFS: readonly project ');
+}
+
+function kernelCommandFailure(error: unknown): RuntimeCommandResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return { stdout: '', stderr: message ? `${message}\n` : 'Runtime command failed.\n', exitCode: 1 };
+}
 
 async function applyCommandResultFiles(
   ctx: CommandContext,
@@ -735,33 +749,38 @@ async function applyCommandResultFiles(
   result: RuntimeCommandResult,
   onFileChange?: RuntimeFileChangeObserver
 ): Promise<RuntimeCommandResult> {
-  return applyRuntimeCommandResultFiles(result, async (file, phase) => {
-    await withSuspendedFsNotifications(ctx.fs, async () => {
-      const absolutePath = toWorkspacePath(workspaceRoot, file.path);
-      if (isRuntimeDirectoryChange(file)) {
-        if (file.deleted === true) {
-          await ctx.fs.rm(absolutePath, { force: true, recursive: true });
-        } else {
-          await ctx.fs.mkdir(absolutePath, { recursive: true });
+  try {
+    return await applyRuntimeCommandResultFiles(result, async (file, phase) => {
+      await withSuspendedFsNotifications(ctx.fs, async () => {
+        const absolutePath = toWorkspacePath(workspaceRoot, file.path);
+        if (isRuntimeDirectoryChange(file)) {
+          if (file.deleted === true) {
+            await ctx.fs.rm(absolutePath, { force: true, recursive: true });
+          } else {
+            await ctx.fs.mkdir(absolutePath, { recursive: true });
+          }
+          onFileChange?.(file, phase);
+          return;
         }
-        onFileChange?.(file, phase);
-        return;
-      }
-      if ((file as { deleted?: boolean }).deleted === true) {
-        await ctx.fs.rm(absolutePath, { force: true });
-        onFileChange?.(file, phase);
-        return;
-      }
-      const changedFile = file as RuntimeFile;
-      await ctx.fs.mkdir(dirname(absolutePath), { recursive: true });
-      if ((changedFile.encoding ?? 'utf8') === 'base64') {
-        await ctx.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
-      } else {
-        await ctx.fs.writeFile(absolutePath, changedFile.contents);
-      }
-      onFileChange?.(changedFile, phase);
+        if ((file as { deleted?: boolean }).deleted === true) {
+          await ctx.fs.rm(absolutePath, { force: true });
+          onFileChange?.(file, phase);
+          return;
+        }
+        const changedFile = file as RuntimeFile;
+        await ctx.fs.mkdir(dirname(absolutePath), { recursive: true });
+        if ((changedFile.encoding ?? 'utf8') === 'base64') {
+          await ctx.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
+        } else {
+          await ctx.fs.writeFile(absolutePath, changedFile.contents);
+        }
+        onFileChange?.(changedFile, phase);
+      });
     });
-  });
+  } catch (error) {
+    if (isKernelReadonlyError(error)) return kernelCommandFailure(error);
+    throw error;
+  }
 }
 
 async function withSuspendedFsNotifications<T>(fs: CommandContext['fs'], fn: () => Promise<T>): Promise<T> {
@@ -775,9 +794,14 @@ async function applyWorkspaceCommandResultFiles(
   workspace: JustBashRuntimeWorkspace,
   result: RuntimeCommandResult
 ): Promise<RuntimeCommandResult> {
-  return applyRuntimeCommandResultFiles(result, async (file, phase) => {
-    await workspace.applyKernelFileChange(file, phase);
-  });
+  try {
+    return await applyRuntimeCommandResultFiles(result, async (file, phase) => {
+      await workspace.applyKernelFileChange(file, phase);
+    });
+  } catch (error) {
+    if (isKernelReadonlyError(error)) return kernelCommandFailure(error);
+    throw error;
+  }
 }
 
 function assertSupportedEncoding(encoding: RuntimeFileEncoding | undefined): RuntimeFileEncoding {
@@ -2209,7 +2233,8 @@ export function createPythonProjectCommands(
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
-  kernel?: RuntimeKernelInfo
+  kernel?: RuntimeKernelInfo,
+  readonlyFiles?: readonly string[]
 ): ProjectWorkspaceCommand[] {
   const runPython = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parsePythonInvocation(args);
@@ -2282,7 +2307,7 @@ export function createPythonProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin,
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
     }), onFileChange);
   };
 
@@ -2298,7 +2323,8 @@ export function createNodeProjectCommands(
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
-  kernel?: RuntimeKernelInfo
+  kernel?: RuntimeKernelInfo,
+  readonlyFiles?: readonly string[]
 ): ProjectWorkspaceCommand[] {
   const runNode = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     const parsed = parseNodeInvocation(args);
@@ -2372,7 +2398,7 @@ export function createNodeProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin,
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
       ...(
         parsed.inputType || parsed.requireModules.length > 0
           ? {
@@ -2397,7 +2423,8 @@ export function createJavaProjectCommands(
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
-  kernel?: RuntimeKernelInfo
+  kernel?: RuntimeKernelInfo,
+  readonlyFiles?: readonly string[]
 ): ProjectWorkspaceCommand[] {
   const runJavac = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -2427,7 +2454,7 @@ export function createJavaProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
     }), onFileChange);
   };
 
@@ -2476,7 +2503,7 @@ export function createJavaProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
       options: {
         ...(jarPath ? { jarPath, classpath: jarPath } : parsed.classpath ? { classpath: parsed.classpath } : {}),
         ...(jarMainClass ? { jarMainClass } : {}),
@@ -2502,6 +2529,7 @@ export function createCppProjectCommands(
     onFileChange?: RuntimeFileChangeObserver;
     workspaceAlias?: string;
     kernel?: RuntimeKernelInfo;
+    readonlyFiles?: readonly string[];
   } = {}
 ): ProjectWorkspaceCommand[] {
   const runCompiler = (compilerCommand: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
@@ -2526,7 +2554,7 @@ export function createCppProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel),
+      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
       options: { compilerCommand },
     });
     const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result, options.onFileChange);
@@ -2556,7 +2584,7 @@ export function createCppProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel),
+      project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
     }), options.onFileChange);
   };
 
@@ -2579,7 +2607,8 @@ export function createCSharpProjectCommands(
   entrypoint?: string,
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
-  kernel?: RuntimeKernelInfo
+  kernel?: RuntimeKernelInfo,
+  readonlyFiles?: readonly string[]
 ): ProjectWorkspaceCommand[] {
   const runDotnet = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -2603,7 +2632,7 @@ export function createCSharpProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       stdin: decodeCommandStdin(ctx.stdin),
-      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel),
+      project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
       ...(parsed.buildArgs || parsed.noBuild
         ? {
             options: {
@@ -2683,17 +2712,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.emitLocalRuntimeEvent({ type: 'file-change', change, phase });
     };
     const customCommands = [
-      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
-      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
-      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
+      ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
+      ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
+      ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.cppExecutablePaths.add(path),
         entrypoint: this.entrypoint,
         onFileChange: observeFileChange,
         workspaceAlias: this.kernelInfo.workspaceAlias,
         kernel: this.kernelInfo,
+        readonlyFiles: this.projectSession?.readonlyFiles,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.customCommands ?? []),
     ];
     this.bash = new Bash({
@@ -2751,10 +2781,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private assertWorkspacePathWritable(absolutePath: string, operation: string): void {
     if (this.isReadonlyPolicySuspended() || !this.isWorkspacePathReadOnly(absolutePath)) return;
-    throw Object.assign(
-      new Error(`EROFS: readonly project file, ${operation} '${toProjectPath(this.cwd, absolutePath)}'`),
-      { code: 'EROFS' }
-    );
+    throw createRuntimeKernelReadonlyFileError(toProjectPath(this.cwd, absolutePath), operation);
   }
 
   private assertWorkspaceSubtreeWritable(absolutePath: string, operation: string): void {
@@ -3262,6 +3289,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       kernelFiles: runtimeKernelVirtualFiles(this.kernelInfo),
       files,
       ...(directories.length > 0 ? { directories } : {}),
+      ...(this.projectSession?.readonlyFiles.length ? { readonlyFiles: [...this.projectSession.readonlyFiles] } : {}),
       ...(options.entrypoint || this.entrypoint
         ? { entrypoint: options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : this.entrypoint }
         : {}),

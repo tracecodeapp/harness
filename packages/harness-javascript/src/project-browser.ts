@@ -17,6 +17,7 @@ import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
   runtimeKernelAccessTarget,
+  createRuntimeKernelReadonlyFileError,
   runtimeKernelCopyErrorCode,
   runtimeKernelCopyErrorMessage,
   runtimeKernelCopyTarget,
@@ -1535,6 +1536,7 @@ async function runBrowserJavaScriptProjectRequest(
     const kernelInfo = request.project.kernel ?? fallbackKernelInfo(request.project, workspacePathContext);
     const kernelDevices = request.project.kernelDevices;
     const cwdPath = workspaceCwdPath(request);
+    const readonlyFiles = new Set(request.project.readonlyFiles ?? []);
     io.status('process-start', 'Starting browser Node', {
       command: 'node',
       args: processArgvForRequest(request).slice(2),
@@ -2640,6 +2642,9 @@ async function runBrowserJavaScriptProjectRequest(
       assertWorkspaceParentDirectoryPath(normalized, path, syscall);
       if (isWorkspaceDirectoryPath(normalized)) {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, ${syscall} '${path}'`), { code: 'EISDIR' });
+      }
+      if (readonlyFiles.has(normalized)) {
+        throw createRuntimeKernelReadonlyFileError(normalized, 'write');
       }
     };
     const assertFileSystemAccess = (path: unknown, mode: number = fsConstants.F_OK): void => {

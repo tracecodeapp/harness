@@ -152,6 +152,14 @@ export interface RuntimeKernelDeviceInputRoute {
 }
 export const RUNTIME_KERNEL_DEVICE_ENTRIES = ['null', 'stderr', 'stdin', 'stdout', 'tty'] as const;
 
+export function runtimeKernelReadonlyFileErrorMessage(path: string, operation: string): string {
+  return `EROFS: readonly project file, ${operation} '${path}'`;
+}
+
+export function createRuntimeKernelReadonlyFileError(path: string, operation: string): Error & { code: 'EROFS' } {
+  return Object.assign(new Error(runtimeKernelReadonlyFileErrorMessage(path, operation)), { code: 'EROFS' as const });
+}
+
 function normalizeRuntimeAbsolutePath(path: string): string | null {
   const raw = path.replace(/\\/g, '/');
   if (!raw.startsWith('/')) return null;
