@@ -67,6 +67,16 @@ interface BrowserProjectSmokeResults {
   javaJarCompile: BrowserCommandResult;
   javaJarClass: string;
   javaJarRun: BrowserCommandResult;
+  takehome: {
+    javaCompile: BrowserCommandResult;
+    javaRun: BrowserCommandResult;
+    javaReport: string;
+    cppCompile: BrowserCommandResult;
+    cppRun: BrowserCommandResult;
+    cppReport: string;
+    csharpRun: BrowserCommandResult;
+    csharpReport: string;
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -328,7 +338,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   await page.goto(`${previewUrl}/dev/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#dev-terminal-input', { timeout: 180_000 });
   await page.waitForFunction(
-    () => document.querySelector('#dev-terminal-status')?.textContent === 'ready',
+    () => document.querySelector('#dev-terminal-status')?.textContent?.endsWith('ready') === true,
     undefined,
     { timeout: 180_000 }
   );
@@ -346,7 +356,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
         (expected) => {
           const text = document.querySelector('#dev-terminal-output')?.textContent ?? '';
           const status = document.querySelector('#dev-terminal-status')?.textContent ?? '';
-          return status === 'ready' && text.includes(expected);
+          return status.endsWith('ready') && text.includes(expected);
         },
         expectedOutput,
         { timeout: timeoutMs }
@@ -365,7 +375,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
     assertCondition(typeof output === 'string' && predicate(output), `Unexpected dev terminal output for ${command}`);
   };
 
-  await runTerminalCommand('pwd', '/workspace', (text) => text.includes('/workspace'));
+  await runTerminalCommand('pwd', '/home/user/weather-api', (text) => text.includes('/home/user/weather-api'));
   await runTerminalCommand(
     'python3 main.py alpha beta',
     'args=alpha,beta',
@@ -606,6 +616,139 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
     const javaJarCompile = await workspace.runCommand('javac -cp lib/external.jar -d jar-out src/jar/JarMain.java');
     const javaJarClass = await safeReadFile('jar-out/jarapp/JarMain.class', 'base64');
     const javaJarRun = await workspace.runCommand('java -cp jar-out:lib/external.jar jarapp.JarMain alpha beta');
+    await workspace.writeFile('takehome/data/orders.csv', [
+      'customer,sku,quantity,price',
+      'Acme,A-100,2,19.50',
+      'Beta,B-200,5,7.25',
+      'Acme,C-300,1,100.00',
+      'Delta,A-100,3,19.50',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/java/stressjava/Order.java', [
+      'package stressjava;',
+      'public record Order(String customer, String sku, int quantity, double price) {',
+      '  public double total() { return quantity * price; }',
+      '}',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/java/stressjava/OrderParser.java', [
+      'package stressjava;',
+      'import java.nio.file.*;',
+      'import java.util.*;',
+      'public final class OrderParser {',
+      '  public static java.util.List<Order> read(Path path) throws Exception {',
+      '    java.util.List<Order> out = new ArrayList<>();',
+      '    for (String line : Files.readAllLines(path).subList(1, Files.readAllLines(path).size())) {',
+      '      if (line.isBlank()) continue;',
+      '      String[] p = line.split(",");',
+      '      out.add(new Order(p[0], p[1], Integer.parseInt(p[2]), Double.parseDouble(p[3])));',
+      '    }',
+      '    return out;',
+      '  }',
+      '}',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/java/stressjava/ReportWriter.java', [
+      'package stressjava;',
+      'import java.nio.file.*;',
+      'import java.util.*;',
+      'public final class ReportWriter {',
+      '  public static String write(Path path, Map<String, Double> totals) throws Exception {',
+      '    Files.createDirectories(path.getParent());',
+      '    String top = totals.entrySet().stream().max(Map.Entry.comparingByValue()).orElseThrow().getKey();',
+      '    Files.writeString(path, "top=" + top + "\\\\ncount=" + totals.size() + "\\\\n");',
+      '    return top;',
+      '  }',
+      '}',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/java/stressjava/Main.java', [
+      'package stressjava;',
+      'import java.nio.file.*;',
+      'import java.util.*;',
+      'public class Main {',
+      '  public static void main(String[] args) throws Exception {',
+      '    Path root = Path.of(System.getProperty("user.dir"));',
+      '    var orders = OrderParser.read(root.resolve("../data/orders.csv"));',
+      '    Map<String, Double> totals = new TreeMap<>();',
+      '    for (Order order : orders) totals.merge(order.customer(), order.total(), Double::sum);',
+      '    String top = ReportWriter.write(root.resolve("reports/summary.txt"), totals);',
+      '    System.out.println("java:" + top + ":" + System.getenv("MODE"));',
+      '    System.out.println(System.getProperty("user.dir"));',
+      '  }',
+      '}',
+      '',
+    ].join('\\n'));
+    const takehomeJavaCompile = await workspace.runCommand('javac -d out stressjava/Main.java stressjava/Order.java stressjava/OrderParser.java stressjava/ReportWriter.java', { cwd: 'takehome/java' });
+    const takehomeJavaRun = await workspace.runCommand('java --class-path out stressjava.Main', { cwd: 'takehome/java', env: { MODE: 'takehome' } });
+    const takehomeJavaReport = await safeReadFile('takehome/java/reports/summary.txt');
+    await workspace.writeFile('takehome/cpp/src/order.hpp', [
+      '#pragma once',
+      '#include <string>',
+      '#include <vector>',
+      'struct Order { std::string customer; std::string sku; int quantity; double price; };',
+      'std::vector<Order> read_orders(const std::string& path);',
+      'std::string write_report(const std::string& path, const std::vector<Order>& orders);',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/cpp/src/order.cpp', [
+      '#include "order.hpp"',
+      '#include <fstream>',
+      '#include <map>',
+      '#include <sstream>',
+      'std::vector<Order> read_orders(const std::string& path) {',
+      '  std::ifstream in(path); std::string line; std::getline(in, line); std::vector<Order> out;',
+      "  while (std::getline(in, line)) { if (line.empty()) continue; std::stringstream ss(line); std::string c,s,q,p; std::getline(ss,c,','); std::getline(ss,s,','); std::getline(ss,q,','); std::getline(ss,p,','); out.push_back({c,s,std::stoi(q),std::stod(p)}); }",
+      '  return out;',
+      '}',
+      'std::string write_report(const std::string& path, const std::vector<Order>& orders) {',
+      '  std::map<std::string,double> totals; for (const auto& order : orders) totals[order.customer] += order.quantity * order.price;',
+      '  std::string top; double best = -1; for (const auto& item : totals) if (item.second > best) { top = item.first; best = item.second; }',
+      '  std::ofstream out(path); out << "top=" << top << "\\\\ncount=" << totals.size() << "\\\\n"; return top;',
+      '}',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/cpp/src/main.cpp', [
+      '#include "order.hpp"',
+      '#include <cstdlib>',
+      '#include <iostream>',
+      'int main() {',
+      '  auto orders = read_orders("../data/orders.csv");',
+      '  std::string top = write_report("summary.txt", orders);',
+      '  const char* mode = std::getenv("MODE");',
+      '  std::cout << "cpp:" << top << ":" << (mode ? mode : "") << "\\\\n";',
+      '}',
+      '',
+    ].join('\\n'));
+    const takehomeCppCompile = await workspace.runCommand('clang++ -std=c++17 main.cpp order.cpp -o ../analyzer', { cwd: 'takehome/cpp/src' });
+    const takehomeCppRun = await workspace.runCommand('./analyzer', { cwd: 'takehome/cpp', env: { MODE: 'takehome' } });
+    const takehomeCppReport = await safeReadFile('takehome/cpp/summary.txt');
+    await workspace.writeFile('takehome/csharp/app/App.csproj', [
+      '<Project Sdk="Microsoft.NET.Sdk">',
+      '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>',
+      '</Project>',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/csharp/app/Order.cs', 'record Order(string Customer, string Sku, int Quantity, double Price) { public double Total => Quantity * Price; }\\n');
+    await workspace.writeFile('takehome/csharp/app/Parser.cs', [
+      'static class Parser {',
+      '  public static List<Order> Read(string path) => File.ReadAllLines(path).Skip(1).Where(line => line.Length > 0).Select(line => { var p = line.Split(","); return new Order(p[0], p[1], int.Parse(p[2]), double.Parse(p[3])); }).ToList();',
+      '}',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/csharp/app/Program.cs', [
+      'using System.Diagnostics;',
+      'var orders = Parser.Read("../data/orders.csv");',
+      'var totals = orders.GroupBy(o => o.Customer).ToDictionary(g => g.Key, g => g.Sum(o => o.Total));',
+      'var top = totals.OrderByDescending(kv => kv.Value).First().Key;',
+      'Directory.CreateDirectory("reports");',
+      'File.WriteAllText("reports/summary.txt", $"top={top}\\\\ncount={totals.Count}\\\\n");',
+      'Console.WriteLine($"csharp:{top}:{Environment.GetEnvironmentVariable("MODE")}");',
+      'try { Process.Start("echo", "child"); Console.WriteLine("process=ok"); } catch (Exception ex) { Console.WriteLine("process-error=" + ex.GetType().Name); }',
+      '',
+    ].join('\\n'));
+    const takehomeCsharpRun = await workspace.runCommand('dotnet run --project app/App.csproj', { cwd: 'takehome/csharp', env: { MODE: 'takehome' } });
+    const takehomeCsharpReport = await safeReadFile('takehome/csharp/reports/summary.txt');
     return {
       pythonCwd,
       pythonGenerated,
@@ -655,6 +798,16 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       javaJarCompile,
       javaJarClass,
       javaJarRun,
+      takehome: {
+        javaCompile: takehomeJavaCompile,
+        javaRun: takehomeJavaRun,
+        javaReport: takehomeJavaReport,
+        cppCompile: takehomeCppCompile,
+        cppRun: takehomeCppRun,
+        cppReport: takehomeCppReport,
+        csharpRun: takehomeCsharpRun,
+        csharpReport: takehomeCsharpReport,
+      },
     };
   })()`)) as BrowserProjectSmokeResults;
 
@@ -704,7 +857,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   assertCondition(
     projectResults.nodeCwd.exitCode === 0 &&
-      projectResults.nodeCwd.stdout === '/workspace/src/js\n61\n' &&
+      projectResults.nodeCwd.stdout === '/home/user/weather-api/src/js\n61\n' &&
       projectResults.nodeGenerated === 'node-created\n' &&
       projectResults.nodeGeneratedAtRoot !== 'node-created\n',
     `Browser Node project cwd/files mismatch: ${JSON.stringify(projectResults)}`
@@ -741,7 +894,13 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectResults.javaCwdGenerated === 'cwd-created\n' &&
       projectResults.javaPropsGenerated === '/home/user/weather-api/src/javawd\ntracekernel\n' &&
       projectResults.staleAfterJava.stdout === 'deleted\n',
-    `Browser Java project cwd/files mismatch: ${JSON.stringify(projectResults.javaCwd)}`
+    `Browser Java project cwd/files mismatch: ${JSON.stringify({
+      javaCwd: projectResults.javaCwd,
+      javaGenerated: projectResults.javaGenerated,
+      javaCwdGenerated: projectResults.javaCwdGenerated,
+      javaPropsGenerated: projectResults.javaPropsGenerated,
+      staleAfterJava: projectResults.staleAfterJava,
+    })}`
   );
   assertCondition(
     projectResults.javaCwdCompile.exitCode === 0 &&
@@ -786,6 +945,27 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectResults.javaJarRun.exitCode === 0 &&
       projectResults.javaJarRun.stdout === '42\nalpha,beta\n',
     `Browser Java project jar/classpath mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.takehome.javaCompile.exitCode === 0 &&
+      projectResults.takehome.javaRun.exitCode === 0 &&
+      projectResults.takehome.javaRun.stdout === 'java:Acme:takehome\n/home/user/weather-api/takehome/java\n' &&
+      projectResults.takehome.javaReport === 'top=Acme\ncount=3\n',
+    `Browser Java takehome project mismatch: ${JSON.stringify(projectResults.takehome)}`
+  );
+  assertCondition(
+    projectResults.takehome.cppCompile.exitCode === 0 &&
+      projectResults.takehome.cppRun.exitCode === 0 &&
+      projectResults.takehome.cppRun.stdout.includes('cpp:Acme:takehome\n') &&
+      projectResults.takehome.cppReport === 'top=Acme\ncount=3\n',
+    `Browser C++ takehome project mismatch: ${JSON.stringify(projectResults.takehome)}`
+  );
+  assertCondition(
+    projectResults.takehome.csharpRun.exitCode === 0 &&
+      projectResults.takehome.csharpRun.stdout.includes('csharp:Acme:takehome\n') &&
+      projectResults.takehome.csharpRun.stdout.includes('process-error=PlatformNotSupportedException') &&
+      projectResults.takehome.csharpReport === 'top=Acme\ncount=3\n',
+    `Browser C# takehome project mismatch: ${JSON.stringify(projectResults.takehome)}`
   );
 }
 
