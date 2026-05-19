@@ -500,7 +500,7 @@ body {
   left: 0;
   top: 31px;
   z-index: 20;
-  min-width: 170px;
+  min-width: 190px;
   padding: 5px;
   display: none;
   background: #252930;
@@ -528,6 +528,21 @@ body {
 
 .dev-menu-popover button:hover {
   background: #355f9d;
+}
+
+.dev-menu-popover button:disabled {
+  color: #7f858f;
+  cursor: default;
+}
+
+.dev-menu-popover button:disabled:hover {
+  background: transparent;
+}
+
+.dev-menu-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: #3a404a;
 }
 
 .dev-menu-spacer {

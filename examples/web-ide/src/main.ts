@@ -162,6 +162,8 @@ for (int index = 0; index < nums.size(); ++index) {
   },
 };
 
+const DEV_KERNEL_STORAGE_KEY = 'tracecode:dev:user:weather-api';
+
 const getExtension = (lang: Language) => {
   if (lang === 'python') return '.py';
   if (lang === 'javascript') return '.js';
@@ -192,6 +194,8 @@ async function bootDevTerminal(): Promise<void> {
             <button id="dev-menu-new-file" type="button">New File</button>
             <button id="dev-menu-save-file" type="button">Save</button>
             <button id="dev-menu-refresh-files" type="button">Refresh Explorer</button>
+            <div class="dev-menu-separator" role="separator"></div>
+            <button id="dev-menu-reset-session" type="button">Restart Project Session</button>
           </div>
         </div>
         <div class="dev-menu-group">
@@ -281,6 +285,7 @@ async function bootDevTerminal(): Promise<void> {
   const saveFileButton = document.querySelector<HTMLButtonElement>('#dev-menu-save-file')!;
   const refreshFilesButton = document.querySelector<HTMLButtonElement>('#dev-refresh-files')!;
   const menuRefreshFilesButton = document.querySelector<HTMLButtonElement>('#dev-menu-refresh-files')!;
+  const resetSessionButton = document.querySelector<HTMLButtonElement>('#dev-menu-reset-session')!;
   const formatFileButton = document.querySelector<HTMLButtonElement>('#dev-menu-format-file')!;
   const clearTerminalButton = document.querySelector<HTMLButtonElement>('#dev-menu-clear-terminal')!;
   const focusTerminalButton = document.querySelector<HTMLButtonElement>('#dev-menu-focus-terminal')!;
@@ -315,6 +320,7 @@ async function bootDevTerminal(): Promise<void> {
     }
   ).__tracecodeCreateBrowserProjectWorkspace = createBrowserProjectWorkspace;
 
+  const kernelStorage = createIndexedDbKernelStorage({ key: DEV_KERNEL_STORAGE_KEY });
   const workspace = await createBrowserProjectWorkspace({
     assetBaseUrl: '/workers',
     pythonProjectTimeoutMs: 120_000,
@@ -326,7 +332,7 @@ async function bootDevTerminal(): Promise<void> {
       host: { hostname: 'tracevm' },
       workspace: { name: 'weather-api' },
     },
-    kernelStorage: createIndexedDbKernelStorage({ key: 'tracecode:dev:user:weather-api' }),
+    kernelStorage,
     projectSession: {
       id: 'dev-weather-api',
       projectId: 'dev-project',
@@ -1068,6 +1074,20 @@ int main(int argc, char** argv) {
   });
   menuRefreshFilesButton.addEventListener('click', () => {
     void renderFileTree();
+  });
+  resetSessionButton.addEventListener('click', () => {
+    if (!window.confirm('Restart this project session? This clears the saved /dev workspace and reloads the starter files.')) return;
+    resetSessionButton.disabled = true;
+    appendLine('Restarting project session...');
+    void kernelStorage.clear()
+      .then(() => {
+        workspace.dispose();
+        window.location.reload();
+      })
+      .catch((error) => {
+        resetSessionButton.disabled = false;
+        appendLine(error instanceof Error ? error.message : String(error), 'stderr');
+      });
   });
   formatFileButton.addEventListener('click', () => {
     void projectEditor.getAction('editor.action.formatDocument')?.run();
