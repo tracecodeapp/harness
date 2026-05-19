@@ -18,6 +18,13 @@ interface BrowserCommandResult {
   exitCode: number;
 }
 
+interface BrowserReadonlyRuntimeResult {
+  language: string;
+  result: BrowserCommandResult;
+  before: string;
+  after: string;
+}
+
 interface BrowserProjectSmokeResults {
   pythonCwd: BrowserCommandResult;
   pythonGenerated: string;
@@ -77,6 +84,7 @@ interface BrowserProjectSmokeResults {
       read: string;
       writeRejected: boolean;
     };
+    readonlyRuntimeWrites: BrowserReadonlyRuntimeResult[];
   };
   takehome: {
     pythonRun: BrowserCommandResult;
@@ -901,16 +909,19 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
     const sessionWorkspace = await createBrowserProjectWorkspace({
       assetBaseUrl: '/workers',
       pythonProjectTimeoutMs: 120000,
+      javaProjectTimeoutMs: 120000,
+      csharpProjectTimeoutMs: 120000,
+      cppProjectTimeoutMs: 120000,
       projectSession: {
         id: 'browser-session-takehome-1',
         projectId: 'browser-session-takehome',
         projectSlug: 'session-takehome',
-        language: 'python',
-        cwd: 'app',
+        language: 'mixed',
         env: { MODE: 'session' },
         commands: {
           test: {
             command: 'python3 main.py',
+            cwd: 'app',
             env: { CHECK: 'visible' },
           },
         },
@@ -959,6 +970,50 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
             readonly: true,
             contents: 'session protected\\n',
           },
+          {
+            path: 'mutate-readonly.js',
+            contents: 'const fs = require("node:fs");\\nfs.writeFileSync("README.md", "node changed\\\\n");\\nconsole.log("after node write");\\n',
+          },
+          {
+            path: 'mutate-readonly.py',
+            contents: 'from pathlib import Path\\nPath("README.md").write_text("python changed\\\\n")\\nprint("after python write")\\n',
+          },
+          {
+            path: 'MutateReadonly.java',
+            contents: [
+              'import java.nio.file.*;',
+              'public class MutateReadonly {',
+              '  public static void main(String[] args) throws Exception {',
+              '    Files.writeString(Path.of("README.md"), "java changed\\\\n");',
+              '    System.out.println("after java write");',
+              '  }',
+              '}',
+              '',
+            ].join('\\n'),
+          },
+          {
+            path: 'readonly-csharp/ReadonlyCsharp.csproj',
+            contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\\n',
+          },
+          {
+            path: 'readonly-csharp/Program.cs',
+            contents: 'using System;\\nusing System.IO;\\nFile.WriteAllText("../README.md", "csharp changed\\\\n");\\nConsole.WriteLine("after csharp write");\\n',
+          },
+          {
+            path: 'mutate-readonly.cpp',
+            contents: [
+              '#include <fstream>',
+              '#include <iostream>',
+              'int main() {',
+              '  std::ofstream out("README.md");',
+              '  out << "cpp changed\\\\n";',
+              '  out.close();',
+              '  std::cout << "after cpp write\\\\n";',
+              '  return 0;',
+              '}',
+              '',
+            ].join('\\n'),
+          },
         ],
         metadata: { source: 'browser-smoke' },
       },
@@ -972,6 +1027,20 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectSessionReadonlyWriteRejected = true;
     }
     const projectSessionReadonlyRead = await sessionWorkspace.readFile('README.md');
+    const readonlyRuntimeChecks = [
+      ['node', 'node mutate-readonly.js'],
+      ['python', 'python3 mutate-readonly.py'],
+      ['java', 'javac MutateReadonly.java && java MutateReadonly'],
+      ['csharp', 'dotnet run --project readonly-csharp/ReadonlyCsharp.csproj'],
+      ['cpp', 'clang++ -std=c++17 mutate-readonly.cpp && ./a.out'],
+    ];
+    const readonlyRuntimeWrites = [];
+    for (const [language, command] of readonlyRuntimeChecks) {
+      const before = await sessionWorkspace.readFile('README.md');
+      const result = await sessionWorkspace.runCommand(command);
+      const after = await sessionWorkspace.readFile('README.md');
+      readonlyRuntimeWrites.push({ language, result, before, after });
+    }
     const projectSessionInfo = sessionWorkspace.projectSession;
     sessionWorkspace.dispose();
     return {
@@ -1033,6 +1102,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
           read: projectSessionReadonlyRead,
           writeRejected: projectSessionReadonlyWriteRejected,
         },
+        readonlyRuntimeWrites,
       },
       takehome: {
         pythonRun: takehomePythonRun,
@@ -1196,6 +1266,18 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectResults.projectSession.readonly.writeRejected &&
       projectResults.projectSession.readonly.read === 'session protected\n',
     `Browser ProjectSession takehome mismatch: ${JSON.stringify(projectResults.projectSession)}`
+  );
+  const expectedReadonlyRuntimeLanguages = ['node', 'python', 'java', 'csharp', 'cpp'];
+  assertCondition(
+    projectResults.projectSession.readonlyRuntimeWrites.length === expectedReadonlyRuntimeLanguages.length &&
+      projectResults.projectSession.readonlyRuntimeWrites.every((write, index) =>
+        write.language === expectedReadonlyRuntimeLanguages[index] &&
+        write.before === 'session protected\n' &&
+        write.after === 'session protected\n' &&
+        write.result.exitCode !== 0 &&
+        write.result.stderr.includes('readonly project file')
+      ),
+    `Browser readonly runtime writes should fail at kernel boundary: ${JSON.stringify(projectResults.projectSession.readonlyRuntimeWrites)}`
   );
   assertCondition(
     projectResults.takehome.pythonRun.exitCode === 0 &&
