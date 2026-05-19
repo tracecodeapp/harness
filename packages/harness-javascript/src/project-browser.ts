@@ -2069,6 +2069,11 @@ async function runBrowserJavaScriptProjectRequest(
       if (!path) return;
       io.fileChange({ path, directory: true, deleted: true }, 'live');
     };
+    const assertReadonlyFilePath = (normalized: string, operation: string): void => {
+      if (readonlyFiles.has(normalized)) {
+        throw createRuntimeKernelReadonlyFileError(normalized, operation);
+      }
+    };
     const setFileBytes = (path: string, bytes: Uint8Array): void => {
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index += 1) {
@@ -2357,7 +2362,7 @@ async function runBrowserJavaScriptProjectRequest(
       const autoClose = typeof options === 'object' && options?.autoClose === false ? false : true;
       const normalized = device || optionFd !== null ? null : assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
       if (normalized !== null) {
-        assertWorkspaceFileWritePath(normalized, path, 'open');
+        assertWorkspaceFileWritePath(normalized, path, 'write');
         if (!parsed.create && !fileStore.has(normalized)) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
         }
@@ -2562,6 +2567,7 @@ async function runBrowserJavaScriptProjectRequest(
         throwRuntimeRemoveTargetError(removeTarget, message);
       }
       const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
+      assertReadonlyFilePath(normalized, 'delete');
       if (!fileStore.delete(normalized)) {
         throw Object.assign(new Error(`ENOENT: no such file or directory, unlink '${path}'`), { code: 'ENOENT' });
       }
@@ -2635,7 +2641,7 @@ async function runBrowserJavaScriptProjectRequest(
         throw Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`), { code: 'ENOENT' });
       }
     };
-    const assertWorkspaceFileWritePath = (normalized: string, path: unknown, syscall: string): void => {
+    const assertWorkspaceFileWritePath = (normalized: string, path: unknown, operation: string, syscall = operation): void => {
       if (!normalized) {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, ${syscall} '${path}'`), { code: 'EISDIR' });
       }
@@ -2643,9 +2649,7 @@ async function runBrowserJavaScriptProjectRequest(
       if (isWorkspaceDirectoryPath(normalized)) {
         throw Object.assign(new Error(`EISDIR: illegal operation on a directory, ${syscall} '${path}'`), { code: 'EISDIR' });
       }
-      if (readonlyFiles.has(normalized)) {
-        throw createRuntimeKernelReadonlyFileError(normalized, 'write');
-      }
+      assertReadonlyFilePath(normalized, operation);
     };
     const assertFileSystemAccess = (path: unknown, mode: number = fsConstants.F_OK): void => {
       const requested = Number(mode) || fsConstants.F_OK;
@@ -3149,12 +3153,12 @@ async function runBrowserJavaScriptProjectRequest(
           if (!parsed.create) {
             throw Object.assign(new Error(`ENOENT: no such file or directory, open '${path}'`), { code: 'ENOENT' });
           }
-          assertWorkspaceFileWritePath(normalized, path, 'open');
+          assertWorkspaceFileWritePath(normalized, path, 'write', 'open');
           setFileBytes(normalized, new Uint8Array());
         } else if (parsed.exclusive) {
           throw Object.assign(new Error(`EEXIST: file already exists, open '${path}'`), { code: 'EEXIST' });
         } else if (parsed.truncate) {
-          assertWorkspaceFileWritePath(normalized, path, 'open');
+          assertWorkspaceFileWritePath(normalized, path, 'truncate', 'open');
           setFileBytes(normalized, new Uint8Array());
         }
         fileDescriptors.set(fd, {
@@ -3571,7 +3575,7 @@ async function runBrowserJavaScriptProjectRequest(
           return;
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
-        assertWorkspaceFileWritePath(normalized, path, 'open');
+        assertWorkspaceFileWritePath(normalized, path, 'write', 'open');
         setFileBytes(normalized, bytesFromFsWriteValue(value, options));
       },
       writeFile: (path: unknown, value: unknown, optionsOrCallback?: string | { encoding?: string | null } | null | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
@@ -3597,7 +3601,7 @@ async function runBrowserJavaScriptProjectRequest(
           return;
         }
         const normalized = assertSafeWorkspaceFilePath(path, cwdPath, workspacePathContext);
-        assertWorkspaceFileWritePath(normalized, path, 'open');
+        assertWorkspaceFileWritePath(normalized, path, 'append', 'open');
         const previous = fileStore.get(normalized) ?? new Uint8Array();
         const next = bytesFromFsWriteValue(value, options);
         const combined = new Uint8Array(previous.byteLength + next.byteLength);
@@ -3646,7 +3650,7 @@ async function runBrowserJavaScriptProjectRequest(
           return;
         }
         const normalizedDestination = assertSafeWorkspaceFilePath(destination, cwdPath, workspacePathContext);
-        assertWorkspaceFileWritePath(normalizedDestination, destination, 'copyfile');
+        assertWorkspaceFileWritePath(normalizedDestination, destination, 'copy', 'copyfile');
         if ((Number(mode) & fsConstants.COPYFILE_EXCL) !== 0 && fileSystemEntryExists(workspaceFilename(normalizedDestination, workspaceRoot))) {
           throw Object.assign(new Error(`EEXIST: file already exists, copyfile '${source}' -> '${destination}'`), { code: 'EEXIST' });
         }
@@ -3764,7 +3768,8 @@ async function runBrowserJavaScriptProjectRequest(
         }
         const bytes = fileStore.get(normalizedOldPath);
         if (bytes) {
-          assertWorkspaceFileWritePath(normalizedNewPath, newPath, 'rename');
+          assertReadonlyFilePath(normalizedOldPath, 'move');
+          assertWorkspaceFileWritePath(normalizedNewPath, newPath, 'move', 'rename');
           fileStore.delete(normalizedOldPath);
           modules.delete(normalizedOldPath);
           cache.delete(normalizedOldPath);
@@ -3786,6 +3791,9 @@ async function runBrowserJavaScriptProjectRequest(
           .sort(([left], [right]) => left.localeCompare(right));
         if (sourceDirectories.length === 0 && sourceFiles.length === 0) {
           throw Object.assign(new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`), { code: 'ENOENT' });
+        }
+        for (const [filePath] of sourceFiles) {
+          assertReadonlyFilePath(filePath, 'move');
         }
         assertWorkspaceParentDirectoryPath(normalizedNewPath, newPath, 'rename');
         if (fileStore.has(normalizedNewPath)) {
@@ -3868,6 +3876,9 @@ async function runBrowserJavaScriptProjectRequest(
           if (directoryStore.has(normalized) || descendantFiles.length > 0 || descendantDirectories.length > 0) {
             if (!options?.recursive) {
               throw Object.assign(new Error(`ERR_FS_EISDIR: path is a directory, rm '${path}'`), { code: 'ERR_FS_EISDIR' });
+            }
+            for (const filePath of descendantFiles) {
+              assertReadonlyFilePath(filePath, 'delete');
             }
             for (const filePath of descendantFiles) {
               fileStore.delete(filePath);

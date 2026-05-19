@@ -85,6 +85,7 @@ interface BrowserProjectSmokeResults {
       writeRejected: boolean;
     };
     readonlyRuntimeWrites: BrowserReadonlyRuntimeResult[];
+    readonlyNodeOperations: BrowserReadonlyRuntimeResult[];
   };
   takehome: {
     pythonRun: BrowserCommandResult;
@@ -975,6 +976,30 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
             contents: 'const fs = require("node:fs");\\nfs.writeFileSync("README.md", "node changed\\\\n");\\nconsole.log("after node write");\\n',
           },
           {
+            path: 'append-readonly.js',
+            contents: 'const fs = require("node:fs");\\nfs.appendFileSync("README.md", "node appended\\\\n");\\nconsole.log("after node append");\\n',
+          },
+          {
+            path: 'delete-readonly.js',
+            contents: 'const fs = require("node:fs");\\nfs.unlinkSync("README.md");\\nconsole.log("after node delete");\\n',
+          },
+          {
+            path: 'move-readonly.js',
+            contents: 'const fs = require("node:fs");\\nfs.renameSync("README.md", "README.moved.md");\\nconsole.log("after node move");\\n',
+          },
+          {
+            path: 'copy-over-readonly.js',
+            contents: 'const fs = require("node:fs");\\nfs.copyFileSync("mutable-source.txt", "README.md");\\nconsole.log("after node copy");\\n',
+          },
+          {
+            path: 'truncate-readonly.js',
+            contents: 'const fs = require("node:fs");\\nfs.truncateSync("README.md", 0);\\nconsole.log("after node truncate");\\n',
+          },
+          {
+            path: 'mutable-source.txt',
+            contents: 'mutable source\\n',
+          },
+          {
             path: 'mutate-readonly.py',
             contents: 'from pathlib import Path\\nPath("README.md").write_text("python changed\\\\n")\\nprint("after python write")\\n',
           },
@@ -1041,6 +1066,20 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       const after = await sessionWorkspace.readFile('README.md');
       readonlyRuntimeWrites.push({ language, result, before, after });
     }
+    const readonlyNodeChecks = [
+      ['append', 'node append-readonly.js'],
+      ['delete', 'node delete-readonly.js'],
+      ['move', 'node move-readonly.js'],
+      ['copy', 'node copy-over-readonly.js'],
+      ['truncate', 'node truncate-readonly.js'],
+    ];
+    const readonlyNodeOperations = [];
+    for (const [language, command] of readonlyNodeChecks) {
+      const before = await sessionWorkspace.readFile('README.md');
+      const result = await sessionWorkspace.runCommand(command);
+      const after = await sessionWorkspace.readFile('README.md');
+      readonlyNodeOperations.push({ language, result, before, after });
+    }
     const projectSessionInfo = sessionWorkspace.projectSession;
     sessionWorkspace.dispose();
     return {
@@ -1103,6 +1142,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
           writeRejected: projectSessionReadonlyWriteRejected,
         },
         readonlyRuntimeWrites,
+        readonlyNodeOperations,
       },
       takehome: {
         pythonRun: takehomePythonRun,
@@ -1279,6 +1319,19 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
         write.result.stderr === "EROFS: readonly project file, write 'README.md'\n"
       ),
     `Browser readonly runtime writes should fail at kernel boundary: ${JSON.stringify(projectResults.projectSession.readonlyRuntimeWrites)}`
+  );
+  const expectedReadonlyNodeOperations = ['append', 'delete', 'move', 'copy', 'truncate'];
+  assertCondition(
+    projectResults.projectSession.readonlyNodeOperations.length === expectedReadonlyNodeOperations.length &&
+      projectResults.projectSession.readonlyNodeOperations.every((write, index) =>
+        write.language === expectedReadonlyNodeOperations[index] &&
+        write.before === 'session protected\n' &&
+        write.after === 'session protected\n' &&
+        write.result.exitCode !== 0 &&
+        write.result.stdout === '' &&
+        write.result.stderr === `EROFS: readonly project file, ${expectedReadonlyNodeOperations[index]} 'README.md'\n`
+      ),
+    `Browser Node readonly operations should fail at kernel boundary: ${JSON.stringify(projectResults.projectSession.readonlyNodeOperations)}`
   );
   assertCondition(
     projectResults.takehome.pythonRun.exitCode === 0 &&
