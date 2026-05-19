@@ -77,8 +77,10 @@ interface WarmupResult {
 }
 
 const INIT_TIMEOUT_MS = 120_000;
-const EXECUTION_TIMEOUT_MS = 25_000;
-const TRACING_TIMEOUT_MS = 30_000;
+// Browser C++ compile/run includes client-side clang/lld work. STL-heavy
+// solutions can spend most of this wall time compiling before user code runs.
+const EXECUTION_TIMEOUT_MS = 60_000;
+const TRACING_TIMEOUT_MS = 60_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
@@ -301,8 +303,14 @@ export class CppWorkerClient {
       const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
+        const timeoutLabel =
+          stage === 'trace'
+            ? 'tracing'
+            : stage === 'interview'
+              ? 'interview execution'
+              : 'compile/run';
         const timeoutError = new CppClientTimeoutError(
-          `C++ ${stage === 'trace' ? 'tracing' : stage === 'interview' ? 'interview execution' : 'execution'} timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
+          `C++ ${timeoutLabel} timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
           stage,
           timeoutMs
         );

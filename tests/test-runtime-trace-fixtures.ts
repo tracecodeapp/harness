@@ -74,6 +74,7 @@ interface FixtureCase {
   id: string;
   functionName: string;
   executionStyle: RuntimeExecutionStyle;
+  languages?: Language[];
   inputs: Record<string, unknown>;
   anchors: Record<string, Record<Language, string>>;
   lineSequenceAnchors?: Record<string, Record<Language, string>>;
@@ -104,8 +105,21 @@ interface FixtureCase {
   expectSummaryByLanguage?: Partial<Record<Language, {
     accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   }>>;
+  expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
+  expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
   expectOpaqueRefs?: boolean;
   knownGaps?: Partial<Record<Language, Record<string, string>>>;
+}
+
+interface RuntimeTraceEventAssertion {
+  kind: RuntimeTraceEventKind;
+  variable?: string;
+  pathDepth?: number;
+  indexSources?: Array<string | null>;
+  bindingVariable?: string;
+  method?: string;
+  args?: unknown[];
+  value?: unknown;
 }
 
 type RuntimeCore = {
@@ -1020,6 +1034,66 @@ function projectLineSnapshotFrames(
   return frames;
 }
 
+function eventMatchesAssertion(event: RuntimeTrace['events'][number], assertion: RuntimeTraceEventAssertion): boolean {
+  if (event.kind !== assertion.kind) return false;
+  if (assertion.variable !== undefined) {
+    if (!('target' in event) || !('variable' in event.target) || event.target.variable !== assertion.variable) {
+      return false;
+    }
+  }
+  if (assertion.pathDepth !== undefined) {
+    if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.path)) return false;
+    if (event.target.path.length !== assertion.pathDepth) return false;
+  }
+  if (assertion.indexSources !== undefined) {
+    if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.indexSources)) return false;
+    if (stableStringify(event.target.indexSources) !== stableStringify(assertion.indexSources)) return false;
+  }
+  if (assertion.bindingVariable !== undefined) {
+    if (!('binding' in event) || event.binding?.kind !== 'iteration' || event.binding.variable !== assertion.bindingVariable) {
+      return false;
+    }
+  }
+  if (assertion.method !== undefined) {
+    if (event.kind !== 'mutate' || event.method !== assertion.method) return false;
+  }
+  if (assertion.args !== undefined) {
+    if (
+      event.kind !== 'mutate' ||
+      !Object.prototype.hasOwnProperty.call(event, 'args') ||
+      stableStringify(event.args) !== stableStringify(assertion.args)
+    ) {
+      return false;
+    }
+  }
+  if (assertion.value !== undefined) {
+    if (!('value' in event) || stableStringify(event.value) !== stableStringify(assertion.value)) return false;
+  }
+  return true;
+}
+
+function assertRoleEventAssertions(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>,
+  assertionsByRole: Record<string, RuntimeTraceEventAssertion[]>,
+  label: string
+): void {
+  for (const [role, assertions] of Object.entries(assertionsByRole)) {
+    const line = roleLines[role];
+    assertCondition(
+      typeof line === 'number' && line > 0,
+      `${label}: event assertion role "${role}" does not have a resolved anchor line`
+    );
+    const roleEvents = trace.events.filter((event) => event.line === line);
+    for (const assertion of assertions) {
+      assertCondition(
+        roleEvents.some((event) => eventMatchesAssertion(event, assertion)),
+        `${label}: missing event assertion for role "${role}".\nExpected: ${stableStringify(assertion)}\nEvents: ${stableStringify(roleEvents)}`
+      );
+    }
+  }
+}
+
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
@@ -1082,7 +1156,9 @@ async function runFixture(
 ): Promise<void> {
   const fixtureDir = join(FIXTURES_DIR, fixtureName);
   const fixture = JSON.parse(await readFile(join(fixtureDir, 'case.json'), 'utf8')) as FixtureCase;
-  const languages = selectedFixtureLanguages();
+  const fixtureLanguages = fixture.languages ? new Set(fixture.languages) : null;
+  const languages = selectedFixtureLanguages().filter((language) => !fixtureLanguages || fixtureLanguages.has(language));
+  assertCondition(languages.length > 0, `${fixture.id}: no selected languages match fixture.languages`);
   const sources = {} as Partial<Record<Language, string>>;
   for (const language of languages) {
     const sourcePath = join(fixtureDir, fixtureLanguageFile(language));
@@ -1226,6 +1302,18 @@ async function runFixture(
       assertCondition(
         stableStringify(stripSummaryMethods(actualSummary).accessTargets) === stableStringify(stripSummaryMethods(expectedSummary).accessTargets),
         `${fixture.id}: ${language} runtime trace fixture summary drifted.\nExpected: ${stableStringify(stripSummaryMethods(expectedSummary).accessTargets)}\nReceived: ${stableStringify(stripSummaryMethods(actualSummary).accessTargets)}`
+      );
+    }
+    const expectedEventAssertions = {
+      ...(fixture.expectEventAssertions ?? {}),
+      ...(fixture.expectEventAssertionsByLanguage?.[language] ?? {}),
+    };
+    if (Object.keys(expectedEventAssertions).length > 0) {
+      assertRoleEventAssertions(
+        trace,
+        roleLines,
+        expectedEventAssertions,
+        `${fixture.id}:${language}`
       );
     }
     assertNoUnsupportedVisualization(trace, `${fixture.id}:${language}`);

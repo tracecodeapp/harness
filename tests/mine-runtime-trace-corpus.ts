@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
@@ -35,6 +35,10 @@ const DEFAULT_CORPUS_PATH = '/Users/obinnanwachukwu/Code/algoflow/tests/v3-corpu
 const PYTHON_RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core.js');
 const JAVASCRIPT_WORKER_PATH = join(process.cwd(), 'workers', 'javascript', 'javascript-worker.js');
 const CSHARP_ASSET_DIR = join(process.cwd(), 'workers', 'vendor', 'csharp');
+const CSHARP_HOST_SOURCE_DIR = join(process.cwd(), 'spikes', 'csharp-wasm-roslyn', 'TraceCode.CSharpHost');
+const CPP_WORKER_PATH = join(process.cwd(), 'workers', 'cpp', 'cpp-worker.js');
+const CPP_RUNTIME_HEADER_PATH = join(process.cwd(), 'workers', 'cpp', 'tracecode_runtime.hpp');
+const YOWASP_COMPILER_BUNDLE_PATH = join(process.cwd(), 'node_modules', '@yowasp', 'clang', 'gen', 'bundle.js');
 const JAVA_SOURCE_AUGMENTATIONS_PATH = join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js');
 const JAVA_REWRITER_CLASSPATH = [
   join(process.cwd(), 'workers', 'vendor', 'java-rewriter.jar'),
@@ -50,11 +54,13 @@ const JAVA_BIN_CANDIDATES = [
   'java',
 ].filter((candidate): candidate is string => Boolean(candidate));
 const JAVA_BIN = JAVA_BIN_CANDIDATES.find((candidate) => candidate === 'java' || existsSync(candidate)) ?? 'java';
+const JAVAC_BIN = JAVA_BIN === 'java' ? 'javac' : join(dirname(dirname(JAVA_BIN)), 'bin', 'javac');
 
-type MineLanguage = Extract<Language, 'python' | 'javascript' | 'typescript' | 'java' | 'csharp'>;
+type MineLanguage = Extract<Language, 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp'>;
 
 interface CorpusEntry {
   slug: string;
+  solutionId?: string;
   family?: string;
   compareMode?: string;
   language: MineLanguage;
@@ -80,6 +86,24 @@ interface RuntimeCore {
     executionStyle?: string,
     options?: Record<string, unknown>
   ) => { code: string };
+  executeCode: (
+    deps: {
+      PYTHON_CLASS_DEFINITIONS_SNIPPET: string;
+      PYTHON_CONVERSION_HELPERS_SNIPPET: string;
+      PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: string;
+      PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: string;
+      PYTHON_DEFAULT_IMPORT_PRELUDE?: string;
+      INTERVIEW_GUARD_DEFAULTS: Record<string, number>;
+      loadPyodideInstance: () => Promise<void>;
+      getPyodide: () => { runPythonAsync: (code: string) => Promise<string> };
+      toPythonLiteral: (value: unknown) => string;
+    },
+    code: string,
+    functionName: string,
+    inputs: Record<string, unknown>,
+    executionStyle?: string,
+    options?: Record<string, unknown>
+  ) => Promise<{ success: boolean; output?: unknown; error?: string; errorLine?: number; consoleOutput?: string[] }>;
 }
 
 interface WorkerMessage {
@@ -108,6 +132,8 @@ interface MineSignature {
 
 interface DriftRecord {
   slug: string;
+  solutionId?: string;
+  sourcePath?: string;
   family?: string;
   comparedTo: MineLanguage | 'expectedOutput';
   language: MineLanguage;
@@ -148,6 +174,8 @@ interface OperationTokenCluster {
 
 interface FailureRecord {
   slug: string;
+  solutionId?: string;
+  sourcePath?: string;
   language: MineLanguage;
   error: string;
 }
@@ -195,10 +223,46 @@ interface MineReport {
   temporalInvariantViolations: TemporalInvariantViolation[];
   drifts: Array<DriftRecord | ClassifiedDriftRecord>;
   failures: FailureRecord[];
+  executionTimingMs?: Record<MineLanguage, number>;
+  executionCounts?: Record<MineLanguage, number>;
 }
 
 type CSharpExecute = (requestJson: string) => string;
 let csharpExecutePromise: Promise<CSharpExecute> | null = null;
+let csharpNativeHostPromise: Promise<{ dotnetBin: string; dllPath: string } | null> | null = null;
+
+interface CppWorkerResult {
+  success: boolean;
+  output: unknown;
+  error?: string;
+  trace?: RuntimeTrace;
+  lineEventCount?: number;
+  traceStepCount?: number;
+}
+
+type CppWorkerHarness = {
+  handleInit: (payload: unknown) => Promise<CppWorkerResult>;
+  handleCompileRun: (payload: unknown) => Promise<CppWorkerResult>;
+  handleExecuteWithTracing: (payload: unknown) => Promise<CppWorkerResult>;
+  buildDriverSource: (source: string, functionName: string, inputs: Record<string, unknown>, options?: Record<string, unknown>) => string;
+  buildOpsClassDriverSource: (source: string, className: string, inputs: Record<string, unknown>, options?: Record<string, unknown>) => string;
+  buildScriptDriverSource: (source: string, options?: Record<string, unknown>) => string;
+  parseProgramStdout: (stdout: string, options?: Record<string, unknown>) => { output: unknown; consoleOutput: string[] };
+};
+
+let cppHarnessPromise: Promise<CppWorkerHarness> | null = null;
+let nativeCppCompilerPath: string | null | undefined;
+let javaHelperPromise: Promise<JavaNativeHelpers> | null = null;
+let javaInvokerPromise: Promise<{ root: string; classpath: string }> | null = null;
+
+interface JavaNativeHelpers {
+  normalizeJavaExecutionPayload: (payload: Record<string, unknown>) => Record<string, unknown>;
+  buildJavaCompileId: (payload: Record<string, unknown>, mode?: string) => string;
+  dynamicInputEntriesForPayload: (payload: Record<string, unknown>, compileId: string) => Array<{ path: string; value: unknown }>;
+  buildPlainRunnableSource: (payload: Record<string, unknown>, compileId: string, dynamicInputs: Array<{ path: string; value: unknown }>) => string;
+  parseJavaReportOutput: (output?: string) => unknown;
+  javaReportConsoleOutput: (report: Record<string, unknown>) => string[];
+}
 
 function parseStringFlag(name: string): string | undefined {
   const prefix = `--${name}=`;
@@ -207,8 +271,8 @@ function parseStringFlag(name: string): string | undefined {
 
 function parseReferenceLanguage(): MineLanguage {
   const raw = parseStringFlag('reference-language') ?? 'python';
-  if (raw === 'python' || raw === 'javascript' || raw === 'typescript' || raw === 'java' || raw === 'csharp') return raw;
-  throw new Error(`Unsupported --reference-language=${raw}. Expected python, javascript, typescript, java, or csharp.`);
+  if (raw === 'python' || raw === 'javascript' || raw === 'typescript' || raw === 'java' || raw === 'csharp' || raw === 'cpp') return raw;
+  throw new Error(`Unsupported --reference-language=${raw}. Expected python, javascript, typescript, java, csharp, or cpp.`);
 }
 
 function parseMineLanguageListFlag(name: string, fallback: MineLanguage[]): MineLanguage[] {
@@ -217,10 +281,10 @@ function parseMineLanguageListFlag(name: string, fallback: MineLanguage[]): Mine
   const languages = raw.split(',').map((language) => language.trim()).filter(Boolean);
   const parsed: MineLanguage[] = [];
   for (const language of languages) {
-    if (language === 'python' || language === 'javascript' || language === 'typescript' || language === 'java' || language === 'csharp') {
+    if (language === 'python' || language === 'javascript' || language === 'typescript' || language === 'java' || language === 'csharp' || language === 'cpp') {
       parsed.push(language);
     } else {
-      throw new Error(`Unsupported --${name} entry ${language}. Expected python, javascript, typescript, java, or csharp.`);
+      throw new Error(`Unsupported --${name} entry ${language}. Expected python, javascript, typescript, java, csharp, or cpp.`);
     }
   }
   return [...new Set(parsed)];
@@ -519,6 +583,7 @@ async function runProcess(command: string, args: string[], input?: string): Prom
         truncatedStderr = true;
       }
     });
+    child.stdin.on('error', () => {});
     child.on('error', reject);
     child.on('close', (code) => {
       if (truncatedStdout) stdout += '\n[stdout truncated by runtime trace miner]';
@@ -535,6 +600,60 @@ async function runProcess(command: string, args: string[], input?: string): Prom
     });
     child.stdin.end(input ?? '');
   });
+}
+
+async function runProcessResult(
+  command: string,
+  args: string[],
+  input?: string,
+  timeoutMs = 20_000
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }> {
+  return await new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      }, 2_000).unref();
+    }, timeoutMs);
+    timeoutId.unref();
+    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.stdin.on('error', () => {});
+    child.on('error', (error) => {
+      clearTimeout(timeoutId);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timeoutId);
+      resolvePromise({ code, stdout, stderr, timedOut });
+    });
+    child.stdin.end(input ?? '');
+  });
+}
+
+async function resolveNativeCppCompiler(): Promise<string | null> {
+  if (nativeCppCompilerPath !== undefined) return nativeCppCompilerPath;
+  const explicit = parseStringFlag('cpp-compiler');
+  const candidates = explicit ? [explicit] : ['clang++', 'g++'];
+  for (const candidate of candidates) {
+    try {
+      const result = await runProcessResult('sh', ['-lc', `command -v ${candidate}`], undefined, 5_000);
+      const path = result.stdout.trim().split(/\r?\n/)[0];
+      if (result.code === 0 && path) {
+        nativeCppCompilerPath = path;
+        return path;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  nativeCppCompilerPath = null;
+  return null;
 }
 
 async function loadPythonRuntimeCore(): Promise<RuntimeCore> {
@@ -556,6 +675,50 @@ async function runPythonScript(script: string): Promise<string> {
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+function emptyTraceRun(language: MineLanguage, entry: CorpusEntry, output: unknown): TraceRun {
+  const trace = createEmptyRuntimeTrace(language, { runId: `mine:${entry.slug}:${language}`, file: entry.source.path });
+  return { language, output, trace, signature: buildMineSignature(trace) };
+}
+
+async function executePythonCode(
+  runtime: RuntimeCore,
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun> {
+  const result = await runtime.executeCode(
+    {
+      PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+      PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+      PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+      PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+      INTERVIEW_GUARD_DEFAULTS: {
+        maxLineEvents: 20_000,
+        maxSingleLineHits: 10_000,
+        maxCallDepth: 1_000,
+        maxMemoryBytes: 256 * 1024 * 1024,
+        memoryCheckEvery: 100,
+      },
+      loadPyodideInstance: async () => {},
+      getPyodide: () => ({
+        runPythonAsync: async (script: string) => {
+          const runnable = script.replace('import string\n', 'import string\nfrom typing import *\nfrom math import *\nfrom copy import *\nfrom re import *\n').replace(
+            /\njson\.dumps\(\{\n    "output": _serialize\(_result\),\n    "console": _console_output,\n\}\)\n?$/,
+            '\n_tracecode_result_json = json.dumps({\n    "output": _serialize(_result),\n    "console": _console_output,\n})\nprint(_tracecode_result_json)\n'
+          );
+          return (await runPythonScript(runnable)).trim();
+        },
+      }),
+      toPythonLiteral,
+    },
+    code,
+    entry.functionName,
+    entry.inputs,
+    entry.runtimeExecutionStyle ?? 'function'
+  );
+  if (!result.success) throw new Error(`python execution failed: ${result.error ?? 'unknown error'}`);
+  return emptyTraceRun('python', entry, result.output);
 }
 
 async function executePythonTrace(
@@ -703,6 +866,25 @@ async function executeJavaScriptTrace(
   return { language: entry.language, output: result.output, trace, signature: buildMineSignature(trace) };
 }
 
+async function executeJavaScriptCode(
+  workerSource: string,
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun> {
+  const harness = createJavaScriptWorkerHarness(workerSource);
+  const init = await harness.sendMessage<{ success: boolean }>('init');
+  if (init.success !== true) throw new Error(`${entry.language} worker init failed`);
+  const result = await harness.sendMessage<{ success: boolean; output?: unknown; error?: string }>('execute-code', {
+    code,
+    functionName: entry.functionName,
+    inputs: entry.inputs,
+    executionStyle: entry.runtimeExecutionStyle ?? 'function',
+    language: entry.language,
+  });
+  if (!result.success) throw new Error(`${entry.language} execution failed: ${result.error ?? 'unknown error'}`);
+  return emptyTraceRun(entry.language, entry, result.output);
+}
+
 async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
   if (csharpExecutePromise) return csharpExecutePromise;
 
@@ -792,6 +974,311 @@ async function executeCSharpTrace(
   return { language: 'csharp', output: parsed.output, trace, signature: buildMineSignature(trace) };
 }
 
+async function executeCSharpCode(
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun> {
+  if ((parseStringFlag('csharp-runner') ?? 'native') === 'native') {
+    const nativeRun = await executeCSharpCodeNative(entry, code);
+    if (nativeRun) return nativeRun;
+  }
+  const execute = await loadCSharpExecuteExport();
+  const raw = execute(JSON.stringify({
+    source: code,
+    functionName: entry.functionName,
+    inputs: entry.inputs,
+    executionStyle: entry.runtimeExecutionStyle ?? 'solution-method',
+    trace: false,
+    timeoutMs: 19_000,
+  }));
+  const parsed = JSON.parse(raw) as {
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  };
+  if (!parsed.success) {
+    throw new Error(`csharp execution failed: ${parsed.error ?? 'unknown error'}`);
+  }
+  return emptyTraceRun('csharp', entry, parsed.output);
+}
+
+async function resolveDotnet10(): Promise<string | null> {
+  const explicit = parseStringFlag('dotnet-bin') ?? process.env.DOTNET_10_BIN;
+  const candidates = explicit ? [explicit] : ['/root/.dotnet/dotnet', 'dotnet'];
+  for (const candidate of candidates) {
+    try {
+      const result = await runProcessResult(candidate, ['--version'], undefined, 10_000);
+      if (result.code === 0 && result.stdout.trim().startsWith('10.')) return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+async function ensureCSharpNativeHost(): Promise<{ dotnetBin: string; dllPath: string } | null> {
+  if (csharpNativeHostPromise) return csharpNativeHostPromise;
+  csharpNativeHostPromise = (async () => {
+    const dotnetBin = await resolveDotnet10();
+    if (!dotnetBin || !existsSync(CSHARP_HOST_SOURCE_DIR)) return null;
+    const explicitHost = parseStringFlag('csharp-native-host') ?? process.env.TRACECODE_CSHARP_NATIVE_HOST;
+    const defaultHost = '/tmp/tracecode-csharp-native-host/bin/Release/net10.0/TraceCode.CSharpNativeHost.dll';
+    const reusableHost = explicitHost && existsSync(explicitHost)
+      ? explicitHost
+      : existsSync(defaultHost)
+        ? defaultHost
+        : null;
+    if (reusableHost) return { dotnetBin, dllPath: reusableHost };
+    const root = await mkdtemp(join(tmpdir(), 'tracecode-csharp-native-host-'));
+    for (const file of await readdir(CSHARP_HOST_SOURCE_DIR)) {
+      if (file.endsWith('.cs')) {
+        await copyFile(join(CSHARP_HOST_SOURCE_DIR, file), join(root, file));
+      }
+    }
+    const projectPath = join(root, 'TraceCode.CSharpNativeHost.csproj');
+    await writeFile(projectPath, `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.3.0" />
+  </ItemGroup>
+</Project>
+`, 'utf8');
+    await writeFile(join(root, 'Program.cs'), `using TraceCode.CSharpHost;
+
+string request = Console.In.ReadToEnd();
+Console.Write(CompilerHost.Execute(request));
+`, 'utf8');
+    await runProcess(dotnetBin, ['restore', projectPath, '--force', '--no-cache'], undefined);
+    await runProcess(dotnetBin, ['build', projectPath, '-c', 'Release', '--no-restore'], undefined);
+    const dllPath = join(root, 'bin', 'Release', 'net10.0', 'TraceCode.CSharpNativeHost.dll');
+    if (!existsSync(dllPath)) throw new Error('C# native host build did not produce a dll');
+    return { dotnetBin, dllPath };
+  })();
+  return csharpNativeHostPromise;
+}
+
+async function executeCSharpCodeNative(
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun | null> {
+  const host = await ensureCSharpNativeHost();
+  if (!host) return null;
+  const request = JSON.stringify({
+    source: code,
+    functionName: entry.functionName,
+    inputs: entry.inputs,
+    executionStyle: entry.runtimeExecutionStyle ?? 'solution-method',
+    trace: false,
+    timeoutMs: 19_000,
+  });
+  const result = await runProcessResult(
+    host.dotnetBin,
+    [host.dllPath],
+    request,
+    parseNumberFlag('csharp-native-timeout-ms', 30_000)
+  );
+  if (result.code !== 0) {
+    throw new Error(`csharp native host failed: ${result.stderr || result.stdout || `exit ${result.code}`}`);
+  }
+  const parsed = JSON.parse(result.stdout) as {
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  };
+  if (!parsed.success) {
+    throw new Error(`csharp execution failed: ${parsed.error ?? 'unknown error'}`);
+  }
+  return emptyTraceRun('csharp', entry, parsed.output);
+}
+
+async function createCppWorkerHarness(): Promise<CppWorkerHarness> {
+  if (cppHarnessPromise) return cppHarnessPromise;
+
+  cppHarnessPromise = (async () => {
+    const workerSource = await readFile(CPP_WORKER_PATH, 'utf8');
+    const compilerBundle = await import(pathToFileURL(YOWASP_COMPILER_BUNDLE_PATH).href);
+    const readAsset = async (url: string) => {
+      const pathname = String(url).replace('file://', '');
+      const data = await readFile(pathname);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+        text: async () => data.toString('utf8'),
+      };
+    };
+
+    const sandbox: Record<string, unknown> = {
+      console,
+      TextEncoder,
+      TextDecoder,
+      WebAssembly,
+      Date,
+      performance,
+      Uint8Array,
+      BigInt,
+      Map,
+      Set,
+      Error,
+      JSON,
+      Object,
+      String,
+      Number,
+      Math,
+      RegExp,
+      Promise,
+      globalThis: null,
+      self: null,
+      postMessage() {},
+      fetch: readAsset,
+      crypto: globalThis.crypto,
+      __tracecodeCppCompilerBundle: compilerBundle,
+    };
+    sandbox.globalThis = sandbox;
+    sandbox.self = sandbox;
+
+    const context = vm.createContext(sandbox);
+    const script = new vm.Script(
+      workerSource + '\nglobalThis.__tracecodeCppMine = { handleInit, handleCompileRun, handleExecuteWithTracing, buildDriverSource, buildOpsClassDriverSource, buildScriptDriverSource, parseProgramStdout };',
+      {
+        importModuleDynamically(specifier) {
+          return import(specifier);
+        },
+      }
+    );
+    await script.runInContext(context);
+    const api = sandbox.__tracecodeCppMine as CppWorkerHarness | undefined;
+    if (!api) throw new Error('Unable to load C++ worker harness');
+
+    const init = await api.handleInit({
+      assets: {
+        compilerBundleUrl: pathToFileURL(YOWASP_COMPILER_BUNDLE_PATH).href,
+        clangWasmUrl: 'file:///missing/clang.wasm',
+        lldWasmUrl: 'file:///missing/lld.wasm',
+        sysrootUrl: 'file:///missing/sysroot.tar',
+        runtimeHeaderUrl: pathToFileURL(CPP_RUNTIME_HEADER_PATH).href,
+      },
+    });
+    if (!init.success) throw new Error(`cpp worker init failed: ${init.error ?? 'unknown error'}`);
+    return api;
+  })();
+
+  return cppHarnessPromise;
+}
+
+async function executeCppTrace(
+  entry: CorpusEntry,
+  code: string,
+  maxStoredEvents: number
+): Promise<TraceRun> {
+  const api = await createCppWorkerHarness();
+  const payload = {
+    code,
+    functionName: entry.functionName,
+    inputs: entry.inputs,
+    executionStyle: entry.runtimeExecutionStyle ?? 'solution-method',
+    options: { maxStoredEvents },
+  };
+  const result = hasFlag('no-trace')
+    ? await api.handleCompileRun(payload)
+    : await api.handleExecuteWithTracing(payload);
+  if (!result.success) throw new Error(`cpp tracing failed: ${result.error ?? 'unknown error'}`);
+  const runId = `mine:${entry.slug}:cpp`;
+  const trace = withRuntimeTraceOptions(
+    result.trace ?? createEmptyRuntimeTrace('cpp', { runId, file: entry.source.path }),
+    { runId, file: entry.source.path }
+  );
+  return { language: 'cpp', output: result.output, trace, signature: buildMineSignature(trace) };
+}
+
+async function executeCppCode(
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun> {
+  if ((parseStringFlag('cpp-runner') ?? 'native') === 'native') {
+    const nativeRun = await executeCppCodeNative(entry, code);
+    if (nativeRun) return nativeRun;
+  }
+  const api = await createCppWorkerHarness();
+  const result = await api.handleCompileRun({
+    code,
+    functionName: entry.functionName,
+    inputs: entry.inputs,
+    executionStyle: entry.runtimeExecutionStyle ?? 'solution-method',
+  });
+  if (!result.success) throw new Error(`cpp execution failed: ${result.error ?? 'unknown error'}`);
+  return emptyTraceRun('cpp', entry, result.output);
+}
+
+async function executeCppCodeNative(
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun | null> {
+  const compiler = await resolveNativeCppCompiler();
+  if (!compiler) return null;
+  const api = await createCppWorkerHarness();
+  const executionStyle = entry.runtimeExecutionStyle ?? 'solution-method';
+  const rawDriverSource = executionStyle === 'ops-class'
+    ? api.buildOpsClassDriverSource(code, entry.functionName, entry.inputs, { executionStyle })
+    : executionStyle === 'function' && !entry.functionName
+      ? api.buildScriptDriverSource(code, { executionStyle })
+      : api.buildDriverSource(code, entry.functionName, entry.inputs, { executionStyle });
+  const driverSource = rawDriverSource.replace(
+    '#include "/tracecode_runtime.hpp"',
+    '#include "tracecode_runtime.hpp"'
+  );
+  const tempDir = await mkdtemp(join(tmpdir(), 'tracecode-cpp-native-mine-'));
+  try {
+    const driverPath = join(tempDir, 'TraceCodeDriver.cpp');
+    const headerPath = join(tempDir, 'tracecode_runtime.hpp');
+    const executablePath = join(tempDir, 'program');
+    await writeFile(driverPath, driverSource, 'utf8');
+    await writeFile(headerPath, await readFile(CPP_RUNTIME_HEADER_PATH, 'utf8'), 'utf8');
+    const compile = await runProcessResult(
+      compiler,
+      [
+        driverPath,
+        '-std=c++20',
+        '-O0',
+        '-fno-exceptions',
+        '-I',
+        tempDir,
+        '-o',
+        executablePath,
+      ],
+      undefined,
+      parseNumberFlag('cpp-native-compile-timeout-ms', 30_000)
+    );
+    if (compile.code !== 0) {
+      throw new Error(`cpp native compilation failed: ${compile.stderr || compile.stdout || `exit ${compile.code}`}`);
+    }
+    const run = await runProcessResult(
+      executablePath,
+      [],
+      JSON.stringify(entry.inputs || {}),
+      parseNumberFlag('cpp-native-run-timeout-ms', 20_000)
+    );
+    if (run.code !== 0) {
+      throw new Error(
+        run.timedOut
+          ? 'cpp native execution timed out'
+          : `cpp native execution failed: ${run.stderr || run.stdout || `exit ${run.code}`}`
+      );
+    }
+    const parsed = api.parseProgramStdout(run.stdout, { tracing: false, defaultLine: 1, allowMissingResult: false });
+    return emptyTraceRun('cpp', entry, parsed.output);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
 
 function normalizeTopLevelPublicClasses(source: string): string {
   return source.replace(/^([ \t]*)public\s+class\s+/gm, '$1class ');
@@ -800,6 +1287,122 @@ function normalizeTopLevelPublicClasses(source: string): string {
 function mapJavaVirtualInputPaths(root: string, source: string): string {
   const hostInputPrefix = join(root, 'str', 'tracecode-java-input').replaceAll('\\', '\\\\');
   return source.replaceAll('/str/tracecode-java-input', hostInputPrefix);
+}
+
+async function loadJavaNativeHelpers(): Promise<JavaNativeHelpers> {
+  if (javaHelperPromise) return javaHelperPromise;
+  javaHelperPromise = (async () => {
+    const workerSource = await readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
+    const selfObject = {
+      location: { search: '' },
+      postMessage() {},
+      onmessage: null as ((event: { data: WorkerMessage }) => void) | null,
+      importScripts: () => {},
+    };
+    const context = vm.createContext({
+      console,
+      self: selfObject,
+      performance: { now: () => Date.now() },
+      setTimeout,
+      clearTimeout,
+      queueMicrotask,
+    });
+    vm.runInContext(
+      workerSource + '\nglobalThis.__tracecodeJavaMine = { normalizeJavaExecutionPayload, buildJavaCompileId, dynamicInputEntriesForPayload, buildPlainRunnableSource, parseJavaReportOutput, javaReportConsoleOutput };',
+      context,
+      { filename: 'java-worker.js' }
+    );
+    const helpers = (context as Record<string, unknown>).__tracecodeJavaMine as JavaNativeHelpers | undefined;
+    if (!helpers) throw new Error('Unable to load Java native helper surface');
+    return helpers;
+  })();
+  return javaHelperPromise;
+}
+
+async function ensureJavaCompileRunInvoker(): Promise<{ root: string; classpath: string }> {
+  if (javaInvokerPromise) return javaInvokerPromise;
+  javaInvokerPromise = (async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tracecode-java-native-invoker-'));
+    const invokerPath = join(root, 'TracecodeCompileRunInvoker.java');
+    await writeFile(invokerPath, `
+public final class TracecodeCompileRunInvoker {
+  public static void main(String[] args) throws Exception {
+    String report = tracecode.browser.BrowserCompileAndTraceLibrary.compileAndRun(
+      args[0], args[1], args[2], args[3], args[4]
+    );
+    java.nio.file.Files.writeString(java.nio.file.Path.of(args[5]), report);
+  }
+}
+`, 'utf8');
+    await runProcess(JAVAC_BIN, ['-cp', JAVA_HELPER_JAR, '-d', root, invokerPath]);
+    return { root, classpath: [root, JAVA_HELPER_JAR].join(':') };
+  })();
+  return javaInvokerPromise;
+}
+
+async function executeJavaCodeNative(
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun | null> {
+  if ((parseStringFlag('java-runner') ?? 'native') !== 'native') return null;
+  const helpers = await loadJavaNativeHelpers();
+  const normalizedPayload = helpers.normalizeJavaExecutionPayload({
+    code,
+    functionName: entry.functionName,
+    inputs: entry.inputs,
+    executionStyle: entry.runtimeExecutionStyle ?? 'function',
+  });
+  const compileId = helpers.buildJavaCompileId(normalizedPayload, 'execute');
+  const dynamicInputs = helpers.dynamicInputEntriesForPayload(normalizedPayload, compileId);
+  const runnableSource = helpers.buildPlainRunnableSource(normalizedPayload, compileId, dynamicInputs);
+  const root = await mkdtemp(join(tmpdir(), 'tracecode-java-native-mine-'));
+  try {
+    const exportsClassName = runnableSource.match(/\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
+    if (!exportsClassName) throw new Error('Unable to resolve generated Java exports class name');
+    const sourcePath = join(root, `${exportsClassName}.java`);
+    const classesDir = join(root, 'classes');
+    const reportPath = join(root, 'report.json');
+    const packageName = runnableSource.match(/\bpackage\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;/)?.[1];
+    if (!packageName) throw new Error('Unable to resolve generated Java package name');
+    const entryClass = `${packageName}.${exportsClassName}`;
+    await mkdir(classesDir, { recursive: true });
+    for (const input of dynamicInputs) {
+      const hostPath = join(root, input.path.replace(/^\/+/, ''));
+      await mkdir(dirname(hostPath), { recursive: true });
+      await writeFile(hostPath, JSON.stringify(input.value), 'utf8');
+    }
+    await writeFile(sourcePath, mapJavaVirtualInputPaths(root, runnableSource), 'utf8');
+    const invoker = await ensureJavaCompileRunInvoker();
+    const run = await runProcessResult(
+      JAVA_BIN,
+      [
+        '-cp',
+        invoker.classpath,
+        'TracecodeCompileRunInvoker',
+        sourcePath,
+        classesDir,
+        entryClass,
+        JAVA_HELPER_JAR,
+        'none',
+        reportPath,
+      ],
+      undefined,
+      parseNumberFlag('java-native-timeout-ms', 30_000)
+    );
+    if (run.code !== 0) {
+      throw new Error(`java native execution failed: ${run.stderr || run.stdout || `exit ${run.code}`}`);
+    }
+    const report = JSON.parse(await readFile(reportPath, 'utf8')) as Record<string, unknown>;
+    if (report.success !== true) {
+      throw new Error(
+        String(report.runtimeError || report.compilerStderr || report.compilerStdout || 'Java execution failed')
+      );
+    }
+    const output = helpers.parseJavaReportOutput(typeof report.output === 'string' ? report.output : undefined);
+    return emptyTraceRun('java', entry, output);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 function createLocalJavaWorkerClient(): JavaWorkerClient {
@@ -863,6 +1466,50 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
       entryClass,
       JAVA_HELPER_JAR,
       ...(maxStoredEvents ? [maxStoredEvents] : []),
+    ]);
+    return readFile(reportPath, 'utf8');
+  }
+
+  async function compileAndRun(
+    sourcePath: string,
+    classesDir: string,
+    entryClass: string,
+    _helperJarPath: string,
+    compilerProfile: string
+  ): Promise<string> {
+    const root = await rootPromise;
+    const source = stringFiles.get(sourcePath);
+    if (source === undefined) throw new Error(`Missing Java source for virtual path: ${sourcePath}`);
+    const sourceFile = join(root, sourcePath.replace(/^\/+/, ''));
+    const outputClassesDir = join(root, classesDir.replace(/^\/+/, '').replace(/\//g, '__'));
+    const invokerDir = join(root, '__tracecode_invoker');
+    const invokerPath = join(invokerDir, 'TracecodeCompileRunInvoker.java');
+    const reportPath = join(root, `${entryClass.replace(/\W/g, '_')}.execute.json`);
+    await mkdir(dirname(sourceFile), { recursive: true });
+    await mkdir(outputClassesDir, { recursive: true });
+    await mkdir(invokerDir, { recursive: true });
+    await writeFile(sourceFile, mapJavaVirtualInputPaths(root, source), 'utf8');
+    await writeFile(invokerPath, `
+public final class TracecodeCompileRunInvoker {
+  public static void main(String[] args) throws Exception {
+    String report = tracecode.browser.BrowserCompileAndTraceLibrary.compileAndRun(
+      args[0], args[1], args[2], args[3], args[4]
+    );
+    java.nio.file.Files.writeString(java.nio.file.Path.of(args[5]), report);
+  }
+}
+`, 'utf8');
+    await runProcess(JAVAC_BIN, ['-cp', JAVA_HELPER_JAR, '-d', invokerDir, invokerPath]);
+    await runProcess(JAVA_BIN, [
+      '-cp',
+      [invokerDir, JAVA_HELPER_JAR].join(':'),
+      'TracecodeCompileRunInvoker',
+      sourceFile,
+      outputClassesDir,
+      entryClass,
+      JAVA_HELPER_JAR,
+      compilerProfile,
+      reportPath,
     ]);
     return readFile(reportPath, 'utf8');
   }
@@ -939,7 +1586,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         },
         cheerpjRunLibrary: async () => ({
           harness: { browser: { JavaRewriteLibrary: { rewriteSource } } },
-          tracecode: { browser: { BrowserCompileAndTraceLibrary: { compileAndTrace } } },
+          tracecode: { browser: { BrowserCompileAndTraceLibrary: { compileAndTrace, compileAndRun } } },
         }),
         close: closeWorker,
       };
@@ -982,7 +1629,91 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
         closeWorker();
       }
     },
-    executeCode: async () => { throw new Error('executeCode is not used by runtime trace mining'); },
+    executeCode: async (
+      code: string,
+      functionName: string,
+      inputs: Record<string, unknown>,
+      options: Record<string, unknown> | undefined,
+      executionStyle: string
+    ) => {
+      const workerSource = await readFile(join(process.cwd(), 'workers', 'java', 'java-worker.js'), 'utf8');
+      const augmentationSource = await readFile(JAVA_SOURCE_AUGMENTATIONS_PATH, 'utf8');
+      let response: { success: boolean; output?: unknown; error?: string; errorLine?: number; consoleOutput?: string[] } | null = null;
+      let errorResponse: Error | null = null;
+      const selfObject: {
+        postMessage: (message: WorkerMessage) => void;
+        onmessage: ((event: { data: WorkerMessage }) => void) | null;
+        importScripts: (...urls: string[]) => void;
+        cheerpjInit: () => Promise<void>;
+        cheerpOSAddStringFile: (path: string, source: string) => Promise<void>;
+        cheerpjRunLibrary: () => Promise<unknown>;
+        close: () => void;
+      } = {
+        postMessage: (message: WorkerMessage) => {
+          if (message.type === 'worker-ready') return;
+          if (message.id !== 'execute') return;
+          if (message.type === 'error') {
+            const payload = message.payload as { error?: unknown } | undefined;
+            errorResponse = new Error(String(payload?.error ?? 'Java worker error'));
+            return;
+          }
+          response = message.payload as typeof response;
+        },
+        onmessage: null,
+        importScripts: (...urls: string[]) => {
+          for (const url of urls) {
+            if (String(url).endsWith('java-source-augmentations.js')) {
+              vm.runInContext(augmentationSource, context, { filename: 'java-source-augmentations.js' });
+            }
+          }
+        },
+        cheerpjInit: async () => {},
+        cheerpOSAddStringFile: async (path: string, source: string) => {
+          stringFiles.set(path, source);
+          const root = await rootPromise;
+          const hostPath = join(root, path.replace(/^\/+/, ''));
+          await mkdir(dirname(hostPath), { recursive: true });
+          await writeFile(hostPath, source, 'utf8');
+        },
+        cheerpjRunLibrary: async () => ({
+          harness: { browser: { JavaRewriteLibrary: { rewriteSource } } },
+          tracecode: { browser: { BrowserCompileAndTraceLibrary: { compileAndTrace, compileAndRun } } },
+        }),
+        close: () => {},
+      };
+      const context = vm.createContext({
+        console,
+        self: selfObject,
+        performance: { now: () => Date.now() },
+        setTimeout,
+        clearTimeout,
+        queueMicrotask,
+      });
+      vm.runInContext(workerSource, context, { filename: 'java-worker.js' });
+      if (typeof selfObject.onmessage !== 'function') throw new Error('Java worker did not register onmessage');
+      selfObject.onmessage({ data: { id: 'init', type: 'init' } });
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+      selfObject.onmessage({
+        data: {
+          id: 'execute',
+          type: 'execute-code',
+          payload: { code, functionName, inputs, options, executionStyle },
+        },
+      });
+      const startedAt = Date.now();
+      while (!response && !errorResponse && Date.now() - startedAt < 60_000) {
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      }
+      if (errorResponse) throw errorResponse;
+      if (!response) throw new Error('Timed out waiting for local Java worker response');
+      return {
+        success: response.success,
+        output: response.output,
+        error: response.error,
+        errorLine: response.errorLine,
+        consoleOutput: response.consoleOutput ?? [],
+      };
+    },
     executeCodeInterviewMode: async () => { throw new Error('executeCodeInterviewMode is not used by runtime trace mining'); },
     terminate: () => {
       if (process.env.TRACECODE_KEEP_JAVA_MINE_TEMP === '1') return;
@@ -1019,6 +1750,59 @@ async function executeJavaTrace(
   } finally {
     workerClient.terminate();
   }
+}
+
+async function executeJavaCode(
+  entry: CorpusEntry,
+  code: string
+): Promise<TraceRun> {
+  const nativeRun = await executeJavaCodeNative(entry, code);
+  if (nativeRun) return nativeRun;
+  const workerClient = createLocalJavaWorkerClient();
+  const client = createJavaRuntimeClient(workerClient);
+  try {
+    const result = await client.executeCode(
+      code,
+      entry.functionName,
+      entry.inputs,
+      entry.runtimeExecutionStyle ?? 'function'
+    );
+    if (!result.success) throw new Error(`java execution failed: ${result.error ?? 'unknown error'}`);
+    return emptyTraceRun('java', entry, result.output);
+  } finally {
+    workerClient.terminate();
+  }
+}
+
+async function executeEntry(
+  pythonRuntime: RuntimeCore,
+  workerSource: string,
+  entry: CorpusEntry,
+  code: string,
+  maxTraceSteps: number,
+  maxLineEvents: number,
+  maxSingleLineHits: number
+): Promise<TraceRun> {
+  if (hasFlag('no-trace')) {
+    return entry.language === 'python'
+      ? executePythonCode(pythonRuntime, entry, code)
+      : entry.language === 'java'
+        ? executeJavaCode(entry, code)
+        : entry.language === 'csharp'
+          ? executeCSharpCode(entry, code)
+          : entry.language === 'cpp'
+            ? executeCppCode(entry, code)
+            : executeJavaScriptCode(workerSource, entry, code);
+  }
+  return entry.language === 'python'
+    ? executePythonTrace(pythonRuntime, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
+    : entry.language === 'java'
+      ? executeJavaTrace(entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
+      : entry.language === 'csharp'
+        ? executeCSharpTrace(entry, code, maxTraceSteps)
+        : entry.language === 'cpp'
+          ? executeCppTrace(entry, code, parseNumberFlag('max-stored-events', maxTraceSteps))
+          : executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
 }
 
 function inferCorpusRoot(corpusPath: string): string {
@@ -1357,6 +2141,7 @@ function summarizeClassifiedDrifts(drifts: ClassifiedDriftRecord[]): DriftClassi
     typescript: emptyClassificationCounts(),
     java: emptyClassificationCounts(),
     csharp: emptyClassificationCounts(),
+    cpp: emptyClassificationCounts(),
   };
   const summary: DriftClassificationSummary = {
     counts: emptyClassificationCounts(),
@@ -1383,11 +2168,15 @@ function isClassifiedDrift(drift: DriftRecord | ClassifiedDriftRecord): drift is
 }
 
 function countDriftsByLanguage(drifts: DriftRecord[]): Record<MineLanguage, number> {
-  const counts = { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0 };
+  const counts = { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0, cpp: 0 };
   for (const drift of drifts) {
     counts[drift.language] += 1;
   }
   return counts;
+}
+
+function emptyLanguageNumberMap(): Record<MineLanguage, number> {
+  return { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0, cpp: 0 };
 }
 
 function clusterOperationTokenDiffs(drifts: DriftRecord[]): OperationTokenCluster[] {
@@ -1473,9 +2262,14 @@ async function writeReport(reportPath: string, value: unknown): Promise<void> {
 
 async function loadMineGroups(corpusPath: string, sourceRoot: string): Promise<Array<[string, CorpusEntry[]]>> {
   const entries = JSON.parse(await readFile(corpusPath, 'utf8')) as CorpusEntry[];
+  if (hasFlag('expected-only')) {
+    return entries
+      .filter((entry) => ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'].includes(entry.language))
+      .map((entry) => [`${entry.slug}:${entry.solutionId ?? entry.source.path}`, [entry]]);
+  }
   const bySlug = new Map<string, CorpusEntry[]>();
   for (const entry of entries) {
-    if (!['python', 'javascript', 'typescript', 'java', 'csharp'].includes(entry.language)) continue;
+    if (!['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'].includes(entry.language)) continue;
     const group = bySlug.get(entry.slug) ?? [];
     group.push(entry);
     bySlug.set(entry.slug, group);
@@ -1549,6 +2343,7 @@ function mergeClassificationSummaries(reports: MineReport[]): DriftClassificatio
       typescript: emptyClassificationCounts(),
       java: emptyClassificationCounts(),
       csharp: emptyClassificationCounts(),
+      cpp: emptyClassificationCounts(),
     },
     examples: {
       'fixture-worthy': [],
@@ -1573,14 +2368,14 @@ function mergeClassificationSummaries(reports: MineReport[]): DriftClassificatio
   return merged;
 }
 
-function childMineArgs(reportPath: string, offset: number): string[] {
+function childMineArgs(reportPath: string, offset: number, limit: number): string[] {
   const blocked = new Set(['jobs', 'report', 'limit', 'offset']);
   const args = process.argv.slice(2).filter((arg) => {
     if (arg === '--worker') return false;
     const match = /^--([^=]+)/.exec(arg);
     return !match || !blocked.has(match[1]);
   });
-  return [...args, '--worker', '--limit=1', `--offset=${offset}`, `--report=${reportPath}`];
+  return [...args, '--worker', `--limit=${limit}`, `--offset=${offset}`, `--report=${reportPath}`];
 }
 
 async function runConcurrentMine(
@@ -1597,14 +2392,30 @@ async function runConcurrentMine(
   const reports: MineReport[] = [];
   const failures: FailureRecord[] = [];
   const workerTimeoutMs = parseNumberFlag('worker-timeout-ms', 180_000);
+  const chunkSize = parseNumberFlag('chunk-size', 1);
+  const chunks: Array<{ start: number; limit: number }> = [];
+  for (let start = 0; start < groups.length; start += chunkSize) {
+    chunks.push({ start, limit: Math.min(chunkSize, groups.length - start) });
+  }
   let nextIndex = 0;
+  let completedGroups = 0;
+  let completedChunks = 0;
+  const startedAt = Date.now();
+  console.log(
+    `runtime trace corpus concurrent mining started: groups=${groups.length} chunks=${chunks.length} ` +
+      `chunkSize=${chunkSize} jobs=${jobs} offset=${offset} noTrace=${hasFlag('no-trace')}`
+  );
 
-  async function runOne(groupIndex: number): Promise<void> {
-    const absoluteOffset = offset + groupIndex;
-    const [slug, group] = groups[groupIndex];
-    const childReportPath = join(workDir, `${String(absoluteOffset).padStart(6, '0')}.json`);
+  async function runOne(chunkIndex: number): Promise<void> {
+    const chunk = chunks[chunkIndex];
+    const absoluteOffset = offset + chunk.start;
+    const chunkGroups = groups.slice(chunk.start, chunk.start + chunk.limit);
+    const firstSlug = chunkGroups[0]?.[0] ?? '<empty>';
+    const lastSlug = chunkGroups[chunkGroups.length - 1]?.[0] ?? firstSlug;
+    const chunkEntryCount = chunkGroups.reduce((sum, [, group]) => sum + group.length, 0);
+    const childReportPath = join(workDir, `${String(absoluteOffset).padStart(6, '0')}-${chunk.limit}.json`);
     const output = await new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>((resolvePromise, reject) => {
-      const child = spawn('pnpm', ['exec', 'tsx', scriptPath, ...childMineArgs(childReportPath, absoluteOffset)], {
+      const child = spawn('pnpm', ['exec', 'tsx', scriptPath, ...childMineArgs(childReportPath, absoluteOffset, chunk.limit)], {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: true,
       });
@@ -1640,25 +2451,46 @@ async function runConcurrentMine(
       });
     });
     if (output.code !== 0 || !existsSync(childReportPath)) {
-      for (const entry of group) {
-        failures.push({
-          slug,
-          language: entry.language,
-          error: tailString(
-            output.timedOut
-              ? `runner-process-timeout: child exceeded ${workerTimeoutMs}ms\n${output.stderr || output.stdout}`
-              : `runner-process-crash: child exited with ${output.code}\n${output.stderr || output.stdout}`,
-            12_000
-          ),
-        });
+      for (const [slug, group] of chunkGroups) {
+        for (const entry of group) {
+          failures.push({
+            slug,
+            solutionId: entry.solutionId,
+            sourcePath: entry.source.path,
+            language: entry.language,
+            error: tailString(
+              output.timedOut
+                ? `runner-process-timeout: child exceeded ${workerTimeoutMs}ms\n${output.stderr || output.stdout}`
+                : `runner-process-crash: child exited with ${output.code}\n${output.stderr || output.stdout}`,
+              12_000
+            ),
+          });
+        }
       }
+      completedGroups += chunk.limit;
+      completedChunks += 1;
+      const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      console.log(
+        `[${completedGroups}/${groups.length}] fail chunk ${completedChunks}/${chunks.length} ` +
+          `${firstSlug}..${lastSlug} entries=${chunkEntryCount} elapsed=${elapsedSeconds}s`
+      );
       return;
     }
-    reports.push(JSON.parse(await readFile(childReportPath, 'utf8')) as MineReport);
+    const childReport = JSON.parse(await readFile(childReportPath, 'utf8')) as MineReport;
+    reports.push(childReport);
+    completedGroups += childReport.groupsScanned;
+    completedChunks += 1;
+    const elapsedSeconds = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    console.log(
+      `[${completedGroups}/${groups.length}] done chunk ${completedChunks}/${chunks.length} ` +
+        `${firstSlug}..${lastSlug} entries=${chunkEntryCount} groups=${childReport.groupsScanned} ` +
+        `comparisons=${childReport.comparisons} drifts=${childReport.driftCount} ` +
+        `failures=${childReport.failureCount} elapsed=${elapsedSeconds}s`
+    );
   }
 
   async function worker(): Promise<void> {
-    while (nextIndex < groups.length) {
+    while (nextIndex < chunks.length) {
       const groupIndex = nextIndex;
       nextIndex += 1;
       await runOne(groupIndex);
@@ -1670,9 +2502,17 @@ async function runConcurrentMine(
   const driftCount = reports.reduce((sum, report) => sum + report.driftCount, 0);
   const failureCount = reports.reduce((sum, report) => sum + report.failureCount, 0) + failures.length;
   const hardFailureCount = reports.reduce((sum, report) => sum + report.hardFailureCount, 0) + failures.length;
+  const executionTimingMs = reports.reduce(
+    (counts, report) => mergeCountMaps(counts, report.executionTimingMs ?? emptyLanguageNumberMap()),
+    emptyLanguageNumberMap()
+  );
+  const executionCounts = reports.reduce(
+    (counts, report) => mergeCountMaps(counts, report.executionCounts ?? emptyLanguageNumberMap()),
+    emptyLanguageNumberMap()
+  );
   const driftCountsByLanguage = reports.reduce(
     (counts, report) => mergeCountMaps(counts, report.driftCountsByLanguage),
-    { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0 }
+    { python: 0, javascript: 0, typescript: 0, java: 0, csharp: 0, cpp: 0 }
   );
   const reportFailures = [
     ...reports.flatMap((report) => report.failures),
@@ -1692,8 +2532,14 @@ async function runConcurrentMine(
   const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
   const includeSignatureDiffs = hasFlag('include-signature-diffs');
   const referenceLanguage = parseReferenceLanguage();
-  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java', 'csharp']);
-  const mergedReport: MineReport & { jobs: number; workerReportDir: string; runnerCrashCount: number } = {
+  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp']);
+  const mergedReport: MineReport & {
+    jobs: number;
+    chunkSize: number;
+    chunkCount: number;
+    workerReportDir: string;
+    runnerCrashCount: number;
+  } = {
     corpusPath,
     sourceRoot,
     offset,
@@ -1729,7 +2575,11 @@ async function runConcurrentMine(
     failures: reportFailures
       .slice(0, maxReportFailures)
       .map((failure) => trimFailureForReport(failure, maxReportErrorChars)),
+    executionTimingMs,
+    executionCounts,
     jobs,
+    chunkSize,
+    chunkCount: chunks.length,
     workerReportDir: workDir,
     runnerCrashCount: failures.length,
     workerTimeoutMs,
@@ -1741,6 +2591,7 @@ async function runConcurrentMine(
   console.log(`Runner crashes recorded as failures: ${failures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Drift classifications: ${Object.entries(mergedReport.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
+  console.log(`Execution timing ms: ${Object.entries(executionTimingMs).map(([language, ms]) => `${language}=${Math.round(ms)}/${executionCounts[language as MineLanguage] ?? 0}`).join(' ')}`);
   console.log(`Temporal invariant violations: ${mergedReport.temporalInvariantViolationCount}`);
   console.log(`Report: ${reportPath}`);
   console.log(`Worker reports: ${workDir}`);
@@ -1781,7 +2632,7 @@ async function main(): Promise<void> {
   const compareRuntimeFacts = hasFlag('compare-runtime-facts');
   const includeSignatureDiffs = hasFlag('include-signature-diffs');
   const referenceLanguage = parseReferenceLanguage();
-  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java', 'csharp']);
+  const comparisonLanguages = parseMineLanguageListFlag('comparison-languages', ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp']);
   const maxReportDrifts = parseNumberFlag('max-report-drifts', 250);
   const maxReportFailures = parseNumberFlag('max-report-failures', 250);
   const maxReportErrorChars = parseNumberFlag('max-report-error-chars', 12_000);
@@ -1796,6 +2647,8 @@ async function main(): Promise<void> {
   const drifts: DriftRecord[] = [];
   const failures: FailureRecord[] = [];
   const temporalInvariantViolations: TemporalInvariantViolation[] = [];
+  const executionTimingMs = emptyLanguageNumberMap();
+  const executionCounts = emptyLanguageNumberMap();
   let compared = 0;
 
   for (const [slug, group] of groups) {
@@ -1804,20 +2657,28 @@ async function main(): Promise<void> {
     for (const entry of group.sort((left, right) => left.language.localeCompare(right.language))) {
       entriesByLanguage.set(entry.language, entry);
       const sourcePath = resolveSourcePath(sourceRoot, entry);
+      let executionStartedAt: number | null = null;
       try {
         const code = await readFile(sourcePath, 'utf8');
-        const run = entry.language === 'python'
-          ? await executePythonTrace(pythonRuntime, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
-          : entry.language === 'java'
-            ? await executeJavaTrace(entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits)
-            : entry.language === 'csharp'
-              ? await executeCSharpTrace(entry, code, maxTraceSteps)
-              : await executeJavaScriptTrace(workerSource, entry, code, maxTraceSteps, maxLineEvents, maxSingleLineHits);
+        executionStartedAt = performance.now();
+        const run = await executeEntry(
+          pythonRuntime,
+          workerSource,
+          entry,
+          code,
+          maxTraceSteps,
+          maxLineEvents,
+          maxSingleLineHits
+        );
+        executionTimingMs[entry.language] += performance.now() - executionStartedAt;
+        executionCounts[entry.language] += 1;
         runs.set(entry.language, run);
         temporalInvariantViolations.push(...auditTemporalInvariants(entry, code, run.trace));
         if (hasExpectedOutput(entry) && !outputsEqual(entry.expectedOutput, run.output, entry.compareMode)) {
           drifts.push({
             slug,
+            solutionId: entry.solutionId,
+            sourcePath: entry.source.path,
             family: entry.family,
             comparedTo: 'expectedOutput',
             language: entry.language,
@@ -1826,9 +2687,20 @@ async function main(): Promise<void> {
           });
         }
       } catch (error) {
-        failures.push({ slug, language: entry.language, error: error instanceof Error ? error.message : String(error) });
+        if (executionStartedAt !== null) {
+          executionTimingMs[entry.language] += performance.now() - executionStartedAt;
+        }
+        executionCounts[entry.language] += 1;
+        failures.push({
+          slug,
+          solutionId: entry.solutionId,
+          sourcePath: entry.source.path,
+          language: entry.language,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
+    if (hasFlag('expected-only')) continue;
     const reference = runs.get(referenceLanguage);
     if (!reference) continue;
     for (const language of comparisonLanguages) {
@@ -1893,6 +2765,8 @@ async function main(): Promise<void> {
     temporalInvariantViolations: temporalInvariantViolations.slice(0, 250),
     drifts: reportedDrifts,
     failures: reportedFailures,
+    executionTimingMs,
+    executionCounts,
   };
   await writeReport(reportPath, report);
 
@@ -1900,6 +2774,7 @@ async function main(): Promise<void> {
   console.log(`Hard failures: ${hardFailures.length}`);
   console.log(`Drifts by language: ${Object.entries(driftCountsByLanguage).map(([language, count]) => `${language}=${count}`).join(' ')}`);
   console.log(`Drift classifications: ${Object.entries(report.classificationSummary.counts).map(([classification, count]) => `${classification}=${count}`).join(' ')}`);
+  console.log(`Execution timing ms: ${Object.entries(executionTimingMs).map(([language, ms]) => `${language}=${Math.round(ms)}/${executionCounts[language as MineLanguage] ?? 0}`).join(' ')}`);
   console.log(`Temporal invariant violations: ${report.temporalInvariantViolationCount}`);
   console.log(`Synthesized Java entries: ${synthesizedJavaEntries}`);
   console.log(`Report: ${reportPath}`);

@@ -12,13 +12,17 @@ export type RuntimeTraceEventKind =
   | 'snapshot'
   | 'stdout'
   | 'exception'
-  | 'timeout'
-  | 'control';
+  | 'timeout';
 
 export type RuntimeTraceTarget =
   | { variable: string; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
-  | { variable: string; path: Array<string | number>; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
-  | { objectId: string; path?: Array<string | number> };
+  | {
+      variable: string;
+      path: Array<string | number>;
+      indexSources?: Array<string | null>;
+      scope?: 'local' | 'global' | 'builtin' | 'receiver';
+    }
+  | { objectId: string; path?: Array<string | number>; indexSources?: Array<string | null> };
 
 export interface RuntimeTraceCallFrame {
   function: string;
@@ -31,6 +35,7 @@ interface RuntimeTraceBaseEvent {
   runId: string;
   file?: string;
   line?: number;
+  column?: number;
   frameId?: string;
   callStack?: RuntimeTraceCallFrame[];
 }
@@ -39,11 +44,16 @@ export type RuntimeTraceEvent =
   | (RuntimeTraceBaseEvent & { kind: 'line'; line: number; function?: string })
   | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> | unknown[] })
   | (RuntimeTraceBaseEvent & { kind: 'return'; line: number; function?: string; value?: unknown })
-  | (RuntimeTraceBaseEvent & { kind: 'read' | 'write'; line: number; target: RuntimeTraceTarget; value?: unknown })
+  | (RuntimeTraceBaseEvent & {
+      kind: 'read' | 'write';
+      line: number;
+      target: RuntimeTraceTarget;
+      value?: unknown;
+      binding?: RuntimeTraceIterationBinding;
+    })
   | (RuntimeTraceBaseEvent & { kind: 'mutate'; line: number; target: RuntimeTraceTarget; method?: string; args?: unknown[] })
   | (RuntimeTraceBaseEvent & { kind: 'snapshot'; line: number; target: RuntimeTraceTarget; value: unknown })
   | (RuntimeTraceBaseEvent & { kind: 'stdout'; text: string })
-  | (RuntimeTraceBaseEvent & { kind: 'control'; line: number; control: 'break' | 'continue' })
   | (RuntimeTraceBaseEvent & { kind: 'exception'; message: string })
   | (RuntimeTraceBaseEvent & {
       kind: 'timeout';
@@ -58,6 +68,11 @@ export interface RuntimeTrace {
   events: RuntimeTraceEvent[];
   lineEventCount: number;
   traceStepCount: number;
+}
+
+export interface RuntimeTraceIterationBinding {
+  kind?: 'iteration';
+  variable: string;
 }
 
 export interface RuntimeTraceOptions {

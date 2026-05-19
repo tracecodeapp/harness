@@ -11,8 +11,7 @@ export type RuntimeRawEmissionKind =
   | 'read'
   | 'write'
   | 'mutate'
-  | 'timeout'
-  | 'control';
+  | 'timeout';
 
 export interface RuntimeRawEmissionSummary {
   language: Language;
@@ -112,7 +111,6 @@ function javaNativeTracePayloadKind(event: string): RuntimeRawEmissionKind | nul
     if (parsed.kind === 'read') return 'read';
     if (parsed.kind === 'write') return 'write';
     if (parsed.kind === 'mutate') return 'mutate';
-    if (parsed.kind === 'control') return 'control';
   } catch {
     return null;
   }
@@ -160,17 +158,22 @@ export function summarizeRuntimeTraceEmissions(trace: RuntimeTrace): RuntimeRawE
       unsupported.push(forbiddenPayload);
       continue;
     }
-    if (event.kind === 'line') kinds.push('line');
-    if (event.kind === 'call') kinds.push('call');
-    if (event.kind === 'return') kinds.push('return');
-    if (event.kind === 'exception') kinds.push('exception');
-    if (event.kind === 'timeout') kinds.push('timeout');
-    if (event.kind === 'stdout') kinds.push('stdout');
-    if (event.kind === 'snapshot') kinds.push('snapshot');
-    if (event.kind === 'read') kinds.push('read');
-    if (event.kind === 'write') kinds.push('write');
-    if (event.kind === 'mutate') kinds.push('mutate');
-    if (event.kind === 'control') kinds.push('control');
+    switch (event.kind) {
+      case 'line':
+      case 'call':
+      case 'return':
+      case 'exception':
+      case 'timeout':
+      case 'stdout':
+      case 'snapshot':
+      case 'read':
+      case 'write':
+      case 'mutate':
+        kinds.push(event.kind);
+        break;
+      default:
+        unsupported.push(`${trace.language} trace event ${index} has unsupported kind "${String((event as { kind?: unknown }).kind)}"`);
+    }
   }
   return {
     language: trace.language,
