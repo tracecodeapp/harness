@@ -254,17 +254,18 @@ async function bootDevTerminal(): Promise<void> {
           <button class="active" type="button">Terminal</button>
         </div>
         <section class="dev-terminal">
-          <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite"></div>
-          <form class="dev-terminal-form" id="dev-terminal-form">
-            <span class="dev-terminal-prompt" id="dev-terminal-prompt">user@tracevm weather-api %</span>
-            <input
-              id="dev-terminal-input"
-              class="dev-terminal-input"
-              autocomplete="off"
-              spellcheck="false"
-              autofocus
-            />
-          </form>
+          <div class="dev-terminal-output" id="dev-terminal-output" aria-live="polite">
+            <form class="dev-terminal-form" id="dev-terminal-form">
+              <span class="dev-terminal-prompt" id="dev-terminal-prompt">user@tracevm weather-api %</span>
+              <input
+                id="dev-terminal-input"
+                class="dev-terminal-input"
+                autocomplete="off"
+                spellcheck="false"
+                autofocus
+              />
+            </form>
+          </div>
         </section>
       </footer>
     </main>
@@ -296,11 +297,13 @@ async function bootDevTerminal(): Promise<void> {
   const runProjectBuildButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-project-build')!;
   const runMvpButton = document.querySelector<HTMLButtonElement>('#dev-menu-run-mvp')!;
 
+  output.replaceChildren(form);
+
   const appendLine = (text: string, className = ''): void => {
     const line = document.createElement('div');
     line.className = `dev-terminal-line ${className}`.trim();
     line.textContent = text;
-    output.append(line);
+    output.insertBefore(line, form);
     output.scrollTop = output.scrollHeight;
   };
 
@@ -309,6 +312,11 @@ async function bootDevTerminal(): Promise<void> {
     for (const line of text.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n')) {
       appendLine(line, className);
     }
+  };
+
+  const terminalPromptText = (): string => prompt.textContent?.trim() ?? '$';
+  const appendCommandLine = (command: string): void => {
+    appendLine(`${terminalPromptText()} ${command}`, 'command');
   };
 
   appendLine('Loading project workspace...');
@@ -965,7 +973,7 @@ int main(int argc, char** argv) {
     input.value = '';
     input.disabled = true;
     status.textContent = 'tracekernel running';
-    appendLine(`$ ${command}`, 'command');
+    appendCommandLine(command);
 
     try {
       if (command === 'capabilities') {
@@ -1108,7 +1116,7 @@ int main(int argc, char** argv) {
     input.value = '';
     input.disabled = true;
     status.textContent = 'tracekernel running';
-    appendLine(`$ ${workspace.projectSession?.commands[name]?.command ?? name}`, 'command');
+    appendCommandLine(workspace.projectSession?.commands[name]?.command ?? name);
     try {
       const streamedOutput = { stdout: '', stderr: '' };
       const result = await workspace.runProjectCommand(name, {
@@ -1174,12 +1182,47 @@ int main(int argc, char** argv) {
   input.disabled = false;
   input.focus();
 
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
+  const commandHistory: string[] = [];
+  let historyIndex = 0;
+  const submitTerminalCommand = (): void => {
     const command = input.value.trim();
     if (!command) return;
-
+    if (commandHistory[commandHistory.length - 1] !== command) {
+      commandHistory.push(command);
+    }
+    historyIndex = commandHistory.length;
     void runTerminalCommand(command);
+  };
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submitTerminalCommand();
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (commandHistory.length === 0) return;
+      historyIndex = Math.max(0, historyIndex - 1);
+      input.value = commandHistory[historyIndex] ?? '';
+      input.setSelectionRange(input.value.length, input.value.length);
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (commandHistory.length === 0) return;
+      historyIndex = Math.min(commandHistory.length, historyIndex + 1);
+      input.value = commandHistory[historyIndex] ?? '';
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  });
+  document.querySelector<HTMLElement>('.dev-terminal')?.addEventListener('click', () => {
+    input.focus();
+  });
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    submitTerminalCommand();
   });
 }
 

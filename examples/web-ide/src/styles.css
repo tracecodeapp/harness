@@ -922,7 +922,14 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-terminal);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 38px),
+    #101215;
+  cursor: text;
+}
+
+.dev-terminal:focus-within {
+  box-shadow: inset 0 0 0 1px rgba(111, 161, 255, 0.16);
 }
 
 .dev-terminal-header {
@@ -954,25 +961,31 @@ body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 12px 14px;
+  padding: 10px 14px;
   font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+  scrollbar-color: #3c424d transparent;
 }
 
 .dev-terminal-line {
-  min-height: 20px;
-  color: #c6cad2;
+  min-height: 18px;
+  color: #c9d1dc;
 }
 
 .dev-terminal-line.command {
-  color: #8fb4ff;
+  color: #e5eaf2;
+  font-weight: 500;
 }
 
 .dev-terminal-line.status {
-  color: #8f98a8;
+  color: #76808f;
+}
+
+.dev-terminal-line.stdout {
+  color: #b8c8b9;
 }
 
 .dev-terminal-line.stderr,
@@ -981,37 +994,40 @@ body {
 }
 
 .dev-terminal-form {
-  height: 40px;
-  flex-shrink: 0;
+  min-height: 30px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  background: #111316;
-  border-top: 1px solid #343841;
+  gap: 7px;
+  padding: 0;
+  background: transparent;
+  border-top: 0;
   font-family: var(--font-mono);
+  white-space: normal;
 }
 
 .dev-terminal-prompt {
-  color: var(--accent-run);
-  font-size: 13px;
+  color: #74c883;
+  font-size: 12px;
+  line-height: 22px;
   white-space: nowrap;
 }
 
 .dev-terminal-input {
   flex: 1;
   min-width: 0;
-  height: 100%;
+  height: 22px;
   border: 0;
   outline: 0;
   background: transparent;
-  color: var(--text-main);
+  color: #e5eaf2;
+  caret-color: #ffffff;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 22px;
 }
 
 .dev-terminal-input:disabled {
-  color: var(--text-muted);
+  color: #707987;
 }
 
 .dev-terminal-error {
