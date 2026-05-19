@@ -513,16 +513,45 @@ function resolveReferenceGraph(
   return out;
 }
 
+function cloneInputGraph(value: unknown, cloned: WeakMap<object, unknown> = new WeakMap()): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+
+  if (cloned.has(value)) {
+    return cloned.get(value);
+  }
+
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    cloned.set(value, out);
+    for (const item of value) {
+      out.push(cloneInputGraph(item, cloned));
+    }
+    return out;
+  }
+
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+
+  const out: Record<string, unknown> = {};
+  cloned.set(value, out);
+  for (const [key, nested] of Object.entries(value)) {
+    out[key] = cloneInputGraph(nested, cloned);
+  }
+  return out;
+}
+
 function normalizeInputs(inputs: Record<string, unknown>): Record<string, unknown> {
   if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return {};
   const byId = new Map<string, Record<string, unknown>>();
   collectReferenceTargets(inputs, byId, new WeakSet<object>());
   if (byId.size === 0) {
-    return inputs;
+    return cloneInputGraph(inputs) as Record<string, unknown>;
   }
   const hydrated = resolveReferenceGraph(inputs, byId, new WeakMap<object, unknown>());
   if (!hydrated || typeof hydrated !== 'object' || Array.isArray(hydrated)) {
-    return inputs;
+    return cloneInputGraph(inputs) as Record<string, unknown>;
   }
   return hydrated as Record<string, unknown>;
 }
