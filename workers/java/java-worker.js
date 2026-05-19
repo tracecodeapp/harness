@@ -3334,6 +3334,8 @@ function augmentJavaProjectFileMutations(source) {
     .replace(/(?<![\w.])Files\.(readString|readAllBytes|readAllLines|lines|list|newDirectoryStream|newInputStream|newBufferedReader|exists|notExists|isDirectory|isRegularFile|isReadable|isWritable|size|writeString|write|createFile|createDirectory|createDirectories|createTempFile|createTempDirectory|setLastModifiedTime|setAttribute|newOutputStream|newBufferedWriter|newByteChannel|deleteIfExists|delete|copy|move)\s*\(/g, 'tracecode.browser.ProjectEvents.$1(')
     .replace(/\bjava\.io\.File\.createTempFile\s*\(/g, 'tracecode.browser.ProjectEvents.createTempFile(')
     .replace(/(?<![\w.])File\.createTempFile\s*\(/g, 'tracecode.browser.ProjectEvents.createTempFile(')
+    .replace(/\bjava\.lang\.System\.getenv\s*\(/g, 'tracecode.browser.ProjectEvents.getenv(')
+    .replace(/\bSystem\.getenv\s*\(/g, 'tracecode.browser.ProjectEvents.getenv(')
     .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/\bnew\s+java\.io\.FileInputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileInputStream(')
@@ -3425,11 +3427,23 @@ function projectKernelFileManifest(project) {
     .join('\n');
 }
 
-function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '') {
+function projectEnvironmentManifest(payload) {
+  const env = payload?.env && typeof payload.env === 'object' ? payload.env : {};
+  return Object.entries(env)
+    .filter(([key]) => typeof key === 'string' && key.length > 0 && !key.includes('=') && !key.includes('\0'))
+    .map(([key, value]) => [base64Utf8(key), base64Utf8(String(value ?? ''))].join('\t'))
+    .join('\n');
+}
+
+function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '', envManifest = '', virtualWorkspaceRoot = '/workspace', workspaceAlias = '/workspace', internalWorkspaceRoot = '') {
   const argsSource = args.map((arg) => javaStringLiteral(arg)).join(', ');
   const stdinSource = javaStringLiteral(stdin);
   const kernelDeviceManifestSource = javaStringLiteral(kernelDeviceManifest);
   const kernelFileManifestSource = javaStringLiteral(kernelFileManifest);
+  const envManifestSource = javaStringLiteral(envManifest);
+  const virtualWorkspaceRootSource = javaStringLiteral(virtualWorkspaceRoot);
+  const workspaceAliasSource = javaStringLiteral(workspaceAlias);
+  const internalWorkspaceRootSource = javaStringLiteral(internalWorkspaceRoot);
   const propertyKeysSource = systemProperties.map(([key]) => javaStringLiteral(key)).join(', ');
   const propertyValuesSource = systemProperties.map(([, value]) => javaStringLiteral(value)).join(', ');
   const invocation = compileOnly
@@ -3481,7 +3495,7 @@ public class ${exportsClassName} {
     java.io.PrintStream previousOut = System.out;
     java.io.PrintStream previousErr = System.err;
     java.io.InputStream previousIn = System.in;
-    java.nio.file.Path tracecodeWorkspaceRoot = java.nio.file.Paths.get("").toAbsolutePath().normalize();
+    java.nio.file.Path tracecodeWorkspaceRoot = java.nio.file.Paths.get(${internalWorkspaceRootSource}).toAbsolutePath().normalize();
     String[] propertyKeys = new String[] { ${propertyKeysSource} };
     String[] propertyValues = new String[] { ${propertyValuesSource} };
     java.util.Properties previousProperties = new java.util.Properties();
@@ -3498,8 +3512,10 @@ public class ${exportsClassName} {
       }
       ProjectEvents.setProjectEventBridgeEnabled(true);
       ProjectEvents.setProjectWorkspaceRoot(tracecodeWorkspaceRoot);
+      ProjectEvents.setProjectVirtualWorkspaceRoot(${virtualWorkspaceRootSource}, ${workspaceAliasSource});
       ProjectEvents.setKernelDevices(${kernelDeviceManifestSource}, ${stdinSource});
       ProjectEvents.setKernelFiles(${kernelFileManifestSource});
+      ProjectEvents.setEnvironment(${envManifestSource});
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
       System.setErr(new java.io.PrintStream(ProjectEvents.streamingOutput(stderrBytes, "stderr"), true, "UTF-8"));
       System.setIn(ProjectEvents.inputStream());
@@ -3551,13 +3567,17 @@ function buildProjectJavaRunnableSource(payload, compileId) {
   const compileOnly = payload.source === 'compile';
   const relativeCwd = projectRelativeCwd(payload);
   const projectCwd = projectVirtualRoot(payload?.project);
+  const workspaceAlias = typeof payload?.project?.workspaceAlias === 'string' && payload.project.workspaceAlias.length > 0
+    ? payload.project.workspaceAlias
+    : '/workspace';
+  const workspaceRoot = `/files/java-worker/${compileId}/workspace`;
   if (compileOnly) {
     assertBrowserProjectJavacOptionsSupported(payload.args, payload.project, relativeCwd, projectCwd);
   }
   const mainClassName = compileOnly ? javaProjectBasename(files[0].path).replace(/\.java$/, '') : assertProjectMainClass(payload.scriptPath);
   const projectFiles = files.map((file) => ({
     path: javaProjectSourcePath(file),
-    source: compileOnly ? file.contents : augmentJavaProjectFileMutations(file.contents),
+    source: augmentJavaProjectFileMutations(file.contents),
   }));
   const adapter = compileOnly
     ? null
@@ -3571,12 +3591,15 @@ function buildProjectJavaRunnableSource(payload, compileId) {
           String(payload.stdin ?? ''),
           javaProjectSystemProperties(payload),
           projectKernelDeviceManifest(payload.project),
-          projectKernelFileManifest(payload.project)
+          projectKernelFileManifest(payload.project),
+          projectEnvironmentManifest(payload),
+          projectCwd,
+          workspaceAlias,
+          workspaceRoot
         ).trim(),
       };
 
   const classpathRoot = `/files/java-worker/${compileId}/classpath`;
-  const workspaceRoot = `/files/java-worker/${compileId}/workspace`;
   const sourceEntries = adapter === null ? projectFiles : [...projectFiles, adapter];
   return {
     classpathManifest: classpathFiles
@@ -3586,7 +3609,7 @@ function buildProjectJavaRunnableSource(payload, compileId) {
     compileClasspath: javaProjectClasspath(
       javaCompileClasspath(payload.args, payload.project, relativeCwd, projectCwd) ?? javaProjectEnvClasspath(payload),
       classpathRoot,
-      compileOnly ? undefined : HELPER_JAR_PATH,
+      HELPER_JAR_PATH,
       relativeCwd,
       projectCwd,
       payload.project
@@ -3618,6 +3641,11 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
     : assertProjectMainClass(payload.scriptPath);
   const relativeCwd = projectRelativeCwd(payload);
   const projectCwd = projectVirtualRoot(payload?.project);
+  const workspaceAlias = typeof payload?.project?.workspaceAlias === 'string' && payload.project.workspaceAlias.length > 0
+    ? payload.project.workspaceAlias
+    : '/workspace';
+  const classRoot = `/files/java-worker/${compileId}/classpath`;
+  const workspaceRoot = `/files/java-worker/${compileId}/workspace`;
   const adapter = {
     path: `${exportsClassName}.java`,
     source: buildProjectJavaAdapterSource(
@@ -3628,12 +3656,14 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
       String(payload.stdin ?? ''),
       javaProjectSystemProperties(payload),
       projectKernelDeviceManifest(payload.project),
-      projectKernelFileManifest(payload.project)
+      projectKernelFileManifest(payload.project),
+      projectEnvironmentManifest(payload),
+      projectCwd,
+      workspaceAlias,
+      workspaceRoot
     ).trim(),
   };
 
-  const classRoot = `/files/java-worker/${compileId}/classpath`;
-  const workspaceRoot = `/files/java-worker/${compileId}/workspace`;
   return {
     classManifest: classpathFiles
       .map((file) => `${file.path}\t${file.contents}`)
@@ -3645,7 +3675,7 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
     workspaceManifest: projectWorkspaceManifest(payload.project),
     workspaceRoot,
     workspaceCwd: projectWorkspaceCwd(payload, workspaceRoot),
-    runtimeClasspath: javaProjectClasspath(javaProjectEffectiveClasspath(payload), classRoot, undefined, relativeCwd, projectCwd, payload.project),
+    runtimeClasspath: javaProjectClasspath(javaProjectEffectiveClasspath(payload), classRoot, HELPER_JAR_PATH, relativeCwd, projectCwd, payload.project),
     mainClassName: exportsClassName,
   };
 }

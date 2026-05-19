@@ -53,6 +53,10 @@ public final class ProjectEvents {
   private static final ThreadLocal<Boolean> PROJECT_EVENT_BRIDGE_ENABLED =
       ThreadLocal.withInitial(() -> Boolean.FALSE);
   private static final ThreadLocal<Path> PROJECT_WORKSPACE_ROOT = new ThreadLocal<>();
+  private static final ThreadLocal<String> PROJECT_VIRTUAL_WORKSPACE_ROOT = new ThreadLocal<>();
+  private static final ThreadLocal<String> PROJECT_WORKSPACE_ALIAS = new ThreadLocal<>();
+  private static final ThreadLocal<Map<String, String>> PROJECT_ENVIRONMENT =
+      ThreadLocal.withInitial(HashMap::new);
   private static final ThreadLocal<Map<String, KernelDevice>> KERNEL_DEVICES =
       ThreadLocal.withInitial(HashMap::new);
   private static final ThreadLocal<Map<String, byte[]>> KERNEL_VIRTUAL_FILES =
@@ -75,6 +79,23 @@ public final class ProjectEvents {
     PROJECT_WORKSPACE_ROOT.set(root == null ? null : root.toAbsolutePath().normalize());
   }
 
+  public static void setProjectVirtualWorkspaceRoot(String root, String alias) {
+    PROJECT_VIRTUAL_WORKSPACE_ROOT.set(normalizeKernelAbsoluteString(root));
+    PROJECT_WORKSPACE_ALIAS.set(normalizeKernelAbsoluteString(alias));
+  }
+
+  public static void setEnvironment(String manifest) {
+    PROJECT_ENVIRONMENT.set(parseEnvironment(manifest));
+  }
+
+  public static String getenv(String name) {
+    return PROJECT_ENVIRONMENT.get().get(name);
+  }
+
+  public static Map<String, String> getenv() {
+    return new HashMap<>(PROJECT_ENVIRONMENT.get());
+  }
+
   public static void setKernelDevices(String manifest, String stdin) {
     KERNEL_DEVICES.set(parseKernelDevices(manifest));
     KERNEL_STDIN.set(stdin == null ? new byte[0] : stdin.getBytes(StandardCharsets.UTF_8));
@@ -92,6 +113,9 @@ public final class ProjectEvents {
     KERNEL_STDIN_OFFSET.remove();
     STDOUT_CAPTURE.remove();
     STDERR_CAPTURE.remove();
+    PROJECT_ENVIRONMENT.remove();
+    PROJECT_VIRTUAL_WORKSPACE_ROOT.remove();
+    PROJECT_WORKSPACE_ALIAS.remove();
   }
 
   public static InputStream inputStream() {
@@ -112,7 +136,7 @@ public final class ProjectEvents {
     if (device != null) return new String(readKernelDevice(device), StandardCharsets.UTF_8);
     byte[] kernelFile = readableKernelFile(path);
     if (kernelFile != null) return new String(kernelFile, StandardCharsets.UTF_8);
-    return Files.readString(path);
+    return Files.readString(runtimePath(path));
   }
 
   public static String readString(Path path, Charset charset) throws IOException {
@@ -120,7 +144,7 @@ public final class ProjectEvents {
     if (device != null) return new String(readKernelDevice(device), charset);
     byte[] kernelFile = readableKernelFile(path);
     if (kernelFile != null) return new String(kernelFile, charset);
-    return Files.readString(path, charset);
+    return Files.readString(runtimePath(path), charset);
   }
 
   public static byte[] readAllBytes(Path path) throws IOException {
@@ -128,7 +152,7 @@ public final class ProjectEvents {
     if (device != null) return readKernelDevice(device);
     byte[] kernelFile = readableKernelFile(path);
     if (kernelFile != null) return kernelFile;
-    return Files.readAllBytes(path);
+    return Files.readAllBytes(runtimePath(path));
   }
 
   public static InputStream newInputStream(Path path, OpenOption... options) throws IOException {
@@ -136,7 +160,7 @@ public final class ProjectEvents {
     if (device != null) return new ByteArrayInputStream(readKernelDevice(device));
     byte[] kernelFile = readableKernelFile(path);
     if (kernelFile != null) return new ByteArrayInputStream(kernelFile);
-    return Files.newInputStream(path, options);
+    return Files.newInputStream(runtimePath(path), options);
   }
 
   public static BufferedReader newBufferedReader(Path path) throws IOException {
@@ -154,7 +178,7 @@ public final class ProjectEvents {
       Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
       return new BufferedReader(new InputStreamReader(new ByteArrayInputStream(kernelFile), effectiveCharset));
     }
-    return Files.newBufferedReader(path, charset);
+    return Files.newBufferedReader(runtimePath(path), charset);
   }
 
   public static List<String> readAllLines(Path path) throws IOException {
@@ -176,7 +200,7 @@ public final class ProjectEvents {
           .lines()
           .collect(java.util.stream.Collectors.toList());
     }
-    return Files.readAllLines(path, charset);
+    return Files.readAllLines(runtimePath(path), charset);
   }
 
   public static Stream<String> lines(Path path) throws IOException {
@@ -194,7 +218,7 @@ public final class ProjectEvents {
       Charset effectiveCharset = charset == null ? StandardCharsets.UTF_8 : charset;
       return new String(kernelFile, effectiveCharset).lines();
     }
-    return Files.lines(path, charset);
+    return Files.lines(runtimePath(path), charset);
   }
 
   public static Stream<Path> list(Path path) throws IOException {
@@ -205,7 +229,7 @@ public final class ProjectEvents {
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     if (isKernelVirtualDirectory(normalized)) return kernelVirtualDirectoryPaths(normalized).stream();
     if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
-    return Files.list(path);
+    return Files.list(runtimePath(path));
   }
 
   public static DirectoryStream<Path> newDirectoryStream(Path dir) throws IOException {
@@ -214,7 +238,7 @@ public final class ProjectEvents {
     if (isVirtualDevicePath(normalized)) throwKernelDeviceNotDirectory(normalized);
     if (isKernelVirtualDirectory(normalized)) return new KernelDirectoryStream(kernelVirtualDirectoryPaths(normalized));
     if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
-    return Files.newDirectoryStream(dir);
+    return Files.newDirectoryStream(runtimePath(dir));
   }
 
   public static DirectoryStream<Path> newDirectoryStream(Path dir, String glob) throws IOException {
@@ -233,7 +257,7 @@ public final class ProjectEvents {
       return newDirectoryStream(dir, filter);
     }
     if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
-    return Files.newDirectoryStream(dir, glob);
+    return Files.newDirectoryStream(runtimePath(dir), glob);
   }
 
   public static DirectoryStream<Path> newDirectoryStream(Path dir, DirectoryStream.Filter<? super Path> filter)
@@ -255,7 +279,7 @@ public final class ProjectEvents {
       return new KernelDirectoryStream(entries);
     }
     if (isKernelVirtualFile(normalized)) throw new NotDirectoryException(normalized);
-    return Files.newDirectoryStream(dir, filter);
+    return Files.newDirectoryStream(runtimePath(dir), filter);
   }
 
   public static boolean exists(Path path, LinkOption... options) {
@@ -263,7 +287,7 @@ public final class ProjectEvents {
     if (isVirtualDeviceDirectory(normalized)) return true;
     if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
     if (isKernelVirtualDirectory(normalized) || isKernelVirtualFile(normalized)) return true;
-    return Files.exists(path, options);
+    return Files.exists(runtimePath(path), options);
   }
 
   public static boolean notExists(Path path, LinkOption... options) {
@@ -271,7 +295,7 @@ public final class ProjectEvents {
     if (isVirtualDeviceNamespacePath(normalized) || isKernelVirtualNamespacePath(normalized)) {
       return !exists(path, options);
     }
-    return Files.notExists(path, options);
+    return Files.notExists(runtimePath(path), options);
   }
 
   public static boolean isDirectory(Path path, LinkOption... options) {
@@ -280,7 +304,7 @@ public final class ProjectEvents {
     if (isVirtualDevicePath(normalized)) return false;
     if (isKernelVirtualDirectory(normalized)) return true;
     if (isKernelVirtualFile(normalized)) return false;
-    return Files.isDirectory(path, options);
+    return Files.isDirectory(runtimePath(path), options);
   }
 
   public static boolean isRegularFile(Path path, LinkOption... options) {
@@ -289,7 +313,7 @@ public final class ProjectEvents {
     if (isVirtualDevicePath(normalized)) return KERNEL_DEVICES.get().containsKey(normalized);
     if (isKernelVirtualDirectory(normalized)) return false;
     if (isKernelVirtualFile(normalized)) return true;
-    return Files.isRegularFile(path, options);
+    return Files.isRegularFile(runtimePath(path), options);
   }
 
   public static boolean isReadable(Path path) {
@@ -301,7 +325,7 @@ public final class ProjectEvents {
     }
     if (isKernelVirtualDirectory(normalized) || isKernelVirtualFile(normalized)) return true;
     if (isKernelVirtualNamespacePath(normalized)) return false;
-    return Files.isReadable(path);
+    return Files.isReadable(runtimePath(path));
   }
 
   public static boolean isWritable(Path path) {
@@ -312,7 +336,7 @@ public final class ProjectEvents {
       return device != null && device.writable;
     }
     if (isKernelVirtualNamespacePath(normalized)) return false;
-    return Files.isWritable(path);
+    return Files.isWritable(runtimePath(path));
   }
 
   public static long size(Path path) throws IOException {
@@ -324,7 +348,7 @@ public final class ProjectEvents {
     if (isKernelVirtualDirectory(normalized)) return 0L;
     if (isKernelVirtualFile(normalized)) return KERNEL_VIRTUAL_FILES.get().get(normalized).length;
     if (isKernelVirtualNamespacePath(normalized)) throw new NoSuchFileException(normalized);
-    return Files.size(path);
+    return Files.size(runtimePath(path));
   }
 
   public static Path writeString(Path path, CharSequence contents, OpenOption... options) throws IOException {
@@ -334,7 +358,8 @@ public final class ProjectEvents {
       return path;
     }
     assertWritableProjectPath(path);
-    Path result = Files.writeString(path, contents, options);
+    Path runtime = runtimePath(path);
+    Path result = Files.writeString(runtime, contents, options);
     emitFileSnapshot(path);
     return result;
   }
@@ -347,7 +372,8 @@ public final class ProjectEvents {
       return path;
     }
     assertWritableProjectPath(path);
-    Path result = Files.writeString(path, contents, charset, options);
+    Path runtime = runtimePath(path);
+    Path result = Files.writeString(runtime, contents, charset, options);
     emitFileSnapshot(path);
     return result;
   }
@@ -359,7 +385,8 @@ public final class ProjectEvents {
       return path;
     }
     assertWritableProjectPath(path);
-    Path result = Files.write(path, bytes, options);
+    Path runtime = runtimePath(path);
+    Path result = Files.write(runtime, bytes, options);
     emitFileSnapshot(path);
     return result;
   }
@@ -374,7 +401,8 @@ public final class ProjectEvents {
       return path;
     }
     assertWritableProjectPath(path);
-    Path result = Files.write(path, lines, options);
+    Path runtime = runtimePath(path);
+    Path result = Files.write(runtime, lines, options);
     emitFileSnapshot(path);
     return result;
   }
@@ -393,21 +421,24 @@ public final class ProjectEvents {
       return path;
     }
     assertWritableProjectPath(path);
-    Path result = Files.write(path, lines, charset, options);
+    Path runtime = runtimePath(path);
+    Path result = Files.write(runtime, lines, charset, options);
     emitFileSnapshot(path);
     return result;
   }
 
   public static Path createFile(Path path, FileAttribute<?>... attrs) throws IOException {
     assertWritableProjectPath(path);
-    Path result = Files.createFile(path, attrs);
+    Path runtime = runtimePath(path);
+    Path result = Files.createFile(runtime, attrs);
     emitFileSnapshot(path);
     return result;
   }
 
   public static Path createDirectory(Path dir, FileAttribute<?>... attrs) throws IOException {
     assertWritableProjectPath(dir);
-    Path result = Files.createDirectory(dir, attrs);
+    Path runtime = runtimePath(dir);
+    Path result = Files.createDirectory(runtime, attrs);
     emitDirectoryCreate(dir);
     return result;
   }
@@ -415,7 +446,8 @@ public final class ProjectEvents {
   public static Path createDirectories(Path dir, FileAttribute<?>... attrs) throws IOException {
     assertWritableProjectPath(dir);
     List<Path> missing = missingDirectories(dir);
-    Path result = Files.createDirectories(dir, attrs);
+    Path runtime = runtimePath(dir);
+    Path result = Files.createDirectories(runtime, attrs);
     for (Path created : missing) {
       if (Files.isDirectory(created)) emitDirectoryCreate(created);
     }
@@ -425,7 +457,8 @@ public final class ProjectEvents {
   public static Path createTempFile(Path dir, String prefix, String suffix, FileAttribute<?>... attrs)
       throws IOException {
     assertWritableProjectPath(dir);
-    Path result = Files.createTempFile(dir, prefix, suffix, attrs);
+    Path runtime = runtimePath(dir);
+    Path result = Files.createTempFile(runtime, prefix, suffix, attrs);
     emitFileSnapshot(result);
     return result;
   }
@@ -451,7 +484,8 @@ public final class ProjectEvents {
 
   public static Path createTempDirectory(Path dir, String prefix, FileAttribute<?>... attrs) throws IOException {
     assertWritableProjectPath(dir);
-    Path result = Files.createTempDirectory(dir, prefix, attrs);
+    Path runtime = runtimePath(dir);
+    Path result = Files.createTempDirectory(runtime, prefix, attrs);
     emitDirectoryCreate(result);
     return result;
   }
@@ -464,22 +498,25 @@ public final class ProjectEvents {
 
   public static Path setLastModifiedTime(Path path, FileTime time) throws IOException {
     assertWritableProjectPath(path);
-    Path result = Files.setLastModifiedTime(path, time);
+    Path runtime = runtimePath(path);
+    Path result = Files.setLastModifiedTime(runtime, time);
     emitPathSnapshot(path);
     return result;
   }
 
   public static Path setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
     assertWritableProjectPath(path);
-    Path result = Files.setAttribute(path, attribute, value, options);
+    Path runtime = runtimePath(path);
+    Path result = Files.setAttribute(runtime, attribute, value, options);
     emitPathSnapshot(path);
     return result;
   }
 
   public static void delete(Path path) throws IOException {
     assertWritableProjectPath(path);
-    boolean directory = Files.isDirectory(path);
-    Files.delete(path);
+    Path runtime = runtimePath(path);
+    boolean directory = Files.isDirectory(runtime);
+    Files.delete(runtime);
     if (directory) {
       emitDirectoryDelete(path);
     } else {
@@ -489,8 +526,9 @@ public final class ProjectEvents {
 
   public static boolean deleteIfExists(Path path) throws IOException {
     assertWritableProjectPath(path);
-    boolean directory = Files.isDirectory(path);
-    boolean deleted = Files.deleteIfExists(path);
+    Path runtime = runtimePath(path);
+    boolean directory = Files.isDirectory(runtime);
+    boolean deleted = Files.deleteIfExists(runtime);
     if (deleted) {
       if (directory) {
         emitDirectoryDelete(path);
@@ -506,23 +544,25 @@ public final class ProjectEvents {
     KernelDevice targetDevice = writableKernelDevice(target);
     byte[] sourceKernelFile = sourceDevice == null ? readableKernelFile(source) : null;
     if (targetDevice != null) {
-      byte[] bytes = sourceDevice != null ? readKernelDevice(sourceDevice) : sourceKernelFile != null ? sourceKernelFile : Files.readAllBytes(source);
+      byte[] bytes = sourceDevice != null ? readKernelDevice(sourceDevice) : sourceKernelFile != null ? sourceKernelFile : Files.readAllBytes(runtimePath(source));
       writeKernelDevice(targetDevice, bytes);
       return target;
     }
     assertWritableProjectPath(target);
     if (sourceDevice != null) {
-      Files.write(target, readKernelDevice(sourceDevice));
+      Files.write(runtimePath(target), readKernelDevice(sourceDevice));
       emitFileSnapshot(target);
       return target;
     }
     if (sourceKernelFile != null) {
-      Files.write(target, sourceKernelFile);
+      Files.write(runtimePath(target), sourceKernelFile);
       emitFileSnapshot(target);
       return target;
     }
-    boolean directory = Files.isDirectory(source);
-    Path result = Files.copy(source, target, options);
+    Path runtimeSource = runtimePath(source);
+    Path runtimeTarget = runtimePath(target);
+    boolean directory = Files.isDirectory(runtimeSource);
+    Path result = Files.copy(runtimeSource, runtimeTarget, options);
     if (directory) {
       emitDirectoryCreate(target);
     } else {
@@ -534,8 +574,10 @@ public final class ProjectEvents {
   public static Path move(Path source, Path target, CopyOption... options) throws IOException {
     assertWritableProjectPath(source);
     assertWritableProjectPath(target);
-    boolean directory = Files.isDirectory(source);
-    Path result = Files.move(source, target, options);
+    Path runtimeSource = runtimePath(source);
+    Path runtimeTarget = runtimePath(target);
+    boolean directory = Files.isDirectory(runtimeSource);
+    Path result = Files.move(runtimeSource, runtimeTarget, options);
     if (directory) {
       emitDirectoryDelete(source);
       emitDirectoryCreate(target);
@@ -550,9 +592,10 @@ public final class ProjectEvents {
     KernelDevice device = writableKernelDevice(path);
     if (device != null) return new KernelDeviceOutputStream(device);
     assertWritableProjectPath(path);
-    boolean existed = Files.exists(path);
-    OutputStream stream = Files.newOutputStream(path, options);
-    return new ProjectOutputStream(stream, path, outputOpenSnapshotRequired(existed, options));
+    Path runtime = runtimePath(path);
+    boolean existed = Files.exists(runtime);
+    OutputStream stream = Files.newOutputStream(runtime, options);
+    return new ProjectOutputStream(stream, runtime, outputOpenSnapshotRequired(existed, options));
   }
 
   public static BufferedWriter newBufferedWriter(Path path, OpenOption... options) throws IOException {
@@ -561,9 +604,10 @@ public final class ProjectEvents {
       return new BufferedWriter(new OutputStreamWriter(new KernelDeviceOutputStream(device), StandardCharsets.UTF_8));
     }
     assertWritableProjectPath(path);
-    boolean existed = Files.exists(path);
-    BufferedWriter writer = Files.newBufferedWriter(path, options);
-    return new ProjectBufferedWriter(writer, path, outputOpenSnapshotRequired(existed, options));
+    Path runtime = runtimePath(path);
+    boolean existed = Files.exists(runtime);
+    BufferedWriter writer = Files.newBufferedWriter(runtime, options);
+    return new ProjectBufferedWriter(writer, runtime, outputOpenSnapshotRequired(existed, options));
   }
 
   public static BufferedWriter newBufferedWriter(Path path, Charset charset, OpenOption... options) throws IOException {
@@ -572,9 +616,10 @@ public final class ProjectEvents {
       return new BufferedWriter(new OutputStreamWriter(new KernelDeviceOutputStream(device), charset));
     }
     assertWritableProjectPath(path);
-    boolean existed = Files.exists(path);
-    BufferedWriter writer = Files.newBufferedWriter(path, charset, options);
-    return new ProjectBufferedWriter(writer, path, outputOpenSnapshotRequired(existed, options));
+    Path runtime = runtimePath(path);
+    boolean existed = Files.exists(runtime);
+    BufferedWriter writer = Files.newBufferedWriter(runtime, charset, options);
+    return new ProjectBufferedWriter(writer, runtime, outputOpenSnapshotRequired(existed, options));
   }
 
   public static SeekableByteChannel newByteChannel(Path path, OpenOption... options) throws IOException {
@@ -584,9 +629,10 @@ public final class ProjectEvents {
     if (kernelFileChannel != null) return kernelFileChannel;
     boolean writable = byteChannelCanWrite(options);
     if (writable) assertWritableProjectPath(path);
-    boolean existed = Files.exists(path);
-    SeekableByteChannel channel = Files.newByteChannel(path, options);
-    return new ProjectSeekableByteChannel(channel, path, writable, byteChannelOpenSnapshotRequired(existed, options));
+    Path runtime = runtimePath(path);
+    boolean existed = Files.exists(runtime);
+    SeekableByteChannel channel = Files.newByteChannel(runtime, options);
+    return new ProjectSeekableByteChannel(channel, runtime, writable, byteChannelOpenSnapshotRequired(existed, options));
   }
 
   public static SeekableByteChannel newByteChannel(
@@ -601,9 +647,10 @@ public final class ProjectEvents {
     if (kernelFileChannel != null) return kernelFileChannel;
     boolean writable = byteChannelCanWrite(optionArray);
     if (writable) assertWritableProjectPath(path);
-    boolean existed = Files.exists(path);
-    SeekableByteChannel channel = Files.newByteChannel(path, options, attrs);
-    return new ProjectSeekableByteChannel(channel, path, writable, byteChannelOpenSnapshotRequired(existed, optionArray));
+    Path runtime = runtimePath(path);
+    boolean existed = Files.exists(runtime);
+    SeekableByteChannel channel = Files.newByteChannel(runtime, options, attrs);
+    return new ProjectSeekableByteChannel(channel, runtime, writable, byteChannelOpenSnapshotRequired(existed, optionArray));
   }
 
   public static final class ProjectFileWriter extends FileWriter {
@@ -1716,6 +1763,21 @@ public final class ProjectEvents {
     return files;
   }
 
+  private static Map<String, String> parseEnvironment(String manifest) {
+    Map<String, String> env = new HashMap<>();
+    if (manifest == null || manifest.isEmpty()) return env;
+    String[] lines = manifest.split("\\n");
+    for (String line : lines) {
+      if (line.isEmpty()) continue;
+      String[] fields = line.split("\\t", -1);
+      if (fields.length < 2) continue;
+      String key = decodeManifestField(fields[0]);
+      if (key == null || key.isEmpty() || key.indexOf('\0') >= 0 || key.indexOf('=') >= 0) continue;
+      env.put(key, decodeManifestField(fields[1]));
+    }
+    return env;
+  }
+
   private static String decodeManifestField(String field) {
     return new String(Base64.getDecoder().decode(field), StandardCharsets.UTF_8);
   }
@@ -1794,7 +1856,9 @@ public final class ProjectEvents {
 
   private static String normalizeVirtualPath(Path path) {
     if (path == null) return null;
-    return normalizeVirtualString(path.toString());
+    String normalized = normalizeVirtualString(path.toString());
+    String relative = virtualWorkspaceRelativePath(normalized);
+    return relative == null ? normalized : PROJECT_WORKSPACE_ROOT.get().resolve(relative).normalize().toString().replace('\\', '/');
   }
 
   private static String normalizeVirtualString(String value) {
@@ -1826,6 +1890,33 @@ public final class ProjectEvents {
     String normalized = normalizeKernelAbsoluteString(value);
     if (normalized == null || "/dev".equals(normalized) || !normalized.startsWith("/dev/")) return null;
     return normalized.length() > "/dev/".length() ? normalized : null;
+  }
+
+  private static String virtualWorkspaceRelativePath(String normalized) {
+    if (normalized == null) return null;
+    for (String root : new String[] { PROJECT_VIRTUAL_WORKSPACE_ROOT.get(), PROJECT_WORKSPACE_ALIAS.get() }) {
+      if (root == null || root.isEmpty()) continue;
+      if (normalized.equals(root)) return "";
+      if (normalized.startsWith(root + "/")) return normalized.substring(root.length() + 1);
+    }
+    return null;
+  }
+
+  private static Path runtimePath(Path path) {
+    if (path == null) return null;
+    Path workspaceRoot = PROJECT_WORKSPACE_ROOT.get();
+    if (workspaceRoot == null) return path;
+    if (!path.isAbsolute()) {
+      String cwdRelative = virtualWorkspaceRelativePath(normalizeKernelAbsoluteString(System.getProperty("user.dir")));
+      Path runtimeCwd = cwdRelative == null || cwdRelative.isEmpty()
+          ? workspaceRoot
+          : workspaceRoot.resolve(cwdRelative).normalize();
+      return runtimeCwd.resolve(path).normalize();
+    }
+    String normalized = normalizeVirtualString(path.toString());
+    String relative = virtualWorkspaceRelativePath(normalized);
+    if (relative == null) return path;
+    return relative.isEmpty() ? workspaceRoot : workspaceRoot.resolve(relative).normalize();
   }
 
   private static boolean isVirtualDeviceDirectory(String normalized) {
@@ -2227,8 +2318,9 @@ public final class ProjectEvents {
       return temporaryDeviceFile();
     }
     assertWritableProjectPath(path);
-    LAST_OUTPUT_FILE_TARGET.set(new OutputFileTargetInfo(Files.exists(path)));
-    return path.toFile();
+    Path runtime = runtimePath(path);
+    LAST_OUTPUT_FILE_TARGET.set(new OutputFileTargetInfo(Files.exists(runtime)));
+    return runtime.toFile();
   }
 
   private static File inputFileTarget(Path path) throws IOException {
@@ -2236,7 +2328,7 @@ public final class ProjectEvents {
     if (device != null) return temporaryDeviceFile();
     byte[] kernelFile = readableKernelFile(path);
     if (kernelFile != null) return temporaryFileWithContents(kernelFile);
-    return path.toFile();
+    return runtimePath(path).toFile();
   }
 
   private static File inputReaderTarget(Path path) throws IOException {
@@ -2244,7 +2336,7 @@ public final class ProjectEvents {
     if (device != null) return temporaryDeviceFile();
     byte[] kernelFile = readableKernelFile(path);
     if (kernelFile != null) return temporaryFileWithContents(kernelFile);
-    return path.toFile();
+    return runtimePath(path).toFile();
   }
 
   private static File randomAccessFileTarget(Path path, String mode) throws IOException {
@@ -2253,7 +2345,7 @@ public final class ProjectEvents {
     if (device != null) return temporaryFileWithContents(readKernelDevice(device));
     byte[] kernelFile = readableKernelFile(path);
     if (kernelFile != null) return temporaryFileWithContents(kernelFile);
-    return path.toFile();
+    return runtimePath(path).toFile();
   }
 
   private static boolean randomAccessFileCanWrite(String mode) {
@@ -2458,7 +2550,7 @@ public final class ProjectEvents {
   private static String projectRelativePath(Path path) {
     Path root = PROJECT_WORKSPACE_ROOT.get();
     if (root == null || path == null) return null;
-    Path absolute = path.toAbsolutePath().normalize();
+    Path absolute = runtimePath(path).toAbsolutePath().normalize();
     if (!absolute.startsWith(root)) return null;
     Path relative = root.relativize(absolute);
     if (relative.getNameCount() == 0) return null;
