@@ -6508,6 +6508,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'const path = require("node:path");',
           'const value = require("/home/ada/weather-api/lib/value.js");',
           'console.log(process.cwd());',
+          'console.log(process.env.MODE);',
           'console.log(os.homedir());',
           'console.log(path.resolve("src/alias.txt"));',
           'console.log(__filename);',
@@ -6542,6 +6543,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'fs.chmodSync("/dev/stdout", 0o600);',
           'try { fs.utimesSync("/dev/missing", new Date(), new Date()); } catch (error) { console.log(error.code); }',
           'try { fs.truncateSync("/dev/stdout", 0); } catch (error) { console.log(error.code); }',
+          'fs.writeFileSync("node-cwd.txt", process.cwd() + "\\n" + process.env.MODE + "\\n");',
           'fs.writeFileSync("/home/ada/weather-api/node-canonical.txt", "node-canonical\\n");',
           'fs.appendFileSync("/workspace/node-alias.txt", "node-alias\\n");',
           '',
@@ -6556,7 +6558,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       async executeProjectPython(request) {
         pythonRequests.push(request);
         return {
-          stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`,
+          stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}:${request.env.MODE}:${request.project.kernel?.name}:${request.project.kernel?.version}\n`,
           stderr: '',
           exitCode: 0,
           files: [{ path: 'python-browser.txt', contents: 'python-browser\n' }],
@@ -6567,14 +6569,14 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     javaWorkerClient: {
       async executeProjectJava(request) {
         javaRequests.push(request);
-        return { stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`, stderr: '', exitCode: 0 };
+        return { stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}:${request.env.MODE}:${request.project.kernel?.name}:${request.project.kernel?.version}\n`, stderr: '', exitCode: 0 };
       },
       terminate() {},
     },
     csharpWorkerClient: {
       async executeProjectCSharp(request) {
         csharpRequests.push(request);
-        return { stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`, stderr: '', exitCode: 0 };
+        return { stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}:${request.env.MODE}:${request.project.kernel?.name}:${request.project.kernel?.version}\n`, stderr: '', exitCode: 0 };
       },
       terminate() {},
     },
@@ -6582,7 +6584,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       async executeProjectCpp(request) {
         cppRequests.push(request);
         return {
-          stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}\n`,
+          stdout: `${request.cwd}:${request.project.workspaceRoot}:${request.project.workspaceAlias}:${request.env.MODE}:${request.project.kernel?.name}:${request.project.kernel?.version}\n`,
           stderr: '',
           exitCode: 0,
           ...(request.source === 'compile'
@@ -6621,11 +6623,14 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       `browser workspace runCommand should surface stdout device events: ${JSON.stringify(outputEvents)}`
     );
 
-    const python = await workspace.runCommand('python3 /workspace/main.py', { cwd: '/workspace' });
+    const python = await workspace.runCommand('python3 /workspace/main.py', {
+      cwd: '/workspace',
+      env: { MODE: 'browser-python' },
+    });
     assertCondition(python.exitCode === 0, `browser Python project command should succeed with alias cwd: ${python.stderr}`);
     assertCondition(
-      python.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
-      `browser Python request should use canonical cwd and expose alias metadata: ${python.stdout}`
+      python.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-python:tracekernel:0.7.0-beta6\n',
+      `browser Python request should use canonical cwd and expose environment/kernel metadata: ${python.stdout}`
     );
     assertCondition(await workspace.readFile('python-browser.txt') === 'python-browser\n', 'browser Python final diff should persist through kernel FS');
     assertCondition(pythonRequests[0]?.project.kernel?.user.username === 'ada', 'browser Python request should include kernel identity');
@@ -6633,12 +6638,14 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
     const nodeEvents: RuntimeCommandEvent[] = [];
     const node = await workspace.runCommand('node /home/ada/weather-api/index.js', {
       cwd: '/workspace',
+      env: { MODE: 'browser-node' },
       onEvent: (event) => nodeEvents.push(event),
     });
     assertCondition(node.exitCode === 0, `browser Node project command should succeed with canonical script path: ${node.stderr}`);
     assertCondition(
       node.stdout === [
         '/home/ada/weather-api',
+        'browser-node',
         '/home/ada',
         '/home/ada/weather-api/src/alias.txt',
         '/home/ada/weather-api/index.js',
@@ -6671,6 +6678,7 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       ].join('\n'),
       `browser Node APIs should use canonical tracekernel paths: ${node.stdout}`
     );
+    assertCondition(await workspace.readFile('node-cwd.txt') === '/home/ada/weather-api\nbrowser-node\n', 'browser Node should write cwd-relative files with runtime env');
     assertCondition(await workspace.readFile('node-canonical.txt') === 'node-canonical\n', 'browser Node should write canonical absolute paths');
     assertCondition(await workspace.readFile('node-alias.txt') === 'node-alias\n', 'browser Node should still map /workspace alias paths');
     assertCondition(nodeEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout'), 'browser Node should stream stdout events');
@@ -6687,32 +6695,38 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
       `browser Node workspace file mutations should be applied once through the kernel hook: ${JSON.stringify(events)}`
     );
 
-    const java = await workspace.runCommand('java Main', { cwd: '/workspace' });
+    const java = await workspace.runCommand('java Main', { cwd: '/workspace', env: { MODE: 'browser-java' } });
     assertCondition(java.exitCode === 0, `browser Java project command should succeed with alias cwd: ${java.stderr}`);
     assertCondition(
-      java.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
-      `browser Java request should use canonical cwd and expose alias metadata: ${java.stdout}`
+      java.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-java:tracekernel:0.7.0-beta6\n',
+      `browser Java request should use canonical cwd and expose environment/kernel metadata: ${java.stdout}`
     );
     assertCondition(javaRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser Java request should include workspaceRoot');
     assertCondition(javaRequests[0]?.project.workspaceAlias === '/workspace', 'browser Java request should include workspaceAlias');
+    assertCondition(javaRequests[0]?.project.kernel?.host.hostname === 'tracevm-browser', 'browser Java request should include kernel host identity');
 
-    const csharp = await workspace.runCommand('dotnet run', { cwd: '/workspace' });
+    const csharp = await workspace.runCommand('dotnet run', { cwd: '/workspace', env: { MODE: 'browser-csharp' } });
     assertCondition(csharp.exitCode === 0, `browser C# project command should succeed with alias cwd: ${csharp.stderr}`);
     assertCondition(
-      csharp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
-      `browser C# request should use canonical cwd and expose alias metadata: ${csharp.stdout}`
+      csharp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-csharp:tracekernel:0.7.0-beta6\n',
+      `browser C# request should use canonical cwd and expose environment/kernel metadata: ${csharp.stdout}`
     );
     assertCondition(csharpRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C# request should include workspaceRoot');
     assertCondition(csharpRequests[0]?.project.workspaceAlias === '/workspace', 'browser C# request should include workspaceAlias');
+    assertCondition(csharpRequests[0]?.project.kernel?.host.hostname === 'tracevm-browser', 'browser C# request should include kernel host identity');
 
-    const cpp = await workspace.runCommand('clang++ /home/ada/weather-api/main.cpp -o /workspace/out/app', { cwd: '/workspace' });
+    const cpp = await workspace.runCommand('clang++ /home/ada/weather-api/main.cpp -o /workspace/out/app', {
+      cwd: '/workspace',
+      env: { MODE: 'browser-cpp' },
+    });
     assertCondition(cpp.exitCode === 0, `browser C++ project command should succeed with canonical and alias args: ${cpp.stderr}`);
     assertCondition(
-      cpp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace\n',
-      `browser C++ request should use canonical cwd and expose alias metadata: ${cpp.stdout}`
+      cpp.stdout === '/home/ada/weather-api:/home/ada/weather-api:/workspace:browser-cpp:tracekernel:0.7.0-beta6\n',
+      `browser C++ request should use canonical cwd and expose environment/kernel metadata: ${cpp.stdout}`
     );
     assertCondition(cppRequests[0]?.project.workspaceRoot === '/home/ada/weather-api', 'browser C++ request should include workspaceRoot');
     assertCondition(cppRequests[0]?.project.workspaceAlias === '/workspace', 'browser C++ request should include workspaceAlias');
+    assertCondition(cppRequests[0]?.project.kernel?.host.hostname === 'tracevm-browser', 'browser C++ request should include kernel host identity');
 
     assertCondition(
       pythonRequests[0]?.project.files.some((file) => file.path === 'src/alias.txt') === true,
