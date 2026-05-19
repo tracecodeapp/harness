@@ -1107,6 +1107,58 @@ print(json.dumps({
   console.log('PASS: Python runtime default convenience imports');
 }
 
+async function assertScriptModePreservesResultSerializer(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `nums = [2, 7, 11, 15]
+target = 9
+seen = {}
+result = None
+for i, value in enumerate(nums):
+    need = target - value
+    if need in seen:
+        result = [seen[need], i]
+        break
+    seen[value] = i
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    '',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  const errorStep = parsed.trace.find((step) => step.event === 'exception');
+
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify([0, 1]),
+    `Python script mode should serialize the result, got ${JSON.stringify(parsed.result)}`
+  );
+  assertCondition(
+    !errorStep,
+    `Python script mode should not lose harness serializer globals, got ${JSON.stringify(errorStep)}`
+  );
+
+  console.log('PASS: Python script mode preserves result serialization helpers');
+}
+
 async function assertIndexedAugAssignAndLoopBindingUseConcreteValues(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def solve():
@@ -1195,6 +1247,7 @@ async function main(): Promise<void> {
   await assertTraceCaptureLimitPreservesOutput();
   await assertRuntimeValueSerializationCap();
   await assertDefaultPreludeImportsAreAvailable();
+  await assertScriptModePreservesResultSerializer();
   await assertIndexedAugAssignAndLoopBindingUseConcreteValues();
   console.log('\nPython runtime checks passed.');
 }
