@@ -74,8 +74,8 @@ public final class JavaRewriteLibrary {
   private static final Pattern OBJECT_FIELD_MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
   private static final Pattern OBJECT_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
   private static final Pattern OBJECT_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
-  private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\s*\\[([^;\\]\\[]+)\\]");
-  private static final Pattern ARRAY_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]");
+  private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]");
+  private static final Pattern ARRAY_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]");
 
   private JavaRewriteLibrary() {}
 
@@ -1529,6 +1529,8 @@ public final class JavaRewriteLibrary {
 
   private static String indexSourceArgument(String value) {
     if (value != null) {
+      String tracedSource = tracedIndexedReadSource(value.trim());
+      if (tracedSource != null) return quote(tracedSource);
       java.util.regex.Matcher charAtIndex = java.util.regex.Pattern
         .compile("^[A-Za-z_][A-Za-z0-9_]*\\.charAt\\(\\s*([\\s\\S]+)\\s*\\)$")
         .matcher(value.trim());
@@ -1537,15 +1539,27 @@ public final class JavaRewriteLibrary {
         if (charAtSource == null) charAtSource = singleIdentifierIndexSource(charAtIndex.group(1));
         if (charAtSource != null) return quote(charAtSource);
       }
-      java.util.regex.Matcher tracedReadSource = java.util.regex.Pattern
-        .compile("^TraceHooks\\.read[A-Za-z0-9_]*AtLine\\([\\s\\S]*,\\s*\"([A-Za-z_][A-Za-z0-9_]*)\"\\s*\\)$")
-        .matcher(value.trim());
-      if (tracedReadSource.matches()) return quote(tracedReadSource.group(1));
       String expressionSource = safeIndexSourceExpression(value.trim());
       if (expressionSource == null) expressionSource = singleIdentifierIndexSource(value.trim());
       if (expressionSource != null) return quote(expressionSource);
     }
     return isSimpleIdentifierExpression(value) ? quote(value) : "null";
+  }
+
+  private static String tracedIndexedReadSource(String value) {
+    if (value == null || !value.startsWith("TraceHooks.read")) return null;
+    int open = value.indexOf('(');
+    if (open < 0 || !value.endsWith(")")) return null;
+    java.util.List<String> args = splitTopLevel(value.substring(open + 1, value.length() - 1));
+    if (args.size() < 2) return null;
+    java.util.regex.Matcher name = java.util.regex.Pattern
+      .compile("^\"([A-Za-z_][A-Za-z0-9_]*)\"$")
+      .matcher(args.get(1).trim());
+    if (!name.matches()) return null;
+    java.util.regex.Matcher explicitSource = java.util.regex.Pattern
+      .compile("^\"([^\"]+)\"$")
+      .matcher(args.get(args.size() - 1).trim());
+    return explicitSource.matches() ? explicitSource.group(1) : name.group(1);
   }
 
   private static String escapedIndexSourcesTargetSegment(String... values) {

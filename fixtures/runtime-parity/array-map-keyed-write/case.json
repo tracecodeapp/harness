@@ -82,6 +82,58 @@
           }
         ]
       }
+    },
+    "javascript": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "dp",
+          "key"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "dp",
+            "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "dp",
+            "pathDepth": 2
+          }
+        ]
+      }
+    },
+    "typescript": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "dp",
+          "key"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "dp",
+            "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "dp",
+            "pathDepth": 2
+          }
+        ]
+      }
     }
   },
   "expectSummary": {
@@ -91,11 +143,89 @@
         "variable": "dp",
         "pathDepth": 2,
         "count": 1
+      },
+      {
+        "kind": "write",
+        "variable": "dp",
+        "count": 1
       }
     ]
   },
   "expectSummaryByLanguage": {
     "csharp": {
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "second",
+          "pathDepth": 1,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "first",
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "second",
+          "count": 1
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "dp",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "count": 1
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "dp",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 2,
+          "count": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "count": 1
+        }
+      ]
+    },
+    "java": {
       "accessTargets": [
         {
           "kind": "write",
@@ -105,9 +235,8 @@
         },
         {
           "kind": "write",
-          "variable": "second",
-          "pathDepth": 1,
-          "count": 1
+          "variable": "dp",
+          "count": 2
         }
       ]
     }

@@ -132,16 +132,29 @@
 
   function indexSourceArgument(source) {
     const value = String(source).trim();
+    const tracedReadSource = tracedIndexedReadSource(value);
+    if (tracedReadSource) return JSON.stringify(tracedReadSource);
     const charAtIndexMatch = value.match(/^[A-Za-z_][A-Za-z0-9_]*\.charAt\(\s*([\s\S]+)\s*\)$/);
     if (charAtIndexMatch?.[1]) {
       const charAtSource = safeIndexSourceExpression(charAtIndexMatch[1]) ?? singleIdentifierIndexSource(charAtIndexMatch[1]);
       if (charAtSource) return JSON.stringify(charAtSource);
     }
-    const tracedReadSourceMatch = value.match(/^TraceHooks\.read[A-Za-z0-9_]*AtLine\([\s\S]*,\s*"([A-Za-z_][A-Za-z0-9_]*)"\s*\)$/);
-    if (tracedReadSourceMatch?.[1]) return `"${tracedReadSourceMatch[1]}"`;
     const expressionSource = safeIndexSourceExpression(value) ?? singleIdentifierIndexSource(value);
     if (expressionSource) return JSON.stringify(expressionSource);
     return isSimpleIdentifierExpression(value) ? JSON.stringify(value) : 'null';
+  }
+
+  function tracedIndexedReadSource(source) {
+    const value = String(source).trim();
+    if (!value.startsWith('TraceHooks.read')) return null;
+    const open = value.indexOf('(');
+    if (open < 0 || !value.endsWith(')')) return null;
+    const args = splitTopLevelJavaList(value.slice(open + 1, -1));
+    if (args.length < 2) return null;
+    const name = String(args[1]).trim().match(/^"([A-Za-z_][A-Za-z0-9_]*)"$/)?.[1];
+    if (!name) return null;
+    const explicitSource = String(args[args.length - 1] ?? '').trim().match(/^"([^"]+)"$/)?.[1];
+    return explicitSource || name;
   }
 
   function indexSourceArgumentSourceFirst(source) {
@@ -462,10 +475,24 @@
     let currentTraceLine = null;
     let pendingScalarDeclarationWrites = null;
     let methodDepth = 0;
+    let generatedExportsClassDepth = null;
     const methodStartPattern =
       /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+    const generatedExportsClassPattern = /^\s*(?:(?:public|private|protected|static|final)\s+)*class\s+Exports[A-Za-z0-9_]*\s*\{/;
 
     for (const line of lines) {
+      if (generatedExportsClassDepth !== null) {
+        output.push(line);
+        generatedExportsClassDepth += braceDelta(line);
+        if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+        continue;
+      }
+      if (generatedExportsClassPattern.test(line)) {
+        output.push(line);
+        generatedExportsClassDepth = Math.max(0, braceDelta(line));
+        if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+        continue;
+      }
       if (methodDepth <= 0) {
         const methodMatch = line.match(methodStartPattern);
         if (methodMatch) {

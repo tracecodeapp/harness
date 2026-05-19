@@ -1,0 +1,138 @@
+{
+  "id": "foreach-line-sequence",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "values": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "anchors": {
+    "header": {
+      "python": "for value in values:",
+      "javascript": "for (const value of values) {",
+      "typescript": "for (const value of values) {",
+      "java": "for (int value : values) {",
+      "csharp": "foreach (int value in values)",
+      "cpp": "for (int value : values) {"
+    },
+    "body": {
+      "python": "total += value",
+      "javascript": "total += value;",
+      "typescript": "total += value;",
+      "java": "total += value;",
+      "csharp": "total += value;",
+      "cpp": "total += value;"
+    }
+  },
+  "lineSequenceAnchors": {
+    "after": {
+      "python": "return total",
+      "javascript": "return total;",
+      "typescript": "return total;",
+      "java": "return total;",
+      "csharp": "return total;",
+      "cpp": "return total;"
+    }
+  },
+  "expectLineSequence": [
+    "header",
+    "body",
+    "header",
+    "body",
+    "header",
+    "body",
+    "header",
+    "body",
+    "header",
+    "after"
+  ],
+  "expect": {
+    "header": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "total",
+        "value",
+        "values"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "values",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "body": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "total",
+        "value",
+        "values"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "total"
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "header": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "total",
+          "value",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "values",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ]
+      },
+      "body": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "total",
+          "value",
+          "values"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ]
+      }
+    }
+  }
+}

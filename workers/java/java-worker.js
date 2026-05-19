@@ -1507,7 +1507,6 @@ function augmentTraceCallArgumentSnapshots(source) {
   const methodStack = [];
   const methodStartPattern =
     /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
-
   return lines.map((line) => {
     const methodMatch = line.match(methodStartPattern);
     if (methodMatch) {
@@ -1673,10 +1672,24 @@ function augmentJavaLocalSnapshots(source) {
   let currentTraceLine = null;
   let pendingScalarDeclarationWrites = null;
   let methodDepth = 0;
+  let generatedExportsClassDepth = null;
   const methodStartPattern =
     /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+  const generatedExportsClassPattern = /^\s*(?:(?:public|private|protected|static|final)\s+)*class\s+Exports[A-Za-z0-9_]*\s*\{/;
 
   for (const line of lines) {
+    if (generatedExportsClassDepth !== null) {
+      output.push(line);
+      generatedExportsClassDepth += braceDelta(line);
+      if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+      continue;
+    }
+    if (generatedExportsClassPattern.test(line)) {
+      output.push(line);
+      generatedExportsClassDepth = Math.max(0, braceDelta(line));
+      if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+      continue;
+    }
     if (methodDepth <= 0) {
       const methodMatch = line.match(methodStartPattern);
       if (methodMatch) {

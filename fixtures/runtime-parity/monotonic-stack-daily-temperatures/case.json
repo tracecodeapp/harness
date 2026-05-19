@@ -1,0 +1,343 @@
+{
+  "id": "monotonic-stack-daily-temperatures",
+  "functionName": "dailyTemperatures",
+  "executionStyle": "solution-method",
+  "inputs": {
+    "temperatures": [
+      73,
+      74,
+      75,
+      71,
+      69,
+      72,
+      76,
+      73
+    ]
+  },
+  "expectOutput": [
+    1,
+    1,
+    4,
+    2,
+    1,
+    1,
+    0,
+    0
+  ],
+  "anchors": {
+    "stackPop": {
+      "python": "prev = stack.pop()",
+      "javascript": "const prev = stack.pop();",
+      "typescript": "const prev = stack.pop() as number;",
+      "java": "int prev = stack.remove(stack.size() - 1);",
+      "csharp": "int prev = stack.Pop();",
+      "cpp": "int prev = stk.top();"
+    },
+    "answerWrite": {
+      "python": "out[prev] = i - prev",
+      "javascript": "out[prev] = i - prev;",
+      "typescript": "out[prev] = i - prev;",
+      "java": "out[prev] = i - prev;",
+      "csharp": "out_[prev] = i - prev;",
+      "cpp": "out[prev] = i - prev;"
+    }
+  },
+  "expect": {
+    "stackPop": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "out",
+        "prev",
+        "stack",
+        "temperatures"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "stack"
+        },
+        {
+          "kind": "write",
+          "variable": "prev"
+        }
+      ]
+    },
+    "answerWrite": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "out",
+        "prev",
+        "stack",
+        "temperatures"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "out",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "javascript": {
+      "stackPop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "out",
+          "prev",
+          "stack",
+          "temperatures",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "stack"
+          },
+          {
+            "kind": "write",
+            "variable": "prev"
+          }
+        ]
+      },
+      "answerWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "out",
+          "prev",
+          "stack",
+          "temperatures",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "out",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "typescript": {
+      "stackPop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "out",
+          "prev",
+          "stack",
+          "temperatures",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "stack"
+          },
+          {
+            "kind": "write",
+            "variable": "prev"
+          }
+        ]
+      },
+      "answerWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "out",
+          "prev",
+          "stack",
+          "temperatures",
+          "this"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "out",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "java": {
+      "stackPop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "out",
+          "stack",
+          "temperatures"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "stack"
+          },
+          {
+            "kind": "write",
+            "variable": "prev"
+          }
+        ]
+      },
+      "answerWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "out",
+          "prev",
+          "stack",
+          "temperatures"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "out",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "stackPop": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "out_",
+          "prev",
+          "stack",
+          "temperatures"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "stack"
+          },
+          {
+            "kind": "write",
+            "variable": "prev"
+          }
+        ]
+      },
+      "answerWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "out_",
+          "prev",
+          "stack",
+          "temperatures"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "out_",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "stackPop": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "out",
+          "prev",
+          "stk",
+          "temperatures"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "stk",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "prev"
+          }
+        ]
+      },
+      "answerWrite": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "out",
+          "prev",
+          "stk",
+          "temperatures"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "out",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}

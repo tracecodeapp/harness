@@ -1265,6 +1265,7 @@ std::string to_json(const std::unordered_map<K, V, Hash, Equal, Allocator>& valu
 inline void write_trace_event_json(const std::string& event_json, int line = 1);
 inline void write_trace_event_json_raw(const std::string& event_json);
 inline bool check_trace_budget(int line);
+inline void emit_line(int line, const char* function_name);
 
 inline std::string target_json(const std::string& name) {
   return std::string("{\"variable\":") + to_json(name) + "}";
@@ -1532,8 +1533,8 @@ class IndexedRangeReadIterator {
   using pointer = typename std::iterator_traits<RawIterator>::pointer;
   using iterator_category = std::input_iterator_tag;
 
-  IndexedRangeReadIterator(Container& container, RawIterator iterator, std::size_t index, int line, const char* binding_name)
-      : container_(container), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name) {}
+  IndexedRangeReadIterator(Container& container, RawIterator iterator, std::size_t index, int line, const char* binding_name, bool is_end = false)
+      : container_(container), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), is_end_(is_end) {}
 
   reference operator*() const {
     if (binding_name_ && *binding_name_) {
@@ -1566,7 +1567,9 @@ class IndexedRangeReadIterator {
   }
 
   bool operator==(const IndexedRangeReadIterator& other) const {
-    return iterator_ == other.iterator_;
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
   }
 
   bool operator!=(const IndexedRangeReadIterator& other) const {
@@ -1579,6 +1582,7 @@ class IndexedRangeReadIterator {
   std::size_t index_;
   int line_;
   const char* binding_name_;
+  bool is_end_;
 };
 
 template <typename Container>
@@ -1588,11 +1592,11 @@ class IndexedRangeReadable {
       : container_(container), line_(line), binding_name_(binding_name) {}
 
   auto begin() {
-    return IndexedRangeReadIterator<Container>(container_, container_.raw().begin(), 0, line_, binding_name_);
+    return IndexedRangeReadIterator<Container>(container_, container_.raw().begin(), 0, line_, binding_name_, false);
   }
 
   auto end() {
-    return IndexedRangeReadIterator<Container>(container_, container_.raw().end(), container_.raw().size(), line_, binding_name_);
+    return IndexedRangeReadIterator<Container>(container_, container_.raw().end(), container_.raw().size(), line_, binding_name_, true);
   }
 
  private:
@@ -1612,8 +1616,8 @@ class IndexedNestedRangeReadIterator {
   using pointer = typename std::iterator_traits<RawIterator>::pointer;
   using iterator_category = std::input_iterator_tag;
 
-  IndexedNestedRangeReadIterator(Row& row, RawIterator iterator, const std::string& name, std::size_t outer, std::size_t inner, int line, const char* outer_source, const char* binding_name)
-      : row_(row), iterator_(iterator), name_(name), outer_(outer), inner_(inner), line_(line), outer_source_(outer_source), binding_name_(binding_name) {}
+  IndexedNestedRangeReadIterator(Row& row, RawIterator iterator, const std::string& name, std::size_t outer, std::size_t inner, int line, const char* outer_source, const char* binding_name, bool is_end = false)
+      : row_(row), iterator_(iterator), name_(name), outer_(outer), inner_(inner), line_(line), outer_source_(outer_source), binding_name_(binding_name), is_end_(is_end) {}
 
   reference operator*() const {
     emit_iteration_bind_read();
@@ -1638,7 +1642,9 @@ class IndexedNestedRangeReadIterator {
   }
 
   bool operator==(const IndexedNestedRangeReadIterator& other) const {
-    return iterator_ == other.iterator_;
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
   }
 
   bool operator!=(const IndexedNestedRangeReadIterator& other) const {
@@ -1668,6 +1674,7 @@ class IndexedNestedRangeReadIterator {
   int line_;
   const char* outer_source_;
   const char* binding_name_;
+  bool is_end_;
 };
 
 template <typename T>
@@ -1677,11 +1684,11 @@ class IndexedNestedRangeReadable {
       : row_(row), name_(name), outer_(outer), line_(line), outer_source_(outer_source), binding_name_(binding_name) {}
 
   auto begin() {
-    return IndexedNestedRangeReadIterator<T>(row_, row_.begin(), name_, outer_, 0, line_, outer_source_, binding_name_);
+    return IndexedNestedRangeReadIterator<T>(row_, row_.begin(), name_, outer_, 0, line_, outer_source_, binding_name_, false);
   }
 
   auto end() {
-    return IndexedNestedRangeReadIterator<T>(row_, row_.end(), name_, outer_, row_.size(), line_, outer_source_, binding_name_);
+    return IndexedNestedRangeReadIterator<T>(row_, row_.end(), name_, outer_, row_.size(), line_, outer_source_, binding_name_, true);
   }
 
  private:
@@ -1703,8 +1710,8 @@ class KeyedRangeReadIterator {
   using pointer = typename std::iterator_traits<RawIterator>::pointer;
   using iterator_category = std::input_iterator_tag;
 
-  KeyedRangeReadIterator(Container& container, RawIterator iterator, int line, const char* key_binding_name)
-      : container_(container), iterator_(iterator), line_(line), key_binding_name_(key_binding_name) {}
+  KeyedRangeReadIterator(Container& container, RawIterator iterator, int line, const char* key_binding_name, bool is_end = false)
+      : container_(container), iterator_(iterator), line_(line), key_binding_name_(key_binding_name), is_end_(is_end) {}
 
   reference operator*() const {
     emit_iteration_bind_read();
@@ -1728,7 +1735,9 @@ class KeyedRangeReadIterator {
   }
 
   bool operator==(const KeyedRangeReadIterator& other) const {
-    return iterator_ == other.iterator_;
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
   }
 
   bool operator!=(const KeyedRangeReadIterator& other) const {
@@ -1748,6 +1757,7 @@ class KeyedRangeReadIterator {
   RawIterator iterator_;
   int line_;
   const char* key_binding_name_;
+  bool is_end_;
 };
 
 template <typename Container>
@@ -1757,11 +1767,11 @@ class KeyedRangeReadable {
       : container_(container), line_(line), key_binding_name_(key_binding_name) {}
 
   auto begin() {
-    return KeyedRangeReadIterator<Container>(container_, container_.raw().begin(), line_, key_binding_name_);
+    return KeyedRangeReadIterator<Container>(container_, container_.raw().begin(), line_, key_binding_name_, false);
   }
 
   auto end() {
-    return KeyedRangeReadIterator<Container>(container_, container_.raw().end(), line_, key_binding_name_);
+    return KeyedRangeReadIterator<Container>(container_, container_.raw().end(), line_, key_binding_name_, true);
   }
 
  private:
@@ -1779,8 +1789,8 @@ class IndexedStringRangeReadIterator {
   using pointer = typename std::iterator_traits<RawIterator>::pointer;
   using iterator_category = std::input_iterator_tag;
 
-  IndexedStringRangeReadIterator(std::string& value, RawIterator iterator, std::size_t index, int line, const char* binding_name, const char* source_name)
-      : value_(value), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+  IndexedStringRangeReadIterator(std::string& value, RawIterator iterator, std::size_t index, int line, const char* binding_name, const char* source_name, bool is_end = false)
+      : value_(value), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), source_name_(source_name), is_end_(is_end) {}
 
   reference operator*() const {
     emit_read();
@@ -1805,7 +1815,9 @@ class IndexedStringRangeReadIterator {
   }
 
   bool operator==(const IndexedStringRangeReadIterator& other) const {
-    return iterator_ == other.iterator_;
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
   }
 
   bool operator!=(const IndexedStringRangeReadIterator& other) const {
@@ -1819,6 +1831,7 @@ class IndexedStringRangeReadIterator {
   int line_;
   const char* binding_name_;
   const char* source_name_;
+  bool is_end_;
 
   void emit_read() const {
     const char item = *iterator_;
@@ -1841,11 +1854,11 @@ class IndexedStringRangeReadable {
       : value_(value), line_(line), binding_name_(binding_name), source_name_(source_name) {}
 
   auto begin() {
-    return IndexedStringRangeReadIterator(value_, value_.begin(), 0, line_, binding_name_, source_name_);
+    return IndexedStringRangeReadIterator(value_, value_.begin(), 0, line_, binding_name_, source_name_, false);
   }
 
   auto end() {
-    return IndexedStringRangeReadIterator(value_, value_.end(), value_.size(), line_, binding_name_, source_name_);
+    return IndexedStringRangeReadIterator(value_, value_.end(), value_.size(), line_, binding_name_, source_name_, true);
   }
 
  private:
@@ -1864,8 +1877,8 @@ class IndexedConstStringRangeReadIterator {
   using pointer = const char*;
   using iterator_category = std::input_iterator_tag;
 
-  IndexedConstStringRangeReadIterator(const std::string& value, RawIterator iterator, std::size_t index, int line, const char* binding_name, const char* source_name)
-      : value_(value), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+  IndexedConstStringRangeReadIterator(const std::string& value, RawIterator iterator, std::size_t index, int line, const char* binding_name, const char* source_name, bool is_end = false)
+      : value_(value), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), source_name_(source_name), is_end_(is_end) {}
 
   char operator*() const {
     emit_read();
@@ -1885,7 +1898,9 @@ class IndexedConstStringRangeReadIterator {
   }
 
   bool operator==(const IndexedConstStringRangeReadIterator& other) const {
-    return iterator_ == other.iterator_;
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
   }
 
   bool operator!=(const IndexedConstStringRangeReadIterator& other) const {
@@ -1899,6 +1914,7 @@ class IndexedConstStringRangeReadIterator {
   int line_;
   const char* binding_name_;
   const char* source_name_;
+  bool is_end_;
 
   void emit_read() const {
     const char item = *iterator_;
@@ -1921,11 +1937,11 @@ class IndexedConstStringRangeReadable {
       : value_(value), line_(line), binding_name_(binding_name), source_name_(source_name) {}
 
   auto begin() const {
-    return IndexedConstStringRangeReadIterator(value_, value_.begin(), 0, line_, binding_name_, source_name_);
+    return IndexedConstStringRangeReadIterator(value_, value_.begin(), 0, line_, binding_name_, source_name_, false);
   }
 
   auto end() const {
-    return IndexedConstStringRangeReadIterator(value_, value_.end(), value_.size(), line_, binding_name_, source_name_);
+    return IndexedConstStringRangeReadIterator(value_, value_.end(), value_.size(), line_, binding_name_, source_name_, true);
   }
 
  private:
@@ -3177,6 +3193,12 @@ inline StdNestedVectorElementRef<T> trace_nested_index_ref(std::vector<std::vect
     outer_source,
     inner_source
   );
+}
+
+template <typename Map, typename OuterIndex, typename Key>
+inline std::enable_if_t<is_std_unordered_map<Map>::value || is_std_map<Map>::value, NestedMapElementRef<Map>>
+trace_nested_index_ref(Vector<Map>& container, const std::string&, OuterIndex outer, const Key& key, const char* = nullptr, const char* = nullptr) {
+  return NestedMapElementRef<Map>(container, static_cast<std::size_t>(outer), key);
 }
 
 template <typename T, typename Index>

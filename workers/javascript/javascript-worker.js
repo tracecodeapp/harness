@@ -3582,6 +3582,7 @@ function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement
         tracedExpression,
         bodyBlock
       ),
+      createHeaderLine(),
       createAttachPendingAccessesStatement(ts),
     ],
     true

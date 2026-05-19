@@ -611,7 +611,11 @@ public final class TraceHooks {
 
           @Override
           public boolean hasNext() {
-            return iterator.hasNext();
+            boolean hasNext = iterator.hasNext();
+            if (!hasNext) {
+              emitLineAtLine(line);
+            }
+            return hasNext;
           }
 
           @Override
@@ -636,7 +640,11 @@ public final class TraceHooks {
 
           @Override
           public boolean hasNext() {
-            return iterator.hasNext();
+            boolean hasNext = iterator.hasNext();
+            if (!hasNext) {
+              emitLineAtLine(line);
+            }
+            return hasNext;
           }
 
           @Override
