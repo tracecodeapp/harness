@@ -19,7 +19,10 @@ type TraceAccess = {
   variable?: string;
   kind?: string;
   indices?: number[];
+  indexSources?: Array<string | null>;
   method?: string;
+  binding?: unknown;
+  value?: unknown;
 };
 
 type TraceStep = {
@@ -287,6 +290,324 @@ print(json.dumps({
   console.log('PASS: Python runtime records indexed receiver mutations');
 }
 
+async function assertIndexSourceProvenanceIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def inspect(nums, grid):
+    i = 1
+    row = 0
+    col = 1
+    nums[i] = grid[row][col]
+    return nums[i]
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    { nums: [0, 0, 0], grid: [[4, 5], [6, 7]] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[] };
+  const writeStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'nums[i] = grid[row][col]') - 1
+  );
+  assertCondition(
+    (writeStep.accesses ?? []).some((access) =>
+      access.variable === 'grid' &&
+      access.kind === 'cell-read' &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['row', 'col'])
+    ),
+    `Python runtime should record indexSources for grid[row][col], received ${JSON.stringify(writeStep.accesses)}`
+  );
+  assertCondition(
+    (writeStep.accesses ?? []).some((access) =>
+      access.variable === 'nums' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['i'])
+    ),
+    `Python runtime should record indexSources for nums[i], received ${JSON.stringify(writeStep.accesses)}`
+  );
+
+  console.log('PASS: Python runtime records indexed source provenance');
+}
+
+async function assertEnumerateLoopBindingIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def inspect(words):
+    for idx, word in enumerate(words):
+        n = len(word)
+        return n
+    return 0
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    { words: ['apple'] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === 5, 'Python enumerate binding fixture should execute successfully');
+  const loopStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'for idx, word in enumerate(words):') - 1
+  );
+  assertCondition(
+    (loopStep.accesses ?? []).some((access) => (
+      access.variable === 'words' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['idx']) &&
+      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'word' })
+    )),
+    `Python enumerate loop should bind the iterated value to word, received ${JSON.stringify(loopStep.accesses)}`
+  );
+  assertCondition(
+    (loopStep.accesses ?? []).some((access) => (
+      access.variable === 'idx' &&
+      access.kind === 'indexed-write' &&
+      access.value === 0
+    )),
+    `Python enumerate loop should write the produced index binding, received ${JSON.stringify(loopStep.accesses)}`
+  );
+
+  console.log('PASS: Python runtime records enumerate value binding');
+}
+
+async function assertTupleForLoopBindingIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def relax(edges):
+    total = 0
+    for u, v, w in edges:
+        total += u + v + w
+    return total
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'relax',
+    { edges: [[0, 1, 5], [1, 2, 7]] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === 16, 'Python tuple for-loop binding fixture should execute successfully');
+  const loopStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'for u, v, w in edges:') - 1
+  );
+  assertCondition(
+    (loopStep.accesses ?? []).some((access) => (
+      access.variable === 'edges' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'u,v,w' }) &&
+      JSON.stringify(access.value) === JSON.stringify([0, 1, 5])
+    )),
+    `Python tuple for-loop should bind the produced source element, received ${JSON.stringify(loopStep.accesses)}`
+  );
+
+  console.log('PASS: Python runtime records tuple for-loop binding provenance');
+}
+
+async function assertTupleAssignmentScalarWritesAreRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def dimensions(grid):
+    rows, cols = len(grid), len(grid[0])
+    return rows * cols
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'dimensions',
+    { grid: [[1, 2, 3], [4, 5, 6]] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === 6, 'Python tuple assignment fixture should execute successfully');
+  const assignmentStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'rows, cols =') - 1
+  );
+  const writes = (assignmentStep.accesses ?? []).filter((access) => access.kind === 'indexed-write');
+  assertCondition(
+    writes.some((access) => access.variable === 'rows' && access.value === 2) &&
+      writes.some((access) => access.variable === 'cols' && access.value === 3),
+    `Python tuple assignment should emit scalar writes for rows and cols, received ${JSON.stringify(assignmentStep.accesses)}`
+  );
+
+  console.log('PASS: Python runtime records tuple assignment scalar writes');
+}
+
+async function assertListComprehensionAssignmentEmitsSingleWriteFrame(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def clone(adjList):
+    n = len(adjList)
+    cloned = [[] for _ in range(n)]
+    return cloned
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'clone',
+    { adjList: [[2], [1], [], []] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify([[], [], [], []]),
+    'Python list-comprehension assignment fixture should execute successfully'
+  );
+  const assignmentLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'cloned =') - 1;
+  const assignmentSteps = parsed.trace.filter((entry) => entry.event === 'line' && entry.line === assignmentLine);
+  assertCondition(
+    assignmentSteps.length === 1,
+    `Python list-comprehension assignment should emit one public line frame, received ${JSON.stringify(assignmentSteps)}`
+  );
+  assertCondition(
+    (assignmentSteps[0].accesses ?? []).some((access) =>
+      access.variable === 'cloned' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.value) === JSON.stringify([[], [], [], []])
+    ),
+    `Python list-comprehension assignment should emit cloned write on the assignment frame, received ${JSON.stringify(assignmentSteps[0].accesses)}`
+  );
+
+  console.log('PASS: Python runtime compacts list-comprehension assignment writes');
+}
+
+async function assertInPlaceSortMutationIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def earliest(intervals):
+    intervals.sort(key=lambda x: x[0])
+    return intervals[0][0]
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'earliest',
+    { intervals: [[5, 10], [0, 30], [15, 20]] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === 0, 'Python in-place sort fixture should execute successfully');
+  const sortStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'intervals.sort') - 1
+  );
+  assertCondition(
+    (sortStep.accesses ?? []).some((access) => (
+      access.variable === 'intervals' &&
+      access.kind === 'mutating-call' &&
+      access.method === 'sort'
+    )),
+    `Python list.sort should emit a receiver mutation, received ${JSON.stringify(sortStep.accesses)}`
+  );
+
+  console.log('PASS: Python runtime records in-place sort mutation provenance');
+}
+
 async function assertTraceReferenceIdsAreNeutral(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `class Box:
@@ -343,6 +664,291 @@ print(json.dumps({
   assertCondition(serialized.includes('"__ref__":"r'), 'Trace should still emit opaque refs for cycles');
 
   console.log('PASS: Python runtime trace reference ids are neutral');
+}
+
+async function assertCustomObjectLocalAliasesMaterializePayloads(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class TrieNode:
+    def __init__(self):
+        self.children = {}
+        self.index = -1
+
+class WordFilter:
+    def __init__(self, words):
+        self.root = TrieNode()
+        for idx, word in enumerate(words):
+            node = self.root
+            node.children["a"] = TrieNode()
+            node = node.children["a"]
+            node.index = idx
+
+def build(words):
+    wf = WordFilter(words)
+    return wf.root.children["a"].index
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'build',
+    { words: ['apple'] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === 0, 'Python trie alias fixture should execute successfully');
+
+  const rootAliasStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'node.children["a"] = TrieNode()') - 1
+  );
+  const rootNode = rootAliasStep.variables?.node as Record<string, unknown> | undefined;
+  assertCondition(
+    Boolean(rootNode) &&
+      rootNode?.__class__ === 'TrieNode' &&
+      rootNode?.__id__ === ((rootAliasStep.variables?.self as Record<string, unknown> | undefined)?.root as Record<string, unknown> | undefined)?.__id__,
+    `Python custom object alias should materialize root TrieNode payload, received ${JSON.stringify(rootAliasStep.variables?.node)}`
+  );
+
+  const childAliasStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'node.index = idx') - 1
+  );
+  const childNode = childAliasStep.variables?.node as Record<string, unknown> | undefined;
+  assertCondition(
+    Boolean(childNode) &&
+      childNode?.__class__ === 'TrieNode' &&
+      childNode?.index === 0 &&
+      typeof childNode?.__id__ === 'string',
+    `Python custom object alias should materialize child TrieNode payload, received ${JSON.stringify(childAliasStep.variables?.node)}`
+  );
+
+  console.log('PASS: Python runtime materializes custom object local aliases');
+}
+
+async function assertCustomObjectIdsAreStableAcrossFrames(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class TrieNode:
+    def __init__(self):
+        self.children = {}
+
+class Holder:
+    def __init__(self):
+        self.root = TrieNode()
+        node = self.root
+        node.children["a"] = TrieNode()
+
+def build():
+    holder = Holder()
+    return len(holder.root.children)
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'build',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === 1, 'Python stable object id fixture should execute successfully');
+
+  const holderRootStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'node.children["a"] = TrieNode()') - 1
+  );
+  const holderSelf = holderRootStep.variables?.self as Record<string, unknown> | undefined;
+  const rootFromSelf = holderSelf?.root as Record<string, unknown> | undefined;
+  const rootFromNode = holderRootStep.variables?.node as Record<string, unknown> | undefined;
+  assertCondition(
+    typeof holderSelf?.__id__ === 'string' &&
+      typeof rootFromSelf?.__id__ === 'string' &&
+      rootFromSelf.__id__ === rootFromNode?.__id__ &&
+      holderSelf.__id__ !== rootFromSelf.__id__,
+    `Python custom object ids should be globally stable and non-colliding, received ${JSON.stringify(holderRootStep.variables)}`
+  );
+
+  const constructorStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'self.children = {}') - 1
+  );
+  const constructorSelf = constructorStep.variables?.self as Record<string, unknown> | undefined;
+  assertCondition(
+    constructorSelf?.__id__ === rootFromSelf?.__id__ || constructorSelf?.__id__ === 'ref-2',
+    `Constructor self should use the constructed object id, not collide with Holder self; received ${JSON.stringify(constructorSelf)}`
+  );
+
+  console.log('PASS: Python runtime keeps custom object ids stable across frames');
+}
+
+async function assertObjectFieldSubscriptReadCarriesValue(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class TrieNode:
+    def __init__(self):
+        self.children = {}
+        self.index = -1
+
+def inspect():
+    root = TrieNode()
+    root.children["a"] = TrieNode()
+    key = "a"
+    node = root.children[key]
+    return node.index
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: Array<Record<string, unknown>> }; result: unknown };
+  assertCondition(parsed.result === -1, 'Python object field subscript fixture should execute successfully');
+
+  const readStep = findTraceStep(
+    parsed.trace,
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'node = root.children[key]') - 1
+  );
+  const readAccess = (readStep.accesses ?? []).find((access) => access.variable === 'root' && access.kind === 'cell-read');
+  assertCondition(
+    Boolean(readAccess) &&
+      JSON.stringify(readAccess?.indices) === JSON.stringify(['children', 'a']) &&
+      JSON.stringify(readAccess?.indexSources) === JSON.stringify([null, 'key']) &&
+      (readAccess?.value as Record<string, unknown> | undefined)?.__class__ === 'TrieNode',
+    `Python object field subscript read should carry path and read value, received ${JSON.stringify(readStep.accesses)}`
+  );
+
+  const runtimeRead = parsed.runtimeTrace.events.find((event) => (
+    event.kind === 'read' &&
+    JSON.stringify(event.target) === JSON.stringify({ variable: 'root', path: ['children', 'a'], indexSources: [null, 'key'] })
+  ));
+  assertCondition(
+    (runtimeRead?.value as Record<string, unknown> | undefined)?.__class__ === 'TrieNode',
+    `Python runtime read event should preserve the access value before assignment changes locals, received ${JSON.stringify(runtimeRead)}`
+  );
+
+  console.log('PASS: Python runtime records object-field subscript read values');
+}
+
+async function assertAttributeReadCarriesPreMutationValue(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def inspect():
+    head = ListNode(1, ListNode(2))
+    curr = head
+    next_temp = curr.next
+    curr.next = None
+    return next_temp.val
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: Array<Record<string, unknown>> }; result: unknown };
+  assertCondition(parsed.result === 2, 'Python linked-list attribute fixture should execute successfully');
+
+  const readLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'next_temp = curr.next') - 1;
+  const readStep = findTraceStep(parsed.trace, readLine);
+  const readAccess = (readStep.accesses ?? []).find((access) => (
+    access.variable === 'curr' &&
+    access.kind === 'indexed-read' &&
+    JSON.stringify(access.indices) === JSON.stringify(['next'])
+  ));
+  assertCondition(
+    (readAccess?.value as Record<string, unknown> | undefined)?.val === 2,
+    `Python attribute read should carry the pre-mutation next node value, received ${JSON.stringify(readStep.accesses)}`
+  );
+
+  const runtimeRead = parsed.runtimeTrace.events.find((event) => (
+    event.kind === 'read' &&
+    event.line === readLine &&
+    JSON.stringify(event.target) === JSON.stringify({ variable: 'curr', path: ['next'] })
+  ));
+  assertCondition(
+    (runtimeRead?.value as Record<string, unknown> | undefined)?.val === 2,
+    `Python runtime attribute read should not fall back to post-line curr.next, received ${JSON.stringify(runtimeRead)}`
+  );
+
+  console.log('PASS: Python runtime records attribute read values before later mutations');
 }
 
 async function assertTraceCaptureLimitPreservesOutput(): Promise<void> {
@@ -501,13 +1107,95 @@ print(json.dumps({
   console.log('PASS: Python runtime default convenience imports');
 }
 
+async function assertIndexedAugAssignAndLoopBindingUseConcreteValues(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def solve():
+    graph = [[1], []]
+    in_degree = [0, 0]
+    course = 1
+    in_degree[course] += 1
+    course = 0
+    for next_course in graph[course]:
+        in_degree[next_course] -= 1
+    return in_degree
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(JSON.stringify(parsed.result) === JSON.stringify([0, 0]), 'Python indexed augassign fixture should execute');
+
+  const incrementLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'in_degree[course] += 1') - 1;
+  const decrementLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'in_degree[next_course] -= 1') - 1;
+  const loopLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'for next_course in graph[course]') - 1;
+  const incrementStep = findTraceStep(parsed.trace, incrementLine);
+  const decrementStep = findTraceStep(parsed.trace, decrementLine);
+  const loopStep = findTraceStep(parsed.trace, loopLine);
+
+  const incrementRead = incrementStep.accesses?.find((access) => access.variable === 'in_degree' && access.kind === 'indexed-read');
+  const incrementWrite = incrementStep.accesses?.find((access) => access.variable === 'in_degree' && access.kind === 'indexed-write');
+  assertCondition(incrementRead?.value === 0 && incrementWrite?.value === 1, 'Python += indexed trace should record pre/post values');
+  assertCondition(
+    JSON.stringify(incrementWrite.indexSources) === JSON.stringify(['course']),
+    'Python += indexed trace should preserve index source'
+  );
+
+  const bindingRead = loopStep.accesses?.find(
+    (access) =>
+      access.variable === 'graph' &&
+      access.kind === 'cell-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([0, 0]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['course', null]) &&
+      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'next_course' })
+  );
+  assertCondition(Boolean(bindingRead), 'Python for x in graph[course] should record indexed iteration binding provenance');
+
+  const decrementRead = decrementStep.accesses?.find((access) => access.variable === 'in_degree' && access.kind === 'indexed-read');
+  const decrementWrite = decrementStep.accesses?.find((access) => access.variable === 'in_degree' && access.kind === 'indexed-write');
+  assertCondition(decrementRead?.value === 1 && decrementWrite?.value === 0, 'Python -= indexed trace should record pre/post values');
+
+  console.log('PASS: Python indexed augmented assignment and subscript for-loop binding provenance');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
+  await assertIndexSourceProvenanceIsRecorded();
+  await assertEnumerateLoopBindingIsRecorded();
+  await assertTupleForLoopBindingIsRecorded();
+  await assertTupleAssignmentScalarWritesAreRecorded();
+  await assertListComprehensionAssignmentEmitsSingleWriteFrame();
+  await assertInPlaceSortMutationIsRecorded();
   await assertTraceReferenceIdsAreNeutral();
+  await assertCustomObjectLocalAliasesMaterializePayloads();
+  await assertCustomObjectIdsAreStableAcrossFrames();
+  await assertObjectFieldSubscriptReadCarriesValue();
+  await assertAttributeReadCarriesPreMutationValue();
   await assertTraceCaptureLimitPreservesOutput();
   await assertRuntimeValueSerializationCap();
   await assertDefaultPreludeImportsAreAvailable();
+  await assertIndexedAugAssignAndLoopBindingUseConcreteValues();
   console.log('\nPython runtime checks passed.');
 }
 

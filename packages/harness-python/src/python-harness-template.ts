@@ -148,9 +148,21 @@ _SKIP_SENTINEL = "__TRACECODE_SKIP__"
 _MAX_SERIALIZE_DEPTH = 48
 _MAX_SERIALIZED_ITEMS = 64
 _MAX_OBJECT_FIELDS = 32
+_tracecode_global_object_refs = {}
+_tracecode_next_object_ref_id = 0
 
-def _tracecode_ref_id(node_refs):
-    return f"ref-{len(node_refs)}"
+def _tracecode_ref_id(obj_ref, node_refs):
+    global _tracecode_next_object_ref_id
+    if obj_ref in node_refs:
+        return node_refs[obj_ref]
+    if obj_ref in _tracecode_global_object_refs:
+        node_id = _tracecode_global_object_refs[obj_ref]
+    else:
+        node_id = f"ref-{_tracecode_next_object_ref_id}"
+        _tracecode_global_object_refs[obj_ref] = node_id
+        _tracecode_next_object_ref_id += 1
+    node_refs[obj_ref] = node_id
+    return node_id
 
 def _truncation_marker(total, emitted):
     return {"__truncated__": True, "remaining": max(0, total - emitted)}
@@ -205,8 +217,7 @@ def _serialize(obj, depth=0, node_refs=None):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = _tracecode_ref_id(node_refs)
-        node_refs[obj_ref] = node_id
+        node_id = _tracecode_ref_id(obj_ref, node_refs)
         result = {
             "__type__": "TreeNode",
             "__id__": node_id,
@@ -221,8 +232,7 @@ def _serialize(obj, depth=0, node_refs=None):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = _tracecode_ref_id(node_refs)
-        node_refs[obj_ref] = node_id
+        node_id = _tracecode_ref_id(obj_ref, node_refs)
         result = {
             "__type__": "ListNode",
             "__id__": node_id,
@@ -237,8 +247,7 @@ def _serialize(obj, depth=0, node_refs=None):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = _tracecode_ref_id(node_refs)
-        node_refs[obj_ref] = node_id
+        node_id = _tracecode_ref_id(obj_ref, node_refs)
         class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
         result = {
             "__type__": class_name,
@@ -300,8 +309,7 @@ def _serialize_output(obj, depth=0, node_refs=None):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = _tracecode_ref_id(node_refs)
-        node_refs[obj_ref] = node_id
+        node_id = _tracecode_ref_id(obj_ref, node_refs)
         result = {
             "__type__": "TreeNode",
             "__id__": node_id,
@@ -316,8 +324,7 @@ def _serialize_output(obj, depth=0, node_refs=None):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = _tracecode_ref_id(node_refs)
-        node_refs[obj_ref] = node_id
+        node_id = _tracecode_ref_id(obj_ref, node_refs)
         result = {
             "__type__": "ListNode",
             "__id__": node_id,
@@ -331,8 +338,7 @@ def _serialize_output(obj, depth=0, node_refs=None):
         obj_ref = _builtins.id(obj)
         if obj_ref in node_refs:
             return {"__ref__": node_refs[obj_ref]}
-        node_id = _tracecode_ref_id(node_refs)
-        node_refs[obj_ref] = node_id
+        node_id = _tracecode_ref_id(obj_ref, node_refs)
         class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
         result = {
             "__type__": class_name,
