@@ -104,6 +104,51 @@ export interface RuntimeProjectSnapshot {
   kernel?: RuntimeKernelInfo;
 }
 
+export interface RuntimeProjectSessionFile extends RuntimeFile {
+  readonly?: boolean;
+}
+
+export interface RuntimeProjectSessionCommand {
+  command: string;
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: string;
+}
+
+export type RuntimeProjectSessionCommandDefinition =
+  | string
+  | RuntimeProjectSessionCommand;
+
+export interface RuntimeProjectSession {
+  id: string;
+  projectId?: string;
+  projectSlug?: string;
+  name?: string;
+  language?: string;
+  workspaceRoot?: string;
+  cwd?: string;
+  entrypoint?: string;
+  env?: Record<string, string>;
+  commands?: Record<string, RuntimeProjectSessionCommandDefinition>;
+  files?: readonly RuntimeProjectSessionFile[];
+  directories?: readonly string[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface RuntimeProjectSessionInfo {
+  id: string;
+  projectId?: string;
+  projectSlug?: string;
+  name?: string;
+  language?: string;
+  workspaceRoot: string;
+  cwd: string;
+  entrypoint?: string;
+  env?: Record<string, string>;
+  commands: Record<string, RuntimeProjectSessionCommand>;
+  metadata?: Record<string, unknown>;
+}
+
 export interface RuntimeCommandOptions {
   cwd?: string;
   env?: Record<string, string>;
@@ -503,6 +548,7 @@ export type RuntimeProjectCommandRunner<
 export interface RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
   readonly cwd: string;
+  readonly projectSession?: RuntimeProjectSessionInfo;
   writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void>;
   writeFiles(files: readonly RuntimeFile[]): Promise<void>;
   appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void>;
@@ -516,6 +562,7 @@ export interface RuntimeWorkspace {
   deleteFile(path: string): Promise<void>;
   remove(path: string, options?: RuntimeWorkspaceRemoveOptions): Promise<void>;
   runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
+  runProjectCommand(name: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
   createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
   snapshot(options?: { entrypoint?: string }): Promise<RuntimeProjectSnapshot>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;

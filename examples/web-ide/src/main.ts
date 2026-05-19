@@ -316,7 +316,24 @@ async function bootDevTerminal(): Promise<void> {
       workspace: { name: 'weather-api' },
     },
     kernelStorage: createIndexedDbKernelStorage({ key: 'tracecode:dev:user:weather-api' }),
-    files: [
+    projectSession: {
+      id: 'dev-weather-api',
+      projectId: 'dev-project',
+      projectSlug: 'weather-api',
+      name: 'Weather API',
+      language: 'mixed',
+      commands: {
+        mvp: 'mvp',
+        python: 'python3 main.py',
+        node: 'node index.js',
+        java: 'javac Main.java && java Main',
+        csharp: 'dotnet run -- alpha beta',
+        cpp: 'clang++ -std=c++17 main.cpp helper.cpp && ./a.out',
+      },
+      metadata: {
+        source: 'web-ide-dev',
+      },
+      files: [
       {
         path: 'helper.py',
         contents: `def add(left, right):
@@ -693,7 +710,8 @@ int main(int argc, char** argv) {
 }
 `,
       },
-    ],
+      ],
+    },
   });
 
   const terminalSession = workspace.createTerminalSession();

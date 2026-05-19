@@ -7683,6 +7683,76 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   workspace.dispose();
 }
 
+async function testProjectSessionMetadataAndCommands(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'attempt-123',
+      projectId: 'problem-weather-api',
+      projectSlug: 'weather-api',
+      name: 'Weather API',
+      language: 'python',
+      cwd: 'src',
+      entrypoint: 'src/main.py',
+      env: { MODE: 'session' },
+      commands: {
+        start: 'python3 main.py',
+        test: {
+          command: 'python3 -m unittest discover tests',
+          cwd: '.',
+          env: { TEST_MODE: 'visible' },
+        },
+      },
+      directories: ['tests'],
+      files: [
+        { path: 'src/main.py', contents: 'import os\nprint(os.getcwd())\nprint(os.environ["MODE"])\n' },
+        { path: 'tests/test_sample.py', contents: '' },
+      ],
+      metadata: {
+        consumer: 'test-harness',
+      },
+    },
+    pythonRunner: async (request) => ({
+      stdout: `${request.scriptPath}:${request.cwd}:${request.env.MODE}:${request.env.TEST_MODE ?? ''}\n`,
+      stderr: '',
+      exitCode: 0,
+    }),
+  });
+
+  assertCondition(workspace.cwd === '/home/user/weather-api', `project session should derive neutral workspace root: ${workspace.cwd}`);
+  assertCondition(workspace.projectSession?.id === 'attempt-123', 'project session should expose stable session id');
+  assertCondition(workspace.projectSession?.projectId === 'problem-weather-api', 'project session should preserve project id');
+  assertCondition(workspace.projectSession?.projectSlug === 'weather-api', 'project session should preserve project slug');
+  assertCondition(workspace.projectSession?.language === 'python', 'project session should preserve language as opaque metadata');
+  assertCondition(workspace.projectSession?.workspaceRoot === '/home/user/weather-api', 'project session should expose canonical root');
+  assertCondition(workspace.projectSession?.cwd === '/home/user/weather-api/src', 'project session should normalize relative session cwd');
+  assertCondition(workspace.projectSession?.metadata?.consumer === 'test-harness', 'project session should preserve opaque metadata');
+  assertCondition(await workspace.exists('src/main.py'), 'project session starter files should be written into workspace');
+  assertCondition(await workspace.exists('tests'), 'project session directories should be written into workspace');
+
+  const start = await workspace.runProjectCommand('start');
+  assertCondition(
+    start.stdout === 'src/main.py:/home/user/weather-api/src:session:\n',
+    `project session start command should run native command from session cwd/env: ${JSON.stringify(start)}`
+  );
+
+  const test = await workspace.runProjectCommand('test');
+  assertCondition(
+    test.stdout === 'unittest:/home/user/weather-api:session:visible\n',
+    `project session object command should use command cwd/env overlays: ${JSON.stringify(test)}`
+  );
+
+  const manual = await workspace.runCommand('python3 main.py', { cwd: 'src', env: { MODE: 'manual' } });
+  assertCondition(
+    manual.stdout === 'src/main.py:/home/user/weather-api/src:manual:\n',
+    `manual terminal-style command should remain native and independent of project command names: ${JSON.stringify(manual)}`
+  );
+
+  const missing = await workspace.runProjectCommand('missing');
+  assertCondition(missing.exitCode === 127 && missing.stderr.includes('Project command not found'), 'missing project command should fail clearly');
+
+  workspace.dispose();
+}
+
 async function testTraceKernelInfoConfig(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     kernel: {
@@ -8090,6 +8160,7 @@ async function main(): Promise<void> {
   await testRuntimeProjectEventQueueRecoversAfterApplyFailure();
   await testWorkspaceKernelEvents();
   await testWorkspaceTerminalSessionCwd();
+  await testProjectSessionMetadataAndCommands();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
   await testConfiguredKernelNativeCompiledRunners();

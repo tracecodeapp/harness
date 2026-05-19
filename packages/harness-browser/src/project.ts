@@ -132,10 +132,22 @@ export async function createBrowserProjectWorkspace(
     };
 
   const storedSnapshot = await hydrateBrowserKernelStorage(kernelStorage);
+  const hasStoredWorkspace = storedSnapshot && (
+    storedSnapshot.files.length > 0 ||
+    (storedSnapshot.directories?.length ?? 0) > 0
+  );
+  const projectSession = hasStoredWorkspace && workspaceOptions.projectSession
+    ? {
+        ...workspaceOptions.projectSession,
+        files: [],
+        directories: [],
+      }
+    : workspaceOptions.projectSession;
 
   workspace = await createRuntimeWorkspace({
     ...workspaceOptions,
-    ...(storedSnapshot
+    projectSession,
+    ...(hasStoredWorkspace
       ? {
           files: storedSnapshot.files,
           directories: storedSnapshot.directories,

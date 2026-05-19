@@ -78,6 +78,11 @@ import type {
   RuntimeProjectTerminalPrompt,
   RuntimeProjectTerminalSession,
   RuntimeProjectTerminalSessionOptions,
+  RuntimeProjectSession,
+  RuntimeProjectSessionCommand,
+  RuntimeProjectSessionCommandDefinition,
+  RuntimeProjectSessionFile,
+  RuntimeProjectSessionInfo,
   RuntimeProjectIoBridge,
   RuntimeProjectLiveIoControllerOptions,
   RuntimeProjectWorkerBridgeOptions,
@@ -134,6 +139,7 @@ export type CSharpProjectCommandRequest = RuntimeProjectCommandRequest<'compile'
 export type CSharpProjectCommandRunner = RuntimeProjectCommandRunner<CSharpProjectCommandRequest>;
 
 export interface CreateRuntimeWorkspaceOptions {
+  projectSession?: RuntimeProjectSession;
   files?: readonly RuntimeFile[];
   directories?: readonly string[];
   entrypoint?: string;
@@ -326,6 +332,96 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
     cwd: workspaceRoot,
     workspaceRoot,
     ...(workspaceAlias ? { workspaceAlias } : {}),
+  };
+}
+
+function normalizeProjectSessionCommand(
+  command: RuntimeProjectSessionCommandDefinition
+): RuntimeProjectSessionCommand {
+  return typeof command === 'string'
+    ? { command }
+    : { ...command, ...(command.env ? { env: { ...command.env } } : {}) };
+}
+
+function normalizeProjectSessionCommands(
+  commands: Record<string, RuntimeProjectSessionCommandDefinition> | undefined
+): Record<string, RuntimeProjectSessionCommand> {
+  const normalized: Record<string, RuntimeProjectSessionCommand> = {};
+  for (const [name, command] of Object.entries(commands ?? {})) {
+    if (!name.trim()) throw new Error('Project session command names must not be empty.');
+    const normalizedCommand = normalizeProjectSessionCommand(command);
+    if (!normalizedCommand.command.trim()) {
+      throw new Error(`Project session command "${name}" must not be empty.`);
+    }
+    normalized[name] = normalizedCommand;
+  }
+  return normalized;
+}
+
+function mergeProjectSessionKernelConfig(
+  options: CreateRuntimeWorkspaceOptions
+): RuntimeTraceKernelConfig | undefined {
+  const session = options.projectSession;
+  if (!session) return options.kernel;
+  const workspaceName = session.projectSlug ?? session.name;
+  const workspaceId = session.id;
+  return {
+    ...(options.kernel ?? {}),
+    workspace: {
+      ...(workspaceName ? { name: workspaceName } : {}),
+      ...(workspaceId ? { id: workspaceId } : {}),
+      ...(session.workspaceRoot ? { root: session.workspaceRoot } : {}),
+      ...(options.kernel?.workspace ?? {}),
+    },
+  };
+}
+
+function normalizeRuntimeWorkspaceOptions(
+  options: CreateRuntimeWorkspaceOptions
+): CreateRuntimeWorkspaceOptions {
+  const session = options.projectSession;
+  if (!session) {
+    return options;
+  }
+  return {
+    ...options,
+    kernel: mergeProjectSessionKernelConfig(options),
+    cwd: options.cwd ?? session.workspaceRoot,
+    entrypoint: options.entrypoint ?? session.entrypoint,
+    env: {
+      ...(session.env ?? {}),
+      ...(options.env ?? {}),
+    },
+    directories: [
+      ...(session.directories ?? []),
+      ...(options.directories ?? []),
+    ],
+    files: [
+      ...(session.files ?? []),
+      ...(options.files ?? []),
+    ],
+  };
+}
+
+function createProjectSessionInfo(session: RuntimeProjectSession, kernelInfo: RuntimeKernelInfo): RuntimeProjectSessionInfo {
+  const cwd = session.cwd
+    ? (session.cwd.startsWith('/') ? normalizeWorkspaceCwd(session.cwd) : normalizeWorkspaceCwd(`${kernelInfo.workspaceRoot}/${session.cwd}`))
+    : kernelInfo.workspaceRoot;
+  if (!isWithinWorkspace(kernelInfo.workspaceRoot, cwd)) {
+    throw new Error(`Project session cwd must stay inside the workspace: ${session.cwd}`);
+  }
+  return {
+    id: session.id,
+    ...(session.projectId ? { projectId: session.projectId } : {}),
+    ...(session.projectSlug ? { projectSlug: session.projectSlug } : {}),
+    ...(session.name ? { name: session.name } : {}),
+    ...(session.language ? { language: session.language } : {}),
+    workspaceRoot: kernelInfo.workspaceRoot,
+    cwd,
+    ...(session.entrypoint ? { entrypoint: normalizeRuntimeProjectPath(session.entrypoint) } : {}),
+    ...(session.env ? { env: { ...session.env } } : {}),
+    commands: normalizeProjectSessionCommands(session.commands),
+    ...(session.metadata ? { metadata: { ...session.metadata } } : {}),
   };
 }
 
@@ -2475,6 +2571,7 @@ export function createCSharpProjectCommands(
 
 export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   readonly kernel: RuntimeWorkspaceKernel;
+  readonly projectSession?: RuntimeProjectSessionInfo;
   readonly cwd: string;
   readonly kernelInfo: RuntimeKernelInfo;
   private readonly bash: Bash;
@@ -2494,6 +2591,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
     this.cwd = this.kernelInfo.workspaceRoot;
+    this.projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
     this.entrypoint = options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : undefined;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
@@ -2944,6 +3042,30 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
+  async runProjectCommand(name: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
+    const command = this.projectSession?.commands[name];
+    if (!command) {
+      return {
+        stdout: '',
+        stderr: `Project command not found: ${name}\n`,
+        exitCode: 127,
+      };
+    }
+    const commandCwd = options.cwd ?? command.cwd;
+    return this.runCommand(command.command, {
+      ...options,
+      cwd: commandCwd
+        ? this.resolveTerminalPath(this.cwd, commandCwd)
+        : this.projectSession?.cwd,
+      env: {
+        ...(this.projectSession?.env ?? {}),
+        ...(command.env ?? {}),
+        ...(options.env ?? {}),
+      },
+      stdin: options.stdin ?? command.stdin,
+    });
+  }
+
   createTerminalSession(options: RuntimeProjectTerminalSessionOptions = {}): RuntimeProjectTerminalSession {
     return new RuntimeProjectWorkspaceTerminalSession(
       {
@@ -3293,6 +3415,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 export async function createRuntimeWorkspace(
   options: CreateRuntimeWorkspaceOptions = {}
 ): Promise<JustBashRuntimeWorkspace> {
+  options = normalizeRuntimeWorkspaceOptions(options);
   const workspace = new JustBashRuntimeWorkspace(options);
   await workspace.ensureReady();
   if (options.directories) {
@@ -3333,6 +3456,11 @@ export type {
   RuntimeProjectTerminalPrompt,
   RuntimeProjectTerminalSession,
   RuntimeProjectTerminalSessionOptions,
+  RuntimeProjectSession,
+  RuntimeProjectSessionCommand,
+  RuntimeProjectSessionCommandDefinition,
+  RuntimeProjectSessionFile,
+  RuntimeProjectSessionInfo,
   RuntimeProjectIoBridge,
   RuntimeProjectWorkerBridgeOptions,
   RuntimeProjectSnapshot,
