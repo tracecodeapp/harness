@@ -562,8 +562,14 @@ public class Main {
         contents: `public class CwdMain {
   public static void main(String[] args) throws Exception {
     System.out.println(System.getProperty("user.dir"));
+    System.out.println(System.getProperty("user.home"));
+    System.out.println(System.getProperty("user.name"));
+    System.out.println(System.getProperty("os.name"));
+    System.out.println(System.getProperty("os.version"));
     java.nio.file.Path cwd = java.nio.file.Path.of(System.getProperty("user.dir"));
     java.nio.file.Files.writeString(cwd.resolve("generated.txt"), "java-created\\n");
+    java.nio.file.Files.writeString(java.nio.file.Path.of("cwd-generated.txt"), "cwd-created\\n");
+    java.nio.file.Files.writeString(java.nio.file.Path.of("props.txt"), System.getProperty("user.dir") + "\\n" + System.getProperty("os.name") + "\\n");
     java.nio.file.Files.deleteIfExists(cwd.resolve("../../java-stale.txt").normalize());
   }
 }

@@ -49,7 +49,9 @@ interface BrowserProjectSmokeResults {
   nodeEsmGenerated: string;
   javaCwd: BrowserCommandResult;
   javaGenerated: string;
+  javaCwdGenerated: string;
   javaGeneratedAtRoot: string;
+  javaPropsGenerated: string;
   staleAfterJava: BrowserCommandResult;
   javaCwdCompile: BrowserCommandResult;
   javaCwdClass: string;
@@ -571,7 +573,9 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
     const nodeEsmGenerated = await safeReadFile('src/js-esm/esm-generated.txt');
     const javaCwd = await workspace.runCommand('java CwdMain', { cwd: 'src/javawd' });
     const javaGenerated = await safeReadFile('src/javawd/generated.txt');
+    const javaCwdGenerated = await safeReadFile('src/javawd/cwd-generated.txt');
     const javaGeneratedAtRoot = await safeReadFile('generated.txt');
+    const javaPropsGenerated = await safeReadFile('src/javawd/props.txt');
     const staleAfterJava = await workspace.runCommand('test ! -e java-stale.txt && echo deleted');
     const javaCwdCompile = await workspace.runCommand('javac -d out CompileMain.java', { cwd: 'src/javacwd' });
     const javaCwdClass = await safeReadFile('src/javacwd/out/CompileMain.class', 'base64');
@@ -633,7 +637,9 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       nodeEsmGenerated,
       javaCwd,
       javaGenerated,
+      javaCwdGenerated,
       javaGeneratedAtRoot,
+      javaPropsGenerated,
       staleAfterJava,
       javaCwdCompile,
       javaCwdClass,
@@ -723,8 +729,17 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
   );
   assertCondition(
     projectResults.javaCwd.exitCode === 0 &&
-      projectResults.javaCwd.stdout.endsWith('/workspace/src/javawd\n') &&
+      projectResults.javaCwd.stdout === [
+        '/home/user/weather-api/src/javawd',
+        '/home/user',
+        'user',
+        'tracekernel',
+        '0.7.0-beta6',
+        '',
+      ].join('\n') &&
       projectResults.javaGenerated === 'java-created\n' &&
+      projectResults.javaCwdGenerated === 'cwd-created\n' &&
+      projectResults.javaPropsGenerated === '/home/user/weather-api/src/javawd\ntracekernel\n' &&
       projectResults.staleAfterJava.stdout === 'deleted\n',
     `Browser Java project cwd/files mismatch: ${JSON.stringify(projectResults.javaCwd)}`
   );
