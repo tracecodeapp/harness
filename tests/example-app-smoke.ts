@@ -68,6 +68,10 @@ interface BrowserProjectSmokeResults {
   javaJarClass: string;
   javaJarRun: BrowserCommandResult;
   takehome: {
+    pythonRun: BrowserCommandResult;
+    pythonReport: string;
+    nodeRun: BrowserCommandResult;
+    nodeReport: string;
     javaCompile: BrowserCommandResult;
     javaRun: BrowserCommandResult;
     javaReport: string;
@@ -624,6 +628,102 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       'Delta,A-100,3,19.50',
       '',
     ].join('\\n'));
+    await workspace.writeFile('takehome/python/orders.py', [
+      'from dataclasses import dataclass',
+      'from pathlib import Path',
+      '',
+      '@dataclass',
+      'class Order:',
+      '    customer: str',
+      '    sku: str',
+      '    quantity: int',
+      '    price: float',
+      '',
+      '    @property',
+      '    def total(self):',
+      '        return self.quantity * self.price',
+      '',
+      'def read_orders(path):',
+      '    rows = Path(path).read_text().splitlines()[1:]',
+      '    orders = []',
+      '    for row in rows:',
+      '        if not row:',
+      '            continue',
+      '        customer, sku, quantity, price = row.split(",")',
+      '        orders.append(Order(customer, sku, int(quantity), float(price)))',
+      '    return orders',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/python/report.py', [
+      'from pathlib import Path',
+      '',
+      'def write_report(path, orders):',
+      '    totals = {}',
+      '    for order in orders:',
+      '        totals[order.customer] = totals.get(order.customer, 0) + order.total',
+      '    top = max(totals.items(), key=lambda item: item[1])[0]',
+      '    target = Path(path)',
+      '    target.parent.mkdir(parents=True, exist_ok=True)',
+      '    target.write_text(f"top={top}\\\\ncount={len(totals)}\\\\n")',
+      '    return top',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/python/main.py', [
+      'import os',
+      'from pathlib import Path',
+      'from orders import read_orders',
+      'from report import write_report',
+      '',
+      'root = Path.cwd()',
+      'top = write_report(root / "reports" / "summary.txt", read_orders(root / "../data/orders.csv"))',
+      'print(f"python:{top}:{os.environ.get(\\'MODE\\', \\'\\')}")',
+      'print(os.getcwd())',
+      '',
+    ].join('\\n'));
+    const takehomePythonRun = await workspace.runCommand('python3 main.py', { cwd: 'takehome/python', env: { MODE: 'takehome' } });
+    const takehomePythonReport = await safeReadFile('takehome/python/reports/summary.txt');
+    await workspace.writeFile('takehome/js/orders.js', [
+      'const fs = require("node:fs");',
+      '',
+      'function readOrders(path) {',
+      '  return fs.readFileSync(path, "utf8").trim().split(/\\\\n/).slice(1).filter(Boolean).map((line) => {',
+      '    const [customer, sku, quantity, price] = line.split(",");',
+      '    return { customer, sku, quantity: Number(quantity), price: Number(price), total: Number(quantity) * Number(price) };',
+      '  });',
+      '}',
+      '',
+      'module.exports = { readOrders };',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/js/report.js', [
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      '',
+      'function writeReport(target, orders) {',
+      '  const totals = new Map();',
+      '  for (const order of orders) totals.set(order.customer, (totals.get(order.customer) || 0) + order.total);',
+      '  const top = [...totals.entries()].sort((left, right) => right[1] - left[1])[0][0];',
+      '  fs.mkdirSync(path.dirname(target), { recursive: true });',
+      '  fs.writeFileSync(target, "top=" + top + "\\\\ncount=" + totals.size + "\\\\n");',
+      '  return top;',
+      '}',
+      '',
+      'module.exports = { writeReport };',
+      '',
+    ].join('\\n'));
+    await workspace.writeFile('takehome/js/main.js', [
+      'const path = require("node:path");',
+      'const { readOrders } = require("./orders");',
+      'const { writeReport } = require("./report");',
+      '',
+      'const root = process.cwd();',
+      'const top = writeReport(path.join(root, "reports/summary.txt"), readOrders(path.join(root, "../data/orders.csv")));',
+      'console.log("node:" + top + ":" + (process.env.MODE || ""));',
+      'console.log(process.cwd());',
+      '',
+    ].join('\\n'));
+    const takehomeNodeRun = await workspace.runCommand('node main.js', { cwd: 'takehome/js', env: { MODE: 'takehome' } });
+    const takehomeNodeReport = await safeReadFile('takehome/js/reports/summary.txt');
     await workspace.writeFile('takehome/java/stressjava/Order.java', [
       'package stressjava;',
       'public record Order(String customer, String sku, int quantity, double price) {',
@@ -799,6 +899,10 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       javaJarClass,
       javaJarRun,
       takehome: {
+        pythonRun: takehomePythonRun,
+        pythonReport: takehomePythonReport,
+        nodeRun: takehomeNodeRun,
+        nodeReport: takehomeNodeReport,
         javaCompile: takehomeJavaCompile,
         javaRun: takehomeJavaRun,
         javaReport: takehomeJavaReport,
@@ -945,6 +1049,18 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
       projectResults.javaJarRun.exitCode === 0 &&
       projectResults.javaJarRun.stdout === '42\nalpha,beta\n',
     `Browser Java project jar/classpath mismatch: ${JSON.stringify(projectResults)}`
+  );
+  assertCondition(
+    projectResults.takehome.pythonRun.exitCode === 0 &&
+      projectResults.takehome.pythonRun.stdout === 'python:Acme:takehome\n/home/user/weather-api/takehome/python\n' &&
+      projectResults.takehome.pythonReport === 'top=Acme\ncount=3\n',
+    `Browser Python takehome project mismatch: ${JSON.stringify(projectResults.takehome)}`
+  );
+  assertCondition(
+    projectResults.takehome.nodeRun.exitCode === 0 &&
+      projectResults.takehome.nodeRun.stdout === 'node:Acme:takehome\n/home/user/weather-api/takehome/js\n' &&
+      projectResults.takehome.nodeReport === 'top=Acme\ncount=3\n',
+    `Browser Node takehome project mismatch: ${JSON.stringify(projectResults.takehome)}`
   );
   assertCondition(
     projectResults.takehome.javaCompile.exitCode === 0 &&
