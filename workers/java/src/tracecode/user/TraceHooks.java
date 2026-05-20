@@ -891,6 +891,7 @@ public final class TraceHooks {
     } else {
       emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", previous);
     }
+    emitTraceMutate(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", "putIfAbsent", null, "[" + serializeResult(key) + "," + serializeResult(value) + "]");
     return previous;
   }
 
@@ -902,6 +903,7 @@ public final class TraceHooks {
     } else {
       emitTraceRead(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", previous, indexSources);
     }
+    emitTraceMutate(line, ownerName, "[" + jsonString(field) + "," + serializeResult(key) + "]", "putIfAbsent", indexSources, "[" + serializeResult(key) + "," + serializeResult(value) + "]");
     return previous;
   }
 

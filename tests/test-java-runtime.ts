@@ -1250,6 +1250,26 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   ],
                 });
               }
+              if (
+                (latestSource.includes('putFieldMapIfAbsentAtLine') && latestSource.includes('children')) ||
+                (latestSource.includes('class TrieNode') && latestSource.includes('children.putIfAbsent'))
+              ) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(2),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 8, function: 'insert', args: { word: 'app' } }),
+                    nativeJavaEvent({
+                      kind: 'mutate',
+                      line: 10,
+                      target: { variable: 'node', path: ['children', 'a'], indexSources: [null, 'ch'] },
+                      method: 'putIfAbsent',
+                      args: ['a', 'tracecode.user.TrieNode@1'],
+                    }),
+                    nativeJavaEvent({ kind: 'return', line: 12, function: 'insert', value: 2 }),
+                  ],
+                });
+              }
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify([0, 1]),
@@ -2836,6 +2856,52 @@ class Solution {
       `Java putIfAbsent should emit keyed mutate args and index-source evidence, received ${JSON.stringify(putIfAbsentTrace.events)}`
     );
     console.log('PASS: java worker emits putIfAbsent mutation args and keyed evidence');
+
+    const fieldPutIfAbsentCode = `import java.util.*;
+
+class Solution {
+  static class TrieNode {
+    Map<Character, TrieNode> children = new HashMap<>();
+  }
+
+  public int insert(String word) {
+    TrieNode node = new TrieNode();
+    for (char ch : word.toCharArray()) {
+      node.children.putIfAbsent(ch, new TrieNode());
+    }
+    return node.children.size();
+  }
+}`;
+    const fieldPutIfAbsentExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: fieldPutIfAbsentCode,
+      functionName: 'insert',
+      inputs: { word: 'app' },
+      executionStyle: 'function',
+    });
+    assertCondition(fieldPutIfAbsentExecute.success === true, 'Java field putIfAbsent trace should execute successfully');
+    const fieldPutIfAbsentTrace = javaTraceHooksEventsToRuntimeTrace(fieldPutIfAbsentExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      fieldPutIfAbsentTrace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 10 &&
+        'variable' in event.target &&
+        event.target.variable === 'node' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify(['children', 'a']) &&
+        event.method === 'putIfAbsent' &&
+        event.args?.[0] === 'a' &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'ch'])
+      ),
+      `Java field putIfAbsent should emit keyed mutate args and index-source evidence, received ${JSON.stringify(fieldPutIfAbsentTrace.events)}`
+    );
+    console.log('PASS: java worker emits field putIfAbsent mutation args and keyed evidence');
 
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: `class Solution {
