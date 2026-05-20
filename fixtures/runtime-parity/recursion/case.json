@@ -27,5 +27,21 @@
       ],
       "accessTargets": []
     }
+  },
+  "expectByLanguage": {
+    "python": {
+      "recursiveCall": {
+        "eventKinds": [
+          "call",
+          "line",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "n"
+        ],
+        "accessTargets": []
+      }
+    }
   }
 }

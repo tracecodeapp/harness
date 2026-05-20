@@ -143,6 +143,39 @@
             "variable": "account"
           }
         ]
+      },
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "account",
+          "accounts",
+          "email",
+          "i"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "account"
+          },
+          {
+            "kind": "read",
+            "variable": "account",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "i"
+          },
+          {
+            "kind": "write",
+            "variable": "email"
+          }
+        ]
       }
     }
   }

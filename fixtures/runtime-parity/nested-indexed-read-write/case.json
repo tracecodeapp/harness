@@ -216,6 +216,11 @@
           "kind": "read",
           "pathDepth": 2,
           "variable": "grid"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "variable": "grid"
         }
       ]
     }
@@ -420,6 +425,10 @@
     "csharp": {
       "read": {
         "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "grid"
+          },
           {
             "kind": "read",
             "pathDepth": 2,

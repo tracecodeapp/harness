@@ -281,6 +281,7 @@
         "accessTargets": [
           {
             "kind": "mutate",
+            "pathDepth": 1,
             "variable": "counts"
           }
         ],
@@ -468,14 +469,9 @@
     "cpp": {
       "accessTargets": [
         {
-          "count": 1,
+          "count": 2,
           "kind": "mutate",
           "pathDepth": 1,
-          "variable": "counts"
-        },
-        {
-          "count": 1,
-          "kind": "mutate",
           "variable": "counts"
         },
         {

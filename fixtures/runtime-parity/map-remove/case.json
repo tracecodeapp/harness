@@ -33,6 +33,26 @@
     }
   },
   "expectByLanguage": {
+    "python": {
+      "remove": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "pathDepth": 1,
+            "method": "remove"
+          }
+        ]
+      }
+    },
     "csharp": {
       "remove": {
         "eventKinds": [
@@ -47,6 +67,26 @@
           {
             "kind": "mutate",
             "variable": "seen",
+            "method": "remove"
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "remove": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "pathDepth": 1,
             "method": "remove"
           }
         ]
