@@ -1497,12 +1497,20 @@ function createTraceRecorder(options = {}) {
       pushRuntimeTraceEvent({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'call') {
       const stack = Array.isArray(step.callStack) ? step.callStack : [];
-      pushRuntimeTraceEvent({ ...base, kind: 'call', function: step.function, args: stack.at(-1)?.args });
+      pushRuntimeTraceEvent({
+        ...base,
+        kind: 'call',
+        function: step.function,
+        args: stack.at(-1)?.args,
+        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
+      });
     } else if (step.event === 'return') {
+      const stack = Array.isArray(step.callStack) ? step.callStack : [];
       pushRuntimeTraceEvent({
         ...base,
         kind: 'return',
         function: step.function,
+        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
         ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
       });
     } else if (step.event === 'exception') {
@@ -2187,11 +2195,25 @@ function createSyntheticRuntimeTrace(payload, codeResult, language) {
       frameId: runtimeTraceFrameIdForSyntheticStep(step),
     };
     if (step.event === 'call') {
-      events.push({ ...base, kind: 'call', function: step.function, args: step.callStack?.at(-1)?.args });
+      const stack = Array.isArray(step.callStack) ? step.callStack : [];
+      events.push({
+        ...base,
+        kind: 'call',
+        function: step.function,
+        args: stack.at(-1)?.args,
+        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
+      });
     } else if (step.event === 'line') {
       events.push({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'return') {
-      events.push({ ...base, kind: 'return', function: step.function, value: step.returnValue });
+      const stack = Array.isArray(step.callStack) ? step.callStack : [];
+      events.push({
+        ...base,
+        kind: 'return',
+        function: step.function,
+        value: step.returnValue,
+        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
+      });
     }
     for (const [variable, value] of Object.entries(step.variables ?? {})) {
       events.push({ ...base, kind: 'snapshot', target: { variable }, value });

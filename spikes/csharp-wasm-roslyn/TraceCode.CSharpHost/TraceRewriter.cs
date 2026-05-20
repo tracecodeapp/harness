@@ -184,12 +184,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         int line = GetLine(node);
-        string arguments = string.Join(
-            ", ",
-            methodNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText)
-        );
         StatementSyntax callStatement = TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
+            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, {BuildNamedCallArgsExpression(methodNode.ParameterList.Parameters)});"
         );
 
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements.Insert(0, callStatement);
@@ -245,12 +241,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         int line = GetLine(node);
-        string arguments = string.Join(
-            ", ",
-            node.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText)
-        );
         StatementSyntax callStatement = TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
+            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(node.Identifier.ValueText)}, {line}, {BuildNamedCallArgsExpression(node.ParameterList.Parameters)});"
         );
 
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements
@@ -310,12 +302,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         int line = GetLine(node);
-        string arguments = string.Join(
-            ", ",
-            localFunctionNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText)
-        );
         StatementSyntax callStatement = TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(localFunctionNode.Identifier.ValueText)}, {line}, new object?[] {{ {arguments} }});"
+            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(localFunctionNode.Identifier.ValueText)}, {line}, {BuildNamedCallArgsExpression(localFunctionNode.ParameterList.Parameters)});"
         );
 
         SyntaxList<StatementSyntax> statements = rewritten.Body!.Statements.Insert(0, callStatement);
@@ -463,9 +451,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         IReadOnlyList<ParameterSyntax> parameters,
         int line)
     {
-        string arguments = string.Join(", ", GetTraceableCallParameterNames(parameters));
         StatementSyntax callStatement = TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(functionName)}, {line}, new object?[] {{ {arguments} }});"
+            $"TraceCode.Internal.TraceCodeTrace.Call({Literal(functionName)}, {line}, {BuildNamedCallArgsExpression(parameters)});"
         );
 
         SyntaxList<StatementSyntax> statements = block.Statements
@@ -482,11 +469,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         int line,
         bool returnsVoid)
     {
-        string arguments = string.Join(", ", GetTraceableCallParameterNames(parameters));
         var statements = new List<StatementSyntax>
         {
             TraceStatement(
-                $"TraceCode.Internal.TraceCodeTrace.Call({Literal(functionName)}, {line}, new object?[] {{ {arguments} }});"
+                $"TraceCode.Internal.TraceCodeTrace.Call({Literal(functionName)}, {line}, {BuildNamedCallArgsExpression(parameters)});"
             ),
         };
 
@@ -618,6 +604,15 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             .Select(parameter => parameter.Identifier.ValueText)
             .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, "_", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal);
+    }
+
+    private static string BuildNamedCallArgsExpression(IEnumerable<ParameterSyntax> parameters)
+    {
+        string entries = string.Join(
+            ", ",
+            GetTraceableCallParameterNames(parameters).Select(name => $"[{Literal(name)}] = {name}")
+        );
+        return $"new global::System.Collections.Generic.Dictionary<string, object?> {{ {entries} }}";
     }
 
     private static IEnumerable<string> GetDeclarationExpressionVariableNames(ExpressionSyntax expression)

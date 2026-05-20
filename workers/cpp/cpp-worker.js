@@ -2925,6 +2925,7 @@ function buildCallInstrumentation(lineNumber, signature) {
   return [
     `std::string __tc_args_json_${lineNumber} = std::string("{") + ${argsExpression} + "}";`,
     `tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${lineNumber} + "}", ${callLine});`,
+    `tracecode::emit_line(${callLine}, ${cppStringLiteral(signature.name)});`,
   ].join('\n');
 }
 
@@ -4848,7 +4849,6 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         frameStack.push({ signature: nextSignature, depth: delta, variables, mapIterators: new Map(), stringPointerAliases: new Map() });
         if (
           delta > 0 &&
-          (nextSignature.name !== functionName || nextSignature.line !== targetSignature.line) &&
           !nextSignature.skipInstrumentation
         ) {
           if (functionName === CPP_SCRIPT_FUNCTION_NAME && nextSignature.lambda) {
@@ -4944,7 +4944,9 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
     ? signature.parameters[0]
     : null;
   const traceSetup = traced ? `  ${configureTraceBudgetCall(options)}` : '';
-  const traceCall = traced
+  const signatureSourceLine = userCode.split(/\r?\n/)[signature.line - 1] ?? '';
+  const hasSingleLineFunctionBody = signatureSourceLine.includes('{') && signatureSourceLine.includes('}');
+  const traceCall = traced && hasSingleLineFunctionBody
     ? [
         `  std::string __tc_args_json = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, index) => `__tc_arg_${index}`, aliases)} + "}";`,
         `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json + "}", ${signature.line});`,

@@ -22,6 +22,7 @@
   },
   "expectLineSequence": [
     "callSite",
+    "lambdaEntry",
     "leftMove",
     "rightMove",
     "leftMove",
@@ -48,7 +49,8 @@
     },
     "lambdaEntry": {
       "eventKinds": [
-        "call"
+        "call",
+        "line"
       ],
       "variableSnapshots": [],
       "accessTargets": []

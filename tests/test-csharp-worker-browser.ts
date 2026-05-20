@@ -1836,7 +1836,7 @@ async function main(): Promise<void> {
       `C# worker traced expression-bodied lambda case should return 5, received ${JSON.stringify(tracedExpressionLambda.output)}`
     );
     assertCondition(
-      tracedExpressionLambda.events?.some((event) => event.kind === 'call' && event.function === 'bump' && event.args?.[0] === 4) === true,
+      tracedExpressionLambda.events?.some((event) => event.kind === 'call' && event.function === 'bump' && !Array.isArray(event.args) && event.args?.x === 4) === true,
       `C# worker traced expression-bodied lambda case should include bump call args, received ${JSON.stringify(tracedExpressionLambda.events)}`
     );
     assertCondition(
@@ -3648,8 +3648,8 @@ async function main(): Promise<void> {
       tracedListNodeValues.events?.some((event) =>
         event.kind === 'call'
         && event.function === 'HeadValue'
-        && Array.isArray(event.args)
-        && (event.args[0] as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode') === true,
+        && !Array.isArray(event.args)
+        && (event.args?.head as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode') === true,
       `C# worker traced ListNode values case should include normalized call args, received ${JSON.stringify(tracedListNodeValues.events)}`
     );
     assertCondition(
@@ -3778,9 +3778,9 @@ async function main(): Promise<void> {
       tracedTreeNodeValues.events?.some((event) =>
         event.kind === 'call'
         && event.function === 'SumTree'
-        && Array.isArray(event.args)
-        && (event.args[0] as { __type__?: string; val?: number } | undefined)?.__type__ === 'TreeNode'
-        && (event.args[0] as { val?: number } | undefined)?.val === 1) === true,
+        && !Array.isArray(event.args)
+        && (event.args?.root as { __type__?: string; val?: number } | undefined)?.__type__ === 'TreeNode'
+        && (event.args?.root as { val?: number } | undefined)?.val === 1) === true,
       `C# worker traced TreeNode values case should include normalized recursive call args, received ${JSON.stringify(tracedTreeNodeValues.events)}`
     );
     assertCondition(

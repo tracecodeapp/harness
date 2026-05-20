@@ -1373,6 +1373,11 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Call(function, line, args);
         }
 
+        public static void Call(string function, int line, IReadOnlyDictionary<string, object?> args)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Call(function, line, args);
+        }
+
         public static void Return(string function, int line, object? value = null)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.Return(function, line, value);

@@ -40,7 +40,8 @@
     "cpp": {
       "helperEntry": {
         "eventKinds": [
-          "call"
+          "call",
+          "line"
         ],
         "variableSnapshots": [],
         "accessTargets": []

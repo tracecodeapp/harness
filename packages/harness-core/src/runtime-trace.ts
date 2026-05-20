@@ -27,7 +27,7 @@ export type RuntimeTraceTarget =
 export interface RuntimeTraceCallFrame {
   function: string;
   line?: number;
-  args?: Record<string, unknown> | unknown[];
+  args?: Record<string, unknown>;
 }
 
 interface RuntimeTraceBaseEvent {
@@ -42,7 +42,7 @@ interface RuntimeTraceBaseEvent {
 
 export type RuntimeTraceEvent =
   | (RuntimeTraceBaseEvent & { kind: 'line'; line: number; function?: string })
-  | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> | unknown[] })
+  | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> })
   | (RuntimeTraceBaseEvent & { kind: 'return'; line: number; function?: string; value?: unknown })
   | (RuntimeTraceBaseEvent & {
       kind: 'read' | 'write';

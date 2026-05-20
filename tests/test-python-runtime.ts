@@ -1906,7 +1906,7 @@ print(json.dumps({
   console.log('PASS: Python boolean indexed assignment emits indexed reads and writes');
 }
 
-async function assertRecursiveCallsiteRuntimeEventsAreRecorded(): Promise<void> {
+async function assertRecursiveCallActivationRuntimeEventsAreRecorded(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `class Solution:
     def combinationSum(self, candidates, target):
@@ -1960,7 +1960,7 @@ print(json.dumps({
 
   assertCondition(
     JSON.stringify(parsed.result) === JSON.stringify([[2, 2]]),
-    `Python recursive callsite fixture should execute, got ${JSON.stringify(parsed.result)}`
+    `Python recursive call activation fixture should execute, got ${JSON.stringify(parsed.result)}`
   );
 
   const recursiveCallLine =
@@ -1968,7 +1968,7 @@ print(json.dumps({
   const recursiveLineStep = parsed.trace.find(
     (step) => step.event === 'line' && step.line === recursiveCallLine && step.function === 'backtrack'
   );
-  assertCondition(Boolean(recursiveLineStep), 'Python recursive callsite line step should exist');
+  assertCondition(Boolean(recursiveLineStep), 'Python recursive invocation line step should exist');
   assertCondition(
     recursiveLineStep?.accesses?.some(
       (access) =>
@@ -1976,23 +1976,45 @@ print(json.dumps({
         access.kind === 'indexed-read' &&
         JSON.stringify(access.indexSources) === JSON.stringify(['i'])
     ) === true,
-    `Python recursive callsite should keep argument read evidence, got ${JSON.stringify(recursiveLineStep?.accesses)}`
+    `Python recursive invocation line should keep argument read evidence, got ${JSON.stringify(recursiveLineStep?.accesses)}`
   );
 
-  const callsiteCallIndex = parsed.runtimeTrace.events.findIndex(
-    (event) => event.kind === 'call' && event.line === recursiveCallLine && event.function === 'backtrack'
+  const activationCalls = parsed.runtimeTrace.events.filter(
+    (event) => event.kind === 'call' && event.function === 'backtrack'
   );
-  const callsiteReturnIndex = parsed.runtimeTrace.events.findIndex(
-    (event, index) =>
-      index > callsiteCallIndex &&
-      event.kind === 'return' &&
-      event.line === recursiveCallLine &&
-      event.function === 'backtrack'
+  assertCondition(
+    activationCalls.some(
+      (event) =>
+        event.args &&
+        !Array.isArray(event.args) &&
+        event.args.start === 0 &&
+        event.args.remaining === 4 &&
+        event.callStack?.at(-1)?.function === 'backtrack' &&
+        event.callStack?.at(-1)?.args?.remaining === 4
+    ),
+    `Python should emit top-level backtrack activation with named args and stack, got ${JSON.stringify(activationCalls)}`
   );
-  assertCondition(callsiteCallIndex >= 0, 'Python recursive callsite should emit a runtime call event on the invocation line');
-  assertCondition(callsiteReturnIndex > callsiteCallIndex, 'Python recursive callsite should emit a runtime return after the call');
+  assertCondition(
+    activationCalls.some(
+      (event) =>
+        event.args &&
+        !Array.isArray(event.args) &&
+        event.args.start === 0 &&
+        event.args.remaining === 2 &&
+        event.callStack?.at(-1)?.function === 'backtrack' &&
+        event.callStack?.at(-1)?.args?.remaining === 2 &&
+        (event.callStack?.filter((frame) => frame.function === 'backtrack').length ?? 0) >= 2
+    ),
+    `Python should emit recursive backtrack activation with named args and stack, got ${JSON.stringify(activationCalls)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some(
+      (event) => event.kind === 'return' && event.function === 'backtrack' && (event.callStack?.length ?? 0) > 0
+    ),
+    `Python recursive activations should emit returns with call stack context, got ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
 
-  console.log('PASS: Python recursive callsites emit runtime call/return events');
+  console.log('PASS: Python recursive activations emit named call/return events');
 }
 
 async function assertBuiltinSumRecordsConsumedCollectionReads(): Promise<void> {
@@ -2175,7 +2197,7 @@ async function main(): Promise<void> {
   await assertIndexedAugAssignAndLoopBindingUseConcreteValues();
   await assertSliceForLoopBindingIsRecorded();
   await assertBooleanIndexedAssignmentReadsAndWrites();
-  await assertRecursiveCallsiteRuntimeEventsAreRecorded();
+  await assertRecursiveCallActivationRuntimeEventsAreRecorded();
   await assertBuiltinSumRecordsConsumedCollectionReads();
   await assertFunctionStyleFallsBackToSolutionMethod();
   console.log('\nPython runtime checks passed.');

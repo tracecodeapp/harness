@@ -558,9 +558,15 @@ def __tracecode_append_trace_events_for_step(step):
     elif event_kind == 'call':
         stack = step.get('callStack') if isinstance(step.get('callStack'), _builtins.list) else []
         frame = stack[-1] if len(stack) > 0 and isinstance(stack[-1], _builtins.dict) else {}
-        __tracecode_append_runtime_event({**base, 'kind': 'call', 'function': function_name, 'args': frame.get('args')})
+        event = {**base, 'kind': 'call', 'function': function_name, 'args': frame.get('args')}
+        if len(stack) > 0:
+            event['callStack'] = [f.copy() for f in stack]
+        __tracecode_append_runtime_event(event)
     elif event_kind == 'return':
         event = {**base, 'kind': 'return', 'function': function_name}
+        stack = step.get('callStack') if isinstance(step.get('callStack'), _builtins.list) else []
+        if len(stack) > 0:
+            event['callStack'] = [f.copy() for f in stack]
         if 'returnValue' in step:
             event['value'] = step.get('returnValue')
         __tracecode_append_runtime_event(event)
@@ -745,26 +751,7 @@ def __tracecode_make_callsite_frame_id(frame, line_number):
     return str(function_name) + ':' + str(line_number)
 
 def _tracecode_user_call(line_number, function_name, func, *args, **kwargs):
-    caller_frame = sys._getframe(1)
-    base = {
-        'runId': 'python:run',
-        'line': line_number,
-        'frameId': __tracecode_make_callsite_frame_id(caller_frame, line_number),
-    }
-    __tracecode_append_runtime_event({
-        **base,
-        'kind': 'call',
-        'function': function_name,
-        'args': __tracecode_serialize_call_args(args, kwargs),
-    })
-    result = func(*args, **kwargs)
-    __tracecode_append_runtime_event({
-        **base,
-        'kind': 'return',
-        'function': function_name,
-        'value': _serialize(result),
-    })
-    return result
+    return func(*args, **kwargs)
 
 def __tracecode_normalize_index_sources(index_sources, path_length):
     if not isinstance(index_sources, (list, _builtins.tuple)) or not isinstance(path_length, int) or path_length <= 0:

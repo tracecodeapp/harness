@@ -28,20 +28,28 @@
       "accessTargets": []
     }
   },
-  "expectByLanguage": {
-    "python": {
-      "recursiveCall": {
-        "eventKinds": [
-          "call",
-          "line",
-          "return",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "n"
-        ],
-        "accessTargets": []
-      }
+  "expectByLanguage": {},
+  "expectCallActivations": [
+    {
+      "function": "solve",
+      "args": {
+        "n": 3
+      },
+      "callStackDepth": 1
+    },
+    {
+      "function": "solve",
+      "args": {
+        "n": 2
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "args": {
+        "n": 1
+      },
+      "callStackDepth": 3
     }
-  }
+  ]
 }

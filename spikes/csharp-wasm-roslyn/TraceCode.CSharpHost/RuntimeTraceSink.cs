@@ -144,6 +144,33 @@ public static class RuntimeTraceSink
         });
     }
 
+    public static void Call(string function, int line, IReadOnlyDictionary<string, object?> args)
+    {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
+        Dictionary<string, object?> argsByName = args.ToDictionary(
+            entry => entry.Key,
+            entry => entry.Value,
+            StringComparer.Ordinal
+        );
+        CallStack.Add(new RuntimeTraceCallFrame
+        {
+            Function = function,
+            Line = line,
+            Args = argsByName,
+        });
+        Add(new RuntimeTraceEvent
+        {
+            Kind = "call",
+            Line = line,
+            Function = function,
+            Args = argsByName,
+        });
+    }
+
     public static void Return(string function, int line, object? value = null)
     {
         if (traceLimitExceeded)
@@ -880,12 +907,12 @@ public static class RuntimeTraceSink
     {
         var references = new ReferenceTracker();
         traceEvent.Value = NormalizeTraceValue(traceEvent.Value, references);
-        traceEvent.Args = traceEvent.Args?.Select(arg => NormalizeTraceValue(arg, references)).ToList();
+        traceEvent.Args = NormalizeTraceArgs(traceEvent.Args, references);
         if (traceEvent.CallStack is not null)
         {
             foreach (RuntimeTraceCallFrame frame in traceEvent.CallStack)
             {
-                frame.Args = frame.Args?.Select(arg => NormalizeTraceValue(arg, references)).ToList();
+                frame.Args = NormalizeTraceArgs(frame.Args, references);
             }
         }
         if (traceEvent.Target?.Path is not null)
@@ -924,9 +951,38 @@ public static class RuntimeTraceSink
             {
                 Function = frame.Function,
                 Line = frame.Line,
-                Args = frame.Args?.ToList(),
+                Args = CloneTraceArgs(frame.Args),
             })
             .ToList();
+    }
+
+    private static object? CloneTraceArgs(object? args)
+    {
+        return args switch
+        {
+            Dictionary<string, object?> named => named.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal),
+            IReadOnlyList<object?> positional => positional.ToList(),
+            _ => args,
+        };
+    }
+
+    private static object? NormalizeTraceArgs(object? args, ReferenceTracker references)
+    {
+        return args switch
+        {
+            Dictionary<string, object?> named => named.ToDictionary(
+                entry => entry.Key,
+                entry => NormalizeTraceValue(entry.Value, references),
+                StringComparer.Ordinal
+            ),
+            IReadOnlyDictionary<string, object?> named => named.ToDictionary(
+                entry => entry.Key,
+                entry => NormalizeTraceValue(entry.Value, references),
+                StringComparer.Ordinal
+            ),
+            IReadOnlyList<object?> positional => positional.Select(arg => NormalizeTraceValue(arg, references)).ToList(),
+            _ => args is null ? null : NormalizeTraceValue(args, references),
+        };
     }
 
     private static object? NormalizeTracePathValue(object? value)

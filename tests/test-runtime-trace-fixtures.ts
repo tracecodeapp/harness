@@ -105,10 +105,18 @@ interface FixtureCase {
   expectSummaryByLanguage?: Partial<Record<Language, {
     accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   }>>;
+  expectCallActivations?: RuntimeTraceCallActivationAssertion[];
+  expectCallActivationsByLanguage?: Partial<Record<Language, RuntimeTraceCallActivationAssertion[]>>;
   expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
   expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
   expectOpaqueRefs?: boolean;
   knownGaps?: Partial<Record<Language, Record<string, string>>>;
+}
+
+interface RuntimeTraceCallActivationAssertion {
+  function: string;
+  args?: Record<string, unknown>;
+  callStackDepth?: number;
 }
 
 interface RuntimeTraceEventAssertion {
@@ -1094,6 +1102,36 @@ function assertRoleEventAssertions(
   }
 }
 
+function callActivationMatchesAssertion(
+  event: RuntimeTrace['events'][number],
+  assertion: RuntimeTraceCallActivationAssertion
+): boolean {
+  if (event.kind !== 'call') return false;
+  if (event.function !== assertion.function) return false;
+  if (assertion.args !== undefined && stableStringify(event.args) !== stableStringify(assertion.args)) return false;
+  if (assertion.callStackDepth !== undefined) {
+    if (!Array.isArray(event.callStack) || event.callStack.length !== assertion.callStackDepth) return false;
+    const topFrame = event.callStack[event.callStack.length - 1];
+    if (topFrame?.function !== assertion.function) return false;
+    if (assertion.args !== undefined && stableStringify(topFrame.args) !== stableStringify(assertion.args)) return false;
+  }
+  return true;
+}
+
+function assertCallActivations(
+  trace: RuntimeTrace,
+  assertions: RuntimeTraceCallActivationAssertion[],
+  label: string
+): void {
+  const callEvents = trace.events.filter((event) => event.kind === 'call');
+  for (const assertion of assertions) {
+    assertCondition(
+      callEvents.some((event) => callActivationMatchesAssertion(event, assertion)),
+      `${label}: missing call activation.\nExpected: ${stableStringify(assertion)}\nCalls: ${stableStringify(callEvents)}`
+    );
+  }
+}
+
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
@@ -1315,6 +1353,13 @@ async function runFixture(
         expectedEventAssertions,
         `${fixture.id}:${language}`
       );
+    }
+    const expectedCallActivations = [
+      ...(fixture.expectCallActivations ?? []),
+      ...(fixture.expectCallActivationsByLanguage?.[language] ?? []),
+    ];
+    if (expectedCallActivations.length > 0) {
+      assertCallActivations(trace, expectedCallActivations, `${fixture.id}:${language}`);
     }
     assertNoUnsupportedVisualization(trace, `${fixture.id}:${language}`);
     if (fixture.expectOpaqueRefs) {

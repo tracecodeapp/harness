@@ -101,7 +101,7 @@ public sealed class RuntimeTraceEvent
     public string? Method { get; set; }
 
     [JsonPropertyName("args")]
-    public List<object?>? Args { get; set; }
+    public object? Args { get; set; }
 
     [JsonPropertyName("binding")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -151,7 +151,7 @@ public sealed class RuntimeTraceCallFrame
 
     [JsonPropertyName("args")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public List<object?>? Args { get; set; }
+    public object? Args { get; set; }
 }
 
 public sealed class CSharpDiagnostic
