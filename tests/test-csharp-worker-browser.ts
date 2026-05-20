@@ -683,6 +683,139 @@ async function main(): Promise<void> {
       `C# worker names.Add(name) should emit a mutate event inside foreach, received ${JSON.stringify(indexedCollectionForeachMutation.events)}`
     );
 
+    const jaggedArrayForeachBinding = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int CountEdges(int[][] edges) {',
+        '    int total = 0;',
+        '    foreach (int[] edge in edges) {',
+        '      total += edge[2];',
+        '    }',
+        '    return total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'CountEdges',
+      { edges: [[0, 1, 7], [1, 2, -3]] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      jaggedArrayForeachBinding.success && jaggedArrayForeachBinding.output === 4,
+      `C# worker jagged-array foreach binding case should succeed, received ${JSON.stringify(jaggedArrayForeachBinding)}`
+    );
+    assertCondition(
+      jaggedArrayForeachBinding.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 4
+        && event.target?.variable === 'edges'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'edge') === true,
+      `C# worker foreach over int[][] should emit iteration binding reads, received ${JSON.stringify(jaggedArrayForeachBinding.events)}`
+    );
+
+    const keyedCollectionForeachVariableKey = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int KeyedCollectionForeachVariableKey() {',
+        '    var owners = new Dictionary<string, HashSet<string>>();',
+        '    owners["email"] = new HashSet<string> { "Ada" };',
+        '    string key = "email";',
+        '    int count = 0;',
+        '    foreach (string name in owners[key]) {',
+        '      count += name.Length;',
+        '    }',
+        '    return count;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'KeyedCollectionForeachVariableKey',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      keyedCollectionForeachVariableKey.success && keyedCollectionForeachVariableKey.output === 3,
+      `C# worker foreach over keyed collection variable-key case should succeed, received ${JSON.stringify(keyedCollectionForeachVariableKey)}`
+    );
+    assertCondition(
+      keyedCollectionForeachVariableKey.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 8
+        && event.target?.variable === 'owners'
+        && JSON.stringify(event.target.path) === JSON.stringify(['email', 0])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['key', null])
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'name') === true,
+      `C# worker foreach over owners[key] should emit indexed iteration binding provenance, received ${JSON.stringify(keyedCollectionForeachVariableKey.events)}`
+    );
+
+    const trieContainsGuard = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class TrieNode { public Dictionary<char, TrieNode> Children = new Dictionary<char, TrieNode>(); }',
+        'public class Solution {',
+        '  public bool HasChild(TrieNode node, char ch) {',
+        '    if (node == null || !node.Children.ContainsKey(ch)) return false;',
+        '    return node.Children[ch] != null;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'HasChild',
+      { node: { Children: { a: {} } }, ch: 'a' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      trieContainsGuard.success && trieContainsGuard.output === true,
+      `C# worker trie ContainsKey guard case should succeed, received ${JSON.stringify(trieContainsGuard)}`
+    );
+    assertCondition(
+      trieContainsGuard.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 5
+        && event.target?.variable === 'node'
+        && JSON.stringify(event.target.path) === JSON.stringify(['Children', 'a'])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'ch'])
+        && event.value === true) === true,
+      `C# worker node.Children.ContainsKey(ch) should emit keyed guard read, received ${JSON.stringify(trieContainsGuard.events)}`
+    );
+
+    const gridGuardReads = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int Visit(char[][] grid, int r, int c) {',
+        '    if (r < 0 || r >= grid.Length || c < 0 || c >= grid[0].Length || grid[r][c] != \'A\') return 0;',
+        '    return 1;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Visit',
+      { grid: [['A']], r: 0, c: 0 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      gridGuardReads.success && gridGuardReads.output === 1,
+      `C# worker grid guard read case should succeed, received ${JSON.stringify(gridGuardReads)}`
+    );
+    assertCondition(
+      gridGuardReads.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 3
+        && event.target?.variable === 'grid'
+        && JSON.stringify(event.target.path) === JSON.stringify([0, 0])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['r', 'c'])
+        && event.value === 'A') === true,
+      `C# worker grid[r][c] short-circuit guard should emit nested indexed reads, received ${JSON.stringify(gridGuardReads.events)}`
+    );
+
     const unbracedQueueEnqueueMutation = await runWorkerCase(
       page,
       [

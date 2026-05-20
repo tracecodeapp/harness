@@ -1097,6 +1097,41 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   ],
                 });
               }
+              if (latestSource.includes('totalAccounts') && latestSource.includes('TraceHooks.iterationBindAtLine')) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(5),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 2, function: 'totalAccounts', args: { accounts: [['John', 'a@mail'], ['Ada', 'b@mail', 'c@mail']] } }),
+                    nativeJavaEvent({
+                      kind: 'read',
+                      line: 4,
+                      target: { variable: 'accounts', path: [0] },
+                      value: ['John', 'a@mail'],
+                      binding: { kind: 'iteration', variable: 'account' },
+                    }),
+                    nativeJavaEvent({ kind: 'write', line: 4, target: { variable: 'account' }, value: ['John', 'a@mail'] }),
+                    nativeJavaEvent({ kind: 'return', line: 7, function: 'totalAccounts', value: 5 }),
+                  ],
+                });
+              }
+              if (latestSource.includes('putMapIfAbsentAtLine') && latestSource.includes('inDegree')) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(2),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 4, function: 'order', args: { letters: ['z', 'a', 'z'] } }),
+                    nativeJavaEvent({
+                      kind: 'mutate',
+                      line: 7,
+                      target: { variable: 'inDegree', path: ['z'], indexSources: ['ch'] },
+                      method: 'putIfAbsent',
+                      args: ['z', 0],
+                    }),
+                    nativeJavaEvent({ kind: 'return', line: 9, function: 'order', value: 2 }),
+                  ],
+                });
+              }
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify([0, 1]),
@@ -2235,6 +2270,43 @@ class Solution {
       foreachArraySource.includes('TraceHooks.iterationBindAtLine(4, "accounts", accounts, "account")'),
       'Java worker should wrap enhanced-for bindings over multidimensional array parameters'
     );
+
+    const foreachArrayExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: `class Solution {
+  public int totalAccounts(Object[][] accounts) {
+    int total = 0;
+    for (Object[] account : accounts) {
+      total += account.length;
+    }
+    return total;
+  }
+}`,
+      functionName: 'totalAccounts',
+      inputs: { accounts: [['John', 'a@mail'], ['Ada', 'b@mail', 'c@mail']] },
+      executionStyle: 'function',
+    });
+    assertCondition(foreachArrayExecute.success === true, 'Java Object[][] enhanced-for trace should execute successfully');
+    const foreachArrayTrace = javaTraceHooksEventsToRuntimeTrace(foreachArrayExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      foreachArrayTrace.events.some((event) =>
+        event.kind === 'read' &&
+        event.line === 4 &&
+        'variable' in event.target &&
+        event.target.variable === 'accounts' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === 'account'
+      ),
+      `Java enhanced-for over Object[][] should emit an iteration binding read, received ${JSON.stringify(foreachArrayTrace.events)}`
+    );
     console.log('PASS: java worker emits enhanced-for iteration binding reads');
 
     const defaultMapCode = `import java.util.*;
@@ -2447,6 +2519,48 @@ class Solution {
       'Java field collection mutations should emit this-field mutate runtime events'
     );
     console.log('PASS: java worker rewrites field collection mutations as this-field runtime trace events');
+
+    const putIfAbsentCode = `import java.util.*;
+
+class Solution {
+  public int order(String[] letters) {
+    Map<String, Integer> inDegree = new HashMap<>();
+    for (String ch : letters) {
+      inDegree.putIfAbsent(ch, 0);
+    }
+    return inDegree.size();
+  }
+}`;
+    const putIfAbsentExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: putIfAbsentCode,
+      functionName: 'order',
+      inputs: { letters: ['z', 'a', 'z'] },
+      executionStyle: 'function',
+    });
+    assertCondition(putIfAbsentExecute.success === true, 'Java putIfAbsent trace should execute successfully');
+    const putIfAbsentTrace = javaTraceHooksEventsToRuntimeTrace(putIfAbsentExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      putIfAbsentTrace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 7 &&
+        'variable' in event.target &&
+        event.target.variable === 'inDegree' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify(['z']) &&
+        event.method === 'putIfAbsent' &&
+        JSON.stringify(event.args) === JSON.stringify(['z', 0]) &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['ch'])
+      ),
+      `Java putIfAbsent should emit keyed mutate args and index-source evidence, received ${JSON.stringify(putIfAbsentTrace.events)}`
+    );
+    console.log('PASS: java worker emits putIfAbsent mutation args and keyed evidence');
 
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: `class Solution {
