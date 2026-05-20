@@ -1788,7 +1788,7 @@ function parseCppLambdaSignatures(source) {
       const hasDeclaration = Boolean(assignedLambda?.[1]);
       const assignedName = assignedLambda?.[2];
       if (!assignedName) continue;
-      if (assignedName && match?.[1] === assignedName) continue;
+      if (assignedName && match?.[2] === assignedName) continue;
       const [, parameterText, returnType] = inlineMatch;
       signatures.push({
         name: hasDeclaration ? assignedName : `<lambda:${index + 1}>`,
@@ -2997,6 +2997,12 @@ function buildPostLineInstrumentation(lineNumber, functionName, variables, curre
 
 function shouldEmitCppFrameSnapshots(activeSignature, insideLocalLambdaBody) {
   return Boolean(activeSignature) && (!insideLocalLambdaBody || Boolean(activeSignature.lambda));
+}
+
+function shouldEmitCppImplicitFrameReturn(signature, aliases) {
+  if (!signature) return false;
+  const normalizedReturnType = normalizeCppType(signature.returnType, aliases);
+  return normalizedReturnType === 'void' || (signature.lambda && normalizedReturnType === 'auto');
 }
 
 function startsCppLocalLambdaDeclaration(line) {
@@ -4765,11 +4771,11 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       );
     }
 
-    const closesActiveVoidHelper =
+    const closesActiveImplicitReturnFrame =
       inFunctionBodyBeforeLine &&
-      normalizeCppType(activeSignature.returnType, aliases) === 'void' &&
+      shouldEmitCppImplicitFrameReturn(activeSignature, aliases) &&
       activeFrame.depth + braceDeltaForLine(line) <= 0;
-    if (closesActiveVoidHelper) {
+    if (closesActiveImplicitReturnFrame) {
       output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
       output.push(buildLineInstrumentation(lineNumber, activeSignature.name));
       output.push(buildReturnInstrumentation(lineNumber, activeSignature));

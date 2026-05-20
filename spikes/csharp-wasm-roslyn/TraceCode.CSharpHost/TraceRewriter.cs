@@ -1102,6 +1102,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             yield return readStatement;
         }
+        foreach (StatementSyntax readStatement in CreateImplicitFieldAliasReadStatements(executableStatement, line))
+        {
+            yield return readStatement;
+        }
         foreach (StatementSyntax mutationStatement in CreateCollectionParameterMutationStatements(executableStatement, line))
         {
             yield return mutationStatement;
@@ -2123,6 +2127,28 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                     $"TraceCode.CSharpHost.RuntimeTraceSink.Read({Literal(name)}, {name}, {line});"
                 );
             }
+        }
+    }
+
+    private IEnumerable<StatementSyntax> CreateImplicitFieldAliasReadStatements(StatementSyntax statement, int line)
+    {
+        if (statement is not LocalDeclarationStatementSyntax localDeclaration)
+        {
+            yield break;
+        }
+
+        foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+        {
+            if (variable.Initializer?.Value is not IdentifierNameSyntax initializer
+                || !TryGetImplicitThisFieldPath(initializer, out string pathExpression))
+            {
+                continue;
+            }
+
+            string name = initializer.Identifier.ValueText;
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.FieldRead({Literal("this")}, {pathExpression}, {name}, {line});"
+            );
         }
     }
 

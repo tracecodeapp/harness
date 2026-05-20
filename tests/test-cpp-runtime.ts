@@ -3139,6 +3139,49 @@ if (!cloneReturnEvent || cloneReturnEvent.callStack?.some((frame) => frame.funct
   throw new Error('C++ caller return should not retain completed lambda frames, received ' + JSON.stringify(voidLambdaEvents));
 }
 
+const autoVoidLambdaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int localHeap(vector<int>& nums) {',
+    '    vector<int> heap;',
+    '    auto siftUp = [&](int index) {',
+    '      while (index > 0) {',
+    '        int parent = (index - 1) / 2;',
+    '        if (heap[parent] <= heap[index]) break;',
+    '        swap(heap[parent], heap[index]);',
+    '        index = parent;',
+    '      }',
+    '    };',
+    '    auto push = [&](int value) {',
+    '      heap.push_back(value);',
+    '      siftUp((int)heap.size() - 1);',
+    '    };',
+    '    for (int num : nums) {',
+    '      push(num);',
+    '    }',
+    '    return heap[0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'localHeap',
+  inputs: { nums: [3, 1, 2] },
+  options: {},
+});
+if (!autoVoidLambdaTrace.success || autoVoidLambdaTrace.output !== 1) {
+  throw new Error('C++ auto void lambda tracing failed: ' + JSON.stringify(autoVoidLambdaTrace));
+}
+const autoVoidLambdaEvents = autoVoidLambdaTrace.trace.events;
+const autoVoidCalls = autoVoidLambdaEvents.filter((event) => event.kind === 'call' && (event.function === 'push' || event.function === 'siftUp'));
+const autoVoidReturns = autoVoidLambdaEvents.filter((event) => event.kind === 'return' && (event.function === 'push' || event.function === 'siftUp'));
+if (autoVoidReturns.length !== autoVoidCalls.length) {
+  throw new Error('C++ auto void lambdas should emit one normal-exit return per helper call, received ' + JSON.stringify(autoVoidLambdaEvents));
+}
+const autoVoidCallerReturn = autoVoidLambdaEvents.find((event) => event.kind === 'return' && event.function === 'localHeap' && event.line === 20);
+if (!autoVoidCallerReturn || autoVoidCallerReturn.callStack?.some((frame) => frame.function === 'push' || frame.function === 'siftUp')) {
+  throw new Error('C++ auto void lambda frames should not leak into caller return, received ' + JSON.stringify(autoVoidLambdaEvents));
+}
+
 const selfRecursiveLambdaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',

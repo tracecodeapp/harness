@@ -592,6 +592,38 @@ async function main(): Promise<void> {
       `C# worker nested member field write should preserve the full field path, received ${JSON.stringify(nestedMemberFieldAccess.events)}`
     );
 
+    const implicitFieldAliasRead = await runWorkerCase(
+      page,
+      [
+        'public class TrieNode {',
+        '  public bool IsEnd;',
+        '}',
+        'public class Solution {',
+        '  private TrieNode root = new TrieNode();',
+        '  public bool AliasRoot() {',
+        '    TrieNode node = root;',
+        '    return node != null;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AliasRoot',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      implicitFieldAliasRead.success && implicitFieldAliasRead.output === true,
+      `C# worker implicit field alias case should succeed, received ${JSON.stringify(implicitFieldAliasRead)}`
+    );
+    assertCondition(
+      implicitFieldAliasRead.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['root'])) === true,
+      `C# worker local alias initializer should emit the source field read, received ${JSON.stringify(implicitFieldAliasRead.events)}`
+    );
+
     const nestedForeachBinding = await runWorkerCase(
       page,
       [
