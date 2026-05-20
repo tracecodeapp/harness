@@ -26,18 +26,32 @@ export interface TypeScriptProjectRunnerOptions {
 
 const DEFAULT_LIB_PATH = '/__tracecode_typescript_lib.d.ts';
 const DEFAULT_LIB = [
-  'interface Array<T> { length: number; [n: number]: T; map<U>(callbackfn: (value: T, index: number, array: T[]) => U): U[]; join(separator?: string): string; }',
+  'interface Array<T> { length: number; [n: number]: T; forEach(callbackfn: (value: T, index: number, array: T[]) => void): void; map<U>(callbackfn: (value: T, index: number, array: T[]) => U): U[]; filter(callbackfn: (value: T, index: number, array: T[]) => unknown): T[]; reduce<U>(callbackfn: (previousValue: U, currentValue: T, currentIndex: number, array: T[]) => U, initialValue: U): U; slice(start?: number, end?: number): T[]; sort(compareFn?: (a: T, b: T) => number): this; join(separator?: string): string; push(...items: T[]): number; }',
   'interface Boolean {}',
   'interface CallableFunction {}',
+  'interface Error { name: string; message: string; stack?: string; }',
   'interface Function {}',
   'interface IArguments {}',
+  'interface Iterable<T> {}',
+  'interface Iterator<T> { next(): { value: T; done?: boolean } }',
   'interface NewableFunction {}',
   'interface Number {}',
   'interface Object {}',
+  'interface Promise<T> { then<TResult>(onfulfilled?: (value: T) => TResult | Promise<TResult>): Promise<TResult>; catch<TResult>(onrejected?: (reason: any) => TResult | Promise<TResult>): Promise<T | TResult>; }',
   'interface RegExp {}',
-  'interface String { trim(): string; split(separator: string | RegExp): string[]; }',
+  'interface String { length: number; trim(): string; split(separator: string | RegExp): string[]; includes(searchString: string): boolean; startsWith(searchString: string): boolean; endsWith(searchString: string): boolean; slice(start?: number, end?: number): string; toLowerCase(): string; toUpperCase(): string; }',
+  'interface Map<K, V> { get(key: K): V | undefined; set(key: K, value: V): this; has(key: K): boolean; entries(): Iterable<[K, V]>; }',
+  'interface Set<T> { add(value: T): this; has(value: T): boolean; }',
+  'declare const Array: { isArray(value: any): value is any[] };',
   'declare const Number: { (value?: any): number };',
   'declare const String: { (value?: any): string };',
+  'declare const Boolean: { (value?: any): boolean };',
+  'declare const Error: { new(message?: string): Error };',
+  'declare const Promise: { new<T>(executor: (resolve: (value: T) => void, reject: (reason?: any) => void) => void): Promise<T>; resolve<T>(value: T): Promise<T> };',
+  'declare const Map: { new<K, V>(): Map<K, V> };',
+  'declare const Set: { new<T>(): Set<T> };',
+  'declare const JSON: { parse(text: string): any; stringify(value: any): string };',
+  'declare const Math: { max(...values: number[]): number; min(...values: number[]): number; round(value: number): number; floor(value: number): number; ceil(value: number): number; abs(value: number): number };',
   'declare const console: { log(...args: any[]): void; error(...args: any[]): void; warn(...args: any[]): void };',
   'declare const process: { argv: string[]; env: Record<string, string | undefined>; cwd(): string };',
   'declare function require(specifier: string): any;',
@@ -119,6 +133,10 @@ function parseJsonObject(contents: string): Record<string, unknown> | null {
   }
 }
 
+function configDirectory(configPath: string, project: RuntimeProjectSnapshot): string {
+  return configPath.slice(0, Math.max(0, configPath.lastIndexOf('/'))) || projectRoot(project);
+}
+
 async function loadDefaultCompiler(): Promise<TypeScriptProjectCompiler> {
   const dynamicImport = new Function('specifier', 'return import(specifier)') as (
     specifier: string
@@ -176,38 +194,97 @@ function configPathFromArgs(args: readonly string[], project: RuntimeProjectSnap
   return absoluteProjectPath('tsconfig.json', project, cwd);
 }
 
-function sourceRootsFromProject(
-  project: RuntimeProjectSnapshot,
-  config: Record<string, unknown> | null,
-  configPath: string
-): string[] {
-  if (Array.isArray(config?.files)) {
-    const configDirectory = configPath.slice(0, Math.max(0, configPath.lastIndexOf('/'))) || projectRoot(project);
-    return config.files
-      .filter((file): file is string => typeof file === 'string')
-      .map((file) => absoluteProjectPath(file, project, configDirectory));
-  }
+function allProjectSourceFiles(project: RuntimeProjectSnapshot): string[] {
   return project.files
-    .map((file) => normalizeProjectPath(file.path))
+    .map((file) => `${projectRoot(project)}/${normalizeProjectPath(file.path)}`)
     .filter((path) =>
-      path.endsWith('.ts') &&
+      (path.endsWith('.ts') || path.endsWith('.tsx')) &&
       !path.endsWith('.d.ts') &&
-      !path.startsWith('dist/') &&
       !path.includes('/dist/') &&
-      !path.startsWith('node_modules/') &&
+      !path.endsWith('/dist') &&
       !path.includes('/node_modules/')
     )
-    .map((path) => `${projectRoot(project)}/${path}`);
+    .sort((left, right) => left.localeCompare(right));
 }
 
-function mergeConfigOptions(
+function sourceRootsFromProject(
+  project: RuntimeProjectSnapshot,
+  parsedConfig: TypeScript.ParsedCommandLine | null
+): string[] {
+  if (parsedConfig) {
+    return parsedConfig.fileNames.map((file) => file.replace(/\\/g, '/'));
+  }
+  return allProjectSourceFiles(project);
+}
+
+function isUnderDirectory(path: string, directory: string): boolean {
+  const normalizedDirectory = directory.replace(/\/+$/, '');
+  return path === normalizedDirectory || path.startsWith(`${normalizedDirectory}/`);
+}
+
+function globToRegExp(pattern: string, basePath: string): RegExp {
+  const absolutePattern = pattern.startsWith('/')
+    ? `/${normalizeProjectPath(pattern)}`
+    : `${basePath.replace(/\/+$/, '')}/${normalizeProjectPath(pattern)}`;
+  let source = '^';
+  for (let index = 0; index < absolutePattern.length; index += 1) {
+    const char = absolutePattern[index];
+    const next = absolutePattern[index + 1];
+    if (char === '*' && next === '*') {
+      if (absolutePattern[index + 2] === '/') {
+        source += '(?:.*/)?';
+        index += 2;
+      } else {
+        source += '.*';
+        index += 1;
+      }
+    } else if (char === '*') {
+      source += '[^/]*';
+    } else if (char === '?') {
+      source += '[^/]';
+    } else {
+      source += char.replace(/[\\^$+?.()|[\]{}]/g, '\\$&');
+    }
+  }
+  source += '$';
+  return new RegExp(source);
+}
+
+function createConfigParseHost(
+  compiler: TypeScriptProjectCompiler,
+  project: RuntimeProjectSnapshot,
+  files: Map<string, string>
+): TypeScript.ParseConfigHost {
+  return {
+    useCaseSensitiveFileNames: true,
+    fileExists: (path) => files.has(path.replace(/\\/g, '/')),
+    readFile: (path) => files.get(path.replace(/\\/g, '/')),
+    readDirectory: (rootDir, extensions, excludes, includes) => {
+      const normalizedRoot = rootDir.replace(/\\/g, '/').replace(/\/+$/, '');
+      const extensionSet = new Set((extensions && extensions.length > 0 ? extensions : ['.ts', '.tsx']).map((extension) => extension.toLowerCase()));
+      const includePatterns = (includes && includes.length > 0 ? includes : ['**/*'])
+        .map((pattern) => globToRegExp(pattern, normalizedRoot));
+      const excludePatterns = (excludes ?? [])
+        .map((pattern) => globToRegExp(pattern, normalizedRoot));
+      return allProjectSourceFiles(project).filter((path) => {
+        if (!isUnderDirectory(path, normalizedRoot)) return false;
+        if (!extensionSet.has(path.slice(path.lastIndexOf('.')).toLowerCase())) return false;
+        if (excludePatterns.some((pattern) => pattern.test(path))) return false;
+        return includePatterns.some((pattern) => pattern.test(path));
+      });
+    },
+  };
+}
+
+function parseConfig(
   compiler: TypeScriptProjectCompiler,
   configPath: string,
+  files: Map<string, string>,
   config: Record<string, unknown> | null,
   cliOptions: TypeScript.CompilerOptions,
   project: RuntimeProjectSnapshot
-): TypeScript.CompilerOptions {
-  const configDirectory = configPath.slice(0, Math.max(0, configPath.lastIndexOf('/'))) || projectRoot(project);
+): TypeScript.ParsedCommandLine {
+  const basePath = configDirectory(configPath, project);
   const defaultOptions: TypeScript.CompilerOptions = {
     target: compiler.ScriptTarget.ES2020,
     module: compiler.ModuleKind.CommonJS,
@@ -219,19 +296,17 @@ function mergeConfigOptions(
     outDir: `${projectRoot(project)}/dist`,
   };
   const parsedConfig = config
-    ? compiler.parseJsonConfigFileContent(config, {
-        useCaseSensitiveFileNames: true,
-        readDirectory: () => [],
-        fileExists: () => true,
-        readFile: () => undefined,
-      }, configDirectory)
-    : { options: {} as TypeScript.CompilerOptions };
+    ? compiler.parseJsonConfigFileContent(config, createConfigParseHost(compiler, project, files), basePath)
+    : { options: {} as TypeScript.CompilerOptions, fileNames: allProjectSourceFiles(project), errors: [] };
   return {
-    ...defaultOptions,
-    ...parsedConfig.options,
-    ...cliOptions,
-    noLib: true,
-    types: [],
+    ...parsedConfig,
+    options: {
+      ...defaultOptions,
+      ...parsedConfig.options,
+      ...cliOptions,
+      noLib: true,
+      types: [],
+    },
   };
 }
 
@@ -307,19 +382,21 @@ export function createTypeScriptProjectRunner(
     const config = files.has(configPath)
       ? parseJsonObject(files.get(configPath)!)
       : null;
-    const compilerOptions = mergeConfigOptions(
+    const parsedConfig = parseConfig(
       compiler,
       configPath,
+      files,
       config,
       compilerOptionsFromArgs(compiler, request.args, request.project),
       request.project
     );
-    const rootNames = [DEFAULT_LIB_PATH, ...sourceRootsFromProject(request.project, config, configPath)];
+    const compilerOptions = parsedConfig.options;
+    const rootNames = [DEFAULT_LIB_PATH, ...sourceRootsFromProject(request.project, parsedConfig)];
     const outputs = new Map<string, string>();
     const host = createCompilerHost(compiler, request.project, files, outputs, compilerOptions);
     const program = compiler.createProgram(rootNames, compilerOptions, host);
     const emit = program.emit();
-    const diagnostics = [...compiler.getPreEmitDiagnostics(program), ...emit.diagnostics]
+    const diagnostics = [...parsedConfig.errors, ...compiler.getPreEmitDiagnostics(program), ...emit.diagnostics]
       .filter((diagnostic) => diagnostic.file?.fileName !== DEFAULT_LIB_PATH);
     const stderr = diagnostics.map((diagnostic) => formatDiagnostic(compiler, diagnostic, request.project)).join('\n');
     const resultFiles: RuntimeFileChange[] = compilerOptions.noEmit

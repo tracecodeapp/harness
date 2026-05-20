@@ -80,6 +80,17 @@ export interface RuntimeKernelWorkspaceInfo {
   startedAt: string;
 }
 
+export type RuntimeProjectSessionExpirationBehavior = 'none' | 'readonly' | 'destroy';
+
+export interface RuntimeProjectSessionLifecycle {
+  createdAt: string;
+  lastOpenedAt: string;
+  expiresAt?: string;
+  expiredAt?: string;
+  destroyedAt?: string;
+  expirationBehavior: RuntimeProjectSessionExpirationBehavior;
+}
+
 export interface RuntimeKernelInfo {
   name: 'tracekernel';
   version: string;
@@ -142,6 +153,10 @@ export interface RuntimeProjectSession {
   commands?: Record<string, RuntimeProjectSessionCommandDefinition>;
   files?: readonly RuntimeProjectSessionFile[];
   directories?: readonly string[];
+  createdAt?: string;
+  lastOpenedAt?: string;
+  expiresAt?: string;
+  expirationBehavior?: RuntimeProjectSessionExpirationBehavior;
   metadata?: Record<string, unknown>;
 }
 
@@ -157,6 +172,7 @@ export interface RuntimeProjectSessionInfo {
   env?: Record<string, string>;
   commands: Record<string, RuntimeProjectSessionCommand>;
   readonlyFiles: readonly string[];
+  lifecycle: RuntimeProjectSessionLifecycle;
   metadata?: Record<string, unknown>;
 }
 
@@ -212,10 +228,24 @@ export interface RuntimeCommandFileChangeEvent {
   actor?: RuntimeWorkspaceActor;
 }
 
+export type RuntimeWorkspaceLifecyclePhase =
+  | 'session-expired'
+  | 'session-destroyed'
+  | 'session-restored';
+
+export interface RuntimeWorkspaceLifecycleEvent {
+  type: 'lifecycle';
+  phase: RuntimeWorkspaceLifecyclePhase;
+  message: string;
+  detail?: Record<string, unknown>;
+  actor?: RuntimeWorkspaceActor;
+}
+
 export type RuntimeCommandEvent =
   | RuntimeCommandOutputEvent
   | RuntimeCommandStatusEvent
-  | RuntimeCommandFileChangeEvent;
+  | RuntimeCommandFileChangeEvent
+  | RuntimeWorkspaceLifecycleEvent;
 
 export type RuntimeCommandEventHandler = (event: RuntimeCommandEvent) => void;
 
@@ -576,6 +606,8 @@ export interface RuntimeWorkspace {
   runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
   runProjectCommand(name: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
   createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
+  checkExpiration(now?: Date | string | number): Promise<RuntimeProjectSessionLifecycle | null>;
+  destroy(options?: { reason?: string; clearStorage?: boolean }): Promise<void>;
   snapshot(options?: { entrypoint?: string }): Promise<RuntimeProjectSnapshot>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
   dispose(): void;

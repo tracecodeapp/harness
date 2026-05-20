@@ -214,8 +214,20 @@ export async function createBrowserProjectWorkspace(
   const storageBinding = bindBrowserKernelStorage(workspace, kernelStorage);
   await persistInitialBrowserKernelSnapshot(workspace, kernelStorage);
   const disposeWorkspace = workspace.dispose.bind(workspace);
+  const destroyWorkspace = workspace.destroy.bind(workspace);
 
   return Object.assign(workspace, {
+    async destroy(options?: { reason?: string; clearStorage?: boolean }) {
+      storageBinding.dispose();
+      await storageBinding.flush();
+      if (options?.clearStorage) {
+        await kernelStorage?.clear?.();
+      }
+      await destroyWorkspace(options);
+      for (const worker of ownedWorkers) {
+        worker.terminate();
+      }
+    },
     dispose() {
       storageBinding.dispose();
       void storageBinding.flush();

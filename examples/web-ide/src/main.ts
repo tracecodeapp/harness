@@ -196,6 +196,7 @@ async function bootDevTerminal(): Promise<void> {
             <button id="dev-menu-refresh-files" type="button">Refresh Explorer</button>
             <div class="dev-menu-separator" role="separator"></div>
             <button id="dev-menu-reset-session" type="button">Restart Project Session</button>
+            <button id="dev-menu-delete-local-data" type="button">Delete Local Project Data</button>
           </div>
         </div>
         <div class="dev-menu-group">
@@ -294,6 +295,7 @@ async function bootDevTerminal(): Promise<void> {
   const refreshFilesButton = document.querySelector<HTMLButtonElement>('#dev-refresh-files')!;
   const menuRefreshFilesButton = document.querySelector<HTMLButtonElement>('#dev-menu-refresh-files')!;
   const resetSessionButton = document.querySelector<HTMLButtonElement>('#dev-menu-reset-session')!;
+  const deleteLocalDataButton = document.querySelector<HTMLButtonElement>('#dev-menu-delete-local-data')!;
   const formatFileButton = document.querySelector<HTMLButtonElement>('#dev-menu-format-file')!;
   const clearTerminalButton = document.querySelector<HTMLButtonElement>('#dev-menu-clear-terminal')!;
   const focusTerminalButton = document.querySelector<HTMLButtonElement>('#dev-menu-focus-terminal')!;
@@ -1525,6 +1527,19 @@ int main(int argc, char** argv) {
       })
       .catch((error) => {
         resetSessionButton.disabled = false;
+        appendLine(error instanceof Error ? error.message : String(error), 'stderr');
+      });
+  });
+  deleteLocalDataButton.addEventListener('click', () => {
+    if (!window.confirm('Delete local project data for this session? This destroys the current kernel session and clears saved browser storage.')) return;
+    deleteLocalDataButton.disabled = true;
+    appendLine('Deleting local project data...');
+    void workspace.destroy({ reason: 'user-requested', clearStorage: true })
+      .then(() => {
+        window.location.reload();
+      })
+      .catch((error) => {
+        deleteLocalDataButton.disabled = false;
         appendLine(error instanceof Error ? error.message : String(error), 'stderr');
       });
   });

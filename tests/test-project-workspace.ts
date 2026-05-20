@@ -6224,6 +6224,57 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     nodeTimeoutWorkspace.dispose();
   }
 
+  const storageEvents: string[] = [];
+  const storageWorkspace = await createBrowserProjectWorkspace({
+    files: [{ path: 'persisted.txt', contents: 'persisted\n' }],
+    kernelStorage: {
+      async load() {
+        return null;
+      },
+      async save(snapshot) {
+        storageEvents.push(`save:${snapshot.files.length}`);
+      },
+      async clear() {
+        storageEvents.push('clear');
+      },
+      async flush() {
+        storageEvents.push('flush');
+      },
+    },
+    pythonWorkerClient: {
+      async executeProjectPython() {
+        throw new Error('unexpected Python runner call');
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava() {
+        throw new Error('unexpected Java runner call');
+      },
+      terminate() {},
+    },
+    csharpWorkerClient: {
+      async executeProjectCSharp() {
+        throw new Error('unexpected C# runner call');
+      },
+      terminate() {},
+    },
+    cppWorkerClient: {
+      async executeProjectCpp() {
+        throw new Error('unexpected C++ runner call');
+      },
+      terminate() {},
+    },
+  });
+  await storageWorkspace.writeFile('persisted.txt', 'changed\n');
+  await storageWorkspace.destroy({ reason: 'test', clearStorage: true });
+  assertCondition(
+    storageEvents.includes('clear') &&
+      storageEvents.indexOf('clear') > storageEvents.findIndex((event) => event.startsWith('save:')),
+    `browser project destroy should clear kernel storage after flushing pending writes: ${JSON.stringify(storageEvents)}`
+  );
+  await assertRejectsAsync(() => storageWorkspace.readFile('persisted.txt'), 'destroyed browser project workspace should reject reads');
+
   let pythonTimeoutMs: number | undefined;
   let javaTimeoutMs: number | undefined;
   let csharpTimeoutMs: number | undefined;
@@ -7981,7 +8032,113 @@ async function testTypeScriptProjectCommands(): Promise<void> {
     `node should run subdirectory TypeScript output: ${JSON.stringify(subdirRun)}`
   );
 
+  await workspace.writeFile('takehome/ts/tsconfig.json', JSON.stringify({
+    compilerOptions: {
+      outDir: 'build',
+      rootDir: 'src',
+      module: 'commonjs',
+      target: 'es2020',
+      strict: true,
+    },
+    include: ['src/**/*.ts'],
+    exclude: ['src/**/*.skip.ts'],
+  }, null, 2));
+  await workspace.writeFile('takehome/ts/src/util.ts', 'export const values = [1, 2, 3].map((value) => value + 1).filter((value) => value > 2);\n');
+  await workspace.writeFile('takehome/ts/src/index.ts', 'import { values } from "./util";\nconst total = values.reduce((sum, value) => sum + value, 0);\nconsole.log("include-ts=" + total);\n');
+  await workspace.writeFile('takehome/ts/src/broken.skip.ts', 'const broken: number = "skip me";\n');
+  const includeCompile = await workspace.runCommand('tsc --project takehome/ts/tsconfig.json');
+  assertCondition(includeCompile.exitCode === 0, `tsconfig include/exclude should compile cleanly: ${JSON.stringify(includeCompile)}`);
+  assertCondition(
+    await workspace.exists('takehome/ts/build/index.js') &&
+      await workspace.exists('takehome/ts/build/util.js') &&
+      !(await workspace.exists('takehome/ts/build/broken.skip.js')),
+    'tsconfig include/exclude should emit included files relative to configured rootDir/outDir'
+  );
+  const includeRun = await workspace.runCommand('node takehome/ts/build/index.js');
+  assertCondition(
+    includeRun.exitCode === 0 && includeRun.stdout === 'include-ts=7\n',
+    `node should run include/exclude TypeScript output: ${JSON.stringify(includeRun)}`
+  );
+
   workspace.dispose();
+}
+
+async function testProjectSessionLifecycle(): Promise<void> {
+  const expiresAt = '2026-01-01T00:00:00.000Z';
+  const workspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'lifecycle-session',
+      projectSlug: 'lifecycle-project',
+      createdAt: '2025-12-31T00:00:00.000Z',
+      lastOpenedAt: '2025-12-31T01:00:00.000Z',
+      expiresAt,
+      expirationBehavior: 'readonly',
+      commands: {
+        test: 'cat main.txt',
+      },
+      files: [
+        { path: 'main.txt', contents: 'active\n' },
+      ],
+    },
+  });
+  assertCondition(
+    workspace.projectSession?.lifecycle.createdAt === '2025-12-31T00:00:00.000Z' &&
+      workspace.projectSession.lifecycle.lastOpenedAt === '2025-12-31T01:00:00.000Z' &&
+      workspace.projectSession.lifecycle.expiresAt === expiresAt &&
+      workspace.projectSession.lifecycle.expirationBehavior === 'readonly',
+    `project session should expose lifecycle metadata: ${JSON.stringify(workspace.projectSession?.lifecycle)}`
+  );
+  const events: RuntimeCommandEvent[] = [];
+  const unsubscribe = workspace.watch((event) => events.push(event));
+  const activeLifecycle = await workspace.checkExpiration('2025-12-31T23:59:59.000Z');
+  assertCondition(!activeLifecycle?.expiredAt, 'checkExpiration before expiresAt should not expire the session');
+  const expiredLifecycle = await workspace.checkExpiration('2026-01-01T00:00:00.000Z');
+  assertCondition(
+    expiredLifecycle?.expiredAt === '2026-01-01T00:00:00.000Z',
+    `checkExpiration should stamp expiredAt when called after expiry: ${JSON.stringify(expiredLifecycle)}`
+  );
+  assertCondition(
+    events.some((event) => event.type === 'lifecycle' && event.phase === 'session-expired'),
+    `checkExpiration should emit a session-expired lifecycle event: ${JSON.stringify(events)}`
+  );
+  assertCondition(await workspace.readFile('main.txt') === 'active\n', 'expired readonly sessions should allow reads');
+  await assertRejectsAsync(() => workspace.writeFile('main.txt', 'blocked\n'), 'expired readonly sessions should reject writes');
+  const expiredRun = await workspace.runProjectCommand('test');
+  assertCondition(
+    expiredRun.exitCode !== 0 && expiredRun.stderr.includes('project session expired'),
+    `expired readonly sessions should reject command runs: ${JSON.stringify(expiredRun)}`
+  );
+  await workspace.destroy({ reason: 'test', clearStorage: true });
+  assertCondition(
+    events.some((event) => event.type === 'lifecycle' && event.phase === 'session-destroyed'),
+    `destroy should emit a session-destroyed lifecycle event before clearing watchers: ${JSON.stringify(events)}`
+  );
+  unsubscribe();
+  await assertRejectsAsync(() => workspace.readFile('main.txt'), 'destroyed sessions should reject reads');
+
+  const noneWorkspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'lifecycle-none',
+      expiresAt,
+      expirationBehavior: 'none',
+      files: [{ path: 'main.txt', contents: 'active\n' }],
+    },
+  });
+  await noneWorkspace.checkExpiration('2026-01-01T00:00:00.000Z');
+  await noneWorkspace.writeFile('main.txt', 'still-writable\n');
+  assertCondition(await noneWorkspace.readFile('main.txt') === 'still-writable\n', 'expirationBehavior none should leave policy to the host app');
+  noneWorkspace.dispose();
+
+  const destroyWorkspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'lifecycle-destroy',
+      expiresAt,
+      expirationBehavior: 'destroy',
+      files: [{ path: 'main.txt', contents: 'active\n' }],
+    },
+  });
+  await destroyWorkspace.checkExpiration('2026-01-01T00:00:00.000Z');
+  await assertRejectsAsync(() => destroyWorkspace.readFile('main.txt'), 'expirationBehavior destroy should destroy the workspace when checked');
 }
 
 async function testTraceKernelInfoConfig(): Promise<void> {
@@ -8393,6 +8550,7 @@ async function main(): Promise<void> {
   await testWorkspaceTerminalSessionCwd();
   await testProjectSessionMetadataAndCommands();
   await testTypeScriptProjectCommands();
+  await testProjectSessionLifecycle();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();
   await testConfiguredKernelNativeCompiledRunners();

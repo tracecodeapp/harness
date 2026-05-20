@@ -83,6 +83,7 @@ import type {
   RuntimeProjectSessionCommand,
   RuntimeProjectSessionCommandDefinition,
   RuntimeProjectSessionCommandStep,
+  RuntimeProjectSessionLifecycle,
   RuntimeProjectSessionFile,
   RuntimeProjectSessionInfo,
   RuntimeProjectIoBridge,
@@ -301,6 +302,11 @@ function normalizeIsoTimestamp(value: string | Date | undefined): string {
   return new Date().toISOString();
 }
 
+function normalizeOptionalIsoTimestamp(value: string | Date | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return normalizeIsoTimestamp(value);
+}
+
 function createWorkspaceId(workspaceName: string, startedAt: string): string {
   return `${normalizeKernelNamePart(workspaceName, 'workspace')}-${startedAt.replace(/[:.]/g, '-')}`;
 }
@@ -434,6 +440,9 @@ function createProjectSessionInfo(session: RuntimeProjectSession, kernelInfo: Ru
   if (!isWithinWorkspace(kernelInfo.workspaceRoot, cwd)) {
     throw new Error(`Project session cwd must stay inside the workspace: ${session.cwd}`);
   }
+  const createdAt = normalizeIsoTimestamp(session.createdAt);
+  const lastOpenedAt = normalizeIsoTimestamp(session.lastOpenedAt);
+  const expiresAt = normalizeOptionalIsoTimestamp(session.expiresAt);
   return {
     id: session.id,
     ...(session.projectId ? { projectId: session.projectId } : {}),
@@ -448,6 +457,12 @@ function createProjectSessionInfo(session: RuntimeProjectSession, kernelInfo: Ru
     readonlyFiles: [...new Set((session.files ?? [])
       .filter((file) => file.readonly === true)
       .map((file) => normalizeRuntimeProjectPath(file.path)))].sort((left, right) => left.localeCompare(right)),
+    lifecycle: {
+      createdAt,
+      lastOpenedAt,
+      ...(expiresAt ? { expiresAt } : {}),
+      expirationBehavior: session.expirationBehavior ?? 'none',
+    },
     ...(session.metadata ? { metadata: { ...session.metadata } } : {}),
   };
 }
@@ -2792,6 +2807,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private activeRuntimeIo = this.createRuntimeLiveIoController();
   private readonlySuspendDepth = 0;
   private nextCommandId = 1;
+  private destroyed = false;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
@@ -2863,10 +2879,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async ensureReady(): Promise<void> {
+    this.assertNotDestroyed();
     await this.bash.fs.mkdir(this.cwd, { recursive: true });
   }
 
   async writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
+    this.assertWorkspaceUsableForMutation('write');
     await this.writeFileAs(path, contents, PRINCIPAL_ACTOR, encoding, 'live');
   }
 
@@ -2890,6 +2908,35 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return this.readonlySuspendDepth > 0;
   }
 
+  private isSessionExpired(): boolean {
+    return Boolean(this.projectSession?.lifecycle.expiredAt);
+  }
+
+  private assertNotDestroyed(): void {
+    if (!this.destroyed) return;
+    throw Object.assign(new Error('EINVAL: tracekernel session has been destroyed'), { code: 'EINVAL' });
+  }
+
+  private assertWorkspaceUsableForMutation(operation: string): void {
+    this.assertNotDestroyed();
+    if (this.isReadonlyPolicySuspended()) return;
+    if (!this.isSessionExpired() || this.projectSession?.lifecycle.expirationBehavior !== 'readonly') return;
+    throw Object.assign(
+      new Error(`EROFS: project session expired, ${operation} '${this.cwd}'`),
+      { code: 'EROFS' }
+    );
+  }
+
+  private assertWorkspaceUsableForRun(command: string): RuntimeCommandResult | null {
+    if (this.destroyed) {
+      return { stdout: '', stderr: 'tracekernel session has been destroyed\n', exitCode: 1 };
+    }
+    if (this.isSessionExpired() && this.projectSession?.lifecycle.expirationBehavior === 'readonly') {
+      return { stdout: '', stderr: `project session expired; command not run: ${command}\n`, exitCode: 1 };
+    }
+    return null;
+  }
+
   private isWorkspacePathReadOnly(absolutePath: string): boolean {
     if (!isWithinWorkspace(this.cwd, absolutePath) || absolutePath === this.cwd) return false;
     return this.readonlyFiles.has(toProjectPath(this.cwd, absolutePath));
@@ -2908,6 +2955,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private assertWorkspacePathWritable(absolutePath: string, operation: string): void {
+    this.assertWorkspaceUsableForMutation(operation);
     if (this.isHomePathOutsideWorkspace(absolutePath)) {
       throw Object.assign(
         new Error(`EROFS: project workspace is read-only outside '${this.cwd}', ${operation} '${absolutePath}'`),
@@ -2919,6 +2967,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private assertWorkspaceSubtreeWritable(absolutePath: string, operation: string): void {
+    this.assertWorkspaceUsableForMutation(operation);
     if (this.isHomePathOutsideWorkspace(absolutePath)) {
       throw Object.assign(
         new Error(`EROFS: project workspace is read-only outside '${this.cwd}', ${operation} '${absolutePath}'`),
@@ -3033,6 +3082,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     encoding?: RuntimeFileEncoding,
     phase: RuntimeFileMutationPhase = 'live'
   ): Promise<void> {
+    this.assertWorkspaceUsableForMutation('write');
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
     if (writeTarget.kind === 'device') {
@@ -3078,6 +3128,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async appendFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
+    this.assertWorkspaceUsableForMutation('append');
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const writeTarget = kernelWriteTarget(path);
     if (writeTarget.kind === 'error') throwKernelWriteTargetError(path, writeTarget);
@@ -3113,6 +3164,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
+    this.assertNotDestroyed();
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'proc-file') {
       if (encoding === 'base64') throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
@@ -3135,6 +3187,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async exists(path: string): Promise<boolean> {
+    this.assertNotDestroyed();
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return true;
     if (accessTarget.kind === 'denied') return false;
@@ -3142,6 +3195,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
+    this.assertNotDestroyed();
     const statTarget = kernelStatTarget(path, this.kernelInfo);
     if (statTarget.kind === 'stat') return { isFile: statTarget.stat.isFile, isDirectory: statTarget.stat.isDirectory };
     if (statTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
@@ -3153,6 +3207,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async readDir(path = '.'): Promise<string[]> {
+    this.assertNotDestroyed();
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name);
     if (directoryTarget.kind === 'error') {
@@ -3167,6 +3222,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async mkdir(path: string): Promise<void> {
+    this.assertWorkspaceUsableForMutation('mkdir');
     const mkdirTarget = kernelMkdirTarget(path);
     if (mkdirTarget.kind === 'error') throwKernelMutationTargetError(path, mkdirTarget);
     const absolutePath = this.toWorkspaceEntryPath(path);
@@ -3183,6 +3239,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async copyFile(sourcePath: string, destinationPath: string): Promise<void> {
+    this.assertWorkspaceUsableForMutation('copy');
     const copyTarget = kernelFileCopyTarget(sourcePath, destinationPath);
     if (copyTarget.kind === 'virtual-source' || copyTarget.kind === 'device-destination') {
       await this.copyFileLike(sourcePath, destinationPath, copyTarget);
@@ -3241,6 +3298,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async moveFile(sourcePath: string, destinationPath: string): Promise<void> {
+    this.assertWorkspaceUsableForMutation('move');
     const renameTarget = kernelRenameTarget(sourcePath, destinationPath);
     if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
     this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(sourcePath), 'move');
@@ -3257,6 +3315,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async deleteFile(path: string): Promise<void> {
+    this.assertWorkspaceUsableForMutation('delete');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const absolutePath = this.toWorkspacePath(path);
@@ -3271,6 +3330,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async remove(path: string, options: RuntimeWorkspaceRemoveOptions = {}): Promise<void> {
+    this.assertWorkspaceUsableForMutation('remove');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const deletedChanges = await this.collectDeletedChangesForRemove(path, options);
@@ -3290,6 +3350,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async runCommand(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
+    const unusable = this.assertWorkspaceUsableForRun(command);
+    if (unusable) return unusable;
     let result: { stdout: string; stderr: string; exitCode: number };
     let commandDeviceStdout = '';
     let commandDeviceStderr = '';
@@ -3340,6 +3402,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async runProjectCommand(name: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
+    const unusable = this.assertWorkspaceUsableForRun(name);
+    if (unusable) return unusable;
     const command = this.projectSession?.commands[name];
     if (!command) {
       return {
@@ -3418,6 +3482,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   createTerminalSession(options: RuntimeProjectTerminalSessionOptions = {}): RuntimeProjectTerminalSession {
+    this.assertNotDestroyed();
     return new RuntimeProjectWorkspaceTerminalSession(
       {
         workspaceRoot: this.cwd,
@@ -3430,6 +3495,57 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         cwd: options.cwd ? this.resolveTerminalPath(this.cwd, options.cwd) : this.cwd,
       }
     );
+  }
+
+  async checkExpiration(now: Date | string | number = new Date()): Promise<RuntimeProjectSessionLifecycle | null> {
+    this.assertNotDestroyed();
+    if (!this.projectSession?.lifecycle.expiresAt) return this.projectSession?.lifecycle ?? null;
+    if (this.projectSession.lifecycle.expiredAt) return this.projectSession.lifecycle;
+    const nowTime = now instanceof Date ? now.getTime() : new Date(now).getTime();
+    const expiresTime = new Date(this.projectSession.lifecycle.expiresAt).getTime();
+    if (Number.isNaN(nowTime) || Number.isNaN(expiresTime) || nowTime < expiresTime) {
+      return this.projectSession.lifecycle;
+    }
+    this.projectSession.lifecycle.expiredAt = new Date(nowTime).toISOString();
+    this.emitRuntimeEvent({
+      type: 'lifecycle',
+      phase: 'session-expired',
+      message: 'Project session expired',
+      detail: {
+        sessionId: this.projectSession.id,
+        expiresAt: this.projectSession.lifecycle.expiresAt,
+        expiredAt: this.projectSession.lifecycle.expiredAt,
+        expirationBehavior: this.projectSession.lifecycle.expirationBehavior,
+      },
+      actor: SYSTEM_ACTOR,
+    });
+    if (this.projectSession.lifecycle.expirationBehavior === 'destroy') {
+      await this.destroy({ reason: 'expired', clearStorage: true });
+    }
+    return this.projectSession.lifecycle;
+  }
+
+  async destroy(options: { reason?: string; clearStorage?: boolean } = {}): Promise<void> {
+    if (this.destroyed) return;
+    if (this.projectSession) {
+      this.projectSession.lifecycle.destroyedAt = new Date().toISOString();
+    }
+    this.emitRuntimeEvent({
+      type: 'lifecycle',
+      phase: 'session-destroyed',
+      message: 'Project session destroyed',
+      detail: {
+        reason: options.reason ?? 'destroy',
+        clearStorage: options.clearStorage === true,
+        ...(this.projectSession ? { sessionId: this.projectSession.id } : {}),
+      },
+      actor: SYSTEM_ACTOR,
+    });
+    this.eventWatchers.clear();
+    await this.withSuspendedReadonlyPolicy(() =>
+      this.bash.fs.rm(this.cwd, { force: true, recursive: true })
+    );
+    this.destroyed = true;
   }
 
   private async tryRunCppExecutable(
@@ -3487,6 +3603,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async snapshot(options: { entrypoint?: string } = {}): Promise<RuntimeProjectSnapshot> {
+    this.assertNotDestroyed();
     const files: RuntimeFile[] = [];
     const directories: string[] = [];
     await this.collectFiles(this.cwd, files, directories);
@@ -3549,6 +3666,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     actor: RuntimeWorkspaceActor,
     phase: RuntimeFileMutationPhase
   ): Promise<void> {
+    this.assertWorkspaceUsableForMutation('apply');
     await this.applyFileChangeToWorkspace(change, actor, phase, true);
   }
 
