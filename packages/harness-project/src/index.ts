@@ -359,7 +359,12 @@ function normalizeProjectSessionCommand(
       const normalized = normalizeProjectSessionCommand(step);
       return 'steps' in normalized ? [...normalized.steps] : [normalized];
     });
-    return { steps };
+    return {
+      steps,
+      ...(command.hidden === true ? { hidden: true } : {}),
+      ...(command.label ? { label: command.label } : {}),
+      ...(command.description ? { description: command.description } : {}),
+    };
   }
   return { ...command, ...(command.env ? { env: { ...command.env } } : {}) };
 }
@@ -781,12 +786,14 @@ async function snapshotCommandContext(
 
 function filterReadonlySnapshotFiles(
   snapshot: RuntimeProjectSnapshot,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  keepFiles?: readonly string[]
 ): RuntimeProjectSnapshot {
   if (!readonlyFiles || readonlyFiles.length === 0) return snapshot;
+  const keep = new Set((keepFiles ?? []).map((path) => normalizeRuntimeProjectPath(path)));
   const readonly = new Set(readonlyFiles
     .map((path) => normalizeRuntimeProjectPath(path))
-    .filter((path) => path.includes('/')));
+    .filter((path) => path.includes('/') && !keep.has(path)));
   if (readonly.size === 0) return snapshot;
   const files = snapshot.files.filter((file) => !readonly.has(normalizeRuntimeProjectPath(file.path)));
   return files.length === snapshot.files.length ? snapshot : { ...snapshot, files };
@@ -1673,7 +1680,7 @@ function parseTscInvocation(args: string[]): RuntimeCommandResult | { args: stri
   if (unsupported) {
     return {
       stdout: '',
-      stderr: `tsc: unsupported project command option '${unsupported}'\n`,
+      stderr: `tracekernel: tsc ${unsupported} is not supported in the emulated project environment\n`,
       exitCode: 2,
     };
   }
@@ -2766,7 +2773,8 @@ export function createCSharpProjectCommands(
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  hiddenFiles?: readonly string[]
 ): ProjectWorkspaceCommand[] {
   const runDotnet = async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
@@ -2784,7 +2792,8 @@ export function createCSharpProjectCommands(
 
     const project = filterReadonlySnapshotFiles(
       await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
-      readonlyFiles
+      readonlyFiles,
+      hiddenFiles
     );
 
     const result = await runner({
@@ -2894,7 +2903,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         kernel: this.kernelInfo,
         readonlyFiles: this.projectSession?.readonlyFiles,
       }) : []),
-      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
+      ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles) : []),
       ...(options.customCommands ?? []),
     ];
     this.bash = new Bash({

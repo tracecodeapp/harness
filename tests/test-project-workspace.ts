@@ -7780,6 +7780,12 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
           ],
         },
         fixtures: 'python3 read_fixture.py',
+        hiddenGate: {
+          command: 'python3 read_fixture.py',
+          hidden: true,
+          label: 'Hidden Gate',
+          description: 'Host-owned hidden verification command',
+        },
         fail: {
           steps: [
             'python3 main.py',
@@ -7857,6 +7863,11 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(workspace.projectSession?.metadata?.consumer === 'test-harness', 'project session should preserve opaque metadata');
   assertCondition(workspace.projectSession?.readonlyFiles.join(',') === '.trace/fixtures/input.txt,README.md', 'project session should expose readonly file policy');
   assertCondition(workspace.projectSession?.hiddenFiles.join(',') === '.trace/fixtures/input.txt', 'project session should expose hidden file policy');
+  assertCondition(
+    workspace.projectSession?.commands.hiddenGate?.hidden === true &&
+      workspace.projectSession.commands.hiddenGate.label === 'Hidden Gate',
+    `project session should preserve hidden command metadata: ${JSON.stringify(workspace.projectSession?.commands.hiddenGate)}`
+  );
   assertCondition(await workspace.exists('src/main.py'), 'project session starter files should be written into workspace');
   assertCondition(await workspace.exists('tests'), 'project session directories should be written into workspace');
   assertCondition(await workspace.readFile('README.md') === 'protected\n', 'project session readonly starter file should be seeded');
@@ -7920,6 +7931,11 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(
     fixtures.stdout === 'fixture:hidden-input\n',
     `project session commands should receive hidden fixture files in runtime snapshots: ${JSON.stringify(fixtures)}`
+  );
+  const hiddenGate = await workspace.runProjectCommand('hiddenGate');
+  assertCondition(
+    hiddenGate.stdout === 'fixture:hidden-input\n',
+    `hidden project session commands should still be runnable by host APIs: ${JSON.stringify(hiddenGate)}`
   );
 
   const failEvents: RuntimeCommandEvent[] = [];
@@ -8004,6 +8020,21 @@ async function testTypeScriptProjectCommands(): Promise<void> {
         {
           path: 'src/index.ts',
           contents: 'import { add } from "./math";\nconsole.log("ts=" + add(2, 3));\n',
+        },
+        {
+          path: 'takehome/browser-ts/node_modules/@tracecode/weather-kit/package.json',
+          contents: '{"name":"@tracecode/weather-kit","main":"index.js","types":"index.d.ts"}\n',
+          hidden: true,
+        },
+        {
+          path: 'takehome/browser-ts/node_modules/@tracecode/weather-kit/index.d.ts',
+          contents: 'export function normalizeCity(value: string): string;\n',
+          hidden: true,
+        },
+        {
+          path: 'takehome/browser-ts/node_modules/@tracecode/weather-kit/index.js',
+          contents: 'exports.normalizeCity = (value) => String(value).trim().toLowerCase().replace(/\\s+/g, "-");\n',
+          hidden: true,
         },
       ],
     },
@@ -8093,7 +8124,254 @@ async function testTypeScriptProjectCommands(): Promise<void> {
     `node should run include/exclude TypeScript output: ${JSON.stringify(includeRun)}`
   );
 
+  await workspace.writeFile('takehome/browser-ts/tsconfig.json', JSON.stringify({
+    compilerOptions: {
+      outDir: 'dist',
+      rootDir: '.',
+      module: 'commonjs',
+      target: 'es2020',
+      strict: true,
+    },
+    include: ['src/**/*.ts', 'tests/**/*.ts'],
+  }, null, 2));
+  await workspace.writeFile(
+    'takehome/browser-ts/src/parser.ts',
+    'import { normalizeCity } from "@tracecode/weather-kit";\nexport function cityKey(value: string): string { return normalizeCity(value); }\n'
+  );
+  await workspace.writeFile(
+    'takehome/browser-ts/tests/report.test.ts',
+    'import { cityKey } from "../src/parser";\nconst fs = require("node:fs");\nconst result = cityKey(" New York ");\nif (result !== "new-york") throw new Error("bad city key: " + result);\nfs.mkdirSync("takehome/browser-ts/reports", { recursive: true });\nfs.writeFileSync("takehome/browser-ts/reports/summary.txt", result + "\\n");\nconsole.log("takehome-ts=" + result);\n'
+  );
+  const realisticCompile = await workspace.runCommand('tsc --project takehome/browser-ts/tsconfig.json');
+  assertCondition(realisticCompile.exitCode === 0, `realistic browser TS project should compile with pre-bundled package types: ${JSON.stringify(realisticCompile)}`);
+  assertCondition(
+    await workspace.exists('takehome/browser-ts/dist/src/parser.js') &&
+      await workspace.exists('takehome/browser-ts/dist/tests/report.test.js'),
+    'realistic browser TS project should emit src and tests into dist'
+  );
+  const realisticRun = await workspace.runCommand('node takehome/browser-ts/dist/tests/report.test.js');
+  assertCondition(
+    realisticRun.exitCode === 0 &&
+      realisticRun.stdout === 'takehome-ts=new-york\n' &&
+      await workspace.readFile('takehome/browser-ts/reports/summary.txt') === 'new-york\n',
+    `realistic browser TS test should run emitted JS, resolve pre-bundled deps, and persist report output: ${JSON.stringify(realisticRun)}`
+  );
+  const install = await workspace.runCommand('node -e "try { require(\\"left-pad\\"); } catch (error) { console.log(error.message); }"');
+  assertCondition(
+    install.stdout.includes("Cannot find module 'left-pad'"),
+    `browser project package imports should be limited to starter-provided dependencies: ${JSON.stringify(install)}`
+  );
+  const watch = await workspace.runCommand('tsc --watch --project takehome/browser-ts/tsconfig.json');
+  assertCondition(
+    watch.exitCode === 2 && watch.stderr.includes('tracekernel: tsc --watch is not supported'),
+    `tsc --watch should fail with a clean tracekernel error: ${JSON.stringify(watch)}`
+  );
+
   workspace.dispose();
+}
+
+async function testHardLanguageTakehomeMvpGate(): Promise<void> {
+  const javaWorkspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'java-takehome',
+      projectSlug: 'java-weather-api',
+      language: 'java',
+      env: { MODE: 'takehome' },
+      commands: {
+        build: 'javac src/Main.java src/weather/Normalizer.java tests/WeatherTest.java',
+        test: {
+          steps: [
+            'javac src/Main.java src/weather/Normalizer.java tests/WeatherTest.java',
+            'java WeatherTest',
+          ],
+        },
+        hiddenGate: {
+          command: 'java WeatherTest',
+          hidden: true,
+        },
+      },
+      files: [
+        { path: 'src/Main.java', contents: 'import weather.Normalizer; class Main { public static void main(String[] args) { System.out.println(Normalizer.city(" New York ")); } }\n' },
+        { path: 'src/weather/Normalizer.java', contents: 'package weather; public class Normalizer { public static String city(String value) { return value.trim().toLowerCase().replace(" ", "-"); } }\n' },
+        { path: 'tests/WeatherTest.java', contents: 'class WeatherTest {}\n' },
+        { path: '.trace/fixtures/weather.txt', contents: 'new-york\n', hidden: true },
+        { path: 'src/Broken.java', contents: 'class Broken { missing }\n' },
+      ],
+    },
+    javaRunner: async (request): Promise<RuntimeCommandResult> => {
+      if (request.source === 'compile' && request.args.some((arg) => arg.endsWith('Broken.java'))) {
+        return { stdout: '', stderr: 'src/Broken.java:1: error: cannot find symbol\n', exitCode: 1 };
+      }
+      if (request.source === 'compile') {
+        assertCondition(
+          request.project.files.some((file) => file.path === 'src/weather/Normalizer.java') &&
+            request.project.files.some((file) => file.path === '.trace/fixtures/weather.txt'),
+          `Java takehome compile should see multi-file sources and hidden fixtures: ${JSON.stringify(request.project.files)}`
+        );
+        return {
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          files: [{ path: 'build/java/classes.marker', contents: 'compiled\n' }],
+        };
+      }
+      const fixture = request.project.files.find((file) => file.path === '.trace/fixtures/weather.txt')?.contents.trim();
+      return {
+        stdout: `java:${request.cwd}:${request.env.MODE}:${fixture}:${request.args.join(',')}\n`,
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'reports/java-summary.txt', contents: `${fixture}\n` }],
+      };
+    },
+  });
+  const javaTest = await javaWorkspace.runProjectCommand('test');
+  assertCondition(
+    javaTest.exitCode === 0 &&
+      javaTest.stdout === 'java:/home/user/java-weather-api:takehome:new-york:\n' &&
+      await javaWorkspace.readFile('reports/java-summary.txt') === 'new-york\n',
+    `Java takehome gate should build, run, see env/cwd/fixtures, and persist reports: ${JSON.stringify(javaTest)}`
+  );
+  const javaBroken = await javaWorkspace.runCommand('javac src/Broken.java');
+  assertCondition(
+    javaBroken.exitCode !== 0 && javaBroken.stderr.includes('src/Broken.java:1: error: cannot find symbol'),
+    `Java takehome gate should surface expected compile failures: ${JSON.stringify(javaBroken)}`
+  );
+  javaWorkspace.dispose();
+
+  const csharpWorkspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'csharp-takehome',
+      projectSlug: 'csharp-weather-api',
+      language: 'csharp',
+      env: { MODE: 'takehome' },
+      commands: {
+        build: 'dotnet build Weather.csproj',
+        test: {
+          steps: [
+            'dotnet build Weather.csproj',
+            'dotnet run --project Weather.csproj -- --case smoke',
+          ],
+        },
+        hiddenGate: {
+          command: 'dotnet run --project Weather.csproj -- --case hidden',
+          hidden: true,
+        },
+      },
+      files: [
+        { path: 'Weather.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n' },
+        { path: 'Program.cs', contents: 'Console.WriteLine(Weather.Normalizer.City(" New York "));\n' },
+        { path: 'Normalizer.cs', contents: 'namespace Weather; public static class Normalizer { public static string City(string value) => value.Trim().ToLower().Replace(" ", "-"); }\n' },
+        { path: 'Broken.csproj', contents: '<Project></Project>\n' },
+        { path: '.trace/fixtures/weather.txt', contents: 'new-york\n', hidden: true },
+      ],
+    },
+    csharpRunner: async (request): Promise<RuntimeCommandResult> => {
+      if (request.source === 'compile' && request.scriptPath === 'Broken.csproj') {
+        return { stdout: '', stderr: 'Broken.csproj(1,1): error CS1002: ; expected\n', exitCode: 1 };
+      }
+      if (request.source === 'compile') {
+        assertCondition(
+          request.scriptPath === 'Weather.csproj' &&
+            request.project.files.some((file) => file.path === 'Normalizer.cs') &&
+            request.project.files.some((file) => file.path === '.trace/fixtures/weather.txt'),
+          `C# takehome compile should see project, sources, and hidden fixtures: ${JSON.stringify(request)}`
+        );
+        return {
+          stdout: 'Build succeeded.\n',
+          stderr: '',
+          exitCode: 0,
+          files: [{ path: 'bin/Weather.dll', contents: 'compiled\n' }],
+        };
+      }
+      const fixture = request.project.files.find((file) => file.path === '.trace/fixtures/weather.txt')?.contents.trim();
+      return {
+        stdout: `csharp:${request.cwd}:${request.env.MODE}:${fixture}:${request.args.join(',')}\n`,
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'reports/csharp-summary.txt', contents: `${fixture}\n` }],
+      };
+    },
+  });
+  const csharpTest = await csharpWorkspace.runProjectCommand('test');
+  assertCondition(
+    csharpTest.exitCode === 0 &&
+      csharpTest.stdout === 'Build succeeded.\ncsharp:/home/user/csharp-weather-api:takehome:new-york:--case,smoke\n' &&
+      await csharpWorkspace.readFile('reports/csharp-summary.txt') === 'new-york\n',
+    `C# takehome gate should build, run, see env/cwd/fixtures, and persist reports: ${JSON.stringify(csharpTest)}`
+  );
+  const csharpBroken = await csharpWorkspace.runCommand('dotnet build Broken.csproj');
+  assertCondition(
+    csharpBroken.exitCode !== 0 && csharpBroken.stderr.includes('error CS1002'),
+    `C# takehome gate should surface expected compile failures: ${JSON.stringify(csharpBroken)}`
+  );
+  csharpWorkspace.dispose();
+
+  const cppWorkspace = await createRuntimeWorkspace({
+    projectSession: {
+      id: 'cpp-takehome',
+      projectSlug: 'cpp-weather-api',
+      language: 'cpp',
+      env: { MODE: 'takehome' },
+      commands: {
+        build: 'clang++ src/main.cpp src/normalizer.cpp -o build/weather-app',
+        test: {
+          steps: [
+            'clang++ src/main.cpp src/normalizer.cpp -o build/weather-app',
+            './build/weather-app smoke',
+          ],
+        },
+        hiddenGate: {
+          command: './build/weather-app hidden',
+          hidden: true,
+        },
+      },
+      files: [
+        { path: 'src/main.cpp', contents: '#include "normalizer.h"\nint main() { return 0; }\n' },
+        { path: 'src/normalizer.cpp', contents: '#include "normalizer.h"\n' },
+        { path: 'src/normalizer.h', contents: '#pragma once\n' },
+        { path: 'src/broken.cpp', contents: 'int main() { return missing; }\n' },
+        { path: '.trace/fixtures/weather.txt', contents: 'new-york\n', hidden: true },
+      ],
+    },
+    cppRunner: async (request): Promise<RuntimeCommandResult> => {
+      if (request.source === 'compile' && request.args.some((arg) => arg.endsWith('broken.cpp'))) {
+        return { stdout: '', stderr: 'src/broken.cpp:1:21: error: use of undeclared identifier missing\n', exitCode: 1 };
+      }
+      if (request.source === 'compile') {
+        assertCondition(
+          request.project.files.some((file) => file.path === 'src/normalizer.h') &&
+            request.project.files.some((file) => file.path === '.trace/fixtures/weather.txt'),
+          `C++ takehome compile should see multi-file sources and hidden fixtures: ${JSON.stringify(request.project.files)}`
+        );
+        return {
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          files: [{ path: 'build/weather-app', contents: 'compiled\n' }],
+        };
+      }
+      const fixture = request.project.files.find((file) => file.path === '.trace/fixtures/weather.txt')?.contents.trim();
+      return {
+        stdout: `cpp:${request.cwd}:${request.env.MODE}:${fixture}:${request.args.join(',')}\n`,
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'reports/cpp-summary.txt', contents: `${fixture}\n` }],
+      };
+    },
+  });
+  const cppTest = await cppWorkspace.runProjectCommand('test');
+  assertCondition(
+    cppTest.exitCode === 0 &&
+      cppTest.stdout === 'cpp:/home/user/cpp-weather-api:takehome:new-york:smoke\n' &&
+      await cppWorkspace.readFile('reports/cpp-summary.txt') === 'new-york\n',
+    `C++ takehome gate should build, run, see env/cwd/fixtures, and persist reports: ${JSON.stringify(cppTest)}`
+  );
+  const cppBroken = await cppWorkspace.runCommand('clang++ src/broken.cpp -o build/broken');
+  assertCondition(
+    cppBroken.exitCode !== 0 && cppBroken.stderr.includes('use of undeclared identifier missing'),
+    `C++ takehome gate should surface expected compile failures: ${JSON.stringify(cppBroken)}`
+  );
+  cppWorkspace.dispose();
 }
 
 async function testProjectSessionLifecycle(): Promise<void> {
@@ -8583,6 +8861,7 @@ async function main(): Promise<void> {
   await testWorkspaceTerminalSessionCwd();
   await testProjectSessionMetadataAndCommands();
   await testTypeScriptProjectCommands();
+  await testHardLanguageTakehomeMvpGate();
   await testProjectSessionLifecycle();
   await testTraceKernelInfoConfig();
   await testConfiguredKernelNativePythonAndNodeRunners();

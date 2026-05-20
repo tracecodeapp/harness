@@ -1177,8 +1177,12 @@ int main(int argc, char** argv) {
   });
 
   const terminalSession = workspace.createTerminalSession();
-  const setProjectCommandButtons = (): void => {
+  const visibleProjectCommands = (): NonNullable<typeof workspace.projectSession>['commands'] => {
     const commands = workspace.projectSession?.commands ?? {};
+    return Object.fromEntries(Object.entries(commands).filter(([, command]) => command.hidden !== true));
+  };
+  const setProjectCommandButtons = (): void => {
+    const commands = visibleProjectCommands();
     runProjectStartButton.disabled = !commands.start;
     runProjectTestButton.disabled = !commands.test;
     runProjectBuildButton.disabled = !commands.build;
@@ -1597,7 +1601,7 @@ int main(int argc, char** argv) {
     }
   };
   const renderProjectCommandActions = (): void => {
-    const commands = workspace.projectSession?.commands ?? {};
+    const commands = visibleProjectCommands();
     const commandNames = Object.keys(commands).sort((left, right) => {
       const rank = (name: string): number => ({ start: 0, test: 1, build: 2, mvp: 3 }[name] ?? 10);
       return rank(left) - rank(right) || left.localeCompare(right);

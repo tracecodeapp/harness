@@ -122,14 +122,20 @@ export interface RuntimeProjectSessionFile extends RuntimeFile {
   hidden?: boolean;
 }
 
-export interface RuntimeProjectSessionCommandStep {
+export interface RuntimeProjectSessionCommandMetadata {
+  hidden?: boolean;
+  label?: string;
+  description?: string;
+}
+
+export interface RuntimeProjectSessionCommandStep extends RuntimeProjectSessionCommandMetadata {
   command: string;
   cwd?: string;
   env?: Record<string, string>;
   stdin?: string;
 }
 
-export interface RuntimeProjectSessionCommandGroup {
+export interface RuntimeProjectSessionCommandGroup extends RuntimeProjectSessionCommandMetadata {
   steps: readonly RuntimeProjectSessionCommandStep[];
 }
 
@@ -140,7 +146,7 @@ export type RuntimeProjectSessionCommand =
 export type RuntimeProjectSessionCommandDefinition =
   | string
   | RuntimeProjectSessionCommandStep
-  | { steps: readonly RuntimeProjectSessionCommandDefinition[] };
+  | (RuntimeProjectSessionCommandMetadata & { steps: readonly RuntimeProjectSessionCommandDefinition[] });
 
 export interface RuntimeProjectSession {
   id: string;
