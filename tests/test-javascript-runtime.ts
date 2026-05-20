@@ -717,6 +717,61 @@ async function main(): Promise<void> {
       Boolean(singleLineSetMutate),
       `${language} single-line for-of body should emit Map.set mutation, received ${JSON.stringify(singleLineForOfMutationTracing.trace?.events)}`
     );
+
+    const receiverInsertTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Trie {
+  words: string[] = [];
+  insert(word: string): void {
+    this.words.push(word);
+  }
+}
+function solve(): number {
+  const trie = new Trie();
+  const word = 'oath';
+  trie.insert(word);
+  return trie.words.length;
+}`
+          : `class Trie {
+  constructor() {
+    this.words = [];
+  }
+  insert(word) {
+    this.words.push(word);
+  }
+}
+function solve() {
+  const trie = new Trie();
+  const word = 'oath';
+  trie.insert(word);
+  return trie.words.length;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      receiverInsertTracing.success === true,
+      `${language} receiver insert tracing should succeed: ${receiverInsertTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(receiverInsertTracing.output === 1, `${language} receiver insert tracing should preserve output`);
+    const receiverInsertMutate = traceAccessEvents(receiverInsertTracing).find((event) =>
+      event.kind === 'mutate' &&
+      event.target?.variable === 'trie' &&
+      event.method === 'insert' &&
+      JSON.stringify(event.args) === JSON.stringify(['oath'])
+    );
+    assertCondition(
+      Boolean(receiverInsertMutate),
+      `${language} receiver insert call should emit call-site mutate, received ${JSON.stringify(receiverInsertTracing.trace?.events)}`
+    );
   }
   console.log('PASS: execute-with-tracing JS/TS Map-backed for-of binding provenance');
 

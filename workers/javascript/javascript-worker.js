@@ -1136,7 +1136,7 @@ function normalizeTraceIndexSources(indexSources, maxDepth = 2) {
 }
 
 function isTraceableMutatingMethod(methodName) {
-  return ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete', 'clear'].includes(methodName);
+  return ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(methodName);
 }
 
 function readValueAtIndices(container, indices) {
@@ -4645,9 +4645,9 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
   for (const __index of __indices || []) {
     __target = __traceIsMapLike(__target) ? __target.get(__index) : __target?.[__index];
   }
-  const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'add', 'delete', 'clear'].includes(__method);
+  const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'add', 'insert', 'delete', 'clear'].includes(__method);
   const __result = __target[__method](...__args);
-  if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete', 'clear'].includes(__method)) {
+  if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(__method)) {
     const __path = __indices || [];
     const __isMapLike = __traceIsMapLike(__target);
     const __isNestedMap = __path.length > 0 && __traceIsMapLike(__target);
