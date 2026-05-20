@@ -748,6 +748,62 @@ async function main(): Promise<void> {
       `C# worker foreach over int[][] should emit iteration binding reads, received ${JSON.stringify(jaggedArrayForeachBinding.events)}`
     );
 
+    const literalArrayForeachBinding = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int LiteralArrayForeachBinding() {',
+        '    int total = 0;',
+        '    foreach (int jump in new[] { 1, 2 }) {',
+        '      total += jump;',
+        '    }',
+        '    foreach (int move in new int[] { -1, 1 }) {',
+        '      total += move;',
+        '    }',
+        '    return total;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'LiteralArrayForeachBinding',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      literalArrayForeachBinding.success && literalArrayForeachBinding.output === 3,
+      `C# worker literal-array foreach binding case should succeed, received ${JSON.stringify(literalArrayForeachBinding)}`
+    );
+    assertCondition(
+      literalArrayForeachBinding.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 4
+        && event.target?.variable === 'new[] { 1, 2 }'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && event.value === 1
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'jump') === true,
+      `C# worker foreach over implicit new array should emit jump iteration binding reads, received ${JSON.stringify(literalArrayForeachBinding.events)}`
+    );
+    assertCondition(
+      literalArrayForeachBinding.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'new int[] { -1, 1 }'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && event.value === -1
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'move') === true,
+      `C# worker foreach over explicit new array should emit move iteration binding reads, received ${JSON.stringify(literalArrayForeachBinding.events)}`
+    );
+    assertCondition(
+      literalArrayForeachBinding.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 4
+        && event.target?.variable === 'jump'
+        && event.value === 1) === true,
+      `C# worker literal-array foreach should still emit scalar jump writes, received ${JSON.stringify(literalArrayForeachBinding.events)}`
+    );
+
     const keyedCollectionForeachVariableKey = await runWorkerCase(
       page,
       [
@@ -1001,6 +1057,113 @@ async function main(): Promise<void> {
         && event.binding?.kind === 'iteration'
         && event.binding.variable === 'ch') === true,
       `C# worker foreach (char ch in word) should emit string character binding reads, received ${JSON.stringify(alienQueueEnqueueMutationArgs.events)}`
+    );
+
+    const interfaceListAddCopyMutation = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public IList<IList<int>> Combine(int n, int k) {',
+        '    IList<IList<int>> result = new List<IList<int>>();',
+        '    var path = new List<int>();',
+        '    void Backtrack(int start) {',
+        '      if (path.Count == k) {',
+        '        result.Add(new List<int>(path));',
+        '        return;',
+        '      }',
+        '      for (int i = start; i <= n; i++) {',
+        '        path.Add(i);',
+        '        Backtrack(i + 1);',
+        '        path.RemoveAt(path.Count - 1);',
+        '      }',
+        '    }',
+        '    Backtrack(1);',
+        '    return result;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'Combine',
+      { n: 2, k: 2 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      interfaceListAddCopyMutation.success && JSON.stringify(interfaceListAddCopyMutation.output) === JSON.stringify([[1, 2]]),
+      `C# worker interface-list Add copy case should succeed, received ${JSON.stringify(interfaceListAddCopyMutation)}`
+    );
+    assertCondition(
+      interfaceListAddCopyMutation.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 8
+        && event.target?.variable === 'result'
+        && event.method === 'Add'
+        && JSON.stringify(event.args) === JSON.stringify([[1, 2]])) === true,
+      `C# worker result.Add(new List<int>(path)) should emit a mutation through interface dispatch, received ${JSON.stringify(interfaceListAddCopyMutation.events)}`
+    );
+
+    const oneLineWhileLpsFallback = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int PrefixFallback(string t) {',
+        '    int[] lps = new int[t.Length];',
+        '    int j = 0;',
+        '    for (int i = 1; i < t.Length; i++) {',
+        '      while (j > 0 && t[i] != t[j]) j = lps[j - 1];',
+        '      if (t[i] == t[j]) j++;',
+        '      lps[i] = j;',
+        '    }',
+        '    return lps[t.Length - 1];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'PrefixFallback',
+      { t: 'abac' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      oneLineWhileLpsFallback.success && oneLineWhileLpsFallback.output === 0,
+      `C# worker one-line while LPS case should succeed, received ${JSON.stringify(oneLineWhileLpsFallback)}`
+    );
+    assertCondition(
+      oneLineWhileLpsFallback.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 6
+        && event.target?.variable === 't'
+        && JSON.stringify(event.target.path) === JSON.stringify([3])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['i'])
+        && event.value === 'c') === true,
+      `C# worker one-line while condition should emit t[i] read, received ${JSON.stringify(oneLineWhileLpsFallback.events)}`
+    );
+    assertCondition(
+      oneLineWhileLpsFallback.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 6
+        && event.target?.variable === 't'
+        && JSON.stringify(event.target.path) === JSON.stringify([1])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['j'])
+        && event.value === 'b') === true,
+      `C# worker one-line while condition should emit t[j] read, received ${JSON.stringify(oneLineWhileLpsFallback.events)}`
+    );
+    assertCondition(
+      oneLineWhileLpsFallback.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 6
+        && event.target?.variable === 'lps'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['j - 1'])
+        && event.value === 0) === true,
+      `C# worker one-line while body should emit lps[j - 1] read, received ${JSON.stringify(oneLineWhileLpsFallback.events)}`
+    );
+    assertCondition(
+      oneLineWhileLpsFallback.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 6
+        && event.target?.variable === 'j'
+        && event.value === 0) === true,
+      `C# worker one-line while body should emit scalar j write, received ${JSON.stringify(oneLineWhileLpsFallback.events)}`
     );
 
     const interviewAdd = await runWorkerCase(
@@ -1979,6 +2142,40 @@ async function main(): Promise<void> {
         && event.method === 'Array.Sort'
       ) === true,
       `C# worker traced Array.Sort case should include chars mutation, received ${JSON.stringify(tracedArraySort.events)}`
+    );
+
+    const tracedSystemArrayReverse = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class Solution {',
+        '  public int[] ReverseArray(int[] arr) {',
+        '    System.Array.Reverse(arr);',
+        '    return arr;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReverseArray',
+      { arr: [1, 2, 3] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedSystemArrayReverse.success,
+      `C# worker traced System.Array.Reverse case should succeed: ${tracedSystemArrayReverse.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(tracedSystemArrayReverse.output) === JSON.stringify([3, 2, 1]),
+      `C# worker traced System.Array.Reverse case should return reversed array, received ${JSON.stringify(tracedSystemArrayReverse.output)}`
+    );
+    assertCondition(
+      tracedSystemArrayReverse.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 4
+        && event.target?.variable === 'arr'
+        && event.method === 'Array.Reverse'
+      ) === true,
+      `C# worker traced System.Array.Reverse case should include arr mutation, received ${JSON.stringify(tracedSystemArrayReverse.events)}`
     );
 
     const tracedArraySortLambdaComparer = await runWorkerCase(

@@ -29,6 +29,7 @@ type TraceAccess = {
 type TraceStep = {
   line: number;
   event: string;
+  function?: string;
   accesses?: TraceAccess[];
   variables?: Record<string, unknown>;
 };
@@ -36,6 +37,7 @@ type TraceStep = {
 type RuntimeTraceEvent = {
   kind?: string;
   line?: number;
+  function?: string;
   target?: {
     variable?: string;
     path?: unknown[];
@@ -1818,6 +1820,278 @@ print(json.dumps({
   console.log('PASS: Python slice for-loop binding provenance');
 }
 
+async function assertBooleanIndexedAssignmentReadsAndWrites(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `
+def solve(nums, target):
+    dp = [False] * (target + 1)
+    dp[0] = True
+    for num in nums:
+        for j in range(target, num - 1, -1):
+            dp[j] = dp[j] or dp[j - num]
+    return dp[target]
+`;
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    { nums: [2], target: 4 },
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === false, 'Python boolean indexed assignment fixture should execute');
+
+  const assignmentStep = parsed.trace.find((step) =>
+    (step.accesses ?? []).some((access) =>
+      access.variable === 'dp'
+      && access.kind === 'indexed-read'
+      && JSON.stringify(access.indices) === JSON.stringify([4])
+      && JSON.stringify(access.indexSources) === JSON.stringify(['j']))
+    && (step.accesses ?? []).some((access) =>
+      access.variable === 'dp'
+      && access.kind === 'indexed-read'
+      && JSON.stringify(access.indices) === JSON.stringify([2])
+      && JSON.stringify(access.indexSources) === JSON.stringify(['j - num']))
+    && (step.accesses ?? []).some((access) =>
+      access.variable === 'dp'
+      && access.kind === 'indexed-write'
+      && JSON.stringify(access.indices) === JSON.stringify([4])
+      && JSON.stringify(access.indexSources) === JSON.stringify(['j']))
+  );
+  assertCondition(Boolean(assignmentStep), `Python boolean indexed assignment step should exist, received ${JSON.stringify(parsed.trace)}`);
+  assertCondition(
+    assignmentStep?.accesses?.some((access) =>
+      access.variable === 'dp'
+      && access.kind === 'indexed-read'
+      && JSON.stringify(access.indices) === JSON.stringify([4])
+      && JSON.stringify(access.indexSources) === JSON.stringify(['j'])
+      && access.value === false) === true,
+    `Python dp[j] boolean assignment should emit left indexed read, received ${JSON.stringify(assignmentStep.accesses)}`
+  );
+  assertCondition(
+    assignmentStep?.accesses?.some((access) =>
+      access.variable === 'dp'
+      && access.kind === 'indexed-read'
+      && JSON.stringify(access.indices) === JSON.stringify([2])
+      && JSON.stringify(access.indexSources) === JSON.stringify(['j - num'])
+      && access.value === false) === true,
+    `Python dp[j] boolean assignment should emit right indexed read, received ${JSON.stringify(assignmentStep.accesses)}`
+  );
+  assertCondition(
+    assignmentStep?.accesses?.some((access) =>
+      access.variable === 'dp'
+      && access.kind === 'indexed-write'
+      && JSON.stringify(access.indices) === JSON.stringify([4])
+      && JSON.stringify(access.indexSources) === JSON.stringify(['j'])
+      && access.value === false) === true,
+    `Python dp[j] boolean assignment should emit indexed write, received ${JSON.stringify(assignmentStep.accesses)}`
+  );
+
+  console.log('PASS: Python boolean indexed assignment emits indexed reads and writes');
+}
+
+async function assertRecursiveCallsiteRuntimeEventsAreRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Solution:
+    def combinationSum(self, candidates, target):
+        result = []
+        path = []
+        def backtrack(start, remaining):
+            if remaining == 0:
+                result.append(path[:])
+                return
+            if remaining < 0:
+                return
+            for i in range(start, len(candidates)):
+                path.append(candidates[i])
+                backtrack(i, remaining - candidates[i])
+                path.pop()
+        backtrack(0, target)
+        return result
+`;
+
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'combinationSum',
+    { candidates: [2, 3], target: 4 },
+    'solution-method',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify([[2, 2]]),
+    `Python recursive callsite fixture should execute, got ${JSON.stringify(parsed.result)}`
+  );
+
+  const recursiveCallLine =
+    tracingPayload.userCodeStartLine + userLineNumber(source, 'backtrack(i, remaining - candidates[i])') - 1;
+  const recursiveLineStep = parsed.trace.find(
+    (step) => step.event === 'line' && step.line === recursiveCallLine && step.function === 'backtrack'
+  );
+  assertCondition(Boolean(recursiveLineStep), 'Python recursive callsite line step should exist');
+  assertCondition(
+    recursiveLineStep?.accesses?.some(
+      (access) =>
+        access.variable === 'candidates' &&
+        access.kind === 'indexed-read' &&
+        JSON.stringify(access.indexSources) === JSON.stringify(['i'])
+    ) === true,
+    `Python recursive callsite should keep argument read evidence, got ${JSON.stringify(recursiveLineStep?.accesses)}`
+  );
+
+  const callsiteCallIndex = parsed.runtimeTrace.events.findIndex(
+    (event) => event.kind === 'call' && event.line === recursiveCallLine && event.function === 'backtrack'
+  );
+  const callsiteReturnIndex = parsed.runtimeTrace.events.findIndex(
+    (event, index) =>
+      index > callsiteCallIndex &&
+      event.kind === 'return' &&
+      event.line === recursiveCallLine &&
+      event.function === 'backtrack'
+  );
+  assertCondition(callsiteCallIndex >= 0, 'Python recursive callsite should emit a runtime call event on the invocation line');
+  assertCondition(callsiteReturnIndex > callsiteCallIndex, 'Python recursive callsite should emit a runtime return after the call');
+
+  console.log('PASS: Python recursive callsites emit runtime call/return events');
+}
+
+async function assertBuiltinSumRecordsConsumedCollectionReads(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def solve(nums, stones):
+    total = sum(nums)
+    weight = sum(stones)
+    return total + weight
+`;
+
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    { nums: [4, 5], stones: [2, 7, 1] },
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(parsed.result === 19, 'Python builtin sum fixture should execute');
+
+  const numsSumLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'total = sum(nums)') - 1;
+  const stonesSumLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'weight = sum(stones)') - 1;
+  const numsStep = findTraceStep(parsed.trace, numsSumLine);
+  const stonesStep = findTraceStep(parsed.trace, stonesSumLine);
+
+  assertCondition(
+    numsStep.accesses?.some(
+      (access) =>
+        access.variable === 'nums' &&
+        access.kind === 'indexed-read' &&
+        JSON.stringify(access.indices) === JSON.stringify([0]) &&
+        access.value === 4
+    ) === true &&
+      numsStep.accesses?.some(
+        (access) =>
+          access.variable === 'nums' &&
+          access.kind === 'indexed-read' &&
+          JSON.stringify(access.indices) === JSON.stringify([1]) &&
+          access.value === 5
+      ) === true,
+    `Python sum(nums) should emit consumed nums reads, got ${JSON.stringify(numsStep.accesses)}`
+  );
+  assertCondition(
+    stonesStep.accesses?.some(
+      (access) =>
+        access.variable === 'stones' &&
+        access.kind === 'indexed-read' &&
+        JSON.stringify(access.indices) === JSON.stringify([2]) &&
+        access.value === 1
+    ) === true,
+    `Python sum(stones) should emit consumed stones reads, got ${JSON.stringify(stonesStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some(
+      (event) =>
+        event.kind === 'read' &&
+        event.line === numsSumLine &&
+        JSON.stringify(event.target) === JSON.stringify({ variable: 'nums', path: [0] }) &&
+        event.value === 4
+    ),
+    'Python runtime trace should include a read event for sum(nums)'
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some(
+      (event) =>
+        event.kind === 'read' &&
+        event.line === stonesSumLine &&
+        JSON.stringify(event.target) === JSON.stringify({ variable: 'stones', path: [2] }) &&
+        event.value === 1
+    ),
+    'Python runtime trace should include a read event for sum(stones)'
+  );
+
+  console.log('PASS: Python builtin sum records consumed collection reads');
+}
+
 async function assertFunctionStyleFallsBackToSolutionMethod(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `class Solution:
@@ -1900,6 +2174,9 @@ async function main(): Promise<void> {
   await assertScriptModePreservesResultSerializer();
   await assertIndexedAugAssignAndLoopBindingUseConcreteValues();
   await assertSliceForLoopBindingIsRecorded();
+  await assertBooleanIndexedAssignmentReadsAndWrites();
+  await assertRecursiveCallsiteRuntimeEventsAreRecorded();
+  await assertBuiltinSumRecordsConsumedCollectionReads();
   await assertFunctionStyleFallsBackToSolutionMethod();
   console.log('\nPython runtime checks passed.');
 }

@@ -100,7 +100,7 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -119,12 +119,12 @@ _internal_locals = {
     '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path',
     '__tracecode_access_value',
     '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices',
-    '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args',
+    '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id',
     '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses',
     '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value',
     '__tracecode_delete_value', '__tracecode_apply_augmented_value', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar',
-    '_tracecode_delete_index', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
-    '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
+    '_tracecode_delete_index', '_tracecode_augassign_index', '_tracecode_user_call', '_tracecode_sum', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_write_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
+    '_tracecode_collect_user_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
     '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
     '_error_line', '_solver', '_ops', '_args', '_cls', '_instance', '_out',
@@ -737,6 +737,35 @@ def __tracecode_serialize_call_args(args, kwargs=None):
                 serialized.append(f'{key}={__tracecode_serialize_call_arg(value)}')
     return serialized
 
+def __tracecode_make_callsite_frame_id(frame, line_number):
+    try:
+        function_name = frame.f_code.co_name
+    except Exception:
+        function_name = '<unknown>'
+    return str(function_name) + ':' + str(line_number)
+
+def _tracecode_user_call(line_number, function_name, func, *args, **kwargs):
+    caller_frame = sys._getframe(1)
+    base = {
+        'runId': 'python:run',
+        'line': line_number,
+        'frameId': __tracecode_make_callsite_frame_id(caller_frame, line_number),
+    }
+    __tracecode_append_runtime_event({
+        **base,
+        'kind': 'call',
+        'function': function_name,
+        'args': __tracecode_serialize_call_args(args, kwargs),
+    })
+    result = func(*args, **kwargs)
+    __tracecode_append_runtime_event({
+        **base,
+        'kind': 'return',
+        'function': function_name,
+        'value': _serialize(result),
+    })
+    return result
+
 def __tracecode_normalize_index_sources(index_sources, path_length):
     if not isinstance(index_sources, (list, _builtins.tuple)) or not isinstance(path_length, int) or path_length <= 0:
         return None
@@ -1065,6 +1094,24 @@ def _tracecode_len(var_name, obj):
     )
     return value
 
+def _tracecode_sum(var_name, iterable, *args, **kwargs):
+    frame = sys._getframe(1)
+    try:
+        if __tracecode_is_indexable_sequence(iterable) or isinstance(iterable, range):
+            for index, value in enumerate(iterable):
+                __tracecode_record_access(
+                    frame,
+                    __tracecode_make_access_event(var_name, 'indexed-read', [index], value=_serialize(value)),
+                )
+        else:
+            __tracecode_record_access(
+                frame,
+                __tracecode_make_access_event(var_name, 'indexed-read', ['<iteration>']),
+            )
+    except Exception:
+        pass
+    return _builtins.sum(iterable, *args, **kwargs)
+
 def _tracecode_write_attr(var_name, obj, attr_name, value):
     setattr(obj, attr_name, value)
     __tracecode_record_access(
@@ -1376,7 +1423,18 @@ def _tracecode_is_annotation_node(node):
         parent = getattr(current, '__trace_parent__', None)
     return False
 
+def _tracecode_collect_user_function_names(tree):
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+    return names
+
 class __TracecodeAccessTransformer(ast.NodeTransformer):
+    def __init__(self, user_function_names=None):
+        super().__init__()
+        self._tracecode_user_function_names = set(user_function_names or [])
+
     def _tracecode_wrap_comprehension_generators(self, generators):
         for generator in generators:
             binding_name = _tracecode_for_target_binding_name(generator.target)
@@ -1815,6 +1873,25 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
     def visit_Call(self, node):
         if (
             isinstance(node.func, ast.Name) and
+            node.func.id == 'sum' and
+            node.func.id not in self._tracecode_user_function_names and
+            len(node.args) >= 1 and
+            isinstance(node.args[0], ast.Name)
+        ):
+            var_name = node.args[0].id
+            call = ast.Call(
+                func=ast.Name(id='_tracecode_sum', ctx=ast.Load()),
+                args=[
+                    ast.Constant(value=var_name),
+                    ast.Name(id=var_name, ctx=ast.Load()),
+                    *[self.visit(arg) for arg in node.args[1:]],
+                ],
+                keywords=[self.visit(keyword) for keyword in node.keywords],
+            )
+            return ast.copy_location(call, node)
+
+        if (
+            isinstance(node.func, ast.Name) and
             node.func.id == 'len' and
             len(node.args) == 1 and
             isinstance(node.args[0], ast.Name)
@@ -1929,6 +2006,21 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                     keywords=node.keywords,
                 )
                 return ast.copy_location(call, node)
+        if (
+            isinstance(node.func, ast.Name) and
+            node.func.id in self._tracecode_user_function_names
+        ):
+            call = ast.Call(
+                func=ast.Name(id='_tracecode_user_call', ctx=ast.Load()),
+                args=[
+                    ast.Constant(value=getattr(node, 'lineno', 1)),
+                    ast.Constant(value=node.func.id),
+                    ast.Name(id=node.func.id, ctx=ast.Load()),
+                    *node.args,
+                ],
+                keywords=node.keywords,
+            )
+            return ast.copy_location(call, node)
         return node
 
     def visit_Compare(self, node):
@@ -2011,7 +2103,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 def __tracecode_compile_user_code(source):
     tree = ast.parse(source, filename='solution.py', mode='exec')
     __tracecode_attach_parents(tree)
-    tree = __TracecodeAccessTransformer().visit(tree)
+    tree = __TracecodeAccessTransformer(_tracecode_collect_user_function_names(tree)).visit(tree)
     ast.fix_missing_locations(tree)
     return compile(tree, 'solution.py', 'exec')
 

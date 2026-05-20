@@ -14,6 +14,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private readonly Stack<HashSet<string>> declaredLocalVariables = new();
     private readonly Stack<HashSet<string>> stringBuilderScopes = new();
     private readonly HashSet<string> collectionVariables = new(StringComparer.Ordinal);
+    private readonly HashSet<string> interfaceDispatchedCollectionVariables = new(StringComparer.Ordinal);
     private readonly HashSet<string> collectionParameterVariables = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string TypeName, string TypeArguments)> collectionVariableTypes = new(StringComparer.Ordinal);
     private readonly HashSet<string> memberNames;
@@ -147,6 +148,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             collectionParameterVariables.Add(collectionParameter);
         }
         HashSet<string> collectionVariablesBeforeMethod = collectionVariables.ToHashSet(StringComparer.Ordinal);
+        HashSet<string> interfaceDispatchedCollectionVariablesBeforeMethod = interfaceDispatchedCollectionVariables.ToHashSet(StringComparer.Ordinal);
 
         MethodDeclarationSyntax rewritten;
         try
@@ -163,6 +165,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             foreach (string collectionVariable in collectionVariablesBeforeMethod)
             {
                 collectionVariables.Add(collectionVariable);
+            }
+            interfaceDispatchedCollectionVariables.Clear();
+            foreach (string collectionVariable in interfaceDispatchedCollectionVariablesBeforeMethod)
+            {
+                interfaceDispatchedCollectionVariables.Add(collectionVariable);
             }
             declaredLocalVariables.Pop();
             variableScopes.Pop();
@@ -1444,6 +1451,12 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string method = memberAccess.Name.Identifier.ValueText;
+        if (interfaceDispatchedCollectionVariables.Contains(receiver.Identifier.ValueText)
+            && IsIndexedReceiverMutationMethod(method))
+        {
+            return false;
+        }
+
         if (method == "Enqueue" && invocation.Parent is ExpressionStatementSyntax)
         {
             string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
@@ -1773,8 +1786,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             }
             else if (!string.IsNullOrWhiteSpace(iterationName))
             {
+                string sourceName = GetIterationSourceName(node.Expression);
                 scopedExpression = SyntaxFactory.ParseExpression(
-                    $"TraceCode.CSharpHost.RuntimeTraceSink.IterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(string.Empty)}, {Literal(iterationName)}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.IterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(sourceName)}, {Literal(iterationName)}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
                 );
             }
             rewritten = rewritten.WithExpression(scopedExpression);
@@ -1835,8 +1849,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             }
             else
             {
+                string sourceName = GetIterationSourceName(node.Expression);
                 scopedExpression = SyntaxFactory.ParseExpression(
-                    $"TraceCode.CSharpHost.RuntimeTraceSink.TupleIterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(string.Empty)}, {bindingVariablesExpression}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.TupleIterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(sourceName)}, {bindingVariablesExpression}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
                 );
             }
             return rewritten
@@ -1896,6 +1911,12 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             .WithStatement(AddLoopHeaderTrace(ExpandEmbeddedLoopStatement(rewritten.Statement, node.Statement, line), line, methodNames.Peek(), emitLine: false));
     }
 
+    private static string GetIterationSourceName(ExpressionSyntax expression)
+    {
+        string source = expression.ToString().Trim();
+        return string.IsNullOrWhiteSpace(source) ? string.Empty : source;
+    }
+
     public override SyntaxNode? VisitVariableDeclarator(VariableDeclaratorSyntax node)
     {
         if (!emitTraceEvents)
@@ -1929,6 +1950,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         collectionVariables.Add(node.Identifier.ValueText);
+        if (ShouldEmitExplicitCollectionMutationForDeclaredType(declaredType))
+        {
+            interfaceDispatchedCollectionVariables.Add(node.Identifier.ValueText);
+        }
         TrackCollectionVariable(node.Identifier.ValueText, declaredType, creation);
         return rewritten.WithInitializer(rewritten.Initializer.WithValue(replacement!));
     }
@@ -2181,6 +2206,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
             || memberAccess.Expression is not IdentifierNameSyntax receiver
             || IsTrackedCollectionReceiver(receiver.Identifier.ValueText)
+                && !interfaceDispatchedCollectionVariables.Contains(receiver.Identifier.ValueText)
             || collectionParameterVariables.Contains(receiver.Identifier.ValueText)
             || !string.Equals(memberAccess.Name.Identifier.ValueText, "Add", StringComparison.Ordinal)
             || invocation.ArgumentList.Arguments.Count != 1)
@@ -2334,15 +2360,15 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         if (statement is not ExpressionStatementSyntax expressionStatement
             || expressionStatement.Expression is not InvocationExpressionSyntax invocation
             || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
-            || memberAccess.Expression is not IdentifierNameSyntax typeName
-            || !string.Equals(typeName.Identifier.ValueText, "Array", StringComparison.Ordinal)
-            || !string.Equals(memberAccess.Name.Identifier.ValueText, "Sort", StringComparison.Ordinal)
+            || !IsSystemArrayTypeExpression(memberAccess.Expression)
+            || !IsStaticArrayMutationMethod(memberAccess.Name.Identifier.ValueText)
             || invocation.ArgumentList.Arguments.Count < 1
             || invocation.ArgumentList.Arguments[0].Expression is not IdentifierNameSyntax receiver)
         {
             yield break;
         }
 
+        string method = memberAccess.Name.Identifier.ValueText;
         string variable = receiver.Identifier.ValueText;
         string args = string.Join(", ", invocation.ArgumentList.Arguments.Skip(1).Select(argument =>
             argument.Expression is AnonymousFunctionExpressionSyntax
@@ -2352,8 +2378,21 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             ? "System.Array.Empty<object?>()"
             : $"new object?[] {{ {args} }}";
         yield return TraceStatement(
-            $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal("Array.Sort")}, {argsExpression}, {line});"
+            $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal($"Array.{method}")}, {argsExpression}, {line});"
         );
+    }
+
+    private static bool IsSystemArrayTypeExpression(ExpressionSyntax expression)
+    {
+        string text = expression.ToString();
+        return string.Equals(text, "Array", StringComparison.Ordinal)
+            || string.Equals(text, "System.Array", StringComparison.Ordinal)
+            || string.Equals(text, "global::System.Array", StringComparison.Ordinal);
+    }
+
+    private static bool IsStaticArrayMutationMethod(string method)
+    {
+        return method is "Sort" or "Reverse";
     }
 
     private bool ShouldEmitBareIdentifierWrite(string name)
@@ -3344,6 +3383,22 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             ImplicitObjectCreationExpressionSyntax => declaredType,
             _ => null,
         };
+    }
+
+    private static bool ShouldEmitExplicitCollectionMutationForDeclaredType(TypeSyntax? declaredType)
+    {
+        if (declaredType is null || IsVarType(declaredType))
+        {
+            return false;
+        }
+
+        return !TryRewriteCollectionDeclarationType(declaredType, out _);
+    }
+
+    private static bool IsVarType(TypeSyntax type)
+    {
+        return type is IdentifierNameSyntax identifier
+            && string.Equals(identifier.Identifier.ValueText, "var", StringComparison.Ordinal);
     }
 
     private bool TryRewriteCollectionFactoryAssignment(

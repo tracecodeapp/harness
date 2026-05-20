@@ -499,6 +499,205 @@ async function main(): Promise<void> {
   console.log('PASS: execute-with-tracing indexed TypeScript for-of binding provenance');
 
   for (const language of ['javascript', 'typescript'] as const) {
+    const literalForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  let total = 0;
+  for (const x of [1, 2]) {
+    total += x;
+  }
+  return total;
+}`
+          : `function solve() {
+  let total = 0;
+  for (const x of [1, 2]) {
+    total += x;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      literalForOfTracing.success === true,
+      `${language} literal for-of tracing should succeed: ${literalForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(literalForOfTracing.output === 3, `${language} literal for-of should preserve output`);
+    const literalBinding = traceAccessEvents(literalForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === '[1, 2]' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'x' &&
+      event.value === 1
+    );
+    assertCondition(
+      Boolean(literalBinding),
+      `${language} literal for-of should emit iteration binding provenance, received ${JSON.stringify(literalForOfTracing.trace?.events)}`
+    );
+
+    const reverseSpreadForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): string {
+  const word = 'abc';
+  const seen: string[] = [];
+  for (const ch of [...word].reverse()) {
+    seen.push(ch);
+  }
+  return seen.join('');
+}`
+          : `function solve() {
+  const word = 'abc';
+  const seen = [];
+  for (const ch of [...word].reverse()) {
+    seen.push(ch);
+  }
+  return seen.join('');
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      reverseSpreadForOfTracing.success === true,
+      `${language} reverse-spread for-of tracing should succeed: ${reverseSpreadForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(reverseSpreadForOfTracing.output === 'cba', `${language} reverse-spread for-of should preserve output`);
+    const reverseSpreadBinding = traceAccessEvents(reverseSpreadForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === '[...word].reverse()' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'ch' &&
+      event.value === 'c'
+    );
+    assertCondition(
+      Boolean(reverseSpreadBinding),
+      `${language} reverse-spread for-of should emit derived iterable binding provenance, received ${JSON.stringify(reverseSpreadForOfTracing.trace?.events)}`
+    );
+
+    const fallbackIndexedForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const adj: number[][] = [[2, 3], []];
+  const u = 0;
+  let total = 0;
+  for (const v of (adj[u] || [])) {
+    total += v;
+  }
+  return total;
+}`
+          : `function solve() {
+  const adj = [[2, 3], []];
+  const u = 0;
+  let total = 0;
+  for (const v of (adj[u] || [])) {
+    total += v;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      fallbackIndexedForOfTracing.success === true,
+      `${language} fallback indexed for-of tracing should succeed: ${fallbackIndexedForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(fallbackIndexedForOfTracing.output === 5, `${language} fallback indexed for-of should preserve output`);
+    const fallbackBinding = traceAccessEvents(fallbackIndexedForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'adj' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0, 0]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['u', null]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'v' &&
+      event.value === 2
+    );
+    assertCondition(
+      Boolean(fallbackBinding),
+      `${language} fallback indexed for-of should emit indexed iteration binding provenance, received ${JSON.stringify(fallbackIndexedForOfTracing.trace?.events)}`
+    );
+
+    const destructuredLiteralForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const r = 1;
+  const c = 2;
+  let total = 0;
+  for (const [nr, nc] of [[r + 1, c], [r, c + 1]]) {
+    total += nr + nc;
+  }
+  return total;
+}`
+          : `function solve() {
+  const r = 1;
+  const c = 2;
+  let total = 0;
+  for (const [nr, nc] of [[r + 1, c], [r, c + 1]]) {
+    total += nr + nc;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      destructuredLiteralForOfTracing.success === true,
+      `${language} destructured literal for-of tracing should succeed: ${destructuredLiteralForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(destructuredLiteralForOfTracing.output === 8, `${language} destructured literal for-of should preserve output`);
+    for (const [bindingVariable, expectedPath, expectedValue] of [
+      ['nr', [0, 0], 2],
+      ['nc', [0, 1], 2],
+    ] as Array<[string, Array<string | number>, number]>) {
+      const destructuredLiteralBinding = traceAccessEvents(destructuredLiteralForOfTracing).find((event) =>
+        event.kind === 'read' &&
+        event.target?.variable === '[[r + 1, c], [r, c + 1]]' &&
+        JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable &&
+        event.value === expectedValue
+      );
+      assertCondition(
+        Boolean(destructuredLiteralBinding),
+        `${language} destructured literal for-of should emit ${bindingVariable} binding provenance, received ${JSON.stringify(destructuredLiteralForOfTracing.trace?.events)}`
+      );
+    }
+  }
+  console.log('PASS: execute-with-tracing JS/TS derived for-of binding provenance');
+
+  for (const language of ['javascript', 'typescript'] as const) {
     const entriesForOfTracing = await harness.sendMessage<{
       success: boolean;
       output: unknown;

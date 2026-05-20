@@ -2938,12 +2938,24 @@ function extractTraceableIterableSource(ts, expression) {
 
   if (
     ts.isBinaryExpression(current) &&
-    current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+    (current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      current.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
     return extractTraceableIterableSource(ts, current.left);
   }
 
   return null;
+}
+
+function expressionLabelText(ts, sourceFile, expression) {
+  let text = '';
+  try {
+    text = typeof expression?.getText === 'function' ? expression.getText(sourceFile).trim().replace(/\s+/g, ' ') : '';
+  } catch {
+    text = '';
+  }
+  if (!text) return '<iterable>';
+  return text.length <= 120 ? text : `${text.slice(0, 117)}...`;
 }
 
 function getCompoundAssignmentOperatorName(ts, tokenKind) {
@@ -3731,6 +3743,19 @@ function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement
           undefined,
           [
             ts.factory.createStringLiteral(iterableSource.variableName),
+            forOfStatement.expression,
+            ts.factory.createStringLiteral(bindingName),
+            ts.factory.createObjectLiteralExpression([
+              ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
+            ]),
+          ]
+        )
+      : bindingName
+      ? ts.factory.createCallExpression(
+          ts.factory.createIdentifier('__traceIterableBind'),
+          undefined,
+          [
+            ts.factory.createStringLiteral(expressionLabelText(ts, sourceFile, originalExpression)),
             forOfStatement.expression,
             ts.factory.createStringLiteral(bindingName),
             ts.factory.createObjectLiteralExpression([

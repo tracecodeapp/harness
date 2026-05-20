@@ -306,9 +306,10 @@ public static class RuntimeTraceSink
         do
         {
             T item = enumerator.Current;
-            if (!string.IsNullOrWhiteSpace(variable))
+            string sourceVariable = !string.IsNullOrWhiteSpace(variable) ? variable : bindingVariable;
+            if (!string.IsNullOrWhiteSpace(sourceVariable))
             {
-                IndexedRead(variable, new object?[] { index }, item, line, bindingVariable);
+                IndexedRead(sourceVariable, new object?[] { index }, item, line, bindingVariable);
             }
             if (!string.IsNullOrWhiteSpace(bindingVariable))
             {
