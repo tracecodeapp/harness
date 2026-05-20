@@ -2018,7 +2018,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeList(string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        public TraceCodeList(string variable, int line)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2081,7 +2081,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeDictionary(string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        public TraceCodeDictionary(string variable, int line)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2195,7 +2195,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeHashSet(string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        public TraceCodeHashSet(string variable, int line)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2271,7 +2271,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeQueue(string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        public TraceCodeQueue(string variable, int line)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2318,7 +2318,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodePriorityQueue(string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        public TraceCodePriorityQueue(string variable, int line)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2390,7 +2390,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeLinkedList(string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        public TraceCodeLinkedList(string variable, int line)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
@@ -2438,7 +2438,7 @@ public class TreeNode
     {
         private readonly string variable;
 
-        public TraceCodeStack(string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        public TraceCodeStack(string variable, int line)
         {
             this.variable = variable;
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);

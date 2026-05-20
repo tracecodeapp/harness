@@ -633,6 +633,68 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
     }
 
+    private static bool IsDeconstructionAssignmentLeft(ExpressionSyntax expression)
+    {
+        return expression is DeclarationExpressionSyntax
+            || expression is TupleExpressionSyntax;
+    }
+
+    private static IEnumerable<string> GetDeconstructionDeclarationNames(ExpressionSyntax expression)
+    {
+        if (expression is DeclarationExpressionSyntax declaration)
+        {
+            foreach (string name in GetVariableDesignationNames(declaration.Designation))
+            {
+                yield return name;
+            }
+            yield break;
+        }
+
+        if (expression is TupleExpressionSyntax tuple)
+        {
+            foreach (ArgumentSyntax argument in tuple.Arguments)
+            {
+                foreach (string name in GetDeconstructionDeclarationNames(argument.Expression))
+                {
+                    yield return name;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<string> GetDeconstructionAssignmentTargetNames(ExpressionSyntax expression)
+    {
+        if (expression is DeclarationExpressionSyntax declaration)
+        {
+            foreach (string name in GetVariableDesignationNames(declaration.Designation))
+            {
+                yield return name;
+            }
+            yield break;
+        }
+
+        if (expression is IdentifierNameSyntax identifier)
+        {
+            string name = identifier.Identifier.ValueText;
+            if (!string.IsNullOrWhiteSpace(name) && !string.Equals(name, "_", StringComparison.Ordinal))
+            {
+                yield return name;
+            }
+            yield break;
+        }
+
+        if (expression is TupleExpressionSyntax tuple)
+        {
+            foreach (ArgumentSyntax argument in tuple.Arguments)
+            {
+                foreach (string name in GetDeconstructionAssignmentTargetNames(argument.Expression))
+                {
+                    yield return name;
+                }
+            }
+        }
+    }
+
     private static IEnumerable<string> GetVariableDesignationNames(VariableDesignationSyntax designation)
     {
         if (designation is SingleVariableDesignationSyntax single)
@@ -1098,6 +1160,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             ),
             line
         );
+        foreach (StatementSyntax readStatement in CreateConstructorConsumptionReadStatements(executableStatement, line))
+        {
+            yield return readStatement;
+        }
         yield return executableStatement;
 
         RegisterDeclaredVariables(executableStatement);
@@ -2089,13 +2155,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             }
 
             if (expressionStatement.Expression is AssignmentExpressionSyntax deconstructionAssignment
-                && deconstructionAssignment.Left is DeclarationExpressionSyntax declarationExpression)
+                && IsDeconstructionAssignmentLeft(deconstructionAssignment.Left))
             {
-                foreach (string name in GetDeclarationExpressionVariableNames(declarationExpression))
+                foreach (string name in GetDeconstructionAssignmentTargetNames(deconstructionAssignment.Left))
                 {
-                    yield return TraceStatement(
-                        $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(name)}, {name}, {line});"
-                    );
+                    if (ShouldEmitBareIdentifierWrite(name))
+                    {
+                        yield return TraceStatement(
+                            $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(name)}, {name}, {line});"
+                        );
+                    }
                 }
                 yield break;
             }
@@ -2129,6 +2198,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         yield break;
+    }
+
+    private IEnumerable<StatementSyntax> CreateConstructorConsumptionReadStatements(StatementSyntax statement, int line)
+    {
+        foreach (string name in GetConstructorConsumptionReadNames(statement))
+        {
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.Read({Literal(name)}, {name}, {line});"
+            );
+        }
     }
 
     private IEnumerable<StatementSyntax> CreateScalarExpressionReadStatements(StatementSyntax statement, int line)
@@ -2429,6 +2508,67 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                     or AnonymousMethodExpressionSyntax);
     }
 
+    private IEnumerable<string> GetConstructorConsumptionReadNames(StatementSyntax statement)
+    {
+        var declaredNames = new HashSet<string>(StringComparer.Ordinal);
+        var expressions = new List<ExpressionSyntax>();
+
+        if (statement is LocalDeclarationStatementSyntax localDeclaration)
+        {
+            foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+            {
+                declaredNames.Add(variable.Identifier.ValueText);
+                if (variable.Initializer?.Value is ExpressionSyntax initializer)
+                {
+                    expressions.Add(initializer);
+                }
+            }
+        }
+        else if (statement is ExpressionStatementSyntax { Expression: AssignmentExpressionSyntax assignment })
+        {
+            expressions.Add(assignment.Right);
+        }
+
+        return expressions
+            .SelectMany(GetConstructorConsumptionIdentifierNames)
+            .Where(name =>
+                !declaredNames.Contains(name)
+                && !string.IsNullOrWhiteSpace(name)
+                && (ShouldEmitBareIdentifierWrite(name) || collectionVariables.Contains(name) || collectionParameterVariables.Contains(name)))
+            .Distinct(StringComparer.Ordinal);
+    }
+
+    private static IEnumerable<string> GetConstructorConsumptionIdentifierNames(ExpressionSyntax expression)
+    {
+        return expression
+            .DescendantNodesAndSelf()
+            .Where(node => node is ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax)
+            .SelectMany(GetObjectCreationArguments)
+            .SelectMany(argument => argument.Expression.DescendantNodesAndSelf().OfType<IdentifierNameSyntax>())
+            .Where(IsConstructorConsumptionIdentifier)
+            .Select(identifier => identifier.Identifier.ValueText);
+    }
+
+    private static IEnumerable<ArgumentSyntax> GetObjectCreationArguments(SyntaxNode creation)
+    {
+        return creation switch
+        {
+            ObjectCreationExpressionSyntax objectCreation => objectCreation.ArgumentList?.Arguments ?? default,
+            ImplicitObjectCreationExpressionSyntax implicitCreation => implicitCreation.ArgumentList.Arguments,
+            _ => Enumerable.Empty<ArgumentSyntax>(),
+        };
+    }
+
+    private static bool IsConstructorConsumptionIdentifier(IdentifierNameSyntax identifier)
+    {
+        return identifier.Parent is not MemberAccessExpressionSyntax
+            && identifier.Parent is not QualifiedNameSyntax
+            && !identifier.Ancestors().Any(ancestor =>
+                ancestor is ParenthesizedLambdaExpressionSyntax
+                    or SimpleLambdaExpressionSyntax
+                    or AnonymousMethodExpressionSyntax);
+    }
+
     private void RegisterDeclaredVariables(StatementSyntax statement)
     {
         if (variableScopes.Count == 0)
@@ -2463,11 +2603,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         if (statement is ExpressionStatementSyntax deconstructionStatement
             && deconstructionStatement.Expression is AssignmentExpressionSyntax deconstructionAssignment
-            && deconstructionAssignment.Left is DeclarationExpressionSyntax declarationExpression)
+            && IsDeconstructionAssignmentLeft(deconstructionAssignment.Left))
         {
             HashSet<string> currentScope = variableScopes.Peek();
             HashSet<string> currentDeclarations = declaredLocalVariables.Peek();
-            foreach (string name in GetDeclarationExpressionVariableNames(declarationExpression))
+            foreach (string name in GetDeconstructionDeclarationNames(deconstructionAssignment.Left))
             {
                 currentDeclarations.Add(name);
                 currentScope.Add(name);

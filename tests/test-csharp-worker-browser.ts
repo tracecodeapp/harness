@@ -1330,6 +1330,50 @@ async function main(): Promise<void> {
       `C# worker traced char-array unary write case should return 49, received ${JSON.stringify(tracedCharArrayUnaryWrite.output)}`
     );
 
+    const tracedStringConstructorConsumption = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public string BuildString(string input) {',
+        '    char[] arr = input.ToCharArray();',
+        '    arr[0] = \'z\';',
+        '    string rev = new string(arr);',
+        '    return rev;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'BuildString',
+      { input: 'cat' },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedStringConstructorConsumption.success,
+      `C# worker traced string constructor consumption case should succeed: ${tracedStringConstructorConsumption.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedStringConstructorConsumption.output === 'zat',
+      `C# worker traced string constructor consumption case should return zat, received ${JSON.stringify(tracedStringConstructorConsumption.output)}`
+    );
+    assertCondition(
+      tracedStringConstructorConsumption.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 5
+        && event.target?.variable === 'arr'
+        && JSON.stringify(event.value) === JSON.stringify(['z', 'a', 't'])
+      ) === true,
+      `C# worker traced string constructor consumption should read arr before writing rev, received ${JSON.stringify(tracedStringConstructorConsumption.events)}`
+    );
+    assertCondition(
+      tracedStringConstructorConsumption.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 5
+        && event.target?.variable === 'rev'
+        && event.value === 'zat'
+      ) === true,
+      `C# worker traced string constructor consumption should write rev, received ${JSON.stringify(tracedStringConstructorConsumption.events)}`
+    );
+
     const tracedStringBuilderIndexedAccess = await runWorkerCase(
       page,
       [
@@ -2031,6 +2075,60 @@ async function main(): Promise<void> {
         && event.value === 2
       ) === true,
       `C# worker traced tuple dequeue binding should write c on line 6, received ${JSON.stringify(tracedTupleDequeueBinding.events)}`
+    );
+
+    const tracedTupleIndexDeconstruction = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int ReadIndexedTuple() {',
+        '    var queue = new List<(string state, int steps)> { ("hit", 7) };',
+        '    int head = 0;',
+        '    (string state, int steps) = queue[head];',
+        '    return state.Length + steps;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'ReadIndexedTuple',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedTupleIndexDeconstruction.success,
+      `C# worker traced tuple index deconstruction case should succeed: ${tracedTupleIndexDeconstruction.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedTupleIndexDeconstruction.output === 10,
+      `C# worker traced tuple index deconstruction case should return 10, received ${JSON.stringify(tracedTupleIndexDeconstruction.output)}`
+    );
+    assertCondition(
+      tracedTupleIndexDeconstruction.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 6
+        && event.target?.variable === 'queue'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+      ) === true,
+      `C# worker traced tuple index deconstruction should read queue[head] on line 6, received ${JSON.stringify(tracedTupleIndexDeconstruction.events)}`
+    );
+    assertCondition(
+      tracedTupleIndexDeconstruction.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 6
+        && event.target?.variable === 'state'
+        && event.value === 'hit'
+      ) === true,
+      `C# worker traced tuple index deconstruction should write state on line 6, received ${JSON.stringify(tracedTupleIndexDeconstruction.events)}`
+    );
+    assertCondition(
+      tracedTupleIndexDeconstruction.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 6
+        && event.target?.variable === 'steps'
+        && event.value === 7
+      ) === true,
+      `C# worker traced tuple index deconstruction should write steps on line 6, received ${JSON.stringify(tracedTupleIndexDeconstruction.events)}`
     );
 
     const tracedCompoundArray = await runWorkerCase(
@@ -2980,6 +3078,51 @@ async function main(): Promise<void> {
     assertCondition(
       tracedCollectionConstructors.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'capacityList' && event.method === 'Add') === true,
       `C# worker traced collection constructors case should include capacity list Add, received ${JSON.stringify(tracedCollectionConstructors.events)}`
+    );
+
+    const tracedHashSetConstructorConsumption = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int CountDeadends(string[] deadends) {',
+        '    HashSet<string> dead = new HashSet<string>(deadends);',
+        '    return dead.Contains("0201") ? dead.Count : -1;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'CountDeadends',
+      { deadends: ['0201', '0101'] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedHashSetConstructorConsumption.success,
+      `C# worker traced HashSet constructor consumption case should succeed: ${tracedHashSetConstructorConsumption.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedHashSetConstructorConsumption.output === 2,
+      `C# worker traced HashSet constructor consumption case should return 2, received ${JSON.stringify(tracedHashSetConstructorConsumption.output)}`
+    );
+    assertCondition(
+      tracedHashSetConstructorConsumption.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 4
+        && event.target?.variable === 'deadends'
+        && JSON.stringify(event.value) === JSON.stringify(['0201', '0101'])
+      ) === true,
+      `C# worker traced HashSet constructor consumption should read deadends, received ${JSON.stringify(tracedHashSetConstructorConsumption.events)}`
+    );
+    assertCondition(
+      tracedHashSetConstructorConsumption.events?.some((event) =>
+        (event.kind === 'write' || event.kind === 'snapshot')
+        && event.line === 4
+        && event.target?.variable === 'dead'
+        && Array.isArray(event.value)
+        && event.value.includes('0201')
+        && event.value.includes('0101')
+      ) === true,
+      `C# worker traced HashSet constructor consumption should not record an empty dead set, received ${JSON.stringify(tracedHashSetConstructorConsumption.events)}`
     );
 
     const tracedComparerConstructors = await runWorkerCase(
