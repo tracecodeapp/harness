@@ -543,6 +543,71 @@ async function main(): Promise<void> {
       Boolean(entriesBinding),
       `${language} Map.entries for-of should emit destructuring binding provenance, received ${JSON.stringify(entriesForOfTracing.trace?.events)}`
     );
+    for (const bindingVariable of ['root', 'emails']) {
+      const destructuredEntryBinding = traceAccessEvents(entriesForOfTracing).find((event) =>
+        event.kind === 'read' &&
+        event.target?.variable === 'groups' &&
+        event.target.path?.length === 2 &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable
+      );
+      assertCondition(
+        Boolean(destructuredEntryBinding),
+        `${language} Map.entries for-of should emit per-name destructuring binding for ${bindingVariable}, received ${JSON.stringify(entriesForOfTracing.trace?.events)}`
+      );
+    }
+
+    const tupleForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const edges: number[][] = [[0, 1, 5], [1, 2, 7]];
+  let total = 0;
+  for (const [u, v, w] of edges) {
+    total += u + v + w;
+  }
+  return total;
+}`
+          : `function solve() {
+  const edges = [[0, 1, 5], [1, 2, 7]];
+  let total = 0;
+  for (const [u, v, w] of edges) {
+    total += u + v + w;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      tupleForOfTracing.success === true,
+      `${language} tuple destructuring for-of tracing should succeed: ${tupleForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(tupleForOfTracing.output === 16, `${language} tuple destructuring for-of should preserve output`);
+    for (const [bindingVariable, expectedPath] of [
+      ['u', [0, 0]],
+      ['v', [0, 1]],
+      ['w', [0, 2]],
+    ] as Array<[string, Array<string | number>]>) {
+      const tupleBinding = traceAccessEvents(tupleForOfTracing).find((event) =>
+        event.kind === 'read' &&
+        event.target?.variable === 'edges' &&
+        JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable
+      );
+      assertCondition(
+        Boolean(tupleBinding),
+        `${language} tuple for-of should emit per-name binding for ${bindingVariable}, received ${JSON.stringify(tupleForOfTracing.trace?.events)}`
+      );
+    }
 
     const nullishGetForOfTracing = await harness.sendMessage<{
       success: boolean;
@@ -580,6 +645,16 @@ async function main(): Promise<void> {
       `${language} Map.get nullish for-of tracing should succeed: ${nullishGetForOfTracing.error ?? 'unknown error'}`
     );
     assertCondition(nullishGetForOfTracing.output === 3, `${language} Map.get nullish for-of should preserve output`);
+    const nullishBaseRead = traceAccessEvents(nullishGetForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'valueToOwners' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['a']) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['email'])
+    );
+    assertCondition(
+      Boolean(nullishBaseRead),
+      `${language} Map.get nullish for-of should emit the keyed lookup before element iteration, received ${JSON.stringify(nullishGetForOfTracing.trace?.events)}`
+    );
     const nullishBinding = traceAccessEvents(nullishGetForOfTracing).find((event) =>
       event.kind === 'read' &&
       event.target?.variable === 'valueToOwners' &&
@@ -590,6 +665,57 @@ async function main(): Promise<void> {
     assertCondition(
       Boolean(nullishBinding),
       `${language} Map.get nullish for-of should emit keyed element binding provenance, received ${JSON.stringify(nullishGetForOfTracing.trace?.events)}`
+    );
+
+    const singleLineForOfMutationTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const adj = new Map<string, Set<string>>([['a', new Set<string>()], ['b', new Set<string>()]]);
+  const inDegree = new Map<string, number>();
+  for (const ch of adj.keys()) inDegree.set(ch, 0);
+  return inDegree.size;
+}`
+          : `function solve() {
+  const adj = new Map([['a', new Set()], ['b', new Set()]]);
+  const inDegree = new Map();
+  for (const ch of adj.keys()) inDegree.set(ch, 0);
+  return inDegree.size;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      singleLineForOfMutationTracing.success === true,
+      `${language} single-line for-of mutation tracing should succeed: ${singleLineForOfMutationTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(singleLineForOfMutationTracing.output === 2, `${language} single-line for-of mutation should preserve output`);
+    const singleLineIterationRead = traceAccessEvents(singleLineForOfMutationTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'adj' &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'ch'
+    );
+    assertCondition(
+      Boolean(singleLineIterationRead),
+      `${language} single-line for-of should emit iteration read, received ${JSON.stringify(singleLineForOfMutationTracing.trace?.events)}`
+    );
+    const singleLineSetMutate = traceAccessEvents(singleLineForOfMutationTracing).find((event) =>
+      event.kind === 'mutate' &&
+      event.target?.variable === 'inDegree' &&
+      event.method === 'set' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['a'])
+    );
+    assertCondition(
+      Boolean(singleLineSetMutate),
+      `${language} single-line for-of body should emit Map.set mutation, received ${JSON.stringify(singleLineForOfMutationTracing.trace?.events)}`
     );
   }
   console.log('PASS: execute-with-tracing JS/TS Map-backed for-of binding provenance');

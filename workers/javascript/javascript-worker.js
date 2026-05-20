@@ -4365,6 +4365,39 @@ function __traceReadIndex(__varName, __container, __indices, __indexSources, __l
   return __value;
 }
 
+function __traceSplitBindingNames(__bindingName) {
+  if (typeof __bindingName !== 'string' || !__bindingName.includes(',')) return [];
+  return __bindingName
+    .split(',')
+    .map((__name) => __name.trim())
+    .filter((__name) => __name.length > 0);
+}
+
+function __traceRecordDestructuredIterationBindings(__varName, __basePath, __baseSources, __iterationIndex, __value, __bindingName, __location) {
+  const __bindingNames = __traceSplitBindingNames(__bindingName);
+  if (__bindingNames.length === 0) return;
+  const __values = Array.isArray(__value) ? __value : Array.from(__value ?? []);
+  for (let __slot = 0; __slot < __bindingNames.length; __slot += 1) {
+    const __path = [...__basePath, __iterationIndex, __slot];
+    const __normalized = __traceNormalizeIndices(__path);
+    if (!__normalized) continue;
+    const __sources = Array.isArray(__baseSources)
+      ? [...__baseSources, null, null]
+      : null;
+    const __normalizedSources = __traceNormalizeIndexSources(__sources, __normalized.length);
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
+      indices: __normalized,
+      pathDepth: __normalized.length,
+      value: __values[__slot],
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+      binding: { kind: 'iteration', variable: __bindingNames[__slot] },
+      ...__traceNormalizeSourceLocation(__location),
+    });
+  }
+}
+
 function* __traceIterableBind(__varName, __iterable, __bindingName, __location) {
   if (
     typeof __varName !== 'string' ||
@@ -4386,6 +4419,7 @@ function* __traceIterableBind(__varName, __iterable, __bindingName, __location) 
       binding: { kind: 'iteration', variable: __bindingName },
       ...__traceNormalizeSourceLocation(__location),
     });
+    __traceRecordDestructuredIterationBindings(__varName, [], null, __index, __value, __bindingName, __location);
     __index += 1;
     yield __value;
   }
@@ -4403,6 +4437,17 @@ function* __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __ind
   }
   const __base = __traceNormalizeIndices(__baseIndices);
   const __baseSources = __traceNormalizeIndexSources(__indexSources, __base?.length ?? 0);
+  if (__base) {
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: __base.length === 2 ? 'cell-read' : 'indexed-read',
+      indices: __base,
+      pathDepth: __base.length,
+      value: serializeValue(__iterable),
+      ...(Array.isArray(__baseSources) ? { indexSources: __baseSources } : {}),
+      ...__traceNormalizeSourceLocation(__location),
+    });
+  }
   let __index = 0;
   for (const __value of __iterable) {
     if (__base) {
@@ -4418,6 +4463,7 @@ function* __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __ind
         binding: { kind: 'iteration', variable: __bindingName },
         ...__traceNormalizeSourceLocation(__location),
       });
+      __traceRecordDestructuredIterationBindings(__varName, __base, __baseSources, __index, __value, __bindingName, __location);
     }
     __index += 1;
     yield __value;

@@ -1,0 +1,82 @@
+{
+  "id": "js-ts-forof-audit-contract",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "javascript",
+    "typescript"
+  ],
+  "inputs": {},
+  "anchors": {
+    "edgeLoop": {
+      "javascript": "for (const [u, v, w] of edges) {",
+      "typescript": "for (const [u, v, w] of edges) {"
+    },
+    "directionLoop": {
+      "javascript": "for (const [di, dj] of directions) {",
+      "typescript": "for (const [di, dj] of directions) {"
+    },
+    "ownerLoop": {
+      "javascript": "for (const owner of valueToOwners.get(email) ?? []) {",
+      "typescript": "for (const owner of valueToOwners.get(email) ?? []) {"
+    },
+    "singleLineSetLoop": {
+      "javascript": "for (const ch of adj.keys()) inDegree.set(ch, 0);",
+      "typescript": "for (const ch of adj.keys()) inDegree.set(ch, 0);"
+    }
+  },
+  "expect": {
+    "edgeLoop": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["adj", "directions", "edges", "email", "inDegree", "total", "u", "v", "valueToOwners", "w"],
+      "accessTargets": [
+        { "kind": "read", "variable": "edges", "pathDepth": 1 },
+        { "kind": "read", "variable": "edges", "pathDepth": 2 }
+      ]
+    },
+    "directionLoop": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["adj", "di", "directions", "dj", "edges", "email", "inDegree", "total", "valueToOwners"],
+      "accessTargets": [
+        { "kind": "read", "variable": "directions", "pathDepth": 1 },
+        { "kind": "read", "variable": "directions", "pathDepth": 2 }
+      ]
+    },
+    "ownerLoop": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["adj", "directions", "edges", "email", "inDegree", "owner", "total", "valueToOwners"],
+      "accessTargets": [
+        { "kind": "read", "variable": "valueToOwners", "pathDepth": 1 },
+        { "kind": "read", "variable": "valueToOwners", "pathDepth": 2 }
+      ]
+    },
+    "singleLineSetLoop": {
+      "eventKinds": ["line", "mutate", "read", "snapshot", "write"],
+      "variableSnapshots": ["adj", "ch", "directions", "edges", "email", "inDegree", "total", "valueToOwners"],
+      "accessTargets": [
+        { "kind": "read", "variable": "adj", "pathDepth": 1 },
+        { "kind": "write", "variable": "inDegree", "pathDepth": 1 },
+        { "kind": "mutate", "variable": "inDegree", "method": "set", "pathDepth": 1 }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "edgeLoop": [
+      { "kind": "read", "variable": "edges", "pathDepth": 2, "bindingVariable": "u" },
+      { "kind": "read", "variable": "edges", "pathDepth": 2, "bindingVariable": "v" },
+      { "kind": "read", "variable": "edges", "pathDepth": 2, "bindingVariable": "w" }
+    ],
+    "directionLoop": [
+      { "kind": "read", "variable": "directions", "pathDepth": 2, "bindingVariable": "di" },
+      { "kind": "read", "variable": "directions", "pathDepth": 2, "bindingVariable": "dj" }
+    ],
+    "ownerLoop": [
+      { "kind": "read", "variable": "valueToOwners", "pathDepth": 1, "indexSources": ["email"] },
+      { "kind": "read", "variable": "valueToOwners", "pathDepth": 2, "indexSources": ["email", null], "bindingVariable": "owner" }
+    ],
+    "singleLineSetLoop": [
+      { "kind": "read", "variable": "adj", "pathDepth": 1, "bindingVariable": "ch" },
+      { "kind": "mutate", "variable": "inDegree", "pathDepth": 1, "method": "set", "args": ["a", 0] }
+    ]
+  }
+}
