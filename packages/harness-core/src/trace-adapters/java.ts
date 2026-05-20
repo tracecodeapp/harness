@@ -263,6 +263,17 @@ function nativeJavaTraceEventsToTrace(
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid Java native runtime trace event: ${message}\n${event.slice(0, 500)}`);
     }
+    if (parsed.kind === 'stdout' && !('text' in parsed)) {
+      const value = (parsed as RuntimeTraceEvent & { value?: unknown }).value;
+      const rest = { ...(parsed as RuntimeTraceEvent & { value?: unknown }) };
+      delete rest.value;
+      return {
+        ...rest,
+        text: value === undefined || value === null ? '' : String(value),
+        runId,
+        ...(options.file ? { file: options.file } : {}),
+      } as RuntimeTraceEvent;
+    }
     return {
       ...parsed,
       runId,

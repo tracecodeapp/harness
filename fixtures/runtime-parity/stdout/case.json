@@ -93,5 +93,59 @@
         "accessTargets": []
       }
     }
+  },
+  "expectFrameEventsByLanguage": {
+    "python": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "javascript": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "typescript": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "java": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    }
   }
 }

@@ -134,6 +134,7 @@ interface RuntimeTraceFrameEventAssertion {
   kind: RuntimeTraceEventKind;
   function: string;
   args?: Record<string, unknown>;
+  text?: string;
   callStackDepth: number;
 }
 
@@ -1189,6 +1190,7 @@ function frameEventMatchesAssertion(
   const topFrame = event.callStack[event.callStack.length - 1];
   if (topFrame?.function !== assertion.function) return false;
   if (assertion.args !== undefined && stableStringify(topFrame.args) !== stableStringify(assertion.args)) return false;
+  if (assertion.text !== undefined && ('text' in event ? event.text : undefined) !== assertion.text) return false;
   return true;
 }
 

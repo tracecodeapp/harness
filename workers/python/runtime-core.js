@@ -574,7 +574,7 @@ def __tracecode_append_trace_events_for_step(step):
         __tracecode_append_runtime_event({**base, 'kind': 'timeout', 'message': 'Runtime timeout'})
     elif event_kind == 'stdout':
         variables = step.get('variables') if isinstance(step.get('variables'), _builtins.dict) else {}
-        __tracecode_append_runtime_event({'kind': 'stdout', 'runId': 'python:run', 'line': line, 'text': str(step.get('returnValue') or variables.get('output') or '')})
+        __tracecode_append_runtime_event({**base, 'kind': 'stdout', 'text': str(step.get('returnValue') or variables.get('output') or '')})
 
     variables = step.get('variables')
     if event_kind != '__access_only__' and isinstance(variables, _builtins.dict):

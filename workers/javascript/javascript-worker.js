@@ -1517,8 +1517,8 @@ function createTraceRecorder(options = {}) {
       pushRuntimeTraceEvent({ ...base, kind: 'timeout', message: 'Runtime timeout' });
     } else if (step.event === 'stdout') {
       pushRuntimeTraceEvent({
+        ...base,
         kind: 'stdout',
-        runId: 'javascript:run',
         ...(step.line ? { line: step.line } : {}),
         text: String(step.returnValue ?? ''),
       });
