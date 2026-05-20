@@ -134,5 +134,25 @@
         ]
       }
     }
+  },
+  "expectEventAssertions": {
+    "add": [
+      {
+        "kind": "mutate",
+        "variable": "seen",
+        "args": [
+          2
+        ]
+      }
+    ],
+    "remove": [
+      {
+        "kind": "mutate",
+        "variable": "seen",
+        "args": [
+          2
+        ]
+      }
+    ]
   }
 }

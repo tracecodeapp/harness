@@ -939,7 +939,7 @@ public final class TraceHooks {
 
   public static boolean removeSetAtLine(int line, String name, java.util.Set<?> values, Object key) {
     boolean changed = values.remove(key);
-    emitTraceMutate(line, name, null, "remove");
+    emitTraceMutate(line, name, null, "remove", null, "[" + serializeResult(key) + "]");
     emitRuntimeSnapshotAtLine(line, name, values);
     return changed;
   }
