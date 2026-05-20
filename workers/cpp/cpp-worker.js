@@ -2084,6 +2084,7 @@ function minimalTraceForOptions(options = {}) {
 
 function traceBudgetHardStopForOptions(options = {}) {
   const traceOptions = options.traceOptions || {};
+  if (traceOptions.softTraceBudget === true) return false;
   return (
     (Number.isFinite(traceOptions.maxTraceSteps) && !Number.isFinite(traceOptions.maxStoredEvents)) ||
     Number.isFinite(traceOptions.maxLineEvents) ||

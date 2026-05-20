@@ -1209,6 +1209,30 @@ if (!singleLineLimitedTrace.trace.events.some((event) => event.kind === 'timeout
   throw new Error('C++ maxSingleLineHits should emit a single-line-limit timeout event, received ' + JSON.stringify(singleLineLimitedTrace.trace.events));
 }
 
+const softLineLimitedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spin() {',
+    '    int total = 0;',
+    '    for (int i = 0; i < 20; ++i) {',
+    '      total += i;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spin',
+  inputs: {},
+  options: { maxLineEvents: 4, maxTraceSteps: 1000, maxStoredEvents: 1000, softTraceBudget: true },
+});
+if (!softLineLimitedTrace.success || softLineLimitedTrace.output !== 190) {
+  throw new Error('C++ soft trace budgets should preserve finite program output, received ' + JSON.stringify(softLineLimitedTrace));
+}
+if (!softLineLimitedTrace.traceLimitExceeded || softLineLimitedTrace.timeoutReason !== 'line-limit') {
+  throw new Error('C++ soft trace budgets should still report line-limit metadata, received ' + JSON.stringify(softLineLimitedTrace));
+}
+
 const minimalTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
