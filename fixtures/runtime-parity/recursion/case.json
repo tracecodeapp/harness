@@ -51,5 +51,31 @@
       },
       "callStackDepth": 3
     }
+  ],
+  "expectReturns": [
+    {
+      "function": "solve",
+      "value": 1,
+      "args": {
+        "n": 1
+      },
+      "callStackDepth": 3
+    },
+    {
+      "function": "solve",
+      "value": 2,
+      "args": {
+        "n": 2
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "value": 6,
+      "args": {
+        "n": 3
+      },
+      "callStackDepth": 1
+    }
   ]
 }

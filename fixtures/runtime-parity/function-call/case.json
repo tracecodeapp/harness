@@ -47,5 +47,23 @@
         "accessTargets": []
       }
     }
-  }
+  },
+  "expectReturns": [
+    {
+      "function": "helper",
+      "value": 3,
+      "args": {
+        "x": 2
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "value": 3,
+      "args": {
+        "n": 2
+      },
+      "callStackDepth": 1
+    }
+  ]
 }

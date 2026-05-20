@@ -107,6 +107,8 @@ interface FixtureCase {
   }>>;
   expectCallActivations?: RuntimeTraceCallActivationAssertion[];
   expectCallActivationsByLanguage?: Partial<Record<Language, RuntimeTraceCallActivationAssertion[]>>;
+  expectReturns?: RuntimeTraceReturnAssertion[];
+  expectReturnsByLanguage?: Partial<Record<Language, RuntimeTraceReturnAssertion[]>>;
   expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
   expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
   expectOpaqueRefs?: boolean;
@@ -115,6 +117,13 @@ interface FixtureCase {
 
 interface RuntimeTraceCallActivationAssertion {
   function: string;
+  args?: Record<string, unknown>;
+  callStackDepth?: number;
+}
+
+interface RuntimeTraceReturnAssertion {
+  function: string;
+  value?: unknown;
   args?: Record<string, unknown>;
   callStackDepth?: number;
 }
@@ -1132,6 +1141,36 @@ function assertCallActivations(
   }
 }
 
+function returnMatchesAssertion(
+  event: RuntimeTrace['events'][number],
+  assertion: RuntimeTraceReturnAssertion
+): boolean {
+  if (event.kind !== 'return') return false;
+  if (event.function !== assertion.function) return false;
+  if (assertion.value !== undefined && stableStringify(event.value) !== stableStringify(assertion.value)) return false;
+  if (assertion.callStackDepth !== undefined) {
+    if (!Array.isArray(event.callStack) || event.callStack.length !== assertion.callStackDepth) return false;
+    const topFrame = event.callStack[event.callStack.length - 1];
+    if (topFrame?.function !== assertion.function) return false;
+    if (assertion.args !== undefined && stableStringify(topFrame.args) !== stableStringify(assertion.args)) return false;
+  }
+  return true;
+}
+
+function assertReturns(
+  trace: RuntimeTrace,
+  assertions: RuntimeTraceReturnAssertion[],
+  label: string
+): void {
+  const returnEvents = trace.events.filter((event) => event.kind === 'return');
+  for (const assertion of assertions) {
+    assertCondition(
+      returnEvents.some((event) => returnMatchesAssertion(event, assertion)),
+      `${label}: missing return event.\nExpected: ${stableStringify(assertion)}\nReturns: ${stableStringify(returnEvents)}`
+    );
+  }
+}
+
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
@@ -1360,6 +1399,13 @@ async function runFixture(
     ];
     if (expectedCallActivations.length > 0) {
       assertCallActivations(trace, expectedCallActivations, `${fixture.id}:${language}`);
+    }
+    const expectedReturns = [
+      ...(fixture.expectReturns ?? []),
+      ...(fixture.expectReturnsByLanguage?.[language] ?? []),
+    ];
+    if (expectedReturns.length > 0) {
+      assertReturns(trace, expectedReturns, `${fixture.id}:${language}`);
     }
     assertNoUnsupportedVisualization(trace, `${fixture.id}:${language}`);
     if (fixture.expectOpaqueRefs) {
