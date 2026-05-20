@@ -600,6 +600,7 @@ async function main(): Promise<void> {
         event.kind === 'read' &&
         event.target?.variable === 'edges' &&
         JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify([null, null]) &&
         event.binding?.kind === 'iteration' &&
         event.binding.variable === bindingVariable
       );
