@@ -109,6 +109,8 @@ interface FixtureCase {
   expectCallActivationsByLanguage?: Partial<Record<Language, RuntimeTraceCallActivationAssertion[]>>;
   expectReturns?: RuntimeTraceReturnAssertion[];
   expectReturnsByLanguage?: Partial<Record<Language, RuntimeTraceReturnAssertion[]>>;
+  expectBalancedCallReturns?: boolean;
+  expectBalancedCallReturnsByLanguage?: Partial<Record<Language, boolean>>;
   expectFrameEvents?: Record<string, RuntimeTraceFrameEventAssertion[]>;
   expectFrameEventsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceFrameEventAssertion[]>>>;
   expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
@@ -1184,6 +1186,36 @@ function assertReturns(
   }
 }
 
+function assertBalancedCallReturns(trace: RuntimeTrace, label: string): void {
+  const stack: Array<{ function: string; args?: unknown; line?: number }> = [];
+  for (const event of trace.events) {
+    if (event.kind === 'call') {
+      stack.push({
+        function: event.function ?? '<module>',
+        args: event.args,
+        line: event.line,
+      });
+      continue;
+    }
+    if (event.kind !== 'return') continue;
+    const actual = event.function ?? '<module>';
+    const top = stack[stack.length - 1];
+    assertCondition(
+      Boolean(top),
+      `${label}: return event without an active call frame.\nReturn: ${stableStringify(event)}`
+    );
+    assertCondition(
+      top?.function === actual,
+      `${label}: return event did not match the active call frame.\nReturn: ${stableStringify(event)}\nActive: ${stableStringify(top)}`
+    );
+    stack.pop();
+  }
+  assertCondition(
+    stack.length === 0,
+    `${label}: call frames were not closed by return events.\nOpen frames: ${stableStringify(stack)}`
+  );
+}
+
 function frameEventMatchesAssertion(
   event: RuntimeTrace['events'][number],
   assertion: RuntimeTraceFrameEventAssertion
@@ -1466,6 +1498,11 @@ async function runFixture(
     ];
     if (expectedReturns.length > 0) {
       assertReturns(trace, expectedReturns, `${fixture.id}:${language}`);
+    }
+    const expectBalancedCallReturns =
+      fixture.expectBalancedCallReturnsByLanguage?.[language] ?? fixture.expectBalancedCallReturns;
+    if (expectBalancedCallReturns) {
+      assertBalancedCallReturns(trace, `${fixture.id}:${language}`);
     }
     assertNoUnsupportedVisualization(trace, `${fixture.id}:${language}`);
     if (fixture.expectOpaqueRefs) {

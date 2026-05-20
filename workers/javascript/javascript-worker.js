@@ -1118,7 +1118,7 @@ function isTraceablePathSegment(value) {
     (typeof value === 'string' && value.length > 0);
 }
 
-function normalizeTraceIndices(indices, maxDepth = 2) {
+function normalizeTraceIndices(indices, maxDepth = 3) {
   if (!Array.isArray(indices) || indices.length === 0 || indices.length > maxDepth) {
     return null;
   }
@@ -1128,7 +1128,7 @@ function normalizeTraceIndices(indices, maxDepth = 2) {
   return indices.map((index) => typeof index === 'number' ? Math.trunc(index) : index);
 }
 
-function normalizeTraceIndexSources(indexSources, maxDepth = 2) {
+function normalizeTraceIndexSources(indexSources, maxDepth = 3) {
   if (!Array.isArray(indexSources) || indexSources.length === 0 || indexSources.length > maxDepth) {
     return null;
   }
@@ -2746,7 +2746,7 @@ function extractTraceableElementAccess(ts, node) {
     break;
   }
 
-  if (!current || indices.length === 0 || indices.length > 2) {
+  if (!current || indices.length === 0 || indices.length > 3) {
     return null;
   }
   if (ts.isThis(current)) {
@@ -4483,7 +4483,7 @@ return result;`
 }
 
 const TRACING_RUNTIME_HELPERS_SOURCE = `
-function __traceNormalizeIndices(__indices, __maxDepth = 2) {
+function __traceNormalizeIndices(__indices, __maxDepth = 3) {
   if (!Array.isArray(__indices) || __indices.length === 0 || __indices.length > __maxDepth) return null;
   if (!__indices.every((__index) =>
     (typeof __index === 'number' && Number.isInteger(__index)) ||

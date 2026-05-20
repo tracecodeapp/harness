@@ -1,0 +1,39 @@
+{
+  "id": "python-slice-iteration-binding",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": ["python"],
+  "inputs": {
+    "nums": [10, 20, 30]
+  },
+  "anchors": {
+    "bind": {
+      "python": "for value in nums[start:]:"
+    }
+  },
+  "expect": {
+    "bind": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["nums", "start", "value"],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "bind": [
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "indexSources": ["start"],
+        "bindingVariable": "value",
+        "value": 20
+      }
+    ]
+  }
+}

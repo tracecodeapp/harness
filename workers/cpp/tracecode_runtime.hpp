@@ -4738,7 +4738,7 @@ class UnorderedMapValueRef {
 
   UnorderedMapValueRef& operator=(const V& value) {
     owner_.values_[key_] = value;
-    owner_.emit_keyed_mutate(key_, "set", trace_event_line(), mutation_args_json(value), source_);
+    owner_.emit_keyed_mutate(key_, "set", trace_event_line(), mutation_args_json(key_, value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
@@ -5325,7 +5325,7 @@ class MapValueRef {
 
   MapValueRef& operator=(const V& value) {
     owner_.values_[key_] = value;
-    owner_.emit_keyed_mutate(key_, "set", trace_event_line(), mutation_args_json(value), source_);
+    owner_.emit_keyed_mutate(key_, "set", trace_event_line(), mutation_args_json(key_, value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }

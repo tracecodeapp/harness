@@ -4965,7 +4965,7 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
         `  tracecode::emit_line(${signature.line}, ${cppStringLiteral(functionName)});`,
       ].join('\n')
     : '';
-  const traceReturn = traced
+  const traceReturn = traced && hasSingleLineFunctionBody
     ? noStoredResult
       ? returnsNull
         ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}null}`)}), ${signature.line});`

@@ -103,5 +103,6 @@
       },
       "callStackDepth": 1
     }
-  ]
+  ],
+  "expectBalancedCallReturns": true
 }

@@ -715,7 +715,7 @@ def __tracecode_normalize_index_component(index):
         return normalized
     return None
 
-def __tracecode_normalize_indices(indices, max_depth=2):
+def __tracecode_normalize_indices(indices, max_depth=3):
     if not isinstance(indices, (list, _builtins.tuple)) or len(indices) == 0 or len(indices) > max_depth:
         return None
     normalized = []
@@ -1294,9 +1294,22 @@ def _tracecode_iter_bind_indexed(var_name, container, base_indices, index_source
             __tracecode_record_destructured_iteration_accesses(frame, var_name, indices, value, binding_names, sources)
         yield value
 
-def _tracecode_iter_bind_slice(var_name, container, start, binding_name, binding_names=None):
-    offset = start if isinstance(start, int) and start >= 0 else 0
-    for index, value in enumerate(container[offset:]):
+def _tracecode_iter_bind_slice(var_name, container, start, start_source, binding_name, binding_names=None):
+    sliced = container[start:]
+    try:
+        normalized_start = start.__index__() if hasattr(start, '__index__') else start
+        if normalized_start is None:
+            offset = 0
+        elif isinstance(normalized_start, int):
+            length = len(container)
+            offset = normalized_start if normalized_start >= 0 else max(length + normalized_start, 0)
+            offset = min(offset, length)
+        else:
+            offset = 0
+    except Exception:
+        offset = 0
+    sources = [start_source] if isinstance(start_source, _builtins.str) and start_source else [None]
+    for index, value in enumerate(sliced):
         frame = sys._getframe(1)
         __tracecode_record_access(
             frame,
@@ -1306,10 +1319,10 @@ def _tracecode_iter_bind_slice(var_name, container, start, binding_name, binding
                 [offset + index],
                 binding_name,
                 _serialize(value),
-                [None],
+                sources,
             ),
         )
-        __tracecode_record_destructured_iteration_accesses(frame, var_name, [offset + index], value, binding_names, [None])
+        __tracecode_record_destructured_iteration_accesses(frame, var_name, [offset + index], value, binding_names, sources)
         yield value
 
 def _tracecode_range_bind(binding_name, iterable):
@@ -1369,7 +1382,7 @@ def _tracecode_extract_named_subscript(node):
     while isinstance(current, ast.Attribute) and len(indices) < 3:
         indices.insert(0, ast.Constant(value=current.attr))
         current = current.value
-    if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > 2:
+    if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > 3:
         return None
     return current.id, indices
 
@@ -1581,20 +1594,20 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             isinstance(original_iter, ast.Subscript) and
             isinstance(original_iter.value, ast.Name) and
             isinstance(original_iter.slice, ast.Slice) and
-            isinstance(original_iter.slice.lower, ast.Constant) and
-            isinstance(original_iter.slice.lower.value, int) and
             original_iter.slice.upper is None and
             original_iter.slice.step is None and
             binding_name is not None
         ):
             var_name = original_iter.value.id
+            start_node = self.visit(original_iter.slice.lower) if original_iter.slice.lower is not None else ast.Constant(value=None)
             node.iter = ast.copy_location(
                 ast.Call(
                     func=ast.Name(id='_tracecode_iter_bind_slice', ctx=ast.Load()),
                     args=[
                         ast.Constant(value=var_name),
                         ast.Name(id=var_name, ctx=ast.Load()),
-                        ast.Constant(value=original_iter.slice.lower.value),
+                        start_node,
+                        _tracecode_index_source_node(original_iter.slice.lower) if original_iter.slice.lower is not None else ast.Constant(value=None),
                         ast.Constant(value=binding_name),
                         binding_names_node,
                     ],
