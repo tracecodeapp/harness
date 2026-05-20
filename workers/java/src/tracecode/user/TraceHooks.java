@@ -939,9 +939,30 @@ public final class TraceHooks {
 
   public static boolean removeSetAtLine(int line, String name, java.util.Set<?> values, Object key) {
     boolean changed = values.remove(key);
-    emitTraceMutate(line, name, null, "remove", null, "[" + serializeResult(key) + "]");
+    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", "remove", null, "[" + serializeResult(key) + "]");
     emitRuntimeSnapshotAtLine(line, name, values);
     return changed;
+  }
+
+  public static boolean removeSetAtLine(int line, String name, java.util.Set<?> values, Object key, String keySource) {
+    boolean changed = values.remove(key);
+    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", "remove", indexSourcesJson(keySource), "[" + serializeResult(key) + "]");
+    emitRuntimeSnapshotAtLine(line, name, values);
+    return changed;
+  }
+
+  public static <K, V> V removeMapAtLine(int line, String name, java.util.Map<K, V> values, K key) {
+    V removed = values.remove(key);
+    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", "remove", null, "[" + serializeResult(key) + "]");
+    emitRuntimeSnapshotAtLine(line, name, values);
+    return removed;
+  }
+
+  public static <K, V> V removeMapAtLine(int line, String name, java.util.Map<K, V> values, K key, String keySource) {
+    V removed = values.remove(key);
+    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", "remove", indexSourcesJson(keySource), "[" + serializeResult(key) + "]");
+    emitRuntimeSnapshotAtLine(line, name, values);
+    return removed;
   }
 
   public static <T> T popListAtLine(int line, String name, java.util.List<T> values, int index) {

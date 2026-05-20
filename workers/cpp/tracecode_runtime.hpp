@@ -5685,7 +5685,7 @@ class Set : public std::set<T> {
     auto args_json = mutation_args_json(value);
     const auto erased = values_.erase(value);
     if (erased > 0) {
-      emit_mutate("erase", trace_event_line(), args_json);
+      emit_mutate_key(value, "erase", trace_event_line(), args_json);
       emit_snapshot(trace_event_line());
     }
     return erased;
@@ -5745,6 +5745,17 @@ class Set : public std::set<T> {
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
+      line
+    );
+  }
+
+  void emit_mutate_key(const T& value, const char* method, int line, const std::string& args_json = "") {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key(value) +
       ",\"method\":" + to_json(method) +
       (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line
@@ -5937,7 +5948,7 @@ class UnorderedSet : public std::unordered_set<T> {
     auto args_json = mutation_args_json(value);
     const auto erased = values_.erase(value);
     if (erased > 0) {
-      emit_mutate("erase", trace_event_line(), args_json);
+      emit_mutate_key(value, "erase", trace_event_line(), args_json);
       emit_snapshot(trace_event_line());
     }
     return erased;
@@ -5993,6 +6004,17 @@ class UnorderedSet : public std::unordered_set<T> {
     write_trace_event_json(
       std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json() +
+      ",\"method\":" + to_json(method) +
+      (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
+      line
+    );
+  }
+
+  void emit_mutate_key(const T& value, const char* method, int line, const std::string& args_json = "") {
+    if (!trace_) return;
+    write_trace_event_json(
+      std::string("{\"kind\":\"mutate\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key(value) +
       ",\"method\":" + to_json(method) +
       (args_json.empty() ? no_arg_mutation_args_json(method) : std::string(",\"args\":") + args_json) + "}",
       line

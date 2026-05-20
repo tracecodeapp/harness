@@ -1535,6 +1535,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             string actualVariable = $"this.{sourceVariable}";
             scopedInvocation = $"TraceCode.Internal.TraceCodeTrace.WithVariableAlias({Literal(actualVariable)}, {Literal(sourceVariable)}, () => {scopedInvocation})";
         }
+        if (method == "Remove" && invocation.ArgumentList.Arguments.Count == 1)
+        {
+            string keyExpression = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            scopedInvocation = $"TraceCode.Internal.TraceCodeTrace.WithIndexSources({CreateIndexSourcesExpression(keyExpression)}, () => {scopedInvocation})";
+        }
 
         replacement = SyntaxFactory.ParseExpression(scopedInvocation);
         return true;

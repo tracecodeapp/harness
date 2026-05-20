@@ -10,6 +10,7 @@ public static class RuntimeTraceSink
     private static readonly HashSet<string> SnapshottedVariablesInCurrentLine = new(StringComparer.Ordinal);
     private static readonly Dictionary<int, int> LineHitCounts = new();
     private static readonly Stack<Dictionary<string, string>> VariableAliasScopes = new();
+    private static readonly Stack<IReadOnlyList<string?>?> ScopedIndexSources = new();
     private static readonly Dictionary<object, string> TraceReferenceIds = new(ReferenceEqualityComparer.Instance);
     private static DateTime deadlineUtc;
     private static int? maxTraceSteps;
@@ -31,6 +32,7 @@ public static class RuntimeTraceSink
         SnapshottedVariablesInCurrentLine.Clear();
         LineHitCounts.Clear();
         VariableAliasScopes.Clear();
+        ScopedIndexSources.Clear();
         TraceReferenceIds.Clear();
         deadlineUtc = DateTime.UtcNow.AddSeconds(2);
         maxTraceSteps = null;
@@ -785,6 +787,22 @@ public static class RuntimeTraceSink
             VariableAliasScopes.Pop();
         }
     }
+
+    public static T WithIndexSources<T>(IReadOnlyList<string?>? indexSources, Func<T> action)
+    {
+        ScopedIndexSources.Push(indexSources);
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            ScopedIndexSources.Pop();
+        }
+    }
+
+    public static IReadOnlyList<string?>? CurrentScopedIndexSources =>
+        ScopedIndexSources.Count > 0 ? ScopedIndexSources.Peek() : null;
 
     private static string ResolveVariableAlias(string variable)
     {

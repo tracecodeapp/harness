@@ -2017,6 +2017,11 @@ public class TreeNode
         {
             return TraceCode.CSharpHost.RuntimeTraceSink.WithVariableAlias(actualVariable, sourceVariable, action);
         }
+
+        public static T WithIndexSources<T>(IReadOnlyList<string?>? indexSources, Func<T> action)
+        {
+            return TraceCode.CSharpHost.RuntimeTraceSink.WithIndexSources(indexSources, action);
+        }
     }
 
     public sealed class TraceCodeList<T> : List<T>
@@ -2171,7 +2176,13 @@ public class TreeNode
         public new bool Remove(TKey key)
         {
             bool removed = base.Remove(key);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Remove", new object?[] { key }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(
+                variable,
+                new object?[] { key },
+                "Remove",
+                new object?[] { key },
+                TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine,
+                TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return removed;
         }
@@ -2259,7 +2270,13 @@ public class TreeNode
         public new bool Remove(T item)
         {
             bool removed = base.Remove(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Remove", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(
+                variable,
+                new object?[] { item },
+                "Remove",
+                new object?[] { item },
+                TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine,
+                TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return removed;
         }

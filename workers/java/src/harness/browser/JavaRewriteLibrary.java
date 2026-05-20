@@ -710,6 +710,24 @@ public final class JavaRewriteLibrary {
           return indent + "TraceHooks." + hook + "(" + sourceLine + ", " + quote(name) + ", " + name + ", " + key + ", " + value + ", " + keySource + ");";
         }
       }
+      if ("remove".equals(method) && isMapType(frame.typeOf(name))) {
+        java.util.List<String> parts = splitTopLevel(rawArgs);
+        if (parts.size() == 1) {
+          String key = rewriteReads(parts.get(0), sourceLine, frame);
+          String keySource = indexSourceArgument(parts.get(0));
+          if ("null".equals(keySource) && isLiteralIndexSource(parts.get(0))) keySource = quote(parts.get(0).trim());
+          return indent + "TraceHooks.removeMapAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + key + ", " + keySource + ");";
+        }
+      }
+      if ("remove".equals(method) && isSetType(frame.typeOf(name))) {
+        java.util.List<String> parts = splitTopLevel(rawArgs);
+        if (parts.size() == 1) {
+          String key = rewriteReads(parts.get(0), sourceLine, frame);
+          String keySource = indexSourceArgument(parts.get(0));
+          if ("null".equals(keySource) && isLiteralIndexSource(parts.get(0))) keySource = quote(parts.get(0).trim());
+          return indent + "TraceHooks.removeSetAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " + key + ", " + keySource + ");";
+        }
+      }
       if ("set".equals(method) && isListType(frame.typeOf(name))) {
         java.util.List<String> parts = splitTopLevel(mutatingCall.group(4).trim());
         if (parts.size() >= 2) {
@@ -1666,6 +1684,10 @@ public final class JavaRewriteLibrary {
       if (expressionSource != null) return quote(expressionSource);
     }
     return isSimpleIdentifierExpression(value) ? quote(value) : "null";
+  }
+
+  private static boolean isLiteralIndexSource(String value) {
+    return value != null && value.trim().matches("^(?:\"(?:\\\\.|[^\"\\\\])*\"|[0-9]+)$");
   }
 
   private static String tracedIndexedReadSource(String value) {

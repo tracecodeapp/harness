@@ -58,7 +58,8 @@
         {
           "kind": "mutate",
           "variable": "counts",
-          "method": "remove"
+          "method": "remove",
+          "pathDepth": 1
         }
       ]
     }
@@ -100,6 +101,7 @@
         "accessTargets": [
           {
             "kind": "mutate",
+            "pathDepth": 1,
             "variable": "counts",
             "method": "remove"
           }
@@ -140,7 +142,8 @@
         "accessTargets": [
           {
             "kind": "mutate",
-            "variable": "counts"
+            "variable": "counts",
+            "pathDepth": 1
           }
         ],
         "eventKinds": [
@@ -187,7 +190,8 @@
         "accessTargets": [
           {
             "kind": "mutate",
-            "variable": "counts"
+            "variable": "counts",
+            "pathDepth": 1
           }
         ],
         "eventKinds": [
@@ -234,6 +238,7 @@
         "accessTargets": [
           {
             "kind": "mutate",
+            "pathDepth": 1,
             "variable": "counts"
           }
         ],
@@ -301,7 +306,8 @@
       {
         "kind": "mutate",
         "variable": "counts",
-        "count": 1
+        "count": 1,
+        "pathDepth": 1
       },
       {
         "kind": "write",
@@ -323,6 +329,7 @@
         {
           "count": 1,
           "kind": "mutate",
+          "pathDepth": 1,
           "variable": "counts"
         },
         {
@@ -349,7 +356,8 @@
         {
           "count": 1,
           "kind": "mutate",
-          "variable": "counts"
+          "variable": "counts",
+          "pathDepth": 1
         },
         {
           "count": 1,
@@ -373,14 +381,9 @@
     "javascript": {
       "accessTargets": [
         {
-          "count": 1,
+          "count": 2,
           "kind": "mutate",
           "pathDepth": 1,
-          "variable": "counts"
-        },
-        {
-          "count": 1,
-          "kind": "mutate",
           "variable": "counts"
         },
         {
@@ -405,14 +408,9 @@
     "typescript": {
       "accessTargets": [
         {
-          "count": 1,
+          "count": 2,
           "kind": "mutate",
           "pathDepth": 1,
-          "variable": "counts"
-        },
-        {
-          "count": 1,
-          "kind": "mutate",
           "variable": "counts"
         },
         {
@@ -437,14 +435,9 @@
     "java": {
       "accessTargets": [
         {
-          "count": 1,
+          "count": 2,
           "kind": "mutate",
           "pathDepth": 1,
-          "variable": "counts"
-        },
-        {
-          "count": 1,
-          "kind": "mutate",
           "variable": "counts"
         },
         {
@@ -490,6 +483,101 @@
           "kind": "read",
           "pathDepth": 1,
           "variable": "counts"
+        }
+      ]
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "java": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "remove",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "csharp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "Remove",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "python": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "'b'"
+          ],
+          "method": "pop",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "delete",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "delete",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "method": "erase",
+          "args": [
+            "b"
+          ]
         }
       ]
     }

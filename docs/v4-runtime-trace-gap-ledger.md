@@ -10,7 +10,7 @@ This ledger tracks implicit V4 trace gaps that are currently encoded as per-lang
 - Formal `knownGaps`: 0.
 - `expectByLanguage`: 152 language fixture overrides.
 - `expectSummaryByLanguage`: 45 language summary overrides.
-- `expectEventAssertionsByLanguage`: 34 language event assertion overrides.
+- `expectEventAssertionsByLanguage`: 52 language event assertion overrides.
 - `expectFrameEventsByLanguage`: 8 language frame-event overrides.
 - `expectLineSnapshotsByLanguage`: 1 language line-snapshot override.
 
@@ -81,7 +81,7 @@ Current recommendation:
 1. Do not force one global `pathDepth` meaning across all languages. `pathDepth` should remain the concrete runtime access path, because property/method reads, object fields, and container indices are genuinely different operations.
 2. Add a visualizer-facing normalized access projection alongside raw events, rather than erasing raw runtime truth. The projection can expose fields such as `containerVariable`, `containerPathDepth`, `effectiveElementPathDepth`, `accessRole`, and `isAliasSecondary`.
 3. First bounded patch: C# access normalization. Suppress or mark no-path receiver reads and intermediate depth-1 reads when the same line has a deeper path access for the same variable. This directly affects `indexed-read-path1-parity`, `nested-indexed-read-write`, and `list-array-indexed-read`.
-4. Second bounded patch: keyed removal path standardization. Emit/derive the removed key path for Python/JS/TS/Java/C# removals so `key-removal-vs-index-write` gives the visualizer a consistent element target.
+4. Completed: keyed removal path standardization. Map/dict removals and set removals now emit the removed key/element path where the language exposes it, with source provenance when available. This is gated by `key-removal-vs-index-write`, `map-remove`, and `set-add-remove`.
 5. Third bounded patch: fixture cleanup. Split `path-depth-polarity` into object-field polarity and nested-index polarity, or align its source shapes so it stops mixing both concerns.
 
 ### 2. Keyed/Indexed Provenance

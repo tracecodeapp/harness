@@ -1006,8 +1006,28 @@ def _tracecode_augassign_index(var_name, container, indices, index_sources, op_n
     return next_value
 
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
+    index_sources = kwargs.pop('__tracecode_index_sources', None)
     result = getattr(container, method_name)(*args, **kwargs)
     if method_name in _TRACE_MUTATING_METHODS:
+        if (
+            len(args) >= 1 and
+            method_name in {'pop', 'remove', 'discard'} and
+            isinstance(container, (_builtins.dict, set))
+        ):
+            normalized = __tracecode_normalize_indices([args[0]])
+            if normalized is not None:
+                __tracecode_record_access(
+                    sys._getframe(1),
+                    __tracecode_make_access_event(
+                        var_name,
+                        'mutating-call',
+                        normalized,
+                        method_name=method_name,
+                        index_sources=index_sources,
+                        args=__tracecode_serialize_call_args(args, kwargs),
+                    ),
+                )
+                return result
         __tracecode_record_access(
             sys._getframe(1),
             __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name, args=__tracecode_serialize_call_args(args, kwargs)),
@@ -1979,6 +1999,15 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 )
                 return ast.copy_location(call, node)
             if method_name in _TRACE_MUTATING_METHODS:
+                keywords = node.keywords
+                if method_name in {'pop', 'remove', 'discard'} and len(node.args) >= 1:
+                    keywords = [
+                        *node.keywords,
+                        ast.keyword(
+                            arg='__tracecode_index_sources',
+                            value=ast.List(elts=[_tracecode_source_string_node(node.args[0])], ctx=ast.Load()),
+                        ),
+                    ]
                 call = ast.Call(
                     func=ast.Name(id='_tracecode_mutating_call', ctx=ast.Load()),
                     args=[
@@ -1987,7 +2016,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                         ast.Constant(value=method_name),
                         *node.args,
                     ],
-                    keywords=node.keywords,
+                    keywords=keywords,
                 )
                 return ast.copy_location(call, node)
         if (

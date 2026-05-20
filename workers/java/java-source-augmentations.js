@@ -864,7 +864,7 @@
             `TraceHooks.addSetAtLine(${lineNumber}, "${name}", ${name}, ${key})`
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'remove', (key) =>
-            `TraceHooks.removeSetAtLine(${lineNumber}, "${name}", ${name}, ${key})`
+            `TraceHooks.removeSetAtLine(${lineNumber}, "${name}", ${name}, ${key}, ${indexSourceArgument(key)})`
           );
         }
 

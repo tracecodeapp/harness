@@ -27,7 +27,8 @@
         {
           "kind": "mutate",
           "variable": "seen",
-          "method": "remove"
+          "method": "remove",
+          "pathDepth": 1
         }
       ]
     }
@@ -67,7 +68,8 @@
           {
             "kind": "mutate",
             "variable": "seen",
-            "method": "remove"
+            "method": "remove",
+            "pathDepth": 1
           }
         ]
       }
@@ -91,6 +93,98 @@
           }
         ]
       }
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "method": "remove",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "delete",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "delete",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "java": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "remove",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "csharp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "Remove",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "method": "erase",
+          "args": [
+            2
+          ]
+        }
+      ]
     }
   }
 }
