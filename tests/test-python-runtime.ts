@@ -18,11 +18,12 @@ const RUNTIME_CORE_PATH = join(process.cwd(), 'workers', 'python', 'runtime-core
 type TraceAccess = {
   variable?: string;
   kind?: string;
-  indices?: number[];
+  indices?: unknown[];
   indexSources?: Array<string | null>;
   method?: string;
   binding?: unknown;
   value?: unknown;
+  args?: unknown[];
 };
 
 type TraceStep = {
@@ -38,12 +39,14 @@ type RuntimeTraceEvent = {
   target?: {
     variable?: string;
     path?: unknown[];
+    indexSources?: Array<string | null>;
   };
   binding?: {
     kind?: string;
     variable?: string;
   };
   value?: unknown;
+  args?: unknown[];
 };
 
 type RuntimeCore = {
@@ -685,12 +688,175 @@ print(json.dumps({
     (sortStep.accesses ?? []).some((access) => (
       access.variable === 'intervals' &&
       access.kind === 'mutating-call' &&
-      access.method === 'sort'
+      access.method === 'sort' &&
+      JSON.stringify(access.args) === JSON.stringify(['key=<lambda>'])
     )),
-    `Python list.sort should emit a receiver mutation, received ${JSON.stringify(sortStep.accesses)}`
+    `Python list.sort should emit a receiver mutation with lambda-safe key args, received ${JSON.stringify(sortStep.accesses)}`
   );
 
   console.log('PASS: Python runtime records in-place sort mutation provenance');
+}
+
+async function assertTupleKeyDictProvenanceIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def inspect():
+    right_id = {}
+    nr = 1
+    nc = 2
+    missing = (nr, nc) not in right_id
+    right_id[(nr, nc)] = 7
+    value = right_id[(nr, nc)]
+    return value + (1 if missing else 0)
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
+  assertCondition(parsed.result === 8, 'Python tuple-key dict fixture should execute successfully');
+
+  const membershipLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'missing = (nr, nc) not in right_id') - 1;
+  const writeLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'right_id[(nr, nc)] = 7') - 1;
+  const readLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'value = right_id[(nr, nc)]') - 1;
+  const membershipStep = findTraceStep(parsed.trace, membershipLine);
+  const writeStep = findTraceStep(parsed.trace, writeLine);
+  const readStep = findTraceStep(parsed.trace, readLine);
+
+  assertCondition(
+    (membershipStep.accesses ?? []).some((access) => (
+      access.variable === 'right_id' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([[1, 2]]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['(nr, nc)']) &&
+      access.value === false
+    )),
+    `Python tuple-key dict membership should carry concrete key and source, received ${JSON.stringify(membershipStep.accesses)}`
+  );
+  assertCondition(
+    (writeStep.accesses ?? []).some((access) => (
+      access.variable === 'right_id' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indices) === JSON.stringify([[1, 2]]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['(nr, nc)']) &&
+      access.value === 7
+    )),
+    `Python tuple-key dict write should carry concrete key and source, received ${JSON.stringify(writeStep.accesses)}`
+  );
+  assertCondition(
+    (readStep.accesses ?? []).some((access) => (
+      access.variable === 'right_id' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([[1, 2]]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['(nr, nc)']) &&
+      access.value === 7
+    )),
+    `Python tuple-key dict read should carry concrete key and source, received ${JSON.stringify(readStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === readLine &&
+      event.target?.variable === 'right_id' &&
+      JSON.stringify(event.target.path) === JSON.stringify([[1, 2]]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['(nr, nc)']) &&
+      event.value === 7
+    )),
+    `Python V4 runtime trace should emit tuple-key read target provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records tuple-key dict provenance');
+}
+
+async function assertObjectMemberDictMembershipProvenanceIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class TrieNode:
+    def __init__(self):
+        self.children = {}
+
+def inspect(char):
+    node = TrieNode()
+    if char not in node.children:
+        node.children[char] = TrieNode()
+    return len(node.children)
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    { char: 'a' },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
+  assertCondition(parsed.result === 1, 'Python object-member dict membership fixture should execute successfully');
+
+  const membershipLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'if char not in node.children') - 1;
+  const membershipStep = findTraceStep(parsed.trace, membershipLine);
+  assertCondition(
+    (membershipStep.accesses ?? []).some((access) => (
+      access.variable === 'node' &&
+      access.kind === 'cell-read' &&
+      JSON.stringify(access.indices) === JSON.stringify(['children', 'a']) &&
+      JSON.stringify(access.indexSources) === JSON.stringify([null, 'char']) &&
+      access.value === false
+    )),
+    `Python object-member dict membership should carry child key provenance, received ${JSON.stringify(membershipStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === membershipLine &&
+      event.target?.variable === 'node' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['children', 'a']) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'char']) &&
+      event.value === false
+    )),
+    `Python V4 runtime trace should emit object-member membership provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records object-member dict membership provenance');
 }
 
 async function assertComputedDeleteMutationArgsAreRecorded(): Promise<void> {
@@ -1518,6 +1684,8 @@ async function main(): Promise<void> {
   await assertTupleAssignmentScalarWritesAreRecorded();
   await assertListComprehensionAssignmentEmitsSingleWriteFrame();
   await assertInPlaceSortMutationIsRecorded();
+  await assertTupleKeyDictProvenanceIsRecorded();
+  await assertObjectMemberDictMembershipProvenanceIsRecorded();
   await assertComputedDeleteMutationArgsAreRecorded();
   await assertTraceReferenceIdsAreNeutral();
   await assertCustomObjectLocalAliasesMaterializePayloads();

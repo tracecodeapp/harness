@@ -2524,14 +2524,104 @@ inline IndexedNestedRangeReadable<T> indexed_nested_range_readable(Vector<std::v
   return IndexedNestedRangeReadable<T>(raw_container[concrete_outer], name, concrete_outer, line, outer_source, binding_name);
 }
 
+template <typename VectorType>
+class StdVectorIndexedRangeReadIterator {
+ public:
+  using RawIterator = decltype(std::declval<VectorType&>().begin());
+  using difference_type = typename std::iterator_traits<RawIterator>::difference_type;
+  using value_type = typename std::iterator_traits<RawIterator>::value_type;
+  using reference = typename std::iterator_traits<RawIterator>::reference;
+  using pointer = typename std::iterator_traits<RawIterator>::pointer;
+  using iterator_category = std::input_iterator_tag;
+
+  StdVectorIndexedRangeReadIterator(VectorType& container, RawIterator iterator, std::size_t index, int line, const char* binding_name, const char* source_name, bool is_end = false)
+      : container_(container), iterator_(iterator), index_(index), line_(line), binding_name_(binding_name), source_name_(source_name), is_end_(is_end) {}
+
+  reference operator*() const {
+    emit_read();
+    return *iterator_;
+  }
+
+  pointer operator->() const {
+    emit_read();
+    return &(*iterator_);
+  }
+
+  StdVectorIndexedRangeReadIterator& operator++() {
+    ++iterator_;
+    ++index_;
+    return *this;
+  }
+
+  StdVectorIndexedRangeReadIterator operator++(int) {
+    StdVectorIndexedRangeReadIterator copy = *this;
+    ++(*this);
+    return copy;
+  }
+
+  bool operator==(const StdVectorIndexedRangeReadIterator& other) const {
+    const bool equal = iterator_ == other.iterator_;
+    if (equal && (is_end_ || other.is_end_)) emit_line(line_, "");
+    return equal;
+  }
+
+  bool operator!=(const StdVectorIndexedRangeReadIterator& other) const {
+    return !(*this == other);
+  }
+
+ private:
+  void emit_read() const {
+    if (minimal_trace_enabled() || !source_name_ || !*source_name_ || !check_trace_budget(line_)) return;
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line_) +
+      ",\"target\":" + target_json_with_index_source(source_name_, index_, nullptr) +
+      ",\"value\":" + to_json(*iterator_) +
+      ((binding_name_ && *binding_name_)
+        ? std::string(",\"binding\":{\"kind\":\"iteration\",\"variable\":") + to_json(binding_name_) + "}"
+        : std::string("")) +
+      "}"
+    );
+  }
+
+  VectorType& container_;
+  RawIterator iterator_;
+  std::size_t index_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+  bool is_end_;
+};
+
+template <typename VectorType>
+class StdVectorIndexedRangeReadable {
+ public:
+  StdVectorIndexedRangeReadable(VectorType& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr)
+      : container_(container), line_(line), binding_name_(binding_name), source_name_(source_name) {}
+
+  auto begin() {
+    return StdVectorIndexedRangeReadIterator<VectorType>(container_, container_.begin(), 0, line_, binding_name_, source_name_, false);
+  }
+
+  auto end() {
+    return StdVectorIndexedRangeReadIterator<VectorType>(container_, container_.end(), container_.size(), line_, binding_name_, source_name_, true);
+  }
+
+ private:
+  VectorType& container_;
+  int line_;
+  const char* binding_name_;
+  const char* source_name_;
+};
+
 template <typename T, typename Allocator>
-inline std::vector<T, Allocator>& indexed_range_readable(std::vector<T, Allocator>& container, int, const char* = nullptr, const char* = nullptr) {
-  return container;
+inline StdVectorIndexedRangeReadable<std::vector<T, Allocator>> indexed_range_readable(std::vector<T, Allocator>& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return StdVectorIndexedRangeReadable<std::vector<T, Allocator>>(container, line, binding_name, source_name);
 }
 
 template <typename T, typename Allocator>
-inline const std::vector<T, Allocator>& indexed_range_readable(const std::vector<T, Allocator>& container, int, const char* = nullptr, const char* = nullptr) {
-  return container;
+inline StdVectorIndexedRangeReadable<const std::vector<T, Allocator>> indexed_range_readable(const std::vector<T, Allocator>& container, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {
+  return StdVectorIndexedRangeReadable<const std::vector<T, Allocator>>(container, line, binding_name, source_name);
 }
 
 inline IndexedStringRangeReadable indexed_range_readable(std::string& value, int line, const char* binding_name = nullptr, const char* source_name = nullptr) {

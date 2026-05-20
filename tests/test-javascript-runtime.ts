@@ -45,7 +45,7 @@ type RuntimeTraceEvent = {
   column?: number;
   function?: string;
   frameId?: string;
-  args?: Record<string, unknown>;
+  args?: unknown;
   value?: unknown;
   target?: { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null>; scope?: string };
   binding?: { kind?: string; variable?: string };
@@ -2511,6 +2511,182 @@ function smallest(nums: number[]): number {
       ),
     `JavaScript tracing should emit indexSources for charCodeAt-derived computed indices, received ${JSON.stringify(charComputedIndexAccesses)}`
   );
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const popIndexSourceTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(bars: number[]): number {
+    const stack: number[] = [1];
+    return bars[stack.pop()!];
+  }
+}`
+          : `class Solution {
+  solve(bars) {
+    const stack = [1];
+    return bars[stack.pop()];
+  }
+}`,
+      functionName: 'solve',
+      inputs: { bars: [4, 9, 16] },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      popIndexSourceTracing.success === true,
+      `${language} stack.pop index-source tracing should succeed: ${popIndexSourceTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(popIndexSourceTracing.output === 9, `${language} stack.pop index-source tracing should preserve output`);
+    const popIndexSourceAccesses = traceAccessEvents(popIndexSourceTracing);
+    const expectedPopSource = language === 'typescript' ? 'stack.pop()!' : 'stack.pop()';
+    assertCondition(
+      popIndexSourceAccesses.some(
+        (access) =>
+          access.target?.variable === 'bars' &&
+          access.kind === 'read' &&
+          JSON.stringify(access.target.indexSources) === JSON.stringify([expectedPopSource])
+      ),
+      `${language} tracing should preserve stack.pop() index provenance, received ${JSON.stringify(popIndexSourceAccesses)}`
+    );
+  }
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const membershipTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(word: string): boolean {
+    const node = { children: { a: 1 } as Record<string, number> };
+    const char = word[0];
+    return char in node.children;
+  }
+}`
+          : `class Solution {
+  solve(word) {
+    const node = { children: { a: 1 } };
+    const char = word[0];
+    return char in node.children;
+  }
+}`,
+      functionName: 'solve',
+      inputs: { word: 'apple' },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      membershipTracing.success === true,
+      `${language} object membership tracing should succeed: ${membershipTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(membershipTracing.output === true, `${language} object membership tracing should preserve output`);
+    const membershipAccesses = traceAccessEvents(membershipTracing);
+    assertCondition(
+      membershipAccesses.some(
+        (access) =>
+          access.target?.variable === 'node' &&
+          access.kind === 'read' &&
+          JSON.stringify(access.target.path) === JSON.stringify(['children', 'a']) &&
+          JSON.stringify(access.target.indexSources) === JSON.stringify([null, 'char'])
+      ),
+      `${language} tracing should emit concrete key/source for char in node.children, received ${JSON.stringify(membershipAccesses)}`
+    );
+  }
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const destructuredIndexedSwapTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(nums: number[]): number[] {
+    const heap = nums.slice();
+    let parent = 0;
+    let i = 1;
+    [heap[parent], heap[i]] = [heap[i], heap[parent]];
+    return heap;
+  }
+}`
+          : `class Solution {
+  solve(nums) {
+    const heap = nums.slice();
+    let parent = 0;
+    let i = 1;
+    [heap[parent], heap[i]] = [heap[i], heap[parent]];
+    return heap;
+  }
+}`,
+      functionName: 'solve',
+      inputs: { nums: [3, 1] },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      destructuredIndexedSwapTracing.success === true,
+      `${language} destructuring indexed swap tracing should succeed: ${destructuredIndexedSwapTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(destructuredIndexedSwapTracing.output) === JSON.stringify([1, 3]),
+      `${language} destructuring indexed swap tracing should preserve output`
+    );
+    const destructuredIndexedSwapWrites = traceAccessEvents(destructuredIndexedSwapTracing).filter(
+      (event) => event.target?.variable === 'heap' && event.kind === 'write'
+    );
+    assertCondition(
+      destructuredIndexedSwapWrites.some(
+        (event) =>
+          JSON.stringify(event.target?.path) === JSON.stringify([0]) &&
+          JSON.stringify(event.target?.indexSources) === JSON.stringify(['parent']) &&
+          event.value === 1
+      ) &&
+        destructuredIndexedSwapWrites.some(
+          (event) =>
+            JSON.stringify(event.target?.path) === JSON.stringify([1]) &&
+            JSON.stringify(event.target?.indexSources) === JSON.stringify(['i']) &&
+            event.value === 3
+        ),
+      `${language} destructuring indexed swap should emit writes for both targets, received ${JSON.stringify(destructuredIndexedSwapWrites)}`
+    );
+  }
+
+  const tuplePushArgsTracing = await harness.sendMessage<{
+    success: boolean;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const edges = [];
+  const u = 1;
+  const v = 2;
+  const w = 3;
+  edges.push([u, v, w]);
+  return edges.length;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(tuplePushArgsTracing.success === true, 'JavaScript tuple push args tracing should succeed');
+  const tuplePushMutate = traceAccessEvents(tuplePushArgsTracing).find(
+    (event) => event.target?.variable === 'edges' && event.kind === 'mutate' && event.method === 'push'
+  );
+  assertCondition(
+    Boolean(tuplePushMutate) && JSON.stringify(tuplePushMutate?.args) === JSON.stringify([[1, 2, 3]]),
+    `JavaScript edges.push([u,v,w]) should preserve the single tuple argument contract, received ${JSON.stringify(tuplePushMutate)}`
+  );
+
   assertCondition(
     flatAccesses.some(
       (access) =>

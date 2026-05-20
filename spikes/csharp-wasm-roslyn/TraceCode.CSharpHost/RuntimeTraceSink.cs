@@ -215,6 +215,22 @@ public static class RuntimeTraceSink
         });
     }
 
+    public static void Read(string variable, object? value, int line)
+    {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
+        Add(new RuntimeTraceEvent
+        {
+            Kind = "read",
+            Line = line,
+            Target = new RuntimeTraceTarget { Variable = ResolveVariableAlias(variable) },
+            Value = value,
+        });
+    }
+
     public static void IndexedRead(string variable, object index, object? value, int line)
     {
         IndexedRead(variable, new object?[] { index }, value, line);
@@ -358,6 +374,133 @@ public static class RuntimeTraceSink
         while (enumerator.MoveNext());
         Line(line, function);
         snapshot?.Invoke();
+    }
+
+    public static IEnumerable<T> TupleIterationBind<T>(
+        IEnumerable<T> values,
+        string variable,
+        IReadOnlyList<string> bindingVariables,
+        int line,
+        string? function = null,
+        bool emitInitialLine = true,
+        Action? snapshot = null
+    )
+    {
+        int index = 0;
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
+        {
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
+        }
+
+        do
+        {
+            T item = enumerator.Current;
+            EmitTupleIterationReads(variable, new object?[] { index }, item, bindingVariables, line, new string?[] { null });
+            index++;
+            Line(line, function);
+            snapshot?.Invoke();
+            yield return item;
+        }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
+    }
+
+    public static IEnumerable<T> TupleNestedIterationBind<T>(
+        IEnumerable<T> values,
+        string variable,
+        object? parentIndex,
+        string? parentIndexSource,
+        IReadOnlyList<string> bindingVariables,
+        int line,
+        string? function = null,
+        bool emitInitialLine = true,
+        Action? snapshot = null
+    )
+    {
+        int index = 0;
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
+        {
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
+        }
+
+        do
+        {
+            T item = enumerator.Current;
+            EmitTupleIterationReads(
+                variable,
+                new object?[] { parentIndex, index },
+                item,
+                bindingVariables,
+                line,
+                new string?[] { parentIndexSource, null }
+            );
+            index++;
+            Line(line, function);
+            snapshot?.Invoke();
+            yield return item;
+        }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
+    }
+
+    private static void EmitTupleIterationReads(
+        string variable,
+        object?[] basePath,
+        object? item,
+        IReadOnlyList<string> bindingVariables,
+        int line,
+        IReadOnlyList<string?> baseIndexSources
+    )
+    {
+        if (item is System.Runtime.CompilerServices.ITuple tuple)
+        {
+            int count = Math.Min(tuple.Length, bindingVariables.Count);
+            for (int index = 0; index < count; index++)
+            {
+                string bindingVariable = bindingVariables[index];
+                object? value = tuple[index];
+                if (!string.IsNullOrWhiteSpace(variable))
+                {
+                    IndexedRead(
+                        variable,
+                        basePath.Concat(new object?[] { index }).ToArray(),
+                        value,
+                        line,
+                        bindingVariable,
+                        baseIndexSources.Concat(new string?[] { null }).ToArray()
+                    );
+                }
+                if (!string.IsNullOrWhiteSpace(bindingVariable))
+                {
+                    Write(bindingVariable, value, line);
+                }
+            }
+            return;
+        }
+
+        string fallbackBinding = bindingVariables.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(variable))
+        {
+            IndexedRead(variable, basePath, item, line, fallbackBinding, baseIndexSources);
+        }
+        if (!string.IsNullOrWhiteSpace(fallbackBinding))
+        {
+            Write(fallbackBinding, item, line);
+        }
     }
 
     public static void IndexedWrite(string variable, object index, object? value, int line)

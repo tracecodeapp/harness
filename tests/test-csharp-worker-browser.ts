@@ -754,6 +754,71 @@ async function main(): Promise<void> {
       `C# worker foreach over owners[key] should emit indexed iteration binding provenance, received ${JSON.stringify(keyedCollectionForeachVariableKey.events)}`
     );
 
+    const tupleWeightedEdgesForeach = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public double TupleWeightedEdgesForeach() {',
+        '    var edges = new List<(int u, int v, double r)> { (0, 1, 0.5), (1, 2, 0.25) };',
+        '    double total = 0;',
+        '    foreach (var (u, v, r) in edges) {',
+        '      double w = -Math.Log(r);',
+        '      total += u + v + w;',
+        '    }',
+        '    return Math.Round(total, 3);',
+        '  }',
+        '}',
+      ].join('\n'),
+      'TupleWeightedEdgesForeach',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tupleWeightedEdgesForeach.success && tupleWeightedEdgesForeach.output === 6.079,
+      `C# worker tuple weighted-edges foreach case should succeed, received ${JSON.stringify(tupleWeightedEdgesForeach)}`
+    );
+    assertCondition(
+      tupleWeightedEdgesForeach.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'edges'
+        && JSON.stringify(event.target.path) === JSON.stringify([0, 0])
+        && event.value === 0
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'u') === true,
+      `C# tuple foreach should emit destructured u binding reads, received ${JSON.stringify(tupleWeightedEdgesForeach.events)}`
+    );
+    assertCondition(
+      tupleWeightedEdgesForeach.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'edges'
+        && JSON.stringify(event.target.path) === JSON.stringify([0, 2])
+        && event.value === 0.5
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'r') === true,
+      `C# tuple foreach should emit destructured r binding reads, received ${JSON.stringify(tupleWeightedEdgesForeach.events)}`
+    );
+    assertCondition(
+      tupleWeightedEdgesForeach.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 7
+        && event.target?.variable === 'r'
+        && event.value === 0.5) === true,
+      `C# tuple foreach should emit scalar writes for destructured loop variables, received ${JSON.stringify(tupleWeightedEdgesForeach.events)}`
+    );
+    assertCondition(
+      tupleWeightedEdgesForeach.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 8
+        && event.target?.variable === 'r'
+        && event.value === 0.5) === true,
+      `C# Math.Log(r) initializer should emit a scalar read for r, received ${JSON.stringify(tupleWeightedEdgesForeach.events)}`
+    );
+
     const trieContainsGuard = await runWorkerCase(
       page,
       [
@@ -893,6 +958,17 @@ async function main(): Promise<void> {
         && event.method === 'Enqueue'
         && JSON.stringify(event.args) === JSON.stringify(['b'])) === true,
       `C# worker queue.Enqueue(neighbor) after inDegree[neighbor] == 0 should emit mutation args, received ${JSON.stringify(alienQueueEnqueueMutationArgs.events)}`
+    );
+    assertCondition(
+      alienQueueEnqueueMutationArgs.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'word'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && event.value === 'a'
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'ch') === true,
+      `C# worker foreach (char ch in word) should emit string character binding reads, received ${JSON.stringify(alienQueueEnqueueMutationArgs.events)}`
     );
 
     const interviewAdd = await runWorkerCase(

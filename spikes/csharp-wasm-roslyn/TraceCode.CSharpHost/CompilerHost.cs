@@ -1393,6 +1393,11 @@ public class TreeNode
             TraceCode.CSharpHost.RuntimeTraceSink.Write(variable, value, line);
         }
 
+        public static void Read(string variable, object? value, int line)
+        {
+            TraceCode.CSharpHost.RuntimeTraceSink.Read(variable, value, line);
+        }
+
         public static void Snapshot(string variable, object? value, int line)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, value, line);

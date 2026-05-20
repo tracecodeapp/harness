@@ -2375,6 +2375,24 @@ class Solution {
       'Java worker should wrap enhanced-for collection bindings with runtime iteration reads'
     );
 
+    const foreachCharSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  public int countChars(List<String> words) {
+    int total = 0;
+    for (String word : words) {
+      for (char ch : word.toCharArray()) {
+        total += ch == 'a' ? 1 : 0;
+      }
+    }
+    return total;
+  }
+}`, 'countChars');
+    assertCondition(
+      foreachCharSource.includes('for (char ch : TraceHooks.iterationBindAtLine(7, "word", word.toCharArray(), "ch")) {'),
+      `Java worker should wrap foreach over word.toCharArray() with string character iteration binding reads, received ${foreachCharSource}`
+    );
+
     const foreachArraySource = augmentRewrittenJavaForTest(`class Solution {
   public int totalAccounts(Object[][] accounts) {
     int total = 0;

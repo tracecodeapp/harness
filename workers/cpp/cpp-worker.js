@@ -1904,6 +1904,11 @@ function isVectorCppType(type, aliases = new Map()) {
   return true;
 }
 
+function isAnyVectorCppType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  return normalized.startsWith('vector<') && normalized.endsWith('>');
+}
+
 function isStringCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   return normalized === 'string' || normalized === 'std::string';
@@ -2644,6 +2649,21 @@ function rewriteRangeForIndexedReads(line, lineNumber, variables, aliases = new 
     if (variable && (isUnorderedMapCppType(variable.type, aliases) || isMapCppType(variable.type, aliases))) {
       const valueBinding = valueBindingName === '_' ? 'nullptr' : cppStringLiteral(valueBindingName);
       const rewritten = `${prefix}tracecode::keyed_range_readable(${rangeName}, ${lineNumber}, ${cppStringLiteral(keyBindingName)}, ${valueBinding})${suffix}`;
+      return line.replace(stripped, rewritten);
+    }
+  }
+  const structuredVectorMatch = stripped.match(/^(\s*for\s*\(\s*[^:;]+?\[\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*\]\s*:\s*)([A-Za-z_]\w*)(\s*\).*)$/);
+  if (structuredVectorMatch) {
+    const [, prefix, bindingNamesSource, rangeName, suffix] = structuredVectorMatch;
+    const variable = variables?.get(rangeName);
+    if (variable && isAnyVectorCppType(variable.type, aliases)) {
+      const bindingNames = bindingNamesSource
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name && name !== '_')
+        .join(',');
+      const bindingName = bindingNames ? cppStringLiteral(bindingNames) : 'nullptr';
+      const rewritten = `${prefix}tracecode::indexed_range_readable(${rangeName}, ${lineNumber}, ${bindingName}, ${cppStringLiteral(rangeName)})${suffix}`;
       return line.replace(stripped, rewritten);
     }
   }
@@ -3415,6 +3435,80 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
   return rewritten;
 }
 
+function rewriteStringPointerIndexedReadInstrumentation(line, lineNumber, pointerAliases = new Map()) {
+  if (line.includes('tracecode::trace_index_read') || !line.includes('(*') || pointerAliases.size === 0) {
+    return line;
+  }
+  let rewritten = line;
+  for (const pointerName of [...pointerAliases.keys()].sort((left, right) => right.length - left.length)) {
+    let cursor = 0;
+    const needle = `(*${pointerName}`;
+    while (cursor < rewritten.length) {
+      const start = rewritten.indexOf(needle, cursor);
+      if (start < 0) break;
+      if (isInsideCppStringOrCharLiteral(rewritten, start)) {
+        cursor = start + needle.length;
+        continue;
+      }
+      const before = previousNonWhitespace(rewritten, start);
+      const closePointer = rewritten.indexOf(')', start + needle.length);
+      if (closePointer < 0) break;
+      const bracket = nextNonWhitespace(rewritten, closePointer + 1);
+      if (bracket.ch !== '[') {
+        cursor = closePointer + 1;
+        continue;
+      }
+      const closeBracket = findMatchingSquareBracket(rewritten, bracket.index);
+      if (closeBracket < 0) break;
+      const next = nextNonWhitespace(rewritten, closeBracket + 1);
+      const twoCharNext = rewritten.slice(next.index, next.index + 2);
+      if (
+        before === '&' ||
+        twoCharNext === '++' ||
+        twoCharNext === '--' ||
+        (/^[+\-*/%]?=$/.test(twoCharNext) && twoCharNext !== '==') ||
+        (next.ch === '=' && rewritten[next.index + 1] !== '=')
+      ) {
+        cursor = closeBracket + 1;
+        continue;
+      }
+      const indexExpression = rewritten.slice(bracket.index + 1, closeBracket).trim();
+      if (!indexExpression) {
+        cursor = closeBracket + 1;
+        continue;
+      }
+      const replacement = `tracecode::trace_index_read(*${pointerName}, ${cppStringLiteral(pointerName)}, ${indexExpression}, ${lineNumber}, ${cppIndexSourceForExpression(indexExpression)})`;
+      rewritten = `${rewritten.slice(0, start)}${replacement}${rewritten.slice(closeBracket + 1)}`;
+      cursor = start + replacement.length;
+    }
+  }
+  return rewritten;
+}
+
+function updateStringPointerAliasesForLine(line, pointerAliases, variables, aliases = new Map(), scopeDepth = 0) {
+  const stripped = stripCppStringsAndComments(line).trim();
+  const assignmentMatch = stripped.match(/^(?:(?:const\s+)?(?:std::)?string\s*\*\s*)?([A-Za-z_]\w*)\s*=\s*&\s*([A-Za-z_]\w*)\s*;\s*$/);
+  if (assignmentMatch) {
+    const [, pointerName, sourceName] = assignmentMatch;
+    const sourceVariable = variables?.get(sourceName);
+    if (sourceVariable && isStringCppType(sourceVariable.type, aliases)) {
+      pointerAliases.set(pointerName, { sourceName, scopeDepth: 1 });
+    }
+    return;
+  }
+  for (const match of stripped.matchAll(/\b([A-Za-z_]\w*)\s*=\s*&\s*([A-Za-z_]\w*)\b/g)) {
+    const [, pointerName, sourceName] = match;
+    const sourceVariable = variables?.get(sourceName);
+    if (sourceVariable && isStringCppType(sourceVariable.type, aliases)) {
+      pointerAliases.set(pointerName, { sourceName, scopeDepth: 1 });
+    }
+  }
+  const nullAssignmentMatch = stripped.match(/^([A-Za-z_]\w*)\s*=\s*(?:nullptr|NULL|0)\s*;\s*$/);
+  if (nullAssignmentMatch) {
+    pointerAliases.delete(nullAssignmentMatch[1]);
+  }
+}
+
 function isKeyedIndexSourceInstrumentableCppType(type, aliases = new Map()) {
   return isUnorderedMapCppType(type, aliases) || isMapCppType(type, aliases);
 }
@@ -3714,7 +3808,10 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     const [, name, method, argsSource] = plainMethodMatch;
     const variable = variables?.get(name);
     if (shouldEmitPlainContainerMutation(variable, name, aliases, source)) {
-      const args = splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
+      const trimmedArgsSource = argsSource.trim();
+      const args = trimmedArgsSource.startsWith('{') && trimmedArgsSource.endsWith('}')
+        ? [trimmedArgsSource]
+        : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
         const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
@@ -4551,6 +4648,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewritePlainContainerLookupInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteMapIteratorSecondMutationInstrumentation(lineForDriver, lineNumber, activeFrame.mapIterators);
       lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
+      lineForDriver = rewriteStringPointerIndexedReadInstrumentation(lineForDriver, lineNumber, activeFrame.stringPointerAliases);
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
       lineForDriver = rewriteScalarWriteInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
@@ -4595,6 +4693,9 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     if (lineForDriver.includes(`__TC_POST_LINE_HANDLED_${lineNumber}`)) {
       output[output.length - 1] = output[output.length - 1].replace(`\n#define __TC_POST_LINE_HANDLED_${lineNumber} 1`, '');
     }
+    if (inFunctionBodyBeforeLine && activeFrame && !skipActiveInstrumentation) {
+      updateStringPointerAliasesForLine(line, activeFrame.stringPointerAliases, activeFrame.variables, aliases, activeFrame.depth);
+    }
 
     if (startsMultilineControlCondition) {
       multilineControlConditionDepth = lineParenDelta;
@@ -4632,7 +4733,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
             variables.set(parameter.name, { type: parameter.type, scopeDepth: 1, parameter: true });
           }
         }
-        frameStack.push({ signature: nextSignature, depth: delta, variables, mapIterators: new Map() });
+        frameStack.push({ signature: nextSignature, depth: delta, variables, mapIterators: new Map(), stringPointerAliases: new Map() });
         if (
           delta > 0 &&
           (nextSignature.name !== functionName || nextSignature.line !== targetSignature.line) &&
@@ -4659,6 +4760,9 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         }
         for (const [name, iterator] of frame.mapIterators) {
           if (iterator.scopeDepth > frame.depth) frame.mapIterators.delete(name);
+        }
+        for (const [name, alias] of frame.stringPointerAliases) {
+          if (alias.scopeDepth > frame.depth) frame.stringPointerAliases.delete(name);
         }
         while (frameStack.length > 0 && frameStack[frameStack.length - 1].depth <= 0) {
           frameStack.pop();

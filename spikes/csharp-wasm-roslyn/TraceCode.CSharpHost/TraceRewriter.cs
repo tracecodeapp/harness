@@ -1098,6 +1098,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             yield return writeStatement;
         }
+        foreach (StatementSyntax readStatement in CreateScalarExpressionReadStatements(executableStatement, line))
+        {
+            yield return readStatement;
+        }
         foreach (StatementSyntax mutationStatement in CreateCollectionParameterMutationStatements(executableStatement, line))
         {
             yield return mutationStatement;
@@ -1806,9 +1810,31 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
             int line = GetLine(node);
             var snapshotExclusions = new HashSet<string>(iterationNames, StringComparer.Ordinal);
-            var scopedExpression = SyntaxFactory.ParseExpression(
-                $"TraceCode.CSharpHost.RuntimeTraceSink.IterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {CreateSnapshotActionExpression(line, snapshotExclusions)}), {Literal(string.Empty)}, {Literal(string.Empty)}, {line}, {Literal(methodNames.Peek())}, false, {CreateSnapshotActionExpression(line, snapshotExclusions)})"
-            );
+            string snapshotAction = CreateSnapshotActionExpression(line, snapshotExclusions);
+            string bindingVariablesExpression = CreateStringArrayExpression(iterationNames);
+            ExpressionSyntax scopedExpression;
+            if (node.Expression is IdentifierNameSyntax identifier && iterationNames.Count > 0)
+            {
+                scopedExpression = SyntaxFactory.ParseExpression(
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.TupleIterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(identifier.Identifier.ValueText)}, {bindingVariablesExpression}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
+                );
+            }
+            else if (
+                iterationNames.Count > 0
+                && node.Expression is ElementAccessExpressionSyntax elementAccess
+                && TryGetIdentifierElementAccessPath(elementAccess, out string variable, out string index)
+            )
+            {
+                scopedExpression = SyntaxFactory.ParseExpression(
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.TupleNestedIterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(variable)}, {index}, {CreateIndexSourceLiteral(index)}, {bindingVariablesExpression}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
+                );
+            }
+            else
+            {
+                scopedExpression = SyntaxFactory.ParseExpression(
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.TupleIterationBind(TraceCode.Internal.TraceCodeTrace.EnumerableSource({line}, {Literal(methodNames.Peek())}, () => {rewritten.Expression}, {snapshotAction}), {Literal(string.Empty)}, {bindingVariablesExpression}, {line}, {Literal(methodNames.Peek())}, false, {snapshotAction})"
+                );
+            }
             return rewritten
                 .WithExpression(scopedExpression)
                 .WithStatement(AddLoopHeaderTrace(ExpandEmbeddedLoopStatement(rewritten.Statement, node.Statement, line), line, methodNames.Peek(), emitLine: false));
@@ -2076,6 +2102,30 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         yield break;
     }
 
+    private IEnumerable<StatementSyntax> CreateScalarExpressionReadStatements(StatementSyntax statement, int line)
+    {
+        if (statement is not LocalDeclarationStatementSyntax localDeclaration)
+        {
+            yield break;
+        }
+
+        foreach (VariableDeclaratorSyntax variable in localDeclaration.Declaration.Variables)
+        {
+            if (variable.Initializer?.Value is not ExpressionSyntax initializer
+                || !initializer.DescendantNodesAndSelf().OfType<InvocationExpressionSyntax>().Any())
+            {
+                continue;
+            }
+
+            foreach (string name in GetScalarReadIdentifierNames(initializer, variable.Identifier.ValueText))
+            {
+                yield return TraceStatement(
+                    $"TraceCode.CSharpHost.RuntimeTraceSink.Read({Literal(name)}, {name}, {line});"
+                );
+            }
+        }
+    }
+
     private IEnumerable<StatementSyntax> CreateCollectionParameterMutationStatements(StatementSyntax statement, int line)
     {
         if (statement is not ExpressionStatementSyntax expressionStatement
@@ -2284,6 +2334,34 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     {
         return !string.IsNullOrWhiteSpace(name)
             && (IsDeclaredLocalVariable(name) || !memberNames.Contains(name));
+    }
+
+    private IEnumerable<string> GetScalarReadIdentifierNames(ExpressionSyntax expression, string declaredName)
+    {
+        return expression
+            .DescendantNodesAndSelf()
+            .OfType<IdentifierNameSyntax>()
+            .Where(IsScalarReadIdentifier)
+            .Select(identifier => identifier.Identifier.ValueText)
+            .Where(name =>
+                !string.IsNullOrWhiteSpace(name)
+                && !string.Equals(name, declaredName, StringComparison.Ordinal)
+                && ShouldEmitBareIdentifierWrite(name)
+                && !collectionVariables.Contains(name)
+                && !collectionParameterVariables.Contains(name))
+            .Distinct(StringComparer.Ordinal);
+    }
+
+    private static bool IsScalarReadIdentifier(IdentifierNameSyntax identifier)
+    {
+        return identifier.Parent is not MemberAccessExpressionSyntax
+            && identifier.Parent is not QualifiedNameSyntax
+            && identifier.Ancestors().OfType<ArgumentSyntax>().Any(argument =>
+                argument.Ancestors().OfType<InvocationExpressionSyntax>().Any())
+            && !identifier.Ancestors().Any(ancestor =>
+                ancestor is ParenthesizedLambdaExpressionSyntax
+                    or SimpleLambdaExpressionSyntax
+                    or AnonymousMethodExpressionSyntax);
     }
 
     private void RegisterDeclaredVariables(StatementSyntax statement)

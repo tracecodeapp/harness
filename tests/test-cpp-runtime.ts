@@ -2098,6 +2098,114 @@ if (!unorderedMapStringVectorEvents.some((event) =>
   throw new Error('C++ const string reference range-for should emit source element binding provenance, received ' + JSON.stringify(unorderedMapStringVectorEvents));
 }
 
+const auditAggregatePushBackTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  struct Edge { int u; int v; double w; };',
+    'public:',
+    '  int build() {',
+    '    unordered_map<string, int> ids;',
+    '    ids["USD"] = 0;',
+    '    ids["EUR"] = 1;',
+    '    auto itU = ids.find("USD");',
+    '    auto itV = ids.find("EUR");',
+    '    double rate = 2.0;',
+    '    vector<Edge> edges;',
+    '    edges.push_back({itU->second, itV->second, -std::log(rate)});',
+    '    return edges.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!auditAggregatePushBackTrace.success || auditAggregatePushBackTrace.output !== 1) {
+  throw new Error('C++ aggregate push_back tracing failed: ' + JSON.stringify(auditAggregatePushBackTrace));
+}
+const auditAggregatePushBackEvents = auditAggregatePushBackTrace.trace.events;
+const auditAggregatePushBackMutate = auditAggregatePushBackEvents.find((event) =>
+  event.kind === 'mutate' &&
+  event.line === 12 &&
+  event.target?.variable === 'edges' &&
+  event.method === 'push_back'
+);
+if (
+  !auditAggregatePushBackMutate ||
+  auditAggregatePushBackMutate.args?.[0] !== 0 ||
+  auditAggregatePushBackMutate.args?.[1] !== 1 ||
+  Math.abs(auditAggregatePushBackMutate.args?.[2] + Math.log(2)) > 0.00001
+) {
+  throw new Error('C++ aggregate push_back should emit evaluated aggregate args, received ' + JSON.stringify(auditAggregatePushBackEvents));
+}
+
+const auditStructuredVectorRangeTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int sumEdges() {',
+    '    vector<tuple<int, int, int>> edges;',
+    '    edges.push_back({1, 2, 3});',
+    '    int total = 0;',
+    '    for (auto& [u, v, w] : edges) {',
+    '      total += u + v + w;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'sumEdges',
+  inputs: {},
+  options: {},
+});
+if (!auditStructuredVectorRangeTrace.success || auditStructuredVectorRangeTrace.output !== 6) {
+  throw new Error('C++ structured vector range tracing failed: ' + JSON.stringify(auditStructuredVectorRangeTrace));
+}
+const auditStructuredVectorRangeEvents = auditStructuredVectorRangeTrace.trace.events;
+if (!auditStructuredVectorRangeEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.target?.variable === 'edges' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'u,v,w' &&
+  JSON.stringify(event.value) === JSON.stringify([1, 2, 3])
+)) {
+  throw new Error('C++ structured vector range-for should emit source element binding provenance, received ' + JSON.stringify(auditStructuredVectorRangeEvents));
+}
+
+const auditStringPointerIndexedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  string shortestAt(vector<string>& strs, int i) {',
+    '    const string* shortest = nullptr;',
+    '    for (const auto& s : strs) {',
+    '      if (!shortest || s.size() < shortest->size()) shortest = &s;',
+    '    }',
+    '    return string(1, (*shortest)[i]);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'shortestAt',
+  inputs: { strs: ['pear', 'plum', 'fig'], i: 1 },
+  options: {},
+});
+if (!auditStringPointerIndexedTrace.success || auditStringPointerIndexedTrace.output !== 'i') {
+  throw new Error('C++ string pointer indexed tracing failed: ' + JSON.stringify(auditStringPointerIndexedTrace));
+}
+const auditStringPointerIndexedEvents = auditStringPointerIndexedTrace.trace.events;
+if (!auditStringPointerIndexedEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 8 &&
+  event.target?.variable === 'shortest' &&
+  JSON.stringify(event.target.path) === JSON.stringify([1]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['i']) &&
+  event.value === 'i'
+)) {
+  throw new Error('C++ (*stringPointer)[i] should emit indexed read provenance, received ' + JSON.stringify(auditStringPointerIndexedEvents));
+}
+
 const unorderedMapSetTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -3342,7 +3450,7 @@ if (!budgetTrace.trace.events.some((event) => event.kind === 'timeout')) {
   throw new Error('C++ trace budget should emit a timeout event, received ' + JSON.stringify(budgetTrace.trace.events));
 }
 
-const aggregatePushBackTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+const existingAggregatePushBackTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'struct Edge {',
     '  int u;',
@@ -3365,18 +3473,18 @@ const aggregatePushBackTrace = await sandbox.__tracecodeCppTest.handleExecuteWit
   inputs: {},
   options: {},
 });
-if (!aggregatePushBackTrace.success || aggregatePushBackTrace.output !== 1) {
-  throw new Error('C++ aggregate push_back tracing failed: ' + JSON.stringify(aggregatePushBackTrace));
+if (!existingAggregatePushBackTrace.success || existingAggregatePushBackTrace.output !== 1) {
+  throw new Error('C++ aggregate push_back tracing failed: ' + JSON.stringify(existingAggregatePushBackTrace));
 }
-const aggregatePushBackEvents = aggregatePushBackTrace.trace.events;
-const aggregatePushBackMutate = aggregatePushBackEvents.find((event) =>
+const existingAggregatePushBackEvents = existingAggregatePushBackTrace.trace.events;
+const existingAggregatePushBackMutate = existingAggregatePushBackEvents.find((event) =>
   event.kind === 'mutate' &&
   event.line === 13 &&
   event.target?.variable === 'edges' &&
   event.method === 'push_back'
 );
-if (!aggregatePushBackMutate || aggregatePushBackMutate.args?.[0] !== 1 || aggregatePushBackMutate.args?.[1] !== 2 || Math.abs(aggregatePushBackMutate.args?.[2] + Math.log(4)) > 1e-9) {
-  throw new Error('C++ aggregate push_back should emit evaluated mutation args, received ' + JSON.stringify(aggregatePushBackEvents));
+if (!existingAggregatePushBackMutate || existingAggregatePushBackMutate.args?.[0] !== 1 || existingAggregatePushBackMutate.args?.[1] !== 2 || Math.abs(existingAggregatePushBackMutate.args?.[2] + Math.log(4)) > 1e-9) {
+  throw new Error('C++ aggregate push_back should emit evaluated mutation args, received ' + JSON.stringify(existingAggregatePushBackEvents));
 }
 
 const pointerFieldIndexedConditionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

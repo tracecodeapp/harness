@@ -292,6 +292,20 @@ public final class JavaRewriteLibrary {
           bodyIndent + "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
     }
 
+    Matcher enhancedForStringCharsDeclaration = Pattern.compile("^(\\s*)for\\s*\\(\\s*(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>.?\\[\\] ]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*([A-Za-z_][A-Za-z0-9_]*)\\.toCharArray\\(\\)\\s*\\)\\s*\\{\\s*$").matcher(line);
+    if (enhancedForStringCharsDeclaration.matches()) {
+      String indent = enhancedForStringCharsDeclaration.group(1);
+      String type = enhancedForStringCharsDeclaration.group(2).trim();
+      String name = enhancedForStringCharsDeclaration.group(3);
+      String sourceName = enhancedForStringCharsDeclaration.group(4);
+      registerLocalDeclarators(frame, type, name);
+      if (frame.variables.containsKey(sourceName) || frame.isField(sourceName)) {
+        return indent + "for (" + type + " " + name + " : TraceHooks.iterationBindAtLine(" +
+            sourceLine + ", " + quote(sourceName) + ", " + sourceName + ".toCharArray(), " + quote(name) + ")) {";
+      }
+      return line;
+    }
+
     Matcher enhancedForDeclaration = Pattern.compile("^(\\s*)for\\s*\\(\\s*(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>.?\\[\\] ]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*([^\\)]+)\\)\\s*\\{\\s*$").matcher(line);
     if (enhancedForDeclaration.matches()) {
       String indent = enhancedForDeclaration.group(1);
