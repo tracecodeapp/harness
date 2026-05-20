@@ -3246,6 +3246,15 @@ if (!opsClassTrieEvents.some((event) => event.kind === 'call' && event.function 
   throw new Error('C++ implement-trie ops-class should emit insert call args, received ' + JSON.stringify(opsClassTrieEvents));
 }
 if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 11 &&
+  event.target?.variable === 'this' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['root']) &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie constructor should emit implicit member field write for root, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
   event.kind === 'snapshot' &&
   event.line === 14 &&
   event.target?.variable === 'node' &&

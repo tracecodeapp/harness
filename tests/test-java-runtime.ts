@@ -290,6 +290,46 @@ public class Main {
   }
 }
 
+function testJavaEnhancedForHeaderExpansionDropsStaleBindingSnapshots(): void {
+  const source = `class Solution {
+  int solve(Object[][] rates) {
+    for (Object[] rate : rates) {
+      int len = rate.length;
+    }
+    return 0;
+  }
+}`;
+  const trace = javaTraceHooksEventsToRuntimeTrace(
+    [
+      nativeJavaEvent({ kind: 'snapshot', line: 4, target: { variable: 'rate' }, value: ['USD', 'EUR', 0.9] }),
+      nativeJavaEvent({
+        kind: 'read',
+        line: 3,
+        target: { variable: 'rates', path: [1] },
+        value: ['EUR', 'USD', 1.1],
+        binding: { kind: 'iteration', variable: 'rate' },
+      }),
+      nativeJavaEvent({ kind: 'line', line: 4 }),
+      nativeJavaEvent({ kind: 'snapshot', line: 4, target: { variable: 'rate' }, value: ['EUR', 'USD', 1.1] }),
+    ],
+    source,
+    { runId: 'java:test' }
+  );
+  const headerRateSnapshots = trace.events.filter(
+    (event) =>
+      event.kind === 'snapshot' &&
+      event.line === 3 &&
+      'variable' in event.target &&
+      event.target.variable === 'rate'
+  );
+  assertCondition(
+    headerRateSnapshots.length === 1 &&
+      JSON.stringify(headerRateSnapshots[0]?.value) === JSON.stringify(['EUR', 'USD', 1.1]),
+    `Java enhanced-for header expansion should keep only the current binding snapshot, received ${JSON.stringify(headerRateSnapshots)}`
+  );
+  console.log('PASS: Java enhanced-for header expansion drops stale binding snapshots');
+}
+
 function testJavaRuntimeRecursiveCallStacks(): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-recursive-callstack-'));
   try {
@@ -1566,6 +1606,7 @@ async function main(): Promise<void> {
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
   testJavaRuntimeMultiSnapshotFragments();
+  testJavaEnhancedForHeaderExpansionDropsStaleBindingSnapshots();
   testJavaRuntimeRecursiveCallStacks();
   testJavaRuntimeMutationHooksEmitPostSnapshots();
 
@@ -2635,6 +2676,38 @@ class Solution {
       'Java runtime trace graph traces should not carry visualization classifications'
     );
     console.log('PASS: java worker indexed receiver graph operations emit neutral runtime trace accesses');
+
+    const cloneGraphCode = `import java.util.*;
+
+class Solution {
+  public int countReachable(int[][] adjList) {
+    boolean[] visited = new boolean[adjList.length];
+    dfs(0, adjList, visited);
+    int count = 0;
+    for (boolean flag : visited) {
+      if (flag) count++;
+    }
+    return count;
+  }
+
+  private void dfs(int node, int[][] adjList, boolean[] visited) {
+    if (visited[node]) return;
+    visited[node] = true;
+    for (int neighbor : adjList[node]) {
+      int neighborIndex = neighbor - 1;
+      if (neighborIndex >= 0 && neighborIndex < adjList.length && !visited[neighborIndex]) {
+        dfs(neighborIndex, adjList, visited);
+      }
+    }
+  }
+}`;
+
+    const cloneGraphSource = assertNativeJavaRewriterCompiles(cloneGraphCode, 'countReachable');
+    assertCondition(
+      cloneGraphSource.includes('TraceHooks.emitReturnAtLine(23, "dfs");'),
+      `Java rewriter should emit an implicit return hook before recursive void helper exit, received ${cloneGraphSource}`
+    );
+    console.log('PASS: java rewriter emits implicit returns for recursive void helpers');
 
     const mutatingExpressionCode = `import java.util.*;
 class Solution {

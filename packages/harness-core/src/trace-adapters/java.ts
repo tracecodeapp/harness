@@ -223,6 +223,7 @@ function expandJavaLoopHeaderTraceEvents(
       expanded.push(cloneRuntimeEventAtLine(event, headerLine));
       for (const [variable, snapshotEvent] of latestSnapshotByVariable) {
         if (headerInfo.excludedVariables.has(variable)) continue;
+        if (headerInfo.headerVariables.has(variable)) continue;
         expanded.push(cloneRuntimeEventAtLine(snapshotEvent, headerLine));
       }
       lastLineEventLine = headerLine;

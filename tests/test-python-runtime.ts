@@ -445,6 +445,79 @@ print(json.dumps({
   console.log('PASS: Python runtime records enumerate value binding');
 }
 
+async function assertEnumerateExpressionLoopBindingIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def largest_rectangle_area(heights):
+    total = 0
+    for i, h in enumerate(heights + [0]):
+        total += i + h
+    return total
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'largest_rectangle_area',
+    { heights: [2, 1] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(parsed.result === 6, `Python enumerate expression fixture should execute successfully, received ${JSON.stringify(parsed.result)}`);
+  const loopLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'for i, h in enumerate(heights + [0]):') - 1;
+  const loopAccesses = parsed.trace
+    .filter((step) => step.event === 'line' && step.line === loopLine)
+    .flatMap((step) => step.accesses ?? []);
+  assertCondition(
+    loopAccesses.some((access) => (
+      access.variable === 'heights + [0]' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([1]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify(['i']) &&
+      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'h' }) &&
+      access.value === 1
+    )),
+    `Python enumerate expression loop should bind values to their expression source, received ${JSON.stringify(loopAccesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === loopLine &&
+      event.target?.variable === 'heights + [0]' &&
+      JSON.stringify(event.target.path) === JSON.stringify([2]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['i']) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'h' &&
+      event.value === 0
+    )),
+    `Python V4 runtime trace should emit enumerate expression sentinel provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records enumerate expression value binding');
+}
+
 async function assertTupleForLoopBindingIsRecorded(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def relax(edges):
@@ -1806,6 +1879,7 @@ async function main(): Promise<void> {
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
   await assertIndexSourceProvenanceIsRecorded();
   await assertEnumerateLoopBindingIsRecorded();
+  await assertEnumerateExpressionLoopBindingIsRecorded();
   await assertTupleForLoopBindingIsRecorded();
   await assertListForLoopBindingSourcesAreRecorded();
   await assertLiteralTupleUnpackingForLoopBindingIsRecorded();

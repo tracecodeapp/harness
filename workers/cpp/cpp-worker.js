@@ -1622,6 +1622,23 @@ function collectTraceContainerMemberVariables(source, aliases = new Map(), class
   return members;
 }
 
+function collectSerializableMemberVariables(source, aliases = new Map(), className = 'Solution') {
+  const members = new Map();
+  const cleaned = stripComments(source);
+  const classMatch = cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escapeRegExp(className)}\\b[\\s\\S]*?\\{([\\s\\S]*?)\\n\\s*public\\s*:`)) ||
+    cleaned.match(new RegExp(`\\b(?:class|struct)\\s+${escapeRegExp(className)}\\b[\\s\\S]*?\\{([\\s\\S]*?)\\n\\s*\\};`));
+  if (!classMatch) return members;
+  for (const line of classMatch[1].split(/\r?\n/)) {
+    const variables = extractDeclaredSnapshotVariables(`${line.trim().replace(/^(?:public|private|protected)\s*:\s*/, '')}`, aliases);
+    for (const variable of variables) {
+      if (isSnapshotSerializableCppType(variable.type, aliases)) {
+        members.set(variable.name, { type: variable.type, scopeDepth: 0 });
+      }
+    }
+  }
+  return members;
+}
+
 function isScriptExecutionRequest(functionName, options = {}) {
   return !String(functionName || '').trim() && options.executionStyle === 'function';
 }
@@ -2857,6 +2874,26 @@ function rewritePointerAssignmentWriteInstrumentation(line, lineNumber) {
   if (!match) return line;
   const [, indent, name] = match;
   return `${line}\n${buildScalarWriteInstrumentation(name, lineNumber, indent)}`;
+}
+
+function rewriteBareMemberAssignmentWriteInstrumentation(
+  line,
+  lineNumber,
+  memberVariables = new Map(),
+  localVariables = new Map(),
+  activeClassName = null,
+  traceMemberClassName = null
+) {
+  if (!activeClassName || activeClassName !== traceMemberClassName || line.includes('tracecode::')) return line;
+  const match = line.match(/^(\s*)([A-Za-z_]\w*)\s*=\s*(.+?)\s*;\s*$/);
+  if (!match) return line;
+  const [, indent, name] = match;
+  if (!memberVariables.has(name) || localVariables.has(name)) return line;
+  const targetExpression = `std::string(${cppStringLiteral(`{"variable":"this","path":[${jsonStringLiteral(name)}]}`)})`;
+  return [
+    line,
+    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"write","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${name}) + "}", ${lineNumber});`,
+  ].join('\n');
 }
 
 function buildCallInstrumentation(lineNumber, signature) {
@@ -4409,6 +4446,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   const aliases = collectCppTypeAliases(source);
   const traceMemberNames = collectTraceContainerMemberNames(source, aliases, options.traceMemberClassName || 'Solution');
   const traceMemberVariables = collectTraceContainerMemberVariables(source, aliases, options.traceMemberClassName || 'Solution');
+  const serializableMemberVariables = collectSerializableMemberVariables(source, aliases, options.traceMemberClassName || 'Solution');
   const targetSignature = parseMethodSignature(source, functionName);
   const skipTraceParameterNames = new Set(
     targetSignature.parameters
@@ -4676,6 +4714,14 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteScalarWriteInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
       lineForDriver = rewritePointerAssignmentWriteInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewritePointerFieldReadInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
+      lineForDriver = rewriteBareMemberAssignmentWriteInstrumentation(
+        lineForDriver,
+        lineNumber,
+        serializableMemberVariables,
+        activeFrame.variables,
+        activeClassName,
+        options.traceMemberClassName || 'Solution'
+      );
       const externalPostLineIsScopeSafe = /^\s*for\s*\([^;:]+:/.test(trimmedLine) && !trimmedLine.includes('{');
       if (postLineHandledInline && !externalPostLineIsScopeSafe) {
         lineForDriver = `${lineForDriver}\n#define __TC_POST_LINE_HANDLED_${lineNumber} 1`;

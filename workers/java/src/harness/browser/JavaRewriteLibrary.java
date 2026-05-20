@@ -204,6 +204,10 @@ public final class JavaRewriteLibrary {
       }
 
       String rewrittenLine = rewriteStatement(line, sourceLine, current);
+      if ("void".equals(current.returnType) && current.depth + braceDelta(line) <= 0) {
+        out.append(indentOf(line)).append("TraceHooks.emitReturnAtLine(")
+            .append(sourceLine).append(", ").append(quote(current.name)).append(");\n");
+      }
       out.append(rewrittenLine).append('\n');
       current.pendingAnnotation = false;
       if (startsMultilineControlHeader(trimmed)) {
