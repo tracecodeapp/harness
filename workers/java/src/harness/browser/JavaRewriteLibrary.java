@@ -54,6 +54,8 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.computeIfAbsent\\((.+),\\s*([^;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
+  private static final Pattern INDEXED_FIELD_MUTATING_CALL_STATEMENT = Pattern.compile(
+      "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\.([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern ARRAY_INDEXED_MUTATING_CALL_STATEMENT = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\);\\s*$");
   private static final Pattern ARRAY_INDEXED_MAP_WRITE_STATEMENT = Pattern.compile(
@@ -153,6 +155,9 @@ public final class JavaRewriteLibrary {
       }
 
       if (current.initializerDepth > 0 || startsMultilineInitializer(trimmed)) {
+        if (current.initializerDepth <= 0) {
+          current.pendingMultilineMutation = multilineMutationStart(line, sourceLine, current);
+        }
         if (
             current.initializerDepth <= 0 &&
             !current.pendingAnnotation &&
@@ -162,7 +167,14 @@ public final class JavaRewriteLibrary {
         }
         registerMultilineLocalDeclaration(current, trimmed);
         out.append(line).append('\n');
+        if (current.pendingMultilineMutation != null) {
+          current.pendingMultilineMutation.appendLine(line);
+        }
         current.initializerDepth = Math.max(0, current.initializerDepth + braceDelta(line));
+        if (current.initializerDepth == 0 && current.pendingMultilineMutation != null) {
+          out.append(current.pendingMultilineMutation.emitHook(current)).append('\n');
+          current.pendingMultilineMutation = null;
+        }
         current.depth += braceDelta(line);
         while (!methods.isEmpty() && methods.peek().depth <= 0) {
           methods.pop();
@@ -366,7 +378,7 @@ public final class JavaRewriteLibrary {
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + (" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"}\");";
+          pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
       String snapshotEvent = "this".equals(name) && frame.isField(field)
           ? "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(field) + ", " + field + ");"
           : "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
@@ -385,7 +397,7 @@ public final class JavaRewriteLibrary {
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"}\");";
+          pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
       return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
@@ -441,6 +453,26 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]" + escapedIndexSourcesTargetSegment(rawKey) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + key + ") + \"]" + escapedIndexSourcesTargetSegment(rawKey) + "},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
+      String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+    }
+
+    Matcher indexedFieldMutatingCall = INDEXED_FIELD_MUTATING_CALL_STATEMENT.matcher(line);
+    if (indexedFieldMutatingCall.matches() && isTrackedMutationMethod(indexedFieldMutatingCall.group(5))) {
+      String indent = indexedFieldMutatingCall.group(1);
+      String name = indexedFieldMutatingCall.group(2);
+      String rawIndex = indexedFieldMutatingCall.group(3).trim();
+      String index = rewriteReads(rawIndex, sourceLine, frame);
+      String field = indexedFieldMutatingCall.group(4);
+      String method = indexedFieldMutatingCall.group(5);
+      MutatingArgs rewrittenArgs = mutatingArgs(indexedFieldMutatingCall.group(6).trim(), sourceLine, frame);
+      String temp = "__tracecodeIndexedFieldTarget" + sourceLine;
+      String target = name + ".get(" + index + ")." + field;
+      String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
+      String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \",\\\"" + field + "\\\"]" + escapedIndexSourcesTargetSegment(rawIndex, null) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
+      String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \",\\\"" + field + "\\\"]" + escapedIndexSourcesTargetSegment(rawIndex, null) + "},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
       return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
@@ -514,15 +546,15 @@ public final class JavaRewriteLibrary {
       String rawIndex = arrayIndexedMutatingCall.group(3).trim();
       String index = rewriteReads(rawIndex, sourceLine, frame);
       String method = arrayIndexedMutatingCall.group(4);
-      String args = rewriteReads(arrayIndexedMutatingCall.group(5).trim(), sourceLine, frame);
+      MutatingArgs rewrittenArgs = mutatingArgs(arrayIndexedMutatingCall.group(5).trim(), sourceLine, frame);
       String target = name + "[" + index + "]";
       String pathPrefix = "\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[";
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
-          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex) + "},\\\"method\\\":\\\"" + method + "\\\"}\");";
+          pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex) + "},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + readEvent + " " + target + "." + method + "(" + args + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
     }
 
     Matcher update2d = ARRAY_UPDATE_2D.matcher(line);
@@ -958,6 +990,14 @@ public final class JavaRewriteLibrary {
         !trimmed.startsWith("if ") && !trimmed.startsWith("for ") && !trimmed.startsWith("while ") &&
         !trimmed.startsWith("switch ") && !trimmed.startsWith("try") && !trimmed.startsWith("catch") &&
         !trimmed.startsWith("finally") && !trimmed.startsWith("else") && !trimmed.startsWith("do ");
+  }
+
+  private static PendingMultilineMutation multilineMutationStart(String line, int sourceLine, MethodFrame frame) {
+    Matcher mutation = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)$").matcher(line);
+    if (!mutation.matches() || !isTrackedMutationMethod(mutation.group(3))) return null;
+    String name = mutation.group(2);
+    if (!frame.variables.containsKey(name) && !frame.isField(name)) return null;
+    return new PendingMultilineMutation(mutation.group(1), sourceLine, name, mutation.group(3));
   }
 
   private static void registerMultilineLocalDeclaration(MethodFrame frame, String trimmed) {
@@ -1652,6 +1692,43 @@ public final class JavaRewriteLibrary {
     }
   }
 
+  private static final class PendingMultilineMutation {
+    final String indent;
+    final int sourceLine;
+    final String name;
+    final String method;
+    final StringBuilder callSource;
+
+    PendingMultilineMutation(String indent, int sourceLine, String name, String method) {
+      this.indent = indent;
+      this.sourceLine = sourceLine;
+      this.name = name;
+      this.method = method;
+      this.callSource = new StringBuilder();
+    }
+
+    void appendLine(String line) {
+      if (callSource.length() > 0) callSource.append('\n');
+      callSource.append(line);
+    }
+
+    String emitHook(MethodFrame frame) {
+      String args = rawArgs();
+      return indent + "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine +
+          ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\"},\\\"method\\\":\\\"" + method + "\\\"" +
+          mutationArgsEventSegment(args, sourceLine, frame) + "}\"); TraceHooks.emitRuntimeSnapshotAtLine(" +
+          sourceLine + ", " + quote(name) + ", " + name + ");";
+    }
+
+    private String rawArgs() {
+      String source = callSource.toString();
+      int open = source.indexOf('(');
+      int close = source.lastIndexOf(')');
+      if (open < 0 || close <= open) return "";
+      return source.substring(open + 1, close).trim();
+    }
+  }
+
   private static final class MethodFrame {
     final String name;
     final String returnType;
@@ -1662,6 +1739,7 @@ public final class JavaRewriteLibrary {
     boolean pendingAnnotation;
     boolean suppressNextLineHook;
     boolean statementContinuation;
+    PendingMultilineMutation pendingMultilineMutation;
     final java.util.Set<String> fields;
     final Map<String, String> variables;
 
@@ -1675,6 +1753,7 @@ public final class JavaRewriteLibrary {
       this.pendingAnnotation = false;
       this.suppressNextLineHook = false;
       this.statementContinuation = false;
+      this.pendingMultilineMutation = null;
       this.fields = new java.util.HashSet<>(fields.keySet());
       this.variables = new HashMap<>(fields);
       registerParameters(this.variables, parametersSource);

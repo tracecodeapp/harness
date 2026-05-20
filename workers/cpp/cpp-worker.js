@@ -3632,10 +3632,11 @@ function cppValueTypeTempInitialization(containerName, tempName, argumentSource)
 function rewritePlainContainerMutationInstrumentation(line, lineNumber, variables, aliases = new Map(), source = '') {
   if (line.includes('tracecode::')) return line;
   const stripped = stripCppStringsAndComments(line).trim();
+  const statement = stripCppLineCommentPreservingStrings(line).trim();
   if (!stripped || /^(?:if|for|while|switch|return|break|continue)\b/.test(stripped)) return line;
   const indent = line.match(/^(\s*)/)?.[1] ?? '';
 
-  const fillMatch = stripped.match(/^([A-Za-z_]\w*)\s*\.\s*fill\s*\((.*)\)\s*;\s*$/);
+  const fillMatch = statement.match(/^([A-Za-z_]\w*)\s*\.\s*fill\s*\((.*)\)\s*;\s*$/);
   if (fillMatch) {
     const [, name, argsSource] = fillMatch;
     const variable = variables?.get(name);
@@ -3648,7 +3649,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     }
   }
 
-  const sortMatch = stripped.match(/^(?:std::)?sort\s*\(\s*([A-Za-z_]\w*)\s*\.\s*begin\s*\(\s*\)\s*,\s*\1\s*\.\s*end\s*\(\s*\)(?:\s*,\s*.*)?\)\s*;\s*$/);
+  const sortMatch = statement.match(/^(?:std::)?sort\s*\(\s*([A-Za-z_]\w*)\s*\.\s*begin\s*\(\s*\)\s*,\s*\1\s*\.\s*end\s*\(\s*\)(?:\s*,\s*.*)?\)\s*;\s*$/);
   if (sortMatch) {
     const [, name] = sortMatch;
     const variable = variables?.get(name);
@@ -3660,7 +3661,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     }
   }
 
-  const plainMethodMatch = stripped.match(/^([A-Za-z_]\w*)\s*\.\s*(push_back|insert|pop_back|clear)\s*\((.*)\)\s*;\s*$/);
+  const plainMethodMatch = statement.match(/^([A-Za-z_]\w*)\s*\.\s*(push_back|insert|pop_back|clear)\s*\((.*)\)\s*;\s*$/);
   if (plainMethodMatch) {
     const [, name, method, argsSource] = plainMethodMatch;
     const variable = variables?.get(name);
@@ -3686,6 +3687,38 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
   }
 
   return line;
+}
+
+function detectMapIteratorAlias(line, variables, aliases = new Map(), scopeDepth = 0) {
+  const statement = stripCppLineCommentPreservingStrings(line).trim();
+  const match = statement.match(/^(?:const\s+)?(?:(?:auto)|(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?(?:\s*<[^;]+>)?(?:::[A-Za-z_]\w+)?))\s+([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\.\s*(?:find|find_with_index_source)\s*\((.*)\)\s*;\s*$/);
+  if (!match) return null;
+  const [, iteratorName, containerName, keySource] = match;
+  const variable = variables?.get(containerName);
+  if (!variable || !isKeyedIndexSourceInstrumentableCppType(variable.type, aliases)) return null;
+  const keyExpression = splitTopLevelCommaList(keySource)[0]?.trim();
+  return {
+    name: iteratorName,
+    containerName,
+    keySource: keyExpression ? cppIndexSourceForExpression(keyExpression) : 'nullptr',
+    scopeDepth,
+  };
+}
+
+function rewriteMapIteratorSecondMutationInstrumentation(line, lineNumber, iteratorAliases) {
+  if (line.includes('tracecode::')) return line;
+  const statement = stripCppLineCommentPreservingStrings(line).trim();
+  const match = statement.match(/^([A-Za-z_]\w*)\s*->\s*second\s*\.\s*(clear|pop_back)\s*\(\s*\)\s*;\s*$/);
+  if (!match) return line;
+  const [, iteratorName, method] = match;
+  const alias = iteratorAliases?.get(iteratorName);
+  if (!alias?.containerName) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  return [
+    line,
+    `${indent}${alias.containerName}.emit_keyed_mutate(${iteratorName}->first, ${cppStringLiteral(method)}, ${lineNumber}, tracecode::mutation_args_json(), ${alias.keySource || 'nullptr'});`,
+    `${indent}${alias.containerName}.emit_snapshot(${lineNumber});`,
+  ].join('\n');
 }
 
 function rewriteTraceContainerProxyReferences(line, variables, aliases = new Map()) {
@@ -4342,6 +4375,10 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         }
         lexicalAccessVariables = buildCppLexicalAccessVariables(frameStack);
       }
+      const iteratorAlias = detectMapIteratorAlias(line, lexicalAccessVariables, aliases, declaredScopeDepth);
+      if (iteratorAlias) {
+        activeFrame.mapIterators.set(iteratorAlias.name, iteratorAlias);
+      }
       if (/\b(?:destroy|cleanup|deleteTree|deleteList)\s*\(/i.test(trimmedLine)) {
         for (const [name, variable] of activeFrame.variables) {
           if (normalizeCppType(variable.type, aliases).includes('*')) activeFrame.variables.delete(name);
@@ -4406,6 +4443,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteVectorIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewritePlainIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewritePlainContainerMutationInstrumentation(lineForDriver, lineNumber, accessVariables, aliases, source);
+      lineForDriver = rewriteMapIteratorSecondMutationInstrumentation(lineForDriver, lineNumber, activeFrame.mapIterators);
       lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
@@ -4488,7 +4526,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
             variables.set(parameter.name, { type: parameter.type, scopeDepth: 1, parameter: true });
           }
         }
-        frameStack.push({ signature: nextSignature, depth: delta, variables });
+        frameStack.push({ signature: nextSignature, depth: delta, variables, mapIterators: new Map() });
         if (
           delta > 0 &&
           (nextSignature.name !== functionName || nextSignature.line !== targetSignature.line) &&
@@ -4512,6 +4550,9 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         frame.depth += delta;
         for (const [name, variable] of frame.variables) {
           if (variable.scopeDepth > frame.depth) frame.variables.delete(name);
+        }
+        for (const [name, iterator] of frame.mapIterators) {
+          if (iterator.scopeDepth > frame.depth) frame.mapIterators.delete(name);
         }
         while (frameStack.length > 0 && frameStack[frameStack.length - 1].depth <= 0) {
           frameStack.pop();
@@ -4958,6 +4999,54 @@ function compileFailureResult(diagnostics, fallbackMessage, start, details = {})
   };
 }
 
+function splitNonEmptyOutputLines(value) {
+  return String(value || '').split(/\r?\n/).filter(Boolean);
+}
+
+function programOutputDiagnostics(program, error) {
+  return [
+    program?.stderr,
+    program?.stdout,
+    error instanceof Error ? error.message : String(error),
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function programOutputParseFailureResult(error, program, signature, start, timings, options = {}) {
+  const diagnostics = programOutputDiagnostics(program, error) || 'C++ program output could not be parsed.';
+  const consoleOutput = [
+    ...splitNonEmptyOutputLines(program?.stdout),
+    ...splitNonEmptyOutputLines(program?.stderr),
+  ];
+  if (options.tracing) {
+    const trace = finalizeRuntimeTrace(
+      [{ kind: 'exception', line: signature.line, message: diagnostics }],
+      options.traceOptions || {}
+    ).trace;
+    return {
+      success: false,
+      output: null,
+      error: diagnostics,
+      trace,
+      consoleOutput,
+      executionTimeMs: elapsedMs(start),
+      lineEventCount: trace.lineEventCount,
+      traceStepCount: trace.traceStepCount,
+      timings: { ...timings, totalMs: elapsedMs(start) },
+    };
+  }
+  return {
+    success: false,
+    output: null,
+    error: diagnostics,
+    consoleOutput,
+    executionTimeMs: elapsedMs(start),
+    timings: { ...timings, totalMs: elapsedMs(start) },
+  };
+}
+
 async function runTool(module, fs, args) {
   const result = await runWasi(module, args, fs, {
     filestatSizeOffset: args[0] === 'wasm-ld' ? 24 : 32,
@@ -5219,11 +5308,16 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
       stdin: JSON.stringify(inputs || {}),
     });
     timings.runMs = elapsedMs(runStartedAt);
-    const parsed = parseProgramStdout(program.stdout, {
-      tracing: options.tracing,
-      defaultLine: signature.line,
-      allowMissingResult: options.tracing,
-    });
+    let parsed;
+    try {
+      parsed = parseProgramStdout(program.stdout, {
+        tracing: options.tracing,
+        defaultLine: signature.line,
+        allowMissingResult: options.tracing,
+      });
+    } catch (parseError) {
+      return programOutputParseFailureResult(parseError, program, signature, start, timings, options);
+    }
     if (scriptRequest && options.tracing) {
       parsed.events = normalizeScriptTraceEvents(parsed.events, scriptLineCount(source));
     }
@@ -5360,11 +5454,16 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
       stdin: JSON.stringify(inputs || {}),
     });
     timings.runMs = elapsedMs(runStartedAt);
-    const parsed = parseProgramStdout(program.stdout, {
-      tracing: options.tracing,
-      defaultLine: signature.line,
-      allowMissingResult: options.tracing,
-    });
+    let parsed;
+    try {
+      parsed = parseProgramStdout(program.stdout, {
+        tracing: options.tracing,
+        defaultLine: signature.line,
+        allowMissingResult: options.tracing,
+      });
+    } catch (parseError) {
+      return programOutputParseFailureResult(parseError, program, signature, start, timings, options);
+    }
     if (scriptRequest && options.tracing) {
       parsed.events = normalizeScriptTraceEvents(parsed.events, scriptLineCount(source));
     }
@@ -5516,11 +5615,16 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
       stdin: JSON.stringify(inputs || {}),
     });
     timings.runMs = elapsedMs(runStartedAt);
-    const parsed = parseProgramStdout(program.stdout, {
-      tracing: options.tracing,
-      defaultLine: signature.line,
-      allowMissingResult: options.tracing,
-    });
+    let parsed;
+    try {
+      parsed = parseProgramStdout(program.stdout, {
+        tracing: options.tracing,
+        defaultLine: signature.line,
+        allowMissingResult: options.tracing,
+      });
+    } catch (parseError) {
+      return programOutputParseFailureResult(parseError, program, signature, start, timings, options);
+    }
     if (scriptRequest && options.tracing) {
       parsed.events = normalizeScriptTraceEvents(parsed.events, scriptLineCount(source));
     }

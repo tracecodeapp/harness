@@ -2268,7 +2268,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string variable = receiver.Identifier.ValueText;
-        string args = string.Join(", ", invocation.ArgumentList.Arguments.Skip(1).Select(argument => argument.Expression.ToString()));
+        string args = string.Join(", ", invocation.ArgumentList.Arguments.Skip(1).Select(argument =>
+            argument.Expression is AnonymousFunctionExpressionSyntax
+                ? Literal("<lambda>")
+                : argument.Expression.ToString()));
         string argsExpression = string.IsNullOrWhiteSpace(args)
             ? "System.Array.Empty<object?>()"
             : $"new object?[] {{ {args} }}";

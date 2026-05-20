@@ -1873,6 +1873,43 @@ async function main(): Promise<void> {
       `C# worker traced Array.Sort case should include chars mutation, received ${JSON.stringify(tracedArraySort.events)}`
     );
 
+    const tracedArraySortLambdaComparer = await runWorkerCase(
+      page,
+      [
+        'using System;',
+        'public class Solution {',
+        '  public int SortIntervals(int[][] intervals) {',
+        '    int[][] sorted = new int[intervals.Length][];',
+        '    for (int i = 0; i < intervals.Length; i++) sorted[i] = intervals[i];',
+        '    Array.Sort(sorted, (a, b) => a[0] - b[0]);',
+        '    return sorted[0][0];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'SortIntervals',
+      { intervals: [[7, 10], [2, 4]] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedArraySortLambdaComparer.success,
+      `C# worker traced Array.Sort lambda comparer case should succeed: ${tracedArraySortLambdaComparer.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedArraySortLambdaComparer.output === 2,
+      `C# worker traced Array.Sort lambda comparer case should return sorted first start, received ${JSON.stringify(tracedArraySortLambdaComparer.output)}`
+    );
+    assertCondition(
+      tracedArraySortLambdaComparer.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 6
+        && event.target?.variable === 'sorted'
+        && event.method === 'Array.Sort'
+        && JSON.stringify(event.args) === JSON.stringify(['<lambda>'])
+      ) === true,
+      `C# worker traced Array.Sort lambda comparer case should include lambda-safe mutation args, received ${JSON.stringify(tracedArraySortLambdaComparer.events)}`
+    );
+
     const tracedCollections = await runWorkerCase(
       page,
       [

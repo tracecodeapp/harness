@@ -2078,6 +2078,11 @@ class Vector : public std::vector<T> {
     return VectorElementRef<T>(*this, index, source);
   }
 
+  const T& with_index_source(std::size_t index, const char* source) const {
+    emit_read(index, trace_event_line(), source);
+    return values_[index];
+  }
+
   const T& operator[](std::size_t index) const {
     emit_read(index, trace_event_line());
     return values_[index];

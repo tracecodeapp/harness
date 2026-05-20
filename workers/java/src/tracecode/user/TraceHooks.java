@@ -551,7 +551,7 @@ public final class TraceHooks {
   }
 
   public static void emitMutatingCallAtLine(int line, String name, String method) {
-    emitTraceMutate(line, name, null, method);
+    emitTraceMutate(line, name, null, method, null, "[]");
   }
 
   public static void emitMutatingCallAtLine(int line, String name, String method, Object... args) {
@@ -578,15 +578,15 @@ public final class TraceHooks {
   }
 
   public static void emitMutatingCallAtLine(int line, String name, int index, String method) {
-    emitTraceMutate(line, name, "[" + serializeResult(index) + "]", method);
+    emitTraceMutate(line, name, "[" + serializeResult(index) + "]", method, null, "[]");
   }
 
   public static void emitMutatingCallAtLine(int line, String name, int index, String method, String indexSource) {
-    emitTraceMutate(line, name, "[" + serializeResult(index) + "]", method, indexSourcesJson(indexSource));
+    emitTraceMutate(line, name, "[" + serializeResult(index) + "]", method, indexSourcesJson(indexSource), "[]");
   }
 
   public static void emitMutatingCallAtLine(int line, String name, Object key, String method, String indexSource) {
-    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", method, indexSourcesJson(indexSource));
+    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", method, indexSourcesJson(indexSource), "[]");
   }
 
   public static void emitMutatingCallAtLine(int line, String name, Object key, String method, String indexSource, Object value) {
@@ -594,7 +594,7 @@ public final class TraceHooks {
   }
 
   public static void emitKeyedMutatingCallAtLine(int line, String name, String method, Object key) {
-    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", method);
+    emitTraceMutate(line, name, "[" + serializeResult(key) + "]", method, null, "[]");
   }
 
   public static void emitKeyedMutatingCallAtLine(int line, String name, String method, Object key, Object value) {

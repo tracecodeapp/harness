@@ -401,6 +401,14 @@ public class Main {
     TraceHooks.emitLineAtLine(14);
     TraceHooks.fillArrayAtLine(14, "matchRight", matchRight, -1);
 
+    Deque<Integer> deque = new ArrayDeque<>();
+    deque.addLast(1);
+    TraceHooks.emitMutatingCallAtLine(15, "deque", "addLast", 1);
+    TraceHooks.emitLineAtLine(16);
+    deque.removeFirst();
+    TraceHooks.emitMutatingCallAtLine(16, "deque", "removeFirst");
+    TraceHooks.emitRuntimeSnapshotAtLine(16, "deque", deque);
+
     for (String event : TraceHooks.drainEvents()) System.out.println(event);
   }
 }
@@ -538,6 +546,17 @@ public class Main {
       ),
       'Java Arrays.fill hook should emit a post-fill array snapshot'
     );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 16 &&
+        'variable' in event.target &&
+        event.target.variable === 'deque' &&
+        event.method === 'removeFirst' &&
+        JSON.stringify(event.args) === JSON.stringify([])
+      ),
+      'Java no-arg mutation helper overloads should emit an empty args array'
+    );
     console.log('PASS: Java native mutation hooks emit post-line snapshots');
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
@@ -616,6 +635,65 @@ class Solution {
     !initializerSource.includes('TraceHooks.emitLineAtLine(7);\n      1.0') &&
       !initializerSource.includes('TraceHooks.emitLineAtLine(8);\n      2.0'),
     'Java rewriter should not insert line hooks inside multiline array initializers'
+  );
+  assertCondition(
+    initializerSource.includes('\\"line\\":6') &&
+      initializerSource.includes('\\"method\\":\\"add\\"') &&
+      initializerSource.includes('\\"args\\":[') &&
+      initializerSource.includes('TraceHooks.emitRuntimeSnapshotAtLine(6, "edges", edges);'),
+    'Java rewriter should emit a mutate event with args for multiline collection adds on the call source line'
+  );
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<double[]> edges = new ArrayList<>();
+    edges.add(new double[] {
+      1.0,
+      2.0
+    });
+    return edges.size();
+  }
+}`);
+
+  const noArgMutationsSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Box {
+  List<Integer> values = new ArrayList<>();
+}
+
+class Solution {
+  int solve() {
+    Deque<Integer> queue = new ArrayDeque<>();
+    queue.addLast(1);
+    queue.removeFirst();
+    List<Box> boxes = new ArrayList<>();
+    boxes.add(new Box());
+    boxes.get(0).values.clear();
+    Set<Integer>[] sets = new Set[] { new HashSet<>() };
+    sets[0].clear();
+    return queue.size() + boxes.size() + sets.length;
+  }
+}`);
+  assertCondition(
+    noArgMutationsSource.includes('TraceHooks.emitNoArgMutatingCallAtLine(11, "queue", "removeFirst")') ||
+      (noArgMutationsSource.includes('\\"line\\":11') &&
+        noArgMutationsSource.includes('\\"method\\":\\"removeFirst\\"') &&
+        noArgMutationsSource.includes('\\"args\\":[]')),
+    'Java rewriter should route no-arg queue.removeFirst mutations through an empty-args mutate path'
+  );
+  assertCondition(
+    noArgMutationsSource.includes('\\"line\\":14') &&
+      noArgMutationsSource.includes('\\"method\\":\\"clear\\"') &&
+      noArgMutationsSource.includes('\\"args\\":[]') &&
+      noArgMutationsSource.includes(',\\"values\\"]'),
+    'Java rewriter should emit empty args for no-arg field-indexed collection mutations'
+  );
+  assertCondition(
+    noArgMutationsSource.includes('\\"line\\":16') &&
+      noArgMutationsSource.includes('\\"method\\":\\"clear\\"') &&
+      noArgMutationsSource.includes('\\"args\\":[]'),
+    'Java rewriter should emit empty args for no-arg array-indexed collection mutations'
   );
 
   const unbracedLoopSource = assertNativeJavaRewriterCompiles(`class Solution {

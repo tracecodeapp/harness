@@ -397,6 +397,31 @@ for (const testCase of cases) {
   }
 }
 
+const runtimeCrashDiagnostics = await sandbox.__tracecodeCppTest.handleCompileRun({
+  name: 'runtime crash diagnostics',
+  code: [
+    'class Solution {',
+    'public:',
+    '  int fail() {',
+    '    std::printf("before crash\\n");',
+    '    std::fprintf(stderr, "fatal detail\\n");',
+    '    std::fflush(stdout);',
+    '    std::fflush(stderr);',
+    '    std::exit(5);',
+    '    return 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'fail',
+  inputs: {},
+});
+if (runtimeCrashDiagnostics.success) {
+  throw new Error('C++ runtime crash diagnostics case should fail');
+}
+if (!String(runtimeCrashDiagnostics.error || '').includes('fatal detail') || !runtimeCrashDiagnostics.consoleOutput?.includes('before crash')) {
+  throw new Error('C++ runtime crash diagnostics should preserve stderr/stdout, received ' + JSON.stringify(runtimeCrashDiagnostics));
+}
+
 const listArrayResult = await sandbox.__tracecodeCppTest.handleCompileRun({
   code: [
     'class Solution {',
@@ -706,6 +731,27 @@ if (!treeTracing.trace.events.some((event) => event.kind === 'call' && event.arg
 }
 if (!treeTracing.trace.events.some((event) => event.kind === 'return' && event.value?.right?.__ref__ === event.value?.left?.__id__)) {
   throw new Error('C++ TreeNode tracing should include aliased return value, received ' + JSON.stringify(treeTracing.trace.events));
+}
+
+const treeStringLiteralMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  TreeNode* runCodec(TreeNode* root) {',
+    '    vector<string> vals;',
+    '    vals.push_back(to_string(root->val));',
+    '    vals.push_back("null");',
+    '    if (vals[1] != "null") return new TreeNode(stoi(vals[1]));',
+    '    return new TreeNode(stoi(vals[0]));',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'runCodec',
+  inputs: { root: { val: 7 } },
+  options: {},
+});
+if (!treeStringLiteralMutationTrace.success || treeStringLiteralMutationTrace.output?.val !== 7) {
+  throw new Error('C++ tracing should preserve string literal mutation args for tree codecs, received ' + JSON.stringify(treeStringLiteralMutationTrace));
 }
 
 const graphSerializationResult = await sandbox.__tracecodeCppTest.handleCompileRun({
@@ -1844,6 +1890,33 @@ for (const method of ['insert', 'erase']) {
   }
 }
 
+const constNestedVectorIndexTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int maxAssignments(vector<vector<int>>& canDo) {',
+    '    const auto& matrix = canDo;',
+    '    if (matrix.empty()) return 0;',
+    '    int m = static_cast<int>(matrix.size());',
+    '    int n = static_cast<int>(matrix[0].size());',
+    '    vector<vector<int>> adj(m);',
+    '    for (int i = 0; i < m; i++) {',
+    '      for (int j = 0; j < n; j++) {',
+    '        if (matrix[i][j] == 1) adj[i].push_back(j);',
+    '      }',
+    '    }',
+    '    return static_cast<int>(adj.size());',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'maxAssignments',
+  inputs: { canDo: [[1, 1, 0], [0, 1, 1], [1, 0, 0]] },
+  options: {},
+});
+if (!constNestedVectorIndexTrace.success || constNestedVectorIndexTrace.output !== 3) {
+  throw new Error('C++ const nested vector indexed member access should compile and trace, received ' + JSON.stringify(constNestedVectorIndexTrace));
+}
+
 const unorderedMapTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -1942,6 +2015,39 @@ if (!unorderedMapVectorEvents.some((event) =>
   JSON.stringify(event.args) === JSON.stringify([7])
 )) {
   throw new Error('C++ unordered_map<vector> push_back should emit mutation args and key provenance, received ' + JSON.stringify(unorderedMapVectorEvents));
+}
+
+const unorderedMapIteratorSecondTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int clearPattern() {',
+    '    unordered_map<string, vector<string>> adjacency;',
+    '    string pattern = "h*t";',
+    '    adjacency[pattern].push_back("hit");',
+    '    auto it = adjacency.find(pattern);',
+    '    it->second.clear();',
+    '    return adjacency[pattern].size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'clearPattern',
+  inputs: {},
+  options: {},
+});
+if (!unorderedMapIteratorSecondTrace.success || unorderedMapIteratorSecondTrace.output !== 0) {
+  throw new Error('C++ unordered_map iterator second clear tracing failed: ' + JSON.stringify(unorderedMapIteratorSecondTrace));
+}
+const unorderedMapIteratorSecondEvents = unorderedMapIteratorSecondTrace.trace.events;
+if (!unorderedMapIteratorSecondEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'adjacency' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['h*t']) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['pattern']) &&
+  event.method === 'clear' &&
+  JSON.stringify(event.args) === JSON.stringify([])
+)) {
+  throw new Error('C++ unordered_map iterator second clear should emit keyed mutate args and provenance, received ' + JSON.stringify(unorderedMapIteratorSecondEvents));
 }
 
 const unorderedMapStringVectorTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
