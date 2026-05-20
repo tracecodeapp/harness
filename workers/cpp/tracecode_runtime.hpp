@@ -2521,6 +2521,14 @@ template <typename T, typename OuterIndex>
 inline IndexedNestedRangeReadable<T> indexed_nested_range_readable(Vector<std::vector<T>>& container, const std::string& name, OuterIndex outer, const char* outer_source, int line, const char* binding_name = nullptr) {
   auto concrete_outer = static_cast<std::size_t>(outer);
   auto& raw_container = static_cast<std::vector<std::vector<T>>&>(container);
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_with_index_source(name, concrete_outer, outer_source) +
+      ",\"value\":" + to_json(raw_container[concrete_outer]) + "}"
+    );
+  }
   return IndexedNestedRangeReadable<T>(raw_container[concrete_outer], name, concrete_outer, line, outer_source, binding_name);
 }
 

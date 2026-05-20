@@ -3118,6 +3118,22 @@ const voidLambdaEvents = voidLambdaTrace.trace.events;
 if (!voidLambdaEvents.some((event) => event.kind === 'return' && event.function === 'dfs')) {
   throw new Error('C++ std::function<void(...)> lambda should emit normal-exit return events, received ' + JSON.stringify(voidLambdaEvents));
 }
+if (!voidLambdaEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 12 &&
+  event.target?.variable === 'adjList' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['nodeIdx'])
+)) {
+  throw new Error('C++ nested range-for should emit the outer indexed source read, received ' + JSON.stringify(voidLambdaEvents));
+}
+if (voidLambdaEvents.some((event) =>
+  event.kind === 'line' &&
+  event.line === 12 &&
+  !event.function
+)) {
+  throw new Error('C++ range-for synthetic line events should inherit the active function, received ' + JSON.stringify(voidLambdaEvents));
+}
 const cloneReturnEvent = voidLambdaEvents.find((event) => event.kind === 'return' && event.function === 'cloneGraph' && event.line === 21);
 if (!cloneReturnEvent || cloneReturnEvent.callStack?.some((frame) => frame.function === 'dfs')) {
   throw new Error('C++ caller return should not retain completed lambda frames, received ' + JSON.stringify(voidLambdaEvents));
@@ -3261,6 +3277,15 @@ if (!opsClassTrieEvents.some((event) =>
   event.value?.__type__ === 'TrieNode'
 )) {
   throw new Error('C++ implement-trie should snapshot TrieNode pointer aliases, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 14 &&
+  event.target?.variable === 'this' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['root']) &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie local root alias should emit member read provenance, received ' + JSON.stringify(opsClassTrieEvents));
 }
 if (!opsClassTrieEvents.some((event) =>
   event.kind === 'write' &&

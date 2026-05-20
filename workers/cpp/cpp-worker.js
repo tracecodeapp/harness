@@ -2896,6 +2896,27 @@ function rewriteBareMemberAssignmentWriteInstrumentation(
   ].join('\n');
 }
 
+function rewriteBareMemberReadInstrumentation(
+  line,
+  lineNumber,
+  memberVariables = new Map(),
+  localVariables = new Map(),
+  activeClassName = null,
+  traceMemberClassName = null
+) {
+  if (!activeClassName || activeClassName !== traceMemberClassName || line.includes('tracecode::')) return line;
+  const firstLine = line.split('\n')[0] ?? line;
+  const match = firstLine.match(/^(\s*)(?:(?:const\s+)?[A-Za-z_][\w:<>,\s*&*]*\s+)?([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*;\s*$/);
+  if (!match) return line;
+  const [, indent, assigneeName, memberName] = match;
+  if (assigneeName === memberName || !memberVariables.has(memberName) || localVariables.has(memberName)) return line;
+  const targetExpression = `std::string(${cppStringLiteral(`{"variable":"this","path":[${jsonStringLiteral(memberName)}]}`)})`;
+  return [
+    `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"read","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${memberName}) + "}", ${lineNumber});`,
+    line,
+  ].join('\n');
+}
+
 function buildCallInstrumentation(lineNumber, signature) {
   const callLine = signature.callLine ?? lineNumber;
   const callEventPrefix = `{"kind":"call","line":${callLine},"function":${jsonStringLiteral(signature.name)},"args":`;
@@ -4711,6 +4732,14 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteStringPointerIndexedReadInstrumentation(lineForDriver, lineNumber, activeFrame.stringPointerAliases);
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
+      lineForDriver = rewriteBareMemberReadInstrumentation(
+        lineForDriver,
+        lineNumber,
+        serializableMemberVariables,
+        activeFrame.variables,
+        activeClassName,
+        options.traceMemberClassName || 'Solution'
+      );
       lineForDriver = rewriteScalarWriteInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
       lineForDriver = rewritePointerAssignmentWriteInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewritePointerFieldReadInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
@@ -5177,11 +5206,15 @@ function finalizeRuntimeTrace(events, options = {}) {
     : Number.isFinite(options.maxTraceSteps)
       ? Number(options.maxTraceSteps)
       : DEFAULT_MAX_STORED_EVENTS;
-  const normalizedEvents = enrichCppRuntimeTraceCallStacks(events).map((event) => ({
-    ...event,
-    runId,
-    file,
-  }));
+  const normalizedEvents = enrichCppRuntimeTraceCallStacks(events).map((event) => {
+    const activeFunction = Array.isArray(event.callStack) ? event.callStack[event.callStack.length - 1]?.function : undefined;
+    return {
+      ...event,
+      ...(event.kind === 'line' && !event.function && activeFunction ? { function: activeFunction } : {}),
+      runId,
+      file,
+    };
+  });
   const traceLimitExceeded = maxEvents !== undefined && normalizedEvents.length > maxEvents;
   let storedEvents = traceLimitExceeded ? normalizedEvents.slice(0, Math.max(0, maxEvents)) : normalizedEvents;
   if (
