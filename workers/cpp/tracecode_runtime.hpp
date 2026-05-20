@@ -1710,8 +1710,8 @@ class KeyedRangeReadIterator {
   using pointer = typename std::iterator_traits<RawIterator>::pointer;
   using iterator_category = std::input_iterator_tag;
 
-  KeyedRangeReadIterator(Container& container, RawIterator iterator, int line, const char* key_binding_name, bool is_end = false)
-      : container_(container), iterator_(iterator), line_(line), key_binding_name_(key_binding_name), is_end_(is_end) {}
+  KeyedRangeReadIterator(Container& container, RawIterator iterator, int line, const char* key_binding_name, const char* value_binding_name, bool is_end = false)
+      : container_(container), iterator_(iterator), line_(line), key_binding_name_(key_binding_name), value_binding_name_(value_binding_name), is_end_(is_end) {}
 
   reference operator*() const {
     emit_iteration_bind_read();
@@ -1751,33 +1751,38 @@ class KeyedRangeReadIterator {
     } else {
       container_.emit_read(iterator_->first, line_, to_json(iterator_->second));
     }
+    if (value_binding_name_ && *value_binding_name_) {
+      container_.emit_iteration_bind_read(iterator_->first, iterator_->second, line_, value_binding_name_);
+    }
   }
 
   Container& container_;
   RawIterator iterator_;
   int line_;
   const char* key_binding_name_;
+  const char* value_binding_name_;
   bool is_end_;
 };
 
 template <typename Container>
 class KeyedRangeReadable {
  public:
-  KeyedRangeReadable(Container& container, int line, const char* key_binding_name = nullptr)
-      : container_(container), line_(line), key_binding_name_(key_binding_name) {}
+  KeyedRangeReadable(Container& container, int line, const char* key_binding_name = nullptr, const char* value_binding_name = nullptr)
+      : container_(container), line_(line), key_binding_name_(key_binding_name), value_binding_name_(value_binding_name) {}
 
   auto begin() {
-    return KeyedRangeReadIterator<Container>(container_, container_.raw().begin(), line_, key_binding_name_, false);
+    return KeyedRangeReadIterator<Container>(container_, container_.raw().begin(), line_, key_binding_name_, value_binding_name_, false);
   }
 
   auto end() {
-    return KeyedRangeReadIterator<Container>(container_, container_.raw().end(), line_, key_binding_name_, true);
+    return KeyedRangeReadIterator<Container>(container_, container_.raw().end(), line_, key_binding_name_, value_binding_name_, true);
   }
 
  private:
   Container& container_;
   int line_;
   const char* key_binding_name_;
+  const char* value_binding_name_;
 };
 
 class IndexedStringRangeReadIterator {
@@ -4561,54 +4566,63 @@ class UnorderedMapValueRef {
 
   UnorderedMapValueRef& operator=(const V& value) {
     owner_.values_[key_] = value;
+    owner_.emit_keyed_mutate(key_, "set", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator+=(const V& value) {
     owner_.values_[key_] += value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator-=(const V& value) {
     owner_.values_[key_] -= value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator*=(const V& value) {
     owner_.values_[key_] *= value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator/=(const V& value) {
     owner_.values_[key_] /= value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   UnorderedMapValueRef& operator--() {
     --owner_.values_[key_];
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator--(int) {
     V old = owner_.values_[key_]--;
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
   UnorderedMapValueRef& operator++() {
     ++owner_.values_[key_];
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator++(int) {
     V old = owner_.values_[key_]++;
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
@@ -5139,54 +5153,63 @@ class MapValueRef {
 
   MapValueRef& operator=(const V& value) {
     owner_.values_[key_] = value;
+    owner_.emit_keyed_mutate(key_, "set", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator+=(const V& value) {
     owner_.values_[key_] += value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator-=(const V& value) {
     owner_.values_[key_] -= value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator*=(const V& value) {
     owner_.values_[key_] *= value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator/=(const V& value) {
     owner_.values_[key_] /= value;
+    owner_.emit_keyed_mutate(key_, "update", trace_event_line(), mutation_args_json(value), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   MapValueRef& operator--() {
     --owner_.values_[key_];
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator--(int) {
     V old = owner_.values_[key_]--;
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
   MapValueRef& operator++() {
     ++owner_.values_[key_];
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator++(int) {
     V old = owner_.values_[key_]++;
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
@@ -5303,13 +5326,13 @@ std::string to_json(const Map<K, V>& values) {
 }
 
 template <typename K, typename V>
-inline KeyedRangeReadable<UnorderedMap<K, V>> keyed_range_readable(UnorderedMap<K, V>& container, int line, const char* key_binding_name = nullptr) {
-  return KeyedRangeReadable<UnorderedMap<K, V>>(container, line, key_binding_name);
+inline KeyedRangeReadable<UnorderedMap<K, V>> keyed_range_readable(UnorderedMap<K, V>& container, int line, const char* key_binding_name = nullptr, const char* value_binding_name = nullptr) {
+  return KeyedRangeReadable<UnorderedMap<K, V>>(container, line, key_binding_name, value_binding_name);
 }
 
 template <typename K, typename V>
-inline KeyedRangeReadable<Map<K, V>> keyed_range_readable(Map<K, V>& container, int line, const char* key_binding_name = nullptr) {
-  return KeyedRangeReadable<Map<K, V>>(container, line, key_binding_name);
+inline KeyedRangeReadable<Map<K, V>> keyed_range_readable(Map<K, V>& container, int line, const char* key_binding_name = nullptr, const char* value_binding_name = nullptr) {
+  return KeyedRangeReadable<Map<K, V>>(container, line, key_binding_name, value_binding_name);
 }
 
 template <typename K, typename V>

@@ -97,35 +97,216 @@
           }
         ]
       }
+    },
+    "javascript": {
+      "append": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 2,
+            "variable": "stack"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "stack"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "stack"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "stack",
+          "value"
+        ]
+      }
+    },
+    "typescript": {
+      "append": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 2,
+            "variable": "stack"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "stack"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "stack"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "stack",
+          "value"
+        ]
+      }
     }
   },
   "expectSummaryByLanguage": {
     "csharp": {
       "accessTargets": [
         {
+          "count": 1,
           "kind": "mutate",
-          "variable": "stack",
           "pathDepth": 2,
-          "method": "append",
-          "count": 1
+          "variable": "stack"
         },
         {
+          "count": 1,
           "kind": "mutate",
-          "variable": "stack",
-          "method": "append",
-          "count": 1
+          "variable": "stack"
         },
         {
+          "count": 1,
           "kind": "read",
-          "variable": "stack",
           "pathDepth": 2,
-          "count": 1
+          "variable": "stack"
         },
         {
+          "count": 1,
+          "kind": "write",
+          "variable": "stack"
+        },
+        {
+          "count": 2,
           "kind": "read",
-          "variable": "stack",
           "pathDepth": 1,
-          "count": 2
+          "variable": "stack"
+        }
+      ]
+    },
+    "python": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "mutate",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "mutate",
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "stack"
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "mutate",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "mutate",
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "stack"
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "mutate",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "mutate",
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "stack"
+        }
+      ]
+    },
+    "java": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "mutate",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "mutate",
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 2,
+          "kind": "write",
+          "variable": "stack"
         }
       ]
     }

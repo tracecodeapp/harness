@@ -60,23 +60,34 @@
   "expectByLanguage": {
     "cpp": {
       "add": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
         "eventKinds": [
           "line",
+          "mutate",
           "snapshot",
           "write"
         ],
         "variableSnapshots": [
           "seen"
-        ],
-        "accessTargets": [
-          {
-            "kind": "write",
-            "variable": "seen",
-            "pathDepth": 1
-          }
         ]
       },
       "remove": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
@@ -84,13 +95,6 @@
         ],
         "variableSnapshots": [
           "seen"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "seen",
-            "method": "remove"
-          }
         ]
       }
     },

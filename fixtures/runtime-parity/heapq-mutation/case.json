@@ -152,6 +152,7 @@
         "eventKinds": [
           "line",
           "mutate",
+          "read",
           "snapshot",
           "write"
         ],
@@ -165,6 +166,11 @@
             "variable": "heap",
             "method": "pop",
             "args": []
+          },
+          {
+            "kind": "read",
+            "variable": "heap",
+            "pathDepth": 1
           },
           {
             "kind": "write",
@@ -198,6 +204,10 @@
             "kind": "read",
             "variable": "nums",
             "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "heap"
           }
         ]
       },
@@ -205,6 +215,7 @@
         "eventKinds": [
           "line",
           "mutate",
+          "read",
           "snapshot",
           "write"
         ],
@@ -214,6 +225,10 @@
             "variable": "heap",
             "method": "pop",
             "args": []
+          },
+          {
+            "kind": "read",
+            "variable": "heap"
           },
           {
             "kind": "write",

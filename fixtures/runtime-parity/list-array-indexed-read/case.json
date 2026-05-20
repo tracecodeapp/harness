@@ -64,28 +64,192 @@
     "csharp": {
       "accessTargets": [
         {
+          "count": 1,
+          "kind": "write",
+          "variable": "total"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "values"
+        },
+        {
+          "count": 2,
           "kind": "mutate",
-          "variable": "values",
-          "method": "append",
-          "count": 2
+          "variable": "values"
         },
         {
+          "count": 2,
           "kind": "read",
-          "variable": "rows",
           "pathDepth": 1,
-          "count": 2
+          "variable": "rows"
         },
         {
+          "count": 2,
           "kind": "read",
-          "variable": "values",
           "pathDepth": 1,
-          "count": 2
+          "variable": "values"
         },
         {
+          "count": 2,
           "kind": "read",
-          "variable": "values",
           "pathDepth": 2,
-          "count": 2
+          "variable": "values"
+        }
+      ]
+    },
+    "python": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "total"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "mutate",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "rows"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "values"
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "total"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "mutate",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "rows"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "values"
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "total"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "mutate",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "rows"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "values"
+        }
+      ]
+    },
+    "java": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "total"
+        },
+        {
+          "count": 2,
+          "kind": "mutate",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "rows"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "write",
+          "variable": "values"
+        }
+      ]
+    },
+    "cpp": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "total"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "mutate",
+          "variable": "values"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "rows"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "values"
         }
       ]
     }
@@ -93,17 +257,22 @@
   "expectByLanguage": {
     "python": {
       "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "row",
@@ -115,17 +284,22 @@
     },
     "javascript": {
       "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "rows",
@@ -136,17 +310,22 @@
     },
     "typescript": {
       "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "rows",
@@ -157,22 +336,27 @@
     },
     "csharp": {
       "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 1
+            "pathDepth": 1,
+            "variable": "values"
           },
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "rows",
@@ -183,17 +367,22 @@
     },
     "java": {
       "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "rows",
@@ -203,17 +392,22 @@
     },
     "cpp": {
       "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "rows",

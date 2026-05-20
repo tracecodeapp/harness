@@ -2850,6 +2850,79 @@ function extractTraceableMutatingCall(ts, node) {
   return null;
 }
 
+function extractTraceableIterableSource(ts, expression) {
+  const current = unwrapParenthesizedExpression(ts, expression);
+  if (!current) return null;
+
+  if (ts.isIdentifier(current)) {
+    return {
+      variableName: current.text,
+      expression: current,
+      indices: [],
+    };
+  }
+
+  const indexedSource = extractTraceableElementAccess(ts, current);
+  if (indexedSource) {
+    return {
+      variableName: indexedSource.variableName,
+      expression: current,
+      indices: indexedSource.indices,
+    };
+  }
+
+  if (
+    ts.isCallExpression(current) &&
+    ts.isPropertyAccessExpression(current.expression)
+  ) {
+    const methodName = current.expression.name.text;
+    const receiver = unwrapParenthesizedExpression(ts, current.expression.expression);
+    if (['entries', 'values', 'keys'].includes(methodName) && receiver) {
+      if (ts.isIdentifier(receiver)) {
+        return {
+          variableName: receiver.text,
+          expression: current,
+          indices: [],
+        };
+      }
+      const indexedReceiver = extractTraceableElementAccess(ts, receiver);
+      if (indexedReceiver) {
+        return {
+          variableName: indexedReceiver.variableName,
+          expression: current,
+          indices: indexedReceiver.indices,
+        };
+      }
+    }
+    if (methodName === 'get' && current.arguments.length === 1 && receiver) {
+      if (ts.isIdentifier(receiver)) {
+        return {
+          variableName: receiver.text,
+          expression: current,
+          indices: [current.arguments[0]],
+        };
+      }
+      const indexedReceiver = extractTraceableElementAccess(ts, receiver);
+      if (indexedReceiver) {
+        return {
+          variableName: indexedReceiver.variableName,
+          expression: current,
+          indices: [...indexedReceiver.indices, current.arguments[0]],
+        };
+      }
+    }
+  }
+
+  if (
+    ts.isBinaryExpression(current) &&
+    current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+  ) {
+    return extractTraceableIterableSource(ts, current.left);
+  }
+
+  return null;
+}
+
 function getCompoundAssignmentOperatorName(ts, tokenKind) {
   switch (tokenKind) {
     case ts.SyntaxKind.PlusEqualsToken:
@@ -3500,8 +3573,7 @@ function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement
   const originalNode = ts.getOriginalNode(forOfStatement) ?? forOfStatement;
   const visitedBodyBlock = ensureBlockStatement(ts, forOfStatement.statement);
   const originalExpression = originalNode.expression ?? forOfStatement.expression;
-  const indexedSource = extractTraceableElementAccess(ts, originalExpression);
-  const sourceName = ts.isIdentifier(forOfStatement.expression) ? forOfStatement.expression.text : null;
+  const iterableSource = extractTraceableIterableSource(ts, originalExpression);
   const bindingName =
     ts.isVariableDeclarationList(forOfStatement.initializer) &&
     forOfStatement.initializer.declarations.length === 1 &&
@@ -3512,27 +3584,27 @@ function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement
         : null;
   const lineNumber = sourceFile.getLineAndCharacterOfPosition(originalNode.getStart(sourceFile)).line + 1;
   const tracedExpression =
-    indexedSource && bindingName
+    iterableSource && bindingName && iterableSource.indices.length > 0
       ? ts.factory.createCallExpression(
           ts.factory.createIdentifier('__traceIterableBindIndexed'),
           undefined,
           [
-            ts.factory.createStringLiteral(indexedSource.variableName),
+            ts.factory.createStringLiteral(iterableSource.variableName),
             forOfStatement.expression,
-            createIndicesArrayExpression(ts, indexedSource.indices),
-            createIndexSourcesArrayExpression(ts, sourceFile, indexedSource.indices),
+            createIndicesArrayExpression(ts, iterableSource.indices),
+            createIndexSourcesArrayExpression(ts, sourceFile, iterableSource.indices),
             ts.factory.createStringLiteral(bindingName),
             ts.factory.createObjectLiteralExpression([
               ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
             ]),
           ]
         )
-      : sourceName && bindingName
+      : iterableSource && bindingName
       ? ts.factory.createCallExpression(
           ts.factory.createIdentifier('__traceIterableBind'),
           undefined,
           [
-            ts.factory.createStringLiteral(sourceName),
+            ts.factory.createStringLiteral(iterableSource.variableName),
             forOfStatement.expression,
             ts.factory.createStringLiteral(bindingName),
             ts.factory.createObjectLiteralExpression([

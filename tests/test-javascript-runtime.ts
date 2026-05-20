@@ -498,6 +498,138 @@ async function main(): Promise<void> {
   assertCondition(Boolean(indexedTypeScriptForOfBinding), 'Indexed TypeScript for-of tracing should emit element binding provenance');
   console.log('PASS: execute-with-tracing indexed TypeScript for-of binding provenance');
 
+  for (const language of ['javascript', 'typescript'] as const) {
+    const entriesForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): string {
+  const groups = new Map<string, string[]>([['root', ['a', 'b']]]);
+  let out = '';
+  for (const [root, emails] of groups.entries()) {
+    out += root + ':' + emails.length;
+  }
+  return out;
+}`
+          : `function solve() {
+  const groups = new Map([['root', ['a', 'b']]]);
+  let out = '';
+  for (const [root, emails] of groups.entries()) {
+    out += root + ':' + emails.length;
+  }
+  return out;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      entriesForOfTracing.success === true,
+      `${language} Map.entries for-of tracing should succeed: ${entriesForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(entriesForOfTracing.output === 'root:2', `${language} Map.entries for-of should preserve output`);
+    const entriesBinding = traceAccessEvents(entriesForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'groups' &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'root,emails'
+    );
+    assertCondition(
+      Boolean(entriesBinding),
+      `${language} Map.entries for-of should emit destructuring binding provenance, received ${JSON.stringify(entriesForOfTracing.trace?.events)}`
+    );
+
+    const nullishGetForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const email = 'a';
+  const valueToOwners = new Map<string, number[]>([['a', [1, 2]]]);
+  let total = 0;
+  for (const owner of valueToOwners.get(email) ?? []) {
+    total += owner;
+  }
+  return total;
+}`
+          : `function solve() {
+  const email = 'a';
+  const valueToOwners = new Map([['a', [1, 2]]]);
+  let total = 0;
+  for (const owner of valueToOwners.get(email) ?? []) {
+    total += owner;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      nullishGetForOfTracing.success === true,
+      `${language} Map.get nullish for-of tracing should succeed: ${nullishGetForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(nullishGetForOfTracing.output === 3, `${language} Map.get nullish for-of should preserve output`);
+    const nullishBinding = traceAccessEvents(nullishGetForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'valueToOwners' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['a', 0]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['email', null]) &&
+      JSON.stringify(event.binding) === JSON.stringify({ kind: 'iteration', variable: 'owner' })
+    );
+    assertCondition(
+      Boolean(nullishBinding),
+      `${language} Map.get nullish for-of should emit keyed element binding provenance, received ${JSON.stringify(nullishGetForOfTracing.trace?.events)}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS Map-backed for-of binding provenance');
+
+  const typeScriptNestedMapSetTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve(): number {
+  const parent = new Map<string | number, string | number>([['a', 'root']]);
+  const email = 'a';
+  function find(x: string | number): string | number {
+    return x;
+  }
+  parent.set(email, find(parent.get(email) as string | number));
+  return parent.size;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(
+    typeScriptNestedMapSetTracing.success === true,
+    `TypeScript nested Map.set tracing should succeed: ${typeScriptNestedMapSetTracing.error ?? 'unknown error'}`
+  );
+  const typeScriptNestedMapSetMutate = traceAccessEvents(typeScriptNestedMapSetTracing).find((event) =>
+    event.kind === 'mutate' &&
+    event.target?.variable === 'parent' &&
+    event.method === 'set' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['a'])
+  );
+  assertCondition(
+    Boolean(typeScriptNestedMapSetMutate),
+    `TypeScript nested Map.set should emit mutate access, received ${JSON.stringify(typeScriptNestedMapSetTracing.trace?.events)}`
+  );
+  console.log('PASS: execute-with-tracing TypeScript nested Map.set mutate provenance');
+
   const globalPropertyTracing = await harness.sendMessage<{
     success: boolean;
     output: unknown;

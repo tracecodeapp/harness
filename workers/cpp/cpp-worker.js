@@ -1928,6 +1928,22 @@ function rangeForElementSnapshotType(rangeName, knownVariables, aliases = new Ma
   return null;
 }
 
+function mapKeyValueCppTypes(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  const prefix = normalized.startsWith('unordered_map<')
+    ? 'unordered_map<'
+    : normalized.startsWith('map<')
+      ? 'map<'
+      : null;
+  if (!prefix || !normalized.endsWith('>')) return null;
+  const innerTypes = splitTopLevelCommaList(normalized.slice(prefix.length, -1));
+  if (innerTypes.length < 2) return null;
+  return {
+    keyType: innerTypes[0].trim(),
+    valueType: innerTypes[1].trim(),
+  };
+}
+
 function isDequeCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   return normalized.startsWith('deque<') && normalized.endsWith('>');
@@ -2621,12 +2637,13 @@ function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(
 
 function rewriteRangeForIndexedReads(line, lineNumber, variables, aliases = new Map()) {
   const stripped = stripCppStringsAndComments(line);
-  const structuredMapMatch = stripped.match(/^(\s*for\s*\(\s*[^:;]+?\[\s*([A-Za-z_]\w*)\s*,\s*(?:[A-Za-z_]\w*|_)\s*\]\s*:\s*)([A-Za-z_]\w*)(\s*\).*)$/);
+  const structuredMapMatch = stripped.match(/^(\s*for\s*\(\s*[^:;]+?\[\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*|_)\s*\]\s*:\s*)([A-Za-z_]\w*)(\s*\).*)$/);
   if (structuredMapMatch) {
-    const [, prefix, keyBindingName, rangeName, suffix] = structuredMapMatch;
+    const [, prefix, keyBindingName, valueBindingName, rangeName, suffix] = structuredMapMatch;
     const variable = variables?.get(rangeName);
     if (variable && (isUnorderedMapCppType(variable.type, aliases) || isMapCppType(variable.type, aliases))) {
-      const rewritten = `${prefix}tracecode::keyed_range_readable(${rangeName}, ${lineNumber}, ${cppStringLiteral(keyBindingName)})${suffix}`;
+      const valueBinding = valueBindingName === '_' ? 'nullptr' : cppStringLiteral(valueBindingName);
+      const rewritten = `${prefix}tracecode::keyed_range_readable(${rangeName}, ${lineNumber}, ${cppStringLiteral(keyBindingName)}, ${valueBinding})${suffix}`;
       return line.replace(stripped, rewritten);
     }
   }
@@ -3020,7 +3037,26 @@ function rewriteControlConditionSource(control, lineNumber, accessVariables = ne
   return `${control.slice(0, openIndex + 1)}${rewrittenCondition}${control.slice(closeIndex)}`;
 }
 
-function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineInstrumentation = '', emitInsideBody = false, variables = new Map(), accessVariables = new Map(), aliases = new Map()) {
+function rewriteInlineControlStatementInstrumentation(statement, lineNumber, variables = new Map(), accessVariables = new Map(), aliases = new Map(), source = '') {
+  let rewritten = rewriteKeyedIndexSourceInstrumentation(statement, accessVariables, aliases, lineNumber);
+  rewritten = rewritePlainContainerMutationInstrumentation(rewritten, lineNumber, accessVariables, aliases, source);
+  rewritten = rewriteNestedIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
+  rewritten = rewriteVectorIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
+  rewritten = rewritePlainIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
+  rewritten = rewriteIndexReadInstrumentation(rewritten, accessVariables, aliases, lineNumber);
+  rewritten = rewriteScalarWriteInstrumentation(rewritten, lineNumber, variables);
+  return rewritten;
+}
+
+function inlineControlStatementSource(statement) {
+  return statement
+    .split('\n')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineInstrumentation = '', emitInsideBody = false, variables = new Map(), accessVariables = new Map(), aliases = new Map(), source = '') {
   const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s+([^{}].*;\s*)$/);
   if (!match) return line;
   const [, indent, rawControl, statement] = match;
@@ -3032,11 +3068,12 @@ function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineIn
     const transfer = controlTransfer[1];
     return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${postLineInstrumentation} ${transfer}; }`;
   }
+  const rewrittenStatement = rewriteInlineControlStatementInstrumentation(statement.trim(), lineNumber, variables, accessVariables, aliases, source);
+  const statementSource = inlineControlStatementSource(rewrittenStatement);
   if (emitInsideBody) {
-    const scalarWrite = buildInlineScalarWriteInstrumentation(statement, lineNumber, variables);
-    return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statement.trim()} ${scalarWrite} ${postLineInstrumentation} }`;
+    return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statementSource} ${postLineInstrumentation} }`;
   }
-  return `${indent}${control} { ${statement.trim()} }`;
+  return `${indent}${control} { ${statementSource} }`;
 }
 
 function buildInlineScalarWriteInstrumentation(statement, lineNumber, variables) {
@@ -3057,14 +3094,14 @@ function buildInlineScalarWriteInstrumentation(statement, lineNumber, variables)
   return '';
 }
 
-function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrumentation = '', variables = new Map()) {
+function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrumentation = '', variables = new Map(), accessVariables = new Map(), aliases = new Map(), source = '') {
   const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s*\{\s*([^{}].*;\s*)\}\s*$/);
   if (!match) return line;
   const [, indent, control, statement] = match;
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
   if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
-  const scalarWrite = buildInlineScalarWriteInstrumentation(statement, lineNumber, variables);
-  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statement.trim()} ${scalarWrite} ${postLineInstrumentation} }`;
+  const rewrittenStatement = rewriteInlineControlStatementInstrumentation(statement.trim(), lineNumber, variables, accessVariables, aliases, source);
+  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${inlineControlStatementSource(rewrittenStatement)} ${postLineInstrumentation} }`;
 }
 
 function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), extraTraceContainerNames = new Set()) {
@@ -4013,6 +4050,23 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariab
     return variables;
   }
 
+  const structuredRangeMatch = collapsed.match(/^(?:for)\s*\(\s*[^:;]+?\[\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*|_)\s*\]\s*:\s*([A-Za-z_]\w*)\s*\)/);
+  if (structuredRangeMatch) {
+    if (!collapsed.includes('{')) return variables;
+    const [, keyName, valueName, rangeName] = structuredRangeMatch;
+    const rangeType = knownVariables?.get(rangeName)?.type;
+    const mapTypes = rangeType ? mapKeyValueCppTypes(rangeType, aliases) : null;
+    if (mapTypes) {
+      if (keyName !== '_' && isSnapshotSerializableCppType(mapTypes.keyType, aliases)) {
+        variables.push({ name: keyName, type: mapTypes.keyType, sameLineVisible: true });
+      }
+      if (valueName !== '_' && isSnapshotSerializableCppType(mapTypes.valueType, aliases)) {
+        variables.push({ name: valueName, type: mapTypes.valueType, sameLineVisible: true });
+      }
+    }
+    return variables;
+  }
+
   const forInitMatch = collapsed.match(/^for\s*\(\s*([^;]+);/);
   if (forInitMatch) {
     if (!collapsed.includes('{')) return variables;
@@ -4265,7 +4319,15 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         activeClassName === (options.traceMemberClassName || 'Solution')
           ? new Map([...traceMemberVariables, ...lexicalAccessVariables])
           : lexicalAccessVariables;
-      rewrittenControlLine = rewriteBracedSingleLineControlBody(lineForDriver, lineNumber, postLineInstrumentation, activeFrame.variables);
+      rewrittenControlLine = rewriteBracedSingleLineControlBody(
+        lineForDriver,
+        lineNumber,
+        postLineInstrumentation,
+        activeFrame.variables,
+        preControlAccessVariables,
+        aliases,
+        source
+      );
       postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
       lineForDriver = rewrittenControlLine;
       rewrittenControlLine = rewriteSingleLineControlBody(
@@ -4276,7 +4338,8 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         lineStartsElse || nextSourceLine.startsWith('else') || /^(?:for|while)\s*\(/.test(trimmedLine),
         activeFrame.variables,
         preControlAccessVariables,
-        aliases
+        aliases,
+        source
       );
       postLineHandledInline ||= rewrittenControlLine !== lineForDriver;
       lineForDriver = rewrittenControlLine;

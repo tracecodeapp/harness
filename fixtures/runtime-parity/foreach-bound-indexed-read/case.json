@@ -33,8 +33,7 @@
       "eventKinds": [
         "line",
         "read",
-        "snapshot",
-        "write"
+        "snapshot"
       ],
       "variableSnapshots": [
         "account",
@@ -45,10 +44,6 @@
           "kind": "read",
           "variable": "accounts",
           "pathDepth": 1
-        },
-        {
-          "kind": "write",
-          "variable": "account"
         }
       ]
     },
@@ -85,14 +80,6 @@
           "variable": "accounts",
           "pathDepth": 1,
           "bindingVariable": "account"
-        },
-        {
-          "kind": "write",
-          "variable": "account",
-          "value": [
-            "John",
-            "john@example.com"
-          ]
         }
       ],
     "read": [
@@ -112,26 +99,29 @@
       }
     ]
   },
+  "expectEventAssertionsByLanguage": {
+    "csharp": {
+      "bind": [
+        {
+          "kind": "read",
+          "variable": "accounts",
+          "pathDepth": 1,
+          "bindingVariable": "account"
+        },
+        {
+          "kind": "write",
+          "variable": "account",
+          "value": [
+            "John",
+            "john@example.com"
+          ]
+        }
+      ]
+    }
+  },
   "expectByLanguage": {
-    "javascript": {
+    "csharp": {
       "bind": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "accounts"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "accounts",
-            "pathDepth": 1
-          }
-        ]
-      },
-      "read": {
         "eventKinds": [
           "line",
           "read",
@@ -140,31 +130,6 @@
         ],
         "variableSnapshots": [
           "account",
-          "accounts",
-          "email",
-          "i"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "account",
-            "pathDepth": 1
-          },
-          {
-            "kind": "write",
-            "variable": "email"
-          }
-        ]
-      }
-    },
-    "typescript": {
-      "bind": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
           "accounts"
         ],
         "accessTargets": [
@@ -172,31 +137,10 @@
             "kind": "read",
             "variable": "accounts",
             "pathDepth": 1
-          }
-        ]
-      },
-      "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot",
-          "write"
-        ],
-        "variableSnapshots": [
-          "account",
-          "accounts",
-          "email",
-          "i"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "account",
-            "pathDepth": 1
           },
           {
             "kind": "write",
-            "variable": "email"
+            "variable": "account"
           }
         ]
       }

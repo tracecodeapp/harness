@@ -1442,6 +1442,36 @@ if (!mutationEvents.some((event) => event.kind === 'write' && event.target?.vari
   throw new Error('C++ vector tracing should emit indexed write, received ' + JSON.stringify(mutationEvents));
 }
 
+const compactPlainVectorMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int collect() {',
+    '    vector<string> ineligible;',
+    '    string c = "x";',
+    '    if (c.size()) ineligible.push_back(c);',
+    '    return ineligible.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'collect',
+  inputs: {},
+  options: {},
+});
+if (!compactPlainVectorMutationTrace.success || compactPlainVectorMutationTrace.output !== 1) {
+  throw new Error('C++ compact plain vector mutation tracing failed: ' + JSON.stringify(compactPlainVectorMutationTrace));
+}
+const compactPlainVectorMutationEvents = compactPlainVectorMutationTrace.trace.events;
+if (!compactPlainVectorMutationEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 6 &&
+  event.target?.variable === 'ineligible' &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify(['x'])
+)) {
+  throw new Error('C++ compact if push_back should emit mutation, received ' + JSON.stringify(compactPlainVectorMutationEvents));
+}
+
 const plainStringVectorMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -2386,6 +2416,70 @@ if (!structuredMapRangeForEvents.some((event) =>
   event.value === 3
 )) {
   throw new Error('C++ structured map range-for should emit key binding provenance, received ' + JSON.stringify(structuredMapRangeForEvents));
+}
+if (structuredMapRangeForEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === '_'
+)) {
+  throw new Error('C++ structured map range-for should not emit underscore binding provenance, received ' + JSON.stringify(structuredMapRangeForEvents));
+}
+
+const structuredMapValueBindingTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int init() {',
+    '    unordered_map<char, unordered_set<char>> adj;',
+    "    adj['a'].insert('b');",
+    '    unordered_map<char, int> inDegree;',
+    '    for (const auto& [ch, neighbors] : adj) {',
+    '      inDegree[ch] = 0;',
+    '      for (char neighbor : neighbors) inDegree[neighbor]++;',
+    '    }',
+    "    return inDegree['a'] + inDegree['b'];",
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'init',
+  inputs: {},
+  options: {},
+});
+if (!structuredMapValueBindingTrace.success || structuredMapValueBindingTrace.output !== 1) {
+  throw new Error('C++ structured map value binding tracing failed: ' + JSON.stringify(structuredMapValueBindingTrace));
+}
+const structuredMapValueBindingEvents = structuredMapValueBindingTrace.trace.events;
+if (!structuredMapValueBindingEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.target?.variable === 'adj' &&
+  event.target.path?.[0] === 'a' &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'neighbors' &&
+  JSON.stringify(event.value) === JSON.stringify(['b'])
+)) {
+  throw new Error('C++ structured map range-for should emit value binding provenance, received ' + JSON.stringify(structuredMapValueBindingEvents));
+}
+if (!structuredMapValueBindingEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'inDegree' &&
+  event.target.path?.[0] === 'a' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['ch']) &&
+  event.method === 'set'
+)) {
+  throw new Error('C++ map assignment should emit keyed set mutation, received ' + JSON.stringify(structuredMapValueBindingEvents));
+}
+if (!structuredMapValueBindingEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 9 &&
+  event.target?.variable === 'inDegree' &&
+  event.target.path?.[0] === 'b' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['neighbor']) &&
+  event.method === 'increment'
+)) {
+  throw new Error('C++ map increment should emit keyed increment mutation, received ' + JSON.stringify(structuredMapValueBindingEvents));
 }
 
 const helperTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

@@ -52,6 +52,7 @@ interface WarmupResult {
 
 const EXECUTION_TIMEOUT_MS = 20_000;
 const TRACING_TIMEOUT_MS = 20_000;
+const SCRIPT_TRACING_TIMEOUT_MS = 60_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 5_000;
 const INIT_TIMEOUT_MS = 45_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
@@ -531,6 +532,7 @@ export class CSharpWorkerClient {
   ): Promise<ExecutionResult> {
     await this.init();
     let result: CSharpWorkerExecuteResult;
+    const tracingTimeoutMs = this.resolveTracingTimeoutMs(functionName, executionStyle);
     try {
       result = await this.executeWithTimeout(
         () =>
@@ -542,7 +544,7 @@ export class CSharpWorkerClient {
               inputs,
               executionStyle,
               assetBaseUrl: this.options.assetBaseUrl,
-              timeoutMs: Math.max(100, this.tracingTimeoutMs - 1_000),
+              timeoutMs: Math.max(100, tracingTimeoutMs - 1_000),
               maxTraceSteps: options?.maxTraceSteps,
               maxLineEvents: options?.maxLineEvents,
               maxSingleLineHits: options?.maxSingleLineHits,
@@ -550,9 +552,9 @@ export class CSharpWorkerClient {
               minimalTrace: options?.minimalTrace,
               ...this.workerOptionsPayload(),
             },
-            this.tracingTimeoutMs + 5_000
+            tracingTimeoutMs + 5_000
           ),
-        this.tracingTimeoutMs
+        tracingTimeoutMs
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -569,13 +571,13 @@ export class CSharpWorkerClient {
         output: null,
         error: message,
         trace,
-        executionTimeMs: this.tracingTimeoutMs,
+        executionTimeMs: tracingTimeoutMs,
         consoleOutput: [],
         traceLimitExceeded: true,
         timeoutReason: 'client-timeout',
         lineEventCount: trace.lineEventCount,
         traceStepCount: trace.traceStepCount,
-        timings: { totalMs: this.tracingTimeoutMs },
+        timings: { totalMs: tracingTimeoutMs },
       };
     }
 
@@ -649,6 +651,16 @@ export class CSharpWorkerClient {
       normalized.includes('recursion-limit') ||
       normalized.includes('memory-limit')
     );
+  }
+
+  private resolveTracingTimeoutMs(functionName: string, executionStyle: CSharpExecutionStyle): number {
+    return this.isScriptStyleRequest(functionName, executionStyle)
+      ? Math.max(this.tracingTimeoutMs, SCRIPT_TRACING_TIMEOUT_MS)
+      : this.tracingTimeoutMs;
+  }
+
+  private isScriptStyleRequest(functionName: string, executionStyle: CSharpExecutionStyle): boolean {
+    return executionStyle === 'function' && functionName.trim() === '';
   }
 
   terminate(): void {

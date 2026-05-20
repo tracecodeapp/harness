@@ -190,4 +190,39 @@ assert.ok(
   `C++ max-sum script lambda should emit indexed nums reads, received ${JSON.stringify(maxSumEvents)}`
 );
 
+const vectorSumScript = [
+  '#include <vector>',
+  'vector<int> nums = {1, 2, 3, 4};',
+  'int sum = 0;',
+  'for (int num : nums) {',
+  '    sum += num;',
+  '}',
+  'int result = sum;',
+].join('\n');
+
+const vectorSumResult = await harness.handleExecuteWithTracing({
+  code: vectorSumScript,
+  functionName: '',
+  inputs: {},
+  executionStyle: 'function',
+  options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
+});
+
+assert.equal(vectorSumResult.success, true, `C++ vector-sum script trace failed: ${vectorSumResult.error ?? 'unknown error'}`);
+assert.equal(vectorSumResult.output, 10, 'C++ vector-sum script should return 10');
+
+const vectorSumEvents = vectorSumResult.trace?.events ?? [];
+assert.ok(
+  snapshotValues(vectorSumEvents, 'nums').some((value) => JSON.stringify(value) === JSON.stringify([1, 2, 3, 4])),
+  `C++ vector-sum script should snapshot nums, received ${JSON.stringify(vectorSumEvents)}`
+);
+assert.ok(
+  snapshotValues(vectorSumEvents, 'sum').some((value) => value === 10),
+  `C++ vector-sum script should snapshot final sum, received ${JSON.stringify(vectorSumEvents)}`
+);
+assert.ok(
+  snapshotValues(vectorSumEvents, 'result').some((value) => value === 10),
+  `C++ vector-sum script should snapshot result, received ${JSON.stringify(vectorSumEvents)}`
+);
+
 console.log('PASS: C++ script lambda trace snapshots');

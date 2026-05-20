@@ -1850,7 +1850,7 @@ function augmentJavaObjectFieldOperations(source) {
           const indent = writeMatch[1] ?? '';
           const field = writeMatch[2];
           const rhs = writeMatch[3];
-          nextLine = `${indent}{ ${name}.${field} = ${rhs}; TraceHooks.emitFieldWriteAtLine(${lineNumber}, "${name}", "${field}", ${name}.${field}); }`;
+          nextLine = `${indent}{ ${name}.${field} = ${rhs}; TraceHooks.emitFieldWriteAtLine(${lineNumber}, "${name}", "${field}", ${name}.${field}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${field}", ${name}.${field}); }`;
           break;
         }
       }

@@ -280,9 +280,18 @@ public final class JavaRewriteLibrary {
 
     Matcher enhancedForDeclaration = Pattern.compile("^(\\s*)for\\s*\\(\\s*(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>.?\\[\\] ]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*([^\\)]+)\\)\\s*\\{\\s*$").matcher(line);
     if (enhancedForDeclaration.matches()) {
+      String indent = enhancedForDeclaration.group(1);
       String type = enhancedForDeclaration.group(2).trim();
       String name = enhancedForDeclaration.group(3);
+      String source = enhancedForDeclaration.group(4).trim();
       registerLocalDeclarators(frame, type, name);
+      if (
+          isSimpleIdentifierExpression(source) &&
+          (frame.variables.containsKey(source) || frame.isField(source))
+      ) {
+        return indent + "for (" + type + " " + name + " : TraceHooks.iterationBindAtLine(" +
+            sourceLine + ", " + quote(source) + ", " + source + ", " + quote(name) + ")) {";
+      }
       return line;
     }
 
@@ -340,7 +349,7 @@ public final class JavaRewriteLibrary {
       String name = fieldWrite.group(2);
       String field = fieldWrite.group(3);
       String value = rewriteReads(fieldWrite.group(4).trim(), sourceLine, frame);
-      return indent + name + "." + field + " = " + value + "; TraceHooks.emitFieldWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ");";
+      return indent + name + "." + field + " = " + value + "; TraceHooks.emitFieldWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + "); TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(field) + ", " + name + "." + field + ");";
     }
 
     Matcher fieldIndexedMutatingCall = FIELD_INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
@@ -892,7 +901,8 @@ public final class JavaRewriteLibrary {
       if (isArrayWriteTarget(fieldReadSource, match.start(), match.end())) return full;
       String name = match.group(1);
       String field = match.group(2);
-      if ("java".equals(name) || Character.isUpperCase(name.charAt(0)) || "out".equals(field) || "err".equals(field) || "length".equals(field)) return full;
+      if ("java".equals(name) || Character.isUpperCase(name.charAt(0)) || "out".equals(field) || "err".equals(field)) return full;
+      if ("length".equals(field) && arrayReadHelper(frame.typeOf(name)) != null) return full;
       return "TraceHooks.readObjectFieldAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ")";
     });
     return next;
@@ -1309,6 +1319,7 @@ public final class JavaRewriteLibrary {
 
   private static boolean isTrackedMutationMethod(String method) {
     return "add".equals(method) || "push".equals(method) || "offer".equals(method) ||
+        "append".equals(method) ||
         "addAll".equals(method) ||
         "addLast".equals(method) || "offerLast".equals(method) || "put".equals(method) || "putIfAbsent".equals(method) ||
         "addFirst".equals(method) || "offerFirst".equals(method) ||

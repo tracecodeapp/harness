@@ -135,6 +135,13 @@
     },
     "javascript": {
       "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          }
+        ],
         "eventKinds": [
           "line",
           "read",
@@ -144,19 +151,30 @@
           "item",
           "items",
           "seen"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "items",
-            "pathDepth": 1
-          }
         ]
       },
       "write": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "seen"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
+          "read",
           "snapshot",
           "write"
         ],
@@ -164,22 +182,159 @@
           "item",
           "items",
           "seen"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "seen",
-            "pathDepth": 1
-          },
-          {
-            "kind": "write",
-            "variable": "seen",
-            "pathDepth": 1
-          }
         ]
       }
     },
     "typescript": {
+      "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "seen"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    },
+    "python": {
+      "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    },
+    "csharp": {
+      "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          },
+          {
+            "kind": "write",
+            "variable": "item"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    },
+    "cpp": {
       "bind": {
         "eventKinds": [
           "line",
@@ -200,6 +355,18 @@
         ]
       },
       "write": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "seen"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
@@ -210,18 +377,6 @@
           "item",
           "items",
           "seen"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "seen",
-            "pathDepth": 1
-          },
-          {
-            "kind": "write",
-            "variable": "seen",
-            "pathDepth": 1
-          }
         ]
       }
     }
@@ -293,6 +448,30 @@
           "method": "set",
           "args": [
             "a",
+            1
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "write": [
+        {
+          "kind": "write",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ]
+        },
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ],
+          "method": "set",
+          "args": [
             1
           ]
         }

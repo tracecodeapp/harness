@@ -41,81 +41,133 @@
   "expectByLanguage": {
     "python": {
       "popIndex": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "nums"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "nums",
           "value"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "nums",
-            "method": "pop"
-          }
         ]
       }
     },
     "javascript": {
       "popIndex": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "nums"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "nums"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "nums",
           "value"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "nums",
-            "method": "pop"
-          }
         ]
       }
     },
     "typescript": {
       "popIndex": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "nums"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "nums"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "read",
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "nums",
           "value"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "nums",
-            "method": "pop"
-          }
         ]
       }
     },
     "csharp": {
       "popIndex": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "values"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "values"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
+          "read",
           "snapshot"
         ],
         "variableSnapshots": [
           "nums",
           "values"
-        ],
+        ]
+      }
+    },
+    "java": {
+      "popIndex": {
         "accessTargets": [
           {
             "kind": "mutate",
-            "variable": "values",
-            "method": "pop"
+            "variable": "nums"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "nums"
         ]
       }
     }

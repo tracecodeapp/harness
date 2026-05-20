@@ -105,27 +105,50 @@
       }
     },
     "java": {
-      "popleft": {
+      "append": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "num",
+          "nums",
+          "queue"
+        ]
+      },
+      "popleft": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "queue"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
           "snapshot",
           "write"
         ],
         "variableSnapshots": [
           "nums",
           "queue"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "queue",
-            "method": "popleft"
-          },
-          {
-            "kind": "write",
-            "variable": "first"
-          }
         ]
       }
     },

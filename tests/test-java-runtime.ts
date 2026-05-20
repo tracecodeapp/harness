@@ -647,10 +647,52 @@ class Solution {
   }
 }`);
   assertCondition(
-    enhancedForArraySource.includes('for (Object[] account : accounts) {') &&
+    enhancedForArraySource.includes('for (Object[] account : TraceHooks.iterationBindAtLine(4, "accounts", accounts, "account")) {') &&
       enhancedForArraySource.includes('TraceHooks.readObjectArrayAtLine(5, "account", account, 0, null)') &&
       enhancedForArraySource.includes('TraceHooks.readObjectArrayAtLine(7, "account", account, i, "i")'),
     'Java rewriter should register enhanced-for array aliases before instrumenting indexed reads from them'
+  );
+
+  const enhancedForBindingSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(Object[][] accounts) {
+    int total = 0;
+    for (Object[] account : accounts) {
+      total += account.length;
+    }
+    return total;
+  }
+}`);
+  assertCondition(
+    enhancedForBindingSource.includes('for (Object[] account : TraceHooks.iterationBindAtLine(4, "accounts", accounts, "account")) {'),
+    'Java native rewriter should wrap enhanced-for array bindings with iteration provenance before worker augmentation'
+  );
+
+  const objectLengthFieldSource = assertNativeJavaRewriterCompiles(`class Box {
+  int length;
+}
+
+class Solution {
+  int solve() {
+    Box box = new Box();
+    box.length = 4;
+    return box.length;
+  }
+}`);
+  assertCondition(
+    objectLengthFieldSource.includes('TraceHooks.readObjectFieldAtLine(9, "box", "length", box.length)'),
+    'Java rewriter should treat user object .length fields as field reads, not array length metadata'
+  );
+
+  const stringBuilderAppendSource = assertNativeJavaRewriterCompiles(`class Solution {
+  String solve(char ch) {
+    StringBuilder order = new StringBuilder();
+    order.append(ch);
+    return order.toString();
+  }
+}`);
+  assertCondition(
+    stringBuilderAppendSource.includes('TraceHooks.emitMutatingCallAtLine(4, "order", "append", ch);'),
+    'Java rewriter should emit mutate events for StringBuilder.append calls'
   );
 
   const expressionIndexSource = assertNativeJavaRewriterCompiles(`class Solution {

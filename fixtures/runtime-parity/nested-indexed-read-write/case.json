@@ -96,18 +96,424 @@
     "cpp": {
       "accessTargets": [
         {
+          "count": 1,
           "kind": "write",
-          "variable": "grid",
           "pathDepth": 2,
-          "count": 1
+          "variable": "grid"
         },
         {
+          "count": 1,
+          "kind": "write",
+          "variable": "value"
+        },
+        {
+          "count": 3,
           "kind": "read",
-          "variable": "grid",
           "pathDepth": 2,
-          "count": 3
+          "variable": "grid"
         }
       ]
+    },
+    "python": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 2,
+          "variable": "grid"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "value"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "grid"
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 2,
+          "variable": "grid"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "value"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "grid"
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 2,
+          "variable": "grid"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "value"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "grid"
+        }
+      ]
+    },
+    "java": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 2,
+          "variable": "grid"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "value"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "grid"
+        }
+      ]
+    },
+    "csharp": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 2,
+          "variable": "grid"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "value"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "grid"
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "read": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "grid"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      }
+    },
+    "javascript": {
+      "read": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "grid"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      }
+    },
+    "typescript": {
+      "read": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "grid"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      }
+    },
+    "java": {
+      "read": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "grid"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      }
+    },
+    "csharp": {
+      "read": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "grid"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      }
+    },
+    "cpp": {
+      "read": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "value"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "grid"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "value"
+        ]
+      }
     }
   }
 }

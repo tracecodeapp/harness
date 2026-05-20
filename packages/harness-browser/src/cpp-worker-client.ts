@@ -80,7 +80,10 @@ const INIT_TIMEOUT_MS = 120_000;
 // Browser C++ compile/run includes client-side clang/lld work. STL-heavy
 // solutions can spend most of this wall time compiling before user code runs.
 const EXECUTION_TIMEOUT_MS = 60_000;
-const TRACING_TIMEOUT_MS = 60_000;
+// Trace requests also pay instrumentation and cold compiler costs. Keep the
+// wall-clock budget aligned with init so first-run playground traces do not
+// fail before small STL script samples finish compiling.
+const TRACING_TIMEOUT_MS = 120_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;

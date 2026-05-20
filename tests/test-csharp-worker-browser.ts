@@ -638,6 +638,83 @@ async function main(): Promise<void> {
       `C# worker nested foreach should emit the bound loop variable write on the header line, received ${JSON.stringify(nestedForeachBinding.events)}`
     );
 
+    const indexedCollectionForeachMutation = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int IndexedCollectionForeachMutation() {',
+        '    var owners = new Dictionary<string, HashSet<string>>();',
+        '    owners["email"] = new HashSet<string> { "Ada" };',
+        '    var names = new HashSet<string>();',
+        '    foreach (string name in owners["email"]) {',
+        '      names.Add(name);',
+        '    }',
+        '    return names.Count;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'IndexedCollectionForeachMutation',
+      {},
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      indexedCollectionForeachMutation.success && indexedCollectionForeachMutation.output === 1,
+      `C# worker indexed collection foreach mutation case should succeed, received ${JSON.stringify(indexedCollectionForeachMutation)}`
+    );
+    assertCondition(
+      indexedCollectionForeachMutation.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'owners'
+        && JSON.stringify(event.target.path) === JSON.stringify(['email', 0])
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'name') === true,
+      `C# worker foreach over owners["email"] should emit an indexed iteration binding, received ${JSON.stringify(indexedCollectionForeachMutation.events)}`
+    );
+    assertCondition(
+      indexedCollectionForeachMutation.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 8
+        && event.target?.variable === 'names'
+        && event.method === 'Add'
+        && JSON.stringify(event.args) === JSON.stringify(['Ada'])) === true,
+      `C# worker names.Add(name) should emit a mutate event inside foreach, received ${JSON.stringify(indexedCollectionForeachMutation.events)}`
+    );
+
+    const unbracedQueueEnqueueMutation = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int UnbracedQueueEnqueueMutation(int degree) {',
+        '    var queue = new Queue<int>();',
+        '    if (degree == 0)',
+        '      queue.Enqueue(degree + 1);',
+        '    return queue.Count;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UnbracedQueueEnqueueMutation',
+      { degree: 0 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      unbracedQueueEnqueueMutation.success && unbracedQueueEnqueueMutation.output === 1,
+      `C# worker unbraced queue enqueue case should succeed, received ${JSON.stringify(unbracedQueueEnqueueMutation)}`
+    );
+    assertCondition(
+      unbracedQueueEnqueueMutation.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 6
+        && event.target?.variable === 'queue'
+        && event.method === 'Enqueue'
+        && JSON.stringify(event.args) === JSON.stringify([1])) === true,
+      `C# worker unbraced queue.Enqueue should emit a mutate event, received ${JSON.stringify(unbracedQueueEnqueueMutation.events)}`
+    );
+
     const interviewAdd = await runWorkerCase(
       page,
       fixture('add.cs'),

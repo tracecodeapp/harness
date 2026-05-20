@@ -1981,7 +1981,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && TryGetMemberAccessPath(memberAccess, out string root, out List<string>? path)
             && IsDeclaredMemberCollectionPath(root, path))
         {
-            variableName = $"{root}.{path[0]}";
+            variableName = path[0];
             return true;
         }
 

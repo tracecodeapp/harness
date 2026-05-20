@@ -1230,6 +1230,62 @@ print(json.dumps({
   console.log('PASS: Python indexed augmented assignment and subscript for-loop binding provenance');
 }
 
+async function assertSliceForLoopBindingIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `
+def solve(account):
+    seen = []
+    for email in account[1:]:
+        seen.append(email)
+    return seen
+`;
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    { account: ['John', 'john@example.com', 'johnny@example.com'] },
+    'function',
+    { maxTraceSteps: 1000, maxLineEvents: 10000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify(['john@example.com', 'johnny@example.com']),
+    'Python slice for-loop binding fixture should execute'
+  );
+
+  const bindingRead = parsed.trace
+    .flatMap((step) => step.accesses ?? [])
+    .find(
+      (access) =>
+        access.variable === 'account' &&
+        access.kind === 'indexed-read' &&
+        JSON.stringify(access.indices) === JSON.stringify([1]) &&
+        JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'email' }) &&
+        access.value === 'john@example.com'
+    );
+  assertCondition(
+    Boolean(bindingRead),
+    `Python for x in account[1:] should record slice iteration binding provenance, received ${JSON.stringify(parsed.trace)}`
+  );
+
+  console.log('PASS: Python slice for-loop binding provenance');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
@@ -1249,6 +1305,7 @@ async function main(): Promise<void> {
   await assertDefaultPreludeImportsAreAvailable();
   await assertScriptModePreservesResultSerializer();
   await assertIndexedAugAssignAndLoopBindingUseConcreteValues();
+  await assertSliceForLoopBindingIsRecorded();
   console.log('\nPython runtime checks passed.');
 }
 
