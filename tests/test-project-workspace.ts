@@ -7779,6 +7779,7 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
             'python3 read_generated.py',
           ],
         },
+        fixtures: 'python3 read_fixture.py',
         fail: {
           steps: [
             'python3 main.py',
@@ -7792,9 +7793,11 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
         { path: 'src/main.py', contents: 'import os\nprint(os.getcwd())\nprint(os.environ["MODE"])\n' },
         { path: 'src/write_generated.py', contents: 'open("generated.txt", "w").write("from-step-one\\n")\n' },
         { path: 'src/read_generated.py', contents: 'print(open("generated.txt").read())\n' },
+        { path: 'src/read_fixture.py', contents: 'print(open("../.trace/fixtures/input.txt").read())\n' },
         { path: 'src/fail.py', contents: 'raise SystemExit(9)\n' },
         { path: 'src/mutate_readonly.py', contents: 'print("mutate")\n' },
         { path: 'tests/test_sample.py', contents: '' },
+        { path: '.trace/fixtures/input.txt', contents: 'hidden-input\n', hidden: true },
         { path: 'README.md', contents: 'protected\n', readonly: true },
       ],
       metadata: {
@@ -7814,6 +7817,14 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
         const generated = request.project.files.find((file) => file.path === 'src/generated.txt')?.contents ?? 'missing\n';
         return {
           stdout: `read-generated:${generated}`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (request.scriptPath.endsWith('read_fixture.py')) {
+        const hiddenFixture = request.project.files.find((file) => file.path === '.trace/fixtures/input.txt')?.contents ?? 'missing\n';
+        return {
+          stdout: `fixture:${hiddenFixture}`,
           stderr: '',
           exitCode: 0,
         };
@@ -7844,12 +7855,28 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(workspace.projectSession?.workspaceRoot === '/home/user/weather-api', 'project session should expose canonical root');
   assertCondition(workspace.projectSession?.cwd === '/home/user/weather-api/src', 'project session should normalize relative session cwd');
   assertCondition(workspace.projectSession?.metadata?.consumer === 'test-harness', 'project session should preserve opaque metadata');
-  assertCondition(workspace.projectSession?.readonlyFiles.join(',') === 'README.md', 'project session should expose readonly file policy');
+  assertCondition(workspace.projectSession?.readonlyFiles.join(',') === '.trace/fixtures/input.txt,README.md', 'project session should expose readonly file policy');
+  assertCondition(workspace.projectSession?.hiddenFiles.join(',') === '.trace/fixtures/input.txt', 'project session should expose hidden file policy');
   assertCondition(await workspace.exists('src/main.py'), 'project session starter files should be written into workspace');
   assertCondition(await workspace.exists('tests'), 'project session directories should be written into workspace');
   assertCondition(await workspace.readFile('README.md') === 'protected\n', 'project session readonly starter file should be seeded');
   assertCondition(workspace.isReadOnly('README.md'), 'workspace should report readonly files');
+  assertCondition(workspace.isReadOnly('.trace/fixtures/input.txt'), 'workspace should treat hidden fixtures as readonly files');
   assertCondition(!workspace.isReadOnly('src/main.py'), 'workspace should not report editable files as readonly');
+  assertCondition(!(await workspace.readDir('.')).includes('.trace'), 'workspace file tree reads should hide hidden fixture directories');
+  const visibleSnapshot = await workspace.snapshot();
+  assertCondition(
+    !visibleSnapshot.files.some((file) => file.path === '.trace/fixtures/input.txt') &&
+      !visibleSnapshot.directories?.some((directory) => directory === '.trace' || directory.startsWith('.trace/')) &&
+      visibleSnapshot.hiddenFiles === undefined,
+    `user-facing snapshots should omit hidden fixtures: ${JSON.stringify(visibleSnapshot)}`
+  );
+  const fullSnapshot = await workspace.snapshot({ includeHidden: true });
+  assertCondition(
+    fullSnapshot.files.some((file) => file.path === '.trace/fixtures/input.txt') &&
+      fullSnapshot.hiddenFiles?.join(',') === '.trace/fixtures/input.txt',
+    `internal snapshots should include hidden fixtures and expose hidden policy: ${JSON.stringify(fullSnapshot)}`
+  );
 
   const start = await workspace.runProjectCommand('start');
   assertCondition(
@@ -7889,6 +7916,11 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
       await workspace.readFile('src/generated.txt') === 'from-step-one\n',
     `project session step file changes should persist into later steps: ${JSON.stringify(persist)}`
   );
+  const fixtures = await workspace.runProjectCommand('fixtures');
+  assertCondition(
+    fixtures.stdout === 'fixture:hidden-input\n',
+    `project session commands should receive hidden fixture files in runtime snapshots: ${JSON.stringify(fixtures)}`
+  );
 
   const failEvents: RuntimeCommandEvent[] = [];
   const fail = await workspace.runProjectCommand('fail', {
@@ -7921,6 +7953,7 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   assertCondition(readonlyRead.stdout === 'protected\n', `commands should read readonly files: ${JSON.stringify(readonlyRead)}`);
   await assertRejectsAsync(() => workspace.writeFile('README.md', 'principal overwrite\n'), 'principal writes should reject readonly files');
   await assertRejectsAsync(() => workspace.appendFile('README.md', 'principal append\n'), 'principal appends should reject readonly files');
+  await assertRejectsAsync(() => workspace.writeFile('.trace/fixtures/input.txt', 'principal overwrite\n'), 'principal writes should reject hidden fixtures');
   await assertRejectsAsync(() => workspace.copyFile('src/main.py', 'README.md'), 'copy destination should reject readonly files');
   await assertRejectsAsync(() => workspace.deleteFile('README.md'), 'delete should reject readonly files');
   await assertRejectsAsync(() => workspace.remove('.', { recursive: true }), 'recursive remove should reject readonly descendants');

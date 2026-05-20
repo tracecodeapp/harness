@@ -388,6 +388,18 @@ function normalizeProjectSessionCommands(
   return normalized;
 }
 
+function normalizeProjectSessionHiddenFiles(session: RuntimeProjectSession): string[] {
+  return [...new Set((session.files ?? [])
+    .filter((file) => file.hidden === true)
+    .map((file) => normalizeRuntimeProjectPath(file.path)))].sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeProjectSessionReadonlyFiles(session: RuntimeProjectSession): string[] {
+  return [...new Set((session.files ?? [])
+    .filter((file) => file.readonly === true || file.hidden === true)
+    .map((file) => normalizeRuntimeProjectPath(file.path)))].sort((left, right) => left.localeCompare(right));
+}
+
 function mergeProjectSessionKernelConfig(
   options: CreateRuntimeWorkspaceOptions
 ): RuntimeTraceKernelConfig | undefined {
@@ -454,9 +466,8 @@ function createProjectSessionInfo(session: RuntimeProjectSession, kernelInfo: Ru
     ...(session.entrypoint ? { entrypoint: normalizeRuntimeProjectPath(session.entrypoint) } : {}),
     ...(session.env ? { env: { ...session.env } } : {}),
     commands: normalizeProjectSessionCommands(session.commands),
-    readonlyFiles: [...new Set((session.files ?? [])
-      .filter((file) => file.readonly === true)
-      .map((file) => normalizeRuntimeProjectPath(file.path)))].sort((left, right) => left.localeCompare(right)),
+    readonlyFiles: normalizeProjectSessionReadonlyFiles(session),
+    hiddenFiles: normalizeProjectSessionHiddenFiles(session),
     lifecycle: {
       createdAt,
       lastOpenedAt,
@@ -779,6 +790,26 @@ function filterReadonlySnapshotFiles(
   if (readonly.size === 0) return snapshot;
   const files = snapshot.files.filter((file) => !readonly.has(normalizeRuntimeProjectPath(file.path)));
   return files.length === snapshot.files.length ? snapshot : { ...snapshot, files };
+}
+
+function filterHiddenSnapshotFiles(
+  snapshot: RuntimeProjectSnapshot,
+  hiddenFiles?: readonly string[]
+): RuntimeProjectSnapshot {
+  if (!hiddenFiles || hiddenFiles.length === 0) return snapshot;
+  const hidden = new Set(hiddenFiles.map((path) => normalizeRuntimeProjectPath(path)));
+  if (hidden.size === 0) return snapshot;
+  const files = snapshot.files.filter((file) => !hidden.has(normalizeRuntimeProjectPath(file.path)));
+  const directories = snapshot.directories?.filter((directory) => {
+    const normalized = normalizeRuntimeProjectPath(directory);
+    return ![...hidden].some((hiddenPath) => hiddenPath === normalized || hiddenPath.startsWith(`${normalized}/`));
+  });
+  const { directories: _directories, hiddenFiles: _hiddenFiles, ...rest } = snapshot;
+  return {
+    ...rest,
+    files,
+    ...(directories && directories.length > 0 ? { directories } : {}),
+  };
 }
 
 function filterReadonlySnapshotDeletions(
@@ -2942,6 +2973,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return this.readonlyFiles.has(toProjectPath(this.cwd, absolutePath));
   }
 
+  private isProjectPathHidden(path: string): boolean {
+    const normalized = normalizeRuntimeProjectPath(path);
+    return (this.projectSession?.hiddenFiles ?? []).some((hiddenPath) =>
+      hiddenPath === normalized || hiddenPath.startsWith(`${normalized}/`)
+    );
+  }
+
   private isWorkspaceSubtreeReadOnly(absolutePath: string): boolean {
     if (!isWithinWorkspace(this.cwd, absolutePath)) return false;
     if (this.isWorkspacePathReadOnly(absolutePath)) return true;
@@ -3217,8 +3255,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           : `Kernel virtual path not found: ${path}`
       );
     }
-    const entries = await this.bash.fs.readdir(this.toWorkspaceEntryPath(path));
-    return [...entries].sort((left, right) => left.localeCompare(right));
+    const absoluteDirectoryPath = this.toWorkspaceEntryPath(path);
+    const entries = await this.bash.fs.readdir(absoluteDirectoryPath);
+    const directoryPath = absoluteDirectoryPath === this.cwd ? '' : toProjectPath(this.cwd, absoluteDirectoryPath);
+    return [...entries]
+      .filter((entry) => {
+        const entryPath = directoryPath ? `${directoryPath}/${entry}` : entry;
+        return !this.isProjectPathHidden(entryPath);
+      })
+      .sort((left, right) => left.localeCompare(right));
   }
 
   async mkdir(path: string): Promise<void> {
@@ -3590,7 +3635,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       cwd,
       env,
       stdin: options.stdin ?? '',
-      project: await this.snapshot(),
+      project: await this.snapshot({ includeHidden: true }),
       onEvent: (event) => {
         this.handleRuntimeCommandEvent(event);
       },
@@ -3602,14 +3647,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     );
   }
 
-  async snapshot(options: { entrypoint?: string } = {}): Promise<RuntimeProjectSnapshot> {
+  async snapshot(options: { entrypoint?: string; includeHidden?: boolean } = {}): Promise<RuntimeProjectSnapshot> {
     this.assertNotDestroyed();
     const files: RuntimeFile[] = [];
     const directories: string[] = [];
     await this.collectFiles(this.cwd, files, directories);
     files.sort((left, right) => left.path.localeCompare(right.path));
     directories.sort((left, right) => left.localeCompare(right));
-    return {
+    const snapshot: RuntimeProjectSnapshot = {
       cwd: this.cwd,
       workspaceRoot: this.cwd,
       ...(this.kernelInfo.workspaceAlias ? { workspaceAlias: this.kernelInfo.workspaceAlias } : {}),
@@ -3619,10 +3664,12 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       files,
       ...(directories.length > 0 ? { directories } : {}),
       ...(this.projectSession?.readonlyFiles.length ? { readonlyFiles: [...this.projectSession.readonlyFiles] } : {}),
+      ...(this.projectSession?.hiddenFiles.length ? { hiddenFiles: [...this.projectSession.hiddenFiles] } : {}),
       ...(options.entrypoint || this.entrypoint
         ? { entrypoint: options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : this.entrypoint }
         : {}),
     };
+    return options.includeHidden ? snapshot : filterHiddenSnapshotFiles(snapshot, this.projectSession?.hiddenFiles);
   }
 
   dispose(): void {

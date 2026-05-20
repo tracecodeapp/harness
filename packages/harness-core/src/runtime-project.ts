@@ -109,6 +109,7 @@ export interface RuntimeProjectSnapshot {
   kernelDevices?: RuntimeKernelDeviceInfo[];
   directories?: string[];
   readonlyFiles?: readonly string[];
+  hiddenFiles?: readonly string[];
   entrypoint?: string;
   cwd?: string;
   workspaceRoot?: string;
@@ -118,6 +119,7 @@ export interface RuntimeProjectSnapshot {
 
 export interface RuntimeProjectSessionFile extends RuntimeFile {
   readonly?: boolean;
+  hidden?: boolean;
 }
 
 export interface RuntimeProjectSessionCommandStep {
@@ -172,6 +174,7 @@ export interface RuntimeProjectSessionInfo {
   env?: Record<string, string>;
   commands: Record<string, RuntimeProjectSessionCommand>;
   readonlyFiles: readonly string[];
+  hiddenFiles: readonly string[];
   lifecycle: RuntimeProjectSessionLifecycle;
   metadata?: Record<string, unknown>;
 }
@@ -532,7 +535,7 @@ export interface RuntimeWorkspaceKernel {
   writeFile(path: string, contents: string, actor?: RuntimeWorkspaceActor, encoding?: RuntimeFileEncoding): Promise<void>;
   deleteFile(path: string, actor?: RuntimeWorkspaceActor): Promise<void>;
   applyFileChange(change: RuntimeFileChange, actor?: RuntimeWorkspaceActor, phase?: RuntimeFileMutationPhase): Promise<void>;
-  snapshot(options?: { entrypoint?: string }): Promise<RuntimeProjectSnapshot>;
+  snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
 }
 
@@ -608,7 +611,7 @@ export interface RuntimeWorkspace {
   createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
   checkExpiration(now?: Date | string | number): Promise<RuntimeProjectSessionLifecycle | null>;
   destroy(options?: { reason?: string; clearStorage?: boolean }): Promise<void>;
-  snapshot(options?: { entrypoint?: string }): Promise<RuntimeProjectSnapshot>;
+  snapshot(options?: { entrypoint?: string; includeHidden?: boolean }): Promise<RuntimeProjectSnapshot>;
   watch(listener: RuntimeWorkspaceEventHandler): RuntimeWorkspaceUnsubscribe;
   dispose(): void;
 }

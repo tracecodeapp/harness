@@ -46,8 +46,12 @@ export type BrowserProjectNodeOptions = Omit<BrowserJavaScriptProjectRunnerOptio
 
 function readonlySessionFiles(options: CreateRuntimeWorkspaceOptions): string[] {
   return [...new Set((options.projectSession?.files ?? [])
-    .filter((file) => file.readonly === true)
+    .filter((file) => file.readonly === true || file.hidden === true)
     .map((file) => normalizeRuntimeProjectPath(file.path)))];
+}
+
+function hiddenSessionFiles(options: CreateRuntimeWorkspaceOptions): NonNullable<CreateRuntimeWorkspaceOptions['projectSession']>['files'] {
+  return (options.projectSession?.files ?? []).filter((file) => file.hidden === true);
 }
 
 function isReadonlyDeletion(change: RuntimeFileChange, readonlyFiles: readonly string[]): boolean {
@@ -167,10 +171,11 @@ export async function createBrowserProjectWorkspace(
     storedSnapshot.files.length > 0 ||
     (storedSnapshot.directories?.length ?? 0) > 0
   );
+  const hiddenFiles = hiddenSessionFiles(workspaceOptions);
   const projectSession = hasStoredWorkspace && workspaceOptions.projectSession
     ? {
         ...workspaceOptions.projectSession,
-        files: [],
+        files: hiddenFiles,
         directories: [],
       }
     : workspaceOptions.projectSession;
