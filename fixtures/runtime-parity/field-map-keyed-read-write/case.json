@@ -541,7 +541,11 @@
         {
           "kind": "read",
           "variable": "this",
-          "pathDepth": 2
+          "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ]
         },
         {
           "kind": "write",
@@ -556,6 +560,10 @@
           "kind": "mutate",
           "variable": "this",
           "pathDepth": 2,
+          "indexSources": [
+            null,
+            "key"
+          ],
           "method": "set",
           "args": [
             1

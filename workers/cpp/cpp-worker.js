@@ -1602,7 +1602,13 @@ function collectTraceContainerMemberNames(source, aliases = new Map(), className
   for (const [name, member] of members) {
     const normalizedType = normalizeCppType(member.type, aliases);
     const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
-    if (isVectorCppType(member.type, aliases) && innerType !== 'string') names.add(name);
+    if (
+      isUnorderedMapCppType(member.type, aliases) ||
+      isMapCppType(member.type, aliases) ||
+      (isVectorCppType(member.type, aliases) && innerType !== 'string')
+    ) {
+      names.add(name);
+    }
   }
   return names;
 }
@@ -3292,6 +3298,12 @@ function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), 
     rewritten = rewritten.replace(memberPattern, (_match, indexExpression) => {
       const trimmedIndex = String(indexExpression || '').trim();
       return `this->${name}.with_index_source(${trimmedIndex}, ${cppIndexSourceForExpression(trimmedIndex)}).`;
+    });
+    const indexedMemberPattern = new RegExp(`\\bthis\\s*->\\s*${escapeRegExp(name)}\\s*\\[([^\\]]+)\\]`, 'g');
+    rewritten = rewritten.replace(indexedMemberPattern, (match, indexExpression) => {
+      if (match.includes('.with_index_source')) return match;
+      const trimmedIndex = String(indexExpression || '').trim();
+      return `this->${name}.with_index_source(${trimmedIndex}, ${cppIndexSourceForExpression(trimmedIndex)})`;
     });
     const pattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\[[^\\]]+\\]\\s*\\.`, 'g');
     rewritten = rewritten.replace(pattern, (match) => match.replace(/\.\s*$/, '->'));

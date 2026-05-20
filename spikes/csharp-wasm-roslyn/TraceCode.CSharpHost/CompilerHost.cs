@@ -1653,7 +1653,7 @@ public class TreeNode
 
         public static T ArrayRead<T>(TraceCodeList<T[]> list, int row, int column, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
-            T value = list[row][column];
+            T value = ((List<T[]>)list)[row][column];
             TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, new object?[] { row, column }, value, line, null, indexSources);
             return value;
         }

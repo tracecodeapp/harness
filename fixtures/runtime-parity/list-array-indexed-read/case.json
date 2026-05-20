@@ -87,12 +87,6 @@
         {
           "count": 2,
           "kind": "read",
-          "pathDepth": 1,
-          "variable": "values"
-        },
-        {
-          "count": 2,
-          "kind": "read",
           "pathDepth": 2,
           "variable": "values"
         }
@@ -337,11 +331,6 @@
     "csharp": {
       "read": {
         "accessTargets": [
-          {
-            "kind": "read",
-            "pathDepth": 1,
-            "variable": "values"
-          },
           {
             "kind": "read",
             "pathDepth": 2,
