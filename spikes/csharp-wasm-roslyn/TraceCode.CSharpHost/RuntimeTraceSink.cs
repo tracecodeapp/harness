@@ -274,13 +274,20 @@ public static class RuntimeTraceSink
     )
     {
         int index = 0;
-        if (emitInitialLine)
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
         {
-            Line(line, function);
-            snapshot?.Invoke();
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
         }
-        foreach (T item in values)
+
+        do
         {
+            T item = enumerator.Current;
             if (!string.IsNullOrWhiteSpace(variable))
             {
                 IndexedRead(variable, new object?[] { index }, item, line, bindingVariable);
@@ -290,10 +297,13 @@ public static class RuntimeTraceSink
                 Write(bindingVariable, item, line);
             }
             index++;
-            yield return item;
             Line(line, function);
             snapshot?.Invoke();
+            yield return item;
         }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
     }
 
     public static IEnumerable<T> NestedIterationBind<T>(
@@ -309,13 +319,20 @@ public static class RuntimeTraceSink
     )
     {
         int index = 0;
-        if (emitInitialLine)
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
         {
-            Line(line, function);
-            snapshot?.Invoke();
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
         }
-        foreach (T item in values)
+
+        do
         {
+            T item = enumerator.Current;
             if (!string.IsNullOrWhiteSpace(variable))
             {
                 IndexedRead(
@@ -332,10 +349,13 @@ public static class RuntimeTraceSink
                 Write(bindingVariable, item, line);
             }
             index++;
-            yield return item;
             Line(line, function);
             snapshot?.Invoke();
+            yield return item;
         }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
     }
 
     public static void IndexedWrite(string variable, object index, object? value, int line)

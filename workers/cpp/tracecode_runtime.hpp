@@ -4377,7 +4377,7 @@ class UnorderedMap : public std::unordered_map<K, V> {
   std::size_t erase(const K& key) {
     const auto erased = values_.erase(key);
     if (erased > 0) {
-      emit_mutate("erase", trace_event_line());
+      emit_keyed_mutate(key, "erase", trace_event_line(), mutation_args_json(key));
       emit_snapshot(trace_event_line());
     }
     return erased;
@@ -4601,28 +4601,28 @@ class UnorderedMapValueRef {
 
   UnorderedMapValueRef& operator--() {
     --owner_.values_[key_];
-    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator--(int) {
     V old = owner_.values_[key_]--;
-    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
   UnorderedMapValueRef& operator++() {
     ++owner_.values_[key_];
-    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator++(int) {
     V old = owner_.values_[key_]++;
-    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
@@ -4964,7 +4964,7 @@ class Map : public std::map<K, V> {
   std::size_t erase(const K& key) {
     const auto erased = values_.erase(key);
     if (erased > 0) {
-      emit_mutate("erase", trace_event_line());
+      emit_keyed_mutate(key, "erase", trace_event_line(), mutation_args_json(key));
       emit_snapshot(trace_event_line());
     }
     return erased;
@@ -5188,28 +5188,28 @@ class MapValueRef {
 
   MapValueRef& operator--() {
     --owner_.values_[key_];
-    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator--(int) {
     V old = owner_.values_[key_]--;
-    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "decrement", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }
 
   MapValueRef& operator++() {
     ++owner_.values_[key_];
-    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return *this;
   }
 
   V operator++(int) {
     V old = owner_.values_[key_]++;
-    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), "", source_);
+    owner_.emit_keyed_mutate(key_, "increment", trace_event_line(), mutation_args_json(), source_);
     owner_.emit_write(key_, owner_.values_[key_], trace_event_line(), source_);
     return old;
   }

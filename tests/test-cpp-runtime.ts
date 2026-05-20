@@ -81,6 +81,36 @@ if (!sandbox.__tracecodeCppTest.state().hasToolchainPromise || !sandbox.__tracec
   throw new Error('C++ warmup should retain the initialized compiler promises');
 }
 
+const describeCppPayload = (method, payload) => {
+  const label = payload?.name || payload?.functionName || payload?.executionStyle || 'unknown';
+  return method + ' ' + label;
+};
+
+const wrapCppTestMethod = (method) => {
+  const original = sandbox.__tracecodeCppTest[method];
+  sandbox.__tracecodeCppTest[method] = async (payload) => {
+    const label = describeCppPayload(method, payload);
+    console.log('RUN: C++ ' + label);
+    const startedAt = performance.now();
+    try {
+      const result = await original(payload);
+      const status = result?.success === false ? 'FAIL' : 'PASS';
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const detail = result?.success === false && result?.error ? ': ' + result.error : '';
+      console.log(status + ': C++ ' + label + ' (' + elapsedMs + 'ms)' + detail);
+      return result;
+    } catch (error) {
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      console.log('FAIL: C++ ' + label + ' (' + elapsedMs + 'ms): ' + (error?.stack || error));
+      throw error;
+    }
+  };
+};
+
+for (const method of ['handleCompileRun', 'handleExecuteWithTracing', 'handleExecuteCodeInterview']) {
+  wrapCppTestMethod(method);
+}
+
 const cases = [
   {
     name: 'scalar add',
@@ -2060,6 +2090,93 @@ if (!orderedMapEvents.some((event) => event.kind === 'read' && event.target?.var
 }
 if (!orderedMapEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'counts' && event.method === 'erase')) {
   throw new Error('C++ map erase should emit mutation, received ' + JSON.stringify(orderedMapEvents));
+}
+
+const keyedMutationContractTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int count(string text) {',
+    '    unordered_map<char, int> need;',
+    "    char ch = text[0];",
+    '    need[ch]++;',
+    '    need[ch]--;',
+    '    need.erase(ch);',
+    '    return (int)need.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'count',
+  inputs: { text: 'ab' },
+  options: {},
+});
+if (!keyedMutationContractTrace.success || keyedMutationContractTrace.output !== 0) {
+  throw new Error('C++ keyed mutation contract tracing failed: ' + JSON.stringify(keyedMutationContractTrace));
+}
+const keyedMutationContractEvents = keyedMutationContractTrace.trace.events;
+for (const [line, method] of [[6, 'increment'], [7, 'decrement']]) {
+  if (!keyedMutationContractEvents.some((event) =>
+    event.kind === 'mutate' &&
+    event.line === line &&
+    event.target?.variable === 'need' &&
+    event.target.path?.[0] === 'a' &&
+    JSON.stringify(event.target.indexSources) === JSON.stringify(['ch']) &&
+    event.method === method &&
+    JSON.stringify(event.args) === JSON.stringify([])
+  )) {
+    throw new Error('C++ unordered_map ' + method + ' should emit keyed target, indexSources, and empty args, received ' + JSON.stringify(keyedMutationContractEvents));
+  }
+}
+if (!keyedMutationContractEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'need' &&
+  event.target.path?.[0] === 'a' &&
+  event.method === 'erase' &&
+  JSON.stringify(event.args) === JSON.stringify(['a'])
+)) {
+  throw new Error('C++ unordered_map erase should emit keyed target and evaluated args, received ' + JSON.stringify(keyedMutationContractEvents));
+}
+
+const triePointerFieldReadTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  struct TrieNode { unordered_map<char, TrieNode*> children; };',
+    'public:',
+    '  int walk(string word) {',
+    '    TrieNode* root = new TrieNode();',
+    '    TrieNode* child = new TrieNode();',
+    '    char ch = word[0];',
+    '    root->children[ch] = child;',
+    '    TrieNode* node = root;',
+    '    node = node->children[ch];',
+    '    return node == child ? 1 : 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'walk',
+  inputs: { word: 'a' },
+  options: {},
+});
+if (!triePointerFieldReadTrace.success || triePointerFieldReadTrace.output !== 1) {
+  throw new Error('C++ trie pointer field read tracing failed: ' + JSON.stringify(triePointerFieldReadTrace));
+}
+const triePointerFieldReadEvents = triePointerFieldReadTrace.trace.events;
+if (!triePointerFieldReadEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 10 &&
+  event.target?.variable === 'node' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['children', 'a']) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'ch'])
+)) {
+  throw new Error('C++ pointer field keyed read assignment should emit concrete read target and indexSources, received ' + JSON.stringify(triePointerFieldReadEvents));
+}
+if (!triePointerFieldReadEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 10 &&
+  event.target?.variable === 'node'
+)) {
+  throw new Error('C++ pointer field keyed read assignment should emit scalar pointer write, received ' + JSON.stringify(triePointerFieldReadEvents));
 }
 
 const orderedMapBoundsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

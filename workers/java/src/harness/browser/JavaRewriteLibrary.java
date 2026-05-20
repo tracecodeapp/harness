@@ -183,7 +183,8 @@ public final class JavaRewriteLibrary {
 
       boolean continuingExpression = current.expressionParenDepth > 0 || current.statementContinuation;
       boolean postLineStateStatement = emitsPostLineState(trimmed, current);
-      boolean suppressLineHook = current.suppressNextLineHook || continuingExpression || postLineStateStatement;
+      boolean suppressLineHook = current.suppressNextLineHook || continuingExpression || postLineStateStatement ||
+          isEnhancedForHeader(trimmed);
       current.suppressNextLineHook = false;
       if (!current.pendingAnnotation && !suppressLineHook && shouldEmitLine(trimmed)) {
         out.append(indentOf(line)).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
@@ -981,6 +982,12 @@ public final class JavaRewriteLibrary {
       return false;
     }
     return parenDelta(trimmed) > 0;
+  }
+
+  private static boolean isEnhancedForHeader(String trimmed) {
+    return trimmed.startsWith("for ") || trimmed.startsWith("for(")
+        ? Pattern.compile("^for\\s*\\([^;]+:[^;]+\\)\\s*\\{?\\s*$").matcher(trimmed).matches()
+        : false;
   }
 
   private static boolean startsUnbracedControlHeader(String trimmed) {

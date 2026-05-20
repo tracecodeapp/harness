@@ -2770,8 +2770,27 @@ function isCppPointerVariable(variable) {
 
 function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = new Map()) {
   if (!line.includes('->')) return line;
+  const firstLine = line.split('\n')[0] ?? line;
+  const pointerFieldAssignment = firstLine.match(/^(\s*)([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)(?:\s*\[\s*([^\[\]]+?)\s*\])?\s*;\s*$/);
+  if (pointerFieldAssignment) {
+    const [, indent, assigneeName, objectName, fieldName, keyExpression] = pointerFieldAssignment;
+    const objectVariable = variables?.get(objectName);
+    if (!objectVariable || isCppPointerVariable(objectVariable)) {
+      const accessExpression = keyExpression
+        ? `${objectName}->${fieldName}[${keyExpression.trim()}]`
+        : `${objectName}->${fieldName}`;
+      const tempName = `__tc_pointer_field_read_${lineNumber}_${assigneeName}`;
+      return [
+        `${indent}auto ${tempName} = ${accessExpression};`,
+        buildFieldReadInstrumentation(accessExpression, tempName, lineNumber, indent),
+        `${indent}${assigneeName} = ${tempName};`,
+        buildScalarWriteInstrumentation(assigneeName, lineNumber, indent),
+      ].join('\n');
+    }
+  }
   if (/^\s*[A-Za-z_]\w*(?:\.|->)[A-Za-z_]\w*(?:\s*\[[^\[\]]+?\])?\s*=/.test(line)) return line;
   const stripped = stripCppStringsAndComments(line);
+  if (/^\s*(?:if|else\s+if|while|for|switch)\s*\(/.test(stripped)) return line;
   const reads = [];
   const seen = new Set();
   const fieldAccessPattern = /\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\b/g;
@@ -2779,7 +2798,9 @@ function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = ne
     const objectName = match[1];
     const fieldName = match[2];
     if (!objectName || !fieldName) continue;
-    if (!isCppPointerVariable(variables?.get(objectName))) continue;
+    if (objectName === 'this') continue;
+    const objectVariable = variables?.get(objectName);
+    if (objectVariable && !isCppPointerVariable(objectVariable)) continue;
     const accessStart = match.index ?? 0;
     const accessEnd = accessStart + match[0].length;
     const before = stripped.slice(0, accessStart);
@@ -2787,15 +2808,36 @@ function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = ne
     if (/\b(?:new|delete)\s+$/.test(before)) continue;
     if (/^\s*=/.test(after)) continue;
     if (/^\s*\(/.test(after)) continue;
-    const expression = `${objectName}->${fieldName}`;
+    const bracketStart = stripped.indexOf('[', accessEnd);
+    let expression = `${objectName}->${fieldName}`;
+    if (bracketStart === accessEnd) {
+      const bracketEnd = findMatchingSquareBracket(stripped, bracketStart);
+      if (bracketEnd > bracketStart) {
+        expression += stripped.slice(bracketStart, bracketEnd + 1);
+      }
+    }
     if (seen.has(expression)) continue;
     seen.add(expression);
     const indent = line.match(/^(\s*)/)?.[1] ?? '';
     const readInstrumentation = buildFieldReadInstrumentation(expression, expression, lineNumber, `${indent}  `);
-    if (readInstrumentation) reads.push(`${indent}if (${objectName}) {\n${readInstrumentation}\n${indent}}`);
+    if (readInstrumentation) {
+      if (objectVariable && isCppPointerVariable(objectVariable)) {
+        reads.push(`${indent}if (${objectName}) {\n${readInstrumentation}\n${indent}}`);
+      } else {
+        reads.push(readInstrumentation);
+      }
+    }
   }
   const instrumentation = reads.filter(Boolean).join('\n');
   return instrumentation ? `${instrumentation}\n${line}` : line;
+}
+
+function rewritePointerAssignmentWriteInstrumentation(line, lineNumber) {
+  if (line.includes('tracecode::') || !line.includes('->')) return line;
+  const match = line.match(/^(\s*)([A-Za-z_]\w*)\s*=\s*(.+->.+)\s*;\s*$/);
+  if (!match) return line;
+  const [, indent, name] = match;
+  return `${line}\n${buildScalarWriteInstrumentation(name, lineNumber, indent)}`;
 }
 
 function buildCallInstrumentation(lineNumber, signature) {
@@ -4364,6 +4406,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
       lineForDriver = rewriteScalarWriteInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
+      lineForDriver = rewritePointerAssignmentWriteInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewritePointerFieldReadInstrumentation(lineForDriver, lineNumber, activeFrame.variables);
       const externalPostLineIsScopeSafe = /^\s*for\s*\([^;:]+:/.test(trimmedLine) && !trimmedLine.includes('{');
       if (postLineHandledInline && !externalPostLineIsScopeSafe) {
