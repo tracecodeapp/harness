@@ -38,7 +38,7 @@ public static partial class CompilerHost
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
         TextWriter originalOut = Console.Out;
-        using StringWriter capturedOut = new();
+        using TracingConsoleWriter capturedOut = new();
         Console.SetOut(capturedOut);
         RuntimeTraceSink.Reset();
         Dictionary<string, object> timings = new();
@@ -2849,5 +2849,81 @@ public class TreeNode
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .ToList();
+    }
+
+    private sealed class TracingConsoleWriter : StringWriter
+    {
+        private readonly StringBuilder lineBuffer = new();
+
+        public override void Write(char value)
+        {
+            base.Write(value);
+            AppendForTrace(value);
+        }
+
+        public override void Write(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return;
+            }
+
+            base.Write(value);
+            AppendForTrace(value);
+        }
+
+        public override void Write(char[] buffer, int index, int count)
+        {
+            base.Write(buffer, index, count);
+            AppendForTrace(buffer.AsSpan(index, count));
+        }
+
+        public override void WriteLine()
+        {
+            Write(NewLine);
+        }
+
+        public override void WriteLine(string? value)
+        {
+            Write(value);
+            WriteLine();
+        }
+
+        private void AppendForTrace(char value)
+        {
+            if (value == '\n')
+            {
+                EmitBufferedLine();
+                return;
+            }
+
+            if (value != '\r')
+            {
+                lineBuffer.Append(value);
+            }
+        }
+
+        private void AppendForTrace(string value)
+        {
+            foreach (char character in value)
+            {
+                AppendForTrace(character);
+            }
+        }
+
+        private void AppendForTrace(ReadOnlySpan<char> value)
+        {
+            foreach (char character in value)
+            {
+                AppendForTrace(character);
+            }
+        }
+
+        private void EmitBufferedLine()
+        {
+            string text = lineBuffer.ToString();
+            lineBuffer.Clear();
+            RuntimeTraceSink.Stdout(text);
+        }
     }
 }

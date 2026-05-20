@@ -5059,22 +5059,33 @@ function splitMarkerLine(text, markerIndex, marker) {
   };
 }
 
-function appendConsoleChunk(chunk, consoleOutput, traceEvents, defaultLine) {
+function appendConsoleChunk(chunk, consoleOutput, traceEvents, pendingStdoutEvents, defaultLine) {
   for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
     consoleOutput.push(line);
     if (traceEvents) {
-      traceEvents.push({
+      const event = {
         kind: 'stdout',
         line: defaultLine,
         text: line,
-      });
+      };
+      traceEvents.push(event);
+      pendingStdoutEvents?.push(event);
     }
   }
+}
+
+function anchorPendingStdoutEvents(pendingStdoutEvents, event) {
+  if (!pendingStdoutEvents?.length || typeof event?.line !== 'number') return;
+  for (const stdoutEvent of pendingStdoutEvents) {
+    stdoutEvent.line = event.line;
+  }
+  pendingStdoutEvents.length = 0;
 }
 
 function parseProgramStdout(stdout, options = {}) {
   const consoleOutput = [];
   const traceEvents = options.tracing ? [] : null;
+  const pendingStdoutEvents = options.tracing ? [] : null;
   let output = null;
   let foundResult = false;
   let traceStatus = null;
@@ -5089,11 +5100,11 @@ function parseProgramStdout(stdout, options = {}) {
       .sort((left, right) => left - right)[0] ?? -1;
 
     if (markerIndex < 0) {
-      appendConsoleChunk(stdout.slice(cursor), consoleOutput, traceEvents, options.defaultLine ?? 1);
+      appendConsoleChunk(stdout.slice(cursor), consoleOutput, traceEvents, pendingStdoutEvents, options.defaultLine ?? 1);
       break;
     }
 
-    appendConsoleChunk(stdout.slice(cursor, markerIndex), consoleOutput, traceEvents, options.defaultLine ?? 1);
+    appendConsoleChunk(stdout.slice(cursor, markerIndex), consoleOutput, traceEvents, pendingStdoutEvents, options.defaultLine ?? 1);
 
     if (markerIndex === resultIndex) {
       const marker = splitMarkerLine(stdout, markerIndex, RESULT_MARKER);
@@ -5108,7 +5119,9 @@ function parseProgramStdout(stdout, options = {}) {
       const marker = splitMarkerLine(stdout, markerIndex, TRACE_EVENT_MARKER);
       if (traceEvents && marker.payload) {
         try {
-          traceEvents.push(JSON.parse(marker.payload));
+          const event = JSON.parse(marker.payload);
+          anchorPendingStdoutEvents(pendingStdoutEvents, event);
+          traceEvents.push(event);
         } catch (error) {
           throw new Error(`C++ trace event JSON parse failed: ${error instanceof Error ? error.message : String(error)}; payload=${marker.payload}`);
         }

@@ -578,14 +578,17 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
 
   const baseEvents = Array.isArray(parsed.events) ? parsed.events : [];
   const consoleOutput = parsed.consoleOutput ?? [];
+  const hostEmittedStdout = baseEvents.some((event) => event.kind === 'stdout');
   const events = [
     ...baseEvents,
-    ...consoleOutput.map((text) => ({
-      kind: 'stdout' as const,
-      runId: 'csharp:run',
-      file: 'solution.cs',
-      text,
-    })),
+    ...(hostEmittedStdout
+      ? []
+      : consoleOutput.map((text) => ({
+          kind: 'stdout' as const,
+          runId: 'csharp:run',
+          file: 'solution.cs',
+          text,
+        }))),
   ];
   const trace: RuntimeTrace = {
     schemaVersion: 'runtime-trace-2026-04-28',

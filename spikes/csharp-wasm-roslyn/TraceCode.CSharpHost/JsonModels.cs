@@ -110,6 +110,10 @@ public sealed class RuntimeTraceEvent
     [JsonPropertyName("message")]
     public string? Message { get; set; }
 
+    [JsonPropertyName("text")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Text { get; set; }
+
     [JsonPropertyName("reason")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Reason { get; set; }

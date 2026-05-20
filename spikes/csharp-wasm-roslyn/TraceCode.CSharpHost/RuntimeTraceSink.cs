@@ -226,6 +226,21 @@ public static class RuntimeTraceSink
         });
     }
 
+    public static void Stdout(string text)
+    {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
+        Add(new RuntimeTraceEvent
+        {
+            Kind = "stdout",
+            Line = ScopedSourceLine > 0 ? ScopedSourceLine : null,
+            Text = text,
+        });
+    }
+
     public static void Write(string variable, object? value, int line)
     {
         if (traceLimitExceeded)

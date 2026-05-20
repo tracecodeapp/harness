@@ -582,14 +582,17 @@ export class CSharpWorkerClient {
     }
 
     const consoleOutput = result.consoleOutput ?? [];
+    const hostEmittedStdout = result.events?.some((event) => event.kind === 'stdout') === true;
     const events = [
       ...(result.events ?? []),
-      ...consoleOutput.map((text): RuntimeTraceEvent => ({
-        kind: 'stdout',
-        runId: 'csharp:run',
-        file: CSHARP_DEFAULT_FILE,
-        text,
-      })),
+      ...(hostEmittedStdout
+        ? []
+        : consoleOutput.map((text): RuntimeTraceEvent => ({
+            kind: 'stdout',
+            runId: 'csharp:run',
+            file: CSHARP_DEFAULT_FILE,
+            text,
+          }))),
     ];
     const trace = this.createTrace(events);
 
