@@ -3270,6 +3270,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                     || prefix.IsKind(SyntaxKind.UnaryMinusExpression))
                 && IsSafeIndexSourceExpression(prefix.Operand),
             MemberAccessExpressionSyntax memberAccess => IsSafeIndexSourceExpression(memberAccess.Expression),
+            InvocationExpressionSyntax invocation => invocation.Expression is MemberAccessExpressionSyntax invocationMemberAccess
+                && invocation.ArgumentList.Arguments.Count == 0
+                && IsSafeIndexSourceExpression(invocationMemberAccess),
             ElementAccessExpressionSyntax elementAccess => IsSafeIndexSourceExpression(elementAccess.Expression)
                 && elementAccess.ArgumentList.Arguments.Count == 1
                 && elementAccess.ArgumentList.Arguments[0].NameColon is null

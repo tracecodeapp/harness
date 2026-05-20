@@ -2891,6 +2891,50 @@ async function main(): Promise<void> {
       `C# worker traced Queue.Peek/Stack.Peek should not emit mutations, received ${JSON.stringify(tracedQueueStackPeekReads.events)}`
     );
 
+    const tracedStackMethodIndexSources = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int StackMethodIndexes(int[] heights) {',
+        '    Stack<int> stack = new Stack<int>();',
+        '    stack.Push(1);',
+        '    int peeked = heights[stack.Peek()];',
+        '    int popped = heights[stack.Pop()];',
+        '    return peeked + popped;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'StackMethodIndexes',
+      { heights: [2, 7, 4] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedStackMethodIndexSources.success,
+      `C# worker traced stack-method index source case should succeed: ${tracedStackMethodIndexSources.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedStackMethodIndexSources.output === 14,
+      `C# worker traced stack-method index source case should return 14, received ${JSON.stringify(tracedStackMethodIndexSources.output)}`
+    );
+    assertCondition(
+      tracedStackMethodIndexSources.events?.some((event) =>
+        event.kind === 'read'
+        && event.target?.variable === 'heights'
+        && event.target.path?.[0] === 1
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['stack.Peek()'])) === true,
+      `C# worker indexed read should preserve stack.Peek() indexSources, received ${JSON.stringify(tracedStackMethodIndexSources.events)}`
+    );
+    assertCondition(
+      tracedStackMethodIndexSources.events?.some((event) =>
+        event.kind === 'read'
+        && event.target?.variable === 'heights'
+        && event.target.path?.[0] === 1
+        && JSON.stringify(event.target.indexSources) === JSON.stringify(['stack.Pop()'])) === true,
+      `C# worker indexed read should preserve stack.Pop() indexSources, received ${JSON.stringify(tracedStackMethodIndexSources.events)}`
+    );
+
     const twoSum = await runWorkerCase(page, fixture('two-sum.cs'), 'TwoSum', { nums: [2, 7, 11, 15], target: 9 }, assetBaseUrl);
     assertCondition(twoSum.success, `C# worker TwoSum should succeed: ${twoSum.error ?? 'unknown error'}`);
     assertCondition(JSON.stringify(twoSum.output) === JSON.stringify([0, 1]), 'C# worker TwoSum should return [0,1]');
