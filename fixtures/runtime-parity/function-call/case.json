@@ -48,6 +48,44 @@
       }
     }
   },
+  "expectFrameEvents": {
+    "helperEntry": [
+      {
+        "kind": "snapshot",
+        "function": "helper",
+        "args": {
+          "x": 2
+        },
+        "callStackDepth": 2
+      }
+    ]
+  },
+  "expectFrameEventsByLanguage": {
+    "csharp": {
+      "helperEntry": [
+        {
+          "kind": "call",
+          "function": "helper",
+          "args": {
+            "x": 2
+          },
+          "callStackDepth": 2
+        }
+      ]
+    },
+    "cpp": {
+      "helperEntry": [
+        {
+          "kind": "line",
+          "function": "helper",
+          "args": {
+            "x": 2
+          },
+          "callStackDepth": 2
+        }
+      ]
+    }
+  },
   "expectReturns": [
     {
       "function": "helper",

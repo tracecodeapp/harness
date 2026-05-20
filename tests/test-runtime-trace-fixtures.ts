@@ -109,6 +109,8 @@ interface FixtureCase {
   expectCallActivationsByLanguage?: Partial<Record<Language, RuntimeTraceCallActivationAssertion[]>>;
   expectReturns?: RuntimeTraceReturnAssertion[];
   expectReturnsByLanguage?: Partial<Record<Language, RuntimeTraceReturnAssertion[]>>;
+  expectFrameEvents?: Record<string, RuntimeTraceFrameEventAssertion[]>;
+  expectFrameEventsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceFrameEventAssertion[]>>>;
   expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
   expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
   expectOpaqueRefs?: boolean;
@@ -126,6 +128,13 @@ interface RuntimeTraceReturnAssertion {
   value?: unknown;
   args?: Record<string, unknown>;
   callStackDepth?: number;
+}
+
+interface RuntimeTraceFrameEventAssertion {
+  kind: RuntimeTraceEventKind;
+  function: string;
+  args?: Record<string, unknown>;
+  callStackDepth: number;
 }
 
 interface RuntimeTraceEventAssertion {
@@ -1171,6 +1180,40 @@ function assertReturns(
   }
 }
 
+function frameEventMatchesAssertion(
+  event: RuntimeTrace['events'][number],
+  assertion: RuntimeTraceFrameEventAssertion
+): boolean {
+  if (event.kind !== assertion.kind) return false;
+  if (!Array.isArray(event.callStack) || event.callStack.length !== assertion.callStackDepth) return false;
+  const topFrame = event.callStack[event.callStack.length - 1];
+  if (topFrame?.function !== assertion.function) return false;
+  if (assertion.args !== undefined && stableStringify(topFrame.args) !== stableStringify(assertion.args)) return false;
+  return true;
+}
+
+function assertFrameEvents(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>,
+  assertionsByRole: Record<string, RuntimeTraceFrameEventAssertion[]>,
+  label: string
+): void {
+  for (const [role, assertions] of Object.entries(assertionsByRole)) {
+    const line = roleLines[role];
+    assertCondition(
+      typeof line === 'number' && line > 0,
+      `${label}: frame event assertion role "${role}" does not have a resolved anchor line`
+    );
+    const roleEvents = trace.events.filter((event) => event.line === line);
+    for (const assertion of assertions) {
+      assertCondition(
+        roleEvents.some((event) => frameEventMatchesAssertion(event, assertion)),
+        `${label}: missing frame event assertion for role "${role}".\nExpected: ${stableStringify(assertion)}\nEvents: ${stableStringify(roleEvents)}`
+      );
+    }
+  }
+}
+
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
@@ -1390,6 +1433,18 @@ async function runFixture(
         trace,
         roleLines,
         expectedEventAssertions,
+        `${fixture.id}:${language}`
+      );
+    }
+    const expectedFrameEvents = {
+      ...(fixture.expectFrameEvents ?? {}),
+      ...(fixture.expectFrameEventsByLanguage?.[language] ?? {}),
+    };
+    if (Object.keys(expectedFrameEvents).length > 0) {
+      assertFrameEvents(
+        trace,
+        roleLines,
+        expectedFrameEvents,
         `${fixture.id}:${language}`
       );
     }

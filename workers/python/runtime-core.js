@@ -548,25 +548,22 @@ def __tracecode_append_trace_events_for_step(step):
     line = step.get('line')
     event_kind = step.get('event')
     function_name = step.get('function')
+    stack = step.get('callStack') if isinstance(step.get('callStack'), _builtins.list) else []
     base = {
         'runId': 'python:run',
         'line': line,
         'frameId': __tracecode_frame_id_for_step(step)
     }
+    if len(stack) > 0:
+        base['callStack'] = [f.copy() for f in stack]
     if event_kind == 'line':
         __tracecode_append_runtime_event({**base, 'kind': 'line', 'function': function_name})
     elif event_kind == 'call':
-        stack = step.get('callStack') if isinstance(step.get('callStack'), _builtins.list) else []
         frame = stack[-1] if len(stack) > 0 and isinstance(stack[-1], _builtins.dict) else {}
         event = {**base, 'kind': 'call', 'function': function_name, 'args': frame.get('args')}
-        if len(stack) > 0:
-            event['callStack'] = [f.copy() for f in stack]
         __tracecode_append_runtime_event(event)
     elif event_kind == 'return':
         event = {**base, 'kind': 'return', 'function': function_name}
-        stack = step.get('callStack') if isinstance(step.get('callStack'), _builtins.list) else []
-        if len(stack) > 0:
-            event['callStack'] = [f.copy() for f in stack]
         if 'returnValue' in step:
             event['value'] = step.get('returnValue')
         __tracecode_append_runtime_event(event)

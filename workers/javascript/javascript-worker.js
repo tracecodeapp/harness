@@ -1479,10 +1479,12 @@ function createTraceRecorder(options = {}) {
     if (traceLimitExceeded && timeoutReason === 'trace-limit' && step?.event !== 'timeout') {
       return;
     }
+    const stack = Array.isArray(step.callStack) ? step.callStack : [];
     const base = {
       runId: 'javascript:run',
       line: step.line,
       frameId: runtimeTraceFrameIdForStep(step),
+      ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
     };
     const pushRuntimeTraceEvent = (event) => {
       if (runtimeTraceEvents.length >= effectiveMaxRuntimeTraceEvents) {
@@ -1496,21 +1498,17 @@ function createTraceRecorder(options = {}) {
     if (step.event === 'line') {
       pushRuntimeTraceEvent({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'call') {
-      const stack = Array.isArray(step.callStack) ? step.callStack : [];
       pushRuntimeTraceEvent({
         ...base,
         kind: 'call',
         function: step.function,
         args: stack.at(-1)?.args,
-        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
       });
     } else if (step.event === 'return') {
-      const stack = Array.isArray(step.callStack) ? step.callStack : [];
       pushRuntimeTraceEvent({
         ...base,
         kind: 'return',
         function: step.function,
-        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
         ...(step.returnValue !== undefined ? { value: step.returnValue } : {}),
       });
     } else if (step.event === 'exception') {
@@ -2188,31 +2186,29 @@ function createSyntheticRuntimeTrace(payload, codeResult, language) {
   const file = defaultRuntimeTraceFile(language);
   const events = [];
   for (const step of syntheticTrace) {
+    const stack = Array.isArray(step.callStack) ? step.callStack : [];
     const base = {
       runId,
       file,
       line: step.line,
       frameId: runtimeTraceFrameIdForSyntheticStep(step),
+      ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
     };
     if (step.event === 'call') {
-      const stack = Array.isArray(step.callStack) ? step.callStack : [];
       events.push({
         ...base,
         kind: 'call',
         function: step.function,
         args: stack.at(-1)?.args,
-        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
       });
     } else if (step.event === 'line') {
       events.push({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'return') {
-      const stack = Array.isArray(step.callStack) ? step.callStack : [];
       events.push({
         ...base,
         kind: 'return',
         function: step.function,
         value: step.returnValue,
-        ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
       });
     }
     for (const [variable, value] of Object.entries(step.variables ?? {})) {

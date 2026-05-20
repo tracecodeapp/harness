@@ -29,6 +29,26 @@
     }
   },
   "expectByLanguage": {},
+  "expectFrameEvents": {
+    "recursiveCall": [
+      {
+        "kind": "line",
+        "function": "solve",
+        "args": {
+          "n": 2
+        },
+        "callStackDepth": 2
+      },
+      {
+        "kind": "snapshot",
+        "function": "solve",
+        "args": {
+          "n": 2
+        },
+        "callStackDepth": 2
+      }
+    ]
+  },
   "expectCallActivations": [
     {
       "function": "solve",
