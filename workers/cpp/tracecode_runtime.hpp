@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <deque>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -1115,6 +1116,24 @@ std::string to_json_key(const T& value) {
 
 template <typename T>
 std::string to_json(const std::vector<T>& values);
+
+template <typename T>
+std::string to_json(const std::deque<T>& values);
+
+template <typename T, std::size_t Size>
+std::string to_json(const std::array<T, Size>& values);
+
+template <typename T, std::size_t Size>
+std::string to_json(const T (&values)[Size]);
+
+template <typename T, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_set<T, Hash, Equal, Allocator>& values);
+
+template <typename K, typename V, typename Hash, typename Equal, typename Allocator>
+std::string to_json(const std::unordered_map<K, V, Hash, Equal, Allocator>& values);
+
+template <typename K, typename V, typename Compare, typename Allocator>
+std::string to_json(const std::map<K, V, Compare, Allocator>& values);
 
 template <typename T>
 std::enable_if_t<
@@ -2271,16 +2290,19 @@ class Vector : public std::vector<T> {
 
   iterator erase(const_iterator position) {
     emit_receiver_read(trace_event_line());
+    auto position_index = std::distance(values_.cbegin(), position);
     auto result = values_.erase(position);
-    emit_mutate("erase", trace_event_line());
+    emit_mutate("erase", trace_event_line(), mutation_args_json(position_index));
     emit_snapshot(trace_event_line());
     return result;
   }
 
   iterator erase(const_iterator first, const_iterator last) {
     emit_receiver_read(trace_event_line());
+    auto first_index = std::distance(values_.cbegin(), first);
+    auto last_index = std::distance(values_.cbegin(), last);
     auto result = values_.erase(first, last);
-    emit_mutate("erase", trace_event_line());
+    emit_mutate("erase", trace_event_line(), mutation_args_json(first_index, last_index));
     emit_snapshot(trace_event_line());
     return result;
   }
@@ -4026,6 +4048,8 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   PriorityQueue() : Base(), values_(static_cast<Base&>(*this)), name_("priority_queue"), path_prefix_json_(""), trace_(false) {}
   PriorityQueue(const char* name, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
   PriorityQueue(const char* name, const char* field, int line) : Base(), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const Compare& compare, const char* name, int line) : Base(compare), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) { emit_snapshot(line); }
+  PriorityQueue(const Compare& compare, const char* name, const char* field, int line) : Base(compare), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(to_json(field)), trace_(true) { emit_snapshot(line); }
   PriorityQueue(const std::vector<T>& values, const char* name, int line) : Base(values.begin(), values.end()), values_(static_cast<Base&>(*this)), name_(name), path_prefix_json_(""), trace_(true) {
     emit_snapshot(line);
   }

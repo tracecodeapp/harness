@@ -286,4 +286,47 @@ assertCondition(
   'pair-backed C++ queue tracing must stay v4-native'
 );
 
+const priorityQueueSource = [
+  'class Solution {',
+  'public:',
+  '  int kthSmallest(vector<vector<int>>& matrix) {',
+  '    using Entry = array<int, 3>;',
+  '    auto compare = [](const Entry& a, const Entry& b) { return a[0] > b[0]; };',
+  '    priority_queue<Entry, vector<Entry>, decltype(compare)> heap(compare);',
+  '    heap.push({matrix[0][0], 0, 0});',
+  '    heap.pop();',
+  '    return 0;',
+  '  }',
+  '};',
+].join('\n');
+const priorityQueueDriver = rewriter.buildDriverSource(priorityQueueSource, 'kthSmallest', { matrix: [[1]] }, { tracing: true });
+assertCondition(
+  priorityQueueDriver.includes('tracecode::PriorityQueue<Entry, vector<Entry>, decltype(compare)> heap(compare, "heap"'),
+  'C++ priority_queue locals with comparator constructor args should be trace-wrapped'
+);
+assertCondition(
+  priorityQueueDriver.includes('tracecode::with_scoped_trace_line(7') &&
+    priorityQueueDriver.includes('heap.push({') &&
+    priorityQueueDriver.includes('tracecode::with_scoped_trace_line(8') &&
+    priorityQueueDriver.includes('heap.pop();'),
+  'C++ priority_queue push/pop should execute through traced wrappers on the source line'
+);
+
+const stringIndexedWriteSource = [
+  'class Solution {',
+  'public:',
+  '  string swapOne(string s) {',
+  '    int right = 1;',
+  '    char temp = s[right];',
+  '    s[right] = temp;',
+  '    return s;',
+  '  }',
+  '};',
+].join('\n');
+const stringIndexedWriteDriver = rewriter.buildDriverSource(stringIndexedWriteSource, 'swapOne', { s: 'ab' }, { tracing: true });
+assertCondition(
+  stringIndexedWriteDriver.includes('tracecode::emit_index_write_value("s", s, __tc_index_6, 6, "right");'),
+  'C++ string indexed assignment should emit indexed write instrumentation'
+);
+
 console.log('PASS: C++ rewriter source snapshots');

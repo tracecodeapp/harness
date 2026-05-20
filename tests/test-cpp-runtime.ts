@@ -853,6 +853,82 @@ if (!traced.trace.events.some((event) => event.kind === 'line' && event.callStac
   throw new Error('C++ tracing should attach callStack frames to runtime events, received ' + JSON.stringify(traced.trace.events));
 }
 
+const priorityQueueMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int kthSmallest(vector<vector<int>>& matrix, int k) {',
+    '    using Entry = array<int, 3>;',
+    '    auto compare = [](const Entry& a, const Entry& b) { return a[0] > b[0]; };',
+    '    priority_queue<Entry, vector<Entry>, decltype(compare)> heap(compare);',
+    '    heap.push({matrix[0][0], 0, 0});',
+    '    heap.pop();',
+    '    return k;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'kthSmallest',
+  inputs: { matrix: [[1]], k: 1 },
+  options: {},
+});
+if (!priorityQueueMutationTrace.success || priorityQueueMutationTrace.output !== 1) {
+  throw new Error('C++ priority_queue tracing failed: ' + JSON.stringify(priorityQueueMutationTrace));
+}
+const priorityQueueMutationEvents = priorityQueueMutationTrace.trace.events;
+if (!priorityQueueMutationEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'push' && JSON.stringify(event.args) === JSON.stringify([[1, 0, 0]]))) {
+  throw new Error('C++ priority_queue push should emit mutate with evaluated args, received ' + JSON.stringify(priorityQueueMutationEvents));
+}
+if (!priorityQueueMutationEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'pop' && JSON.stringify(event.args) === JSON.stringify([]))) {
+  throw new Error('C++ priority_queue pop should emit mutate with empty args, received ' + JSON.stringify(priorityQueueMutationEvents));
+}
+
+const stringIndexedWriteTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  string swapOne(string s) {',
+    '    int right = 1;',
+    '    char temp = s[right];',
+    '    s[right] = temp;',
+    '    return s;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'swapOne',
+  inputs: { s: 'ab' },
+  options: {},
+});
+if (!stringIndexedWriteTrace.success || stringIndexedWriteTrace.output !== 'ab') {
+  throw new Error('C++ string indexed write tracing failed: ' + JSON.stringify(stringIndexedWriteTrace));
+}
+const stringIndexedAssignmentEvents = stringIndexedWriteTrace.trace.events;
+if (!stringIndexedAssignmentEvents.some((event) => event.kind === 'write' && event.target?.variable === 's' && JSON.stringify(event.target.path) === JSON.stringify([1]) && JSON.stringify(event.target.indexSources) === JSON.stringify(['right']) && event.value === 'b')) {
+  throw new Error('C++ string indexed assignment should emit indexed write with provenance, received ' + JSON.stringify(stringIndexedAssignmentEvents));
+}
+
+const eraseArgsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  vector<int> trim(vector<int>& input) {',
+    '    vector<int> stream = input;',
+    '    stream.erase(stream.begin());',
+    '    return stream;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'trim',
+  inputs: { input: [4, 5, 6] },
+  options: {},
+});
+if (!eraseArgsTrace.success || JSON.stringify(eraseArgsTrace.output) !== JSON.stringify([5, 6])) {
+  throw new Error('C++ vector erase tracing failed: ' + JSON.stringify(eraseArgsTrace));
+}
+const vectorEraseArgsEvents = eraseArgsTrace.trace.events;
+if (!vectorEraseArgsEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'stream' && event.method === 'erase' && JSON.stringify(event.args) === JSON.stringify([0]))) {
+  throw new Error('C++ stream.erase(stream.begin()) should emit mutate with evaluated index arg, received ' + JSON.stringify(vectorEraseArgsEvents));
+}
+
 const exceptionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     '#include <stdexcept>',

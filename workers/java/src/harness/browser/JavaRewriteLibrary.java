@@ -197,7 +197,7 @@ public final class JavaRewriteLibrary {
       boolean continuingExpression = current.expressionParenDepth > 0 || current.statementContinuation;
       boolean postLineStateStatement = emitsPostLineState(trimmed, current);
       boolean suppressLineHook = current.suppressNextLineHook || continuingExpression || postLineStateStatement ||
-          isEnhancedForHeader(trimmed);
+          isEnhancedForHeader(trimmed) || isControlHeaderContinuation(trimmed);
       current.suppressNextLineHook = false;
       if (!current.pendingAnnotation && !suppressLineHook && shouldEmitLine(trimmed)) {
         out.append(indentOf(line)).append("TraceHooks.emitLineAtLine(").append(sourceLine).append(");\n");
@@ -261,13 +261,18 @@ public final class JavaRewriteLibrary {
       String indent = declaration.group(1);
       String type = declaration.group(2).trim();
       String name = declaration.group(3);
-      java.util.List<String> declaredNames = registerLocalDeclarators(frame, type, name + " = " + declaration.group(4).trim());
-      String value = rewriteReads(declaration.group(4).trim(), sourceLine, frame);
+      String rawInitializer = declaration.group(4).trim();
+      if (rawInitializer.contains("->") && rawInitializer.contains("{")) {
+        registerLocalDeclarators(frame, type, name + " = " + rawInitializer);
+        return line;
+      }
+      java.util.List<String> declaredNames = registerLocalDeclarators(frame, type, name + " = " + rawInitializer);
+      String value = rewriteReads(rawInitializer, sourceLine, frame);
       String prefix = line.substring(0, declaration.start(3));
       String rewritten = frame.pendingAnnotation
           ? prefix + name + " = " + value + ";\n" + indent + "TraceHooks.emitLineAtLine(" + sourceLine + ");"
           : indent + "TraceHooks.emitLineAtLine(" + sourceLine + ");\n" + prefix + name + " = " + value + ";";
-      Matcher mutatingExpression = MUTATING_CALL_EXPRESSION.matcher(declaration.group(4).trim());
+      Matcher mutatingExpression = MUTATING_CALL_EXPRESSION.matcher(rawInitializer);
       if (mutatingExpression.matches() && isTrackedMutationMethod(mutatingExpression.group(2))) {
         String receiver = mutatingExpression.group(1);
         if (!value.contains("TraceHooks.") || !value.contains(receiver)) {
@@ -1067,6 +1072,10 @@ public final class JavaRewriteLibrary {
     return parenDelta(trimmed) > 0;
   }
 
+  private static boolean isControlHeaderContinuation(String trimmed) {
+    return trimmed.startsWith(")") || trimmed.startsWith("&&") || trimmed.startsWith("||");
+  }
+
   private static boolean isEnhancedForHeader(String trimmed) {
     return trimmed.startsWith("for ") || trimmed.startsWith("for(")
         ? Pattern.compile("^for\\s*\\([^;]+:[^;]+\\)\\s*\\{?\\s*$").matcher(trimmed).matches()
@@ -1403,6 +1412,7 @@ public final class JavaRewriteLibrary {
     if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) return false;
     if (trimmed.startsWith("{") || trimmed.equals("}")) return false;
     if (trimmed.startsWith("}")) return false;
+    if (trimmed.startsWith(")")) return false;
     if (trimmed.startsWith(".")) return false;
     if (trimmed.startsWith("case ") || trimmed.startsWith("default:")) return false;
     if (trimmed.startsWith("?") || trimmed.startsWith(":")) return false;
@@ -1640,6 +1650,7 @@ public final class JavaRewriteLibrary {
 
   private static String indexSourceArgument(String value) {
     if (value != null) {
+      if (value.contains("TraceHooks.")) return "null";
       String tracedSource = tracedIndexedReadSource(value.trim());
       if (tracedSource != null) return quote(tracedSource);
       java.util.regex.Matcher charAtIndex = java.util.regex.Pattern

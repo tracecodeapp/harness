@@ -3349,6 +3349,11 @@ function isStdArrayCppType(type, aliases = new Map()) {
   return normalizeCppType(type, aliases).startsWith('array<');
 }
 
+function isPlainIndexedWriteInstrumentableCppType(type, aliases = new Map()) {
+  const normalized = normalizeCppType(type, aliases);
+  return normalized.startsWith('array<') || normalized === 'string';
+}
+
 function cppIndexSourceForExpression(expression) {
   const trimmed = expression.trim();
   const normalized = trimmed.replace(/\s+/g, ' ');
@@ -3789,7 +3794,7 @@ function rewritePlainIndexedWriteInstrumentation(line, lineNumber, variables, al
   if (line.includes('tracecode::')) return line;
 
   const candidateNames = [...(variables || []).entries()]
-    .filter(([, variable]) => isStdArrayCppType(variable.type, aliases))
+    .filter(([, variable]) => isPlainIndexedWriteInstrumentableCppType(variable.type, aliases))
     .map(([name]) => name)
     .sort((left, right) => right.length - left.length);
   if (candidateNames.length === 0) return line;
@@ -4198,6 +4203,9 @@ function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map(), sourc
     ? `${initializerType}${bracedValue}`
     : initializer;
   const type = cppTraceType(declaredType, aliases);
+  if (kind === 'priority_queue' && constructorArgs && constructorArgs.trim()) {
+    return `${indent}${type} ${name}(${constructorArgs.trim()}, ${cppStringLiteral(name)}, ${lineNumber});`;
+  }
   if ((kind === 'queue' || kind === 'priority_queue' || kind === 'stack') && traceInitializer && traceInitializer.trim() !== '{}') {
     return line;
   }

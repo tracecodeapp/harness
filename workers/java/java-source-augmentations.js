@@ -3,6 +3,30 @@
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+  function isInsideJavaStringLiteral(line, offset) {
+    let quote = null;
+    let escaped = false;
+    for (let index = 0; index < offset; index += 1) {
+      const ch = line[index];
+      const next = line[index + 1] ?? '';
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (quote) {
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '/' && next === '/') return false;
+      if (ch === '"' || ch === "'") quote = ch;
+    }
+    return quote !== null;
+  }
+
   function parseNativeTraceLine(line) {
     const match = line.match(/TraceHooks\.[A-Za-z0-9_]+AtLine\((\d+)\b/);
     if (!match) return null;
@@ -526,6 +550,7 @@
           lineNumber !== null &&
           !isControlHeaderDeclarationLine(line) &&
           line.includes('=') &&
+          !line.includes('->') &&
           !/;\s*$/.test(line)
         ) {
           pendingScalarDeclarationWrites = {
@@ -667,17 +692,22 @@
         `TraceHooks\\.read(?:Object)?ArrayAtLine\\(\\s*${lineNumber}\\s*,\\s*"${escapeRegExp(name)}"\\s*,\\s*${escapeRegExp(name)}\\s*,\\s*([^,]+)\\s*,\\s*([^\\)]+)\\)\\.length\\b(?!\\s*\\()`,
         'g'
       );
-      nextLine = nextLine.replace(tracedArrayElementLengthPattern, (match, indexExpression, indexSource) => {
+      nextLine = nextLine.replace(tracedArrayElementLengthPattern, (match, indexExpression, indexSource, offset) => {
+        if (isInsideJavaStringLiteral(nextLine, offset)) return match;
         const readCall = match.slice(0, match.lastIndexOf('.length'));
         return `TraceHooks.readArrayLengthAtLine(${lineNumber}, "${name}", ${readCall}, ${String(indexExpression).trim()}, ${String(indexSource).trim()})`;
       });
       const nestedLengthPattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\[([^\\]]+)\\]\\.length\\b(?!\\s*\\()`, 'g');
-      nextLine = nextLine.replace(nestedLengthPattern, (_match, indexExpression) => {
+      nextLine = nextLine.replace(nestedLengthPattern, (match, indexExpression, offset) => {
+        if (isInsideJavaStringLiteral(nextLine, offset)) return match;
         const indexSource = String(indexExpression).trim();
         return `TraceHooks.readArrayLengthAtLine(${lineNumber}, "${name}", ${name}[${indexSource}], ${indexSource}, ${indexSourceArgument(indexSource)})`;
       });
       const lengthPattern = new RegExp(`\\b${escapeRegExp(name)}\\.length\\b(?!\\s*\\()`, 'g');
-      nextLine = nextLine.replace(lengthPattern, `TraceHooks.readArrayLengthAtLine(${lineNumber}, "${name}", ${name})`);
+      nextLine = nextLine.replace(lengthPattern, (match, offset) => {
+        if (isInsideJavaStringLiteral(nextLine, offset)) return match;
+        return `TraceHooks.readArrayLengthAtLine(${lineNumber}, "${name}", ${name})`;
+      });
     }
     return nextLine;
   }

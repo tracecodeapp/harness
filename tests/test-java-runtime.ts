@@ -2380,6 +2380,56 @@ class Solution {
     assertJavaSourceCompiles(multilineArrayDeclarationSource, 'augmented Java multiline array declaration source');
     console.log('PASS: java worker emits scalar writes for multiline initialized local declarations');
 
+    const tracedArrayLengthIndexSource = assertNativeJavaRewriterCompiles(`class Solution {
+  public int solve(int[] days) {
+    int lastDay = days[days.length - 1];
+    return lastDay;
+  }
+}`, 'solve');
+    assertCondition(
+      tracedArrayLengthIndexSource.includes('TraceHooks.readIntArrayAtLine(3, "days", days, days.length - 1, "days.length - 1");') &&
+        !tracedArrayLengthIndexSource.includes('"TraceHooks.readArrayLengthAtLine'),
+      'Java array reads with traced length expressions should not emit unescaped TraceHooks source strings'
+    );
+
+    const multilineControlHeaderSource = assertNativeJavaRewriterCompiles(`class Solution {
+  public boolean solve(int[][] grid, boolean[][] visited, int nextRow, int nextCol, int n) {
+    if (
+      nextRow >= 0 && nextRow < n &&
+      nextCol >= 0 && nextCol < n &&
+      !visited[nextRow][nextCol] &&
+      grid[nextRow][nextCol] == 0
+    ) {
+      visited[nextRow][nextCol] = true;
+      return true;
+    }
+    return false;
+  }
+}`, 'solve');
+    assertCondition(
+      !multilineControlHeaderSource.includes('TraceHooks.emitLineAtLine(8') ||
+        multilineControlHeaderSource.indexOf('TraceHooks.emitLineAtLine(8') > multilineControlHeaderSource.indexOf(') {'),
+      'Java multiline control header closing line should not receive an injected line hook before the closing paren'
+    );
+
+    const lambdaInitializerSource = augmentRewrittenJavaForTest(`import java.util.PriorityQueue;
+
+class Solution {
+  public int solve(int[][] matrix) {
+    PriorityQueue<int[]> heap = new PriorityQueue<>((a, b) -> {
+      if (a[0] != b[0]) return Integer.compare(a[0], b[0]);
+      return Integer.compare(a[1], b[1]);
+    });
+    heap.offer(new int[] { matrix[0][0], 0 });
+    return heap.peek()[0];
+  }
+}`, 'solve');
+    assertJavaSourceCompiles(lambdaInitializerSource, 'augmented Java lambda initializer source');
+    assertCondition(
+      !lambdaInitializerSource.includes('TraceHooks.emitScalarWriteAtLine(5, "heap", heap);'),
+      'Java lambda/block initializers should not emit local declaration writes inside the initializer before assignment completes'
+    );
+
     const twoSumCode = `import java.util.*;
 
 class Solution {

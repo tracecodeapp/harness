@@ -1495,6 +1495,30 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isInsideJavaStringLiteral(line, offset) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < offset; index += 1) {
+    const ch = line[index];
+    const next = line[index + 1] ?? '';
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '/' && next === '/') return false;
+    if (ch === '"' || ch === "'") quote = ch;
+  }
+  return quote !== null;
+}
+
 function parseNativeTraceLine(line) {
   const match = line.match(/TraceHooks\.emit(?:Line|Call|Return)AtLine\((\d+)\b/);
   if (!match) return null;
@@ -1728,6 +1752,7 @@ function augmentJavaLocalSnapshots(source) {
       if (
         !isControlHeaderDeclarationLine(line) &&
         line.includes('=') &&
+        !line.includes('->') &&
         !/;\s*$/.test(line)
       ) {
         pendingScalarDeclarationWrites = {
@@ -1983,10 +2008,10 @@ function augmentArrayLengthReads(source) {
       ) {
         for (const arrayName of currentMethod.arrayNames) {
           const lengthPattern = new RegExp(`\\b${escapeRegExp(arrayName)}\\.length\\b`, 'g');
-          nextLine = nextLine.replace(
-            lengthPattern,
-            `TraceHooks.readArrayLengthAtLine(${currentMethod.currentTraceLine}, "${arrayName}", ${arrayName})`
-          );
+          nextLine = nextLine.replace(lengthPattern, (match, offset) => {
+            if (isInsideJavaStringLiteral(nextLine, offset)) return match;
+            return `TraceHooks.readArrayLengthAtLine(${currentMethod.currentTraceLine}, "${arrayName}", ${arrayName})`;
+          });
         }
       }
 
