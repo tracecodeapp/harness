@@ -4855,11 +4855,13 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
       return __result;
     }
     if (__target instanceof Set && __method === 'has') {
+      const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-read',
         indices: [...__path, __args[0]],
         pathDepth: __path.length + 1,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
         ...__sourceLocation,
       });
       return __result;

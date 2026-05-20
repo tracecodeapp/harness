@@ -2603,6 +2603,72 @@ function smallest(nums: number[]): number {
   }
 
   for (const language of ['javascript', 'typescript'] as const) {
+    const setHasTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(n: number): boolean {
+    const cols = new Set<number>([1]);
+    const diag1 = new Set<number>([99]);
+    const diag2 = new Set<number>([88]);
+    const row = 1;
+    const col = 2;
+    return !cols.has(col) && !diag1.has(row - col) && !diag2.has(row + col);
+  }
+}`
+          : `class Solution {
+  solve(n) {
+    const cols = new Set([1]);
+    const diag1 = new Set([99]);
+    const diag2 = new Set([88]);
+    const row = 1;
+    const col = 2;
+    return !cols.has(col) && !diag1.has(row - col) && !diag2.has(row + col);
+  }
+}`,
+      functionName: 'solve',
+      inputs: { n: 4 },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      setHasTracing.success === true,
+      `${language} Set.has tracing should succeed: ${setHasTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(setHasTracing.output === true, `${language} Set.has tracing should preserve output`);
+    const setHasAccesses = traceAccessEvents(setHasTracing);
+    assertCondition(
+      setHasAccesses.some(
+        (access) =>
+          access.target?.variable === 'cols' &&
+          access.kind === 'read' &&
+          JSON.stringify(access.target.path) === JSON.stringify([2]) &&
+          JSON.stringify(access.target.indexSources) === JSON.stringify(['col'])
+      ) &&
+        setHasAccesses.some(
+          (access) =>
+            access.target?.variable === 'diag1' &&
+            access.kind === 'read' &&
+            JSON.stringify(access.target.path) === JSON.stringify([-1]) &&
+            JSON.stringify(access.target.indexSources) === JSON.stringify(['row - col'])
+        ) &&
+        setHasAccesses.some(
+          (access) =>
+            access.target?.variable === 'diag2' &&
+            access.kind === 'read' &&
+            JSON.stringify(access.target.path) === JSON.stringify([3]) &&
+            JSON.stringify(access.target.indexSources) === JSON.stringify(['row + col'])
+        ),
+      `${language} tracing should emit key/source provenance for Set.has reads, received ${JSON.stringify(setHasAccesses)}`
+    );
+  }
+
+  for (const language of ['javascript', 'typescript'] as const) {
     const destructuredIndexedSwapTracing = await harness.sendMessage<{
       success: boolean;
       output?: unknown;
