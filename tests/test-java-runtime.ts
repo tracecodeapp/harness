@@ -894,6 +894,27 @@ class Solution {
     'Java rewriter should emit a value-returning Deque.pop hook when pop is used as an array-read index'
   );
 
+  const stackPeekConditionIndexReadSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve(int[] heights) {
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    int best = 0;
+    for (int i = 1; i < heights.length; i++) {
+      while (!stack.isEmpty() && heights[stack.peek()] > heights[i]) {
+        best = Math.max(best, heights[stack.pop()]);
+      }
+      stack.push(i);
+    }
+    return best;
+  }
+}`);
+  assertCondition(
+    stackPeekConditionIndexReadSource.includes('TraceHooks.readIntArrayAtLine(9, "heights", heights, TraceHooks.readQueuePeekAtLine(9, "stack", stack), "stack.peek()")'),
+    'Java rewriter should preserve outer array-read provenance when a Deque.peek call is used as the index'
+  );
+
   const mutatingIndexWriteSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {

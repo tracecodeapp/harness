@@ -394,10 +394,17 @@ async function assertEnumerateLoopBindingIsRecorded(): Promise<void> {
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
     'result': _serialize_output(_result)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
   assertCondition(parsed.result === 5, 'Python enumerate binding fixture should execute successfully');
   const loopStep = findTraceStep(
     parsed.trace,
@@ -420,6 +427,19 @@ print(json.dumps({
       access.value === 0
     )),
     `Python enumerate loop should write the produced index binding, received ${JSON.stringify(loopStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === tracingPayload.userCodeStartLine + userLineNumber(source, 'for idx, word in enumerate(words):') - 1 &&
+      event.target?.variable === 'words' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['idx']) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'word' &&
+      event.value === 'apple'
+    )),
+    `Python enumerate V4 runtime trace should emit indexed value binding provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
   );
 
   console.log('PASS: Python runtime records enumerate value binding');
@@ -454,10 +474,17 @@ async function assertTupleForLoopBindingIsRecorded(): Promise<void> {
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
     'result': _serialize_output(_result)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
   assertCondition(parsed.result === 16, 'Python tuple for-loop binding fixture should execute successfully');
   const loopStep = findTraceStep(
     parsed.trace,
@@ -468,13 +495,113 @@ print(json.dumps({
       access.variable === 'edges' &&
       access.kind === 'indexed-read' &&
       JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify([null]) &&
       JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'u,v,w' }) &&
       JSON.stringify(access.value) === JSON.stringify([0, 1, 5])
     )),
     `Python tuple for-loop should bind the produced source element, received ${JSON.stringify(loopStep.accesses)}`
   );
+  assertCondition(
+    (loopStep.accesses ?? []).some((access) => (
+      access.variable === 'edges' &&
+      access.kind === 'cell-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([0, 2]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify([null, null]) &&
+      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'w' }) &&
+      access.value === 5
+    )),
+    `Python tuple for-loop should bind destructured components to concrete source cells, received ${JSON.stringify(loopStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === tracingPayload.userCodeStartLine + userLineNumber(source, 'for u, v, w in edges:') - 1 &&
+      event.target?.variable === 'edges' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0, 2]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify([null, null]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'w' &&
+      event.value === 5
+    )),
+    `Python V4 runtime trace should emit destructured tuple iteration cell provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
 
   console.log('PASS: Python runtime records tuple for-loop binding provenance');
+}
+
+async function assertListForLoopBindingSourcesAreRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def longest_common_prefix(strs):
+    prefix = strs[0]
+    for word in strs:
+        while not word.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'longest_common_prefix',
+    { strs: ['flower', 'flow', 'flight'] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(parsed.result === 'fl', 'Python longest common prefix fixture should execute successfully');
+
+  const loopLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'for word in strs:') - 1;
+  const loopAccesses = parsed.trace
+    .filter((step) => step.event === 'line' && step.line === loopLine)
+    .flatMap((step) => step.accesses ?? []);
+  assertCondition(
+    loopAccesses.some((access) => (
+      access.variable === 'strs' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([1]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify([null]) &&
+      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'word' }) &&
+      access.value === 'flow'
+    )),
+    `Python list for-loop should record implicit index source provenance, received ${JSON.stringify(loopAccesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === loopLine &&
+      event.target?.variable === 'strs' &&
+      JSON.stringify(event.target.path) === JSON.stringify([1]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify([null]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'word' &&
+      event.value === 'flow'
+    )),
+    `Python V4 runtime trace should emit list iteration binding provenance, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records list for-loop index source provenance');
 }
 
 async function assertLiteralTupleUnpackingForLoopBindingIsRecorded(): Promise<void> {
@@ -1680,6 +1807,7 @@ async function main(): Promise<void> {
   await assertIndexSourceProvenanceIsRecorded();
   await assertEnumerateLoopBindingIsRecorded();
   await assertTupleForLoopBindingIsRecorded();
+  await assertListForLoopBindingSourcesAreRecorded();
   await assertLiteralTupleUnpackingForLoopBindingIsRecorded();
   await assertTupleAssignmentScalarWritesAreRecorded();
   await assertListComprehensionAssignmentEmitsSingleWriteFrame();

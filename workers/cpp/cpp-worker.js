@@ -2692,7 +2692,7 @@ function isSnapshotSerializableCppType(type, aliases = new Map()) {
   const normalized = normalizeCppType(type, aliases);
   if (!normalized || normalized === 'void') return false;
   if (normalized === 'auto' || normalized.includes('auto&&') || normalized.includes('function<')) return false;
-  if (normalized === 'TreeNode' || normalized === 'TreeNode*' || normalized === 'ListNode' || normalized === 'ListNode*') return true;
+  if (normalized === 'TreeNode' || normalized === 'TreeNode*' || normalized === 'ListNode' || normalized === 'ListNode*' || normalized === 'TrieNode' || normalized === 'TrieNode*') return true;
   if (/^(?:bool|char|string|size_t|std::size_t|(?:unsigned)?(?:short|int|long|longlong|longlongint)|float|double|longdouble)$/.test(normalized)) {
     return true;
   }
@@ -3104,6 +3104,7 @@ function rewriteInlineControlStatementInstrumentation(statement, lineNumber, var
   rewritten = rewriteNestedIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
   rewritten = rewriteVectorIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
   rewritten = rewritePlainIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
+  rewritten = rewriteFieldWriteInstrumentation(rewritten, lineNumber);
   rewritten = rewriteIndexReadInstrumentation(rewritten, accessVariables, aliases, lineNumber);
   rewritten = rewriteScalarWriteInstrumentation(rewritten, lineNumber, variables);
   return rewritten;
@@ -3196,9 +3197,13 @@ function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrument
 function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), extraTraceContainerNames = new Set()) {
   let rewritten = line;
   const candidateNames = new Set(extraTraceContainerNames);
+  const nestedVectorNames = new Set();
   for (const [name, variable] of variables || []) {
     const normalizedType = normalizeCppType(variable.type, aliases);
     const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
+    if (isVectorCppType(variable.type, aliases) && innerType.startsWith('vector<')) {
+      nestedVectorNames.add(name);
+    }
     if (
       isVectorCppType(variable.type, aliases) &&
       !/\bconst\b/.test(variable.type) &&
@@ -3208,6 +3213,13 @@ function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), 
     ) {
       candidateNames.add(name);
     }
+  }
+  for (const name of nestedVectorNames) {
+    const nestedMethodPattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\[([^\\]]+)\\]\\s*\\.\\s*(assign|push_back|emplace_back|insert|erase|clear|pop_back)\\s*\\(`, 'g');
+    rewritten = rewritten.replace(nestedMethodPattern, (_match, indexExpression, methodName) => {
+      const trimmedIndex = String(indexExpression || '').trim();
+      return `${name}.with_index_source(${trimmedIndex}, ${cppIndexSourceForExpression(trimmedIndex)}).${methodName}(`;
+    });
   }
   for (const name of candidateNames) {
     const memberPattern = new RegExp(`\\bthis\\s*->\\s*${escapeRegExp(name)}\\s*\\[([^\\]]+)\\]\\s*\\.`, 'g');
@@ -3283,6 +3295,16 @@ function cppIndexSourceForExpression(expression) {
   if (/^[A-Za-z_]\w*\s*\[[^\]]+\]\s*$/.test(normalized)) return cppStringLiteral(normalized.replace(/\s+/g, ''));
   if (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*\(\))+(?:\s*[+\-*/%]\s*\d+)?$/.test(normalized)) {
     return cppStringLiteral(normalized);
+  }
+  if (/^[A-Za-z_]\w*\s*\([^()]*\)$/.test(normalized)) {
+    const openIndex = normalized.indexOf('(');
+    const argsSource = normalized.slice(openIndex + 1, -1).trim();
+    const args = argsSource ? splitTopLevelCommaList(argsSource) : [];
+    const simpleArgument = String.raw`(?:[A-Za-z_]\w*|\d+|'(?:\\.|[^'\\])')`;
+    const simpleExpression = new RegExp(`^${simpleArgument}(?:\\s*(?:[+\\-*/%]|<<|>>|&|\\||\\^)\\s*${simpleArgument})*$`);
+    if (args.every((arg) => simpleExpression.test(arg.trim()))) {
+      return cppStringLiteral(normalized);
+    }
   }
   const indexedArithmeticTerm = String.raw`(?:[A-Za-z_]\w*\s*\[[^\]]+\]|[A-Za-z_]\w*|\d+|'(?:\\.|[^'\\])')`;
   const indexedArithmeticPattern = new RegExp(`^${indexedArithmeticTerm}(?:\\s*(?:[+\\-*/%]|<<|>>|&|\\||\\^)\\s*${indexedArithmeticTerm})*$`);

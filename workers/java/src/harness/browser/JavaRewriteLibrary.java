@@ -823,18 +823,6 @@ public final class JavaRewriteLibrary {
       String index = match.group(2).trim();
       return "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + index + ", " + indexSourceArgument(index) + ")";
     });
-    next = replaceAll(QUEUE_REMOVE_CALL, next, match -> {
-      String name = match.group(1);
-      if (!isQueueLikeType(frame.typeOf(name))) return match.group(0);
-      String method = match.group(2);
-      String hook = "poll".equals(method) ? "pollQueueAtLine" : "removeQueueAtLine";
-      return "TraceHooks." + hook + "(" + line + ", " + quote(name) + ", " + name + ")";
-    });
-    next = replaceAll(QUEUE_PEEK_CALL, next, match -> {
-      String name = match.group(1);
-      if (!isQueueLikeType(frame.typeOf(name))) return match.group(0);
-      return "TraceHooks.readQueuePeekAtLine(" + line + ", " + quote(name) + ", " + name + ")";
-    });
     next = replaceAll(LIST_ARRAY_READ, next, match -> {
       String name = match.group(1);
       String helper = listArrayReadHelper(frame.typeOf(name));
@@ -953,6 +941,18 @@ public final class JavaRewriteLibrary {
       if (helper == null) return full;
       String index = match.group(2).trim();
       return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(index) + ")";
+    });
+    next = replaceAll(QUEUE_REMOVE_CALL, next, match -> {
+      String name = match.group(1);
+      if (!isQueueLikeType(frame.typeOf(name))) return match.group(0);
+      String method = match.group(2);
+      String hook = "poll".equals(method) ? "pollQueueAtLine" : "removeQueueAtLine";
+      return "TraceHooks." + hook + "(" + line + ", " + quote(name) + ", " + name + ")";
+    });
+    next = replaceAll(QUEUE_PEEK_CALL, next, match -> {
+      String name = match.group(1);
+      if (!isQueueLikeType(frame.typeOf(name))) return match.group(0);
+      return "TraceHooks.readQueuePeekAtLine(" + line + ", " + quote(name) + ", " + name + ")";
     });
     next = replaceAll(STACK_DEQUE_POP_CALL, next, match -> {
       String name = match.group(1);

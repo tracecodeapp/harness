@@ -1917,6 +1917,40 @@ if (!constNestedVectorIndexTrace.success || constNestedVectorIndexTrace.output !
   throw new Error('C++ const nested vector indexed member access should compile and trace, received ' + JSON.stringify(constNestedVectorIndexTrace));
 }
 
+const functionIndexSourceAdjacencyTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int connect() {',
+    '    vector<vector<int>> adjacency(9);',
+    '    auto cellId = [&](int r, int c) { return r * 3 + c; };',
+    '    int r = 1;',
+    '    int c = 1;',
+    '    adjacency[cellId(r, c)].push_back(cellId(r, c + 1));',
+    '    return adjacency[4][0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'connect',
+  inputs: {},
+  options: {},
+});
+if (!functionIndexSourceAdjacencyTrace.success || functionIndexSourceAdjacencyTrace.output !== 5) {
+  throw new Error('C++ function-call indexed adjacency tracing failed: ' + JSON.stringify(functionIndexSourceAdjacencyTrace));
+}
+const functionIndexSourceAdjacencyEvents = functionIndexSourceAdjacencyTrace.trace.events;
+if (!functionIndexSourceAdjacencyEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'adjacency' &&
+  JSON.stringify(event.target.path) === JSON.stringify([4]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['cellId(r, c)']) &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([5])
+)) {
+  throw new Error('C++ adjacency[cellId(...)] push_back should preserve function-call index provenance and args, received ' + JSON.stringify(functionIndexSourceAdjacencyEvents));
+}
+
 const unorderedMapTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -2391,6 +2425,14 @@ if (!triePointerFieldReadEvents.some((event) =>
   event.target?.variable === 'node'
 )) {
   throw new Error('C++ pointer field keyed read assignment should emit scalar pointer write, received ' + JSON.stringify(triePointerFieldReadEvents));
+}
+if (!triePointerFieldReadEvents.some((event) =>
+  event.kind === 'snapshot' &&
+  event.line === 9 &&
+  event.target?.variable === 'node' &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ TrieNode pointer aliases should emit object snapshots, received ' + JSON.stringify(triePointerFieldReadEvents));
 }
 
 const orderedMapBoundsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -3152,6 +3194,74 @@ if (!opsClassEvents.some((event) => event.kind === 'return' && event.function ==
 }
 if (!opsClassEvents.some((event) => event.kind === 'return' && event.function === 'value' && event.value === 6)) {
   throw new Error('C++ ops-class should preserve shared state across operations, received ' + JSON.stringify(opsClassEvents));
+}
+
+const opsClassTrieTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class TrieNode {',
+    'public:',
+    '  vector<TrieNode*> children;',
+    '  bool isEnd;',
+    '  TrieNode() : children(26, nullptr), isEnd(false) {}',
+    '};',
+    'class Trie {',
+    '  TrieNode* root;',
+    'public:',
+    '  Trie() {',
+    '    root = new TrieNode();',
+    '  }',
+    '  void insert(string word) {',
+    '    TrieNode* node = root;',
+    '    for (char ch : word) {',
+    "      int idx = ch - 'a';",
+    '      if (node->children[idx] == nullptr) node->children[idx] = new TrieNode();',
+    '      node = node->children[idx];',
+    '    }',
+    '    node->isEnd = true;',
+    '  }',
+    '  bool search(string word) {',
+    '    TrieNode* node = root;',
+    '    for (char ch : word) {',
+    "      int idx = ch - 'a';",
+    '      if (node->children[idx] == nullptr) return false;',
+    '      node = node->children[idx];',
+    '    }',
+    '    return node->isEnd;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'Trie',
+  inputs: {
+    operations: ['Trie', 'insert', 'search'],
+    arguments: [[], ['app'], ['app']],
+  },
+  executionStyle: 'ops-class',
+  options: {},
+});
+if (!opsClassTrieTrace.success || JSON.stringify(opsClassTrieTrace.output) !== JSON.stringify([null, null, true])) {
+  throw new Error('C++ implement-trie ops-class output shape failed: ' + JSON.stringify(opsClassTrieTrace));
+}
+const opsClassTrieEvents = opsClassTrieTrace.trace.events;
+if (!opsClassTrieEvents.some((event) => event.kind === 'call' && event.function === 'insert' && event.args?.word === 'app')) {
+  throw new Error('C++ implement-trie ops-class should emit insert call args, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'snapshot' &&
+  event.line === 14 &&
+  event.target?.variable === 'node' &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie should snapshot TrieNode pointer aliases, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 17 &&
+  event.target?.variable === 'node' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['children', 0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'idx']) &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie inline child allocation should emit pointer-field write provenance, received ' + JSON.stringify(opsClassTrieEvents));
 }
 
 const opsClassLeadingBlockCommentTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
