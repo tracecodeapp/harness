@@ -3341,6 +3341,170 @@ if (!budgetTrace.traceLimitExceeded || budgetTrace.timeoutReason !== 'trace-limi
 if (!budgetTrace.trace.events.some((event) => event.kind === 'timeout')) {
   throw new Error('C++ trace budget should emit a timeout event, received ' + JSON.stringify(budgetTrace.trace.events));
 }
+
+const aggregatePushBackTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Edge {',
+    '  int u;',
+    '  int v;',
+    '  double w;',
+    '};',
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    vector<Edge> edges;',
+    '    int u = 1;',
+    '    int v = 2;',
+    '    double rate = 4.0;',
+    '    edges.push_back({u, v, -std::log(rate)});',
+    '    return edges.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!aggregatePushBackTrace.success || aggregatePushBackTrace.output !== 1) {
+  throw new Error('C++ aggregate push_back tracing failed: ' + JSON.stringify(aggregatePushBackTrace));
+}
+const aggregatePushBackEvents = aggregatePushBackTrace.trace.events;
+const aggregatePushBackMutate = aggregatePushBackEvents.find((event) =>
+  event.kind === 'mutate' &&
+  event.line === 13 &&
+  event.target?.variable === 'edges' &&
+  event.method === 'push_back'
+);
+if (!aggregatePushBackMutate || aggregatePushBackMutate.args?.[0] !== 1 || aggregatePushBackMutate.args?.[1] !== 2 || Math.abs(aggregatePushBackMutate.args?.[2] + Math.log(4)) > 1e-9) {
+  throw new Error('C++ aggregate push_back should emit evaluated mutation args, received ' + JSON.stringify(aggregatePushBackEvents));
+}
+
+const pointerFieldIndexedConditionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct TrieNode {',
+    '  vector<TrieNode*> children;',
+    '  TrieNode() : children(26, nullptr) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  bool check() {',
+    '    TrieNode* node = new TrieNode();',
+    '    int idx = 2;',
+    '    if (node->children[idx] == nullptr) return true;',
+    '    return false;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'check',
+  inputs: {},
+  options: {},
+});
+if (!pointerFieldIndexedConditionTrace.success || pointerFieldIndexedConditionTrace.output !== true) {
+  throw new Error('C++ pointer field indexed condition tracing failed: ' + JSON.stringify(pointerFieldIndexedConditionTrace));
+}
+const pointerFieldEvents = pointerFieldIndexedConditionTrace.trace.events;
+if (!pointerFieldEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 10 &&
+  event.target?.variable === 'node' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['children', 2]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'idx'])
+)) {
+  throw new Error('C++ pointer field indexed condition should emit children[idx] read, received ' + JSON.stringify(pointerFieldEvents));
+}
+
+const addressOfIndexedReadTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int lcp(vector<string>& strs) {',
+    '    string* first = &strs[0];',
+    '    int shortest = first->size();',
+    '    if (strs[1].size() < shortest) shortest = strs[1].size();',
+    '    return shortest;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'lcp',
+  inputs: { strs: ['flower', 'flow'] },
+  options: {},
+});
+if (!addressOfIndexedReadTrace.success || addressOfIndexedReadTrace.output !== 4) {
+  throw new Error('C++ address-of indexed read tracing failed: ' + JSON.stringify(addressOfIndexedReadTrace));
+}
+const addressOfEvents = addressOfIndexedReadTrace.trace.events;
+if (!addressOfEvents.some((event) => event.kind === 'read' && event.line === 4 && event.target?.variable === 'strs' && event.target.path?.[0] === 0)) {
+  throw new Error('C++ &strs[0] should emit indexed read, received ' + JSON.stringify(addressOfEvents));
+}
+if (!addressOfEvents.some((event) => event.kind === 'write' && event.line === 6 && event.target?.variable === 'shortest' && event.value === 4)) {
+  throw new Error('C++ shortest scalar update should emit write, received ' + JSON.stringify(addressOfEvents));
+}
+
+const setEraseArgsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int solve() {',
+    '    unordered_set<int> cols;',
+    '    int col = 3;',
+    '    cols.insert(col);',
+    '    cols.erase(col);',
+    '    return cols.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'solve',
+  inputs: {},
+  options: {},
+});
+if (!setEraseArgsTrace.success || setEraseArgsTrace.output !== 0) {
+  throw new Error('C++ set erase tracing failed: ' + JSON.stringify(setEraseArgsTrace));
+}
+const setEraseEvents = setEraseArgsTrace.trace.events;
+if (!setEraseEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 7 &&
+  event.target?.variable === 'cols' &&
+  event.method === 'erase' &&
+  JSON.stringify(event.args) === JSON.stringify([3])
+)) {
+  throw new Error('C++ set erase should emit key args, received ' + JSON.stringify(setEraseEvents));
+}
+
+const nativeSetFindGuardTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int visit() {',
+    '    function<int(int, std::unordered_set<int>&)> dfs = [&](int v, std::unordered_set<int>& visited) {',
+    '      if (visited.find(v) != visited.end()) return 1;',
+    '      visited.insert(v);',
+    '      return 0;',
+    '    };',
+    '    unordered_set<int> visited;',
+    '    visited.insert(7);',
+    '    return dfs(7, visited);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: {},
+});
+if (!nativeSetFindGuardTrace.success || nativeSetFindGuardTrace.output !== 1) {
+  throw new Error('C++ native set find guard tracing failed: ' + JSON.stringify(nativeSetFindGuardTrace));
+}
+const nativeSetFindEvents = nativeSetFindGuardTrace.trace.events;
+if (!nativeSetFindEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 5 &&
+  event.target?.variable === 'visited' &&
+  event.target.path?.[0] === 7 &&
+  event.value === true &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['v'])
+)) {
+  throw new Error('C++ native set find guard should emit lookup read, received ' + JSON.stringify(nativeSetFindEvents));
+}
 `;
 
 execFileSync(

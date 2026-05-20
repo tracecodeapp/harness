@@ -1623,6 +1623,129 @@ function smallest(nums: number[]): number {
   );
   console.log('PASS: execute-with-tracing typescript single-line while body read column contract');
 
+  for (const language of ['javascript', 'typescript'] as const) {
+    const shortestPalindromeSingleLineWhile = await harness.sendMessage<{
+      success: boolean;
+      trace: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  shortestPalindrome(s: string): string {
+    const rev = s.split('').reverse().join('');
+    const t = s + '#' + rev;
+    const lps = new Array(t.length).fill(0);
+    for (let i = 1; i < t.length; i++) {
+      let j = lps[i - 1];
+      while (j > 0 && t[i] !== t[j]) j = lps[j - 1];
+      if (t[i] === t[j]) j++;
+      lps[i] = j;
+    }
+    const palinLen = lps[t.length - 1];
+    return rev.slice(0, s.length - palinLen) + s;
+  }
+}`
+          : `class Solution {
+  shortestPalindrome(s) {
+    const rev = s.split('').reverse().join('');
+    const t = s + '#' + rev;
+    const lps = new Array(t.length).fill(0);
+    for (let i = 1; i < t.length; i++) {
+      let j = lps[i - 1];
+      while (j > 0 && t[i] !== t[j]) j = lps[j - 1];
+      if (t[i] === t[j]) j++;
+      lps[i] = j;
+    }
+    const palinLen = lps[t.length - 1];
+    return rev.slice(0, s.length - palinLen) + s;
+  }
+}`,
+      functionName: 'shortestPalindrome',
+      className: 'Solution',
+      inputs: { s: 'aacecaaa' },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      shortestPalindromeSingleLineWhile.success === true,
+      `${language} shortest-palindrome single-line while tracing should succeed`
+    );
+    const shortestPalindromeAccesses = traceAccessEvents(shortestPalindromeSingleLineWhile);
+    assertCondition(
+      shortestPalindromeAccesses.some(
+        (event) =>
+          event.kind === 'read' &&
+          event.target?.variable === 'lps' &&
+          JSON.stringify(event.target.indexSources) === JSON.stringify(['j - 1'])
+      ) &&
+        shortestPalindromeAccesses.some(
+          (event) =>
+            event.kind === 'write' &&
+            event.target?.variable === 'j'
+        ),
+      `${language} shortest-palindrome single-line while body should emit lps[j - 1] read and j write, received ${JSON.stringify(shortestPalindromeAccesses)}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS shortest-palindrome single-line while body access contract');
+
+  const sortArrayTypeScriptSingleLineMerge = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  sortArray(nums: number[]): number[] {
+    const arr = nums;
+    if (arr.length <= 1) return arr;
+    const mid = arr.length >> 1;
+    const left = this.sortArray(arr.slice(0, mid));
+    const right = this.sortArray(arr.slice(mid));
+    const merged: number[] = [];
+    let i = 0, j = 0;
+    while (i < left.length && j < right.length) {
+      if (left[i] <= right[j]) merged.push(left[i++]);
+      else merged.push(right[j++]);
+    }
+    while (i < left.length) merged.push(left[i++]);
+    while (j < right.length) merged.push(right[j++]);
+    return merged;
+  }
+}`,
+    functionName: 'sortArray',
+    className: 'Solution',
+    inputs: { nums: [5, 2, 3, 1] },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    sortArrayTypeScriptSingleLineMerge.success === true,
+    'TypeScript sort-an-array single-line merge tracing should succeed'
+  );
+  const sortArrayAccesses = traceAccessEvents(sortArrayTypeScriptSingleLineMerge);
+  assertCondition(
+    sortArrayAccesses.some(
+      (event) =>
+        event.kind === 'read' &&
+        event.target?.variable === 'left' &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['i++'])
+    ) &&
+      sortArrayAccesses.some((event) => event.kind === 'write' && event.target?.variable === 'i') &&
+      sortArrayAccesses.some(
+        (event) =>
+          event.kind === 'read' &&
+          event.target?.variable === 'right' &&
+          JSON.stringify(event.target.indexSources) === JSON.stringify(['j++'])
+      ) &&
+      sortArrayAccesses.some((event) => event.kind === 'write' && event.target?.variable === 'j') &&
+      sortArrayAccesses.some(
+        (event) =>
+          event.kind === 'mutate' &&
+          event.target?.variable === 'merged' &&
+          event.method === 'push'
+      ),
+    `TypeScript sort-an-array single-line merge should emit incrementing argument reads/writes and merged.push mutations, received ${JSON.stringify(sortArrayAccesses)}`
+  );
+  console.log('PASS: execute-with-tracing TypeScript sort-an-array single-line merge access contract');
+
   const executeTypeScriptSingleLineIfBreakReadLineState = await harness.sendMessage<{
     success: boolean;
     trace: { events?: RuntimeTraceEvent[] };

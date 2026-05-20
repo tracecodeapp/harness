@@ -990,6 +990,21 @@ std::string to_json_trie_children(const std::array<Node*, Size>& children, std::
 }
 
 template <typename Node>
+std::string to_json_trie_children(const std::vector<Node*>& children, std::unordered_map<const void*, std::string>& refs) {
+  std::string json = "{";
+  bool first = true;
+  for (std::size_t index = 0; index < children.size(); ++index) {
+    if (children[index] == nullptr) continue;
+    if (!first) json += ",";
+    first = false;
+    const std::string key = children.size() == 26 ? std::string(1, static_cast<char>('a' + index)) : std::to_string(index);
+    json += to_json(key) + ":" + to_json_trie_like_node(children[index], refs);
+  }
+  json += "}";
+  return json;
+}
+
+template <typename Node>
 std::string to_json_trie_like_node(Node* node, std::unordered_map<const void*, std::string>& refs) {
   if (node == nullptr) return "null";
   const auto found = refs.find(node);
@@ -1345,6 +1360,36 @@ inline auto trace_index_read(const Container& container, const std::string& name
     );
   }
   return value;
+}
+
+template <typename Container, typename Index>
+inline decltype(auto) trace_index_address_read(Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
+  auto concrete_index = static_cast<std::size_t>(index);
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key_with_index_source(name, concrete_index, index_source) +
+      ",\"value\":" + to_json(trace_index_read_value(container, concrete_index)) + "}"
+    );
+  }
+  if constexpr (requires { container.raw(); }) {
+    return (container.raw()[concrete_index]);
+  } else {
+    return (container[concrete_index]);
+  }
+}
+
+template <typename Container, typename Key>
+inline void emit_container_lookup_read_value(const std::string& name, const Container& container, const Key& key, int line, const char* index_source = nullptr) {
+  if (minimal_trace_enabled() || !check_trace_budget(line)) return;
+  const bool present = container.find(key) != container.end();
+  trace_event_count() += 1;
+  write_trace_event_json_raw(
+    std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+    ",\"target\":" + target_json_key_with_index_source(name, key, index_source) +
+    ",\"value\":" + to_json(present) + "}"
+  );
 }
 
 template <typename Container, typename Index>
@@ -5515,9 +5560,10 @@ class Set : public std::set<T> {
   }
 
   std::size_t erase(const T& value) {
+    auto args_json = mutation_args_json(value);
     const auto erased = values_.erase(value);
     if (erased > 0) {
-      emit_mutate("erase", trace_event_line());
+      emit_mutate("erase", trace_event_line(), args_json);
       emit_snapshot(trace_event_line());
     }
     return erased;
@@ -5766,9 +5812,10 @@ class UnorderedSet : public std::unordered_set<T> {
   }
 
   std::size_t erase(const T& value) {
+    auto args_json = mutation_args_json(value);
     const auto erased = values_.erase(value);
     if (erased > 0) {
-      emit_mutate("erase", trace_event_line());
+      emit_mutate("erase", trace_event_line(), args_json);
       emit_snapshot(trace_event_line());
     }
     return erased;

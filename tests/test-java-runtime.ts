@@ -872,6 +872,27 @@ class Solution {
       !ternaryContinuationSource.includes('TraceHooks.emitLineAtLine(10'),
     'Java rewriter should not inject standalone line hooks into ternary expression continuations'
   );
+  assertCondition(
+    ternaryContinuationSource.includes('TraceHooks.popStackAtLine(8, "stack", stack)') &&
+      ternaryContinuationSource.includes('TraceHooks.popStackAtLine(9, "stack", stack)') &&
+      ternaryContinuationSource.includes('TraceHooks.popStackAtLine(10, "stack", stack)'),
+    'Java rewriter should preserve Stack.pop expression mutations as value-returning V4 hooks'
+  );
+
+  const stackPopIndexReadSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve(int[] heights) {
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    int poppedHeight = heights[stack.pop()];
+    return poppedHeight;
+  }
+}`);
+  assertCondition(
+    stackPopIndexReadSource.includes('TraceHooks.readIntArrayAtLine(7, "heights", heights, TraceHooks.popDequeAtLine(7, "stack", stack), "stack.pop()")'),
+    'Java rewriter should emit a value-returning Deque.pop hook when pop is used as an array-read index'
+  );
 
   const mutatingIndexWriteSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
@@ -912,6 +933,25 @@ class Solution {
   assertCondition(
     indexedSetMutationSource.includes('((java.util.Set)((java.util.List)groups).get(0))'),
     'Java rewriter should cast indexed List<Set<...>> mutation targets to Set, not List'
+  );
+
+  const cloneGraphWindowSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+class Solution {
+  List<List<Integer>> solve(int[][] adjList) {
+    List<List<Integer>> cloned = new ArrayList<>();
+    cloned.add(new ArrayList<>());
+    int node = 0;
+    for (int neighbor : adjList[node]) {
+      cloned.get(node).add(neighbor);
+    }
+    return cloned;
+  }
+}`);
+  assertCondition(
+    cloneGraphWindowSource.includes('for (int neighbor : TraceHooks.iterationBindAtLine(7, "adjList", node, TraceHooks.readObjectArrayAtLine(7, "adjList", adjList, node, "node"), "neighbor", "node"))') &&
+      cloneGraphWindowSource.includes('"kind\\":\\"mutate\\",\\"line\\":8') &&
+      cloneGraphWindowSource.includes('\\"method\\":\\"add\\",\\"args\\":[" + TraceHooks.serializeResult(neighbor) + "]}'),
+    'Java rewriter should preserve clone-graph enhanced-for row reads and indexed cloned.add mutation args'
   );
 
   const courseScheduleSource = augmentRewrittenJavaForTest(`import java.util.*;
@@ -2557,6 +2597,145 @@ class Solution {
       'Java worker should rewrite queue poll assignment RHS mutations to value-returning V4 hooks'
     );
     console.log('PASS: java worker snapshots receiver state after mutating RHS expressions');
+
+    const heapSetCode = `import java.util.*;
+class Solution {
+  int solve() {
+    List<Integer> heap = new ArrayList<>();
+    heap.add(4);
+    heap.add(9);
+    int i = 1;
+    int parent = 0;
+    int tmp = heap.get(parent);
+    heap.set(parent, heap.get(i));
+    heap.set(i, tmp);
+    heap.set(0, heap.get(i));
+    return heap.get(0);
+  }
+}`;
+    const heapSetSource = assertNativeJavaRewriterCompiles(heapSetCode);
+    assertCondition(
+      heapSetSource.includes('TraceHooks.writeListAtLine(10, "heap", heap, parent, TraceHooks.readListAtLine(10, "heap", heap, i, "i"), "parent")') &&
+        heapSetSource.includes('TraceHooks.writeListAtLine(11, "heap", heap, i, tmp, "i")') &&
+        heapSetSource.includes('TraceHooks.writeListAtLine(12, "heap", heap, 0, TraceHooks.readListAtLine(12, "heap", heap, i, "i"), null)'),
+      'Java rewriter should route List.set heap mutations through writeListAtLine hooks'
+    );
+
+    const heapSetTmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-heap-set-hooks-'));
+    let heapSetHookEvents: string[] = [];
+    try {
+      const sourcePath = join(heapSetTmpRoot, 'Main.java');
+      const classesPath = join(heapSetTmpRoot, 'classes');
+      writeFileSync(
+        sourcePath,
+        `import tracecode.user.TraceHooks;
+import java.util.*;
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    List<Integer> heap = new ArrayList<>();
+    heap.add(4);
+    heap.add(9);
+    TraceHooks.writeListAtLine(10, "heap", heap, 0, heap.get(1), "parent");
+    TraceHooks.writeListAtLine(11, "heap", heap, 1, 4, "i");
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}`
+      );
+      execFileSync('mkdir', ['-p', classesPath]);
+      execFileSync('javac', ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath], {
+        cwd: process.cwd(),
+        stdio: 'pipe',
+      });
+      heapSetHookEvents = execFileSync('java', ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim().split(/\r?\n/).filter(Boolean);
+    } finally {
+      rmSync(heapSetTmpRoot, { recursive: true, force: true });
+    }
+    const heapSetTrace = javaTraceHooksEventsToRuntimeTrace(heapSetHookEvents, undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    const heapSetMutations = heapSetTrace.events.filter(
+      (event) =>
+        event.kind === 'mutate' &&
+        'variable' in event.target &&
+        event.target.variable === 'heap' &&
+        event.method === 'set'
+    );
+    assertCondition(
+      heapSetMutations.some((event) => JSON.stringify(event.args) === JSON.stringify([0, 9])) &&
+        heapSetMutations.some((event) => JSON.stringify(event.args) === JSON.stringify([1, 4])),
+      `Java List.set hooks should emit mutate events with evaluated [index,value] args, received ${JSON.stringify(heapSetMutations)}`
+    );
+    console.log('PASS: java worker emits List.set mutate events with evaluated args');
+
+    const stackPopIndexCode = `import java.util.*;
+class Solution {
+  int solve(int[] heights) {
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    int poppedHeight = heights[stack.pop()];
+    return poppedHeight;
+  }
+}`;
+    assertCondition(
+      assertNativeJavaRewriterCompiles(stackPopIndexCode).includes(
+        'TraceHooks.readIntArrayAtLine(6, "heights", heights, TraceHooks.popDequeAtLine(6, "stack", stack), "stack.pop()")'
+      ),
+      'Java rewriter should preserve array-read evidence while wrapping Deque.pop index mutations'
+    );
+    const stackPopTmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-stack-pop-hooks-'));
+    let stackPopHookEvents: string[] = [];
+    try {
+      const sourcePath = join(stackPopTmpRoot, 'Main.java');
+      const classesPath = join(stackPopTmpRoot, 'classes');
+      writeFileSync(
+        sourcePath,
+        `import tracecode.user.TraceHooks;
+import java.util.*;
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    TraceHooks.popDequeAtLine(6, "stack", stack);
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}`
+      );
+      execFileSync('mkdir', ['-p', classesPath]);
+      execFileSync('javac', ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath], {
+        cwd: process.cwd(),
+        stdio: 'pipe',
+      });
+      stackPopHookEvents = execFileSync('java', ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim().split(/\r?\n/).filter(Boolean);
+    } finally {
+      rmSync(stackPopTmpRoot, { recursive: true, force: true });
+    }
+    const stackPopIndexTrace = javaTraceHooksEventsToRuntimeTrace(stackPopHookEvents, undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      stackPopIndexTrace.events.some(
+        (event) =>
+          event.kind === 'mutate' &&
+          'variable' in event.target &&
+          event.target.variable === 'stack' &&
+          event.method === 'pop' &&
+          JSON.stringify(event.args) === JSON.stringify([])
+      ),
+      `Java Deque.pop used as an array index should emit a no-arg mutate event, received ${JSON.stringify(stackPopIndexTrace.events)}`
+    );
+    console.log('PASS: java worker emits pop mutate events for array-index expressions');
 
     const fieldListCode = `import java.util.*;
 

@@ -2130,7 +2130,15 @@ pow = _builtins.pow
           `            _out.append(_method(*_call_args))`,
           `    _result = _out`,
         ].join('\n')
-        : `    _result = ${functionName}(${argList})`
+        : [
+          `    if '${functionName}' in globals() and callable(globals()['${functionName}']):`,
+          `        _result = globals()['${functionName}'](${argList})`,
+          `    elif 'Solution' in globals() and hasattr(Solution, '${functionName}'):`,
+          `        _solver = Solution()`,
+          `        _result = getattr(_solver, '${functionName}')(${argList})`,
+          `    else:`,
+          `        raise NameError(\"Implement ${functionName}(...) or Solution.${functionName}(...)\")`,
+        ].join('\n')
     : [
       `    exec(__tracecode_compiled, _globals_dict)`,
       `    _result = _globals_dict.get('result', None)`,
@@ -2643,7 +2651,13 @@ for _i, _op in enumerate(_ops):
         _method = getattr(_instance, _op)
         _out.append(_method(*_call_args))
 _result = _out`
-        : `_result = ${functionName}(${inputArgs})`;
+        : `if '${functionName}' in globals() and callable(globals()['${functionName}']):
+    _result = globals()['${functionName}'](${inputArgs})
+elif 'Solution' in globals() and hasattr(Solution, '${functionName}'):
+    _solver = Solution()
+    _result = getattr(_solver, '${functionName}')(${inputArgs})
+else:
+    raise NameError("Implement ${functionName}(...) or Solution.${functionName}(...)")`;
     const executionCallInTry = executionCall
       .split('\n')
       .map((line) => (line ? `    ${line}` : line))

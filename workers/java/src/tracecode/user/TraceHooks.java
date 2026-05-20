@@ -675,6 +675,12 @@ public final class TraceHooks {
     return iterationBindAtLine(line, name, boxed, bindingVariable);
   }
 
+  public static Iterable<Integer> iterationBindAtLine(int line, String name, Object parentKey, int[] values, String bindingVariable, String parentKeySource) {
+    java.util.List<Integer> boxed = new java.util.ArrayList<>(values.length);
+    for (int value : values) boxed.add(value);
+    return iterationBindAtLine(line, name, parentKey, boxed, bindingVariable, parentKeySource);
+  }
+
   public static Iterable<Long> iterationBindAtLine(int line, String name, long[] values, String bindingVariable) {
     java.util.List<Long> boxed = new java.util.ArrayList<>(values.length);
     for (long value : values) boxed.add(value);
@@ -947,6 +953,25 @@ public final class TraceHooks {
     return popListAtLine(line, name, values, values.size() - 1);
   }
 
+  public static <T> T popStackAtLine(int line, String name, java.util.Stack<T> values) {
+    int index = values.size() - 1;
+    T value = values.peek();
+    emitTraceRead(line, name, "[" + serializeResult(index) + "]", value);
+    value = values.pop();
+    emitTraceMutate(line, name, null, "pop", null, "[]");
+    emitRuntimeSnapshotAtLine(line, name, values);
+    return value;
+  }
+
+  public static <T> T popDequeAtLine(int line, String name, java.util.Deque<T> values) {
+    T value = values.peek();
+    emitTraceRead(line, name, "[0]", value);
+    value = values.pop();
+    emitTraceMutate(line, name, null, "pop", null, "[]");
+    emitRuntimeSnapshotAtLine(line, name, values);
+    return value;
+  }
+
   public static <T> T readListAtLine(int line, String name, java.util.List<T> values, int index) {
     T value = values.get(index);
     emitTraceRead(line, name, "[" + serializeResult(index) + "]", value);
@@ -966,6 +991,7 @@ public final class TraceHooks {
   public static <T> T writeListAtLine(int line, String name, java.util.List<T> values, int index, T value) {
     T previous = values.set(index, value);
     emitTraceWrite(line, name, "[" + serializeResult(index) + "]", values.get(index));
+    emitTraceMutate(line, name, null, "set", null, "[" + serializeResult(index) + "," + serializeResult(value) + "]");
     emitRuntimeSnapshotAtLine(line, name, values);
     return previous;
   }
@@ -973,6 +999,7 @@ public final class TraceHooks {
   public static <T> T writeListAtLine(int line, String name, java.util.List<T> values, int index, T value, String indexSource) {
     T previous = values.set(index, value);
     emitTraceWrite(line, name, "[" + serializeResult(index) + "]", values.get(index), indexSourcesJson(indexSource));
+    emitTraceMutate(line, name, null, "set", null, "[" + serializeResult(index) + "," + serializeResult(value) + "]");
     emitRuntimeSnapshotAtLine(line, name, values);
     return previous;
   }

@@ -2790,7 +2790,6 @@ function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = ne
   }
   if (/^\s*[A-Za-z_]\w*(?:\.|->)[A-Za-z_]\w*(?:\s*\[[^\[\]]+?\])?\s*=/.test(line)) return line;
   const stripped = stripCppStringsAndComments(line);
-  if (/^\s*(?:if|else\s+if|while|for|switch)\s*\(/.test(stripped)) return line;
   const reads = [];
   const seen = new Set();
   const fieldAccessPattern = /\b([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\b/g;
@@ -3099,9 +3098,26 @@ function inlineControlStatementSource(statement) {
 }
 
 function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineInstrumentation = '', emitInsideBody = false, variables = new Map(), accessVariables = new Map(), aliases = new Map(), source = '') {
-  const match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s+([^{}].*;\s*)$/);
-  if (!match) return line;
-  const [, indent, rawControl, statement] = match;
+  let match = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*\(.*?\)|else)\s+([^{}].*;\s*)$/);
+  let indent;
+  let rawControl;
+  let statement;
+  if (match) {
+    [, indent, rawControl, statement] = match;
+  }
+  if (!match || (rawControl !== 'else' && parenDeltaForLine(rawControl) !== 0)) {
+    const controlMatch = line.match(/^(\s*)((?:else\s+if|if|for|while)\s*)\(/);
+    if (!controlMatch) return line;
+    const openIndex = line.indexOf('(', controlMatch[0].length - 1);
+    const closeIndex = findMatchingParen(line, openIndex);
+    if (openIndex < 0 || closeIndex < 0) return line;
+    const rest = line.slice(closeIndex + 1).trim();
+    if (!rest || rest.includes('{') || rest.includes('}') || !/;\s*$/.test(rest)) return line;
+    indent = controlMatch[1];
+    rawControl = line.slice(indent.length, closeIndex + 1).trim();
+    statement = rest;
+    match = [line, indent, rawControl, statement];
+  }
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
   const control = rewriteControlConditionSource(rawControl, lineNumber, accessVariables, aliases);
   if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
@@ -3111,7 +3127,12 @@ function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineIn
     return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${postLineInstrumentation} ${transfer}; }`;
   }
   const rewrittenStatement = rewriteInlineControlStatementInstrumentation(statement.trim(), lineNumber, variables, accessVariables, aliases, source);
-  const statementSource = inlineControlStatementSource(rewrittenStatement);
+  const scalarWrite = buildInlineScalarWriteInstrumentation(rewrittenStatement, lineNumber, variables);
+  const statementSource = inlineControlStatementSource(
+    scalarWrite && !rewrittenStatement.includes('write_trace_event_json')
+      ? `${rewrittenStatement}\n${scalarWrite}`
+      : rewrittenStatement
+  );
   if (emitInsideBody) {
     return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statementSource} ${postLineInstrumentation} }`;
   }
@@ -3143,7 +3164,13 @@ function rewriteBracedSingleLineControlBody(line, lineNumber, postLineInstrument
   if (/^\s*(?:do|switch)\b/.test(line)) return line;
   if (control !== 'else' && parenDeltaForLine(control) !== 0) return line;
   const rewrittenStatement = rewriteInlineControlStatementInstrumentation(statement.trim(), lineNumber, variables, accessVariables, aliases, source);
-  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${inlineControlStatementSource(rewrittenStatement)} ${postLineInstrumentation} }`;
+  const scalarWrite = buildInlineScalarWriteInstrumentation(rewrittenStatement, lineNumber, variables);
+  const statementSource = inlineControlStatementSource(
+    scalarWrite && !rewrittenStatement.includes('write_trace_event_json')
+      ? `${rewrittenStatement}\n${scalarWrite}`
+      : rewrittenStatement
+  );
+  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statementSource} ${postLineInstrumentation} }`;
 }
 
 function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), extraTraceContainerNames = new Set()) {
@@ -3316,14 +3343,19 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
       const previousIsAddressOf = previous === '&' && !prefixBeforeName.endsWith('&&');
       const next = nextNonWhitespace(rewritten, closeIndex + 1);
       const twoCharNext = rewritten.slice(next.index, next.index + 2);
+      const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
+      const indexSource = cppIndexSourceForExpression(indexExpression);
       if (next.ch === '.') {
         if (previousIsAddressOf) {
           cursor = closeIndex + 1;
           continue;
         }
-        const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
-        const indexSource = cppIndexSourceForExpression(indexExpression);
-        const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource})`;
+        const elementType = vectorElementCppType(variables.get(name)?.type || '', aliases);
+        if (elementType?.replace(/^std::/, '').startsWith('vector<')) {
+          cursor = closeIndex + 1;
+          continue;
+        }
+        const replacement = `tracecode::trace_index_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
         rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
         cursor = nameIndex + replacement.length;
         continue;
@@ -3359,8 +3391,13 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         cursor = nameIndex + replacement.length;
         continue;
       }
+      if (previousIsAddressOf) {
+        const replacement = `tracecode::trace_index_address_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
+        rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+        cursor = nameIndex + replacement.length;
+        continue;
+      }
       if (
-        previousIsAddressOf ||
         twoCharNext === '->' ||
         twoCharNext === '++' ||
         twoCharNext === '--' ||
@@ -3370,8 +3407,6 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         cursor = closeIndex + 1;
         continue;
       }
-      const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
-      const indexSource = cppIndexSourceForExpression(indexExpression);
       const replacement = `tracecode::trace_index_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
@@ -3629,6 +3664,19 @@ function cppValueTypeTempInitialization(containerName, tempName, argumentSource)
   return `std::decay_t<decltype(${containerName})>::value_type ${tempName} = ${initializer};`;
 }
 
+function aggregateMutationArgsJsonExpression(argumentSource, fallbackExpression) {
+  const trimmedArgument = argumentSource.trim();
+  if (trimmedArgument.startsWith('{') && trimmedArgument.endsWith('}')) {
+    const aggregateArgs = splitTopLevelCommaList(trimmedArgument.slice(1, -1))
+      .map((arg) => arg.trim())
+      .filter(Boolean);
+    return aggregateArgs.length > 0
+      ? `tracecode::mutation_args_json(${aggregateArgs.join(', ')})`
+      : 'tracecode::mutation_args_json()';
+  }
+  return `tracecode::mutation_args_json(${fallbackExpression})`;
+}
+
 function rewritePlainContainerMutationInstrumentation(line, lineNumber, variables, aliases = new Map(), source = '') {
   if (line.includes('tracecode::')) return line;
   const stripped = stripCppStringsAndComments(line).trim();
@@ -3669,11 +3717,12 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
       const args = splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
+        const argsJsonExpression = aggregateMutationArgsJsonExpression(args[0], tempName);
         return [
           `${indent}{`,
           `${indent}  ${cppValueTypeTempInitialization(name, tempName, args[0])}`,
           `${indent}  ${name}.${method}(${tempName});`,
-          `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, tracecode::mutation_args_json(${tempName}));`,
+          `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${argsJsonExpression});`,
           `${indent}}`,
         ].join('\n');
       }
@@ -3687,6 +3736,62 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
   }
 
   return line;
+}
+
+function shouldEmitPlainSetLookup(variable, aliases = new Map()) {
+  if (!variable || !variable.parameter || !/\bstd::/.test(variable.type || '')) return false;
+  return isSetCppType(variable.type, aliases);
+}
+
+function rewritePlainContainerLookupInstrumentation(line, lineNumber, variables, aliases = new Map()) {
+  if (line.includes('tracecode::emit_container_lookup_read_value')) return line;
+  const stripped = stripCppStringsAndComments(line);
+  if (!stripped.includes('.find')) return line;
+  const candidateNames = [...(variables || []).entries()]
+    .filter(([, variable]) => shouldEmitPlainSetLookup(variable, aliases))
+    .map(([name]) => name)
+    .sort((left, right) => right.length - left.length);
+  if (candidateNames.length === 0) return line;
+
+  const reads = [];
+  for (const name of candidateNames) {
+    let cursor = 0;
+    while (cursor < stripped.length) {
+      const nameIndex = stripped.indexOf(name, cursor);
+      if (nameIndex < 0) break;
+      const before = nameIndex > 0 ? stripped[nameIndex - 1] : '';
+      const afterName = stripped[nameIndex + name.length] || '';
+      if (/[A-Za-z0-9_]/.test(before) || /[A-Za-z0-9_]/.test(afterName)) {
+        cursor = nameIndex + name.length;
+        continue;
+      }
+      let memberIndex = nameIndex + name.length;
+      while (/\s/.test(stripped[memberIndex] || '')) memberIndex += 1;
+      if (stripped[memberIndex] !== '.') {
+        cursor = nameIndex + name.length;
+        continue;
+      }
+      const methodMatch = stripped.slice(memberIndex).match(/^\.\s*find\s*\(/);
+      if (!methodMatch) {
+        cursor = memberIndex + 1;
+        continue;
+      }
+      const openIndex = memberIndex + methodMatch[0].lastIndexOf('(');
+      const closeIndex = findMatchingParen(stripped, openIndex);
+      if (closeIndex < 0) break;
+      const keyExpression = stripped.slice(openIndex + 1, closeIndex).trim();
+      if (keyExpression) reads.push({ name, keyExpression });
+      cursor = closeIndex + 1;
+    }
+  }
+  if (reads.length === 0) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  const instrumentation = reads
+    .map(({ name, keyExpression }) =>
+      `${indent}tracecode::emit_container_lookup_read_value(${cppStringLiteral(name)}, ${name}, ${keyExpression}, ${lineNumber}, ${cppIndexSourceForExpression(keyExpression)});`
+    )
+    .join('\n');
+  return `${instrumentation}\n${line}`;
 }
 
 function detectMapIteratorAlias(line, variables, aliases = new Map(), scopeDepth = 0) {
@@ -4443,6 +4548,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteVectorIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewritePlainIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewritePlainContainerMutationInstrumentation(lineForDriver, lineNumber, accessVariables, aliases, source);
+      lineForDriver = rewritePlainContainerLookupInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteMapIteratorSecondMutationInstrumentation(lineForDriver, lineNumber, activeFrame.mapIterators);
       lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);

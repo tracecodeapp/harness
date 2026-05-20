@@ -69,6 +69,7 @@ public final class JavaRewriteLibrary {
   private static final Pattern MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
   private static final Pattern QUEUE_PEEK_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.peek\\(\\)");
   private static final Pattern QUEUE_REMOVE_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.(remove|poll)\\(\\)");
+  private static final Pattern STACK_DEQUE_POP_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.pop\\(\\)");
   private static final Pattern COLLECTION_CONTAINS_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.contains\\(([^()\\n;]+)\\)");
   private static final Pattern THIS_FIELD_MAP_GET_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
   private static final Pattern THIS_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
@@ -298,6 +299,19 @@ public final class JavaRewriteLibrary {
       String name = enhancedForDeclaration.group(3);
       String source = enhancedForDeclaration.group(4).trim();
       registerLocalDeclarators(frame, type, name);
+      Matcher arraySource = ARRAY_READ.matcher(source);
+      if (arraySource.matches()) {
+        String sourceName = arraySource.group(1);
+        String rawIndex = arraySource.group(2).trim();
+        String helper = arrayReadHelper(frame.typeOf(sourceName));
+        if (helper != null) {
+          String index = rewriteReads(rawIndex, sourceLine, frame);
+          return indent + "for (" + type + " " + name + " : TraceHooks.iterationBindAtLine(" +
+              sourceLine + ", " + quote(sourceName) + ", " + index + ", TraceHooks." + helper + "(" +
+              sourceLine + ", " + quote(sourceName) + ", " + sourceName + ", " + index + ", " +
+              indexSourceArgument(rawIndex) + "), " + quote(name) + ", " + indexSourceArgument(rawIndex) + ")) {";
+        }
+      }
       if (
           isSimpleIdentifierExpression(source) &&
           (frame.variables.containsKey(source) || frame.isField(source))
@@ -926,6 +940,17 @@ public final class JavaRewriteLibrary {
       String index = match.group(2).trim();
       return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(index) + ")";
     });
+    next = replaceAll(STACK_DEQUE_POP_CALL, next, match -> {
+      String name = match.group(1);
+      String receiverType = frame.typeOf(name);
+      if (isStackType(receiverType)) {
+        return "TraceHooks.popStackAtLine(" + line + ", " + quote(name) + ", " + name + ")";
+      }
+      if (isDequeType(receiverType)) {
+        return "TraceHooks.popDequeAtLine(" + line + ", " + quote(name) + ", " + name + ")";
+      }
+      return match.group(0);
+    });
     final String fieldReadSource = next;
     next = replaceAll(FIELD_READ, fieldReadSource, match -> {
       String full = match.group(0);
@@ -1178,6 +1203,16 @@ public final class JavaRewriteLibrary {
     if (type == null) return false;
     String normalized = normalizeJavaType(type);
     return normalized.contains("Queue<") || normalized.contains("Deque<") || normalized.contains("PriorityQueue<");
+  }
+
+  private static boolean isStackType(String type) {
+    if (type == null) return false;
+    return normalizeJavaType(type).contains("Stack<");
+  }
+
+  private static boolean isDequeType(String type) {
+    if (type == null) return false;
+    return normalizeJavaType(type).contains("Deque<");
   }
 
   private static String indexedAccessExpression(String name, String type, String index) {

@@ -1452,6 +1452,62 @@ print(json.dumps({
   console.log('PASS: Python slice for-loop binding provenance');
 }
 
+async function assertFunctionStyleFallsBackToSolutionMethod(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Solution:
+    def findTargetSumWays(self, nums: list[int], target: int) -> int:
+        total = sum(nums)
+        if abs(target) > total or (total + target) % 2 != 0:
+            return 0
+
+        subset_target = (total + target) // 2
+        dp = [0] * (subset_target + 1)
+        dp[0] = 1
+
+        for num in nums:
+            for j in range(subset_target, num - 1, -1):
+                dp[j] += dp[j - num]
+
+        return dp[subset_target]
+`;
+
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'findTargetSumWays',
+    { nums: [1, 1, 1, 1, 1], target: 3 },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  assertCondition(parsed.result === 5, 'Python function-style execution should fall back to Solution.method when no top-level function exists');
+  assertCondition(
+    !parsed.trace.some((step) => step.event === 'exception'),
+    `Python function-style Solution fallback should not emit exception frames, received ${JSON.stringify(parsed.trace)}`
+  );
+  assertCondition(
+    parsed.trace.some((step) => (step.accesses ?? []).some((access) => access.variable === 'dp' && access.kind === 'indexed-write')),
+    'Python function-style Solution fallback should produce normal traced DP writes'
+  );
+
+  console.log('PASS: Python function-style execution falls back to Solution.method');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
@@ -1474,6 +1530,7 @@ async function main(): Promise<void> {
   await assertScriptModePreservesResultSerializer();
   await assertIndexedAugAssignAndLoopBindingUseConcreteValues();
   await assertSliceForLoopBindingIsRecorded();
+  await assertFunctionStyleFallsBackToSolutionMethod();
   console.log('\nPython runtime checks passed.');
 }
 
