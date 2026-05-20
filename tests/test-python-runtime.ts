@@ -32,6 +32,20 @@ type TraceStep = {
   variables?: Record<string, unknown>;
 };
 
+type RuntimeTraceEvent = {
+  kind?: string;
+  line?: number;
+  target?: {
+    variable?: string;
+    path?: unknown[];
+  };
+  binding?: {
+    kind?: string;
+    variable?: string;
+  };
+  value?: unknown;
+};
+
 type RuntimeCore = {
   generateTracingCode: (
     deps: RuntimeDeps,
@@ -460,6 +474,77 @@ print(json.dumps({
   console.log('PASS: Python runtime records tuple for-loop binding provenance');
 }
 
+async function assertLiteralTupleUnpackingForLoopBindingIsRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def offsets():
+    total = 0
+    for di, dj in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        total += di + dj
+    return total
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'offsets',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(parsed.result === 0, 'Python literal tuple-unpacking for-loop fixture should execute successfully');
+
+  const loopLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'for di, dj in [(0, 1)') - 1;
+  const loopStep = findTraceStep(parsed.trace, loopLine);
+  assertCondition(
+    (loopStep.accesses ?? []).some((access) => (
+      access.variable === 'di,dj' &&
+      access.kind === 'indexed-read' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      JSON.stringify(access.binding) === JSON.stringify({ kind: 'iteration', variable: 'di,dj' }) &&
+      JSON.stringify(access.value) === JSON.stringify([0, 1])
+    )),
+    `Python literal tuple-unpacking for-loop should bind the produced literal element, received ${JSON.stringify(loopStep.accesses)}`
+  );
+
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === loopLine &&
+      event.target?.variable === 'di,dj' &&
+      JSON.stringify(event.target?.path) === JSON.stringify([0]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'di,dj' &&
+      JSON.stringify(event.value) === JSON.stringify([0, 1])
+    )),
+    `Python V4 runtime trace should emit an iteration read for literal tuple-unpacking, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records literal tuple-unpacking for-loop V4 binding provenance');
+}
+
 async function assertTupleAssignmentScalarWritesAreRecorded(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def dimensions(grid):
@@ -606,6 +691,87 @@ print(json.dumps({
   );
 
   console.log('PASS: Python runtime records in-place sort mutation provenance');
+}
+
+async function assertComputedDeleteMutationArgsAreRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Node:
+    def __init__(self, key):
+        self.key = key
+
+class Cache:
+    def __init__(self):
+        self.cache = {1: Node(1)}
+        self.tail = Node(1)
+
+    def evict(self):
+        lru = self.tail
+        del self.cache[lru.key]
+        return len(self.cache)
+
+def run():
+    cache = Cache()
+    return cache.evict()
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'run',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(parsed.result === 0, 'Python computed delete fixture should execute successfully');
+
+  const deleteLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'del self.cache[lru.key]') - 1;
+  const deleteStep = findTraceStep(parsed.trace, deleteLine);
+  assertCondition(
+    (deleteStep.accesses ?? []).some((access) => (
+      access.variable === 'self' &&
+      access.kind === 'mutating-call' &&
+      access.method === 'remove' &&
+      JSON.stringify(access.indices) === JSON.stringify(['cache', 1]) &&
+      JSON.stringify(access.indexSources) === JSON.stringify([null, 'lru.key']) &&
+      JSON.stringify(access.args) === JSON.stringify([1])
+    )),
+    `Python computed del should emit remove args on legacy accesses, received ${JSON.stringify(deleteStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'mutate' &&
+      event.line === deleteLine &&
+      event.target?.variable === 'self' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['cache', 1]) &&
+      JSON.stringify(event.args) === JSON.stringify([1])
+    )),
+    `Python V4 runtime trace should emit delete mutation args, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records computed delete mutation args');
 }
 
 async function assertTraceReferenceIdsAreNeutral(): Promise<void> {
@@ -1292,9 +1458,11 @@ async function main(): Promise<void> {
   await assertIndexSourceProvenanceIsRecorded();
   await assertEnumerateLoopBindingIsRecorded();
   await assertTupleForLoopBindingIsRecorded();
+  await assertLiteralTupleUnpackingForLoopBindingIsRecorded();
   await assertTupleAssignmentScalarWritesAreRecorded();
   await assertListComprehensionAssignmentEmitsSingleWriteFrame();
   await assertInPlaceSortMutationIsRecorded();
+  await assertComputedDeleteMutationArgsAreRecorded();
   await assertTraceReferenceIdsAreNeutral();
   await assertCustomObjectLocalAliasesMaterializePayloads();
   await assertCustomObjectIdsAreStableAcrossFrames();

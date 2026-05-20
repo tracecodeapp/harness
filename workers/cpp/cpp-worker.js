@@ -4323,7 +4323,11 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       }
       lineForDriver = rewriteTraceContainerLocal(line, lineNumber, aliases, source);
       let lexicalAccessVariables = buildCppLexicalAccessVariables(frameStack);
-      lineForDriver = rewriteRangeForIndexedReads(lineForDriver, lineNumber, lexicalAccessVariables, aliases);
+      const rangeAccessVariables =
+        activeClassName === (options.traceMemberClassName || 'Solution')
+          ? new Map([...traceMemberVariables, ...lexicalAccessVariables])
+          : lexicalAccessVariables;
+      lineForDriver = rewriteRangeForIndexedReads(lineForDriver, lineNumber, rangeAccessVariables, aliases);
       const lineDelta = braceDeltaForLine(line);
       const declaredScopeDepth = activeFrame.depth + Math.max(0, lineDelta, /^\s*for\s*\(/.test(trimmedLine) ? 1 : 0);
       const postLineDepth = activeFrame.depth + Math.min(0, lineDelta);

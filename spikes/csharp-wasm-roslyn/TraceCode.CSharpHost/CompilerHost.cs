@@ -1420,6 +1420,16 @@ public class TreeNode
             }
         }
 
+        public static void CollectionMutationCall(int line, string variable, string method, IReadOnlyList<object?> args, Action action)
+        {
+            int startIndex = TraceCode.CSharpHost.RuntimeTraceSink.EventCount;
+            WithSourceLine(line, action);
+            if (!TraceCode.CSharpHost.RuntimeTraceSink.HasMutationSince(startIndex, variable, method, line))
+            {
+                TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, method, args, line);
+            }
+        }
+
         public static bool LoopCondition(int line, string? function, Func<bool> action)
         {
             TraceCode.CSharpHost.RuntimeTraceSink.Line(line, function);

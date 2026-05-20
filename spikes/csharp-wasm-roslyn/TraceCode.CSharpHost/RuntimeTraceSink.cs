@@ -78,6 +78,8 @@ public static class RuntimeTraceSink
 
     public static string? TimeoutReason => timeoutReason;
 
+    public static int EventCount => Events.Count;
+
     public static void Line(int line, string? function)
     {
         if (traceLimitExceeded)
@@ -496,6 +498,25 @@ public static class RuntimeTraceSink
             Method = method,
             Args = args.ToList(),
         });
+    }
+
+    public static bool HasMutationSince(int startIndex, string variable, string method, int line)
+    {
+        string resolvedVariable = ResolveVariableAlias(variable);
+        int boundedStartIndex = Math.Clamp(startIndex, 0, Events.Count);
+        for (int index = boundedStartIndex; index < Events.Count; index++)
+        {
+            RuntimeTraceEvent traceEvent = Events[index];
+            if (traceEvent.Kind == "mutate"
+                && traceEvent.Line == line
+                && string.Equals(traceEvent.Method, method, StringComparison.Ordinal)
+                && string.Equals(traceEvent.Target?.Variable, resolvedVariable, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static void Snapshot(string variable, object? value)

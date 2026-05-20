@@ -2599,6 +2599,55 @@ if (!structuredMapValueBindingEvents.some((event) =>
   throw new Error('C++ map increment should emit keyed increment mutation, received ' + JSON.stringify(structuredMapValueBindingEvents));
 }
 
+const orderedStructuredMapGroupingTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  map<string, int> parent;',
+    'public:',
+    '  int group() {',
+    '    parent["alice@mail.com"] = 0;',
+    '    parent["bob@mail.com"] = 0;',
+    '    map<string, set<string>> groups;',
+    '    string root = "team";',
+    '    for (auto& [email, _] : parent) {',
+    '      groups[root].insert(email);',
+    '    }',
+    '    return (int)groups[root].size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'group',
+  inputs: {},
+  options: {},
+});
+if (!orderedStructuredMapGroupingTrace.success || orderedStructuredMapGroupingTrace.output !== 2) {
+  throw new Error('C++ ordered structured map grouping failed: ' + JSON.stringify(orderedStructuredMapGroupingTrace));
+}
+const orderedStructuredMapGroupingEvents = orderedStructuredMapGroupingTrace.trace.events;
+if (!orderedStructuredMapGroupingEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'this' &&
+  event.target.path?.[0] === 'parent' &&
+  event.target.path?.[1] === 'alice@mail.com' &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'email' &&
+  event.value === 0
+)) {
+  throw new Error('C++ ordered structured map range-for should emit key binding provenance, received ' + JSON.stringify(orderedStructuredMapGroupingEvents));
+}
+if (!orderedStructuredMapGroupingEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 10 &&
+  event.target?.variable === 'groups' &&
+  event.target.path?.[0] === 'team' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['root']) &&
+  event.method === 'insert' &&
+  JSON.stringify(event.args) === JSON.stringify(['alice@mail.com'])
+)) {
+  throw new Error('C++ map<set> insert should emit keyed mutation args for grouped email, received ' + JSON.stringify(orderedStructuredMapGroupingEvents));
+}
+
 const helperTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',

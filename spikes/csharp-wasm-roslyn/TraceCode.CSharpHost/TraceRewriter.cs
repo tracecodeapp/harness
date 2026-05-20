@@ -1435,6 +1435,16 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return false;
         }
 
+        string method = memberAccess.Name.Identifier.ValueText;
+        if (method == "Enqueue" && invocation.Parent is ExpressionStatementSyntax)
+        {
+            string args = string.Join(", ", invocation.ArgumentList.Arguments.Select(argument => argument.Expression.ToString()));
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.CollectionMutationCall({line}, {Literal(receiver.Identifier.ValueText)}, {Literal(method)}, new object?[] {{ {args} }}, () => {invocation})"
+            );
+            return true;
+        }
+
         string scopedInvocation = $"TraceCode.Internal.TraceCodeTrace.WithSourceLine({line}, () => {invocation})";
         if (memberCollectionNames.Contains(receiver.Identifier.ValueText)
             && !IsDeclaredLocalVariable(receiver.Identifier.ValueText))

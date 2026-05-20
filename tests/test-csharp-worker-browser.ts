@@ -848,6 +848,53 @@ async function main(): Promise<void> {
       `C# worker unbraced queue.Enqueue should emit a mutate event, received ${JSON.stringify(unbracedQueueEnqueueMutation.events)}`
     );
 
+    const alienQueueEnqueueMutationArgs = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public string AlienOrder(string[] words) {',
+        '    var graph = new Dictionary<char, HashSet<char>>();',
+        '    var inDegree = new Dictionary<char, int>();',
+        '    foreach (string word in words) {',
+        '      foreach (char ch in word) {',
+        '        if (!graph.ContainsKey(ch)) graph[ch] = new HashSet<char>();',
+        '        if (!inDegree.ContainsKey(ch)) inDegree[ch] = 0;',
+        '      }',
+        '    }',
+        '    graph[\'a\'].Add(\'b\');',
+        '    inDegree[\'b\'] = inDegree[\'b\'] + 1;',
+        '    var queue = new Queue<char>();',
+        '    queue.Enqueue(\'a\');',
+        '    char current = queue.Dequeue();',
+        '    foreach (char neighbor in graph[current]) {',
+        '      inDegree[neighbor] = inDegree[neighbor] - 1;',
+        '      if (inDegree[neighbor] == 0)',
+        '        queue.Enqueue(neighbor);',
+        '    }',
+        '    return new string(queue.ToArray());',
+        '  }',
+        '}',
+      ].join('\n'),
+      'AlienOrder',
+      { words: ['ab'] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      alienQueueEnqueueMutationArgs.success && alienQueueEnqueueMutationArgs.output === 'b',
+      `C# worker Alien Dictionary queue.Enqueue case should succeed, received ${JSON.stringify(alienQueueEnqueueMutationArgs)}`
+    );
+    assertCondition(
+      alienQueueEnqueueMutationArgs.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 20
+        && event.target?.variable === 'queue'
+        && event.method === 'Enqueue'
+        && JSON.stringify(event.args) === JSON.stringify(['b'])) === true,
+      `C# worker queue.Enqueue(neighbor) after inDegree[neighbor] == 0 should emit mutation args, received ${JSON.stringify(alienQueueEnqueueMutationArgs.events)}`
+    );
+
     const interviewAdd = await runWorkerCase(
       page,
       fixture('add.cs'),
