@@ -1,0 +1,24 @@
+{
+  "id": "python-nested-list-symbol-write",
+  "languages": ["python"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "write": { "python": "board[row][col] = 'Q'" }
+  },
+  "expect": {
+    "write": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["board", "col", "row"],
+      "accessTargets": [
+        { "kind": "write", "variable": "board", "pathDepth": 2 }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "write": [
+      { "kind": "write", "variable": "board", "pathDepth": 2, "indexSources": ["row", "col"], "value": "Q" }
+    ]
+  }
+}

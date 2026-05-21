@@ -247,7 +247,7 @@
         {
           "count": 1,
           "kind": "read",
-          "pathDepth": 1,
+          "pathDepth": 2,
           "variable": "matrix"
         },
         {
@@ -543,7 +543,7 @@
         "accessTargets": [
           {
             "kind": "read",
-            "pathDepth": 1,
+            "pathDepth": 2,
             "variable": "matrix"
           },
           {

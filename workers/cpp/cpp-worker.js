@@ -3019,7 +3019,8 @@ function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(
     const match = line.match(wrapperPattern);
     if (!match) return line;
     const condition = match[2].trim();
-    const rewrittenCondition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
+    let rewrittenCondition = rewriteFieldContainerCountInstrumentation(condition, lineNumber);
+    rewrittenCondition = rewriteIndexReadInstrumentation(rewrittenCondition, variables, aliases, lineNumber);
     if (rewrittenCondition === condition) return line;
     return line.replace(condition, rewrittenCondition);
   }
@@ -3037,10 +3038,12 @@ function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(
   if (keyword === 'for') {
     const parts = splitTopLevel(source, ';', { trackAngleBrackets: false });
     if (parts.length !== 3 || !parts[1].trim()) return line;
-    const condition = rewriteIndexReadInstrumentation(parts[1].trim(), variables, aliases, lineNumber);
+    let condition = rewriteFieldContainerCountInstrumentation(parts[1].trim(), lineNumber);
+    condition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
     rewrittenSource = `${parts[0]}; tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); }); ${parts[2]}`;
   } else {
-    const condition = rewriteIndexReadInstrumentation(source.trim(), variables, aliases, lineNumber);
+    let condition = rewriteFieldContainerCountInstrumentation(source.trim(), lineNumber);
+    condition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
     if (!condition) return line;
     rewrittenSource = `tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); })`;
   }
@@ -3264,6 +3267,38 @@ function rewritePointerAssignmentWriteInstrumentation(line, lineNumber) {
   if (!match) return line;
   const [, indent, name] = match;
   return `${line}\n${buildScalarWriteInstrumentation(name, lineNumber, indent)}`;
+}
+
+function rewriteFieldContainerCountInstrumentation(line, lineNumber) {
+  if (line.includes('tracecode::trace_field_container_count')) return line;
+  if (!line.includes('.count')) return line;
+
+  let rewritten = line;
+  let cursor = 0;
+  const pattern = /\b([A-Za-z_]\w*)\s*(->|\.)\s*([A-Za-z_]\w*)\s*\.\s*count\s*\(/g;
+  while (true) {
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(rewritten);
+    if (!match) break;
+    const start = match.index ?? 0;
+    if (isInsideCppStringOrCharLiteral(rewritten, start)) {
+      cursor = start + match[0].length;
+      continue;
+    }
+    const [source, objectName, operator, fieldName] = match;
+    const openIndex = start + source.lastIndexOf('(');
+    const closeIndex = findMatchingParen(rewritten, openIndex);
+    if (closeIndex < 0) break;
+    const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
+    if (!keyExpression) {
+      cursor = closeIndex + 1;
+      continue;
+    }
+    const replacement = `tracecode::trace_field_container_count(${objectName}${operator}${fieldName}, ${cppStringLiteral(objectName)}, ${cppStringLiteral(fieldName)}, ${keyExpression}, ${lineNumber}, ${cppIndexSourceForExpression(keyExpression)})`;
+    rewritten = `${rewritten.slice(0, start)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+    cursor = start + replacement.length;
+  }
+  return rewritten;
 }
 
 function rewriteBareMemberAssignmentWriteInstrumentation(
@@ -3612,7 +3647,7 @@ function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineIn
   if (emitInsideBody) {
     return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statementSource} ${postLineInstrumentation} }`;
   }
-  return `${indent}${control} { ${statementSource} }`;
+  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statementSource} }`;
 }
 
 function buildInlineScalarWriteInstrumentation(statement, lineNumber, variables) {
@@ -3824,14 +3859,15 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         let memberIndex = nameIndex + name.length;
         while (/\s/.test(rewritten[memberIndex] || '')) memberIndex += 1;
         if (rewritten[memberIndex] === '.') {
-          const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*find\s*\(/);
+          const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*(find|count)\s*\(/);
           if (methodMatch) {
             const openIndex = memberIndex + methodMatch[0].lastIndexOf('(');
             const closeIndex = findMatchingParen(rewritten, openIndex);
             if (closeIndex >= 0) {
               const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
               const indexSource = cppIndexSourceForExpression(keyExpression);
-              const replacement = `.find_with_index_source(${keyExpression}, ${indexSource})`;
+              const methodName = methodMatch[1];
+              const replacement = `.${methodName}_with_index_source(${keyExpression}, ${indexSource})`;
               rewritten = `${rewritten.slice(0, memberIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
               cursor = memberIndex + replacement.length;
               continue;
@@ -3859,6 +3895,14 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
           continue;
         }
         const elementType = vectorElementCppType(variables.get(name)?.type || '', aliases);
+        const memberSource = rewritten.slice(next.index);
+        const sizeMatch = memberSource.match(/^\.\s*size\s*\(\s*\)/);
+        if (sizeMatch && elementType?.replace(/^std::/, '').startsWith('vector<')) {
+          const replacement = `tracecode::trace_nested_size_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(next.index + sizeMatch[0].length)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
         if (elementType?.replace(/^std::/, '').startsWith('vector<')) {
           cursor = closeIndex + 1;
           continue;
@@ -4032,14 +4076,15 @@ function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new M
       while (/\s/.test(rewritten[bracketIndex] || '')) bracketIndex += 1;
       if (rewritten[bracketIndex] !== '[') {
         if (rewritten[bracketIndex] === '.') {
-          const methodMatch = rewritten.slice(bracketIndex).match(/^\.\s*find\s*\(/);
+          const methodMatch = rewritten.slice(bracketIndex).match(/^\.\s*(find|count)\s*\(/);
           if (methodMatch) {
             const openIndex = bracketIndex + methodMatch[0].lastIndexOf('(');
             const closeIndex = findMatchingParen(rewritten, openIndex);
             if (closeIndex >= 0) {
               const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
               const indexSource = cppIndexSourceForExpression(keyExpression);
-              const replacement = `.find_with_index_source(${keyExpression}, ${indexSource})`;
+              const methodName = methodMatch[1];
+              const replacement = `.${methodName}_with_index_source(${keyExpression}, ${indexSource})`;
               rewritten = `${rewritten.slice(0, bracketIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
               cursor = bracketIndex + replacement.length;
               continue;
@@ -4056,12 +4101,20 @@ function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new M
       }
       const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
       const indexSource = cppIndexSourceForExpression(indexExpression);
-      const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource})`;
+      const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource}, ${lineNumber})`;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
     }
   }
   return rewritten;
+}
+
+function scopeTraceContainerAssignmentLine(line, lineNumber) {
+  if (!line.includes('.with_index_source') || line.includes('TraceHooks::setCurrentLine')) return line;
+  const stripped = stripCppStringsAndComments(line);
+  if (!/\.with_index_source\s*\([^;]*\)\s*=/.test(stripped)) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  return `${indent}${buildCurrentLineInstrumentation(lineNumber)}\n${line}`;
 }
 
 function findIndexedStatementAccess(line, name) {
@@ -5133,6 +5186,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           : lexicalAccessVariables;
       lineForDriver = rewriteVectorElementMemberAccess(lineForDriver, lexicalAccessVariables, aliases, traceMemberNames);
       lineForDriver = rewriteKeyedIndexSourceInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
+      lineForDriver = scopeTraceContainerAssignmentLine(lineForDriver, lineNumber);
       lineForDriver = rewriteNestedIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteVectorIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewritePlainIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
@@ -5142,6 +5196,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
       lineForDriver = rewriteStringPointerIndexedReadInstrumentation(lineForDriver, lineNumber, activeFrame.stringPointerAliases);
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
+      lineForDriver = rewriteFieldContainerCountInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
       lineForDriver = rewriteBareMemberReadInstrumentation(
         lineForDriver,

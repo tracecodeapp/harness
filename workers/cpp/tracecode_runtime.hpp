@@ -1382,6 +1382,22 @@ inline auto trace_index_read(const Container& container, const std::string& name
 }
 
 template <typename Container, typename Index>
+inline auto trace_nested_size_read(const Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
+  auto concrete_index = static_cast<std::size_t>(index);
+  auto size = trace_index_read_value(container, concrete_index).size();
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":{\"variable\":" + to_json(name) +
+      ",\"path\":[" + std::to_string(concrete_index) + ",\"size\"],\"indexSources\":" + index_sources_json(index_source, nullptr) + "}" +
+      ",\"value\":" + to_json(size) + "}"
+    );
+  }
+  return size;
+}
+
+template <typename Container, typename Index>
 inline decltype(auto) trace_index_address_read(Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
   auto concrete_index = static_cast<std::size_t>(index);
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
@@ -1409,6 +1425,21 @@ inline void emit_container_lookup_read_value(const std::string& name, const Cont
     ",\"target\":" + target_json_key_with_index_source(name, key, index_source) +
     ",\"value\":" + to_json(present) + "}"
   );
+}
+
+template <typename Container, typename Key>
+inline auto trace_field_container_count(const Container& container, const std::string& object_name, const std::string& field_name, const Key& key, int line, const char* index_source = nullptr) {
+  const auto count = container.count(key);
+  if (!minimal_trace_enabled() && check_trace_budget(line)) {
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
+      ",\"target\":{\"variable\":" + to_json(object_name) +
+      ",\"path\":[" + to_json(field_name) + "," + to_json(key) + "],\"indexSources\":" + index_sources_json(nullptr, index_source) + "}" +
+      ",\"value\":" + to_json(count > 0) + "}"
+    );
+  }
+  return count;
 }
 
 template <typename Container, typename Index>
@@ -4483,6 +4514,11 @@ class UnorderedMap : public std::unordered_map<K, V> {
     return values_.count(key);
   }
 
+  std::size_t count_with_index_source(const K& key, const char* source) const {
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null", source);
+    return values_.count(key);
+  }
+
   bool contains(const K& key) const {
     return count(key) > 0;
   }
@@ -4512,6 +4548,11 @@ class UnorderedMap : public std::unordered_map<K, V> {
   }
 
   UnorderedMapValueRef<K, V> with_index_source(const K& key, const char* source) {
+    return UnorderedMapValueRef<K, V>(*this, key, source);
+  }
+
+  UnorderedMapValueRef<K, V> with_index_source(const K& key, const char* source, int line) {
+    current_trace_line() = line;
     return UnorderedMapValueRef<K, V>(*this, key, source);
   }
 
@@ -5046,6 +5087,11 @@ class Map : public std::map<K, V> {
     return values_.count(key);
   }
 
+  std::size_t count_with_index_source(const K& key, const char* source) const {
+    emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null", source);
+    return values_.count(key);
+  }
+
   bool contains(const K& key) const {
     return count(key) > 0;
   }
@@ -5099,6 +5145,11 @@ class Map : public std::map<K, V> {
   }
 
   MapValueRef<K, V> with_index_source(const K& key, const char* source) {
+    return MapValueRef<K, V>(*this, key, source);
+  }
+
+  MapValueRef<K, V> with_index_source(const K& key, const char* source, int line) {
+    current_trace_line() = line;
     return MapValueRef<K, V>(*this, key, source);
   }
 
