@@ -118,6 +118,16 @@ public final class TraceHooks {
     emitTraceWrite(line, name, "[" + jsonString(field) + "]", value);
   }
 
+  public static void emitFieldPathWriteAtLine(int line, String name, String[] fields, Object value) {
+    StringBuilder path = new StringBuilder("[");
+    for (int index = 0; index < fields.length; index++) {
+      if (index > 0) path.append(",");
+      path.append(jsonString(fields[index]));
+    }
+    path.append("]");
+    emitTraceWrite(line, name, path.toString(), value);
+  }
+
   public static void emitArrayWriteAtLine(int line, String name, int index, Object value) {
     emitTraceWrite(line, name, "[" + serializeResult(index) + "]", value);
   }

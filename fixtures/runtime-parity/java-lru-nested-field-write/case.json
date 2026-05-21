@@ -1,0 +1,121 @@
+{
+  "id": "java-lru-nested-field-write",
+  "functionName": "solve",
+  "executionStyle": "solution-method",
+  "languages": [
+    "java"
+  ],
+  "inputs": {
+    "value": 7
+  },
+  "anchors": {
+    "headNextWrite": {
+      "java": "head.next = tail;"
+    },
+    "tailPrevWrite": {
+      "java": "tail.prev = head;"
+    },
+    "nestedPrevWrite": {
+      "java": "head.next.prev = node;"
+    }
+  },
+  "expect": {
+    "headNextWrite": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "this",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 2
+        }
+      ]
+    },
+    "tailPrevWrite": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "this",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 2
+        }
+      ]
+    },
+    "nestedPrevWrite": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "node",
+        "this",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "head",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 3
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "headNextWrite": [
+      {
+        "kind": "write",
+        "variable": "this",
+        "path": [
+          "head",
+          "next"
+        ],
+        "pathDepth": 2
+      }
+    ],
+    "tailPrevWrite": [
+      {
+        "kind": "write",
+        "variable": "this",
+        "path": [
+          "tail",
+          "prev"
+        ],
+        "pathDepth": 2
+      }
+    ],
+    "nestedPrevWrite": [
+      {
+        "kind": "write",
+        "variable": "this",
+        "path": [
+          "head",
+          "next",
+          "prev"
+        ],
+        "pathDepth": 3
+      }
+    ]
+  }
+}

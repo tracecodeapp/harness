@@ -1706,6 +1706,9 @@ function augmentTraceCallArgumentSnapshots(source) {
 function collectJavaLocalDeclarations(line) {
   const names = [];
   const trimmedLine = String(line).trim();
+  if (/^(?:return|throw|break|continue)\b/.test(trimmedLine)) {
+    return names;
+  }
   if (trimmedLine.startsWith('//') || trimmedLine.startsWith('/*') || trimmedLine.startsWith('*')) {
     return names;
   }
@@ -1955,6 +1958,119 @@ function collectJavaObjectDeclarations(line) {
   return names;
 }
 
+function collectJavaDeclaredLocalNames(line) {
+  const names = new Set(collectJavaLocalDeclarations(line));
+  const trimmedLine = String(line).trim();
+  if (
+    /^(?:return|throw|break|continue)\b/.test(trimmedLine) ||
+    trimmedLine.startsWith('//') ||
+    trimmedLine.startsWith('/*') ||
+    trimmedLine.startsWith('*')
+  ) {
+    return [...names];
+  }
+
+  const declarationPattern =
+    /^\s*(?:final\s+)?(?:boolean|byte|char|short|int|long|float|double|String|Object|[A-Z][A-Za-z0-9_<>]*(?:\s*<[^;=(){}:]+>)?)\s*(?:\[\s*\])*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|;|,)/;
+  const match = line.match(declarationPattern);
+  if (match?.[1] && !match[1].startsWith('__tracecode')) names.add(match[1]);
+  return [...names];
+}
+
+function collectJavaMethodParameterNames(parametersSource) {
+  const names = [];
+  for (const parameter of splitTopLevelCommaList(parametersSource)) {
+    const match = parameter.trim().match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+    if (match?.[1]) names.push(match[1]);
+  }
+  return names;
+}
+
+function collectJavaFieldNames(source) {
+  const names = new Set();
+  let depth = 0;
+  for (const line of source.split('\n')) {
+    const trimmed = line.trim();
+    if (
+      depth === 1 &&
+      trimmed &&
+      /;\s*$/.test(trimmed)
+    ) {
+      const match = trimmed.match(/^(?:public|private|protected|static|final|transient|volatile|\s)+\s*([A-Za-z_][A-Za-z0-9_<>\[\], ?]*?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=.*)?;\s*$/)
+        || trimmed.match(/^([A-Za-z_][A-Za-z0-9_<>\[\], ?]*?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=.*)?;\s*$/);
+      if (match?.[2]) names.add(match[2]);
+    }
+    depth += braceDelta(line);
+  }
+  return names;
+}
+
+function javaStringArrayLiteral(values) {
+  return `new String[] { ${values.map((value) => javaStringLiteral(value)).join(', ')} }`;
+}
+
+function tryRewriteJavaNestedFieldWrite(line, lineNumber, fieldNames, localNames) {
+  const emittedFieldRootWriteMatch = line.match(
+    /^(\s*)([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?);\s*TraceHooks\.emitFieldWriteAtLine\(\s*\d+\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*[^)]*\);\s*TraceHooks\.emitRuntimeSnapshotAtLine\([^;]+\);\s*$/
+  );
+  if (emittedFieldRootWriteMatch) {
+    const indent = emittedFieldRootWriteMatch[1] ?? '';
+    const root = emittedFieldRootWriteMatch[2];
+    const field = emittedFieldRootWriteMatch[3];
+    const rhs = emittedFieldRootWriteMatch[4];
+    const emittedRoot = emittedFieldRootWriteMatch[5];
+    const emittedField = emittedFieldRootWriteMatch[6];
+    if (root === emittedRoot && field === emittedField && fieldNames.has(root) && !localNames.has(root)) {
+      const left = `${root}.${field}`;
+      return `${indent}{ ${left} = ${rhs}; TraceHooks.emitFieldPathWriteAtLine(${lineNumber}, "this", ${javaStringArrayLiteral([root, field])}, ${left}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "this", this); }`;
+    }
+  }
+
+  const tracedReceiverMatch = line.match(
+    /^(\s*)TraceHooks\.readObjectFieldAtLine\(\s*\d+\s*,\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*([^)]+)\)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+);\s*$/
+  );
+  if (tracedReceiverMatch) {
+    const indent = tracedReceiverMatch[1] ?? '';
+    const root = tracedReceiverMatch[2];
+    const firstField = tracedReceiverMatch[3];
+    const receiverExpression = tracedReceiverMatch[4].trim();
+    const finalField = tracedReceiverMatch[5];
+    const rhs = tracedReceiverMatch[6];
+    let variable = root;
+    let path = [firstField, finalField];
+    if (fieldNames.has(root) && !localNames.has(root)) {
+      variable = 'this';
+      path = [root, ...path];
+    }
+    const leftValueExpression = `${receiverExpression}.${finalField}`;
+    const snapshotExpression = variable === 'this' ? 'this' : variable;
+    return `${indent}{ TraceHooks.readObjectFieldAtLine(${lineNumber}, "${root}", "${firstField}", ${receiverExpression}).${finalField} = ${rhs}; TraceHooks.emitFieldPathWriteAtLine(${lineNumber}, "${variable}", ${javaStringArrayLiteral(path)}, ${leftValueExpression}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${variable}", ${snapshotExpression}); }`;
+  }
+
+  const match = line.match(/^(\s*)((?:this\s*\.\s*)?[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*(.+);\s*$/);
+  if (!match || line.includes('TraceHooks.')) return null;
+  const indent = match[1] ?? '';
+  const left = match[2].replace(/\s+/g, '');
+  const rhs = match[3];
+  const parts = left.split('.');
+  if (parts.length < 2) return null;
+
+  let variable = parts[0];
+  let path = parts.slice(1);
+  if (variable === 'this') {
+    path = parts.slice(1);
+  } else if (fieldNames.has(variable) && !localNames.has(variable)) {
+    path = [variable, ...path];
+    variable = 'this';
+  } else if (path.length < 2) {
+    return null;
+  }
+
+  if (path.length === 0) return null;
+  const snapshotExpression = variable === 'this' ? 'this' : variable;
+  return `${indent}{ ${left} = ${rhs}; TraceHooks.emitFieldPathWriteAtLine(${lineNumber}, "${variable}", ${javaStringArrayLiteral(path)}, ${left}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${variable}", ${snapshotExpression}); }`;
+}
+
 function rewriteJavaObjectFieldReads(expression, objectNames, lineNumber) {
   let output = expression;
   for (const name of objectNames) {
@@ -1973,6 +2089,7 @@ function rewriteJavaObjectFieldReads(expression, objectNames, lineNumber) {
 
 function augmentJavaObjectFieldOperations(source) {
   const lines = source.split('\n');
+  const fieldNames = collectJavaFieldNames(source);
   const methodStack = [];
   const methodStartPattern =
     /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
@@ -1984,6 +2101,7 @@ function augmentJavaObjectFieldOperations(source) {
         depth: 1,
         currentTraceLine: null,
         objectNames: new Set(),
+        localNames: new Set(collectJavaMethodParameterNames(methodMatch[3] ?? '')),
       });
       return line;
     }
@@ -1995,11 +2113,20 @@ function augmentJavaObjectFieldOperations(source) {
     for (const name of collectJavaObjectDeclarations(line)) {
       currentMethod.objectNames.add(name);
     }
+    for (const name of collectJavaDeclaredLocalNames(line)) {
+      currentMethod.localNames.add(name);
+    }
 
     const traceLine = parseNativeTraceLine(line);
     if (traceLine !== null) currentMethod.currentTraceLine = traceLine;
 
     const lineNumber = currentMethod.currentTraceLine;
+    if (lineNumber !== null) {
+      const nestedWrite = tryRewriteJavaNestedFieldWrite(nextLine, lineNumber, fieldNames, currentMethod.localNames);
+      if (nestedWrite) {
+        nextLine = nestedWrite;
+      }
+    }
     if (lineNumber !== null && currentMethod.objectNames.size > 0) {
       for (const name of currentMethod.objectNames) {
         const writePattern = new RegExp(`^(\\s*)${escapeRegExp(name)}\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$`);
