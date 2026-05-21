@@ -2636,7 +2636,8 @@ function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(
     const match = line.match(wrapperPattern);
     if (!match) return line;
     const condition = match[2].trim();
-    const rewrittenCondition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
+    let rewrittenCondition = rewriteFieldContainerCountInstrumentation(condition, lineNumber);
+    rewrittenCondition = rewriteIndexReadInstrumentation(rewrittenCondition, variables, aliases, lineNumber);
     if (rewrittenCondition === condition) return line;
     return line.replace(condition, rewrittenCondition);
   }
@@ -2654,10 +2655,12 @@ function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(
   if (keyword === 'for') {
     const parts = splitTopLevel(source, ';', { trackAngleBrackets: false });
     if (parts.length !== 3 || !parts[1].trim()) return line;
-    const condition = rewriteIndexReadInstrumentation(parts[1].trim(), variables, aliases, lineNumber);
+    let condition = rewriteFieldContainerCountInstrumentation(parts[1].trim(), lineNumber);
+    condition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
     rewrittenSource = `${parts[0]}; tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); }); ${parts[2]}`;
   } else {
-    const condition = rewriteIndexReadInstrumentation(source.trim(), variables, aliases, lineNumber);
+    let condition = rewriteFieldContainerCountInstrumentation(source.trim(), lineNumber);
+    condition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
     if (!condition) return line;
     rewrittenSource = `tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); })`;
   }
@@ -2885,22 +2888,25 @@ function rewritePointerAssignmentWriteInstrumentation(line, lineNumber) {
 
 function rewriteFieldContainerCountInstrumentation(line, lineNumber) {
   if (line.includes('tracecode::trace_field_container_count')) return line;
-  const stripped = stripCppStringsAndComments(line);
-  if (!stripped.includes('.count')) return line;
+  if (!line.includes('.count')) return line;
 
   let rewritten = line;
   let cursor = 0;
   const pattern = /\b([A-Za-z_]\w*)\s*(->|\.)\s*([A-Za-z_]\w*)\s*\.\s*count\s*\(/g;
   while (true) {
     pattern.lastIndex = cursor;
-    const match = pattern.exec(stripped);
+    const match = pattern.exec(rewritten);
     if (!match) break;
-    const [source, objectName, operator, fieldName] = match;
     const start = match.index ?? 0;
+    if (isInsideCppStringOrCharLiteral(rewritten, start)) {
+      cursor = start + match[0].length;
+      continue;
+    }
+    const [source, objectName, operator, fieldName] = match;
     const openIndex = start + source.lastIndexOf('(');
-    const closeIndex = findMatchingParen(stripped, openIndex);
+    const closeIndex = findMatchingParen(rewritten, openIndex);
     if (closeIndex < 0) break;
-    const keyExpression = stripped.slice(openIndex + 1, closeIndex).trim();
+    const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
     if (!keyExpression) {
       cursor = closeIndex + 1;
       continue;
@@ -4795,10 +4801,10 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewritePlainContainerMutationInstrumentation(lineForDriver, lineNumber, accessVariables, aliases, source);
       lineForDriver = rewritePlainContainerLookupInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteMapIteratorSecondMutationInstrumentation(lineForDriver, lineNumber, activeFrame.mapIterators);
-      lineForDriver = rewriteFieldContainerCountInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
       lineForDriver = rewriteStringPointerIndexedReadInstrumentation(lineForDriver, lineNumber, activeFrame.stringPointerAliases);
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);
+      lineForDriver = rewriteFieldContainerCountInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewriteTraceMutatingCallLineScope(lineForDriver, lineNumber);
       lineForDriver = rewriteBareMemberReadInstrumentation(
         lineForDriver,
