@@ -1,0 +1,71 @@
+{
+  "id": "cpp-braced-index-write-line",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "parent": {
+      "a": "b",
+      "b": "b"
+    },
+    "x": "a",
+    "root": "b"
+  },
+  "anchors": {
+    "guardedWrite": {
+      "cpp": "parent[x] = root;"
+    },
+    "returnRead": {
+      "cpp": "return parent[x].size();"
+    }
+  },
+  "expect": {
+    "guardedWrite": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "parent",
+        "root",
+        "x"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "parent",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "parent",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "returnRead": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "parent",
+        "root",
+        "x"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "parent",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

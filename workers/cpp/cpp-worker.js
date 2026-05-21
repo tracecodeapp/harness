@@ -3726,6 +3726,14 @@ function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new M
   return rewritten;
 }
 
+function scopeTraceContainerAssignmentLine(line, lineNumber) {
+  if (!line.includes('.with_index_source') || line.includes('TraceHooks::setCurrentLine')) return line;
+  const stripped = stripCppStringsAndComments(line);
+  if (!/\.with_index_source\s*\([^;]*\)\s*=/.test(stripped)) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  return `${indent}${buildCurrentLineInstrumentation(lineNumber)}\n${line}`;
+}
+
 function findIndexedStatementAccess(line, name) {
   let cursor = 0;
   while (cursor < line.length) {
@@ -4795,6 +4803,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           : lexicalAccessVariables;
       lineForDriver = rewriteVectorElementMemberAccess(lineForDriver, lexicalAccessVariables, aliases, traceMemberNames);
       lineForDriver = rewriteKeyedIndexSourceInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
+      lineForDriver = scopeTraceContainerAssignmentLine(lineForDriver, lineNumber);
       lineForDriver = rewriteNestedIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteVectorIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewritePlainIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
