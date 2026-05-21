@@ -1,0 +1,102 @@
+{
+  "id": "cpp-nested-vector-append-index-sources",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "append": {
+      "cpp": "adj[e[0]].push_back(e[1]);"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "adj",
+        "e",
+        "edges"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "adj",
+          "pathDepth": 1,
+          "method": "push_back"
+        },
+        {
+          "kind": "read",
+          "variable": "adj",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "e",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "append": [
+      {
+        "kind": "read",
+        "variable": "e",
+        "path": [
+          0
+        ],
+        "pathDepth": 1,
+        "indexSources": [
+          null
+        ],
+        "value": 1
+      },
+      {
+        "kind": "read",
+        "variable": "e",
+        "path": [
+          1
+        ],
+        "pathDepth": 1,
+        "indexSources": [
+          null
+        ],
+        "value": 2
+      },
+      {
+        "kind": "read",
+        "variable": "adj",
+        "path": [
+          1
+        ],
+        "pathDepth": 1,
+        "indexSources": [
+          "e[0]"
+        ],
+        "value": []
+      },
+      {
+        "kind": "mutate",
+        "variable": "adj",
+        "path": [
+          1
+        ],
+        "pathDepth": 1,
+        "indexSources": [
+          "e[0]"
+        ],
+        "method": "push_back",
+        "args": [
+          2
+        ]
+      }
+    ]
+  }
+}

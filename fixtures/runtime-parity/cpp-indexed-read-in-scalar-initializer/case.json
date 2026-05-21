@@ -1,0 +1,100 @@
+{
+  "id": "cpp-indexed-read-in-scalar-initializer",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "readZero": {
+      "cpp": "int ni = i + d[0];"
+    },
+    "readOne": {
+      "cpp": "int nj = j + d[1];"
+    }
+  },
+  "expect": {
+    "readZero": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "d",
+        "i",
+        "j",
+        "ni"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "d",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "ni"
+        }
+      ]
+    },
+    "readOne": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "d",
+        "i",
+        "j",
+        "ni",
+        "nj"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "d",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "nj"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "readZero": [
+      {
+        "kind": "read",
+        "variable": "d",
+        "path": [
+          0
+        ],
+        "pathDepth": 1,
+        "indexSources": [
+          null
+        ],
+        "value": 1
+      }
+    ],
+    "readOne": [
+      {
+        "kind": "read",
+        "variable": "d",
+        "path": [
+          1
+        ],
+        "pathDepth": 1,
+        "indexSources": [
+          null
+        ],
+        "value": 0
+      }
+    ]
+  }
+}

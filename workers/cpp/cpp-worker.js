@@ -3768,11 +3768,7 @@ function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), 
     }
   }
   for (const name of nestedVectorNames) {
-    const nestedMethodPattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\[([^\\]]+)\\]\\s*\\.\\s*(assign|push_back|emplace_back|insert|erase|clear|pop_back)\\s*\\(`, 'g');
-    rewritten = rewritten.replace(nestedMethodPattern, (_match, indexExpression, methodName) => {
-      const trimmedIndex = String(indexExpression || '').trim();
-      return `${name}.with_index_source(${trimmedIndex}, ${cppIndexSourceForExpression(trimmedIndex)}).${methodName}(`;
-    });
+    rewritten = rewriteNestedVectorMemberMethodIndexSources(rewritten, name);
   }
   for (const name of candidateNames) {
     const memberPattern = new RegExp(`\\bthis\\s*->\\s*${escapeRegExp(name)}\\s*\\[([^\\]]+)\\]\\s*\\.`, 'g');
@@ -3788,6 +3784,68 @@ function rewriteVectorElementMemberAccess(line, variables, aliases = new Map(), 
     });
     const pattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\[[^\\]]+\\]\\s*\\.`, 'g');
     rewritten = rewritten.replace(pattern, (match) => match.replace(/\.\s*$/, '->'));
+  }
+  return rewritten;
+}
+
+function rewriteNestedVectorMemberMethodIndexSources(line, name) {
+  const methods = new Set(['assign', 'push_back', 'emplace_back', 'insert', 'erase', 'clear', 'pop_back']);
+  let rewritten = line;
+  let cursor = 0;
+  while (cursor < rewritten.length) {
+    const nameIndex = rewritten.indexOf(name, cursor);
+    if (nameIndex < 0) break;
+    const before = nameIndex > 0 ? rewritten[nameIndex - 1] : '';
+    const beforeTwo = nameIndex >= 2 ? rewritten.slice(nameIndex - 2, nameIndex) : '';
+    const afterName = rewritten[nameIndex + name.length] || '';
+    if (
+      /[A-Za-z0-9_]/.test(before) ||
+      /[A-Za-z0-9_]/.test(afterName) ||
+      before === '.' ||
+      beforeTwo === '->' ||
+      beforeTwo === '::' ||
+      isInsideCppStringOrCharLiteral(rewritten, nameIndex)
+    ) {
+      cursor = nameIndex + name.length;
+      continue;
+    }
+
+    let bracketIndex = nameIndex + name.length;
+    while (/\s/.test(rewritten[bracketIndex] || '')) bracketIndex += 1;
+    if (rewritten[bracketIndex] !== '[') {
+      cursor = nameIndex + name.length;
+      continue;
+    }
+    const closeIndex = findMatchingSquareBracket(rewritten, bracketIndex);
+    if (closeIndex < 0) {
+      cursor = nameIndex + name.length;
+      continue;
+    }
+
+    let dotIndex = closeIndex + 1;
+    while (/\s/.test(rewritten[dotIndex] || '')) dotIndex += 1;
+    if (rewritten[dotIndex] !== '.') {
+      cursor = closeIndex + 1;
+      continue;
+    }
+    let methodIndex = dotIndex + 1;
+    while (/\s/.test(rewritten[methodIndex] || '')) methodIndex += 1;
+    const methodMatch = rewritten.slice(methodIndex).match(/^([A-Za-z_]\w*)\s*\(/);
+    if (!methodMatch || !methods.has(methodMatch[1])) {
+      cursor = closeIndex + 1;
+      continue;
+    }
+
+    const openIndex = methodIndex + methodMatch[0].lastIndexOf('(');
+    const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
+    if (!indexExpression) {
+      cursor = closeIndex + 1;
+      continue;
+    }
+
+    const replacement = `${name}.with_index_source(${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}).${methodMatch[1]}(`;
+    rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(openIndex + 1)}`;
+    cursor = nameIndex + replacement.length;
   }
   return rewritten;
 }
