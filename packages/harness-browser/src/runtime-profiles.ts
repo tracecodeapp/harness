@@ -346,7 +346,7 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'Java currently supports the browser-local Java 17 lane for function, solution-method, ops-class, and script-style execution.',
     'Interview-mode Java reuses the same browser-local execution path and remains experimental.',
     'Script-style Java uses an empty function name with executionStyle="function" and reads the top-level result variable.',
-    'Project-mode Java uses shared tracekernel /dev and /proc policy with final-diff persistence; provider-native live filesystem interception is not yet advertised.',
+    'Project-mode Java uses shared tracekernel /dev and /proc policy with bridged live file mutation and stdio events plus final-diff reconciliation.',
   ],
 };
 
@@ -415,7 +415,7 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'ListNode and TreeNode inputs are hydrated from level-order arrays or object-shaped JSON.',
     'Dictionary, HashSet, List, and array return values serialize through the browser-local worker.',
     'Tracing currently supports line, call, return, stdout, and simple local variable write events.',
-    'Project-mode C# uses shared tracekernel /dev and /proc policy with final-diff persistence; provider-native live filesystem interception is not yet advertised.',
+    'Project-mode C# uses shared tracekernel /dev and /proc policy with bridged live file mutation and stdio events plus final-diff reconciliation.',
     'Structural visualization is added after execution and diagnostics are proven.',
   ],
 };
@@ -481,7 +481,7 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
     'The runtime intentionally does not depend on a generic multi-language container/runtime SDK.',
     'Script-style C++ uses an empty function name with executionStyle="function"; the snippet must assign a serializable result variable.',
     'Interview-mode C++ reuses the tracing compiler path with a trace budget and returns a non-trace execution result.',
-    'Project-mode C++ uses shared tracekernel /dev and /proc policy with final-diff persistence; provider-native live filesystem interception is not yet advertised.',
+    'Project-mode C++ uses shared tracekernel /dev and /proc policy with bridged live WASI file mutation and stdio events plus final-diff reconciliation.',
   ],
 };
 
@@ -558,7 +558,8 @@ const PROJECT_IO_LIMITATIONS: Record<Language, readonly string[]> = {
     'Browser project mode is the reference live tracekernel path; node project mode uses host filesystem execution with final-diff reconciliation.',
   ],
   typescript: [
-    'Project mode supports tsc compile/typecheck commands through tracekernel snapshots; package installation and watch/build mode are not implemented.',
+    'Project mode supports tsc compile/typecheck commands through tracekernel snapshots; emitted JavaScript runs through the browser JavaScript live I/O path.',
+    'Package installation and watch/build mode are not implemented.',
   ],
   java: [
     'Browser project mode emits bridged live events through TraceCode-owned runtime instrumentation, not provider-native filesystem hooks.',

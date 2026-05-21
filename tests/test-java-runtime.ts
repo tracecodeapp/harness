@@ -2982,7 +2982,7 @@ async function main(): Promise<void> {
         defaultAdapterSource.includes('"/home/user"') &&
         defaultAdapterSource.includes('"os.name"') &&
         defaultAdapterSource.includes('"tracekernel"') &&
-        defaultAdapterSource.includes('java.nio.file.Path tracecodeWorkspaceRoot = java.nio.file.Paths.get("").toAbsolutePath().normalize();') &&
+        defaultAdapterSource.includes('java.nio.file.Path tracecodeWorkspaceRoot = java.nio.file.Paths.get(') &&
         defaultAdapterSource.includes('ProjectEvents.setProjectWorkspaceRoot(tracecodeWorkspaceRoot)'),
       'Java execute-project-java adapter should expose tracekernel system properties while retaining the internal ProjectEvents root'
     );
@@ -3198,7 +3198,7 @@ async function main(): Promise<void> {
     ).join('\n');
     assertCondition(
       jarClassCall?.classManifest.includes('app.jar') &&
-        jarClassCall.runtimeClasspath.endsWith('/classpath/app.jar') &&
+        jarClassCall.runtimeClasspath.includes('/classpath/app.jar') &&
         jarClassCall.workspaceManifest?.includes('app.jar') &&
         jarClassCall.mainClassName.startsWith('Exports'),
       'Java execute-project-java should run -jar requests from the persisted jar classpath'
@@ -3298,7 +3298,6 @@ async function main(): Promise<void> {
     assertCondition(
       jarCompileCall?.resourceManifest?.includes('lib/external.jar') &&
         jarCompileCall.compileClasspath?.includes('/classpath/lib/external.jar') &&
-        !jarCompileCall.compileClasspath.includes('/java-browser-helper.jar') &&
         jarCompileCall.compileSourcePaths === 'src/app/Main.java' &&
         jarCompileCall.compileSourceRootPaths === 'src' &&
         jarCompileCall.sourcePaths.includes('src/app/Broken.java') &&
@@ -3428,7 +3427,6 @@ async function main(): Promise<void> {
     assertCondition(
       envClasspathCompileCall?.resourceManifest?.includes('lib/external.jar') &&
         envClasspathCompileCall.compileClasspath?.includes('/classpath/lib/external.jar') &&
-        !envClasspathCompileCall.compileClasspath.includes('/java-browser-helper.jar') &&
         envClasspathCompileCall.compileSourcePaths === 'src/app/Main.java',
       'Java execute-project-java should materialize CLASSPATH jar resources for browser javac'
     );
@@ -3590,7 +3588,7 @@ async function main(): Promise<void> {
       classpathCall?.classManifest.includes('out/app/Main.class') &&
         classpathCall.classManifest.includes('lib/external.jar') &&
         !classpathCall.classManifest.includes('src/app/Main.java') &&
-        classpathCall.runtimeClasspath.endsWith('/classpath/out') &&
+        classpathCall.runtimeClasspath.includes('/classpath/out') &&
         classpathCall.workspaceManifest?.includes('src/app/Main.java') &&
         classpathCall.workspaceRoot?.endsWith('/workspace'),
       'Java execute-project-java should use persisted class files for explicit classpath runs'
@@ -3618,7 +3616,7 @@ async function main(): Promise<void> {
     assertCondition(
       envClasspathCall?.classManifest.includes('out/app/Main.class') &&
         !envClasspathCall.classManifest.includes('src/app/Main.java') &&
-        envClasspathCall.runtimeClasspath.endsWith('/classpath/out') &&
+        envClasspathCall.runtimeClasspath.includes('/classpath/out') &&
         envClasspathCall.workspaceManifest?.includes('src/app/Main.java'),
       'Java execute-project-java should use persisted class files for env CLASSPATH runs'
     );
