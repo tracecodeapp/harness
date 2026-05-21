@@ -4,53 +4,41 @@ All notable changes to this project are documented here.
 
 This repo uses Git tags as release boundaries. Version notes below summarize what shipped in each tagged release.
 
-## [0.7.0-beta4] - 2026-05-10
-
-### Changed
-
-- Upgraded the C# browser-WASM runtime lane to .NET 10, C# 14, and Roslyn `Microsoft.CodeAnalysis.CSharp` 5.3.0.
-- Added `pnpm update:csharp-runtime` to locally install/update the required .NET SDK channel, publish the C# WASM host, sync vendored assets, and regenerate runtime language info.
-
-### Fixed
-
-- Fixed newer .NET worker startup by registering C# worker messages with `addEventListener('message', ...)` so sidecar boot mode is detected correctly.
-- Fixed local Java trace fixture dynamic input mapping so full runtime trace parity can validate browser-style input files under the host JVM.
-
-## [0.7.0-beta3] - 2026-05-10
+## [0.8.0] - 2026-05-21
 
 ### Added
 
-- Added generated runtime language info metadata and public browser/core APIs for language versions, compilers, standards, default imports, and bundled libraries.
-- Added JavaScript and TypeScript runtime library support for lodash and datastructures-js packages.
-- Expanded default import/header coverage for Python, Java, C#, and C++ runtime lanes.
-
-## [0.7.0-beta2] - 2026-05-09
+- Added the V4 harness execution contract as the public runtime trace contract for browser harness consumers.
+- Added native V4 runtime trace emission across JavaScript/TypeScript, Python, Java, C#, and C++.
+- Added browser-local C# and C++ runtime support.
+- Added language-split packages for core, browser, Python, JavaScript/TypeScript, Java, C#, and C++ harness consumers.
+- Added generated runtime language metadata covering language versions, compiler/runtime details, standards, default imports, and bundled libraries.
+- Added default runtime library support across supported runtimes, including JavaScript/TypeScript bundled libraries.
+- Added explicit browser warmup APIs for heavyweight runtimes.
+- Added language-filtered asset syncing through `tracecode-harness sync-assets --languages ...`.
+- Added third-party runtime notices for bundled browser runtimes and toolchains.
+- Added expanded runtime parity fixtures and contract gates for cross-language V4 trace behavior.
 
 ### Changed
 
-- Added explicit browser warmup paths for Java, Python, TypeScript, C#, and C++ so heavy runtimes can stay lazy until the app intentionally warms them.
-- Split C# and Python worker `init()` from runtime loading, preserving lazy first execution while allowing guided/code-assist flows to warm runtimes on demand.
-- Isolated C++ compiler warmup and Java background warmup behavior behind `warmLanguage(...)`.
-- Renamed Python worker-facing client/log labels from Pyodide-specific names to `PythonWorkerClient` and `[PythonWorker]`, while keeping backwards-compatible `PyodideWorkerClient` exports.
+- Changed the public trace result surface to V4 runtime traces.
+- Reframed harness traces as low-level runtime facts rather than visualizer-specific payloads.
+- Standardized runtime traces on post-line state, where line events describe facts visible after the source line executes.
+- Standardized trace events around calls, lines, returns, snapshots, reads, writes, mutations, stdout, exceptions, timeouts, and trace-budget behavior.
+- Standardized collection mutation and access provenance reporting across supported runtimes.
+- Updated Java runtime tracing to emit native V4 traces by default.
+- Updated browser runtime initialization so C#, C++, Java, Python, and TypeScript can be warmed intentionally before first execution.
 
 ### Fixed
 
-- Added a dedicated Java non-trace execution path, including run-only batch execution support.
-- Stopped plain JavaScript non-trace execution from loading the TypeScript compiler just to recover function argument order.
+- Improved Java rewrite-failure handling so parser failures surface as user-facing syntax or compiler diagnostics.
+- Improved JavaScript/TypeScript non-trace execution so plain JavaScript runs no longer load the TypeScript compiler just to recover argument order.
+- Improved Python serialization for script results and callable values.
 
-## [0.7.0-beta1] - 2026-05-07
+### Notes
 
-### Added
-
-- Added third-party runtime notices covering CheerpJ, Pyodide/CPython, TypeScript, JavaParser, OpenJDK/JBR, .NET/Roslyn, YoWASP/LLVM, and WASI libc.
-- Added publishable language-split packages for core, browser, Python, JavaScript/TypeScript, Java, C#, and C++.
-- Added Java, C#, and C++ public root subpath exports.
-- Added language-filtered asset sync through `tracecode-harness sync-assets --languages ...`.
-
-### Changed
-
-- The umbrella package remains backwards compatible, while standalone language packages now publish their own generated `workers/` assets.
-- Package builds now generate per-package assets without committing duplicate runtime blobs.
+- `0.8.0` supersedes the unpublished `0.7.0-beta` line.
+- This is a contract-establishing release for V4 runtime traces. Consumers upgrading from `0.6.6` should expect trace contract changes.
 
 ## [0.6.6] - 2026-04-27
 
