@@ -4580,6 +4580,30 @@ async function main(): Promise<void> {
         batchExecuteSource.includes('solution.add(a, b)'),
       'Java execute-code-batch should compile one runnable source with per-case export entries'
     );
+
+    const batchNodeExecute = await harness.sendMessage<{
+      success: boolean;
+      results?: Array<{ success: boolean; output: unknown }>;
+      error?: string;
+    }>('execute-code-batch', {
+      code: `class Solution {
+  int headValue(ListNode head) {
+    return head == null ? -1 : head.val;
+  }
+}`,
+      functionName: 'headValue',
+      inputBatch: [
+        { head: { __type__: 'ListNode', val: 1, next: { __type__: 'ListNode', val: 2, next: null } } },
+        { head: { __type__: 'ListNode', val: 3, next: { __type__: 'ListNode', val: 4, next: null } } },
+      ],
+      executionStyle: 'function',
+    });
+    assertCondition(batchNodeExecute.success === true, `Java execute-code-batch with ListNode should succeed: ${JSON.stringify(batchNodeExecute)}`);
+    const batchNodeSource = latestSourceContaining(harness.stringFiles, 'headValue');
+    assertCondition(
+      (batchNodeSource.match(/\bclass\s+ListNode\b/g) ?? []).length === 1,
+      `Java execute-code-batch should emit ListNode helper classes once per batch: ${batchNodeSource}`
+    );
     console.log('PASS: java execute-code-batch runs multiple non-trace cases in one worker request');
 
     const rewriteProbeFailure = await harness.sendMessage<{

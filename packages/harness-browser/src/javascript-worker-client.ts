@@ -1,4 +1,4 @@
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { logRuntimeDiagnostic } from './runtime-diagnostics';
 
 type MessageId = string;
@@ -344,6 +344,31 @@ export class JavaScriptWorkerClient {
             code,
             functionName,
             inputs,
+            executionStyle,
+            language,
+          },
+          EXECUTION_TIMEOUT_MS + 2000
+        ),
+      EXECUTION_TIMEOUT_MS
+    );
+  }
+
+  async executeCodeBatch(
+    code: string,
+    functionName: string,
+    inputBatch: Record<string, unknown>[],
+    executionStyle: JavaScriptExecutionStyle = 'function',
+    language: JavaScriptWorkerLanguage = 'javascript'
+  ): Promise<CodeExecutionBatchResult> {
+    await this.init();
+    return this.executeWithTimeout(
+      () =>
+        this.sendMessage<CodeExecutionBatchResult>(
+          'execute-code-batch',
+          {
+            code,
+            functionName,
+            inputBatch,
             executionStyle,
             language,
           },

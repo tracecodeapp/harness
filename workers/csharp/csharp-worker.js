@@ -1351,6 +1351,36 @@ async function handleMessage(message) {
     return warmRuntime(message.payload?.assetBaseUrl);
   }
 
+  if (message.type === 'execute-code-batch') {
+    const startedAt = now();
+    const inputBatch = Array.isArray(message.payload?.inputBatch)
+      ? message.payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
+      : [];
+    if (inputBatch.length === 0) {
+      return {
+        success: false,
+        results: [],
+        error: 'C# batch execution requires a non-empty inputBatch array.',
+        consoleOutput: [],
+        timings: { totalMs: elapsedMs(startedAt) },
+      };
+    }
+
+    const results = [];
+    for (const inputs of inputBatch) {
+      results.push(await handleMessage({
+        type: 'execute-code',
+        payload: { ...message.payload, inputs },
+      }));
+    }
+    return {
+      success: results.every((result) => result.success === true),
+      results,
+      consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
   if (
     message.type === 'execute-code' ||
     message.type === 'execute-code-interview' ||

@@ -2982,6 +2982,33 @@ json.dumps({
   }
 }
 
+async function executeCodeBatch(code, functionName, inputBatch, executionStyle = 'function') {
+  const startedAt = performance.now();
+  const cases = Array.isArray(inputBatch)
+    ? inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
+    : [];
+  if (cases.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'Python batch execution requires a non-empty inputBatch array.',
+      consoleOutput: [],
+      timings: { totalMs: performance.now() - startedAt },
+    };
+  }
+
+  const results = [];
+  for (const inputs of cases) {
+    results.push(await executeCode(code, functionName, inputs, executionStyle));
+  }
+  return {
+    success: results.every((result) => result.success === true),
+    results,
+    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+    timings: { totalMs: performance.now() - startedAt },
+  };
+}
+
 async function processMessage(data) {
   const { id, type, payload } = data;
   try {
@@ -3012,6 +3039,14 @@ async function processMessage(data) {
       case 'execute-code': {
         const { code, functionName, inputs, executionStyle } = payload;
         const result = await executeCode(code, functionName, inputs, executionStyle ?? 'function');
+        analyzerInitialized = false;
+        self.postMessage({ id, type: 'execute-result', payload: result });
+        break;
+      }
+
+      case 'execute-code-batch': {
+        const { code, functionName, inputBatch, executionStyle } = payload;
+        const result = await executeCodeBatch(code, functionName, inputBatch, executionStyle ?? 'function');
         analyzerInitialized = false;
         self.postMessage({ id, type: 'execute-result', payload: result });
         break;

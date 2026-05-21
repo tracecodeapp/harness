@@ -32,6 +32,9 @@ export interface RuntimeExecutionTimings {
   rewriteMs?: number;
   driverBuildMs?: number;
   compileMs?: number;
+  pchMs?: number;
+  pchCacheHit?: boolean;
+  pchFallback?: boolean;
   linkMs?: number;
   wasmCompileMs?: number;
   classLoadMs?: number;
@@ -62,6 +65,15 @@ export interface CodeExecutionResult {
     | 'driver-compile'
     | 'trace-driver-compile'
     | 'driver-link';
+  timings?: RuntimeExecutionTimings;
+}
+
+export interface CodeExecutionBatchResult {
+  success: boolean;
+  results: CodeExecutionResult[];
+  error?: string;
+  consoleOutput?: string[];
+  executionTimeMs?: number;
   timings?: RuntimeExecutionTimings;
 }
 

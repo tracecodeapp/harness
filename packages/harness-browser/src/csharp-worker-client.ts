@@ -7,6 +7,7 @@ import {
 import type { TraceExecutionOptions } from '../../harness-core/src/runtime-types';
 import type {
   CodeExecutionResult,
+  CodeExecutionBatchResult,
   ExecutionResult,
   RuntimeExecutionTimings,
 } from '../../harness-core/src/types';
@@ -467,6 +468,40 @@ export class CSharpWorkerClient {
       output: result.output,
       consoleOutput: result.consoleOutput ?? [],
       timings: result.timings,
+    };
+  }
+
+  async executeCodeBatch(
+    code: string,
+    functionName: string,
+    inputBatch: Record<string, unknown>[],
+    executionStyle: CSharpExecutionStyle
+  ): Promise<CodeExecutionBatchResult> {
+    await this.init();
+    const result = await this.executeWithTimeout(
+      () =>
+        this.sendMessage<CodeExecutionBatchResult>(
+          'execute-code-batch',
+          {
+            code,
+            functionName,
+            inputBatch,
+            executionStyle,
+            assetBaseUrl: this.options.assetBaseUrl,
+            timeoutMs: Math.max(100, this.executionTimeoutMs - 1_000),
+            ...this.workerOptionsPayload(),
+          },
+          this.executionTimeoutMs + 5_000
+        ),
+      this.executionTimeoutMs
+    );
+
+    return {
+      ...result,
+      results: (result.results ?? []).map((entry) => ({
+        ...entry,
+        output: entry.output ?? null,
+      })),
     };
   }
 

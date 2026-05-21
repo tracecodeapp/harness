@@ -69,6 +69,39 @@ class MockWorker {
         return;
       }
 
+      if (type === 'execute-code-batch' || type === 'compile-run-batch') {
+        const inputBatch = Array.isArray((payload as { inputBatch?: unknown[] } | undefined)?.inputBatch)
+          ? (payload as { inputBatch: unknown[] }).inputBatch
+          : [];
+        this.onmessage?.({
+          data: {
+            id,
+            type,
+            payload: {
+              success: true,
+              results: inputBatch.map((inputs) => ({ success: true, output: inputs, consoleOutput: [] })),
+              consoleOutput: [],
+            },
+          },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
+      if (type.startsWith('execute-project-')) {
+        this.onmessage?.({
+          data: {
+            id,
+            type,
+            payload: {
+              stdout: `${type}:${(payload as { scriptPath?: string } | undefined)?.scriptPath ?? ''}\n`,
+              stderr: '',
+              exitCode: 0,
+            },
+          },
+        } as MessageEvent<WorkerMessage>);
+        return;
+      }
+
       if (type === 'compile-run') {
         this.onmessage?.({
           data: {
@@ -283,6 +316,34 @@ async function main(): Promise<void> {
 
     const executeResult = await harnessB.getClient('python').executeCode('result = 1', 'noop', {}, 'function');
     assertCondition(executeResult.success, 'Surviving harness instance should still execute after a peer is disposed');
+    const pythonBatchResult = await harnessB.getClient('python').execute({
+      code: 'def add(a, b):\n    return a + b',
+      functionName: 'add',
+      executionStyle: 'function',
+      cases: [
+        { id: 'a', inputs: { a: 1, b: 2 }, expected: { a: 1, b: 2 } },
+        { id: 'b', inputs: { a: 3, b: 4 }, expected: { a: 3, b: 4 } },
+      ],
+    });
+    assertCondition(pythonBatchResult.success, 'Python unified execute should route multi-case run requests');
+    assertCondition(
+      workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/pyodide-worker.js'))?.messages.at(-1)?.type === 'execute-code-batch',
+      'Python unified execute should send execute-code-batch for multi-case run requests'
+    );
+    const javascriptBatchResult = await harnessB.getClient('javascript').execute({
+      code: 'function add(a, b) { return a + b; }',
+      functionName: 'add',
+      executionStyle: 'function',
+      cases: [
+        { id: 'a', inputs: { a: 1, b: 2 }, expected: { a: 1, b: 2 } },
+        { id: 'b', inputs: { a: 3, b: 4 }, expected: { a: 3, b: 4 } },
+      ],
+    });
+    assertCondition(javascriptBatchResult.success, 'JavaScript unified execute should route multi-case run requests');
+    assertCondition(
+      workerInstances.findLast((worker) => String(worker.url).startsWith('/instance-b/javascript-worker.js'))?.messages.at(-1)?.type === 'execute-code-batch',
+      'JavaScript unified execute should send execute-code-batch for multi-case run requests'
+    );
     console.log('PASS: browser harness instances are isolated');
 
     const javaExecuteResult = await harnessA
@@ -308,6 +369,49 @@ async function main(): Promise<void> {
       'Java interview-mode executeCode should send execute-code-interview instead of execute-with-tracing'
     );
     console.log('PASS: browser harness routes Java interview-mode requests');
+
+    const javaUnifiedBatchResult = await harnessA
+      .getClient('java')
+      .execute({
+        code: 'class Solution { int add(int a, int b) { return a + b; } }',
+        functionName: 'add',
+        executionStyle: 'function',
+        cases: [
+          { id: 'a', inputs: { a: 1, b: 2 }, expected: { a: 1, b: 2 } },
+          { id: 'b', inputs: { a: 3, b: 4 }, expected: { a: 3, b: 4 } },
+        ],
+      });
+    assertCondition(javaUnifiedBatchResult.success, 'Java unified execute should route multi-case run requests');
+    assertCondition(
+      javaWorker?.messages.at(-1)?.type === 'execute-code-batch',
+      'Java unified execute should send execute-code-batch for multi-case run requests'
+    );
+    console.log('PASS: browser harness routes Java unified batch execute');
+
+    const javaProjectExecute = await harnessA
+      .getClient('java')
+      .execute({
+        kind: 'project',
+        code: '',
+        source: 'run',
+        scriptPath: 'Main',
+        args: [],
+        cwd: '/home/user/project',
+        env: {},
+        stdin: '',
+        project: {
+          cwd: '/home/user/project',
+          workspaceRoot: '/home/user/project',
+          workspaceAlias: '/workspace',
+          files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+        },
+      });
+    assertCondition(javaProjectExecute.exitCode === 0, 'Java unified execute should route project requests');
+    assertCondition(
+      javaWorker?.messages.at(-1)?.type === 'execute-project-java',
+      'Java unified execute should send execute-project-java for project requests'
+    );
+    console.log('PASS: browser harness routes Java unified project execute');
 
     const csharpExecuteResult = await harnessA
       .getClient('csharp')
@@ -350,6 +454,25 @@ async function main(): Promise<void> {
     assertCondition(csharpInterviewResult.success, 'C# runtime should route interview-mode requests');
     console.log('PASS: browser harness routes C# interview-mode requests');
 
+    const csharpBatchResult = await harnessA
+      .getClient('csharp')
+      .execute({
+        code: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
+        functionName: 'Add',
+        executionStyle: 'solution-method',
+        cases: [
+          { id: 'a', inputs: { a: 1, b: 2 }, expected: { a: 1, b: 2 } },
+          { id: 'b', inputs: { a: 3, b: 4 }, expected: { a: 3, b: 4 } },
+        ],
+      });
+    assertCondition(csharpBatchResult.success, 'C# unified execute should route multi-case run requests');
+    const csharpWorker = [...workerInstances].reverse().find((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js'));
+    assertCondition(
+      csharpWorker?.messages.at(-1)?.type === 'execute-code-batch',
+      'C# unified execute should send execute-code-batch for multi-case run requests'
+    );
+    console.log('PASS: browser harness routes C# unified batch execute');
+
     const activeCSharpWorker = [...workerInstances]
       .reverse()
       .find((worker) => String(worker.url).startsWith('/instance-a/csharp-worker.js'));
@@ -373,6 +496,23 @@ async function main(): Promise<void> {
       .getClient('cpp')
       .executeCodeInterviewMode('int result = 3;', '', {}, 'function');
     assertCondition(cppInterviewResult.success, 'C++ runtime should route interview-mode requests');
+    const cppBatchResult = await harnessA
+      .getClient('cpp')
+      .execute({
+        code: 'class Solution { public: int add(int a, int b) { return a + b; } };',
+        functionName: 'add',
+        executionStyle: 'solution-method',
+        cases: [
+          { id: 'a', inputs: { a: 1, b: 2 }, expected: { a: 1, b: 2 } },
+          { id: 'b', inputs: { a: 3, b: 4 }, expected: { a: 3, b: 4 } },
+        ],
+      });
+    assertCondition(cppBatchResult.success, 'C++ unified execute should route multi-case run requests');
+    const activeCppWorker = [...workerInstances].reverse().find((worker) => String(worker.url).startsWith('/instance-a/cpp-worker.js'));
+    assertCondition(
+      activeCppWorker?.messages.at(-1)?.type === 'compile-run-batch',
+      'C++ unified execute should send compile-run-batch for multi-case run requests'
+    );
     console.log('PASS: browser harness routes C++ runtime requests');
 
     class HangingCppWorker extends MockWorker {

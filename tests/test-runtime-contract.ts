@@ -1180,6 +1180,15 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
       output: nextOutput,
       consoleOutput: [],
     }),
+    executeCodeBatch: async () => ({
+      success: true,
+      results: [
+        { success: true, output: [0, 1], consoleOutput: [], timings: { compileCacheHit: false } },
+        { success: true, output: [1, 2], consoleOutput: [], timings: { compileCacheHit: false } },
+      ],
+      consoleOutput: [],
+      timings: { compileCacheHit: false, totalMs: 10 },
+    }),
     executeCodeInterviewMode: async () => ({
       success: true,
       output: nextOutput,
@@ -1207,6 +1216,24 @@ async function testJavaSerializedResultNormalization(): Promise<void> {
   assertCondition(
     stableStringify(interviewArray.output) === stableStringify([2, 3]),
     'Java runtime interview execution should preserve worker-normalized array output'
+  );
+
+  const batched = await javaClient.execute({
+    code: 'class Solution {}',
+    functionName: 'solve',
+    cases: [
+      { id: 'a', inputs: { nums: [2, 7, 11, 15], target: 9 }, expected: [0, 1] },
+      { id: 'b', inputs: { nums: [3, 2, 4], target: 6 }, expected: [1, 2] },
+    ],
+  });
+  assertCondition(batched.success === true, 'Java runtime unified execute should succeed for batched code execution');
+  assertCondition(
+    stableStringify(batched.cases.map((testCase) => testCase.output)) === stableStringify([[0, 1], [1, 2]]),
+    'Java runtime unified execute should preserve batched worker outputs'
+  );
+  assertCondition(
+    batched.cases.every((testCase) => testCase.passed === true),
+    'Java runtime unified execute should compare expected outputs for batch cases'
   );
 
   console.log('PASS: Java TraceHooks serialized results normalize without double-parsing runtime outputs');
@@ -1345,6 +1372,7 @@ async function main(): Promise<void> {
       `${name} client should not expose getCapabilities`
     );
     assertCondition(typeof client.init === 'function', `${name} client should implement init`);
+    assertCondition(typeof client.execute === 'function', `${name} client should implement execute`);
     assertCondition(typeof client.executeCode === 'function', `${name} client should implement executeCode`);
     assertCondition(
       typeof client.executeWithTracing === 'function',

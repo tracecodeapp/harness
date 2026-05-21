@@ -47,6 +47,9 @@ export interface CreateBrowserHarnessOptions {
     tracingTimeoutMs?: number;
     interviewTimeoutMs?: number;
     workerIdleTimeoutMs?: number;
+    programCacheLimit?: number;
+    usePrecompiledHeader?: boolean;
+    externalCompilerUrl?: string;
   };
 }
 
@@ -111,6 +114,9 @@ class BrowserHarnessRuntime implements BrowserHarness {
       tracingTimeoutMs: options.cpp?.tracingTimeoutMs,
       interviewTimeoutMs: options.cpp?.interviewTimeoutMs,
       workerIdleTimeoutMs: options.cpp?.workerIdleTimeoutMs,
+      programCacheLimit: options.cpp?.programCacheLimit,
+      usePrecompiledHeader: options.cpp?.usePrecompiledHeader,
+      externalCompilerUrl: options.cpp?.externalCompilerUrl,
     });
     this.clients = {
       python: createPythonRuntimeClient(this.pythonWorkerClient),

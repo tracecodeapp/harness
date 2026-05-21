@@ -2586,7 +2586,7 @@ function buildExportsSource(source, functionName, executionStyle, input, options
     skipInputMaterializers: options.scriptMode === true,
   };
   const helperMethods = buildHelperMethods(features);
-  const nodePreludeSource = buildNodePreludeSource(source, options);
+  const nodePreludeSource = options.skipNodePrelude === true ? '' : buildNodePreludeSource(source, options);
   const dynamicInputsByKey = dynamicInputByKey(options.dynamicInputs ?? []);
 
   if (executionStyle === 'ops-class') {
@@ -2895,6 +2895,7 @@ function buildBatchRunnableSource(payload, compileId, inputBatch, dynamicInputBa
         dynamicInputs,
         hasDynamicInputs: dynamicInputs.length > 0,
         scriptMode: payload.scriptMode === true,
+        skipNodePrelude: index > 0,
       }
     ).replaceAll(
       /\bpublic class Exports\b/g,

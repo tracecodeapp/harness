@@ -19,7 +19,8 @@ const DEFAULT_INTERVIEW_MAX_TRACE_STEPS = 10_000;
 const DEFAULT_INTERVIEW_MAX_LINE_EVENTS = 12_000;
 const DEFAULT_INTERVIEW_MAX_SINGLE_LINE_HITS = 1_000;
 const CPP_PROGRAM_STACK_SIZE = 8 * 1024 * 1024;
-const CPP_PROGRAM_CACHE_LIMIT = 32;
+const DEFAULT_CPP_PROGRAM_CACHE_LIMIT = 32;
+const MAX_CPP_PROGRAM_CACHE_LIMIT = 512;
 const CPP_WARMUP_SOURCE = 'class Solution { public: int add(int a, int b) { return a + b; } };';
 const WORKER_DEBUG = (() => {
   try {
@@ -129,6 +130,8 @@ let idleTimer = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let queuedTasks = 0;
 let programCache = new Map();
+let programCacheLimit = DEFAULT_CPP_PROGRAM_CACHE_LIMIT;
+let usePrecompiledHeader = false;
 let externalCompileRequestId = 0;
 const pendingExternalCompiles = new Map();
 let compilerWorker = null;
@@ -184,6 +187,19 @@ function applyWorkerOptions(payload) {
   if (Number.isFinite(requestedIdleTimeoutMs) && requestedIdleTimeoutMs >= 1_000) {
     idleTimeoutMs = Math.round(requestedIdleTimeoutMs);
   }
+
+  const requestedProgramCacheLimit = Number(payload?.programCacheLimit);
+  if (Number.isFinite(requestedProgramCacheLimit) && requestedProgramCacheLimit >= 0) {
+    programCacheLimit = Math.min(
+      MAX_CPP_PROGRAM_CACHE_LIMIT,
+      Math.max(0, Math.floor(requestedProgramCacheLimit))
+    );
+    trimProgramCache();
+  }
+
+  if (typeof payload?.usePrecompiledHeader === 'boolean') {
+    usePrecompiledHeader = payload.usePrecompiledHeader;
+  }
 }
 
 function getProgramCacheKey(compiler, driverSource) {
@@ -199,11 +215,16 @@ function getCachedProgramModule(cacheKey) {
 }
 
 function storeProgramModule(cacheKey, module) {
+  if (programCacheLimit <= 0) return;
   if (programCache.has(cacheKey)) {
     programCache.delete(cacheKey);
   }
   programCache.set(cacheKey, module);
-  while (programCache.size > CPP_PROGRAM_CACHE_LIMIT) {
+  trimProgramCache();
+}
+
+function trimProgramCache() {
+  while (programCache.size > programCacheLimit) {
     const oldestKey = programCache.keys().next().value;
     programCache.delete(oldestKey);
   }
@@ -5937,6 +5958,7 @@ function runCompilerWorker(driverSource) {
         driverSource,
         standard: CPP_STANDARD,
         stackSize: CPP_PROGRAM_STACK_SIZE,
+        usePrecompiledHeader,
       },
     });
   });
@@ -5979,6 +6001,7 @@ function requestExternalCompile(driverSource) {
         driverSource,
         standard: CPP_STANDARD,
         stackSize: CPP_PROGRAM_STACK_SIZE,
+        usePrecompiledHeader,
       },
     });
   });
@@ -6840,6 +6863,9 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     timings.compileMs = Number.isFinite(Number(compileResult.compileMs))
       ? Number(compileResult.compileMs)
       : timings.compilerWorkerMs;
+    if (compileResult.timings && typeof compileResult.timings === 'object') {
+      Object.assign(timings, compileResult.timings);
+    }
 
     if (!compileResult.success) {
       const diagnostics = [compileResult.stderr, compileResult.stdout, compileResult.error]
@@ -7172,6 +7198,9 @@ async function handleWarmup(payload) {
       ...(typeof warmupTimings.compileMs === 'number' ? { compileMs: warmupTimings.compileMs } : {}),
       ...(typeof warmupTimings.externalCompileMs === 'number' ? { externalCompileMs: warmupTimings.externalCompileMs } : {}),
       ...(typeof warmupTimings.compilerWorkerMs === 'number' ? { compilerWorkerMs: warmupTimings.compilerWorkerMs } : {}),
+      ...(typeof warmupTimings.pchMs === 'number' ? { pchMs: warmupTimings.pchMs } : {}),
+      ...(typeof warmupTimings.pchCacheHit === 'boolean' ? { pchCacheHit: warmupTimings.pchCacheHit } : {}),
+      ...(typeof warmupTimings.pchFallback === 'boolean' ? { pchFallback: warmupTimings.pchFallback } : {}),
       ...(typeof warmupTimings.wasmCompileMs === 'number' ? { wasmCompileMs: warmupTimings.wasmCompileMs } : {}),
       ...(typeof warmupTimings.runMs === 'number' ? { runMs: warmupTimings.runMs } : {}),
     },
@@ -7212,6 +7241,33 @@ async function handleCompileRun(payload) {
       consoleOutput: [],
     };
   }
+}
+
+async function handleCompileRunBatch(payload) {
+  const startedAt = now();
+  const inputBatch = Array.isArray(payload?.inputBatch)
+    ? payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
+    : [];
+  if (inputBatch.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'C++ batch execution requires a non-empty inputBatch array.',
+      consoleOutput: [],
+      timings: { totalMs: elapsedMs(startedAt) },
+    };
+  }
+
+  const results = [];
+  for (const inputs of inputBatch) {
+    results.push(await handleCompileRun({ ...payload, inputs }));
+  }
+  return {
+    success: results.every((result) => result.success === true),
+    results,
+    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+    timings: { totalMs: elapsedMs(startedAt) },
+  };
 }
 
 async function handleExecuteWithTracing(payload) {
@@ -7401,6 +7457,8 @@ self.onmessage = (event) => {
             ? await handleWarmup(payload)
           : type === 'compile-run'
             ? await handleCompileRun(payload)
+            : type === 'compile-run-batch'
+              ? await handleCompileRunBatch(payload)
             : type === 'execute-project-cpp'
               ? await handleProjectCpp(payload, id)
             : type === 'execute-with-tracing'

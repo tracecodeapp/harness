@@ -1,13 +1,20 @@
 import type {
   RuntimeClient,
+  RuntimeExecuteCodeRequest,
+  RuntimeExecuteProjectRequest,
+  RuntimeExecuteRequest,
+  RuntimeExecuteResponse,
+  RuntimeExecuteResult,
   RuntimeExecutionStyle,
   TraceExecutionOptions,
 } from '../../harness-core/src/runtime-types';
+import type { RuntimeCommandResult } from '../../harness-core/src/runtime-project';
 import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import { assertRuntimeRequestSupported } from './runtime-capability-guards';
 import { getLanguageRuntimeProfile } from './runtime-profiles';
-import type { JavaExecutionStyle, JavaWorkerClient } from './java-worker-client';
+import type { JavaExecutionStyle, JavaWorkerClient, JavaWorkerProjectRequest } from './java-worker-client';
+import { batchCodeResultToExecuteResult, executeRuntimeRequest, isRuntimeProjectExecuteRequest } from './runtime-execute';
 
 const JAVA_DEFAULT_FILE = 'solution.java';
 
@@ -16,6 +23,46 @@ class JavaRuntimeClient implements RuntimeClient {
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     return this.workerClient.init();
+  }
+
+  async execute(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;
+  async execute(request: RuntimeExecuteProjectRequest): Promise<RuntimeCommandResult>;
+  async execute(request: RuntimeExecuteRequest): Promise<RuntimeExecuteResponse> {
+    if (isRuntimeProjectExecuteRequest(request)) {
+      return executeRuntimeRequest(request, {
+        defaultExecutionStyle: 'function',
+        executeProject: (projectRequest) =>
+          this.workerClient.executeProjectJava(projectRequest as unknown as JavaWorkerProjectRequest),
+        executeCode: this.executeCode.bind(this),
+        executeWithTracing: this.executeWithTracing.bind(this),
+        executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
+      });
+    }
+
+    const codeRequest = request as RuntimeExecuteCodeRequest;
+    const executionStyle = codeRequest.executionStyle ?? 'function';
+    if (!codeRequest.trace && !codeRequest.interview && codeRequest.cases.length > 1) {
+      assertRuntimeRequestSupported(getLanguageRuntimeProfile('java'), {
+        request: 'execute',
+        executionStyle,
+        functionName: codeRequest.functionName ?? '',
+      });
+      const batchResult = await this.workerClient.executeCodeBatch(
+        codeRequest.code,
+        codeRequest.functionName ?? '',
+        codeRequest.cases.map((testCase) => testCase.inputs),
+        undefined,
+        executionStyle as JavaExecutionStyle
+      );
+      return batchCodeResultToExecuteResult(codeRequest, batchResult);
+    }
+
+    return executeRuntimeRequest(codeRequest, {
+      defaultExecutionStyle: 'function',
+      executeCode: this.executeCode.bind(this),
+      executeWithTracing: this.executeWithTracing.bind(this),
+      executeCodeInterviewMode: this.executeCodeInterviewMode.bind(this),
+    });
   }
 
   async executeWithTracing(

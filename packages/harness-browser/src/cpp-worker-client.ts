@@ -1,5 +1,6 @@
 import type {
   CodeExecutionResult,
+  CodeExecutionBatchResult,
   ExecutionResult,
   RuntimeExecutionTimings,
 } from '../../harness-core/src/types';
@@ -37,6 +38,9 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   tracingTimeoutMs?: number;
   interviewTimeoutMs?: number;
   workerIdleTimeoutMs?: number;
+  programCacheLimit?: number;
+  usePrecompiledHeader?: boolean;
+  externalCompilerUrl?: string;
 }
 
 interface PendingMessage {
@@ -113,6 +117,7 @@ export class CppWorkerClient {
   private readonly tracingTimeoutMs: number;
   private readonly interviewTimeoutMs: number;
   private readonly compilerFrameUrl?: string;
+  private readonly externalCompilerUrl?: string;
   private readonly activeCompilerFrames = new Set<HTMLIFrameElement>();
   private compilerFrame: HTMLIFrameElement | null = null;
   private compilerFrameReadyPromise: Promise<void> | null = null;
@@ -130,6 +135,7 @@ export class CppWorkerClient {
     this.tracingTimeoutMs = options.tracingTimeoutMs ?? TRACING_TIMEOUT_MS;
     this.interviewTimeoutMs = options.interviewTimeoutMs ?? INTERVIEW_MODE_TIMEOUT_MS;
     this.compilerFrameUrl = options.compilerFrameUrl;
+    this.externalCompilerUrl = options.externalCompilerUrl;
   }
 
   isSupported(): boolean {
@@ -448,7 +454,7 @@ export class CppWorkerClient {
           sysrootUrl: this.options.sysrootUrl,
           runtimeHeaderUrl: this.options.runtimeHeaderUrl,
           compilerBundleUrl: this.options.compilerBundleUrl,
-          compilerFrameEnabled: Boolean(this.compilerFrameUrl && typeof document !== 'undefined'),
+          compilerFrameEnabled: Boolean(this.externalCompilerUrl || (this.compilerFrameUrl && typeof document !== 'undefined')),
           compilerFrameUrl: this.compilerFrameUrl,
           compilerWorkerUrl: this.options.compilerWorkerUrl,
         },
@@ -477,10 +483,12 @@ export class CppWorkerClient {
     }
   }
 
-  private workerOptionsPayload(): { idleTimeoutMs?: number } {
-    return this.options.workerIdleTimeoutMs === undefined
-      ? {}
-      : { idleTimeoutMs: this.options.workerIdleTimeoutMs };
+  private workerOptionsPayload(): { idleTimeoutMs?: number; programCacheLimit?: number; usePrecompiledHeader?: boolean } {
+    return {
+      ...(this.options.workerIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: this.options.workerIdleTimeoutMs }),
+      ...(this.options.programCacheLimit === undefined ? {} : { programCacheLimit: this.options.programCacheLimit }),
+      ...(this.options.usePrecompiledHeader === undefined ? {} : { usePrecompiledHeader: this.options.usePrecompiledHeader }),
+    };
   }
 
   async warmup(): Promise<WarmupResult> {
@@ -524,7 +532,9 @@ export class CppWorkerClient {
     const worker = this.worker;
     if (!worker) return;
 
-    const result = await this.compileInFrame(message.payload);
+    const result = this.externalCompilerUrl
+      ? await this.compileWithExternalUrl(message.payload)
+      : await this.compileInFrame(message.payload);
     const transfer = result?.programBuffer instanceof ArrayBuffer ? [result.programBuffer] : [];
     worker.postMessage(
       {
@@ -534,6 +544,87 @@ export class CppWorkerClient {
       },
       transfer
     );
+  }
+
+  private async compileWithExternalUrl(payload: unknown): Promise<Record<string, unknown>> {
+    if (!this.externalCompilerUrl) {
+      return { success: false, error: 'C++ external compiler URL is not configured.' };
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(this.externalCompilerUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/wasm, application/json',
+        },
+        body: JSON.stringify(payload ?? {}),
+      });
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+
+    const headerNumber = (name: string): number | undefined => {
+      const value = response.headers.get(name);
+      if (!value) return undefined;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    const headerBoolean = (name: string): boolean | undefined => {
+      const value = response.headers.get(name);
+      if (value === null) return undefined;
+      return value === 'true';
+    };
+
+    const timings = {
+      ...(headerNumber('x-tracecode-pch-ms') === undefined ? {} : { pchMs: headerNumber('x-tracecode-pch-ms') }),
+      ...(headerBoolean('x-tracecode-pch-cache-hit') === undefined
+        ? {}
+        : { pchCacheHit: headerBoolean('x-tracecode-pch-cache-hit') }),
+      ...(headerBoolean('x-tracecode-pch-fallback') === undefined
+        ? {}
+        : { pchFallback: headerBoolean('x-tracecode-pch-fallback') }),
+    };
+
+    if (response.ok) {
+      const programBuffer = await response.arrayBuffer();
+      return {
+        success: true,
+        programBuffer,
+        stdout: '',
+        stderr: '',
+        compileMs: headerNumber('x-tracecode-compile-ms'),
+        timings,
+      };
+    }
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      try {
+        const body = (await response.json()) as Record<string, unknown>;
+        return {
+          success: false,
+          error: typeof body.error === 'string' ? body.error : `C++ external compiler failed with HTTP ${response.status}.`,
+          stdout: typeof body.stdout === 'string' ? body.stdout : '',
+          stderr: typeof body.stderr === 'string' ? body.stderr : '',
+          compileMs: typeof body.compileMs === 'number' ? body.compileMs : headerNumber('x-tracecode-compile-ms'),
+          timings: typeof body.timings === 'object' && body.timings !== null ? body.timings : timings,
+        };
+      } catch {
+        // Fall through to text response handling below.
+      }
+    }
+
+    const text = await response.text().catch(() => '');
+    return {
+      success: false,
+      error: text || `C++ external compiler failed with HTTP ${response.status}.`,
+      stdout: '',
+      stderr: text,
+      compileMs: headerNumber('x-tracecode-compile-ms'),
+      timings,
+    };
   }
 
   private ensureCompilerFrame(): Promise<void> {
@@ -651,6 +742,37 @@ export class CppWorkerClient {
     } catch (error) {
       if (this.isClientTimeout(error)) return this.timeoutCodeResult(error);
       throw error;
+    }
+  }
+
+  async executeCodeBatch(
+    code: string,
+    functionName: string,
+    inputBatch: Record<string, unknown>[],
+    executionStyle: CppExecutionStyle
+  ): Promise<CodeExecutionBatchResult> {
+    await this.init();
+    try {
+      return await this.executeWithTimeout(
+        () =>
+          this.sendMessage<CodeExecutionBatchResult>(
+            'compile-run-batch',
+            { code, functionName, inputBatch, executionStyle },
+            this.executionTimeoutMs + 5_000
+          ),
+        this.executionTimeoutMs,
+        'compile-run'
+      );
+    } catch (error) {
+      if (!this.isClientTimeout(error)) throw error;
+      const timeout = this.timeoutCodeResult(error);
+      return {
+        success: false,
+        results: inputBatch.map(() => timeout),
+        error: timeout.error,
+        consoleOutput: timeout.consoleOutput,
+        timings: timeout.timings,
+      };
     }
   }
 

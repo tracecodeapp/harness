@@ -40,6 +40,94 @@ function transferableArrayBuffer(bytes) {
     : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
 }
 
+let runtimeHeaderUrl = '';
+let runtimeHeaderPromise = null;
+let compilerBundleUrl = '';
+let compilerBundlePromise = null;
+let pchCacheKey = '';
+let pchPromise = null;
+
+function loadRuntimeHeader(url) {
+  if (runtimeHeaderPromise && runtimeHeaderUrl === url) return runtimeHeaderPromise;
+  runtimeHeaderUrl = url;
+  runtimeHeaderPromise = fetchText('tracecode_runtime.hpp', url);
+  runtimeHeaderPromise.catch(() => {
+    runtimeHeaderPromise = null;
+  });
+  return runtimeHeaderPromise;
+}
+
+function loadCompilerBundle(url) {
+  if (compilerBundlePromise && compilerBundleUrl === url) return compilerBundlePromise;
+  compilerBundleUrl = url;
+  compilerBundlePromise = import(url);
+  compilerBundlePromise.catch(() => {
+    compilerBundlePromise = null;
+  });
+  return compilerBundlePromise;
+}
+
+function pchHeaderSource() {
+  return '#include "tracecode_runtime.hpp"\n';
+}
+
+async function loadPrecompiledHeader(compilerBundle, runtimeHeader, payload) {
+  const standard = payload?.standard || 'c++23';
+  const stackSize = Number(payload?.stackSize) || 8 * 1024 * 1024;
+  const cacheKey = `${compilerBundleUrl}\0${runtimeHeaderUrl}\0${standard}\0${stackSize}`;
+  if (pchPromise && pchCacheKey === cacheKey) {
+    const cached = await pchPromise;
+    return { ...cached, cacheHit: true };
+  }
+
+  pchCacheKey = cacheKey;
+  pchPromise = (async () => {
+    const startedAt = performance.now();
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    const collect = (chunks) => (bytes) => {
+      if (bytes) chunks.push(bytes);
+    };
+    const files = await compilerBundle.runClang(
+      [
+        'clang++',
+        '-x',
+        'c++-header',
+        'tracecode_pch.hpp',
+        `-std=${standard}`,
+        '-O0',
+        '-fno-exceptions',
+        '-o',
+        'tracecode_pch.hpp.pch',
+      ],
+      {
+        'tracecode_pch.hpp': pchHeaderSource(),
+        'tracecode_runtime.hpp': runtimeHeader,
+      },
+      {
+        stdout: collect(stdoutChunks),
+        stderr: collect(stderrChunks),
+        fetchProgress: () => {},
+      }
+    );
+    const pchBytes = files?.['tracecode_pch.hpp.pch'];
+    if (!(pchBytes instanceof Uint8Array)) {
+      const stdout = decodeUtf8(concatBytes(stdoutChunks));
+      const stderr = decodeUtf8(concatBytes(stderrChunks));
+      throw new Error([stderr, stdout, 'C++ PCH generation did not produce tracecode_pch.hpp.pch.'].filter(Boolean).join('\n'));
+    }
+    return {
+      bytes: pchBytes,
+      ms: Math.max(0, Math.round(performance.now() - startedAt)),
+    };
+  })();
+  pchPromise.catch(() => {
+    pchPromise = null;
+  });
+  const built = await pchPromise;
+  return { ...built, cacheHit: false };
+}
+
 async function compileWithYowasp(payload) {
   const startedAt = performance.now();
   const assets = payload?.assets || {};
@@ -48,8 +136,8 @@ async function compileWithYowasp(payload) {
     throw new Error('Missing C++ driver source.');
   }
 
-  const runtimeHeader = await fetchText('tracecode_runtime.hpp', assets.runtimeHeaderUrl);
-  const compilerBundle = await import(assets.compilerBundleUrl);
+  const runtimeHeader = await loadRuntimeHeader(assets.runtimeHeaderUrl);
+  const compilerBundle = await loadCompilerBundle(assets.compilerBundleUrl);
   if (typeof compilerBundle.runClang !== 'function') {
     throw new Error('C++ compiler bundle does not expose runClang.');
   }
@@ -59,23 +147,40 @@ async function compileWithYowasp(payload) {
   const collect = (chunks) => (bytes) => {
     if (bytes) chunks.push(bytes);
   };
+  const timings = {};
+  const extraArgs = [];
+  const inputFiles = {
+    'TraceCodeDriver.cpp': driverSource,
+    'tracecode_runtime.hpp': runtimeHeader,
+  };
+
+  if (payload?.usePrecompiledHeader === true) {
+    try {
+      const pch = await loadPrecompiledHeader(compilerBundle, runtimeHeader, payload);
+      timings.pchMs = pch.cacheHit ? 0 : pch.ms;
+      timings.pchCacheHit = pch.cacheHit;
+      extraArgs.push('-include-pch', 'tracecode_pch.hpp.pch');
+      inputFiles['tracecode_pch.hpp'] = pchHeaderSource();
+      inputFiles['tracecode_pch.hpp.pch'] = pch.bytes;
+    } catch {
+      timings.pchFallback = true;
+    }
+  }
 
   try {
     const files = await compilerBundle.runClang(
       [
         'clang++',
-        'TraceCodeDriver.cpp',
         `-std=${payload?.standard || 'c++23'}`,
         '-O0',
         '-fno-exceptions',
+        ...extraArgs,
+        'TraceCodeDriver.cpp',
         `-Wl,-z,stack-size=${Number(payload?.stackSize) || 8 * 1024 * 1024}`,
         '-o',
         'program.wasm',
       ],
-      {
-        'TraceCodeDriver.cpp': driverSource,
-        'tracecode_runtime.hpp': runtimeHeader,
-      },
+      inputFiles,
       {
         stdout: collect(stdoutChunks),
         stderr: collect(stderrChunks),
@@ -91,6 +196,7 @@ async function compileWithYowasp(payload) {
         stdout: decodeUtf8(concatBytes(stdoutChunks)),
         stderr: decodeUtf8(concatBytes(stderrChunks)),
         compileMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        timings,
       };
     }
 
@@ -100,6 +206,7 @@ async function compileWithYowasp(payload) {
       stdout: decodeUtf8(concatBytes(stdoutChunks)),
       stderr: decodeUtf8(concatBytes(stderrChunks)),
       compileMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      timings,
     };
   } catch (error) {
     return {
@@ -108,6 +215,7 @@ async function compileWithYowasp(payload) {
       stdout: decodeUtf8(concatBytes(stdoutChunks)),
       stderr: decodeUtf8(concatBytes(stderrChunks)),
       compileMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      timings,
     };
   }
 }

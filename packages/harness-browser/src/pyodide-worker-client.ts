@@ -5,7 +5,7 @@
  * Provides a promise-based API for executing Python code off the main thread.
  */
 
-import type { CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
+import type { CodeExecutionBatchResult, CodeExecutionResult, ExecutionResult } from '../../harness-core/src/types';
 import { createEmptyRuntimeTrace } from '../../harness-core/src/runtime-trace';
 import type {
   RuntimeCommandEvent,
@@ -517,6 +517,25 @@ export class PythonWorkerClient {
         code,
         functionName,
         inputs,
+        executionStyle,
+      }, EXECUTION_TIMEOUT_MS + 5000),
+      EXECUTION_TIMEOUT_MS
+    );
+  }
+
+  async executeCodeBatch(
+    code: string,
+    functionName: string,
+    inputBatch: Record<string, unknown>[],
+    executionStyle: ExecutionStyle = 'function'
+  ): Promise<CodeExecutionBatchResult> {
+    await this.init();
+
+    return this.executeWithTimeout(
+      () => this.sendMessage<CodeExecutionBatchResult>('execute-code-batch', {
+        code,
+        functionName,
+        inputBatch,
         executionStyle,
       }, EXECUTION_TIMEOUT_MS + 5000),
       EXECUTION_TIMEOUT_MS

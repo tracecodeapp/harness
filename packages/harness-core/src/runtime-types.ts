@@ -1,4 +1,8 @@
-import type { CodeExecutionResult, ExecutionResult } from './types';
+import type { CodeExecutionResult, ExecutionResult, RuntimeExecutionTimings } from './types';
+import type {
+  RuntimeCommandResult,
+  RuntimeProjectCommandRequest,
+} from './runtime-project';
 
 export type Language = 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp';
 
@@ -121,8 +125,58 @@ export interface LanguageRuntimeProfile {
   notes?: string[];
 }
 
+export interface RuntimeExecuteCase {
+  id?: string;
+  inputs: Record<string, unknown>;
+  expected?: unknown;
+}
+
+export interface RuntimeExecuteCodeRequest {
+  kind?: 'code';
+  code: string;
+  functionName?: string | null;
+  executionStyle?: RuntimeExecutionStyle;
+  cases: RuntimeExecuteCase[];
+  trace?: boolean;
+  interview?: boolean;
+  traceOptions?: TraceExecutionOptions;
+}
+
+export interface RuntimeExecuteCaseResult {
+  id?: string;
+  success: boolean;
+  output?: unknown;
+  expected?: unknown;
+  passed?: boolean;
+  error?: string;
+  errorLine?: number;
+  consoleOutput?: string[];
+  trace?: ExecutionResult['trace'];
+  traceLimitExceeded?: boolean;
+  timeoutReason?: CodeExecutionResult['timeoutReason'];
+  diagnosticStage?: CodeExecutionResult['diagnosticStage'];
+  timings?: RuntimeExecutionTimings;
+}
+
+export interface RuntimeExecuteResult {
+  success: boolean;
+  cases: RuntimeExecuteCaseResult[];
+  timings?: RuntimeExecutionTimings;
+}
+
+export interface RuntimeExecuteProjectRequest extends RuntimeProjectCommandRequest {
+  kind: 'project';
+}
+
+export type RuntimeExecuteRequest = RuntimeExecuteCodeRequest | RuntimeExecuteProjectRequest;
+
+export type RuntimeExecuteResponse = RuntimeExecuteResult | RuntimeCommandResult;
+
 export interface RuntimeClient {
   init(): Promise<{ success: boolean; loadTimeMs: number }>;
+  execute(request: RuntimeExecuteCodeRequest): Promise<RuntimeExecuteResult>;
+  execute(request: RuntimeExecuteProjectRequest): Promise<RuntimeCommandResult>;
+  execute(request: RuntimeExecuteRequest): Promise<RuntimeExecuteResponse>;
   executeWithTracing(
     code: string,
     functionName: string | null,

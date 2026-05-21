@@ -1,4 +1,4 @@
-import type { CodeExecutionResult, RuntimeExecutionTimings } from '../../harness-core/src/types';
+import type { CodeExecutionBatchResult, CodeExecutionResult, RuntimeExecutionTimings } from '../../harness-core/src/types';
 import type {
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
@@ -442,6 +442,25 @@ export class JavaWorkerClient {
     executionStyle: JavaExecutionStyle
   ): Promise<CodeExecutionResult> {
     return this.executeCodeMessage('execute-code', code, functionName, inputs, options, executionStyle);
+  }
+
+  async executeCodeBatch(
+    code: string,
+    functionName: string,
+    inputBatch: Record<string, unknown>[],
+    options: JavaTraceExecutionOptions | undefined,
+    executionStyle: JavaExecutionStyle
+  ): Promise<CodeExecutionBatchResult> {
+    await this.init();
+    return this.executeWithTimeout(
+      () =>
+        this.sendMessage<CodeExecutionBatchResult>(
+          'execute-code-batch',
+          { code, functionName, inputBatch, options, executionStyle },
+          EXECUTION_TIMEOUT_MS + 5_000
+        ),
+      EXECUTION_TIMEOUT_MS
+    );
   }
 
   private async executeCodeMessage(

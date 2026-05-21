@@ -5313,6 +5313,33 @@ async function executeCode(payload) {
   }
 }
 
+async function executeCodeBatch(payload) {
+  const startedAt = performanceNow();
+  const inputBatch = Array.isArray(payload?.inputBatch)
+    ? payload.inputBatch.map((inputs) => (inputs && typeof inputs === 'object' ? inputs : {}))
+    : [];
+  if (inputBatch.length === 0) {
+    return {
+      success: false,
+      results: [],
+      error: 'JavaScript batch execution requires a non-empty inputBatch array.',
+      consoleOutput: [],
+      timings: { totalMs: performanceNow() - startedAt },
+    };
+  }
+
+  const results = [];
+  for (const inputs of inputBatch) {
+    results.push(await executeCode({ ...payload, inputs }));
+  }
+  return {
+    success: results.every((result) => result.success === true),
+    results,
+    consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+    timings: { totalMs: performanceNow() - startedAt },
+  };
+}
+
 async function executeWithTracing(payload) {
   const startedAt = performanceNow();
   const {
@@ -5605,6 +5632,12 @@ async function processMessage(data) {
 
       case 'execute-code': {
         const result = await executeCode(payload);
+        self.postMessage({ id, type: 'execute-result', payload: result });
+        break;
+      }
+
+      case 'execute-code-batch': {
+        const result = await executeCodeBatch(payload);
         self.postMessage({ id, type: 'execute-result', payload: result });
         break;
       }
