@@ -3696,6 +3696,7 @@ function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variabl
         tracedLine,
         guardedBreak,
         ...visitedBodyBlock.statements,
+        createAttachPendingAccessesStatement(ts),
       ],
       true
     )

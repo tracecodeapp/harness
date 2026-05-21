@@ -1,0 +1,31 @@
+{
+  "id": "js-single-line-while-mutator-update",
+  "languages": ["javascript", "typescript"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "body": {
+      "javascript": "while (j < right.length) merged.push(right[j++]);",
+      "typescript": "while (j < right.length) merged.push(right[j++]);"
+    }
+  },
+  "expect": {
+    "body": {
+      "eventKinds": ["line", "mutate", "read", "snapshot", "write"],
+      "variableSnapshots": ["j", "merged", "right"],
+      "accessTargets": [
+        { "kind": "mutate", "variable": "merged" },
+        { "kind": "read", "variable": "right", "pathDepth": 1 },
+        { "kind": "write", "variable": "j" }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "body": [
+      { "kind": "read", "variable": "right", "pathDepth": 1, "indexSources": ["j++"], "value": 7 },
+      { "kind": "mutate", "variable": "merged", "method": "push", "args": [7] },
+      { "kind": "write", "variable": "j", "value": 1 }
+    ]
+  }
+}

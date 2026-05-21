@@ -1,0 +1,30 @@
+{
+  "id": "js-single-line-while-body-trace",
+  "languages": ["javascript", "typescript"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "body": {
+      "javascript": "while (j > 0 && t[i] !== t[j]) j = lps[j - 1];",
+      "typescript": "while (j > 0 && t[i] !== t[j]) j = lps[j - 1];"
+    }
+  },
+  "expect": {
+    "body": {
+      "eventKinds": ["line", "read", "snapshot", "write"],
+      "variableSnapshots": ["i", "j", "lps", "t"],
+      "accessTargets": [
+        { "kind": "read", "variable": "lps", "pathDepth": 1 },
+        { "kind": "read", "variable": "t", "pathDepth": 1 },
+        { "kind": "write", "variable": "j" }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "body": [
+      { "kind": "read", "variable": "lps", "pathDepth": 1, "indexSources": ["j - 1"] },
+      { "kind": "write", "variable": "j", "value": 0 }
+    ]
+  }
+}

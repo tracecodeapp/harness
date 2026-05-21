@@ -1,0 +1,124 @@
+{
+  "id": "python-dp-index-assign",
+  "languages": [
+    "python"
+  ],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "aug": {
+      "python": "dp[j] += dp[j - num]"
+    },
+    "assign": {
+      "python": "dp[k] = dp[k] or dp[k - num]"
+    }
+  },
+  "expect": {
+    "aug": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "dp",
+        "j",
+        "num"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "dp",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "assign": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "dp",
+        "j",
+        "k",
+        "num"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "dp",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "aug": [
+      {
+        "kind": "read",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "j"
+        ]
+      },
+      {
+        "kind": "read",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "j - num"
+        ]
+      },
+      {
+        "kind": "write",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "j"
+        ]
+      }
+    ],
+    "assign": [
+      {
+        "kind": "read",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "k"
+        ]
+      },
+      {
+        "kind": "read",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "k - num"
+        ]
+      },
+      {
+        "kind": "write",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "k"
+        ]
+      }
+    ]
+  }
+}
