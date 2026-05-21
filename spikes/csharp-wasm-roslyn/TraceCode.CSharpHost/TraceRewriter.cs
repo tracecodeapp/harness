@@ -2725,7 +2725,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
             string nestedValueExpression = assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
                 ? assignment.Right.ToString()
-                : CreateCompoundNestedArrayValueExpression(assignment, nestedVariable, firstIndex, secondIndex, line);
+                : CreateCompoundNestedArrayValueExpression(assignment, nestedVariable, firstIndex, secondIndex, line, CreateIndexSourcesExpression(firstIndex, secondIndex));
             if (string.IsNullOrWhiteSpace(nestedValueExpression))
             {
                 return statement;
@@ -2754,7 +2754,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                     rectangularArrayExpression,
                     indexExpressions,
                     rectangularIdentifier.Identifier.ValueText,
-                    line
+                    line,
+                    CreateIndexSourcesExpression(indexExpressions)
                 );
             if (string.IsNullOrWhiteSpace(rectangularValueExpression))
             {
@@ -2782,7 +2783,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string valueExpression = assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
             ? assignment.Right.ToString()
-            : CreateCompoundArrayValueExpression(assignment, arrayExpression, runtimeIndexExpression, identifier.Identifier.ValueText, line);
+            : CreateCompoundArrayValueExpression(
+                assignment,
+                arrayExpression,
+                runtimeIndexExpression,
+                identifier.Identifier.ValueText,
+                line,
+                CreateIndexSourcesExpression(sourceIndexExpression)
+            );
         if (string.IsNullOrWhiteSpace(valueExpression))
         {
             return statement;
@@ -3413,7 +3421,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         string arrayExpression,
         string indexExpression,
         string variableName,
-        int line
+        int line,
+        string indexSourcesExpression
     )
     {
         string operatorText = assignment.Kind() switch
@@ -3431,7 +3440,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return string.Empty;
         }
 
-        return $"{CreateArrayReadExpression(arrayExpression, indexExpression, variableName, line)} {operatorText} {assignment.Right}";
+        return $"{CreateArrayReadExpression(arrayExpression, indexExpression, variableName, line, indexSourcesExpression)} {operatorText} {assignment.Right}";
     }
 
     private static string CreateCompoundNestedArrayValueExpression(
@@ -3439,7 +3448,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         string variableName,
         string firstIndex,
         string secondIndex,
-        int line
+        int line,
+        string indexSourcesExpression
     )
     {
         string operatorText = assignment.Kind() switch
@@ -3457,7 +3467,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return string.Empty;
         }
 
-        return $"TraceCode.Internal.TraceCodeTrace.ArrayRead({variableName}, {firstIndex}, {secondIndex}, {Literal(variableName)}, {line}) {operatorText} {assignment.Right}";
+        return $"TraceCode.Internal.TraceCodeTrace.ArrayRead({variableName}, {firstIndex}, {secondIndex}, {Literal(variableName)}, {line}, {indexSourcesExpression}) {operatorText} {assignment.Right}";
     }
 
     private static string CreateCompoundRectangularArrayValueExpression(
@@ -3465,7 +3475,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         string arrayExpression,
         IReadOnlyList<string> indexExpressions,
         string variableName,
-        int line
+        int line,
+        string indexSourcesExpression
     )
     {
         string operatorText = assignment.Kind() switch
@@ -3483,27 +3494,29 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             return string.Empty;
         }
 
-        return $"{CreateRectangularArrayReadExpression(arrayExpression, indexExpressions, variableName, line)} {operatorText} {assignment.Right}";
+        return $"{CreateRectangularArrayReadExpression(arrayExpression, indexExpressions, variableName, line, indexSourcesExpression)} {operatorText} {assignment.Right}";
     }
 
     private static string CreateArrayReadExpression(
         string arrayExpression,
         string indexExpression,
         string variableName,
-        int line
+        int line,
+        string indexSourcesExpression
     )
     {
-        return $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {indexExpression}, {Literal(variableName)}, {line})";
+        return $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {indexExpression}, {Literal(variableName)}, {line}, {indexSourcesExpression})";
     }
 
     private static string CreateRectangularArrayReadExpression(
         string arrayExpression,
         IReadOnlyList<string> indexExpressions,
         string variableName,
-        int line
+        int line,
+        string indexSourcesExpression
     )
     {
-        return $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {string.Join(", ", indexExpressions)}, {Literal(variableName)}, {line})";
+        return $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {string.Join(", ", indexExpressions)}, {Literal(variableName)}, {line}, {indexSourcesExpression})";
     }
 
     private static List<string> GetArgumentExpressions(SeparatedSyntaxList<ArgumentSyntax> arguments)

@@ -1,0 +1,74 @@
+{
+  "id": "indexed-compound-update-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "compoundUpdate": {
+      "python": "dp[idx] += dp[idx - num]",
+      "javascript": "dp[idx] += dp[idx - num];",
+      "typescript": "dp[idx] += dp[idx - num];",
+      "java": "dp[idx] += dp[idx - num];",
+      "csharp": "dp[idx] += dp[idx - num];",
+      "cpp": "dp[idx] += dp[idx - num];"
+    }
+  },
+  "expect": {
+    "compoundUpdate": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "dp",
+        "idx",
+        "num"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "dp",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "dp",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "compoundUpdate": [
+      {
+        "kind": "read",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "idx"
+        ],
+        "value": 0
+      },
+      {
+        "kind": "read",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "idx - num"
+        ],
+        "value": 1
+      },
+      {
+        "kind": "write",
+        "variable": "dp",
+        "pathDepth": 1,
+        "indexSources": [
+          "idx"
+        ],
+        "value": 1
+      }
+    ]
+  }
+}
