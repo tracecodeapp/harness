@@ -1516,13 +1516,37 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             || memberAccess.Expression is not IdentifierNameSyntax receiver
             || !IsTrackedCollectionReceiver(receiver.Identifier.ValueText)
             || !IsTrackedCollectionWrapperMethod(memberAccess.Name.Identifier.ValueText)
-            || invocation.ArgumentList.Arguments.Any(argument => argument.NameColon is not null || argument.RefOrOutKeyword.RawKind != 0)
             || IsInsideTraceCodeSourceLineScope(invocation))
         {
             return false;
         }
 
         string method = memberAccess.Name.Identifier.ValueText;
+        if (method == "TryGetValue" && interfaceDispatchedCollectionVariables.Contains(receiver.Identifier.ValueText))
+        {
+            return false;
+        }
+
+        if (method == "TryGetValue"
+            && invocation.ArgumentList.Arguments.Count == 2
+            && invocation.ArgumentList.Arguments[0].NameColon is null
+            && invocation.ArgumentList.Arguments[0].RefOrOutKeyword.RawKind == 0
+            && invocation.ArgumentList.Arguments[1].NameColon is null
+            && invocation.ArgumentList.Arguments[1].RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword))
+        {
+            string keyExpression = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            string outArgument = invocation.ArgumentList.Arguments[1].ToString();
+            replacement = SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.DictionaryTryGetValue({receiver.Identifier.ValueText}, {keyExpression}, {outArgument}, {line}, {CreateIndexSourcesExpression(keyExpression)})"
+            );
+            return true;
+        }
+
+        if (!CanScopeTrackedCollectionInvocationArguments(method, invocation.ArgumentList.Arguments))
+        {
+            return false;
+        }
+
         if (interfaceDispatchedCollectionVariables.Contains(receiver.Identifier.ValueText)
             && IsIndexedReceiverMutationMethod(method))
         {
@@ -1546,7 +1570,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             string actualVariable = $"this.{sourceVariable}";
             scopedInvocation = $"TraceCode.Internal.TraceCodeTrace.WithVariableAlias({Literal(actualVariable)}, {Literal(sourceVariable)}, () => {scopedInvocation})";
         }
-        if (method == "Remove" && invocation.ArgumentList.Arguments.Count == 1)
+        if ((method == "Remove" || method == "TryGetValue") && invocation.ArgumentList.Arguments.Count >= 1)
         {
             string keyExpression = invocation.ArgumentList.Arguments[0].Expression.ToString();
             scopedInvocation = $"TraceCode.Internal.TraceCodeTrace.WithIndexSources({CreateIndexSourcesExpression(keyExpression)}, () => {scopedInvocation})";
@@ -1554,6 +1578,23 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         replacement = SyntaxFactory.ParseExpression(scopedInvocation);
         return true;
+    }
+
+    private static bool CanScopeTrackedCollectionInvocationArguments(string method, SeparatedSyntaxList<ArgumentSyntax> arguments)
+    {
+        if (arguments.Any(argument => argument.NameColon is not null))
+        {
+            return false;
+        }
+
+        if (method == "TryGetValue")
+        {
+            return arguments.Count == 2
+                && arguments[0].RefOrOutKeyword.RawKind == 0
+                && arguments[1].RefOrOutKeyword.IsKind(SyntaxKind.OutKeyword);
+        }
+
+        return arguments.All(argument => argument.RefOrOutKeyword.RawKind == 0);
     }
 
     private bool TryRewriteIdentifierReceiverRead(InvocationExpressionSyntax invocation, out ExpressionSyntax? replacement)

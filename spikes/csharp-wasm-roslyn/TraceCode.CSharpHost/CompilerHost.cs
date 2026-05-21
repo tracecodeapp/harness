@@ -4011,6 +4011,17 @@ public class TreeNode
         {
             return TraceCode.CSharpHost.RuntimeTraceSink.WithIndexSources(indexSources, action);
         }
+
+        public static bool DictionaryTryGetValue<TKey, TValue>(
+            TraceCodeDictionary<TKey, TValue> dictionary,
+            TKey key,
+            out TValue value,
+            int line,
+            IReadOnlyList<string?>? indexSources)
+            where TKey : notnull
+        {
+            return dictionary.TryGetValue(key, out value, line, indexSources);
+        }
     }
 
     public sealed class TraceCodeList<T> : List<T>
@@ -4190,8 +4201,13 @@ public class TreeNode
 
         public new bool TryGetValue(TKey key, out TValue value)
         {
+            return TryGetValue(key, out value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
+        }
+
+        public bool TryGetValue(TKey key, out TValue value, int line, IReadOnlyList<string?>? indexSources)
+        {
             bool found = base.TryGetValue(key, out value!);
-            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, found ? value : default, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, found ? value : default, line, null, indexSources);
             return found;
         }
     }

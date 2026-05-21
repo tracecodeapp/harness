@@ -8,6 +8,7 @@ public class Solution
         int r = 0;
         int c = 1;
         rightIndex[(r, c)] = 7;
-        return rightIndex[(r, c)];
+        rightIndex.TryGetValue((r, c), out int value);
+        return value;
     }
 }
