@@ -84,11 +84,8 @@ function postMessageResponse(message) {
 function isJavaHarnessStackFrame(line) {
   const trimmed = String(line ?? '').trim();
   return (
-    trimmed.startsWith('at tracecode.browser.') ||
-    trimmed.startsWith('at com.leaningtech.cheerpj.CheerpJLibrary.') ||
-    trimmed.startsWith('at jdk.internal.reflect.') ||
-    trimmed.startsWith('at java.lang.reflect.Method.invoke') ||
-    trimmed.startsWith('at sun.reflect.')
+    /^at tracecode(?:\.|\$)/.test(trimmed) ||
+    trimmed.startsWith('at com.leaningtech.cheerpj.CheerpJLibrary.')
   );
 }
 

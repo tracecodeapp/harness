@@ -3941,13 +3941,13 @@ async function main(): Promise<void> {
     assertCondition(
       runtimeFailureProjectExecute.stderr.includes('RuntimeException: boom-java-stack') &&
         runtimeFailureProjectExecute.stderr.includes('at Main.inner') &&
-        runtimeFailureProjectExecute.stderr.includes('at Main.main'),
+        runtimeFailureProjectExecute.stderr.includes('at Main.main') &&
+        runtimeFailureProjectExecute.stderr.includes('java.lang.reflect.Method.invoke'),
       `Java execute-project-java should preserve user runtime stack frames: ${runtimeFailureProjectExecute.stderr}`
     );
     assertCondition(
       !runtimeFailureStderr.includes('tracecode.browser') &&
-        !runtimeFailureStderr.includes('CheerpJLibrary') &&
-        !runtimeFailureStderr.includes('java.lang.reflect.Method.invoke'),
+        !runtimeFailureStderr.includes('CheerpJLibrary'),
       `Java execute-project-java should not leak harness stack frames through stderr/events: ${runtimeFailureStderr}`
     );
     console.log('PASS: java worker sanitizes browser project runtime stack traces');
