@@ -358,7 +358,7 @@ public final class JavaRewriteLibrary {
       return line;
     }
 
-    Matcher enhancedForDeclaration = Pattern.compile("^(\\s*)for\\s*\\(\\s*(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>.?\\[\\] ]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*([^\\)]+)\\)\\s*\\{\\s*$").matcher(line);
+    Matcher enhancedForDeclaration = Pattern.compile("^(\\s*)for\\s*\\(\\s*(?:final\\s+)?([A-Za-z_][A-Za-z0-9_<>.?\\[\\] ]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*((?:[^()]|\\([^()]*\\))+)\\)\\s*\\{\\s*$").matcher(line);
     if (enhancedForDeclaration.matches()) {
       String indent = enhancedForDeclaration.group(1);
       String type = enhancedForDeclaration.group(2).trim();
@@ -376,6 +376,19 @@ public final class JavaRewriteLibrary {
               sourceLine + ", " + quote(sourceName) + ", " + index + ", TraceHooks." + helper + "(" +
               sourceLine + ", " + quote(sourceName) + ", " + sourceName + ", " + index + ", " +
               indexSourceArgument(rawIndex) + "), " + quote(name) + ", " + indexSourceArgument(rawIndex) + ")) {";
+        }
+      }
+      Matcher indexedListSource = Pattern.compile("^([A-Za-z_][A-Za-z0-9_]*)\\.get\\(((?:[^()]|\\([^()]*\\))+?)\\)$").matcher(source);
+      if (indexedListSource.matches()) {
+        String sourceName = indexedListSource.group(1);
+        String rawIndex = indexedListSource.group(2).trim();
+        if (isListType(frame.typeOf(sourceName))) {
+          String index = rewriteReads(rawIndex, sourceLine, frame);
+          String indexSource = indexSourceArgument(rawIndex);
+          return indent + "for (" + type + " " + name + " : TraceHooks.iterationBindAtLine(" +
+              sourceLine + ", " + quote(sourceName) + ", " + index + ", TraceHooks.readListAtLine(" +
+              sourceLine + ", " + quote(sourceName) + ", " + sourceName + ", " + index + ", " +
+              indexSource + "), " + quote(name) + ", " + indexSource + ")) {";
         }
       }
       if (

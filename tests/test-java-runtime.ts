@@ -1503,6 +1503,23 @@ class Solution {
       courseScheduleSource.includes('TraceHooks.iterationBindAtLine(11, "graph", 0, TraceHooks.readListAtLine(11, "graph", graph, 0, null), "next", null)'),
     'Java source augmentation should emit nested enhanced-for iteration binding over adjacency-list get(...) sources'
   );
+  const nativeListGetEnhancedForSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  boolean solve(int n) {
+    List<List<Integer>> graph = new ArrayList<>();
+    graph.add(new ArrayList<>());
+    int node = 0;
+    for (int next : graph.get(node)) {
+      return next == 1;
+    }
+    return false;
+  }
+}`);
+  assertCondition(
+    nativeListGetEnhancedForSource.includes('for (int next : TraceHooks.iterationBindAtLine(8, "graph", node, TraceHooks.readListAtLine(8, "graph", graph, node, "node"), "next", "node"))'),
+    'Java native rewriter should emit nested enhanced-for iteration binding over List.get(...) sources'
+  );
 
   const arraysFillSource = augmentRewrittenJavaForTest(`import java.util.*;
 

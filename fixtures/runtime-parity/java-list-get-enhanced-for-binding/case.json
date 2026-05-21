@@ -1,0 +1,68 @@
+{
+  "id": "java-list-get-enhanced-for-binding",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "java"
+  ],
+  "inputs": {},
+  "anchors": {
+    "bind": {
+      "java": "for (int next : graph.get(node)) {"
+    }
+  },
+  "expect": {
+    "bind": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "graph",
+        "next",
+        "node",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "graph",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "graph",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "bind": [
+      {
+        "kind": "read",
+        "variable": "graph",
+        "pathDepth": 1,
+        "indexSources": [
+          "node"
+        ],
+        "value": [
+          1,
+          2
+        ]
+      },
+      {
+        "kind": "read",
+        "variable": "graph",
+        "pathDepth": 2,
+        "indexSources": [
+          "node",
+          null
+        ],
+        "bindingVariable": "next",
+        "value": 1
+      }
+    ]
+  }
+}
