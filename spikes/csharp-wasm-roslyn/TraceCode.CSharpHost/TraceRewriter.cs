@@ -1313,9 +1313,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         IfStatementSyntax expanded = ifStatement.WithStatement(ExpandEmbeddedStatement(ifStatement.Statement, conditionLine, statementFallbackLine));
         if (ifStatement.Else is { Statement: StatementSyntax elseStatement } elseClause)
         {
-            int? elseExactLine = elseStatement is IfStatementSyntax
-                ? null
-                : GetUnbracedElseBodyLineOrFallback(elseClause, conditionLine);
+            int? elseExactLine = GetUnbracedElseBodyLineOrFallback(elseClause, conditionLine);
             expanded = expanded.WithElse(elseClause.WithStatement(ExpandEmbeddedStatement(elseStatement, conditionLine, elseExactLine)));
         }
 

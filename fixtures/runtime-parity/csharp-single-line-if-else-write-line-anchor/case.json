@@ -1,0 +1,85 @@
+{
+  "id": "csharp-single-line-if-else-write-line-anchor",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "ifBranch": {
+      "csharp": "if (value == 2) queue.Enqueue(value);"
+    },
+    "elseIfBranch": {
+      "csharp": "else if (value == 1) fresh++;"
+    }
+  },
+  "expect": {
+    "ifBranch": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "fresh",
+        "queue",
+        "value",
+        "values"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "queue",
+          "method": "Enqueue"
+        }
+      ]
+    },
+    "elseIfBranch": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "fresh",
+        "queue",
+        "value",
+        "values"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "fresh"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "ifBranch": [
+      {
+        "kind": "mutate",
+        "variable": "queue",
+        "method": "Enqueue",
+        "args": [
+          2
+        ]
+      }
+    ],
+    "elseIfBranch": [
+      {
+        "kind": "write",
+        "variable": "fresh",
+        "value": 1
+      }
+    ]
+  },
+  "rejectEventAssertions": {
+    "ifBranch": [
+      {
+        "kind": "write",
+        "variable": "fresh"
+      }
+    ]
+  }
+}
