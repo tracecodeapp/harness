@@ -4895,15 +4895,17 @@ function __traceNormalizeSourceLocation(__location) {
 function __traceReadProperty(__varName, __container, __propertyName, __scopeOrLocation, __maybeLocation) {
   const __scope = typeof __scopeOrLocation === 'string' ? __scopeOrLocation : undefined;
   const __location = typeof __scopeOrLocation === 'string' ? __maybeLocation : __scopeOrLocation;
+  const __value = __container?.[__propertyName];
   __traceRecorder.recordAccess({
     variable: __varName,
     kind: 'indexed-read',
     indices: [__propertyName],
     pathDepth: 1,
+    value: __value,
     ...(__scope ? { scope: __scope } : {}),
     ...__traceNormalizeSourceLocation(__location),
   });
-  return __container?.[__propertyName];
+  return __value;
 }
 
 function __traceWriteIndex(__varName, __container, __indices, __indexSources, __value, __location) {
