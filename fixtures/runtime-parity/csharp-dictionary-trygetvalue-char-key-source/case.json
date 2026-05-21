@@ -1,0 +1,50 @@
+{
+  "id": "csharp-dictionary-trygetvalue-char-key-source",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "read": {
+      "csharp": "lastSeen.TryGetValue(ch, out int previous);"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "ch",
+        "lastSeen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "lastSeen",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "read": [
+      {
+        "kind": "read",
+        "variable": "lastSeen",
+        "path": [
+          "a"
+        ],
+        "pathDepth": 1,
+        "indexSources": [
+          "ch"
+        ],
+        "value": 4
+      }
+    ]
+  }
+}

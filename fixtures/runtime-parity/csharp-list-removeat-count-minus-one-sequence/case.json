@@ -1,0 +1,105 @@
+{
+  "id": "csharp-list-removeat-count-minus-one-sequence",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "removeFirst": {
+      "csharp": "heap.RemoveAt(heap.Count - 1);"
+    },
+    "removeSecond": {
+      "csharp": "heap.RemoveAt(heap.Count - 1); // second removal"
+    }
+  },
+  "expect": {
+    "removeFirst": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "heap"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "RemoveAt"
+        },
+        {
+          "kind": "read",
+          "variable": "heap",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "removeSecond": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "heap"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "heap",
+          "method": "RemoveAt"
+        },
+        {
+          "kind": "read",
+          "variable": "heap",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "removeFirst": [
+      {
+        "kind": "read",
+        "variable": "heap",
+        "path": [
+          "Count"
+        ],
+        "pathDepth": 1,
+        "value": 2
+      },
+      {
+        "kind": "mutate",
+        "variable": "heap",
+        "method": "RemoveAt",
+        "args": [
+          1
+        ]
+      }
+    ],
+    "removeSecond": [
+      {
+        "kind": "read",
+        "variable": "heap",
+        "path": [
+          "Count"
+        ],
+        "pathDepth": 1,
+        "value": 1
+      },
+      {
+        "kind": "mutate",
+        "variable": "heap",
+        "method": "RemoveAt",
+        "args": [
+          0
+        ]
+      }
+    ]
+  }
+}
