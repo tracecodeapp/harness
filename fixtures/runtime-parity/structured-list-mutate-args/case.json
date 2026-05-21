@@ -1,0 +1,98 @@
+{
+  "id": "structured-list-mutate-args",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "append": {
+      "python": "cells.append([r, c])",
+      "javascript": "cells.push([r, c]);",
+      "typescript": "cells.push([r, c]);",
+      "java": "cells.add(Arrays.asList(r, c));",
+      "csharp": "cells.Add(new List<int> { r, c });",
+      "cpp": "cells.push_back({r, c});"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "c",
+        "cells",
+        "r"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "cells"
+        }
+      ]
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "cells",
+          "method": "append",
+          "args": [[0, 1]]
+        }
+      ]
+    },
+    "javascript": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "cells",
+          "method": "push",
+          "args": [[0, 1]]
+        }
+      ]
+    },
+    "typescript": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "cells",
+          "method": "push",
+          "args": [[0, 1]]
+        }
+      ]
+    },
+    "java": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "cells",
+          "method": "add",
+          "args": [[0, 1]]
+        }
+      ]
+    },
+    "csharp": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "cells",
+          "method": "Add",
+          "args": [[0, 1]]
+        }
+      ]
+    },
+    "cpp": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "cells",
+          "method": "push_back",
+          "args": [[0, 1]]
+        }
+      ]
+    }
+  }
+}

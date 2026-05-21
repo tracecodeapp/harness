@@ -1865,11 +1865,15 @@ public final class JavaRewriteLibrary {
     if (normalized.matches("^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*\\(\\))+(?:\\s*[+\\-*/%]\\s*[0-9]+)?$")) {
       return normalized;
     }
-    String stripped = normalized
+    String stripped = stripJavaLiteralTokens(normalized)
         .replaceAll("[A-Za-z_][A-Za-z0-9_]*", "")
         .replaceAll("[0-9]+", "")
         .replaceAll("[+\\-*/%.() \\t]", "");
     return stripped.isEmpty() ? normalized : null;
+  }
+
+  private static String stripJavaLiteralTokens(String value) {
+    return value.replaceAll("\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'", "");
   }
 
   private static String indexSourceArgument(String value) {

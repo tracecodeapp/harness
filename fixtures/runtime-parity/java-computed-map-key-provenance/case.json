@@ -1,0 +1,105 @@
+{
+  "id": "java-computed-map-key-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "java"
+  ],
+  "inputs": {},
+  "anchors": {
+    "put": {
+      "java": "rightIndex.put(nr + \",\" + nc, 42);"
+    },
+    "get": {
+      "java": "Integer v = rightIndex.get(nr + \",\" + nc);"
+    }
+  },
+  "expect": {
+    "put": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "nc",
+        "nr",
+        "rightIndex"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "rightIndex",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "rightIndex",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "get": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "nc",
+        "nr",
+        "rightIndex"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "rightIndex",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "v"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "put": [
+      {
+        "kind": "write",
+        "variable": "rightIndex",
+        "pathDepth": 1,
+        "indexSources": [
+          "nr + \",\" + nc"
+        ],
+        "value": 42
+      },
+      {
+        "kind": "mutate",
+        "variable": "rightIndex",
+        "pathDepth": 1,
+        "indexSources": [
+          "nr + \",\" + nc"
+        ],
+        "method": "put",
+        "args": [
+          "1,0",
+          42
+        ]
+      }
+    ],
+    "get": [
+      {
+        "kind": "read",
+        "variable": "rightIndex",
+        "pathDepth": 1,
+        "indexSources": [
+          "nr + \",\" + nc"
+        ],
+        "value": 42
+      }
+    ]
+  }
+}

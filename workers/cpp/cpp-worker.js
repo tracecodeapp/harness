@@ -4369,8 +4369,8 @@ function aggregateMutationArgsJsonExpression(argumentSource, fallbackExpression)
       .map((arg) => arg.trim())
       .filter(Boolean);
     return aggregateArgs.length > 0
-      ? `tracecode::mutation_args_json(${aggregateArgs.join(', ')})`
-      : 'tracecode::mutation_args_json()';
+      ? `std::string("[") + tracecode::mutation_args_json(${aggregateArgs.join(', ')}) + "]"`
+      : 'std::string("[[]]")';
   }
   return `tracecode::mutation_args_json(${fallbackExpression})`;
 }

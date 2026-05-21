@@ -1249,6 +1249,23 @@ class Solution {
     'Java rewriter should preserve charAt-derived computed array index provenance'
   );
 
+  const computedStringMapKeySource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  public int solve() {
+    Map<String, Integer> rightIndex = new HashMap<>();
+    int nr = 1;
+    int nc = 0;
+    rightIndex.put(nr + "," + nc, 42);
+    Integer v = rightIndex.get(nr + "," + nc);
+    return v == null ? -1 : v;
+  }
+}`);
+  assertCondition(
+    computedStringMapKeySource.includes('TraceHooks.readMapAtLine(9, "rightIndex", rightIndex, nr + "," + nc, "nr + \\",\\" + nc")'),
+    'Java rewriter should preserve computed string-concat map key provenance'
+  );
+
   const explicitNullReturnSource = assertNativeJavaRewriterCompiles(`class Solution {
   Object solve(boolean done) {
     if (done) return null;

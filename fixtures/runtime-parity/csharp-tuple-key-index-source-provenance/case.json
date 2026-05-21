@@ -1,0 +1,48 @@
+{
+  "id": "csharp-tuple-key-index-source-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "write": {
+      "csharp": "rightIndex[(r, c)] = 7;"
+    }
+  },
+  "expect": {
+    "write": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "c",
+        "r",
+        "rightIndex"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "rightIndex",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "write": [
+      {
+        "kind": "write",
+        "variable": "rightIndex",
+        "pathDepth": 1,
+        "indexSources": [
+          "(r, c)"
+        ],
+        "value": 7
+      }
+    ]
+  }
+}

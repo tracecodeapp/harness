@@ -2276,11 +2276,12 @@ const auditAggregatePushBackMutate = auditAggregatePushBackEvents.find((event) =
 );
 if (
   !auditAggregatePushBackMutate ||
-  auditAggregatePushBackMutate.args?.[0] !== 0 ||
-  auditAggregatePushBackMutate.args?.[1] !== 1 ||
-  Math.abs(auditAggregatePushBackMutate.args?.[2] + Math.log(2)) > 0.00001
+  !Array.isArray(auditAggregatePushBackMutate.args?.[0]) ||
+  auditAggregatePushBackMutate.args[0][0] !== 0 ||
+  auditAggregatePushBackMutate.args[0][1] !== 1 ||
+  Math.abs(auditAggregatePushBackMutate.args[0][2] + Math.log(2)) > 0.00001
 ) {
-  throw new Error('C++ aggregate push_back should emit evaluated aggregate args, received ' + JSON.stringify(auditAggregatePushBackEvents));
+  throw new Error('C++ aggregate push_back should emit evaluated aggregate as one mutation arg, received ' + JSON.stringify(auditAggregatePushBackEvents));
 }
 
 const auditStructuredVectorRangeTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -3780,8 +3781,14 @@ const existingAggregatePushBackMutate = existingAggregatePushBackEvents.find((ev
   event.target?.variable === 'edges' &&
   event.method === 'push_back'
 );
-if (!existingAggregatePushBackMutate || existingAggregatePushBackMutate.args?.[0] !== 1 || existingAggregatePushBackMutate.args?.[1] !== 2 || Math.abs(existingAggregatePushBackMutate.args?.[2] + Math.log(4)) > 1e-9) {
-  throw new Error('C++ aggregate push_back should emit evaluated mutation args, received ' + JSON.stringify(existingAggregatePushBackEvents));
+if (
+  !existingAggregatePushBackMutate ||
+  !Array.isArray(existingAggregatePushBackMutate.args?.[0]) ||
+  existingAggregatePushBackMutate.args[0][0] !== 1 ||
+  existingAggregatePushBackMutate.args[0][1] !== 2 ||
+  Math.abs(existingAggregatePushBackMutate.args[0][2] + Math.log(4)) > 1e-9
+) {
+  throw new Error('C++ aggregate push_back should emit evaluated aggregate as one mutation arg, received ' + JSON.stringify(existingAggregatePushBackEvents));
 }
 
 const pointerFieldIndexedConditionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

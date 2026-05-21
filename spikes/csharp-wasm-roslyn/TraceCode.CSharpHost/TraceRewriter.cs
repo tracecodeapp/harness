@@ -3529,6 +3529,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 && elementAccess.ArgumentList.Arguments[0].NameColon is null
                 && elementAccess.ArgumentList.Arguments[0].RefKindKeyword.RawKind == 0
                 && IsSafeIndexSourceExpression(elementAccess.ArgumentList.Arguments[0].Expression),
+            TupleExpressionSyntax tuple => tuple.Arguments.Count > 0
+                && tuple.Arguments.All(argument =>
+                    argument.RefKindKeyword.RawKind == 0
+                    && IsSafeIndexSourceExpression(argument.Expression)),
             BinaryExpressionSyntax binary => IsSafeIndexSourceBinaryOperator(binary.Kind())
                 && IsSafeIndexSourceExpression(binary.Left)
                 && IsSafeIndexSourceExpression(binary.Right),
