@@ -3065,6 +3065,12 @@ function isSafeIndexSourceExpression(ts, node) {
   if (ts.isIdentifier(unwrapped) || ts.isNumericLiteral(unwrapped) || ts.isStringLiteral(unwrapped)) {
     return true;
   }
+  if (ts.isNoSubstitutionTemplateLiteral(unwrapped)) {
+    return true;
+  }
+  if (ts.isTemplateExpression(unwrapped)) {
+    return unwrapped.templateSpans.every((span) => isSafeIndexSourceExpression(ts, span.expression));
+  }
   if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) {
     return true;
   }

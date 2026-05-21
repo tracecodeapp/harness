@@ -1,0 +1,104 @@
+{
+  "id": "js-ts-template-map-key-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "javascript",
+    "typescript"
+  ],
+  "inputs": {},
+  "anchors": {
+    "put": {
+      "javascript": "rightIndex.set(`${nr},${nc}`, 7);",
+      "typescript": "rightIndex.set(`${nr},${nc}`, 7);"
+    },
+    "get": {
+      "javascript": "return rightIndex.get(`${nr},${nc}`);",
+      "typescript": "return rightIndex.get(`${nr},${nc}`)!;"
+    }
+  },
+  "expect": {
+    "put": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "nc",
+        "nr",
+        "rightIndex"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "rightIndex",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "rightIndex",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "get": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "nc",
+        "nr",
+        "rightIndex"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "rightIndex",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "put": [
+      {
+        "kind": "write",
+        "variable": "rightIndex",
+        "pathDepth": 1,
+        "indexSources": [
+          "`${nr},${nc}`"
+        ],
+        "value": 7
+      },
+      {
+        "kind": "mutate",
+        "variable": "rightIndex",
+        "pathDepth": 1,
+        "indexSources": [
+          "`${nr},${nc}`"
+        ],
+        "method": "set",
+        "args": [
+          "0,1",
+          7
+        ]
+      }
+    ],
+    "get": [
+      {
+        "kind": "read",
+        "variable": "rightIndex",
+        "pathDepth": 1,
+        "indexSources": [
+          "`${nr},${nc}`"
+        ],
+        "value": 7
+      }
+    ]
+  }
+}
