@@ -1868,9 +1868,16 @@ function createTraceRecorder(options = {}) {
       }
       pendingAccessesByFrame.set(frameId, attachable);
     },
-    traceCondition(value) {
-      this.attachPendingAccessesToPreviousLine();
-      return value;
+    traceCondition(evaluate) {
+      if (typeof evaluate !== 'function') {
+        this.attachPendingAccessesToPreviousLine();
+        return evaluate;
+      }
+      try {
+        return evaluate();
+      } finally {
+        this.attachPendingAccessesToPreviousLine();
+      }
     },
     tracePostLineCondition(evaluate) {
       if (typeof evaluate !== 'function') {
@@ -3709,16 +3716,14 @@ function ensureBlockStatement(ts, statement) {
 
 function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
   const recorderMethod = deferAccessesToNextLine ? 'tracePostLineCondition' : 'traceCondition';
-  const argument = deferAccessesToNextLine
-    ? ts.factory.createArrowFunction(
-        undefined,
-        undefined,
-        [],
-        undefined,
-        ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
-        expression
-      )
-    : expression;
+  const argument = ts.factory.createArrowFunction(
+    undefined,
+    undefined,
+    [],
+    undefined,
+    ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+    expression
+  );
   return ts.factory.createCallExpression(
     ts.factory.createPropertyAccessExpression(
       ts.factory.createIdentifier('__traceRecorder'),

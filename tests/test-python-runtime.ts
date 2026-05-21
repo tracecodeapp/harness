@@ -778,14 +778,25 @@ async function assertTupleAssignmentScalarWritesAreRecorded(): Promise<void> {
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events
+    },
     'result': _serialize_output(_result)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
   assertCondition(parsed.result === 6, 'Python tuple assignment fixture should execute successfully');
+  const assignmentLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'rows, cols =') - 1;
   const assignmentStep = findTraceStep(
     parsed.trace,
-    tracingPayload.userCodeStartLine + userLineNumber(source, 'rows, cols =') - 1
+    assignmentLine
   );
   const writes = (assignmentStep.accesses ?? []).filter((access) => access.kind === 'indexed-write');
   assertCondition(
@@ -793,8 +804,84 @@ print(json.dumps({
       writes.some((access) => access.variable === 'cols' && access.value === 3),
     `Python tuple assignment should emit scalar writes for rows and cols, received ${JSON.stringify(assignmentStep.accesses)}`
   );
+  const runtimeWrites = parsed.runtimeTrace.events.filter((event) => (
+    event.kind === 'write' &&
+    event.line === assignmentLine &&
+    (event.target?.variable === 'rows' || event.target?.variable === 'cols')
+  ));
+  assertCondition(
+    runtimeWrites.some((event) => event.target?.variable === 'rows' && event.value === 2) &&
+      runtimeWrites.some((event) => event.target?.variable === 'cols' && event.value === 3),
+    `Python tuple assignment should emit V4 write events for rows and cols, received ${JSON.stringify(runtimeWrites)}`
+  );
 
   console.log('PASS: Python runtime records tuple assignment scalar writes');
+}
+
+async function assertChainedAssignmentScalarWritesAreRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def solve(nums):
+    mid = len(nums) // 2
+    i = j = mid + 1
+    return i + j
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'solve',
+    { nums: [1, 2, 3, 4] },
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'schemaVersion': 'runtime-trace-2026-04-28',
+        'language': 'python',
+        'runId': 'python:run',
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    trace: TraceStep[];
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+  };
+  assertCondition(parsed.result === 6, 'Python chained assignment fixture should execute successfully');
+  const assignmentLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'i = j = mid + 1') - 1;
+  const assignmentStep = findTraceStep(parsed.trace, assignmentLine);
+  const writes = (assignmentStep.accesses ?? []).filter((access) => access.kind === 'indexed-write');
+  assertCondition(
+    writes.some((access) => access.variable === 'i' && access.value === 3) &&
+      writes.some((access) => access.variable === 'j' && access.value === 3),
+    `Python chained assignment should emit legacy scalar writes for i and j, received ${JSON.stringify(assignmentStep.accesses)}`
+  );
+
+  const runtimeWrites = parsed.runtimeTrace.events.filter((event) => (
+    event.kind === 'write' &&
+    event.line === assignmentLine &&
+    (event.target?.variable === 'i' || event.target?.variable === 'j')
+  ));
+  assertCondition(
+    runtimeWrites.some((event) => event.target?.variable === 'i' && event.value === 3) &&
+      runtimeWrites.some((event) => event.target?.variable === 'j' && event.value === 3),
+    `Python chained assignment should emit V4 write events for i and j, received ${JSON.stringify(runtimeWrites)}`
+  );
+
+  console.log('PASS: Python runtime records chained assignment scalar writes');
 }
 
 async function assertListComprehensionAssignmentEmitsSingleWriteFrame(): Promise<void> {
@@ -2217,6 +2304,7 @@ async function main(): Promise<void> {
   await assertListForLoopBindingSourcesAreRecorded();
   await assertLiteralTupleUnpackingForLoopBindingIsRecorded();
   await assertTupleAssignmentScalarWritesAreRecorded();
+  await assertChainedAssignmentScalarWritesAreRecorded();
   await assertListComprehensionAssignmentEmitsSingleWriteFrame();
   await assertInPlaceSortMutationIsRecorded();
   await assertTupleKeyDictProvenanceIsRecorded();

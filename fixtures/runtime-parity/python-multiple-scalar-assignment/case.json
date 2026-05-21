@@ -1,0 +1,112 @@
+{
+  "id": "python-multiple-scalar-assignment",
+  "languages": ["python"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [1, 2, 3, 4]
+  },
+  "anchors": {
+    "lo": {
+      "python": "lo = 1"
+    },
+    "mid": {
+      "python": "mid = len(nums) // 2"
+    },
+    "unpack": {
+      "python": "left, right = lo, mid + 1"
+    },
+    "chain": {
+      "python": "i = j = mid + 1"
+    },
+    "ret": {
+      "python": "return left * 1000 + right * 100 + i * 10 + j"
+    }
+  },
+  "expectLineSnapshots": [
+    {
+      "role": "lo",
+      "includes": {
+        "lo": 1
+      },
+      "excludes": ["mid", "left", "right", "i", "j"]
+    },
+    {
+      "role": "mid",
+      "includes": {
+        "lo": 1,
+        "mid": 2
+      },
+      "excludes": ["left", "right", "i", "j"]
+    },
+    {
+      "role": "unpack",
+      "includes": {
+        "lo": 1,
+        "mid": 2,
+        "left": 1,
+        "right": 3
+      },
+      "excludes": ["i", "j"]
+    },
+    {
+      "role": "chain",
+      "includes": {
+        "lo": 1,
+        "mid": 2,
+        "left": 1,
+        "right": 3,
+        "i": 3,
+        "j": 3
+      }
+    }
+  ],
+  "expect": {
+    "lo": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["lo", "nums"],
+      "accessTargets": [
+        { "kind": "write", "variable": "lo" }
+      ]
+    },
+    "mid": {
+      "eventKinds": ["line", "read", "snapshot", "write"],
+      "variableSnapshots": ["lo", "mid", "nums"],
+      "accessTargets": [
+        { "kind": "read", "variable": "nums", "pathDepth": 1 },
+        { "kind": "write", "variable": "mid" }
+      ]
+    },
+    "unpack": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["left", "lo", "mid", "nums", "right"],
+      "accessTargets": [
+        { "kind": "write", "variable": "left" },
+        { "kind": "write", "variable": "right" }
+      ]
+    },
+    "chain": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["i", "j", "left", "lo", "mid", "nums", "right"],
+      "accessTargets": [
+        { "kind": "write", "variable": "i" },
+        { "kind": "write", "variable": "j" }
+      ]
+    },
+    "ret": {
+      "eventKinds": ["line", "return", "snapshot"],
+      "variableSnapshots": ["i", "j", "left", "lo", "mid", "nums", "right"],
+      "accessTargets": []
+    }
+  },
+  "expectEventAssertions": {
+    "unpack": [
+      { "kind": "write", "variable": "left", "value": 1 },
+      { "kind": "write", "variable": "right", "value": 3 }
+    ],
+    "chain": [
+      { "kind": "write", "variable": "i", "value": 3 },
+      { "kind": "write", "variable": "j", "value": 3 }
+    ]
+  }
+}

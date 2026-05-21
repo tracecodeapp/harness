@@ -1,0 +1,28 @@
+{
+  "id": "js-ts-indexed-while-condition-read",
+  "functionName": "countRangeSum",
+  "executionStyle": "solution-method",
+  "languages": ["javascript", "typescript"],
+  "inputs": { "nums": [-2, 5, -1], "lower": -2, "upper": 2 },
+  "anchors": {
+    "rangeUpperWhile": {
+      "javascript": "while (j <= hi && prefix[j] - prefix[left] <= upper) {",
+      "typescript": "while (j <= hi && prefix[j] - prefix[left] <= upper) {"
+    }
+  },
+  "expect": {
+    "rangeUpperWhile": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["count", "hi", "j", "left", "lo", "lower", "mid", "nums", "prefix", "upper"],
+      "accessTargets": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1 }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "rangeUpperWhile": [
+      { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["j"] },
+      { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["left"] }
+    ]
+  }
+}

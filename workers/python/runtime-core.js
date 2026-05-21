@@ -1855,33 +1855,23 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                     keywords=[],
                 )
                 return ast.copy_location(ast.Expr(value=call), node)
-            if isinstance(node.targets[0], ast.Name):
-                visited = self.generic_visit(node)
-                var_name = node.targets[0].id
-                call = ast.Expr(value=ast.Call(
+        scalar_names = []
+        for target in node.targets:
+            scalar_names.extend(_tracecode_scalar_target_names(target))
+        if scalar_names:
+            visited = self.generic_visit(node)
+            writes = []
+            for scalar_name in scalar_names:
+                write_call = ast.Expr(value=ast.Call(
                     func=ast.Name(id='_tracecode_write_scalar', ctx=ast.Load()),
                     args=[
-                        ast.Constant(value=var_name),
-                        ast.Name(id=var_name, ctx=ast.Load()),
+                        ast.Constant(value=scalar_name),
+                        ast.Name(id=scalar_name, ctx=ast.Load()),
                     ],
                     keywords=[],
                 ))
-                return [visited, ast.copy_location(call, node)]
-            scalar_names = _tracecode_scalar_target_names(node.targets[0])
-            if scalar_names:
-                visited = self.generic_visit(node)
-                writes = []
-                for scalar_name in scalar_names:
-                    write_call = ast.Expr(value=ast.Call(
-                        func=ast.Name(id='_tracecode_write_scalar', ctx=ast.Load()),
-                        args=[
-                            ast.Constant(value=scalar_name),
-                            ast.Name(id=scalar_name, ctx=ast.Load()),
-                        ],
-                        keywords=[],
-                    ))
-                    writes.append(ast.copy_location(write_call, node))
-                return [visited, *writes]
+                writes.append(ast.copy_location(write_call, node))
+            return [visited, *writes]
         return self.generic_visit(node)
 
     def visit_AnnAssign(self, node):
