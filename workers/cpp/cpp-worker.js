@@ -3811,8 +3811,9 @@ function cppIndexSourceForExpression(expression) {
   const trimmed = expression.trim();
   const normalized = trimmed.replace(/\s+/g, ' ');
   if (/^[A-Za-z_]\w*$/.test(normalized)) return cppStringLiteral(normalized);
-  if (/^(?:\+\+|--)\s*[A-Za-z_]\w*$/.test(normalized) || /^[A-Za-z_]\w*\s*(?:\+\+|--)$/.test(normalized)) {
-    return cppStringLiteral(normalized.replace(/\s+/g, ''));
+  const unaryIndexMatch = normalized.match(/^(?:\+\+|--)\s*([A-Za-z_]\w*)$/) ?? normalized.match(/^([A-Za-z_]\w*)\s*(?:\+\+|--)$/);
+  if (unaryIndexMatch?.[1]) {
+    return cppStringLiteral(unaryIndexMatch[1]);
   }
   if (/^[A-Za-z_]\w*\s*\[[^\]]+\]\s*$/.test(normalized)) return cppStringLiteral(normalized.replace(/\s+/g, ''));
   if (/^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*\(\))+(?:\s*[+\-*/%]\s*\d+)?$/.test(normalized)) {

@@ -1653,6 +1653,12 @@ public final class JavaRewriteLibrary {
     if (normalized.isEmpty()) return null;
     if (!java.util.regex.Pattern.compile("[A-Za-z_][A-Za-z0-9_]*").matcher(normalized).find()) return null;
     if (isSimpleIdentifierExpression(normalized)) return normalized;
+    java.util.regex.Matcher unaryIndex = java.util.regex.Pattern
+        .compile("^(?:\\+\\+|--)\\s*([A-Za-z_][A-Za-z0-9_]*)$|^([A-Za-z_][A-Za-z0-9_]*)\\s*(?:\\+\\+|--)$")
+        .matcher(normalized);
+    if (unaryIndex.matches()) {
+      return unaryIndex.group(1) != null ? unaryIndex.group(1) : unaryIndex.group(2);
+    }
     if (normalized.matches("^[A-Za-z_][A-Za-z0-9_]*\\s*\\[[^\\]]+\\]\\s*$")) {
       return normalized.replaceAll("\\s+", "");
     }

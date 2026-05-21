@@ -3032,6 +3032,15 @@ function createIndexSourcesArrayExpression(ts, sourceFile, indices) {
 
 function indexSourceExpressionText(ts, sourceFile, index) {
   if (ts.isIdentifier(index)) return index.text;
+  const unwrapped = unwrapParenthesizedExpression(ts, index);
+  if (
+    unwrapped &&
+    (ts.isPrefixUnaryExpression(unwrapped) || ts.isPostfixUnaryExpression(unwrapped)) &&
+    (unwrapped.operator === ts.SyntaxKind.PlusPlusToken || unwrapped.operator === ts.SyntaxKind.MinusMinusToken) &&
+    ts.isIdentifier(unwrapped.operand)
+  ) {
+    return unwrapped.operand.text;
+  }
   if (typeof index.pos === 'number' && index.pos < 0) return null;
   let text = '';
   try {

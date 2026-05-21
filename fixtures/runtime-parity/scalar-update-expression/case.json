@@ -226,7 +226,7 @@
         "variable": "nums",
         "pathDepth": 1,
         "indexSources": [
-          "left++"
+          "left"
         ]
       },
       {

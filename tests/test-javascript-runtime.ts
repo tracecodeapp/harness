@@ -1926,14 +1926,14 @@ function smallest(nums: number[]): number {
       (event) =>
         event.kind === 'read' &&
         event.target?.variable === 'left' &&
-        JSON.stringify(event.target.indexSources) === JSON.stringify(['i++'])
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['i'])
     ) &&
       sortArrayAccesses.some((event) => event.kind === 'write' && event.target?.variable === 'i') &&
       sortArrayAccesses.some(
         (event) =>
           event.kind === 'read' &&
           event.target?.variable === 'right' &&
-          JSON.stringify(event.target.indexSources) === JSON.stringify(['j++'])
+          JSON.stringify(event.target.indexSources) === JSON.stringify(['j'])
       ) &&
       sortArrayAccesses.some((event) => event.kind === 'write' && event.target?.variable === 'j') &&
       sortArrayAccesses.some(

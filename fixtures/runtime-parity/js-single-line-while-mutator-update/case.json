@@ -23,7 +23,7 @@
   },
   "expectEventAssertions": {
     "body": [
-      { "kind": "read", "variable": "right", "pathDepth": 1, "indexSources": ["j++"], "value": 7 },
+      { "kind": "read", "variable": "right", "pathDepth": 1, "indexSources": ["j"], "value": 7 },
       { "kind": "mutate", "variable": "merged", "method": "push", "args": [7] },
       { "kind": "write", "variable": "j", "value": 1 }
     ]

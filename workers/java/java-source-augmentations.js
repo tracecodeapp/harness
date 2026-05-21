@@ -143,6 +143,8 @@
     if (!value) return null;
     if (!/[A-Za-z_][A-Za-z0-9_]*/.test(value)) return null;
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) return value;
+    const unaryIndex = value.match(/^(?:\+\+|--)\s*([A-Za-z_][A-Za-z0-9_]*)$/) ?? value.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\+\+|--)$/);
+    if (unaryIndex?.[1]) return unaryIndex[1];
     if (/^[A-Za-z_][A-Za-z0-9_]*\s*\[[^\]]+\]\s*$/.test(value)) return value.replace(/\s+/g, '');
     if (/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*\(\))+(?:\s*[+\-*/%]\s*[0-9]+)?$/.test(value)) {
       return value;

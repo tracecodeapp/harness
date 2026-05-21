@@ -1,0 +1,785 @@
+{
+  "id": "post-increment-slice-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "nums": [
+      10,
+      20,
+      30,
+      40
+    ]
+  },
+  "anchors": {
+    "readPostIncrement": {
+      "python": "pulled = left[i]",
+      "javascript": "const pulled = left[i++];",
+      "typescript": "const pulled = left[i++];",
+      "java": "int pulled = left[i++];",
+      "csharp": "int pulled = left[i++];",
+      "cpp": "int pulled = left[i++];"
+    },
+    "writePostIncrement": {
+      "python": "merged[k] = pulled",
+      "javascript": "merged[k++] = pulled;",
+      "typescript": "merged[k++] = pulled;",
+      "java": "merged[k++] = pulled;",
+      "csharp": "merged[k++] = pulled;",
+      "cpp": "merged[k++] = pulled;"
+    },
+    "sliceFromMid": {
+      "python": "tail = nums[mid:]",
+      "javascript": "const tail = nums.slice(mid);",
+      "typescript": "const tail = nums.slice(mid);",
+      "java": "int[] tail = Arrays.copyOfRange(nums, mid, nums.length);",
+      "csharp": "int[] tail = nums[mid..];",
+      "cpp": "vector<int> tail(nums.begin() + mid, nums.end());"
+    },
+    "sliceToMid": {
+      "python": "head = nums[:mid]",
+      "javascript": "const head = nums.slice(0, mid);",
+      "typescript": "const head = nums.slice(0, mid);",
+      "java": "int[] head = Arrays.copyOfRange(nums, 0, mid);",
+      "csharp": "int[] head = nums[0..mid];",
+      "cpp": "vector<int> head(nums.begin(), nums.begin() + mid);"
+    }
+  },
+  "expect": {
+    "readPostIncrement": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "k",
+        "left",
+        "merged",
+        "nums",
+        "pulled"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "left",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "i"
+        },
+        {
+          "kind": "write",
+          "variable": "pulled"
+        }
+      ]
+    },
+    "writePostIncrement": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "k",
+        "left",
+        "merged",
+        "nums",
+        "pulled"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "k"
+        },
+        {
+          "kind": "write",
+          "variable": "merged",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "sliceFromMid": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "k",
+        "left",
+        "merged",
+        "mid",
+        "nums",
+        "pulled",
+        "tail"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "tail"
+        }
+      ]
+    },
+    "sliceToMid": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "head",
+        "i",
+        "k",
+        "left",
+        "merged",
+        "mid",
+        "nums",
+        "pulled",
+        "tail"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "head"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "readPostIncrement": [
+      {
+        "kind": "read",
+        "variable": "left",
+        "pathDepth": 1,
+        "indexSources": [
+          "i"
+        ],
+        "value": 10
+      }
+    ],
+    "writePostIncrement": [
+      {
+        "kind": "write",
+        "variable": "merged",
+        "pathDepth": 1,
+        "indexSources": [
+          "k"
+        ],
+        "value": 10
+      }
+    ]
+  },
+  "expectEventAssertionsByLanguage": {
+    "csharp": {
+      "sliceFromMid": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 2,
+          "indexSources": [
+            "mid",
+            null
+          ],
+          "value": [
+            30,
+            40
+          ]
+        }
+      ],
+      "sliceToMid": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 2,
+          "indexSources": [
+            "0",
+            "mid"
+          ],
+          "value": [
+            10,
+            20
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "readPostIncrement": [
+        {
+          "kind": "read",
+          "variable": "left",
+          "pathDepth": 1,
+          "indexSources": [
+            "i"
+          ],
+          "value": 10
+        }
+      ],
+      "writePostIncrement": [
+        {
+          "kind": "write",
+          "variable": "merged",
+          "pathDepth": 1,
+          "indexSources": [
+            "k"
+          ],
+          "value": 10
+        }
+      ]
+    },
+    "typescript": {
+      "readPostIncrement": [
+        {
+          "kind": "read",
+          "variable": "left",
+          "pathDepth": 1,
+          "indexSources": [
+            "i"
+          ],
+          "value": 10
+        }
+      ],
+      "writePostIncrement": [
+        {
+          "kind": "write",
+          "variable": "merged",
+          "pathDepth": 1,
+          "indexSources": [
+            "k"
+          ],
+          "value": 10
+        }
+      ]
+    },
+    "java": {
+      "readPostIncrement": [
+        {
+          "kind": "read",
+          "variable": "left",
+          "pathDepth": 1,
+          "indexSources": [
+            "i"
+          ],
+          "value": 10
+        }
+      ],
+      "writePostIncrement": [
+        {
+          "kind": "write",
+          "variable": "merged",
+          "pathDepth": 1,
+          "indexSources": [
+            "k"
+          ],
+          "value": 10
+        }
+      ]
+    },
+    "cpp": {
+      "readPostIncrement": [
+        {
+          "kind": "read",
+          "variable": "left",
+          "pathDepth": 1,
+          "indexSources": [
+            "i"
+          ],
+          "value": 10
+        }
+      ],
+      "writePostIncrement": [
+        {
+          "kind": "write",
+          "variable": "merged",
+          "pathDepth": 1,
+          "indexSources": [
+            "k"
+          ],
+          "value": 10
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "readPostIncrement": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "left",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "pulled"
+          }
+        ]
+      },
+      "writePostIncrement": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "merged",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "javascript": {
+      "sliceFromMid": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "tail"
+          }
+        ]
+      },
+      "sliceToMid": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "head",
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "head"
+          }
+        ]
+      }
+    },
+    "typescript": {
+      "sliceFromMid": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "tail"
+          }
+        ]
+      },
+      "sliceToMid": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "head",
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "head"
+          }
+        ]
+      }
+    },
+    "java": {
+      "readPostIncrement": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "left",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "pulled"
+          }
+        ]
+      },
+      "writePostIncrement": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "merged",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "sliceToMid": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "head",
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "head"
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "readPostIncrement": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "left",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "i"
+          },
+          {
+            "kind": "read",
+            "variable": "left"
+          },
+          {
+            "kind": "write",
+            "variable": "pulled"
+          }
+        ]
+      },
+      "writePostIncrement": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "merged",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "sliceFromMid": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "mid"
+          },
+          {
+            "kind": "read",
+            "variable": "nums"
+          },
+          {
+            "kind": "write",
+            "variable": "tail"
+          }
+        ]
+      },
+      "sliceToMid": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "head",
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 2
+          },
+          {
+            "kind": "read",
+            "variable": "mid"
+          },
+          {
+            "kind": "read",
+            "variable": "nums"
+          },
+          {
+            "kind": "write",
+            "variable": "head"
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "readPostIncrement": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "left",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "i"
+          },
+          {
+            "kind": "write",
+            "variable": "pulled"
+          }
+        ]
+      },
+      "writePostIncrement": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "nums",
+          "pulled"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "merged",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "k"
+          }
+        ]
+      },
+      "sliceFromMid": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "tail"
+          }
+        ]
+      },
+      "sliceToMid": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "head",
+          "i",
+          "k",
+          "left",
+          "merged",
+          "mid",
+          "nums",
+          "pulled",
+          "tail"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "head"
+          }
+        ]
+      }
+    }
+  }
+}

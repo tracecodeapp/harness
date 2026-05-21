@@ -1446,6 +1446,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         string arrayExpression = rewritten.Expression.ToString();
         string indexExpression = rewritten.ArgumentList.Arguments[0].Expression.ToString();
         string indexSourceExpression = node.ArgumentList.Arguments[0].Expression.ToString();
+        if (node.ArgumentList.Arguments[0].Expression is RangeExpressionSyntax rangeExpression)
+        {
+            string pathExpression = CreateRangePathExpression(arrayExpression, rangeExpression);
+            string indexSourcesExpression = CreateRangeIndexSourcesExpression(rangeExpression);
+            return SyntaxFactory.ParseExpression(
+                $"TraceCode.Internal.TraceCodeTrace.ArraySliceRead({arrayExpression}, {indexExpression}, {pathExpression}, {Literal(identifier.Identifier.ValueText)}, {line}, {indexSourcesExpression})"
+            );
+        }
         if (IsRangeIndex(indexSourceExpression))
         {
             return rewritten;
@@ -3435,6 +3443,22 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return $"new string?[] {{ {CreateIndexSourceLiteral(indexExpression)}, null }}";
     }
 
+    private static string CreateRangePathExpression(string receiverExpression, RangeExpressionSyntax rangeExpression)
+    {
+        string start = rangeExpression.LeftOperand?.ToString() ?? "0";
+        string end = rangeExpression.RightOperand?.ToString() ?? $"{receiverExpression}.Length";
+        return $"new object?[] {{ {start}, {end} }}";
+    }
+
+    private static string CreateRangeIndexSourcesExpression(RangeExpressionSyntax rangeExpression)
+    {
+        string start = rangeExpression.LeftOperand?.ToString() ?? "0";
+        string? end = rangeExpression.RightOperand?.ToString();
+        return end is null
+            ? $"new string?[] {{ {CreateIndexSourceLiteral(start)}, null }}"
+            : $"new string?[] {{ {CreateIndexSourceLiteral(start)}, {CreateIndexSourceLiteral(end)} }}";
+    }
+
     private static string CreateFieldIndexedMetadataIndexSourcesExpression(IReadOnlyList<string> fieldPath, string indexExpression)
     {
         List<string> sources = fieldPath.Select(_ => "null").ToList();
@@ -3456,6 +3480,18 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         catch
         {
             return null;
+        }
+
+        if (parsed is PrefixUnaryExpressionSyntax prefix
+            && (prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression)))
+        {
+            return NormalizeIndexSourceExpression(prefix.Operand.ToString());
+        }
+
+        if (parsed is PostfixUnaryExpressionSyntax postfix
+            && (postfix.IsKind(SyntaxKind.PostIncrementExpression) || postfix.IsKind(SyntaxKind.PostDecrementExpression)))
+        {
+            return NormalizeIndexSourceExpression(postfix.Operand.ToString());
         }
 
         return IsSafeIndexSourceExpression(parsed) ? trimmed : null;

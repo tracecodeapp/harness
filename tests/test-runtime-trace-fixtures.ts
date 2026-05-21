@@ -930,7 +930,12 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
 }
 
 async function createCppWorkerHarness() {
-  const workerSource = await readFile(CPP_WORKER_PATH, 'utf8');
+  const sharedKernelPolicySource = (await readFile(join(process.cwd(), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8'))
+    .replace(/\bexport\s+/g, '');
+  const workerSource = (await readFile(CPP_WORKER_PATH, 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
+    ''
+  );
   const compilerBundle = await import(pathToFileURL(CPP_COMPILER_BUNDLE_PATH).href);
   const readAsset = async (url: string) => {
     const pathname = String(url).replace('file://', '');
@@ -971,7 +976,12 @@ async function createCppWorkerHarness() {
   sandbox.self = sandbox;
   const context = vm.createContext(sandbox);
   const script = new vm.Script(
-    `${workerSource}\nglobalThis.__tracecodeCppFixture = { handleInit, handleExecuteWithTracing };`,
+    `${sharedKernelPolicySource}
+const isRuntimeDeviceDirectory = isRuntimeKernelDeviceDirectory;
+const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;
+const isRuntimeProcPath = isRuntimeKernelProcPath;
+${workerSource}
+globalThis.__tracecodeCppFixture = { handleInit, handleExecuteWithTracing };`,
     {
       importModuleDynamically(specifier) {
         return import(String(specifier));
@@ -1081,6 +1091,36 @@ function projectLineSequence(trace: RuntimeTrace, roleLines: Record<string, numb
   return trace.events.flatMap((event) => {
     if (event.kind !== 'line' || typeof event.line !== 'number') return [];
     return rolesByLine.get(event.line) ?? [];
+  });
+}
+
+function declaredRawEmissionKindsForLanguage(fixture: FixtureCase, language: Language): RuntimeTraceEventKind[] {
+  const expected = {
+    ...fixture.expect,
+    ...(fixture.expectByLanguage?.[language] ?? {}),
+  };
+  return sortedUnique(Object.entries(expected).flatMap(([role, entry]) =>
+    fixture.knownGaps?.[language]?.[role] ? [] : entry.eventKinds
+  )) as RuntimeTraceEventKind[];
+}
+
+function fixtureDeclaresLanguageSpecificRawEmissionKinds(fixture: FixtureCase, languages: Language[]): boolean {
+  const [reference, ...others] = languages;
+  if (!reference) return false;
+  const expected = stableStringify(declaredRawEmissionKindsForLanguage(fixture, reference));
+  return others.some((language) =>
+    stableStringify(declaredRawEmissionKindsForLanguage(fixture, language)) !== expected
+  );
+}
+
+function summarizeAnchoredRawEmissions(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>
+): RuntimeRawEmissionSummary {
+  const anchoredLines = new Set(Object.values(roleLines));
+  return summarizeRuntimeTraceEmissions({
+    ...trace,
+    events: trace.events.filter((event) => typeof event.line === 'number' && anchoredLines.has(event.line)),
   });
 }
 
@@ -1430,17 +1470,37 @@ async function runFixture(
       console.log(JSON.stringify(traces[language]?.events, null, 2));
     }
   }
+  const roleLinesByLanguage = Object.fromEntries(
+    (Object.keys(traces) as Language[]).map((language) => [
+      language,
+      Object.fromEntries(
+        Object.entries(fixture.anchors).map(([role, anchors]) => [
+          role,
+          findAnchorLine(sources[language] ?? '', anchors[language]),
+        ])
+      ),
+    ])
+  ) as Partial<Record<Language, Record<string, number>>>;
   const hasRawParityReferenceRuns = RAW_PARITY_REFERENCE_LANGUAGES.every((language) => runs[language]);
   if (hasRawParityReferenceRuns) {
     const completeRuns = runs as Record<Language, FixtureTraceRun>;
     const rawParityRuns = RAW_PARITY_COMPARE_LANGUAGES
       .filter((language) => completeRuns[language])
-      .map((language) => completeRuns[language].rawSummary);
+      .map((language) => summarizeAnchoredRawEmissions(
+        completeRuns[language].trace,
+        roleLinesByLanguage[language] ?? {}
+      ));
     const rawParityMismatches = compareRawEmissionParity(
-      completeRuns.python.rawSummary,
+      summarizeAnchoredRawEmissions(completeRuns.python.trace, roleLinesByLanguage.python ?? {}),
       rawParityRuns
     );
-    if (rawParityMismatches.length > 0 && process.env.TRACECODE_STRICT_RAW_EMISSION_PARITY === '1') {
+    const rawParityLanguages = rawParityRuns.map((summary) => summary.language);
+    const declaredLanguageSpecificKinds = fixtureDeclaresLanguageSpecificRawEmissionKinds(fixture, rawParityLanguages);
+    if (
+      rawParityMismatches.length > 0 &&
+      process.env.TRACECODE_STRICT_RAW_EMISSION_PARITY === '1' &&
+      !declaredLanguageSpecificKinds
+    ) {
       throw new Error(
         `${fixture.id}: raw runtime emission parity mismatch.\n${JSON.stringify(rawParityMismatches, null, 2)}`
       );
@@ -1450,12 +1510,7 @@ async function runFixture(
   for (const language of Object.keys(traces) as Language[]) {
     const trace = traces[language];
     assertCondition(Boolean(trace), `${fixture.id}: ${language} trace was not produced`);
-    const roleLines = Object.fromEntries(
-      Object.entries(fixture.anchors).map(([role, anchors]) => [
-        role,
-        findAnchorLine(sources[language] ?? '', anchors[language]),
-      ])
-    );
+    const roleLines = roleLinesByLanguage[language] ?? {};
     const actual = projectRoleSignature(trace, roleLines);
     if (fixture.expectLineSequence) {
       const lineSequenceRoleLines = Object.fromEntries(

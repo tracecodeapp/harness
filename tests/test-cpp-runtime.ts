@@ -7,7 +7,12 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { pathToFileURL } from 'node:url';
 
-const workerSource = await readFile('workers/cpp/cpp-worker.js', 'utf8');
+const sharedKernelPolicySource = (await readFile('workers/shared/runtime-kernel-policy.js', 'utf8'))
+  .replace(/\bexport\s+/g, '');
+const workerSource = (await readFile('workers/cpp/cpp-worker.js', 'utf8')).replace(
+  /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
+  ''
+);
 
 const readAsset = async (url) => {
   const pathname = String(url).replace('file://', '');
@@ -51,7 +56,12 @@ sandbox.self = sandbox;
 
 const context = vm.createContext(sandbox);
 const script = new vm.Script(
-  workerSource + '\nglobalThis.__tracecodeCppTest = { handleInit, handleWarmup, handleCompileRun, handleExecuteWithTracing, handleExecuteCodeInterview, state: () => ({ hasToolchainPromise: Boolean(toolchainPromise), hasWarmupPromise: Boolean(warmupPromise), programCacheSize: programCache.size }) };',
+  sharedKernelPolicySource + '\n' +
+    'const isRuntimeDeviceDirectory = isRuntimeKernelDeviceDirectory;\n' +
+    'const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;\n' +
+    'const isRuntimeProcPath = isRuntimeKernelProcPath;\n' +
+    workerSource +
+    '\nglobalThis.__tracecodeCppTest = { handleInit, handleWarmup, handleCompileRun, handleExecuteWithTracing, handleExecuteCodeInterview, state: () => ({ hasToolchainPromise: Boolean(toolchainPromise), hasWarmupPromise: Boolean(warmupPromise), programCacheSize: programCache.size }) };',
   {
     importModuleDynamically(specifier) {
       return import(specifier);

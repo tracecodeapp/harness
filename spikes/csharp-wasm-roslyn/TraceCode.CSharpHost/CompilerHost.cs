@@ -3547,6 +3547,13 @@ public class TreeNode
             return value;
         }
 
+        public static T[] ArraySliceRead<T>(T[] array, Range range, object?[] path, string variable, int line, IReadOnlyList<string?>? indexSources = null)
+        {
+            T[] value = array[range];
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, path, value, line, null, indexSources);
+            return value;
+        }
+
         public static T ArrayRead<T>(IList<T> list, int index, string variable, int line, IReadOnlyList<string?>? indexSources = null)
         {
             T value = list[index];
