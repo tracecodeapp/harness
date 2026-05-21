@@ -3718,7 +3718,7 @@ function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new M
       }
       const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
       const indexSource = cppIndexSourceForExpression(indexExpression);
-      const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource})`;
+      const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource}, ${lineNumber})`;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
     }

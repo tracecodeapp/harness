@@ -4551,6 +4551,11 @@ class UnorderedMap : public std::unordered_map<K, V> {
     return UnorderedMapValueRef<K, V>(*this, key, source);
   }
 
+  UnorderedMapValueRef<K, V> with_index_source(const K& key, const char* source, int line) {
+    current_trace_line() = line;
+    return UnorderedMapValueRef<K, V>(*this, key, source);
+  }
+
   V at(const K& key) const {
     emit_read(key, trace_event_line(), values_.count(key) ? to_json(values_.at(key)) : "null");
     return values_.at(key);
@@ -5140,6 +5145,11 @@ class Map : public std::map<K, V> {
   }
 
   MapValueRef<K, V> with_index_source(const K& key, const char* source) {
+    return MapValueRef<K, V>(*this, key, source);
+  }
+
+  MapValueRef<K, V> with_index_source(const K& key, const char* source, int line) {
+    current_trace_line() = line;
     return MapValueRef<K, V>(*this, key, source);
   }
 
