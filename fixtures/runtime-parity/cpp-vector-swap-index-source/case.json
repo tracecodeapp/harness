@@ -1,0 +1,77 @@
+{
+  "id": "cpp-vector-swap-index-source",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "swap": {
+      "cpp": "std::swap(heap[parent], heap[i]);"
+    }
+  },
+  "expect": {
+    "swap": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "heap",
+        "i",
+        "parent"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "heap",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "heap",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "swap": [
+      {
+        "kind": "read",
+        "variable": "heap",
+        "path": [0],
+        "pathDepth": 1,
+        "indexSources": ["parent"],
+        "value": 2
+      },
+      {
+        "kind": "read",
+        "variable": "heap",
+        "path": [2],
+        "pathDepth": 1,
+        "indexSources": ["i"],
+        "value": 1
+      },
+      {
+        "kind": "write",
+        "variable": "heap",
+        "path": [0],
+        "pathDepth": 1,
+        "indexSources": ["parent"],
+        "value": 1
+      },
+      {
+        "kind": "write",
+        "variable": "heap",
+        "path": [2],
+        "pathDepth": 1,
+        "indexSources": ["i"],
+        "value": 2
+      }
+    ]
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "id": "csharp-tuple-indexed-swap-writes",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "swap": {
+      "csharp": "(heap[parent], heap[index]) = (heap[index], heap[parent]);"
+    }
+  },
+  "expect": {
+    "swap": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "heap",
+        "index",
+        "parent"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "heap",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "heap",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "swap": [
+      {
+        "kind": "write",
+        "variable": "heap",
+        "path": [0],
+        "pathDepth": 1,
+        "indexSources": ["parent"],
+        "value": 2
+      },
+      {
+        "kind": "write",
+        "variable": "heap",
+        "path": [1],
+        "pathDepth": 1,
+        "indexSources": ["index"],
+        "value": 1
+      }
+    ]
+  }
+}

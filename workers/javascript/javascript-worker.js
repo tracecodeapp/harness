@@ -1126,14 +1126,32 @@ function isTraceablePathSegment(value) {
     (typeof value === 'string' && value.length > 0);
 }
 
-function normalizeTraceIndices(indices, maxDepth = 3) {
+function normalizeTracePathSegment(index, serializePathValue) {
+  if (typeof index === 'number' && Number.isInteger(index)) return Math.trunc(index);
+  if (typeof index === 'string' && index.length > 0) return index;
+  if (index && typeof index === 'object') {
+    if (typeof index.__id__ === 'string' && index.__id__.length > 0) return index.__id__;
+    if (typeof index.__ref__ === 'string' && index.__ref__.length > 0) return index.__ref__;
+    if (typeof serializePathValue === 'function') {
+      const serialized = serializePathValue(index);
+      if (serialized && typeof serialized === 'object') {
+        if (typeof serialized.__id__ === 'string' && serialized.__id__.length > 0) return serialized.__id__;
+        if (typeof serialized.__ref__ === 'string' && serialized.__ref__.length > 0) return serialized.__ref__;
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeTraceIndices(indices, maxDepth = 3, serializePathValue) {
   if (!Array.isArray(indices) || indices.length === 0 || indices.length > maxDepth) {
     return null;
   }
-  if (!indices.every(isTraceablePathSegment)) {
+  const normalized = indices.map((index) => normalizeTracePathSegment(index, serializePathValue));
+  if (!normalized.every(isTraceablePathSegment)) {
     return null;
   }
-  return indices.map((index) => typeof index === 'number' ? Math.trunc(index) : index);
+  return normalized;
 }
 
 function normalizeTraceIndexSources(indexSources, maxDepth = 3) {
@@ -1774,7 +1792,7 @@ function createTraceRecorder(options = {}) {
         variable,
         kind,
         ...(Array.isArray(event.indices) && event.indices.length > 0
-          ? { indices: normalizeTraceIndices(event.indices, maxPathDepth) ?? undefined }
+          ? { indices: normalizeTraceIndices(event.indices, maxPathDepth, (value) => this.serialize(value)) ?? undefined }
           : {}),
         ...(Array.isArray(event.indexSources) && event.indexSources.length > 0
           ? { indexSources: normalizeTraceIndexSources(event.indexSources, maxPathDepth) ?? undefined }
@@ -4627,6 +4645,17 @@ function __traceResolveIndexValues(__indices) {
   return Array.isArray(__indices) ? __indices.map((__index) => __traceResolvedIndexValue(__index)) : __indices;
 }
 
+function __tracePathSegment(__index) {
+  const __resolved = __traceResolvedIndexValue(__index);
+  if (typeof __resolved === 'number' && Number.isInteger(__resolved)) return Math.trunc(__resolved);
+  if (typeof __resolved === 'string' && __resolved.length > 0) return __resolved;
+  if (__resolved && typeof __resolved === 'object') {
+    if (typeof __resolved.__id__ === 'string' && __resolved.__id__.length > 0) return __resolved.__id__;
+    if (typeof __resolved.__ref__ === 'string' && __resolved.__ref__.length > 0) return __resolved.__ref__;
+  }
+  return null;
+}
+
 function __traceFlushDeferredScalarUpdates(__indices) {
   if (!Array.isArray(__indices)) return;
   for (const __index of __indices) {
@@ -4637,13 +4666,13 @@ function __traceFlushDeferredScalarUpdates(__indices) {
 }
 
 function __traceNormalizeIndices(__indices, __maxDepth = __TRACE_V4_MAX_PATH_DEPTH) {
-  const __resolved = __traceResolveIndexValues(__indices);
-  if (!Array.isArray(__resolved) || __resolved.length === 0 || __resolved.length > __maxDepth) return null;
-  if (!__resolved.every((__index) =>
+  if (!Array.isArray(__indices) || __indices.length === 0 || __indices.length > __maxDepth) return null;
+  const __normalized = __indices.map((__index) => __tracePathSegment(__index));
+  if (!__normalized.every((__index) =>
     (typeof __index === 'number' && Number.isInteger(__index)) ||
     (typeof __index === 'string' && __index.length > 0)
   )) return null;
-  return __resolved.map((__index) => typeof __index === 'number' ? Math.trunc(__index) : __index);
+  return __normalized;
 }
 
 function __traceNormalizeIndexSources(__indexSources, __pathLength) {
@@ -5085,12 +5114,15 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
     }
     if (__target instanceof Set && __method === 'has') {
       const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
+      const __normalizedKey = __tracePathSegment(__args[0]);
+      const __indices = __normalizedKey === null ? __path : [...__path, __normalizedKey];
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-read',
-        indices: [...__path, __args[0]],
-        pathDepth: __path.length + 1,
+        indices: __indices,
+        pathDepth: __indices.length,
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        value: serializeValue(__result),
         ...__sourceLocation,
       });
       __traceFlushDeferredScalarUpdates(__rawPath);

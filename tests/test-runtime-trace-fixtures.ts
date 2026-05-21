@@ -148,6 +148,7 @@ interface RuntimeTraceFrameEventAssertion {
 interface RuntimeTraceEventAssertion {
   kind: RuntimeTraceEventKind;
   variable?: string;
+  path?: unknown[];
   pathDepth?: number;
   indexSources?: Array<string | null>;
   bindingVariable?: string;
@@ -1172,6 +1173,10 @@ function eventMatchesAssertion(event: RuntimeTrace['events'][number], assertion:
   if (assertion.pathDepth !== undefined) {
     if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.path)) return false;
     if (event.target.path.length !== assertion.pathDepth) return false;
+  }
+  if (assertion.path !== undefined) {
+    if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.path)) return false;
+    if (stableStringify(event.target.path) !== stableStringify(assertion.path)) return false;
   }
   if (assertion.indexSources !== undefined) {
     if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.indexSources)) return false;

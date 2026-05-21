@@ -25,6 +25,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private int returnValueCounter;
     private int exceptionValueCounter;
     private int conditionValueCounter;
+    private int tupleAssignmentCounter;
 
     private TraceRewriter(
         bool emitTraceEvents,
@@ -2704,6 +2705,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private StatementSyntax RewriteArrayWriteStatement(StatementSyntax statement, int line)
     {
+        if (TryRewriteTupleIndexedAssignmentStatement(statement, line, out StatementSyntax? tupleAssignment))
+        {
+            return tupleAssignment!;
+        }
+
         if (statement is not ExpressionStatementSyntax expressionStatement
             || expressionStatement.Expression is not AssignmentExpressionSyntax assignment
             || assignment.Left is not ElementAccessExpressionSyntax elementAccess)
@@ -2787,6 +2793,55 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.ArrayWrite({arrayExpression}, {runtimeIndexExpression}, {valueExpression}, {Literal(identifier.Identifier.ValueText)}, {line}, {CreateIndexSourcesExpression(sourceIndexExpression)});"
         );
+    }
+
+    private bool TryRewriteTupleIndexedAssignmentStatement(
+        StatementSyntax statement,
+        int line,
+        out StatementSyntax? replacement
+    )
+    {
+        replacement = null;
+        if (statement is not ExpressionStatementSyntax expressionStatement
+            || expressionStatement.Expression is not AssignmentExpressionSyntax assignment
+            || !assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+            || assignment.Left is not TupleExpressionSyntax leftTuple
+            || assignment.Right is not TupleExpressionSyntax rightTuple
+            || leftTuple.Arguments.Count == 0
+            || leftTuple.Arguments.Count != rightTuple.Arguments.Count)
+        {
+            return false;
+        }
+        line = GetAssignmentWriteLineOrFallback(assignment, line);
+
+        string tempName = $"__tracecode_tuple_assignment_{tupleAssignmentCounter++}";
+        var writeStatements = new List<string>();
+        for (int index = 0; index < leftTuple.Arguments.Count; index += 1)
+        {
+            if (leftTuple.Arguments[index].Expression is not ElementAccessExpressionSyntax elementAccess
+                || elementAccess.Expression is not IdentifierNameSyntax identifier
+                || elementAccess.ArgumentList.Arguments.Count != 1)
+            {
+                return false;
+            }
+
+            string sourceIndexExpression = elementAccess.ArgumentList.Arguments[0].Expression.ToString();
+            if (IsRangeIndex(sourceIndexExpression))
+            {
+                return false;
+            }
+
+            string arrayExpression = elementAccess.Expression.ToString();
+            string runtimeIndexExpression = ((ExpressionSyntax)Visit(elementAccess.ArgumentList.Arguments[0].Expression)!).ToString();
+            writeStatements.Add(
+                $"TraceCode.Internal.TraceCodeTrace.ArrayWrite({arrayExpression}, {runtimeIndexExpression}, {tempName}.Item{index + 1}, {Literal(identifier.Identifier.ValueText)}, {line}, {CreateIndexSourcesExpression(sourceIndexExpression)});"
+            );
+        }
+
+        replacement = TraceStatement(
+            $"{{ var {tempName} = {assignment.Right}; {string.Join(" ", writeStatements)} }}"
+        );
+        return true;
     }
 
     private StatementSyntax RewriteFieldIndexedWriteStatement(StatementSyntax statement, int line)

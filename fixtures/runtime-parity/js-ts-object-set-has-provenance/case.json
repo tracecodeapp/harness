@@ -1,0 +1,49 @@
+{
+  "id": "js-ts-object-set-has-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "javascript",
+    "typescript"
+  ],
+  "inputs": {},
+  "anchors": {
+    "objectHas": {
+      "javascript": "return seen.has(first);",
+      "typescript": "return seen.has(first);"
+    }
+  },
+  "expect": {
+    "objectHas": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "first",
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "seen",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "objectHas": [
+      {
+        "kind": "read",
+        "variable": "seen",
+        "path": ["n0"],
+        "pathDepth": 1,
+        "indexSources": ["first"],
+        "value": true
+      }
+    ]
+  }
+}

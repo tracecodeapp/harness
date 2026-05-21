@@ -3652,6 +3652,7 @@ function rewriteControlConditionSource(control, lineNumber, accessVariables = ne
 
 function rewriteInlineControlStatementInstrumentation(statement, lineNumber, variables = new Map(), accessVariables = new Map(), aliases = new Map(), source = '') {
   let rewritten = rewriteKeyedIndexSourceInstrumentation(statement, accessVariables, aliases, lineNumber);
+  rewritten = rewriteVectorSwapInstrumentation(rewritten, accessVariables, aliases);
   rewritten = rewritePlainContainerMutationInstrumentation(rewritten, lineNumber, accessVariables, aliases, source);
   rewritten = rewriteNestedIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
   rewritten = rewriteVectorIndexedWriteInstrumentation(rewritten, lineNumber, accessVariables, aliases);
@@ -4170,6 +4171,47 @@ function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new M
     }
   }
   return rewritten;
+}
+
+function parseSimpleIndexedAccessExpression(expression) {
+  const trimmed = expression.trim();
+  const nameMatch = trimmed.match(/^([A-Za-z_]\w*)\s*\[/);
+  if (!nameMatch) return null;
+  const name = nameMatch[1];
+  const bracketIndex = trimmed.indexOf('[', name.length);
+  const closeIndex = findMatchingSquareBracket(trimmed, bracketIndex);
+  if (closeIndex < 0) return null;
+  if (trimmed.slice(closeIndex + 1).trim() !== '') return null;
+  const indexExpression = trimmed.slice(bracketIndex + 1, closeIndex).trim();
+  if (!indexExpression) return null;
+  return { name, indexExpression };
+}
+
+function rewriteVectorSwapInstrumentation(line, variables, aliases = new Map()) {
+  if (!/\b(?:std::)?swap\s*\(/.test(stripCppStringsAndComments(line))) return line;
+  if (line.includes('tracecode::trace_index_ref')) return line;
+  const swapMatch = line.match(/\b(?:std::)?swap\s*\(/);
+  if (!swapMatch || swapMatch.index === undefined) return line;
+  const openIndex = line.indexOf('(', swapMatch.index);
+  const closeIndex = findMatchingParen(line, openIndex);
+  if (openIndex < 0 || closeIndex < 0) return line;
+  if (!/^\s*;\s*$/.test(line.slice(closeIndex + 1))) return line;
+
+  const args = splitTopLevelCommaList(line.slice(openIndex + 1, closeIndex));
+  if (args.length !== 2) return line;
+  const accesses = args.map(parseSimpleIndexedAccessExpression);
+  if (accesses.some((access) => access === null)) return line;
+
+  const rewrittenArgs = [];
+  for (const access of accesses) {
+    const variable = variables.get(access.name);
+    if (!variable || !isVectorCppType(variable.type, aliases)) return line;
+    rewrittenArgs.push(
+      `tracecode::trace_index_ref(${access.name}, ${cppStringLiteral(access.name)}, ${access.indexExpression}, ${cppIndexSourceForExpression(access.indexExpression)})`
+    );
+  }
+
+  return `${line.slice(0, swapMatch.index)}swap(${rewrittenArgs.join(', ')})${line.slice(closeIndex + 1)}`;
 }
 
 function scopeTraceContainerAssignmentLine(line, lineNumber) {
@@ -5281,6 +5323,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           : lexicalAccessVariables;
       lineForDriver = rewriteVectorElementMemberAccess(lineForDriver, lexicalAccessVariables, aliases, traceMemberNames);
       lineForDriver = rewriteKeyedIndexSourceInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
+      lineForDriver = rewriteVectorSwapInstrumentation(lineForDriver, accessVariables, aliases);
       lineForDriver = scopeTraceContainerAssignmentLine(lineForDriver, lineNumber);
       lineForDriver = rewriteNestedIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteVectorIndexedWriteInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);

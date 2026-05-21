@@ -38,6 +38,20 @@
       ]
     }
   },
+  "expectEventAssertionsByLanguage": {
+    "csharp": {
+      "pop": [
+        {
+          "kind": "mutate",
+          "variable": "values",
+          "method": "RemoveAt",
+          "args": [
+            2
+          ]
+        }
+      ]
+    }
+  },
   "expectByLanguage": {
     "python": {
       "pop": {
