@@ -1842,7 +1842,7 @@ class KeyedRangeReadIterator {
  private:
   void emit_iteration_bind_read() const {
     if (key_binding_name_ && *key_binding_name_) {
-      container_.emit_iteration_bind_read(iterator_->first, to_json(iterator_->first), line_, key_binding_name_);
+      container_.emit_iteration_bind_read(iterator_->first, to_json(iterator_->second), line_, key_binding_name_);
     } else {
       container_.emit_read(iterator_->first, line_, to_json(iterator_->second));
     }

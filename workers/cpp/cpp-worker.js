@@ -4961,7 +4961,8 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariab
     return variables;
   }
 
-  const declarationMatch = collapsed.match(/^((?:(?:const|unsigned|long|short|signed)\s+)*(?:(?:std::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?(?:\s*<.+>)?(?:\s*[*&])?))\s+(.+);\s*$/);
+  const scalarDeclarationMatch = collapsed.match(/^((?:(?:const|unsigned|long|short|signed)\s+)*(?:bool|char|int|long|float|double|string|size_t|std::size_t)(?:\s*[*&])?)\s+(.+);\s*$/);
+  const declarationMatch = scalarDeclarationMatch ?? collapsed.match(/^((?:(?:const|unsigned|long|short|signed)\s+)*(?:(?:std::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?(?:\s*<.+>)?(?:\s*[*&])?))\s+(.+);\s*$/);
   if (!declarationMatch) return variables;
   const [, rawType, declaratorsSource] = declarationMatch;
   const rawTypeSerializable = isSnapshotSerializableCppType(rawType, aliases);
@@ -4988,6 +4989,12 @@ function extractDeclaredSnapshotVariables(line, aliases = new Map(), knownVariab
     }
   }
   return variables;
+}
+
+function extractMultilineStatementStartDeclaredSnapshotVariables(line, aliases = new Map(), knownVariables = null) {
+  const collapsed = stripCppLineCommentPreservingStrings(line).replace(/\s*\n\s*/g, ' ').trim();
+  if (!collapsed || /;\s*$/.test(collapsed)) return [];
+  return extractDeclaredSnapshotVariables(`${collapsed};`, aliases, knownVariables);
 }
 
 function instrumentCppSourceForTracing(source, functionName, options = {}) {
@@ -5138,6 +5145,26 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     if (shouldInstrumentLine || startsMultilineControlCondition || shouldAnchorMultilineStatement) {
       output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
       output.push(buildCurrentLineInstrumentation(lineNumber));
+    }
+
+    if (
+      startsMultilineStatement &&
+      inFunctionBodyBeforeLine &&
+      activeFrame &&
+      !skipActiveInstrumentation &&
+      !insideLocalClassDeclaration &&
+      (!insideLocalLambdaBody || activeSignature?.lambda)
+    ) {
+      const lineDelta = braceDeltaForLine(line);
+      const declaredScopeDepth = activeFrame.depth + Math.max(0, lineDelta);
+      for (const variable of extractMultilineStatementStartDeclaredSnapshotVariables(line, aliases, activeFrame.variables)) {
+        activeFrame.variables.set(variable.name, {
+          type: variable.type,
+          scopeDepth: declaredScopeDepth,
+          declarationLine: lineNumber,
+          sameLineVisible: false,
+        });
+      }
     }
 
     let lineForDriver = pendingSignature

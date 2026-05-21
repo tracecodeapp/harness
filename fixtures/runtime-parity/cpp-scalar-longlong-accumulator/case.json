@@ -1,0 +1,116 @@
+{
+  "id": "cpp-scalar-longlong-accumulator",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "nums": [
+      1,
+      4
+    ]
+  },
+  "anchors": {
+    "lowInit": {
+      "cpp": "long long low = static_cast<long long>(nums[0]);"
+    },
+    "highInit": {
+      "cpp": "long long high = static_cast<long long>(nums[1]);"
+    },
+    "accumulate": {
+      "cpp": "count += high - low;"
+    }
+  },
+  "expect": {
+    "lowInit": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "low",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "low"
+        }
+      ]
+    },
+    "highInit": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "high",
+        "low",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "high"
+        }
+      ]
+    },
+    "accumulate": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "count",
+        "high",
+        "low",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "count"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "lowInit": [
+      {
+        "kind": "write",
+        "variable": "low",
+        "value": 1
+      }
+    ],
+    "highInit": [
+      {
+        "kind": "write",
+        "variable": "high",
+        "value": 4
+      }
+    ],
+    "accumulate": [
+      {
+        "kind": "write",
+        "variable": "count",
+        "value": 8
+      }
+    ]
+  }
+}
