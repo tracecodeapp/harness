@@ -17,6 +17,14 @@
       "java": "total += nums[i];",
       "csharp": "total += nums[i];",
       "cpp": "total += nums[i];"
+    },
+    "header": {
+      "python": "for i in range(len(nums)):",
+      "javascript": "for (let i = 0; i < nums.length; i++) {",
+      "typescript": "for (let i = 0; i < nums.length; i++) {",
+      "java": "for (int i = 0; i < nums.length; i++) {",
+      "csharp": "for (int i = 0; i < nums.Length; i++)",
+      "cpp": "for (int i = 0; i < nums.size(); i++) {"
     }
   },
   "expect": {
@@ -24,7 +32,8 @@
       "eventKinds": [
         "line",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "i",
@@ -36,6 +45,34 @@
           "kind": "read",
           "variable": "nums",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "total"
+        }
+      ]
+    },
+    "header": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "i"
         }
       ]
     }

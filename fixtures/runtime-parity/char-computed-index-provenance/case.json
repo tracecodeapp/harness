@@ -1,0 +1,264 @@
+{
+  "id": "char-computed-index-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "text": "ab"
+  },
+  "anchors": {
+    "increment": {
+      "python": "counts[ord(text[i]) - base] += 1",
+      "javascript": "counts[text.charCodeAt(i) - base] += 1;",
+      "typescript": "counts[text.charCodeAt(i) - base] += 1;",
+      "java": "counts[text.charAt(i) - base]++;",
+      "csharp": "counts[text[i] - baseChar]++;",
+      "cpp": "counts[text[i] - base]++;"
+    }
+  },
+  "expect": {
+    "increment": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "base",
+        "counts",
+        "i",
+        "text"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "increment": [
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "ord(text[i]) - base"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "ord(text[i]) - base"
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "increment": [
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text.charCodeAt(i) - base"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text.charCodeAt(i) - base"
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "increment": [
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text.charCodeAt(i) - base"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text.charCodeAt(i) - base"
+          ]
+        }
+      ]
+    },
+    "java": {
+      "increment": [
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text.charAt(i) - base"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text.charAt(i) - base"
+          ]
+        }
+      ]
+    },
+    "csharp": {
+      "increment": [
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text[i] - baseChar"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text[i] - baseChar"
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "increment": [
+        {
+          "kind": "read",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text[i] - base"
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "text[i] - base"
+          ]
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "increment": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "base",
+          "counts",
+          "i",
+          "text"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "counts",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "text",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "counts",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "csharp": {
+      "increment": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "baseChar",
+          "counts",
+          "i",
+          "text"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "counts",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "counts",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "increment": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "base",
+          "counts",
+          "i",
+          "text"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "counts",
+            "pathDepth": 1
+          },
+          {
+            "kind": "read",
+            "variable": "text",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "counts",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  }
+}

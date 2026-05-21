@@ -513,16 +513,45 @@ function resolveReferenceGraph(
   return out;
 }
 
+function cloneInputGraph(value: unknown, cloned: WeakMap<object, unknown> = new WeakMap()): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+
+  if (cloned.has(value)) {
+    return cloned.get(value);
+  }
+
+  if (Array.isArray(value)) {
+    const out: unknown[] = [];
+    cloned.set(value, out);
+    for (const item of value) {
+      out.push(cloneInputGraph(item, cloned));
+    }
+    return out;
+  }
+
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+
+  const out: Record<string, unknown> = {};
+  cloned.set(value, out);
+  for (const [key, nested] of Object.entries(value)) {
+    out[key] = cloneInputGraph(nested, cloned);
+  }
+  return out;
+}
+
 function normalizeInputs(inputs: Record<string, unknown>): Record<string, unknown> {
   if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return {};
   const byId = new Map<string, Record<string, unknown>>();
   collectReferenceTargets(inputs, byId, new WeakSet<object>());
   if (byId.size === 0) {
-    return inputs;
+    return cloneInputGraph(inputs) as Record<string, unknown>;
   }
   const hydrated = resolveReferenceGraph(inputs, byId, new WeakMap<object, unknown>());
   if (!hydrated || typeof hydrated !== 'object' || Array.isArray(hydrated)) {
-    return inputs;
+    return cloneInputGraph(inputs) as Record<string, unknown>;
   }
   return hydrated as Record<string, unknown>;
 }
@@ -535,6 +564,7 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
   if (firstValue === null || firstValue === undefined) return null;
   const root: Record<string, unknown> = {
     val: firstValue,
+    value: firstValue,
     left: null,
     right: null,
   };
@@ -549,6 +579,7 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
     if (leftValue !== null && leftValue !== undefined) {
       const leftNode: Record<string, unknown> = {
         val: leftValue,
+        value: leftValue,
         left: null,
         right: null,
       };
@@ -562,6 +593,7 @@ function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown>
     if (rightValue !== null && rightValue !== undefined) {
       const rightNode: Record<string, unknown> = {
         val: rightValue,
+        value: rightValue,
         left: null,
         right: null,
       };
@@ -584,6 +616,7 @@ function materializeTreeInput(value: unknown): unknown {
   if (isLikelyTreeNodeValue(record)) {
     const node: Record<string, unknown> = {
       val: record.val ?? record.value ?? null,
+      value: record.val ?? record.value ?? null,
       left: materializeTreeInput(record.left ?? null),
       right: materializeTreeInput(record.right ?? null),
     };
@@ -597,6 +630,7 @@ function materializeTreeInput(value: unknown): unknown {
   if (taggedRecord.__type__ === 'TreeNode') {
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
+      value: taggedRecord.val ?? taggedRecord.value ?? null,
       left: materializeTreeInput(taggedRecord.left ?? null),
       right: materializeTreeInput(taggedRecord.right ?? null),
     };
@@ -619,11 +653,12 @@ function materializeListInput(
     if (value.length === 0) return null;
     const head: Record<string, unknown> = {
       val: value[0],
+      value: value[0],
       next: null,
     };
     let current: Record<string, unknown> = head;
     for (let i = 1; i < value.length; i++) {
-      const nextNode: Record<string, unknown> = { val: value[i], next: null };
+      const nextNode: Record<string, unknown> = { val: value[i], value: value[i], next: null };
       current.next = nextNode;
       current = nextNode;
     }
@@ -644,6 +679,7 @@ function materializeListInput(
     }
     const node: Record<string, unknown> = {
       val: taggedRecord.val ?? taggedRecord.value ?? null,
+      value: taggedRecord.val ?? taggedRecord.value ?? null,
       next: null,
     };
     materialized.set(record as object, node);

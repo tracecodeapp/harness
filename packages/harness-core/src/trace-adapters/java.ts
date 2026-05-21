@@ -1,5 +1,6 @@
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
+  withRuntimeTraceOptions,
   type RuntimeTraceEvent,
   type RuntimeTrace,
   type RuntimeTraceOptions,
@@ -223,6 +224,7 @@ function expandJavaLoopHeaderTraceEvents(
       expanded.push(cloneRuntimeEventAtLine(event, headerLine));
       for (const [variable, snapshotEvent] of latestSnapshotByVariable) {
         if (headerInfo.excludedVariables.has(variable)) continue;
+        if (headerInfo.headerVariables.has(variable)) continue;
         expanded.push(cloneRuntimeEventAtLine(snapshotEvent, headerLine));
       }
       lastLineEventLine = headerLine;
@@ -262,6 +264,17 @@ function nativeJavaTraceEventsToTrace(
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid Java native runtime trace event: ${message}\n${event.slice(0, 500)}`);
     }
+    if (parsed.kind === 'stdout' && !('text' in parsed)) {
+      const value = (parsed as RuntimeTraceEvent & { value?: unknown }).value;
+      const rest = { ...(parsed as RuntimeTraceEvent & { value?: unknown }) };
+      delete rest.value;
+      return {
+        ...rest,
+        text: value === undefined || value === null ? '' : String(value),
+        runId,
+        ...(options.file ? { file: options.file } : {}),
+      } as RuntimeTraceEvent;
+    }
     return {
       ...parsed,
       runId,
@@ -271,14 +284,14 @@ function nativeJavaTraceEventsToTrace(
   parsedEvents = removeSameLineMutationDeclarationSnapshotEvents(parsedEvents, sourceText);
   parsedEvents = expandJavaLoopHeaderTraceEvents(parsedEvents, sourceText);
 
-  return {
+  return withRuntimeTraceOptions({
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language: 'java',
     runId,
     events: parsedEvents,
     lineEventCount: parsedEvents.filter((event) => event.kind === 'line').length,
     traceStepCount: parsedEvents.length,
-  };
+  }, options);
 }
 
 export function javaTraceHooksEventsToRuntimeTrace(

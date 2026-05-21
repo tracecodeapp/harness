@@ -68,24 +68,17 @@
   "expectByLanguage": {
     "python": {
       "fieldIndexedRead": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "picked",
-          "self"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "self",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "self"
+          },
+          {
+            "kind": "write",
+            "variable": "picked"
           }
-        ]
-      },
-      "fieldIndexedWrite": {
+        ],
         "eventKinds": [
           "line",
           "read",
@@ -95,41 +88,46 @@
         "variableSnapshots": [
           "picked",
           "self"
-        ],
+        ]
+      },
+      "fieldIndexedWrite": {
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "self",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "self"
           },
           {
             "kind": "write",
-            "variable": "self",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "self"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "self"
         ]
       }
     },
     "java": {
       "fieldIndexedRead": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "picked",
-          "values"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "picked"
           }
-        ]
-      },
-      "fieldIndexedWrite": {
+        ],
         "eventKinds": [
           "line",
           "read",
@@ -137,42 +135,69 @@
           "write"
         ],
         "variableSnapshots": [
-          "picked",
-          "values"
-        ],
+          "picked"
+        ]
+      },
+      "fieldIndexedWrite": {
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
           },
           {
             "kind": "write",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked"
         ]
       }
     },
     "cpp": {
       "fieldIndexedRead": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "picked"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "this",
-            "pathDepth": 3
+            "pathDepth": 3,
+            "variable": "this"
+          },
+          {
+            "kind": "write",
+            "variable": "picked"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked"
         ]
       },
       "fieldIndexedWrite": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 3,
+            "variable": "this"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 3,
+            "variable": "this"
+          }
+        ],
         "eventKinds": [
           "line",
           "read",
@@ -182,40 +207,22 @@
         "variableSnapshots": [
           "picked",
           "this"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "this",
-            "pathDepth": 3
-          },
-          {
-            "kind": "write",
-            "variable": "this",
-            "pathDepth": 3
-          }
         ]
       }
     },
     "csharp": {
       "fieldIndexedRead": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "picked"
-        ],
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
+          },
+          {
+            "kind": "write",
+            "variable": "picked"
           }
-        ]
-      },
-      "fieldIndexedWrite": {
+        ],
         "eventKinds": [
           "line",
           "read",
@@ -224,18 +231,127 @@
         ],
         "variableSnapshots": [
           "picked"
-        ],
+        ]
+      },
+      "fieldIndexedWrite": {
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
           },
           {
             "kind": "write",
-            "variable": "values",
-            "pathDepth": 2
+            "pathDepth": 2,
+            "variable": "values"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked"
+        ]
+      }
+    },
+    "javascript": {
+      "fieldIndexedRead": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "this"
+          },
+          {
+            "kind": "write",
+            "variable": "picked"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "this"
+        ]
+      },
+      "fieldIndexedWrite": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "this"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "this"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "this"
+        ]
+      }
+    },
+    "typescript": {
+      "fieldIndexedRead": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "this"
+          },
+          {
+            "kind": "write",
+            "variable": "picked"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "this"
+        ]
+      },
+      "fieldIndexedWrite": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "this"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 2,
+            "variable": "this"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "picked",
+          "this"
         ]
       }
     }
@@ -272,82 +388,168 @@
     "python": {
       "accessTargets": [
         {
+          "count": 1,
           "kind": "read",
-          "variable": "self",
           "pathDepth": 1,
-          "count": 1
+          "variable": "self"
         },
         {
+          "count": 1,
           "kind": "write",
-          "variable": "self",
           "pathDepth": 1,
-          "count": 1
+          "variable": "self"
         },
         {
+          "count": 1,
           "kind": "write",
-          "variable": "self",
           "pathDepth": 2,
-          "count": 1
+          "variable": "self"
         },
         {
+          "count": 1,
+          "kind": "write",
+          "variable": "picked"
+        },
+        {
+          "count": 2,
           "kind": "read",
-          "variable": "self",
           "pathDepth": 2,
-          "count": 2
+          "variable": "self"
         }
       ]
     },
     "java": {
       "accessTargets": [
         {
+          "count": 1,
           "kind": "write",
-          "variable": "values",
           "pathDepth": 2,
-          "count": 1
+          "variable": "values"
         },
         {
+          "count": 1,
+          "kind": "write",
+          "variable": "picked"
+        },
+        {
+          "count": 2,
           "kind": "read",
-          "variable": "values",
           "pathDepth": 2,
-          "count": 2
+          "variable": "values"
         }
       ]
     },
     "cpp": {
       "accessTargets": [
         {
+          "count": 1,
           "kind": "read",
-          "variable": "this",
           "pathDepth": 1,
-          "count": 1
+          "variable": "this"
         },
         {
+          "count": 1,
           "kind": "write",
-          "variable": "this",
           "pathDepth": 3,
-          "count": 1
+          "variable": "this"
         },
         {
+          "count": 1,
+          "kind": "write",
+          "variable": "picked"
+        },
+        {
+          "count": 2,
           "kind": "read",
-          "variable": "this",
           "pathDepth": 3,
-          "count": 2
+          "variable": "this"
         }
       ]
     },
     "csharp": {
       "accessTargets": [
         {
+          "count": 1,
           "kind": "write",
-          "variable": "values",
           "pathDepth": 2,
-          "count": 1
+          "variable": "values"
         },
         {
+          "count": 1,
+          "kind": "write",
+          "variable": "picked"
+        },
+        {
+          "count": 2,
           "kind": "read",
-          "variable": "values",
           "pathDepth": 2,
-          "count": 2
+          "variable": "values"
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "this"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "this"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 2,
+          "variable": "this"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "picked"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "this"
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "this"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "this"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 2,
+          "variable": "this"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "picked"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "this"
         }
       ]
     }

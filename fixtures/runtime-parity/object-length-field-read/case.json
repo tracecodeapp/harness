@@ -57,5 +57,45 @@
         }
       ]
     }
+  },
+  "expectByLanguage": {
+    "java": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "box",
+          "length"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "box",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "box"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "box",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
   }
 }

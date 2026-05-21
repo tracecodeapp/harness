@@ -81,6 +81,36 @@ if (!sandbox.__tracecodeCppTest.state().hasToolchainPromise || !sandbox.__tracec
   throw new Error('C++ warmup should retain the initialized compiler promises');
 }
 
+const describeCppPayload = (method, payload) => {
+  const label = payload?.name || payload?.functionName || payload?.executionStyle || 'unknown';
+  return method + ' ' + label;
+};
+
+const wrapCppTestMethod = (method) => {
+  const original = sandbox.__tracecodeCppTest[method];
+  sandbox.__tracecodeCppTest[method] = async (payload) => {
+    const label = describeCppPayload(method, payload);
+    console.log('RUN: C++ ' + label);
+    const startedAt = performance.now();
+    try {
+      const result = await original(payload);
+      const status = result?.success === false ? 'FAIL' : 'PASS';
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const detail = result?.success === false && result?.error ? ': ' + result.error : '';
+      console.log(status + ': C++ ' + label + ' (' + elapsedMs + 'ms)' + detail);
+      return result;
+    } catch (error) {
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      console.log('FAIL: C++ ' + label + ' (' + elapsedMs + 'ms): ' + (error?.stack || error));
+      throw error;
+    }
+  };
+};
+
+for (const method of ['handleCompileRun', 'handleExecuteWithTracing', 'handleExecuteCodeInterview']) {
+  wrapCppTestMethod(method);
+}
+
 const cases = [
   {
     name: 'scalar add',
@@ -367,6 +397,31 @@ for (const testCase of cases) {
   }
 }
 
+const runtimeCrashDiagnostics = await sandbox.__tracecodeCppTest.handleCompileRun({
+  name: 'runtime crash diagnostics',
+  code: [
+    'class Solution {',
+    'public:',
+    '  int fail() {',
+    '    std::printf("before crash\\n");',
+    '    std::fprintf(stderr, "fatal detail\\n");',
+    '    std::fflush(stdout);',
+    '    std::fflush(stderr);',
+    '    std::exit(5);',
+    '    return 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'fail',
+  inputs: {},
+});
+if (runtimeCrashDiagnostics.success) {
+  throw new Error('C++ runtime crash diagnostics case should fail');
+}
+if (!String(runtimeCrashDiagnostics.error || '').includes('fatal detail') || !runtimeCrashDiagnostics.consoleOutput?.includes('before crash')) {
+  throw new Error('C++ runtime crash diagnostics should preserve stderr/stdout, received ' + JSON.stringify(runtimeCrashDiagnostics));
+}
+
 const listArrayResult = await sandbox.__tracecodeCppTest.handleCompileRun({
   code: [
     'class Solution {',
@@ -554,6 +609,100 @@ if (!nodeTracing.trace.events.some((event) => event.kind === 'return' && event.v
   throw new Error('C++ ListNode tracing should include serialized return value, received ' + JSON.stringify(nodeTracing.trace.events));
 }
 
+const nodeFieldReadTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int sumPair(ListNode* head) {',
+    '    int first = head ? head->val : 0;',
+    '    ListNode* next = head ? head->next : nullptr;',
+    '    int second = next ? next->val : 0;',
+    '    return first + second;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'sumPair',
+  inputs: { head: [4, 9] },
+  options: {},
+});
+if (!nodeFieldReadTracing.success || nodeFieldReadTracing.output !== 13) {
+  throw new Error('C++ ListNode field-read tracing failed: ' + JSON.stringify(nodeFieldReadTracing));
+}
+const nodeFieldReadEvents = nodeFieldReadTracing.trace.events;
+if (!nodeFieldReadEvents.some((event) => event.kind === 'read' && event.target?.variable === 'head' && event.target?.path?.[0] === 'val' && event.value === 4)) {
+  throw new Error('C++ ListNode head->val should emit field read, received ' + JSON.stringify(nodeFieldReadEvents));
+}
+if (!nodeFieldReadEvents.some((event) => event.kind === 'read' && event.target?.variable === 'head' && event.target?.path?.[0] === 'next' && event.value?.__type__ === 'ListNode')) {
+  throw new Error('C++ ListNode head->next should emit field read, received ' + JSON.stringify(nodeFieldReadEvents));
+}
+if (!nodeFieldReadEvents.some((event) => event.kind === 'read' && event.target?.variable === 'next' && event.target?.path?.[0] === 'val' && event.value === 9)) {
+  throw new Error('C++ ListNode next->val should emit field read, received ' + JSON.stringify(nodeFieldReadEvents));
+}
+
+const stackNodeDeclarationTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct ListNode {',
+    '  int val;',
+    '  ListNode* next;',
+    '  ListNode() : val(0), next(nullptr) {}',
+    '  ListNode(int x) : val(x), next(nullptr) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  int makeDummy() {',
+    '    ListNode dummy(0);',
+    '    return dummy.val;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'makeDummy',
+  inputs: {},
+  options: {},
+});
+if (!stackNodeDeclarationTracing.success || stackNodeDeclarationTracing.output !== 0) {
+  throw new Error('C++ stack ListNode declaration tracing failed: ' + JSON.stringify(stackNodeDeclarationTracing));
+}
+const stackNodeEvents = stackNodeDeclarationTracing.trace.events;
+const stackNodeWrite = stackNodeEvents.find((event) =>
+  event.kind === 'write' &&
+  event.line === 10 &&
+  event.target?.variable === 'dummy'
+);
+if (stackNodeWrite?.value?.__type__ !== 'ListNode' || stackNodeWrite.value.val !== 0) {
+  throw new Error('C++ stack ListNode declaration should emit object write, received ' + JSON.stringify(stackNodeEvents));
+}
+
+const nodeIdentityTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  ListNode* reverseList(ListNode* head) {',
+    '    ListNode* prev = nullptr;',
+    '    ListNode* curr = head;',
+    '    while (curr) {',
+    '      ListNode* next = curr->next;',
+    '      curr->next = prev;',
+    '      prev = curr;',
+    '      curr = next;',
+    '    }',
+    '    return prev;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'reverseList',
+  inputs: { head: [1, 2, 3] },
+  options: {},
+});
+if (!nodeIdentityTracing.success) {
+  throw new Error('C++ ListNode identity tracing failed: ' + JSON.stringify(nodeIdentityTracing));
+}
+const nodeIdentityEvents = nodeIdentityTracing.trace.events;
+const firstMoveHead = nodeIdentityEvents.find((event) => event.kind === 'snapshot' && event.line === 10 && event.target?.variable === 'head')?.value;
+const firstMoveCurr = nodeIdentityEvents.find((event) => event.kind === 'snapshot' && event.line === 10 && event.target?.variable === 'curr' && event.value?.val === 2)?.value;
+if (!firstMoveHead?.__id__ || !firstMoveCurr?.__id__ || firstMoveHead.__id__ === firstMoveCurr.__id__) {
+  throw new Error('C++ ListNode snapshots should keep distinct object ids across variables in one frame, received ' + JSON.stringify(nodeIdentityEvents));
+}
+
 const treeTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -582,6 +731,27 @@ if (!treeTracing.trace.events.some((event) => event.kind === 'call' && event.arg
 }
 if (!treeTracing.trace.events.some((event) => event.kind === 'return' && event.value?.right?.__ref__ === event.value?.left?.__id__)) {
   throw new Error('C++ TreeNode tracing should include aliased return value, received ' + JSON.stringify(treeTracing.trace.events));
+}
+
+const treeStringLiteralMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  TreeNode* runCodec(TreeNode* root) {',
+    '    vector<string> vals;',
+    '    vals.push_back(to_string(root->val));',
+    '    vals.push_back("null");',
+    '    if (vals[1] != "null") return new TreeNode(stoi(vals[1]));',
+    '    return new TreeNode(stoi(vals[0]));',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'runCodec',
+  inputs: { root: { val: 7 } },
+  options: {},
+});
+if (!treeStringLiteralMutationTrace.success || treeStringLiteralMutationTrace.output?.val !== 7) {
+  throw new Error('C++ tracing should preserve string literal mutation args for tree codecs, received ' + JSON.stringify(treeStringLiteralMutationTrace));
 }
 
 const graphSerializationResult = await sandbox.__tracecodeCppTest.handleCompileRun({
@@ -681,6 +851,82 @@ if (!traced.trace.events.some((event) => event.kind === 'return' && event.value 
 }
 if (!traced.trace.events.some((event) => event.kind === 'line' && event.callStack?.some((frame) => frame.function === 'add'))) {
   throw new Error('C++ tracing should attach callStack frames to runtime events, received ' + JSON.stringify(traced.trace.events));
+}
+
+const priorityQueueMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int kthSmallest(vector<vector<int>>& matrix, int k) {',
+    '    using Entry = array<int, 3>;',
+    '    auto compare = [](const Entry& a, const Entry& b) { return a[0] > b[0]; };',
+    '    priority_queue<Entry, vector<Entry>, decltype(compare)> heap(compare);',
+    '    heap.push({matrix[0][0], 0, 0});',
+    '    heap.pop();',
+    '    return k;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'kthSmallest',
+  inputs: { matrix: [[1]], k: 1 },
+  options: {},
+});
+if (!priorityQueueMutationTrace.success || priorityQueueMutationTrace.output !== 1) {
+  throw new Error('C++ priority_queue tracing failed: ' + JSON.stringify(priorityQueueMutationTrace));
+}
+const priorityQueueMutationEvents = priorityQueueMutationTrace.trace.events;
+if (!priorityQueueMutationEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'push' && JSON.stringify(event.args) === JSON.stringify([[1, 0, 0]]))) {
+  throw new Error('C++ priority_queue push should emit mutate with evaluated args, received ' + JSON.stringify(priorityQueueMutationEvents));
+}
+if (!priorityQueueMutationEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'pop' && JSON.stringify(event.args) === JSON.stringify([]))) {
+  throw new Error('C++ priority_queue pop should emit mutate with empty args, received ' + JSON.stringify(priorityQueueMutationEvents));
+}
+
+const stringIndexedWriteTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  string swapOne(string s) {',
+    '    int right = 1;',
+    '    char temp = s[right];',
+    '    s[right] = temp;',
+    '    return s;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'swapOne',
+  inputs: { s: 'ab' },
+  options: {},
+});
+if (!stringIndexedWriteTrace.success || stringIndexedWriteTrace.output !== 'ab') {
+  throw new Error('C++ string indexed write tracing failed: ' + JSON.stringify(stringIndexedWriteTrace));
+}
+const stringIndexedAssignmentEvents = stringIndexedWriteTrace.trace.events;
+if (!stringIndexedAssignmentEvents.some((event) => event.kind === 'write' && event.target?.variable === 's' && JSON.stringify(event.target.path) === JSON.stringify([1]) && JSON.stringify(event.target.indexSources) === JSON.stringify(['right']) && event.value === 'b')) {
+  throw new Error('C++ string indexed assignment should emit indexed write with provenance, received ' + JSON.stringify(stringIndexedAssignmentEvents));
+}
+
+const eraseArgsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  vector<int> trim(vector<int>& input) {',
+    '    vector<int> stream = input;',
+    '    stream.erase(stream.begin());',
+    '    return stream;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'trim',
+  inputs: { input: [4, 5, 6] },
+  options: {},
+});
+if (!eraseArgsTrace.success || JSON.stringify(eraseArgsTrace.output) !== JSON.stringify([5, 6])) {
+  throw new Error('C++ vector erase tracing failed: ' + JSON.stringify(eraseArgsTrace));
+}
+const vectorEraseArgsEvents = eraseArgsTrace.trace.events;
+if (!vectorEraseArgsEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'stream' && event.method === 'erase' && JSON.stringify(event.args) === JSON.stringify([0]))) {
+  throw new Error('C++ stream.erase(stream.begin()) should emit mutate with evaluated index arg, received ' + JSON.stringify(vectorEraseArgsEvents));
 }
 
 const exceptionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -963,6 +1209,30 @@ if (!singleLineLimitedTrace.trace.events.some((event) => event.kind === 'timeout
   throw new Error('C++ maxSingleLineHits should emit a single-line-limit timeout event, received ' + JSON.stringify(singleLineLimitedTrace.trace.events));
 }
 
+const softLineLimitedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int spin() {',
+    '    int total = 0;',
+    '    for (int i = 0; i < 20; ++i) {',
+    '      total += i;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'spin',
+  inputs: {},
+  options: { maxLineEvents: 4, maxTraceSteps: 1000, maxStoredEvents: 1000, softTraceBudget: true },
+});
+if (!softLineLimitedTrace.success || softLineLimitedTrace.output !== 190) {
+  throw new Error('C++ soft trace budgets should preserve finite program output, received ' + JSON.stringify(softLineLimitedTrace));
+}
+if (!softLineLimitedTrace.traceLimitExceeded || softLineLimitedTrace.timeoutReason !== 'line-limit') {
+  throw new Error('C++ soft trace budgets should still report line-limit metadata, received ' + JSON.stringify(softLineLimitedTrace));
+}
+
 const minimalTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -983,9 +1253,9 @@ if (!minimalTrace.success || minimalTrace.output !== 1) {
   throw new Error('C++ minimalTrace should preserve execution, received ' + JSON.stringify(minimalTrace));
 }
 if (!minimalTrace.trace.events.some((event) => event.kind === 'line') || !minimalTrace.trace.events.some((event) => event.kind === 'return')) {
-  throw new Error('C++ minimalTrace should keep control-flow events, received ' + JSON.stringify(minimalTrace.trace.events));
+  throw new Error('C++ minimalTrace should keep line/return events, received ' + JSON.stringify(minimalTrace.trace.events));
 }
-if (minimalTrace.trace.events.some((event) => ['snapshot', 'read', 'write', 'mutate', 'control'].includes(event.kind))) {
+if (minimalTrace.trace.events.some((event) => ['snapshot', 'read', 'write', 'mutate'].includes(event.kind))) {
   throw new Error('C++ minimalTrace should suppress detail events, received ' + JSON.stringify(minimalTrace.trace.events));
 }
 
@@ -1060,6 +1330,107 @@ if (!vectorEvents.some((event) => event.kind === 'snapshot' && event.target?.var
 }
 if (!vectorEvents.some((event) => event.kind === 'read' && event.target?.variable === 'nums' && event.target.path?.length === 1)) {
   throw new Error('C++ vector tracing should emit indexed reads, received ' + JSON.stringify(vectorEvents));
+}
+if (!vectorEvents.some((event) => event.kind === 'read' && event.target?.variable === 'nums' && JSON.stringify(event.target.indexSources) === JSON.stringify(['mid']))) {
+  throw new Error('C++ vector tracing should emit indexSources for nums[mid], received ' + JSON.stringify(vectorEvents));
+}
+if (!vectorEvents.some((event) => event.kind === 'write' && event.line === 9 && event.target?.variable === 'left' && event.value === 3)) {
+  throw new Error('C++ inline conditional scalar assignment should emit left write on line 9, received ' + JSON.stringify(vectorEvents));
+}
+
+const vectorBoolTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  bool visit() {',
+    '    vector<bool> visited(3, false);',
+    '    int nodeIdx = 1;',
+    '    visited[nodeIdx] = true;',
+    '    int neighborIdx = 1;',
+    '    if (!visited[neighborIdx]) return false;',
+    '    return visited[1];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: {},
+});
+if (!vectorBoolTrace.success || vectorBoolTrace.output !== true) {
+  throw new Error('C++ vector<bool> tracing failed: ' + JSON.stringify(vectorBoolTrace));
+}
+const vectorBoolEvents = vectorBoolTrace.trace.events;
+if (!vectorBoolEvents.some((event) => event.kind === 'snapshot' && event.target?.variable === 'visited' && JSON.stringify(event.value) === JSON.stringify([false, false, false]))) {
+  throw new Error('C++ vector<bool> should snapshot boolean vectors, received ' + JSON.stringify(vectorBoolEvents));
+}
+if (!vectorBoolEvents.some((event) => event.kind === 'write' && event.line === 6 && event.target?.variable === 'visited' && JSON.stringify(event.target.path) === JSON.stringify([1]) && event.value === true && JSON.stringify(event.target.indexSources) === JSON.stringify(['nodeIdx']))) {
+  throw new Error('C++ vector<bool> indexed assignment should emit write indexSources, received ' + JSON.stringify(vectorBoolEvents));
+}
+if (!vectorBoolEvents.some((event) => event.kind === 'read' && event.line === 8 && event.target?.variable === 'visited' && JSON.stringify(event.target.path) === JSON.stringify([1]) && event.value === true && JSON.stringify(event.target.indexSources) === JSON.stringify(['neighborIdx']))) {
+  throw new Error('C++ vector<bool> indexed condition should emit read indexSources, received ' + JSON.stringify(vectorBoolEvents));
+}
+
+const vectorUnaryWriteTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int bump(vector<int>& values, int index) {',
+    '    values[index]++;',
+    '    values[index]--;',
+    '    return values[index];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'bump',
+  inputs: { values: [2, 4], index: 1 },
+  options: {},
+});
+if (!vectorUnaryWriteTrace.success || vectorUnaryWriteTrace.output !== 4) {
+  throw new Error('C++ vector unary write tracing failed: ' + JSON.stringify(vectorUnaryWriteTrace));
+}
+const vectorUnaryEvents = vectorUnaryWriteTrace.trace.events;
+if (!vectorUnaryEvents.some((event) => event.kind === 'read' && event.line === 4 && event.target?.variable === 'values' && JSON.stringify(event.target.indexSources) === JSON.stringify(['index']))) {
+  throw new Error('C++ vector unary increment should emit read indexSources, received ' + JSON.stringify(vectorUnaryEvents));
+}
+if (!vectorUnaryEvents.some((event) => event.kind === 'write' && event.line === 4 && event.target?.variable === 'values' && event.value === 5 && JSON.stringify(event.target.indexSources) === JSON.stringify(['index']))) {
+  throw new Error('C++ vector unary increment should emit write indexSources, received ' + JSON.stringify(vectorUnaryEvents));
+}
+if (!vectorUnaryEvents.some((event) => event.kind === 'write' && event.line === 5 && event.target?.variable === 'values' && event.value === 4 && JSON.stringify(event.target.indexSources) === JSON.stringify(['index']))) {
+  throw new Error('C++ vector unary decrement should emit write indexSources, received ' + JSON.stringify(vectorUnaryEvents));
+}
+
+const slidingWindowConditionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  vector<int> maxSlidingWindow(vector<int>& nums, int k) {',
+    '    vector<int> out;',
+    '    deque<int> q;',
+    '    for (int i = 0; i < nums.size(); i++) {',
+    '      int num = nums[i];',
+    '      while (!q.empty() && nums[q.back()] < num) {',
+    '        q.pop_back();',
+    '      }',
+    '      q.push_back(i);',
+    '      if (i >= k - 1) out.push_back(nums[q.front()]);',
+    '    }',
+    '    return out;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'maxSlidingWindow',
+  inputs: { nums: [1, 3, 2, 5], k: 2 },
+  options: {},
+});
+if (!slidingWindowConditionTrace.success || JSON.stringify(slidingWindowConditionTrace.output) !== JSON.stringify([3, 3, 5])) {
+  throw new Error('C++ sliding-window trace failed: ' + JSON.stringify(slidingWindowConditionTrace));
+}
+const slidingWindowEvents = slidingWindowConditionTrace.trace.events;
+if (!slidingWindowEvents.some((event) => event.kind === 'read' && event.target?.variable === 'nums' && event.line === 8)) {
+  throw new Error('C++ while-condition indexed read should carry condition line 8, received ' + JSON.stringify(slidingWindowEvents));
+}
+if (slidingWindowEvents.some((event) => event.kind === 'read' && event.target?.variable === 'nums' && event.line === 9)) {
+  throw new Error('C++ while-condition indexed read leaked body line 9, received ' + JSON.stringify(slidingWindowEvents));
 }
 
 const multilineSignatureTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -1192,6 +1563,34 @@ if (scopedEvents.filter((event) => event.kind === 'line' && event.line === 11).l
   throw new Error('C++ single-line for body should emit body line events per iteration, received ' + JSON.stringify(scopedEvents));
 }
 
+const nativeNestedVectorTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int dpMin() {',
+    '    std::vector<std::vector<int>> dp(2, std::vector<int>(2, 0));',
+    '    dp[0][1] = 4;',
+    '    dp[1][0] = 5;',
+    '    dp[1][1] = 1 + std::min({dp[0][1], dp[1][0], dp[0][0]});',
+    '    return dp[1][1];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'dpMin',
+  inputs: {},
+  options: {},
+});
+if (!nativeNestedVectorTrace.success || nativeNestedVectorTrace.output !== 1) {
+  throw new Error('C++ native nested vector tracing should compile around std::min initializer lists: ' + JSON.stringify(nativeNestedVectorTrace));
+}
+const nativeNestedVectorEvents = nativeNestedVectorTrace.trace.events;
+if (!nativeNestedVectorEvents.some((event) => event.kind === 'write' && event.target?.variable === 'dp' && event.target.path?.[0] === 1 && event.target.path?.[1] === 1 && event.value === 1)) {
+  throw new Error('C++ native nested vector writes should emit V4 write events, received ' + JSON.stringify(nativeNestedVectorEvents));
+}
+if (!nativeNestedVectorEvents.some((event) => event.kind === 'read' && event.target?.variable === 'dp' && event.target.path?.[0] === 0 && event.target.path?.[1] === 1)) {
+  throw new Error('C++ native nested vector reads should emit V4 read events, received ' + JSON.stringify(nativeNestedVectorEvents));
+}
+
 const vectorMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -1217,6 +1616,311 @@ if (!mutationEvents.some((event) => event.kind === 'mutate' && event.target?.var
 }
 if (!mutationEvents.some((event) => event.kind === 'write' && event.target?.variable === 'out' && event.target.path?.[0] === 0 && event.value === 2)) {
   throw new Error('C++ vector tracing should emit indexed write, received ' + JSON.stringify(mutationEvents));
+}
+
+const compactPlainVectorMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int collect() {',
+    '    vector<string> ineligible;',
+    '    string c = "x";',
+    '    if (c.size()) ineligible.push_back(c);',
+    '    return ineligible.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'collect',
+  inputs: {},
+  options: {},
+});
+if (!compactPlainVectorMutationTrace.success || compactPlainVectorMutationTrace.output !== 1) {
+  throw new Error('C++ compact plain vector mutation tracing failed: ' + JSON.stringify(compactPlainVectorMutationTrace));
+}
+const compactPlainVectorMutationEvents = compactPlainVectorMutationTrace.trace.events;
+if (!compactPlainVectorMutationEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 6 &&
+  event.target?.variable === 'ineligible' &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify(['x'])
+)) {
+  throw new Error('C++ compact if push_back should emit mutation, received ' + JSON.stringify(compactPlainVectorMutationEvents));
+}
+
+const plainStringVectorMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int collect() {',
+    '    map<string, string> emailToName;',
+    '    emailToName["a"] = "Ann";',
+    '    string email = "a";',
+    '    vector<string> names;',
+    '    names.push_back(emailToName[email]);',
+    '    return names.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'collect',
+  inputs: {},
+  options: {},
+});
+if (!plainStringVectorMutationTrace.success || plainStringVectorMutationTrace.output !== 1) {
+  throw new Error('C++ plain string vector mutation tracing failed: ' + JSON.stringify(plainStringVectorMutationTrace));
+}
+const plainStringVectorEvents = plainStringVectorMutationTrace.trace.events;
+if (!plainStringVectorEvents.some((event) => event.kind === 'read' && event.line === 8 && event.target?.variable === 'emailToName' && event.target.path?.[0] === 'a')) {
+  throw new Error('C++ plain vector push_back argument should preserve keyed read, received ' + JSON.stringify(plainStringVectorEvents));
+}
+if (!plainStringVectorEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'names' &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify(['Ann'])
+)) {
+  throw new Error('C++ plain string vector push_back should emit mutation args, received ' + JSON.stringify(plainStringVectorEvents));
+}
+
+const plainSetInsertMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int visit() {',
+    '    unordered_set<int> visited;',
+    '    int v = 7;',
+    '    visited.insert(v);',
+    '    return visited.count(7);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: {},
+});
+if (!plainSetInsertMutationTrace.success || plainSetInsertMutationTrace.output !== 1) {
+  throw new Error('C++ plain set insert tracing failed: ' + JSON.stringify(plainSetInsertMutationTrace));
+}
+const plainSetInsertEvents = plainSetInsertMutationTrace.trace.events;
+if (!plainSetInsertEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 6 &&
+  event.target?.variable === 'visited' &&
+  event.method === 'insert' &&
+  JSON.stringify(event.args) === JSON.stringify([7])
+)) {
+  throw new Error('C++ plain set insert should emit mutation args, received ' + JSON.stringify(plainSetInsertEvents));
+}
+
+const nativeSetReferenceInsertMutationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int visit() {',
+    '    function<void(int, std::unordered_set<int>&)> dfs = [&](int v, std::unordered_set<int>& visited) {',
+    '      visited.insert(v);',
+    '    };',
+    '    unordered_set<int> visited;',
+    '    dfs(7, visited);',
+    '    return visited.count(7);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: {},
+});
+if (!nativeSetReferenceInsertMutationTrace.success || nativeSetReferenceInsertMutationTrace.output !== 1) {
+  throw new Error('C++ native set reference insert tracing failed: ' + JSON.stringify(nativeSetReferenceInsertMutationTrace));
+}
+const nativeSetReferenceInsertEvents = nativeSetReferenceInsertMutationTrace.trace.events;
+if (!nativeSetReferenceInsertEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 5 &&
+  event.target?.variable === 'visited' &&
+  event.method === 'insert' &&
+  JSON.stringify(event.args) === JSON.stringify([7])
+)) {
+  throw new Error('C++ native set reference insert should emit mutation args, received ' + JSON.stringify(nativeSetReferenceInsertEvents));
+}
+
+const trailingCommentDeclarationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int writeKey() {',
+    '    unordered_map<int, int> rightIndex; // key -> index',
+    '    int key = 51;',
+    '    int idx = 1;',
+    '    rightIndex[key] = idx;',
+    '    return rightIndex[key];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'writeKey',
+  inputs: {},
+  options: {},
+});
+if (!trailingCommentDeclarationTrace.success || trailingCommentDeclarationTrace.output !== 1) {
+  throw new Error('C++ trailing-comment declaration tracing failed: ' + JSON.stringify(trailingCommentDeclarationTrace));
+}
+const trailingCommentDeclarationEvents = trailingCommentDeclarationTrace.trace.events;
+if (!trailingCommentDeclarationEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 7 &&
+  event.target?.variable === 'rightIndex' &&
+  event.target.path?.[0] === 51 &&
+  event.value === 1
+)) {
+  throw new Error('C++ declarations with trailing comments should stay traceable, received ' + JSON.stringify(trailingCommentDeclarationEvents));
+}
+
+const blankLineContainerDeclarationTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    int n = 2;',
+    '',
+    '    vector<int> dist(n, 7);',
+    '    return dist[0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!blankLineContainerDeclarationTrace.success || blankLineContainerDeclarationTrace.output !== 7) {
+  throw new Error('C++ blank-line container declaration tracing failed: ' + JSON.stringify(blankLineContainerDeclarationTrace));
+}
+const blankLineContainerDeclarationEvents = blankLineContainerDeclarationTrace.trace.events;
+if (blankLineContainerDeclarationEvents.some((event) => event.kind !== 'line' && event.line === 5)) {
+  throw new Error('C++ blank line before container declaration should not receive state events, received ' + JSON.stringify(blankLineContainerDeclarationEvents));
+}
+if (!blankLineContainerDeclarationEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 6 &&
+  event.target?.variable === 'dist' &&
+  JSON.stringify(event.value) === JSON.stringify([7, 7])
+)) {
+  throw new Error('C++ container declaration after blank line should write on declaration line, received ' + JSON.stringify(blankLineContainerDeclarationEvents));
+}
+
+const stringReferenceIndexedConditionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  bool differs(vector<string>& words) {',
+    '    int i = 0;',
+    '    const string& w1 = words[i];',
+    '    const string& w2 = words[i + 1];',
+    '    int j = 0;',
+    '    if (w1[j] != w2[j]) return true;',
+    '    return false;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'differs',
+  inputs: { words: ['za', 'xb'] },
+  options: {},
+});
+if (!stringReferenceIndexedConditionTrace.success || stringReferenceIndexedConditionTrace.output !== true) {
+  throw new Error('C++ string reference indexed condition tracing failed: ' + JSON.stringify(stringReferenceIndexedConditionTrace));
+}
+const stringReferenceEvents = stringReferenceIndexedConditionTrace.trace.events;
+if (!stringReferenceEvents.some((event) => event.kind === 'read' && event.line === 8 && event.target?.variable === 'w1' && event.target.path?.[0] === 0 && event.value === 'z' && JSON.stringify(event.target.indexSources) === JSON.stringify(['j']))) {
+  throw new Error('C++ string reference condition should read w1[j], received ' + JSON.stringify(stringReferenceEvents));
+}
+if (!stringReferenceEvents.some((event) => event.kind === 'read' && event.line === 8 && event.target?.variable === 'w2' && event.target.path?.[0] === 0 && event.value === 'x' && JSON.stringify(event.target.indexSources) === JSON.stringify(['j']))) {
+  throw new Error('C++ string reference condition should read w2[j], received ' + JSON.stringify(stringReferenceEvents));
+}
+
+const plainArrayTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int plainArrays(string s) {',
+    '    array<int, 3> counts{};',
+    '    counts.fill(0);',
+    "    counts[s[0] - 'a']++;",
+    '    string key = "tea";',
+    '    sort(key.begin(), key.end());',
+    '    int dr[] = {1, -1, 0, 0};',
+    '    return counts[0] + dr[0] + (int)key.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'plainArrays',
+  inputs: { s: 'a' },
+  options: {},
+});
+if (!plainArrayTrace.success || plainArrayTrace.output !== 5) {
+  throw new Error('C++ plain array tracing failed: ' + JSON.stringify(plainArrayTrace));
+}
+const plainArrayEvents = plainArrayTrace.trace.events;
+if (!plainArrayEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'counts' && event.method === 'fill' && JSON.stringify(event.args) === JSON.stringify([0]))) {
+  throw new Error('C++ std::array fill should emit mutation args, received ' + JSON.stringify(plainArrayEvents));
+}
+if (!plainArrayEvents.some((event) => event.kind === 'write' && event.target?.variable === 'counts' && event.target.path?.[0] === 0 && event.value === 1)) {
+  throw new Error('C++ std::array indexed update should emit write evidence, received ' + JSON.stringify(plainArrayEvents));
+}
+if (!plainArrayEvents.some((event) => event.kind === 'read' && event.target?.variable === 'counts' && JSON.stringify(event.target.indexSources) === JSON.stringify(["s[0] - 'a'"]))) {
+  throw new Error('C++ std::array indexed update should preserve char-derived read indexSources, received ' + JSON.stringify(plainArrayEvents));
+}
+if (!plainArrayEvents.some((event) => event.kind === 'write' && event.target?.variable === 'counts' && JSON.stringify(event.target.indexSources) === JSON.stringify(["s[0] - 'a'"]))) {
+  throw new Error('C++ std::array indexed update should preserve char-derived write indexSources, received ' + JSON.stringify(plainArrayEvents));
+}
+if (!plainArrayEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'key' && event.method === 'sort')) {
+  throw new Error('C++ std::sort should emit receiver mutation evidence, received ' + JSON.stringify(plainArrayEvents));
+}
+if (!plainArrayEvents.some((event) => event.kind === 'snapshot' && event.target?.variable === 'key' && event.value === 'aet')) {
+  throw new Error('C++ std::sort should snapshot sorted receiver value, received ' + JSON.stringify(plainArrayEvents));
+}
+if (!plainArrayEvents.some((event) => event.kind === 'snapshot' && event.target?.variable === 'dr' && JSON.stringify(event.value) === JSON.stringify([1, -1, 0, 0]))) {
+  throw new Error('C++ raw C arrays should snapshot as indexed values, received ' + JSON.stringify(plainArrayEvents));
+}
+if (!plainArrayEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 10 &&
+  event.target?.variable === 'dr' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null]) &&
+  event.value === 1
+)) {
+  throw new Error('C++ raw C array literal-index reads should emit indexed read evidence, received ' + JSON.stringify(plainArrayEvents));
+}
+
+const rawArrayVariableIndexTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int rawArrayIndexedRead(int base) {',
+    '    int dr[] = {1, -1, 0, 0};',
+    '    int d = 2;',
+    '    int nr = base + dr[d];',
+    '    return nr;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'rawArrayIndexedRead',
+  inputs: { base: 5 },
+  options: {},
+});
+if (!rawArrayVariableIndexTrace.success || rawArrayVariableIndexTrace.output !== 5) {
+  throw new Error('C++ raw C array variable-index tracing failed: ' + JSON.stringify(rawArrayVariableIndexTrace));
+}
+const rawArrayVariableIndexEvents = rawArrayVariableIndexTrace.trace.events;
+if (!rawArrayVariableIndexEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 6 &&
+  event.target?.variable === 'dr' &&
+  JSON.stringify(event.target.path) === JSON.stringify([2]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['d']) &&
+  event.value === 0
+)) {
+  throw new Error('C++ raw C array variable-index reads should emit indexed read evidence with indexSources, received ' + JSON.stringify(rawArrayVariableIndexEvents));
 }
 
 const vectorApiTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -1284,6 +1988,67 @@ for (const method of ['insert', 'erase']) {
   if (!vectorSwapEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'nums' && event.method === method)) {
     throw new Error('C++ vector tracing should emit ' + method + ' mutation, received ' + JSON.stringify(vectorSwapEvents));
   }
+}
+
+const constNestedVectorIndexTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int maxAssignments(vector<vector<int>>& canDo) {',
+    '    const auto& matrix = canDo;',
+    '    if (matrix.empty()) return 0;',
+    '    int m = static_cast<int>(matrix.size());',
+    '    int n = static_cast<int>(matrix[0].size());',
+    '    vector<vector<int>> adj(m);',
+    '    for (int i = 0; i < m; i++) {',
+    '      for (int j = 0; j < n; j++) {',
+    '        if (matrix[i][j] == 1) adj[i].push_back(j);',
+    '      }',
+    '    }',
+    '    return static_cast<int>(adj.size());',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'maxAssignments',
+  inputs: { canDo: [[1, 1, 0], [0, 1, 1], [1, 0, 0]] },
+  options: {},
+});
+if (!constNestedVectorIndexTrace.success || constNestedVectorIndexTrace.output !== 3) {
+  throw new Error('C++ const nested vector indexed member access should compile and trace, received ' + JSON.stringify(constNestedVectorIndexTrace));
+}
+
+const functionIndexSourceAdjacencyTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int connect() {',
+    '    vector<vector<int>> adjacency(9);',
+    '    auto cellId = [&](int r, int c) { return r * 3 + c; };',
+    '    int r = 1;',
+    '    int c = 1;',
+    '    adjacency[cellId(r, c)].push_back(cellId(r, c + 1));',
+    '    return adjacency[4][0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'connect',
+  inputs: {},
+  options: {},
+});
+if (!functionIndexSourceAdjacencyTrace.success || functionIndexSourceAdjacencyTrace.output !== 5) {
+  throw new Error('C++ function-call indexed adjacency tracing failed: ' + JSON.stringify(functionIndexSourceAdjacencyTrace));
+}
+const functionIndexSourceAdjacencyEvents = functionIndexSourceAdjacencyTrace.trace.events;
+if (!functionIndexSourceAdjacencyEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'adjacency' &&
+  JSON.stringify(event.target.path) === JSON.stringify([4]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['cellId(r, c)']) &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([5])
+)) {
+  throw new Error('C++ adjacency[cellId(...)] push_back should preserve function-call index provenance and args, received ' + JSON.stringify(functionIndexSourceAdjacencyEvents));
 }
 
 const unorderedMapTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -1354,6 +2119,293 @@ for (const method of ['erase', 'clear']) {
   }
 }
 
+const unorderedMapVectorTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    unordered_map<int, vector<int>> graph;',
+    '    int from = 2;',
+    '    int to = 7;',
+    '    graph[from].push_back(to);',
+    '    return graph[from][0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!unorderedMapVectorTrace.success || unorderedMapVectorTrace.output !== 7) {
+  throw new Error('C++ unordered_map<vector> tracing failed: ' + JSON.stringify(unorderedMapVectorTrace));
+}
+const unorderedMapVectorEvents = unorderedMapVectorTrace.trace.events;
+if (!unorderedMapVectorEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'graph' &&
+  event.target.path?.[0] === 2 &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['from']) &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify([7])
+)) {
+  throw new Error('C++ unordered_map<vector> push_back should emit mutation args and key provenance, received ' + JSON.stringify(unorderedMapVectorEvents));
+}
+
+const unorderedMapIteratorSecondTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int clearPattern() {',
+    '    unordered_map<string, vector<string>> adjacency;',
+    '    string pattern = "h*t";',
+    '    adjacency[pattern].push_back("hit");',
+    '    auto it = adjacency.find(pattern);',
+    '    it->second.clear();',
+    '    return adjacency[pattern].size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'clearPattern',
+  inputs: {},
+  options: {},
+});
+if (!unorderedMapIteratorSecondTrace.success || unorderedMapIteratorSecondTrace.output !== 0) {
+  throw new Error('C++ unordered_map iterator second clear tracing failed: ' + JSON.stringify(unorderedMapIteratorSecondTrace));
+}
+const unorderedMapIteratorSecondEvents = unorderedMapIteratorSecondTrace.trace.events;
+if (!unorderedMapIteratorSecondEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'adjacency' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['h*t']) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['pattern']) &&
+  event.method === 'clear' &&
+  JSON.stringify(event.args) === JSON.stringify([])
+)) {
+  throw new Error('C++ unordered_map iterator second clear should emit keyed mutate args and provenance, received ' + JSON.stringify(unorderedMapIteratorSecondEvents));
+}
+
+const unorderedMapStringVectorTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  vector<vector<string>> group(vector<string>& strs) {',
+    '    unordered_map<string, vector<string>> groups;',
+    '    for (const std::string& s : strs) {',
+    '      string key = s;',
+    '      sort(key.begin(), key.end());',
+    '      groups[key].push_back(s);',
+    '    }',
+    '    vector<vector<string>> out;',
+    '    for (auto& [key, values] : groups) out.push_back(values);',
+    '    return out;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'group',
+  inputs: { strs: ['eat'] },
+  options: {},
+});
+if (!unorderedMapStringVectorTrace.success || JSON.stringify(unorderedMapStringVectorTrace.output) !== JSON.stringify([['eat']])) {
+  throw new Error('C++ unordered_map<string, vector<string>> tracing failed: ' + JSON.stringify(unorderedMapStringVectorTrace));
+}
+const unorderedMapStringVectorEvents = unorderedMapStringVectorTrace.trace.events;
+if (!unorderedMapStringVectorEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'groups' &&
+  event.target.path?.[0] === 'aet' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['key']) &&
+  event.method === 'push_back' &&
+  JSON.stringify(event.args) === JSON.stringify(['eat'])
+)) {
+  throw new Error('C++ groups[key].push_back(s) should emit keyed mutation args and key provenance, received ' + JSON.stringify(unorderedMapStringVectorEvents));
+}
+if (!unorderedMapStringVectorEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 5 &&
+  event.target?.variable === 'strs' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 's' &&
+  event.value === 'eat'
+)) {
+  throw new Error('C++ const string reference range-for should emit source element binding provenance, received ' + JSON.stringify(unorderedMapStringVectorEvents));
+}
+
+const auditAggregatePushBackTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  struct Edge { int u; int v; double w; };',
+    'public:',
+    '  int build() {',
+    '    unordered_map<string, int> ids;',
+    '    ids["USD"] = 0;',
+    '    ids["EUR"] = 1;',
+    '    auto itU = ids.find("USD");',
+    '    auto itV = ids.find("EUR");',
+    '    double rate = 2.0;',
+    '    vector<Edge> edges;',
+    '    edges.push_back({itU->second, itV->second, -std::log(rate)});',
+    '    return edges.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!auditAggregatePushBackTrace.success || auditAggregatePushBackTrace.output !== 1) {
+  throw new Error('C++ aggregate push_back tracing failed: ' + JSON.stringify(auditAggregatePushBackTrace));
+}
+const auditAggregatePushBackEvents = auditAggregatePushBackTrace.trace.events;
+const auditAggregatePushBackMutate = auditAggregatePushBackEvents.find((event) =>
+  event.kind === 'mutate' &&
+  event.line === 12 &&
+  event.target?.variable === 'edges' &&
+  event.method === 'push_back'
+);
+if (
+  !auditAggregatePushBackMutate ||
+  auditAggregatePushBackMutate.args?.[0] !== 0 ||
+  auditAggregatePushBackMutate.args?.[1] !== 1 ||
+  Math.abs(auditAggregatePushBackMutate.args?.[2] + Math.log(2)) > 0.00001
+) {
+  throw new Error('C++ aggregate push_back should emit evaluated aggregate args, received ' + JSON.stringify(auditAggregatePushBackEvents));
+}
+
+const auditStructuredVectorRangeTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int sumEdges() {',
+    '    vector<tuple<int, int, int>> edges;',
+    '    edges.push_back({1, 2, 3});',
+    '    int total = 0;',
+    '    for (auto& [u, v, w] : edges) {',
+    '      total += u + v + w;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'sumEdges',
+  inputs: {},
+  options: {},
+});
+if (!auditStructuredVectorRangeTrace.success || auditStructuredVectorRangeTrace.output !== 6) {
+  throw new Error('C++ structured vector range tracing failed: ' + JSON.stringify(auditStructuredVectorRangeTrace));
+}
+const auditStructuredVectorRangeEvents = auditStructuredVectorRangeTrace.trace.events;
+if (!auditStructuredVectorRangeEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.target?.variable === 'edges' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'u,v,w' &&
+  JSON.stringify(event.value) === JSON.stringify([1, 2, 3])
+)) {
+  throw new Error('C++ structured vector range-for should emit source element binding provenance, received ' + JSON.stringify(auditStructuredVectorRangeEvents));
+}
+
+const auditStringPointerIndexedTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  string shortestAt(vector<string>& strs, int i) {',
+    '    const string* shortest = nullptr;',
+    '    for (const auto& s : strs) {',
+    '      if (!shortest || s.size() < shortest->size()) shortest = &s;',
+    '    }',
+    '    return string(1, (*shortest)[i]);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'shortestAt',
+  inputs: { strs: ['pear', 'plum', 'fig'], i: 1 },
+  options: {},
+});
+if (!auditStringPointerIndexedTrace.success || auditStringPointerIndexedTrace.output !== 'i') {
+  throw new Error('C++ string pointer indexed tracing failed: ' + JSON.stringify(auditStringPointerIndexedTrace));
+}
+const auditStringPointerIndexedEvents = auditStringPointerIndexedTrace.trace.events;
+if (!auditStringPointerIndexedEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 8 &&
+  event.target?.variable === 'shortest' &&
+  JSON.stringify(event.target.path) === JSON.stringify([1]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['i']) &&
+  event.value === 'i'
+)) {
+  throw new Error('C++ (*stringPointer)[i] should emit indexed read provenance, received ' + JSON.stringify(auditStringPointerIndexedEvents));
+}
+
+const unorderedMapSetTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    unordered_map<char, unordered_set<char>> graph;',
+    '    char from = \'a\';',
+    '    char to = \'b\';',
+    '    graph[from].insert(to);',
+    '    return graph[from].count(to);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!unorderedMapSetTrace.success || unorderedMapSetTrace.output !== 1) {
+  throw new Error('C++ unordered_map<unordered_set> tracing failed: ' + JSON.stringify(unorderedMapSetTrace));
+}
+const unorderedMapSetEvents = unorderedMapSetTrace.trace.events;
+if (!unorderedMapSetEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'graph' &&
+  event.target.path?.[0] === 'a' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['from']) &&
+  event.method === 'insert' &&
+  JSON.stringify(event.args) === JSON.stringify(['b'])
+)) {
+  throw new Error('C++ unordered_map<unordered_set> insert should emit mutation args, received ' + JSON.stringify(unorderedMapSetEvents));
+}
+
+const unorderedMapSetIndexedKeyTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int build(vector<string>& words) {',
+    '    unordered_map<char, unordered_set<char>> graph;',
+    '    int i = 0;',
+    '    int j = 1;',
+    '    string w1 = words[i];',
+    '    string w2 = words[i + 1];',
+    '    graph[w1[j]].insert(w2[j]);',
+    '    return graph[w1[j]].count(w2[j]);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: { words: ['ab', 'ac'] },
+  options: {},
+});
+if (!unorderedMapSetIndexedKeyTrace.success || unorderedMapSetIndexedKeyTrace.output !== 1) {
+  throw new Error('C++ unordered_map<unordered_set> indexed key tracing failed: ' + JSON.stringify(unorderedMapSetIndexedKeyTrace));
+}
+const unorderedMapSetIndexedKeyEvents = unorderedMapSetIndexedKeyTrace.trace.events;
+if (!unorderedMapSetIndexedKeyEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.target?.variable === 'graph' &&
+  event.target.path?.[0] === 'b' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['w1[j]']) &&
+  event.method === 'insert' &&
+  JSON.stringify(event.args) === JSON.stringify(['c'])
+)) {
+  throw new Error('C++ unordered_map<unordered_set> insert should preserve indexed key provenance, received ' + JSON.stringify(unorderedMapSetIndexedKeyEvents));
+}
+
 const orderedMapTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'class Solution {',
@@ -1386,6 +2438,101 @@ if (!orderedMapEvents.some((event) => event.kind === 'read' && event.target?.var
 }
 if (!orderedMapEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'counts' && event.method === 'erase')) {
   throw new Error('C++ map erase should emit mutation, received ' + JSON.stringify(orderedMapEvents));
+}
+
+const keyedMutationContractTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int count(string text) {',
+    '    unordered_map<char, int> need;',
+    "    char ch = text[0];",
+    '    need[ch]++;',
+    '    need[ch]--;',
+    '    need.erase(ch);',
+    '    return (int)need.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'count',
+  inputs: { text: 'ab' },
+  options: {},
+});
+if (!keyedMutationContractTrace.success || keyedMutationContractTrace.output !== 0) {
+  throw new Error('C++ keyed mutation contract tracing failed: ' + JSON.stringify(keyedMutationContractTrace));
+}
+const keyedMutationContractEvents = keyedMutationContractTrace.trace.events;
+for (const [line, method] of [[6, 'increment'], [7, 'decrement']]) {
+  if (!keyedMutationContractEvents.some((event) =>
+    event.kind === 'mutate' &&
+    event.line === line &&
+    event.target?.variable === 'need' &&
+    event.target.path?.[0] === 'a' &&
+    JSON.stringify(event.target.indexSources) === JSON.stringify(['ch']) &&
+    event.method === method &&
+    JSON.stringify(event.args) === JSON.stringify([])
+  )) {
+    throw new Error('C++ unordered_map ' + method + ' should emit keyed target, indexSources, and empty args, received ' + JSON.stringify(keyedMutationContractEvents));
+  }
+}
+if (!keyedMutationContractEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'need' &&
+  event.target.path?.[0] === 'a' &&
+  event.method === 'erase' &&
+  JSON.stringify(event.args) === JSON.stringify(['a'])
+)) {
+  throw new Error('C++ unordered_map erase should emit keyed target and evaluated args, received ' + JSON.stringify(keyedMutationContractEvents));
+}
+
+const triePointerFieldReadTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  struct TrieNode { unordered_map<char, TrieNode*> children; };',
+    'public:',
+    '  int walk(string word) {',
+    '    TrieNode* root = new TrieNode();',
+    '    TrieNode* child = new TrieNode();',
+    '    char ch = word[0];',
+    '    root->children[ch] = child;',
+    '    TrieNode* node = root;',
+    '    node = node->children[ch];',
+    '    return node == child ? 1 : 0;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'walk',
+  inputs: { word: 'a' },
+  options: {},
+});
+if (!triePointerFieldReadTrace.success || triePointerFieldReadTrace.output !== 1) {
+  throw new Error('C++ trie pointer field read tracing failed: ' + JSON.stringify(triePointerFieldReadTrace));
+}
+const triePointerFieldReadEvents = triePointerFieldReadTrace.trace.events;
+if (!triePointerFieldReadEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 10 &&
+  event.target?.variable === 'node' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['children', 'a']) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'ch'])
+)) {
+  throw new Error('C++ pointer field keyed read assignment should emit concrete read target and indexSources, received ' + JSON.stringify(triePointerFieldReadEvents));
+}
+if (!triePointerFieldReadEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 10 &&
+  event.target?.variable === 'node'
+)) {
+  throw new Error('C++ pointer field keyed read assignment should emit scalar pointer write, received ' + JSON.stringify(triePointerFieldReadEvents));
+}
+if (!triePointerFieldReadEvents.some((event) =>
+  event.kind === 'snapshot' &&
+  event.line === 9 &&
+  event.target?.variable === 'node' &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ TrieNode pointer aliases should emit object snapshots, received ' + JSON.stringify(triePointerFieldReadEvents));
 }
 
 const orderedMapBoundsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -1578,6 +2725,284 @@ if (!nestedEvents.some((event) => event.kind === 'read' && event.target?.variabl
 if (!nestedEvents.some((event) => event.kind === 'write' && event.target?.variable === 'dp' && event.target.path?.[0] === 2 && event.target.path?.[1] === 3 && event.value === 10)) {
   throw new Error('C++ nested vector tracing should emit grid writes, received ' + JSON.stringify(nestedEvents));
 }
+if (!nestedEvents.some((event) => event.kind === 'read' && event.target?.variable === 'dp' && JSON.stringify(event.target.indexSources) === JSON.stringify(['row - 1', 'col']))) {
+  throw new Error('C++ nested vector reads should emit nested indexSources, received ' + JSON.stringify(nestedEvents));
+}
+if (!nestedEvents.some((event) => event.kind === 'write' && event.target?.variable === 'dp' && JSON.stringify(event.target.indexSources) === JSON.stringify(['row', 'col']))) {
+  throw new Error('C++ nested vector writes should emit nested indexSources, received ' + JSON.stringify(nestedEvents));
+}
+
+const expressionIndexSourceTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int best(vector<int>& dp, int a, int coin) {',
+    '    return dp[a - coin] + 1;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'best',
+  inputs: { dp: [0, 4, 8, 15], a: 3, coin: 1 },
+  options: {},
+});
+if (!expressionIndexSourceTrace.success || expressionIndexSourceTrace.output !== 9) {
+  throw new Error('C++ expression index-source tracing failed: ' + JSON.stringify(expressionIndexSourceTrace));
+}
+const expressionIndexSourceEvents = expressionIndexSourceTrace.trace.events;
+if (!expressionIndexSourceEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 4 &&
+  event.target?.variable === 'dp' &&
+  JSON.stringify(event.target.path) === JSON.stringify([2]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['a - coin']) &&
+  event.value === 8
+)) {
+  throw new Error('C++ expression index reads should emit source expression provenance, received ' + JSON.stringify(expressionIndexSourceEvents));
+}
+
+const conditionExpressionIndexSourceTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  bool canUse(vector<int>& dp, int a, int coin) {',
+    '    if (coin <= a && dp[a - coin] != 999) {',
+    '      return true;',
+    '    }',
+    '    return false;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'canUse',
+  inputs: { dp: [0, 4, 8, 15], a: 3, coin: 1 },
+  options: {},
+});
+if (!conditionExpressionIndexSourceTrace.success || conditionExpressionIndexSourceTrace.output !== true) {
+  throw new Error('C++ condition expression index-source tracing failed: ' + JSON.stringify(conditionExpressionIndexSourceTrace));
+}
+const conditionExpressionIndexSourceEvents = conditionExpressionIndexSourceTrace.trace.events;
+if (!conditionExpressionIndexSourceEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 4 &&
+  event.target?.variable === 'dp' &&
+  JSON.stringify(event.target.path) === JSON.stringify([2]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['a - coin']) &&
+  event.value === 8
+)) {
+  throw new Error('C++ condition expression index reads should emit source expression provenance, received ' + JSON.stringify(conditionExpressionIndexSourceEvents));
+}
+
+const lambdaNestedVectorTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int flood(vector<vector<char>>& grid) {',
+    '    int rows = grid.size();',
+    '    int cols = grid[0].size();',
+    '    auto dfs = [&](auto& self, int r, int c) -> void {',
+    "      if (r < 0 || r >= rows || c < 0 || c >= cols || grid[r][c] != '1') return;",
+    "      grid[r][c] = '0';",
+    '    };',
+    '    dfs(dfs, 0, 0);',
+    "    return grid[0][0] == '0' ? 1 : 0;",
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'flood',
+  inputs: { grid: [['1']] },
+  options: {},
+});
+if (!lambdaNestedVectorTrace.success || lambdaNestedVectorTrace.output !== 1) {
+  throw new Error('C++ lambda nested vector tracing failed: ' + JSON.stringify(lambdaNestedVectorTrace));
+}
+const lambdaNestedEvents = lambdaNestedVectorTrace.trace.events;
+if (!lambdaNestedEvents.some((event) => event.kind === 'read' && event.line === 7 && event.target?.variable === 'grid' && JSON.stringify(event.target.indexSources) === JSON.stringify(['r', 'c']))) {
+  throw new Error('C++ lambda captured nested vector read should emit indexSources, received ' + JSON.stringify(lambdaNestedEvents));
+}
+if (!lambdaNestedEvents.some((event) => event.kind === 'write' && event.line === 8 && event.target?.variable === 'grid' && JSON.stringify(event.target.indexSources) === JSON.stringify(['r', 'c']))) {
+  throw new Error('C++ lambda captured nested vector write should emit indexSources, received ' + JSON.stringify(lambdaNestedEvents));
+}
+
+const indexedRangeForTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int sumNext(vector<vector<int>>& graph, int node) {',
+    '    int total = 0;',
+    '    for (int next : graph[node]) {',
+    '      total += next;',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'sumNext',
+  inputs: { graph: [[1], [2, 3]], node: 1 },
+  options: {},
+});
+if (!indexedRangeForTrace.success || indexedRangeForTrace.output !== 5) {
+  throw new Error('C++ indexed range-for tracing failed: ' + JSON.stringify(indexedRangeForTrace));
+}
+const indexedRangeForEvents = indexedRangeForTrace.trace.events;
+if (!indexedRangeForEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 5 &&
+  event.target?.variable === 'graph' &&
+  JSON.stringify(event.target.path) === JSON.stringify([1, 0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['node', null]) &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'next' &&
+  event.value === 2
+)) {
+  throw new Error('C++ indexed range-for should emit first element binding provenance, received ' + JSON.stringify(indexedRangeForEvents));
+}
+
+const structuredMapRangeForTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int init() {',
+    '    unordered_map<char, int> adj;',
+    "    adj['z'] = 3;",
+    '    unordered_map<char, int> inDegree;',
+    '    for (const auto& [ch, _] : adj) {',
+    '      inDegree[ch] = 0;',
+    '    }',
+    "    return inDegree['z'];",
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'init',
+  inputs: {},
+  options: {},
+});
+if (!structuredMapRangeForTrace.success || structuredMapRangeForTrace.output !== 0) {
+  throw new Error('C++ structured map range-for tracing failed: ' + JSON.stringify(structuredMapRangeForTrace));
+}
+const structuredMapRangeForEvents = structuredMapRangeForTrace.trace.events;
+if (!structuredMapRangeForEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.target?.variable === 'adj' &&
+  event.target.path?.[0] === 'z' &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'ch' &&
+  event.value === 3
+)) {
+  throw new Error('C++ structured map range-for should emit key binding provenance, received ' + JSON.stringify(structuredMapRangeForEvents));
+}
+if (structuredMapRangeForEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === '_'
+)) {
+  throw new Error('C++ structured map range-for should not emit underscore binding provenance, received ' + JSON.stringify(structuredMapRangeForEvents));
+}
+
+const structuredMapValueBindingTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int init() {',
+    '    unordered_map<char, unordered_set<char>> adj;',
+    "    adj['a'].insert('b');",
+    '    unordered_map<char, int> inDegree;',
+    '    for (const auto& [ch, neighbors] : adj) {',
+    '      inDegree[ch] = 0;',
+    '      for (char neighbor : neighbors) inDegree[neighbor]++;',
+    '    }',
+    "    return inDegree['a'] + inDegree['b'];",
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'init',
+  inputs: {},
+  options: {},
+});
+if (!structuredMapValueBindingTrace.success || structuredMapValueBindingTrace.output !== 1) {
+  throw new Error('C++ structured map value binding tracing failed: ' + JSON.stringify(structuredMapValueBindingTrace));
+}
+const structuredMapValueBindingEvents = structuredMapValueBindingTrace.trace.events;
+if (!structuredMapValueBindingEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 7 &&
+  event.target?.variable === 'adj' &&
+  event.target.path?.[0] === 'a' &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'neighbors' &&
+  JSON.stringify(event.value) === JSON.stringify(['b'])
+)) {
+  throw new Error('C++ structured map range-for should emit value binding provenance, received ' + JSON.stringify(structuredMapValueBindingEvents));
+}
+if (!structuredMapValueBindingEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 8 &&
+  event.target?.variable === 'inDegree' &&
+  event.target.path?.[0] === 'a' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['ch']) &&
+  event.method === 'set'
+)) {
+  throw new Error('C++ map assignment should emit keyed set mutation, received ' + JSON.stringify(structuredMapValueBindingEvents));
+}
+if (!structuredMapValueBindingEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 9 &&
+  event.target?.variable === 'inDegree' &&
+  event.target.path?.[0] === 'b' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['neighbor']) &&
+  event.method === 'increment'
+)) {
+  throw new Error('C++ map increment should emit keyed increment mutation, received ' + JSON.stringify(structuredMapValueBindingEvents));
+}
+
+const orderedStructuredMapGroupingTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    '  map<string, int> parent;',
+    'public:',
+    '  int group() {',
+    '    parent["alice@mail.com"] = 0;',
+    '    parent["bob@mail.com"] = 0;',
+    '    map<string, set<string>> groups;',
+    '    string root = "team";',
+    '    for (auto& [email, _] : parent) {',
+    '      groups[root].insert(email);',
+    '    }',
+    '    return (int)groups[root].size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'group',
+  inputs: {},
+  options: {},
+});
+if (!orderedStructuredMapGroupingTrace.success || orderedStructuredMapGroupingTrace.output !== 2) {
+  throw new Error('C++ ordered structured map grouping failed: ' + JSON.stringify(orderedStructuredMapGroupingTrace));
+}
+const orderedStructuredMapGroupingEvents = orderedStructuredMapGroupingTrace.trace.events;
+if (!orderedStructuredMapGroupingEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'this' &&
+  event.target.path?.[0] === 'parent' &&
+  event.target.path?.[1] === 'alice@mail.com' &&
+  event.binding?.kind === 'iteration' &&
+  event.binding?.variable === 'email' &&
+  event.value === 0
+)) {
+  throw new Error('C++ ordered structured map range-for should emit key binding provenance, received ' + JSON.stringify(orderedStructuredMapGroupingEvents));
+}
+if (!orderedStructuredMapGroupingEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 10 &&
+  event.target?.variable === 'groups' &&
+  event.target.path?.[0] === 'team' &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['root']) &&
+  event.method === 'insert' &&
+  JSON.stringify(event.args) === JSON.stringify(['alice@mail.com'])
+)) {
+  throw new Error('C++ map<set> insert should emit keyed mutation args for grouped email, received ' + JSON.stringify(orderedStructuredMapGroupingEvents));
+}
 
 const helperTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
@@ -1705,17 +3130,17 @@ if (!controlFormTrace.success || controlFormTrace.output !== 1) {
   throw new Error('C++ control-form tracing failed: ' + JSON.stringify(controlFormTrace));
 }
 const controlFormEvents = controlFormTrace.trace.events;
+if (!controlFormEvents.some((event) => event.kind === 'read' && event.target?.variable === 'nums' && event.target.path?.[0] === 0)) {
+  throw new Error('C++ range-for over vector should emit indexed reads for the source vector, received ' + JSON.stringify(controlFormEvents));
+}
 if (!controlFormEvents.some((event) => event.kind === 'return' && event.function === 'classify' && event.value === -1)) {
   throw new Error('C++ braced helper return should emit return value, received ' + JSON.stringify(controlFormEvents));
 }
 if (!controlFormEvents.some((event) => event.kind === 'return' && event.function === 'classify' && event.value === 0)) {
   throw new Error('C++ else-if helper return should emit return value, received ' + JSON.stringify(controlFormEvents));
 }
-if (!controlFormEvents.some((event) => event.kind === 'control' && event.control === 'continue')) {
-  throw new Error('C++ continue should emit control event, received ' + JSON.stringify(controlFormEvents));
-}
-if (!controlFormEvents.some((event) => event.kind === 'control' && event.control === 'break')) {
-  throw new Error('C++ break should emit control event, received ' + JSON.stringify(controlFormEvents));
+if (controlFormEvents.some((event) => event.kind === 'control')) {
+  throw new Error('C++ should not emit language-specific control events, received ' + JSON.stringify(controlFormEvents));
 }
 if (!controlFormEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'kept' && event.method === 'push_back')) {
   throw new Error('C++ else single-line mutation should still trace container mutation, received ' + JSON.stringify(controlFormEvents));
@@ -1754,6 +3179,107 @@ if (!lambdaEvents.some((event) => event.kind === 'return' && event.function === 
 }
 if (!lambdaEvents.some((event) => event.kind === 'return' && event.function === 'dfs' && event.value === 0)) {
   throw new Error('C++ lambda helper should trace one-line early return values, received ' + JSON.stringify(lambdaEvents));
+}
+
+const voidLambdaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  vector<vector<int>> cloneGraph(vector<vector<int>>& adjList) {',
+    '    int n = adjList.size();',
+    '    vector<vector<int>> cloned(n);',
+    '    vector<bool> visited(n, false);',
+    '    function<void(int)> dfs = [&](int nodeIdx) {',
+    '      if (visited[nodeIdx]) {',
+    '        return;',
+    '      }',
+    '      visited[nodeIdx] = true;',
+    '      for (int neighborVal : adjList[nodeIdx]) {',
+    '        cloned[nodeIdx].push_back(neighborVal);',
+    '        int neighborIdx = neighborVal - 1;',
+    '        if (!visited[neighborIdx]) {',
+    '          dfs(neighborIdx);',
+    '        }',
+    '      }',
+    '    };',
+    '    dfs(0);',
+    '    return cloned;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'cloneGraph',
+  inputs: { adjList: [[2], [1]] },
+  options: {},
+});
+if (!voidLambdaTrace.success || JSON.stringify(voidLambdaTrace.output) !== JSON.stringify([[2], [1]])) {
+  throw new Error('C++ void lambda tracing failed: ' + JSON.stringify(voidLambdaTrace));
+}
+const voidLambdaEvents = voidLambdaTrace.trace.events;
+if (!voidLambdaEvents.some((event) => event.kind === 'return' && event.function === 'dfs')) {
+  throw new Error('C++ std::function<void(...)> lambda should emit normal-exit return events, received ' + JSON.stringify(voidLambdaEvents));
+}
+if (!voidLambdaEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 12 &&
+  event.target?.variable === 'adjList' &&
+  JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['nodeIdx'])
+)) {
+  throw new Error('C++ nested range-for should emit the outer indexed source read, received ' + JSON.stringify(voidLambdaEvents));
+}
+if (voidLambdaEvents.some((event) =>
+  event.kind === 'line' &&
+  event.line === 12 &&
+  !event.function
+)) {
+  throw new Error('C++ range-for synthetic line events should inherit the active function, received ' + JSON.stringify(voidLambdaEvents));
+}
+const cloneReturnEvent = voidLambdaEvents.find((event) => event.kind === 'return' && event.function === 'cloneGraph' && event.line === 21);
+if (!cloneReturnEvent || cloneReturnEvent.callStack?.some((frame) => frame.function === 'dfs')) {
+  throw new Error('C++ caller return should not retain completed lambda frames, received ' + JSON.stringify(voidLambdaEvents));
+}
+
+const autoVoidLambdaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int localHeap(vector<int>& nums) {',
+    '    vector<int> heap;',
+    '    auto siftUp = [&](int index) {',
+    '      while (index > 0) {',
+    '        int parent = (index - 1) / 2;',
+    '        if (heap[parent] <= heap[index]) break;',
+    '        swap(heap[parent], heap[index]);',
+    '        index = parent;',
+    '      }',
+    '    };',
+    '    auto push = [&](int value) {',
+    '      heap.push_back(value);',
+    '      siftUp((int)heap.size() - 1);',
+    '    };',
+    '    for (int num : nums) {',
+    '      push(num);',
+    '    }',
+    '    return heap[0];',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'localHeap',
+  inputs: { nums: [3, 1, 2] },
+  options: {},
+});
+if (!autoVoidLambdaTrace.success || autoVoidLambdaTrace.output !== 1) {
+  throw new Error('C++ auto void lambda tracing failed: ' + JSON.stringify(autoVoidLambdaTrace));
+}
+const autoVoidLambdaEvents = autoVoidLambdaTrace.trace.events;
+const autoVoidCalls = autoVoidLambdaEvents.filter((event) => event.kind === 'call' && (event.function === 'push' || event.function === 'siftUp'));
+const autoVoidReturns = autoVoidLambdaEvents.filter((event) => event.kind === 'return' && (event.function === 'push' || event.function === 'siftUp'));
+if (autoVoidReturns.length !== autoVoidCalls.length) {
+  throw new Error('C++ auto void lambdas should emit one normal-exit return per helper call, received ' + JSON.stringify(autoVoidLambdaEvents));
+}
+const autoVoidCallerReturn = autoVoidLambdaEvents.find((event) => event.kind === 'return' && event.function === 'localHeap' && event.line === 20);
+if (!autoVoidCallerReturn || autoVoidCallerReturn.callStack?.some((frame) => frame.function === 'push' || frame.function === 'siftUp')) {
+  throw new Error('C++ auto void lambda frames should not leak into caller return, received ' + JSON.stringify(autoVoidLambdaEvents));
 }
 
 const selfRecursiveLambdaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -1827,6 +3353,92 @@ if (!opsClassEvents.some((event) => event.kind === 'return' && event.function ==
 }
 if (!opsClassEvents.some((event) => event.kind === 'return' && event.function === 'value' && event.value === 6)) {
   throw new Error('C++ ops-class should preserve shared state across operations, received ' + JSON.stringify(opsClassEvents));
+}
+
+const opsClassTrieTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class TrieNode {',
+    'public:',
+    '  vector<TrieNode*> children;',
+    '  bool isEnd;',
+    '  TrieNode() : children(26, nullptr), isEnd(false) {}',
+    '};',
+    'class Trie {',
+    '  TrieNode* root;',
+    'public:',
+    '  Trie() {',
+    '    root = new TrieNode();',
+    '  }',
+    '  void insert(string word) {',
+    '    TrieNode* node = root;',
+    '    for (char ch : word) {',
+    "      int idx = ch - 'a';",
+    '      if (node->children[idx] == nullptr) node->children[idx] = new TrieNode();',
+    '      node = node->children[idx];',
+    '    }',
+    '    node->isEnd = true;',
+    '  }',
+    '  bool search(string word) {',
+    '    TrieNode* node = root;',
+    '    for (char ch : word) {',
+    "      int idx = ch - 'a';",
+    '      if (node->children[idx] == nullptr) return false;',
+    '      node = node->children[idx];',
+    '    }',
+    '    return node->isEnd;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'Trie',
+  inputs: {
+    operations: ['Trie', 'insert', 'search'],
+    arguments: [[], ['app'], ['app']],
+  },
+  executionStyle: 'ops-class',
+  options: {},
+});
+if (!opsClassTrieTrace.success || JSON.stringify(opsClassTrieTrace.output) !== JSON.stringify([null, null, true])) {
+  throw new Error('C++ implement-trie ops-class output shape failed: ' + JSON.stringify(opsClassTrieTrace));
+}
+const opsClassTrieEvents = opsClassTrieTrace.trace.events;
+if (!opsClassTrieEvents.some((event) => event.kind === 'call' && event.function === 'insert' && event.args?.word === 'app')) {
+  throw new Error('C++ implement-trie ops-class should emit insert call args, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 11 &&
+  event.target?.variable === 'this' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['root']) &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie constructor should emit implicit member field write for root, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'snapshot' &&
+  event.line === 14 &&
+  event.target?.variable === 'node' &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie should snapshot TrieNode pointer aliases, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 14 &&
+  event.target?.variable === 'this' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['root']) &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie local root alias should emit member read provenance, received ' + JSON.stringify(opsClassTrieEvents));
+}
+if (!opsClassTrieEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 17 &&
+  event.target?.variable === 'node' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['children', 0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'idx']) &&
+  event.value?.__type__ === 'TrieNode'
+)) {
+  throw new Error('C++ implement-trie inline child allocation should emit pointer-field write provenance, received ' + JSON.stringify(opsClassTrieEvents));
 }
 
 const opsClassLeadingBlockCommentTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
@@ -2123,6 +3735,170 @@ if (!budgetTrace.traceLimitExceeded || budgetTrace.timeoutReason !== 'trace-limi
 }
 if (!budgetTrace.trace.events.some((event) => event.kind === 'timeout')) {
   throw new Error('C++ trace budget should emit a timeout event, received ' + JSON.stringify(budgetTrace.trace.events));
+}
+
+const existingAggregatePushBackTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Edge {',
+    '  int u;',
+    '  int v;',
+    '  double w;',
+    '};',
+    'class Solution {',
+    'public:',
+    '  int build() {',
+    '    vector<Edge> edges;',
+    '    int u = 1;',
+    '    int v = 2;',
+    '    double rate = 4.0;',
+    '    edges.push_back({u, v, -std::log(rate)});',
+    '    return edges.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'build',
+  inputs: {},
+  options: {},
+});
+if (!existingAggregatePushBackTrace.success || existingAggregatePushBackTrace.output !== 1) {
+  throw new Error('C++ aggregate push_back tracing failed: ' + JSON.stringify(existingAggregatePushBackTrace));
+}
+const existingAggregatePushBackEvents = existingAggregatePushBackTrace.trace.events;
+const existingAggregatePushBackMutate = existingAggregatePushBackEvents.find((event) =>
+  event.kind === 'mutate' &&
+  event.line === 13 &&
+  event.target?.variable === 'edges' &&
+  event.method === 'push_back'
+);
+if (!existingAggregatePushBackMutate || existingAggregatePushBackMutate.args?.[0] !== 1 || existingAggregatePushBackMutate.args?.[1] !== 2 || Math.abs(existingAggregatePushBackMutate.args?.[2] + Math.log(4)) > 1e-9) {
+  throw new Error('C++ aggregate push_back should emit evaluated mutation args, received ' + JSON.stringify(existingAggregatePushBackEvents));
+}
+
+const pointerFieldIndexedConditionTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct TrieNode {',
+    '  vector<TrieNode*> children;',
+    '  TrieNode() : children(26, nullptr) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  bool check() {',
+    '    TrieNode* node = new TrieNode();',
+    '    int idx = 2;',
+    '    if (node->children[idx] == nullptr) return true;',
+    '    return false;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'check',
+  inputs: {},
+  options: {},
+});
+if (!pointerFieldIndexedConditionTrace.success || pointerFieldIndexedConditionTrace.output !== true) {
+  throw new Error('C++ pointer field indexed condition tracing failed: ' + JSON.stringify(pointerFieldIndexedConditionTrace));
+}
+const pointerFieldEvents = pointerFieldIndexedConditionTrace.trace.events;
+if (!pointerFieldEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 10 &&
+  event.target?.variable === 'node' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['children', 2]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'idx'])
+)) {
+  throw new Error('C++ pointer field indexed condition should emit children[idx] read, received ' + JSON.stringify(pointerFieldEvents));
+}
+
+const addressOfIndexedReadTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int lcp(vector<string>& strs) {',
+    '    string* first = &strs[0];',
+    '    int shortest = first->size();',
+    '    if (strs[1].size() < shortest) shortest = strs[1].size();',
+    '    return shortest;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'lcp',
+  inputs: { strs: ['flower', 'flow'] },
+  options: {},
+});
+if (!addressOfIndexedReadTrace.success || addressOfIndexedReadTrace.output !== 4) {
+  throw new Error('C++ address-of indexed read tracing failed: ' + JSON.stringify(addressOfIndexedReadTrace));
+}
+const addressOfEvents = addressOfIndexedReadTrace.trace.events;
+if (!addressOfEvents.some((event) => event.kind === 'read' && event.line === 4 && event.target?.variable === 'strs' && event.target.path?.[0] === 0)) {
+  throw new Error('C++ &strs[0] should emit indexed read, received ' + JSON.stringify(addressOfEvents));
+}
+if (!addressOfEvents.some((event) => event.kind === 'write' && event.line === 6 && event.target?.variable === 'shortest' && event.value === 4)) {
+  throw new Error('C++ shortest scalar update should emit write, received ' + JSON.stringify(addressOfEvents));
+}
+
+const setEraseArgsTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int solve() {',
+    '    unordered_set<int> cols;',
+    '    int col = 3;',
+    '    cols.insert(col);',
+    '    cols.erase(col);',
+    '    return cols.size();',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'solve',
+  inputs: {},
+  options: {},
+});
+if (!setEraseArgsTrace.success || setEraseArgsTrace.output !== 0) {
+  throw new Error('C++ set erase tracing failed: ' + JSON.stringify(setEraseArgsTrace));
+}
+const setEraseEvents = setEraseArgsTrace.trace.events;
+if (!setEraseEvents.some((event) =>
+  event.kind === 'mutate' &&
+  event.line === 7 &&
+  event.target?.variable === 'cols' &&
+  event.method === 'erase' &&
+  JSON.stringify(event.args) === JSON.stringify([3])
+)) {
+  throw new Error('C++ set erase should emit key args, received ' + JSON.stringify(setEraseEvents));
+}
+
+const nativeSetFindGuardTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int visit() {',
+    '    function<int(int, std::unordered_set<int>&)> dfs = [&](int v, std::unordered_set<int>& visited) {',
+    '      if (visited.find(v) != visited.end()) return 1;',
+    '      visited.insert(v);',
+    '      return 0;',
+    '    };',
+    '    unordered_set<int> visited;',
+    '    visited.insert(7);',
+    '    return dfs(7, visited);',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'visit',
+  inputs: {},
+  options: {},
+});
+if (!nativeSetFindGuardTrace.success || nativeSetFindGuardTrace.output !== 1) {
+  throw new Error('C++ native set find guard tracing failed: ' + JSON.stringify(nativeSetFindGuardTrace));
+}
+const nativeSetFindEvents = nativeSetFindGuardTrace.trace.events;
+if (!nativeSetFindEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 5 &&
+  event.target?.variable === 'visited' &&
+  event.target.path?.[0] === 7 &&
+  event.value === true &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['v'])
+)) {
+  throw new Error('C++ native set find guard should emit lookup read, received ' + JSON.stringify(nativeSetFindEvents));
 }
 `;
 

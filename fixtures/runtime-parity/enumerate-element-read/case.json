@@ -24,7 +24,8 @@
       "eventKinds": [
         "line",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "i",
@@ -37,18 +38,76 @@
           "kind": "read",
           "variable": "nums",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "num"
         }
       ]
     }
   },
-  "expectSummary": {
-    "accessTargets": [
-      {
-        "kind": "read",
-        "variable": "nums",
-        "pathDepth": 1,
-        "count": 3
+  "expectByLanguage": {
+    "python": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "num",
+          "nums",
+          "total"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "i"
+          }
+        ]
       }
-    ]
+    },
+    "csharp": {
+      "read": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "num",
+          "nums",
+          "total"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "i"
+          },
+          {
+            "kind": "read",
+            "variable": "nums"
+          },
+          {
+            "kind": "read",
+            "variable": "nums",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "num"
+          }
+        ]
+      }
+    }
   }
 }

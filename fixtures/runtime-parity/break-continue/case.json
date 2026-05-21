@@ -66,7 +66,8 @@
       "eventKinds": [
         "line",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "i",
@@ -78,57 +79,12 @@
           "kind": "read",
           "variable": "nums",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "total"
         }
       ]
-    }
-  },
-  "expectByLanguage": {
-    "cpp": {
-      "continue": {
-        "eventKinds": [
-          "control",
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "nums",
-          "total"
-        ],
-        "accessTargets": []
-      },
-      "break": {
-        "eventKinds": [
-          "control",
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "nums",
-          "total"
-        ],
-        "accessTargets": []
-      },
-      "add": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "i",
-          "nums",
-          "total"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "nums",
-            "pathDepth": 1
-          }
-        ]
-      }
     }
   }
 }

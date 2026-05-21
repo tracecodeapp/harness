@@ -65,13 +65,25 @@
       ]
     }
   },
+  "expectEventAssertions": {
+    "append": [
+      {
+        "kind": "mutate",
+        "variable": "queue",
+        "args": [
+          1
+        ]
+      }
+    ]
+  },
   "expectByLanguage": {
     "python": {
       "popleft": {
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -84,27 +96,59 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }
     },
     "java": {
-      "popleft": {
+      "append": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "queue"
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
           "snapshot"
         ],
         "variableSnapshots": [
+          "num",
           "nums",
           "queue"
-        ],
+        ]
+      },
+      "popleft": {
         "accessTargets": [
           {
             "kind": "mutate",
-            "variable": "queue",
-            "method": "popleft"
+            "variable": "queue"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "queue"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "nums",
+          "queue"
         ]
       }
     },
@@ -113,7 +157,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -125,6 +170,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }
@@ -134,7 +183,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -146,6 +196,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }
@@ -158,6 +212,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "num",
           "nums",
           "queue"
         ],
@@ -173,7 +228,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "first",
@@ -185,6 +241,10 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "popleft"
+          },
+          {
+            "kind": "write",
+            "variable": "first"
           }
         ]
       }

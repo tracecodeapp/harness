@@ -1,6 +1,6 @@
 # Runtime Trace Parity Status
 
-Last updated: 2026-05-06
+Last updated: 2026-05-19
 
 ## Purpose
 
@@ -12,6 +12,8 @@ The Runtime Trace parity corpus defines the language-agnostic harness contract f
 - which calls, returns, stdout writes, exceptions, timeouts, or snapshots occurred
 
 Runtime trace frames use a post-line state model. A `line` event means the source line has executed, and snapshots/access facts attached to that line describe the state and runtime facts after that line's operation. Runtime trace playback is not a debugger-style "next line to execute" cursor. Declarations, assignments, mutations, and returns should therefore attach their resulting state to the source line that caused the state, not to the following line. Loop and branch condition lines still emit when the condition is evaluated; because condition evaluation normally does not mutate local state, the post-condition state is usually the same values that entered the condition plus any read facts caused by evaluating it.
+
+The normative V4 execution contract is documented in [`docs/harness-execution-contract.md`](./harness-execution-contract.md). This status document tracks parity progress and known gaps; the execution contract defines what harnesses should emit.
 
 The fixture corpus must not encode higher-level classification such as graph adjacency, linked lists, hash maps, or tree roles. Runtime traces should stay limited to execution facts; downstream consumers can derive presentation-specific meaning separately.
 
@@ -117,6 +119,8 @@ C++ now participates in the 59-fixture runtime parity corpus. The C++ fixture ga
 
 C++ also supports playground script-style execution through the public runtime API. A script request uses `executionStyle="function"` with an empty function name and must assign a serializable top-level `result` variable. The worker wraps those top-level statements in generated C++ glue, maps trace lines back to `solution.cpp`, and emits a native `<script>` call/return frame. C++ interview mode uses the same instrumented compiler path with a trace budget, then returns the standard non-trace execution result shape.
 
+C++ TC83 export hardening now covers the first full all-language V4 compact-audit pass. The pass initially exposed seven C++ compile-dropout traces caused by provenance rewriting on plain STL fallbacks. The worker now avoids rewriting member-field keyed receivers such as `node->children[ch]` into nonexistent helper methods, skips pointer method calls such as `a->size()` in pointer-field read instrumentation, and routes indexed writes through a free `trace_index_ref` helper that supports both traced `tracecode::Vector<T>` values and plain `std::vector<T>` fallbacks, including `std::vector<bool>` and `std::vector<std::string>` character cells. The failing TC83 C++ subset now exports with `failureCount=0`.
+
 C++ trace controls now match the public profile for `maxLineEvents`, `maxSingleLineHits`, `minimalTrace`, and call-stack attachment. `maxLineEvents` and `maxSingleLineHits` are enforced inside the generated C++/Wasm runtime as hard trace aborts with `line-limit` and `single-line-limit` timeout reasons, which keeps runaway loops bounded before the broader execution hardening pass.
 
 C++ execution hardening now has a two-layer timeout contract. Instrumented runs first use runtime trace guards for trace budgets, line-event budgets, and single-line hit budgets. If compile or runtime execution still blocks the worker, `CppWorkerClient` terminates and recreates the worker, returns `client-timeout` metadata, and keeps interview-mode errors sanitized as `Time Limit Exceeded`.
@@ -161,6 +165,29 @@ The final gap-removal pass also tightened:
 - Python and Java keyed field-map reads/writes now emit access to the owning object plus field and key path, matching JavaScript/TypeScript field `Map` behavior without presentation-side recovery.
 - TypeScript `as`/type-assertion receivers now preserve keyed parent mutation attribution, so `(map.get(key) as T[]).push(value)` emits the same neutral runtime mutation as JavaScript `map.get(key).push(value)`.
 - Java object-field map operations now emit keyed owner paths, so `node.children.get/put/containsKey/putIfAbsent(key, ...)` produces `node.children[key]` runtime facts instead of field-only reads or generic mutations.
+- C++ plain local containers that intentionally remain unwrapped, including `std::vector<std::string>` and vectors with custom or variant element types, now emit fallback `mutate` events for `push_back(...)` while preserving nested argument reads such as `emailToName[email]`.
+- C++ plain local set-like containers now emit fallback `mutate` events for `insert(...)` with evaluated mutation args instead of forcing consumers to infer inserts from snapshots.
+- C++ reference locals such as `const std::string& w1 = words[i]` now remain visible to indexed-read instrumentation, so condition lines like `w1[j] != w2[j]` emit concrete string reads for both operands.
+- C++ declaration tracking now ignores trailing source comments, so declarations like `std::unordered_map<int, int> rightIndex; // key -> index` still make later keyed writes visible to V4.
+- C++ multi-line declaration scanning no longer starts from blank lines, so container declaration writes/snapshots after a spacer line are anchored to the actual declaration line instead of the blank line.
+- C++ structured map range-for headers such as `for (const auto& [ch, _] : adj)` now emit iteration-binding read provenance for the key binding before body writes use that key as an index source.
+- Python tuple-destructuring collection loops such as `for u, v, w in edges:` now emit iteration-binding read provenance for the produced source element instead of relying on scalar snapshots of the unpacked variables.
+- JavaScript and TypeScript `for...of` loops now emit per-iteration binding reads on the loop header before the body runs, so binding values match same-header snapshots instead of being attached to the previous iteration.
+- Python tuple/list destructuring assignments such as `rows, cols = ...` now emit scalar writes for each assigned local instead of relying on snapshots alone.
+- Python list-comprehension assignments now collapse repeated same-line interpreter frames, so `cloned = [[] for _ in range(n)]` emits one public assignment frame with the completed `cloned` write instead of several empty line frames before the write.
+- Python `enumerate(...)` loop headers now emit scalar writes for the index binding as well as iteration-read provenance for the value binding.
+- Java local scalar declaration writes are being hardened so initialized locals such as `int leftGain = ...` can emit same-line `write` events instead of only appearing later in snapshots. The JS augmentation path has coverage, but the active browser worker/export seam still needs verification against the native Java rewrite output before this is considered fully closed.
+- JavaScript and TypeScript destructuring assignments to local identifiers, such as `[n, edges, src] = [a, b, c]`, now emit scalar write events for each assigned local on the assignment line.
+- JavaScript and TypeScript same-line guarded map initialization such as `if (!adj.has(ch)) adj.set(ch, new Set())` now preserves runtime event order by emitting the guard `has` read before the body `set` write/mutation.
+- Java `Arrays.sort(array, ...)` now emits a receiver `sort` mutation event and a post-sort snapshot instead of leaving the line as snapshot-only state.
+- Python in-place sequence ordering operations such as `list.sort(...)` and `list.reverse()` now emit receiver mutation events instead of relying on lambda reads and snapshots alone.
+- Python object-field reads/writes now carry the observed access value immediately, preventing post-line mutations such as `curr.next = prev` from poisoning the earlier `curr.next` read event.
+- JavaScript, TypeScript, Java, and C# nested indexed metadata reads such as `grid[0].length` / `grid[0].Length` now emit concrete nested read events instead of stopping at the row read and leaving the metadata value to snapshots.
+- C++ `ListNode` and list-like pointer serialization now uses pointer-stable object ids, so distinct nodes do not reuse `ref-0` across separate variable snapshots in the same trace frame.
+- C++ stack `TreeNode` and `ListNode` locals now participate in declaration writes and snapshots with full object serialization, so lines like `ListNode dummy(0);` are not reduced to `{}` or snapshot-only lifecycle evidence.
+- C++ condition reads after short-circuit operators now preserve index-source provenance, so expressions such as `coin <= a && dp[a - coin] != INT_MAX` emit `target.indexSources:["a - coin"]` instead of treating the preceding `&&` as address-of suppression.
+- C# trace-event object serialization now uses run-stable object ids for repeated user-object, `ListNode`, and `TreeNode` references, so linked/object traces do not relabel the same node across access events.
+- JavaScript and TypeScript trace serialization now preserves non-finite numbers as `"Infinity"`, `"-Infinity"`, and `"NaN"` instead of allowing JSON serialization to collapse them to `null`.
 
 ## Near-Term Priority
 

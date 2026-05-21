@@ -34,20 +34,5 @@
         }
       ]
     }
-  },
-  "expectByLanguage": {
-    "cpp": {
-      "read": {
-        "eventKinds": [
-          "line",
-          "return",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "text"
-        ],
-        "accessTargets": []
-      }
-    }
   }
 }

@@ -63,6 +63,134 @@
           }
         ]
       }
+    },
+    "javascript": {
+      "update": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "freq"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "freq",
+          "nums"
+        ]
+      }
+    },
+    "typescript": {
+      "update": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "freq"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "freq",
+          "nums"
+        ]
+      }
+    },
+    "java": {
+      "update": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "freq"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "freq",
+          "nums"
+        ]
+      }
+    },
+    "cpp": {
+      "update": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "freq"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "freq"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "freq",
+          "nums"
+        ]
+      }
     }
   },
   "expectSummary": {
@@ -85,16 +213,150 @@
     "csharp": {
       "accessTargets": [
         {
-          "kind": "read",
-          "variable": "freq",
-          "pathDepth": 1,
-          "count": 4
+          "count": 1,
+          "kind": "write",
+          "variable": "freq"
         },
         {
+          "count": 3,
           "kind": "write",
-          "variable": "freq",
           "pathDepth": 1,
-          "count": 3
+          "variable": "freq"
+        },
+        {
+          "count": 4,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "freq"
+        }
+      ]
+    },
+    "python": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 4,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "freq"
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 4,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "freq"
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 4,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "freq"
+        }
+      ]
+    },
+    "cpp": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 4,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "freq"
+        }
+      ]
+    },
+    "java": {
+      "accessTargets": [
+        {
+          "count": 2,
+          "kind": "write",
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 3,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "freq"
+        },
+        {
+          "count": 4,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "freq"
         }
       ]
     }

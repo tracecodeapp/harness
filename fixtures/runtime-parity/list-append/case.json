@@ -39,6 +39,16 @@
       ]
     }
   },
+  "expectEventAssertions": {
+    "append": [
+      {
+        "kind": "mutate",
+        "args": [
+          1
+        ]
+      }
+    ]
+  },
   "expectByLanguage": {
     "csharp": {
       "append": {
@@ -48,6 +58,7 @@
           "snapshot"
         ],
         "variableSnapshots": [
+          "num",
           "nums",
           "outList"
         ],

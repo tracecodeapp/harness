@@ -74,6 +74,8 @@ interface FixtureCase {
   id: string;
   functionName: string;
   executionStyle: RuntimeExecutionStyle;
+  languages?: Language[];
+  traceOptions?: Record<string, unknown>;
   inputs: Record<string, unknown>;
   anchors: Record<string, Record<Language, string>>;
   lineSequenceAnchors?: Record<string, Record<Language, string>>;
@@ -104,8 +106,50 @@ interface FixtureCase {
   expectSummaryByLanguage?: Partial<Record<Language, {
     accessTargets?: Array<RuntimeTraceParityAccessTarget & { count: number }>;
   }>>;
+  expectCallActivations?: RuntimeTraceCallActivationAssertion[];
+  expectCallActivationsByLanguage?: Partial<Record<Language, RuntimeTraceCallActivationAssertion[]>>;
+  expectReturns?: RuntimeTraceReturnAssertion[];
+  expectReturnsByLanguage?: Partial<Record<Language, RuntimeTraceReturnAssertion[]>>;
+  expectBalancedCallReturns?: boolean;
+  expectBalancedCallReturnsByLanguage?: Partial<Record<Language, boolean>>;
+  expectFrameEvents?: Record<string, RuntimeTraceFrameEventAssertion[]>;
+  expectFrameEventsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceFrameEventAssertion[]>>>;
+  expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
+  expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
   expectOpaqueRefs?: boolean;
   knownGaps?: Partial<Record<Language, Record<string, string>>>;
+}
+
+interface RuntimeTraceCallActivationAssertion {
+  function: string;
+  args?: Record<string, unknown>;
+  callStackDepth?: number;
+}
+
+interface RuntimeTraceReturnAssertion {
+  function: string;
+  value?: unknown;
+  args?: Record<string, unknown>;
+  callStackDepth?: number;
+}
+
+interface RuntimeTraceFrameEventAssertion {
+  kind: RuntimeTraceEventKind;
+  function: string;
+  args?: Record<string, unknown>;
+  text?: string;
+  callStackDepth: number;
+}
+
+interface RuntimeTraceEventAssertion {
+  kind: RuntimeTraceEventKind;
+  variable?: string;
+  pathDepth?: number;
+  indexSources?: Array<string | null>;
+  bindingVariable?: string;
+  method?: string;
+  args?: unknown[];
+  value?: unknown;
 }
 
 type RuntimeCore = {
@@ -153,6 +197,49 @@ function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function parsePositiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  assertCondition(
+    Number.isInteger(value) && value > 0,
+    `${name} must be a positive integer, got ${JSON.stringify(raw)}`
+  );
+  return value;
+}
+
+function runtimeTraceOptions(fixture: FixtureCase): Record<string, unknown> {
+  const envMaxPathDepth = parsePositiveIntegerEnv('TRACECODE_V4_MAX_PATH_DEPTH');
+  return {
+    maxTraceSteps: 1000,
+    maxLineEvents: 2000,
+    ...(envMaxPathDepth !== undefined ? { maxPathDepth: envMaxPathDepth } : {}),
+    ...(fixture.traceOptions ?? {}),
+  };
+}
+
+function runtimeTraceMaxPathDepth(fixture: FixtureCase): number | undefined {
+  const value = runtimeTraceOptions(fixture).maxPathDepth;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(8, Math.max(1, Math.floor(value)))
+    : undefined;
+}
+
+function normalizeFixtureTraceEventPathDepth<T extends RuntimeTrace['events'][number]>(
+  event: T,
+  fixture: FixtureCase
+): T {
+  const maxPathDepth = runtimeTraceMaxPathDepth(fixture);
+  if (maxPathDepth === undefined || !('target' in event)) return event;
+  const target = event.target;
+  if (!target || typeof target !== 'object' || !('path' in target) || !Array.isArray(target.path)) return event;
+  if (target.path.length <= maxPathDepth) return event;
+  const nextTarget = { ...target };
+  delete nextTarget.path;
+  delete nextTarget.indexSources;
+  return { ...event, target: nextTarget } as T;
 }
 
 function stableStringify(value: unknown): string {
@@ -344,7 +431,7 @@ async function executePythonTrace(code: string, fixture: FixtureCase): Promise<F
     fixture.functionName,
     fixture.inputs,
     fixture.executionStyle,
-    { maxTraceSteps: 1000, maxLineEvents: 2000 }
+    runtimeTraceOptions(fixture)
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
@@ -457,7 +544,7 @@ async function executeJavaScriptTrace(
     inputs: fixture.inputs,
     executionStyle: fixture.executionStyle,
     language,
-    options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
+    options: runtimeTraceOptions(fixture),
   });
   assertCondition(result.success === true, `${language} tracing failed: ${result.error ?? 'unknown error'}`);
   const rawSummary = summarizeRuntimeTraceEmissions(result.trace);
@@ -516,6 +603,7 @@ async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
 
 async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<FixtureTraceRun> {
   const execute = await loadCSharpExecuteExport();
+  const options = runtimeTraceOptions(fixture);
   const raw = execute(JSON.stringify({
     source: code,
     functionName: fixture.functionName,
@@ -523,7 +611,7 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
     executionStyle: fixture.executionStyle,
     trace: true,
     timeoutMs: 19_000,
-    maxTraceSteps: 1000,
+    ...options,
   }));
   const parsed = JSON.parse(raw) as {
     success: boolean;
@@ -535,16 +623,20 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
     throw new Error(`C# tracing failed for ${fixture.id}: ${parsed.error ?? 'unknown error'}`);
   }
 
-  const baseEvents = Array.isArray(parsed.events) ? parsed.events : [];
+  const baseEvents = (Array.isArray(parsed.events) ? parsed.events : [])
+    .map((event) => normalizeFixtureTraceEventPathDepth(event, fixture));
   const consoleOutput = parsed.consoleOutput ?? [];
+  const hostEmittedStdout = baseEvents.some((event) => event.kind === 'stdout');
   const events = [
     ...baseEvents,
-    ...consoleOutput.map((text) => ({
-      kind: 'stdout' as const,
-      runId: 'csharp:run',
-      file: 'solution.cs',
-      text,
-    })),
+    ...(hostEmittedStdout
+      ? []
+      : consoleOutput.map((text) => ({
+          kind: 'stdout' as const,
+          runId: 'csharp:run',
+          file: 'solution.cs',
+          text,
+        }))),
   ];
   const trace: RuntimeTrace = {
     schemaVersion: 'runtime-trace-2026-04-28',
@@ -759,6 +851,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
             ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
                 runId: 'java:run',
                 file: 'solution.java',
+                maxPathDepth: typeof options?.maxPathDepth === 'number' ? options.maxPathDepth : undefined,
               })
             : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'solution.java' }),
         };
@@ -787,7 +880,7 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
       code,
       fixture.functionName ?? '',
       fixture.inputs,
-      { maxTraceSteps: 1000, maxLineEvents: 2000 },
+      runtimeTraceOptions(fixture),
       fixture.executionStyle as Parameters<JavaWorkerClient['executeWithTracing']>[4]
     );
     if (!rawResult.success) {
@@ -801,7 +894,7 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
       code,
       fixture.functionName,
       fixture.inputs,
-      { maxTraceSteps: 1000, maxLineEvents: 2000 },
+      runtimeTraceOptions(fixture),
       fixture.executionStyle
     );
     if (!result.success) {
@@ -911,7 +1004,7 @@ async function executeCppTrace(
     functionName: fixture.functionName,
     inputs: fixture.inputs,
     executionStyle: fixture.executionStyle,
-    options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
+    options: runtimeTraceOptions(fixture),
   });
   assertCondition(result.success === true, `C++ tracing failed: ${result.error ?? 'unknown error'}`);
   const rawSummary = summarizeRuntimeTraceEmissions(result.trace);
@@ -1020,6 +1113,191 @@ function projectLineSnapshotFrames(
   return frames;
 }
 
+function eventMatchesAssertion(event: RuntimeTrace['events'][number], assertion: RuntimeTraceEventAssertion): boolean {
+  if (event.kind !== assertion.kind) return false;
+  if (assertion.variable !== undefined) {
+    if (!('target' in event) || !('variable' in event.target) || event.target.variable !== assertion.variable) {
+      return false;
+    }
+  }
+  if (assertion.pathDepth !== undefined) {
+    if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.path)) return false;
+    if (event.target.path.length !== assertion.pathDepth) return false;
+  }
+  if (assertion.indexSources !== undefined) {
+    if (!('target' in event) || !('path' in event.target) || !Array.isArray(event.target.indexSources)) return false;
+    if (stableStringify(event.target.indexSources) !== stableStringify(assertion.indexSources)) return false;
+  }
+  if (assertion.bindingVariable !== undefined) {
+    if (!('binding' in event) || event.binding?.kind !== 'iteration' || event.binding.variable !== assertion.bindingVariable) {
+      return false;
+    }
+  }
+  if (assertion.method !== undefined) {
+    if (event.kind !== 'mutate' || event.method !== assertion.method) return false;
+  }
+  if (assertion.args !== undefined) {
+    if (
+      event.kind !== 'mutate' ||
+      !Object.prototype.hasOwnProperty.call(event, 'args') ||
+      stableStringify(event.args) !== stableStringify(assertion.args)
+    ) {
+      return false;
+    }
+  }
+  if (assertion.value !== undefined) {
+    if (!('value' in event) || stableStringify(event.value) !== stableStringify(assertion.value)) return false;
+  }
+  return true;
+}
+
+function assertRoleEventAssertions(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>,
+  assertionsByRole: Record<string, RuntimeTraceEventAssertion[]>,
+  label: string
+): void {
+  for (const [role, assertions] of Object.entries(assertionsByRole)) {
+    const line = roleLines[role];
+    assertCondition(
+      typeof line === 'number' && line > 0,
+      `${label}: event assertion role "${role}" does not have a resolved anchor line`
+    );
+    const roleEvents = trace.events.filter((event) => event.line === line);
+    for (const assertion of assertions) {
+      assertCondition(
+        roleEvents.some((event) => eventMatchesAssertion(event, assertion)),
+        `${label}: missing event assertion for role "${role}".\nExpected: ${stableStringify(assertion)}\nEvents: ${stableStringify(roleEvents)}`
+      );
+    }
+  }
+}
+
+function callActivationMatchesAssertion(
+  event: RuntimeTrace['events'][number],
+  assertion: RuntimeTraceCallActivationAssertion
+): boolean {
+  if (event.kind !== 'call') return false;
+  if (event.function !== assertion.function) return false;
+  if (assertion.args !== undefined && stableStringify(event.args) !== stableStringify(assertion.args)) return false;
+  if (assertion.callStackDepth !== undefined) {
+    if (!Array.isArray(event.callStack) || event.callStack.length !== assertion.callStackDepth) return false;
+    const topFrame = event.callStack[event.callStack.length - 1];
+    if (topFrame?.function !== assertion.function) return false;
+    if (assertion.args !== undefined && stableStringify(topFrame.args) !== stableStringify(assertion.args)) return false;
+  }
+  return true;
+}
+
+function assertCallActivations(
+  trace: RuntimeTrace,
+  assertions: RuntimeTraceCallActivationAssertion[],
+  label: string
+): void {
+  const callEvents = trace.events.filter((event) => event.kind === 'call');
+  for (const assertion of assertions) {
+    assertCondition(
+      callEvents.some((event) => callActivationMatchesAssertion(event, assertion)),
+      `${label}: missing call activation.\nExpected: ${stableStringify(assertion)}\nCalls: ${stableStringify(callEvents)}`
+    );
+  }
+}
+
+function returnMatchesAssertion(
+  event: RuntimeTrace['events'][number],
+  assertion: RuntimeTraceReturnAssertion
+): boolean {
+  if (event.kind !== 'return') return false;
+  if (event.function !== assertion.function) return false;
+  if (assertion.value !== undefined && stableStringify(event.value) !== stableStringify(assertion.value)) return false;
+  if (assertion.callStackDepth !== undefined) {
+    if (!Array.isArray(event.callStack) || event.callStack.length !== assertion.callStackDepth) return false;
+    const topFrame = event.callStack[event.callStack.length - 1];
+    if (topFrame?.function !== assertion.function) return false;
+    if (assertion.args !== undefined && stableStringify(topFrame.args) !== stableStringify(assertion.args)) return false;
+  }
+  return true;
+}
+
+function assertReturns(
+  trace: RuntimeTrace,
+  assertions: RuntimeTraceReturnAssertion[],
+  label: string
+): void {
+  const returnEvents = trace.events.filter((event) => event.kind === 'return');
+  for (const assertion of assertions) {
+    assertCondition(
+      returnEvents.some((event) => returnMatchesAssertion(event, assertion)),
+      `${label}: missing return event.\nExpected: ${stableStringify(assertion)}\nReturns: ${stableStringify(returnEvents)}`
+    );
+  }
+}
+
+function assertBalancedCallReturns(trace: RuntimeTrace, label: string): void {
+  const stack: Array<{ function: string; args?: unknown; line?: number }> = [];
+  for (const event of trace.events) {
+    if (event.kind === 'call') {
+      stack.push({
+        function: event.function ?? '<module>',
+        args: event.args,
+        line: event.line,
+      });
+      continue;
+    }
+    if (event.kind !== 'return') continue;
+    const actual = event.function ?? '<module>';
+    const top = stack[stack.length - 1];
+    assertCondition(
+      Boolean(top),
+      `${label}: return event without an active call frame.\nReturn: ${stableStringify(event)}`
+    );
+    assertCondition(
+      top?.function === actual,
+      `${label}: return event did not match the active call frame.\nReturn: ${stableStringify(event)}\nActive: ${stableStringify(top)}`
+    );
+    stack.pop();
+  }
+  assertCondition(
+    stack.length === 0,
+    `${label}: call frames were not closed by return events.\nOpen frames: ${stableStringify(stack)}`
+  );
+}
+
+function frameEventMatchesAssertion(
+  event: RuntimeTrace['events'][number],
+  assertion: RuntimeTraceFrameEventAssertion
+): boolean {
+  if (event.kind !== assertion.kind) return false;
+  if (!Array.isArray(event.callStack) || event.callStack.length !== assertion.callStackDepth) return false;
+  const topFrame = event.callStack[event.callStack.length - 1];
+  if (topFrame?.function !== assertion.function) return false;
+  if (assertion.args !== undefined && stableStringify(topFrame.args) !== stableStringify(assertion.args)) return false;
+  if (assertion.text !== undefined && ('text' in event ? event.text : undefined) !== assertion.text) return false;
+  return true;
+}
+
+function assertFrameEvents(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>,
+  assertionsByRole: Record<string, RuntimeTraceFrameEventAssertion[]>,
+  label: string
+): void {
+  for (const [role, assertions] of Object.entries(assertionsByRole)) {
+    const line = roleLines[role];
+    assertCondition(
+      typeof line === 'number' && line > 0,
+      `${label}: frame event assertion role "${role}" does not have a resolved anchor line`
+    );
+    const roleEvents = trace.events.filter((event) => event.line === line);
+    for (const assertion of assertions) {
+      assertCondition(
+        roleEvents.some((event) => frameEventMatchesAssertion(event, assertion)),
+        `${label}: missing frame event assertion for role "${role}".\nExpected: ${stableStringify(assertion)}\nEvents: ${stableStringify(roleEvents)}`
+      );
+    }
+  }
+}
+
 function assertNoUnsupportedVisualization(trace: RuntimeTrace, label: string): void {
   const serialized = stableStringify(trace.events);
   assertCondition(
@@ -1082,7 +1360,9 @@ async function runFixture(
 ): Promise<void> {
   const fixtureDir = join(FIXTURES_DIR, fixtureName);
   const fixture = JSON.parse(await readFile(join(fixtureDir, 'case.json'), 'utf8')) as FixtureCase;
-  const languages = selectedFixtureLanguages();
+  const fixtureLanguages = fixture.languages ? new Set(fixture.languages) : null;
+  const languages = selectedFixtureLanguages().filter((language) => !fixtureLanguages || fixtureLanguages.has(language));
+  assertCondition(languages.length > 0, `${fixture.id}: no selected languages match fixture.languages`);
   const sources = {} as Partial<Record<Language, string>>;
   for (const language of languages) {
     const sourcePath = join(fixtureDir, fixtureLanguageFile(language));
@@ -1227,6 +1507,49 @@ async function runFixture(
         stableStringify(stripSummaryMethods(actualSummary).accessTargets) === stableStringify(stripSummaryMethods(expectedSummary).accessTargets),
         `${fixture.id}: ${language} runtime trace fixture summary drifted.\nExpected: ${stableStringify(stripSummaryMethods(expectedSummary).accessTargets)}\nReceived: ${stableStringify(stripSummaryMethods(actualSummary).accessTargets)}`
       );
+    }
+    const expectedEventAssertions = {
+      ...(fixture.expectEventAssertions ?? {}),
+      ...(fixture.expectEventAssertionsByLanguage?.[language] ?? {}),
+    };
+    if (Object.keys(expectedEventAssertions).length > 0) {
+      assertRoleEventAssertions(
+        trace,
+        roleLines,
+        expectedEventAssertions,
+        `${fixture.id}:${language}`
+      );
+    }
+    const expectedFrameEvents = {
+      ...(fixture.expectFrameEvents ?? {}),
+      ...(fixture.expectFrameEventsByLanguage?.[language] ?? {}),
+    };
+    if (Object.keys(expectedFrameEvents).length > 0) {
+      assertFrameEvents(
+        trace,
+        roleLines,
+        expectedFrameEvents,
+        `${fixture.id}:${language}`
+      );
+    }
+    const expectedCallActivations = [
+      ...(fixture.expectCallActivations ?? []),
+      ...(fixture.expectCallActivationsByLanguage?.[language] ?? []),
+    ];
+    if (expectedCallActivations.length > 0) {
+      assertCallActivations(trace, expectedCallActivations, `${fixture.id}:${language}`);
+    }
+    const expectedReturns = [
+      ...(fixture.expectReturns ?? []),
+      ...(fixture.expectReturnsByLanguage?.[language] ?? []),
+    ];
+    if (expectedReturns.length > 0) {
+      assertReturns(trace, expectedReturns, `${fixture.id}:${language}`);
+    }
+    const expectBalancedCallReturns =
+      fixture.expectBalancedCallReturnsByLanguage?.[language] ?? fixture.expectBalancedCallReturns;
+    if (expectBalancedCallReturns) {
+      assertBalancedCallReturns(trace, `${fixture.id}:${language}`);
     }
     assertNoUnsupportedVisualization(trace, `${fixture.id}:${language}`);
     if (fixture.expectOpaqueRefs) {

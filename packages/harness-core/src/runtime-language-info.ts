@@ -20,6 +20,7 @@ export interface LanguageRuntimeInfo {
   language: Language;
   displayName: string;
   versionLabel: string;
+  description: string;
   runtime: RuntimeComponentInfo;
   compiler?: RuntimeComponentInfo;
   engine?: RuntimeComponentInfo;

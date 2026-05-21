@@ -1,6 +1,7 @@
 export const TYPESCRIPT_RUNTIME_DECLARATIONS = `
 declare class ListNode {
   val: any;
+  value: any;
   next: ListNode | SerializedListNode | SerializedRef | null;
   prev?: ListNode | SerializedListNode | SerializedRef | null;
   constructor(val?: any, next?: ListNode | null);
@@ -8,6 +9,7 @@ declare class ListNode {
 
 declare class TreeNode {
   val: any;
+  value: any;
   left: TreeNode | SerializedTreeNode | SerializedRef | null;
   right: TreeNode | SerializedTreeNode | SerializedRef | null;
   constructor(val?: any, left?: TreeNode | null, right?: TreeNode | null);
@@ -19,6 +21,7 @@ type SerializedListNode = {
   __id__?: string;
   __type__?: 'ListNode';
   val?: any;
+  value?: any;
   next?: SerializedListNode | SerializedRef | ListNode | null;
   prev?: SerializedListNode | SerializedRef | ListNode | null;
 };
@@ -27,6 +30,7 @@ type SerializedTreeNode = {
   __id__?: string;
   __type__?: 'TreeNode';
   val?: any;
+  value?: any;
   left?: SerializedTreeNode | SerializedRef | TreeNode | null;
   right?: SerializedTreeNode | SerializedRef | TreeNode | null;
 };
@@ -35,4 +39,3 @@ type SerializedTreeNode = {
 export function withTypeScriptRuntimeDeclarations(sourceCode: string): string {
   return `${sourceCode}\n\n${TYPESCRIPT_RUNTIME_DECLARATIONS}\n`;
 }
-

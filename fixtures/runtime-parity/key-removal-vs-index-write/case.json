@@ -58,7 +58,8 @@
         {
           "kind": "mutate",
           "variable": "counts",
-          "method": "remove"
+          "method": "remove",
+          "pathDepth": 1
         }
       ]
     }
@@ -100,9 +101,202 @@
         "accessTargets": [
           {
             "kind": "mutate",
+            "pathDepth": 1,
             "variable": "counts",
             "method": "remove"
           }
+        ]
+      }
+    },
+    "javascript": {
+      "decrement": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "counts"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ]
+      },
+      "remove": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "counts",
+            "pathDepth": 1
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ]
+      }
+    },
+    "typescript": {
+      "decrement": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "counts"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ]
+      },
+      "remove": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "counts",
+            "pathDepth": 1
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ]
+      }
+    },
+    "java": {
+      "decrement": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "counts"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ]
+      },
+      "remove": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "counts"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ]
+      }
+    },
+    "cpp": {
+      "decrement": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "counts"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "counts"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "counts"
+        ]
+      },
+      "remove": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "counts"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "counts"
         ]
       }
     }
@@ -112,7 +306,8 @@
       {
         "kind": "mutate",
         "variable": "counts",
-        "count": 1
+        "count": 1,
+        "pathDepth": 1
       },
       {
         "kind": "write",
@@ -132,22 +327,257 @@
     "csharp": {
       "accessTargets": [
         {
+          "count": 1,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "counts"
+        },
+        {
+          "count": 3,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 3,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "counts"
+        }
+      ]
+    },
+    "python": {
+      "accessTargets": [
+        {
+          "count": 1,
           "kind": "mutate",
           "variable": "counts",
-          "method": "remove",
-          "count": 1
+          "pathDepth": 1
         },
         {
-          "kind": "read",
-          "variable": "counts",
-          "pathDepth": 1,
-          "count": 2
-        },
-        {
+          "count": 1,
           "kind": "write",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "counts"
+        },
+        {
+          "count": 3,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "counts"
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "count": 2,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "counts"
+        },
+        {
+          "count": 3,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "counts"
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "count": 2,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "counts"
+        },
+        {
+          "count": 3,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "counts"
+        }
+      ]
+    },
+    "java": {
+      "accessTargets": [
+        {
+          "count": 2,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 2,
+          "kind": "write",
+          "variable": "counts"
+        }
+      ]
+    },
+    "cpp": {
+      "accessTargets": [
+        {
+          "count": 2,
+          "kind": "mutate",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "counts"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "counts"
+        },
+        {
+          "count": 2,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "counts"
+        }
+      ]
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "java": {
+      "remove": [
+        {
+          "kind": "mutate",
           "variable": "counts",
           "pathDepth": 1,
-          "count": 3
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "remove",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "csharp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "Remove",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "python": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "'b'"
+          ],
+          "method": "pop",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "delete",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "indexSources": [
+            "\"b\""
+          ],
+          "method": "delete",
+          "args": [
+            "b"
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "counts",
+          "pathDepth": 1,
+          "method": "erase",
+          "args": [
+            "b"
+          ]
         }
       ]
     }

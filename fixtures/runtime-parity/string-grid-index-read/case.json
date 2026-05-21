@@ -1,0 +1,56 @@
+{
+  "id": "string-grid-index-read",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "board": [
+      ".#",
+      ".."
+    ]
+  },
+  "anchors": {
+    "read": {
+      "python": "if board[r][c] == '.':",
+      "javascript": "if (board[r][c] === '.') {",
+      "typescript": "if (board[r][c] === '.') {",
+      "java": "if (board[r].charAt(c) == '.') {",
+      "csharp": "if (board[r][c] == '.')",
+      "cpp": "if (board[r][c] == '.') {"
+    }
+  },
+  "expect": {
+    "read": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "board",
+        "c",
+        "count",
+        "r"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "board",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "read": [
+      {
+        "kind": "read",
+        "variable": "board",
+        "pathDepth": 2,
+        "indexSources": [
+          "r",
+          "c"
+        ]
+      }
+    ]
+  }
+}

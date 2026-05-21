@@ -1,0 +1,108 @@
+{
+  "id": "lru-nested-field-write-depth2",
+  "functionName": "solve",
+  "executionStyle": "solution-method",
+  "languages": [
+    "python",
+    "javascript",
+    "typescript"
+  ],
+  "inputs": {
+    "value": 7
+  },
+  "anchors": {
+    "allocAssign": {
+      "python": "node = Node(value)",
+      "javascript": "const node = new Node(value);",
+      "typescript": "const node = new Node(value);"
+    },
+    "nestedPrevWrite": {
+      "python": "self.head.next.prev = node",
+      "javascript": "this.head.next.prev = node;",
+      "typescript": "this.head.next!.prev = node;"
+    }
+  },
+  "expect": {
+    "allocAssign": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "node",
+        "this",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "node"
+        }
+      ]
+    },
+    "nestedPrevWrite": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "node",
+        "this",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "this",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "allocAssign": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "node",
+          "self",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "node"
+          }
+        ]
+      },
+      "nestedPrevWrite": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "node",
+          "self",
+          "value"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "self",
+            "pathDepth": 1
+          }
+        ]
+      }
+    }
+  },
+  "traceOptions": {
+    "maxPathDepth": 2
+  }
+}

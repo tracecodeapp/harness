@@ -99,18 +99,495 @@
     "csharp": {
       "accessTargets": [
         {
+          "count": 1,
           "kind": "read",
-          "variable": "matrix",
-          "pathDepth": 1,
-          "count": 1
+          "pathDepth": 2,
+          "variable": "matrix"
         },
         {
+          "count": 1,
           "kind": "read",
-          "variable": "pizza",
-          "pathDepth": 1,
-          "count": 1
+          "pathDepth": 2,
+          "variable": "pizza"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "variable": "matrix"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "variable": "pizza"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "cols"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "width"
         }
       ]
+    },
+    "python": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "matrix"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "pizza"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "cols"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "width"
+        }
+      ]
+    },
+    "javascript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "matrix"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "pizza"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "cols"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "width"
+        }
+      ]
+    },
+    "typescript": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "matrix"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "pizza"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "cols"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "width"
+        }
+      ]
+    },
+    "java": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "matrix"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "matrix"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 2,
+          "variable": "pizza"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "cols"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "width"
+        }
+      ]
+    },
+    "cpp": {
+      "accessTargets": [
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "matrix"
+        },
+        {
+          "count": 1,
+          "kind": "read",
+          "pathDepth": 1,
+          "variable": "pizza"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "cols"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "width"
+        }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "matrixRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "matrix"
+          },
+          {
+            "kind": "write",
+            "variable": "cols"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza"
+        ]
+      },
+      "stringRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "pizza"
+          },
+          {
+            "kind": "write",
+            "variable": "width"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza",
+          "width"
+        ]
+      }
+    },
+    "javascript": {
+      "matrixRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "matrix"
+          },
+          {
+            "kind": "write",
+            "variable": "cols"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza"
+        ]
+      },
+      "stringRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "pizza"
+          },
+          {
+            "kind": "write",
+            "variable": "width"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza",
+          "width"
+        ]
+      }
+    },
+    "typescript": {
+      "matrixRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "matrix"
+          },
+          {
+            "kind": "write",
+            "variable": "cols"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza"
+        ]
+      },
+      "stringRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "pizza"
+          },
+          {
+            "kind": "write",
+            "variable": "width"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza",
+          "width"
+        ]
+      }
+    },
+    "java": {
+      "matrixRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "matrix"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "matrix"
+          },
+          {
+            "kind": "write",
+            "variable": "cols"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza"
+        ]
+      },
+      "stringRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "pizza"
+          },
+          {
+            "kind": "write",
+            "variable": "width"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza",
+          "width"
+        ]
+      }
+    },
+    "csharp": {
+      "matrixRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "matrix"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "matrix"
+          },
+          {
+            "kind": "write",
+            "variable": "cols"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza"
+        ]
+      },
+      "stringRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "pizza"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "pizza"
+          },
+          {
+            "kind": "write",
+            "variable": "width"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza",
+          "width"
+        ]
+      }
+    },
+    "cpp": {
+      "matrixRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "matrix"
+          },
+          {
+            "kind": "write",
+            "variable": "cols"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza"
+        ]
+      },
+      "stringRowLength": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "pizza"
+          },
+          {
+            "kind": "write",
+            "variable": "width"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "cols",
+          "matrix",
+          "pizza",
+          "width"
+        ]
+      }
     }
   }
 }

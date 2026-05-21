@@ -123,23 +123,31 @@
     },
     "java": {
       "constructorWrite": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "this"
+          }
+        ],
         "eventKinds": [
           "line",
           "snapshot",
           "write"
         ],
         "variableSnapshots": [
-          "nums"
-        ],
-        "accessTargets": [
-          {
-            "kind": "write",
-            "variable": "this",
-            "pathDepth": 1
-          }
+          "nums",
+          "prefix"
         ]
       },
       "methodRead": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "this"
+          }
+        ],
         "eventKinds": [
           "line",
           "read",
@@ -149,13 +157,6 @@
         "variableSnapshots": [
           "left",
           "right"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "this",
-            "pathDepth": 1
-          }
         ]
       }
     },

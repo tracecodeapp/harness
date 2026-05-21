@@ -12,18 +12,22 @@ export type RuntimeTraceEventKind =
   | 'snapshot'
   | 'stdout'
   | 'exception'
-  | 'timeout'
-  | 'control';
+  | 'timeout';
 
 export type RuntimeTraceTarget =
   | { variable: string; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
-  | { variable: string; path: Array<string | number>; scope?: 'local' | 'global' | 'builtin' | 'receiver' }
-  | { objectId: string; path?: Array<string | number> };
+  | {
+      variable: string;
+      path: Array<string | number>;
+      indexSources?: Array<string | null>;
+      scope?: 'local' | 'global' | 'builtin' | 'receiver';
+    }
+  | { objectId: string; path?: Array<string | number>; indexSources?: Array<string | null> };
 
 export interface RuntimeTraceCallFrame {
   function: string;
   line?: number;
-  args?: Record<string, unknown> | unknown[];
+  args?: Record<string, unknown>;
 }
 
 interface RuntimeTraceBaseEvent {
@@ -31,19 +35,25 @@ interface RuntimeTraceBaseEvent {
   runId: string;
   file?: string;
   line?: number;
+  column?: number;
   frameId?: string;
   callStack?: RuntimeTraceCallFrame[];
 }
 
 export type RuntimeTraceEvent =
   | (RuntimeTraceBaseEvent & { kind: 'line'; line: number; function?: string })
-  | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> | unknown[] })
+  | (RuntimeTraceBaseEvent & { kind: 'call'; line: number; function: string; args?: Record<string, unknown> })
   | (RuntimeTraceBaseEvent & { kind: 'return'; line: number; function?: string; value?: unknown })
-  | (RuntimeTraceBaseEvent & { kind: 'read' | 'write'; line: number; target: RuntimeTraceTarget; value?: unknown })
+  | (RuntimeTraceBaseEvent & {
+      kind: 'read' | 'write';
+      line: number;
+      target: RuntimeTraceTarget;
+      value?: unknown;
+      binding?: RuntimeTraceIterationBinding;
+    })
   | (RuntimeTraceBaseEvent & { kind: 'mutate'; line: number; target: RuntimeTraceTarget; method?: string; args?: unknown[] })
   | (RuntimeTraceBaseEvent & { kind: 'snapshot'; line: number; target: RuntimeTraceTarget; value: unknown })
   | (RuntimeTraceBaseEvent & { kind: 'stdout'; text: string })
-  | (RuntimeTraceBaseEvent & { kind: 'control'; line: number; control: 'break' | 'continue' })
   | (RuntimeTraceBaseEvent & { kind: 'exception'; message: string })
   | (RuntimeTraceBaseEvent & {
       kind: 'timeout';
@@ -60,9 +70,15 @@ export interface RuntimeTrace {
   traceStepCount: number;
 }
 
+export interface RuntimeTraceIterationBinding {
+  kind?: 'iteration';
+  variable: string;
+}
+
 export interface RuntimeTraceOptions {
   runId?: string;
   file?: string;
+  maxPathDepth?: number;
 }
 
 export function createEmptyRuntimeTrace(
@@ -106,15 +122,39 @@ export function withRuntimeTraceOptions(
   options: RuntimeTraceOptions = {}
 ): RuntimeTrace {
   const runId = options.runId ?? trace.runId;
+  const maxPathDepth = normalizeMaxPathDepth(options.maxPathDepth);
   return {
     ...trace,
     runId,
-    events: trace.events.map((event) => ({
+    events: trace.events.map((event) => normalizeRuntimeTraceEventOptions({
       ...event,
       runId,
       ...(options.file ? { file: options.file } : {}),
-    })),
+    }, maxPathDepth)),
   };
+}
+
+function normalizeMaxPathDepth(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(8, Math.max(1, Math.floor(value)));
+}
+
+function normalizeRuntimeTraceEventOptions<T extends RuntimeTraceEvent>(
+  event: T,
+  maxPathDepth: number | undefined
+): T {
+  if (maxPathDepth === undefined || !('target' in event)) return event;
+  const target = event.target;
+  if (!target || typeof target !== 'object' || !('path' in target) || !Array.isArray(target.path)) {
+    return event;
+  }
+  if (target.path.length <= maxPathDepth) {
+    return event;
+  }
+  const nextTarget = { ...target };
+  delete nextTarget.path;
+  delete nextTarget.indexSources;
+  return { ...event, target: nextTarget } as T;
 }
 
 export function buildRuntimeTraceParitySignature(trace: RuntimeTrace): RuntimeTraceParitySignature {

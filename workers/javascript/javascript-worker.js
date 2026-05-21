@@ -58,6 +58,7 @@ if (typeof globalThis.ListNode !== 'function') {
   globalThis.ListNode = class ListNode {
     constructor(val = 0, next = null) {
       this.val = val;
+      this.value = val;
       this.next = next;
     }
   };
@@ -66,6 +67,7 @@ if (typeof globalThis.TreeNode !== 'function') {
   globalThis.TreeNode = class TreeNode {
     constructor(val = 0, left = null, right = null) {
       this.val = val;
+      this.value = val;
       this.left = left;
       this.right = right;
     }
@@ -111,6 +113,7 @@ function ensureJavaScriptLibraries() {
 const TYPESCRIPT_RUNTIME_DECLARATIONS = `
 declare class ListNode {
   val: any;
+  value: any;
   next: ListNode | SerializedListNode | SerializedRef | null;
   prev?: ListNode | SerializedListNode | SerializedRef | null;
   constructor(val?: any, next?: ListNode | null);
@@ -118,6 +121,7 @@ declare class ListNode {
 
 declare class TreeNode {
   val: any;
+  value: any;
   left: TreeNode | SerializedTreeNode | SerializedRef | null;
   right: TreeNode | SerializedTreeNode | SerializedRef | null;
   constructor(val?: any, left?: TreeNode | null, right?: TreeNode | null);
@@ -129,6 +133,7 @@ type SerializedListNode = {
   __id__?: string;
   __type__?: 'ListNode';
   val?: any;
+  value?: any;
   next?: SerializedListNode | SerializedRef | ListNode | null;
   prev?: SerializedListNode | SerializedRef | ListNode | null;
 };
@@ -137,6 +142,7 @@ type SerializedTreeNode = {
   __id__?: string;
   __type__?: 'TreeNode';
   val?: any;
+  value?: any;
   left?: SerializedTreeNode | SerializedRef | TreeNode | null;
   right?: SerializedTreeNode | SerializedRef | TreeNode | null;
 };
@@ -262,7 +268,13 @@ function serializeValue(
   if (value === null || value === undefined) return value;
 
   const valueType = typeof value;
-  if (valueType === 'string' || valueType === 'number' || valueType === 'boolean') {
+  if (valueType === 'number') {
+    if (Number.isNaN(value)) return 'NaN';
+    if (value === Infinity) return 'Infinity';
+    if (value === -Infinity) return '-Infinity';
+    return value;
+  }
+  if (valueType === 'string' || valueType === 'boolean') {
     return value;
   }
   if (valueType === 'bigint') {
@@ -565,16 +577,45 @@ function resolveReferenceGraph(value, byId, resolved) {
   return out;
 }
 
+function cloneInputGraph(value, cloned = new WeakMap()) {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+
+  if (cloned.has(value)) {
+    return cloned.get(value);
+  }
+
+  if (Array.isArray(value)) {
+    const out = [];
+    cloned.set(value, out);
+    for (const item of value) {
+      out.push(cloneInputGraph(item, cloned));
+    }
+    return out;
+  }
+
+  if (!isPlainObjectRecord(value)) {
+    return value;
+  }
+
+  const out = {};
+  cloned.set(value, out);
+  for (const [key, nested] of Object.entries(value)) {
+    out[key] = cloneInputGraph(nested, cloned);
+  }
+  return out;
+}
+
 function normalizeInputs(inputs) {
   if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return {};
   const byId = new Map();
   collectReferenceTargets(inputs, byId, new WeakSet());
   if (byId.size === 0) {
-    return inputs;
+    return cloneInputGraph(inputs);
   }
   const hydrated = resolveReferenceGraph(inputs, byId, new WeakMap());
   if (!hydrated || typeof hydrated !== 'object' || Array.isArray(hydrated)) {
-    return inputs;
+    return cloneInputGraph(inputs);
   }
   return hydrated;
 }
@@ -583,7 +624,7 @@ function buildTreeNodeFromLevelOrder(values) {
   if (!Array.isArray(values) || values.length === 0) return null;
   const firstValue = values[0];
   if (firstValue === null || firstValue === undefined) return null;
-  const root = { val: firstValue, left: null, right: null };
+  const root = { val: firstValue, value: firstValue, left: null, right: null };
   const queue = [root];
   let index = 1;
 
@@ -593,7 +634,7 @@ function buildTreeNodeFromLevelOrder(values) {
 
     const leftValue = values[index++];
     if (leftValue !== null && leftValue !== undefined) {
-      node.left = { val: leftValue, left: null, right: null };
+      node.left = { val: leftValue, value: leftValue, left: null, right: null };
       queue.push(node.left);
     }
 
@@ -601,7 +642,7 @@ function buildTreeNodeFromLevelOrder(values) {
 
     const rightValue = values[index++];
     if (rightValue !== null && rightValue !== undefined) {
-      node.right = { val: rightValue, left: null, right: null };
+      node.right = { val: rightValue, value: rightValue, left: null, right: null };
       queue.push(node.right);
     }
   }
@@ -621,6 +662,7 @@ function materializeTreeInput(value) {
     const nodeValue = value;
     const node = {
       val: nodeValue.val ?? nodeValue.value ?? null,
+      value: nodeValue.val ?? nodeValue.value ?? null,
       left: materializeTreeInput(nodeValue.left ?? null),
       right: materializeTreeInput(nodeValue.right ?? null),
     };
@@ -637,10 +679,10 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
-    const head = { val: value[0], next: null };
+    const head = { val: value[0], value: value[0], next: null };
     let current = head;
     for (let i = 1; i < value.length; i++) {
-      current.next = { val: value[i], next: null };
+      current.next = { val: value[i], value: value[i], next: null };
       current = current.next;
     }
     return head;
@@ -658,6 +700,7 @@ function materializeListInput(value, refs = new Map(), materialized = new WeakMa
     }
     const node = {
       val: value.val ?? value.value ?? null,
+      value: value.val ?? value.value ?? null,
       next: null,
     };
     materialized.set(value, node);
@@ -1070,12 +1113,20 @@ function getNumericOption(value, fallback) {
   return Math.floor(value);
 }
 
+const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
+const MAX_TRACE_MAX_PATH_DEPTH = 8;
+
+function getMaxPathDepthOption(value) {
+  const numeric = getNumericOption(value, DEFAULT_TRACE_MAX_PATH_DEPTH);
+  return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, numeric));
+}
+
 function isTraceablePathSegment(value) {
   return (typeof value === 'number' && Number.isInteger(value)) ||
     (typeof value === 'string' && value.length > 0);
 }
 
-function normalizeTraceIndices(indices, maxDepth = 2) {
+function normalizeTraceIndices(indices, maxDepth = 3) {
   if (!Array.isArray(indices) || indices.length === 0 || indices.length > maxDepth) {
     return null;
   }
@@ -1085,8 +1136,15 @@ function normalizeTraceIndices(indices, maxDepth = 2) {
   return indices.map((index) => typeof index === 'number' ? Math.trunc(index) : index);
 }
 
+function normalizeTraceIndexSources(indexSources, maxDepth = 3) {
+  if (!Array.isArray(indexSources) || indexSources.length === 0 || indexSources.length > maxDepth) {
+    return null;
+  }
+  return indexSources.map((source) => typeof source === 'string' && source.length > 0 ? source : null);
+}
+
 function isTraceableMutatingMethod(methodName) {
-  return ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete'].includes(methodName);
+  return ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(methodName);
 }
 
 function readValueAtIndices(container, indices) {
@@ -1135,6 +1193,7 @@ function createTraceRecorder(options = {}) {
   const maxLineEvents = getNumericOption(options.maxLineEvents, 12000);
   const maxSingleLineHits = getNumericOption(options.maxSingleLineHits, 1000);
   const maxCallDepth = getNumericOption(options.maxCallDepth, 2000);
+  const maxPathDepth = getMaxPathDepthOption(options.maxPathDepth);
 
   let lineEventCount = 0;
   let traceLimitExceeded = false;
@@ -1185,13 +1244,27 @@ function createTraceRecorder(options = {}) {
       if (variableValue === undefined) continue;
       if (typeof variableValue === 'function') continue;
       try {
-        const refState =
-          key === 'this' && variableValue && typeof variableValue === 'object'
-            ? { ids: new Map(), nextId: 1 }
-            : stableNodeRefState;
-        result[key] = serializeTopLevelValue(variableValue, refState);
+        result[key] = serializeTopLevelValue(variableValue, stableNodeRefState);
       } catch {
         // Skip variables that throw during serialization (e.g. transient proxy/getter failures).
+      }
+    }
+    return result;
+  }
+
+  function sanitizeCallArgs(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const result = {};
+    for (const [key, variableValue] of Object.entries(value)) {
+      if (typeof variableValue === 'function') continue;
+      if (variableValue === undefined) {
+        result[key] = '<undefined>';
+        continue;
+      }
+      try {
+        result[key] = serializeTopLevelValue(variableValue, stableNodeRefState);
+      } catch {
+        result[key] = '<unserializable>';
       }
     }
     return result;
@@ -1300,9 +1373,16 @@ function createTraceRecorder(options = {}) {
       ...(Array.isArray(access.indices) && access.indices.length > 0
         ? { indices: access.indices }
         : {}),
+      ...(Array.isArray(access.indexSources) && access.indexSources.length > 0
+        ? { indexSources: access.indexSources }
+        : {}),
       ...(access.method ? { method: access.method } : {}),
+      ...(Array.isArray(access.args) ? { args: access.args } : {}),
       ...(access.pathDepth ? { pathDepth: access.pathDepth } : {}),
       ...(access.scope ? { scope: access.scope } : {}),
+      ...(access.binding ? { binding: access.binding } : {}),
+      ...(Number.isFinite(access.line) && access.line > 0 ? { line: access.line } : {}),
+      ...(Number.isFinite(access.column) && access.column >= 0 ? { column: access.column } : {}),
       ...(Object.prototype.hasOwnProperty.call(access, 'value') ? { value: access.value } : {}),
     }));
   }
@@ -1352,6 +1432,7 @@ function createTraceRecorder(options = {}) {
 
   function runtimeTraceTargetForAccess(access) {
     const indices = Array.isArray(access?.indices) ? access.indices : [];
+    const indexSources = Array.isArray(access?.indexSources) ? access.indexSources : [];
     const scope = typeof access?.scope === 'string' && access.scope.length > 0
       ? access.scope
       : undefined;
@@ -1360,7 +1441,11 @@ function createTraceRecorder(options = {}) {
       ...(scope ? { scope } : {}),
     };
     if (indices.length > 0) {
-      return { ...base, path: indices };
+      return {
+        ...base,
+        path: indices,
+        ...(indexSources.length > 0 ? { indexSources } : {}),
+      };
     }
     return base;
   }
@@ -1403,10 +1488,12 @@ function createTraceRecorder(options = {}) {
     if (traceLimitExceeded && timeoutReason === 'trace-limit' && step?.event !== 'timeout') {
       return;
     }
+    const stack = Array.isArray(step.callStack) ? step.callStack : [];
     const base = {
       runId: 'javascript:run',
       line: step.line,
       frameId: runtimeTraceFrameIdForStep(step),
+      ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
     };
     const pushRuntimeTraceEvent = (event) => {
       if (runtimeTraceEvents.length >= effectiveMaxRuntimeTraceEvents) {
@@ -1420,8 +1507,12 @@ function createTraceRecorder(options = {}) {
     if (step.event === 'line') {
       pushRuntimeTraceEvent({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'call') {
-      const stack = Array.isArray(step.callStack) ? step.callStack : [];
-      pushRuntimeTraceEvent({ ...base, kind: 'call', function: step.function, args: stack.at(-1)?.args });
+      pushRuntimeTraceEvent({
+        ...base,
+        kind: 'call',
+        function: step.function,
+        args: stack.at(-1)?.args,
+      });
     } else if (step.event === 'return') {
       pushRuntimeTraceEvent({
         ...base,
@@ -1435,8 +1526,8 @@ function createTraceRecorder(options = {}) {
       pushRuntimeTraceEvent({ ...base, kind: 'timeout', message: 'Runtime timeout' });
     } else if (step.event === 'stdout') {
       pushRuntimeTraceEvent({
+        ...base,
         kind: 'stdout',
-        runId: 'javascript:run',
         ...(step.line ? { line: step.line } : {}),
         text: String(step.returnValue ?? ''),
       });
@@ -1456,11 +1547,28 @@ function createTraceRecorder(options = {}) {
       updateRuntimeTraceAccessStats(access);
       const kind = runtimeTraceKindForAccess(access);
       const target = runtimeTraceTargetForAccess(access);
+      const accessBase = {
+        ...base,
+        ...(Number.isFinite(access.line) && access.line > 0 ? { line: access.line } : {}),
+        ...(Number.isFinite(access.column) && access.column >= 0 ? { column: access.column } : {}),
+      };
       if (kind === 'mutate') {
-        const event = { ...base, kind, target, ...(access.method ? { method: access.method } : {}) };
+        const event = {
+          ...accessBase,
+          kind,
+          target,
+          ...(access.method ? { method: access.method } : {}),
+          ...(Array.isArray(access.args) ? { args: access.args } : {}),
+        };
         if (!pushRuntimeTraceEvent(event)) return;
       } else {
-        const event = { ...base, kind, target, value: runtimeTraceAccessValue(step, access) };
+        const event = {
+          ...accessBase,
+          kind,
+          target,
+          value: runtimeTraceAccessValue(step, access),
+          ...(access.binding ? { binding: access.binding } : {}),
+        };
         if (!pushRuntimeTraceEvent(event)) return;
       }
     }
@@ -1627,7 +1735,7 @@ function createTraceRecorder(options = {}) {
         return;
       }
       this.attachPendingAccessesToPreviousLine();
-      const normalizedArgs = sanitizeVariables(args);
+      const normalizedArgs = sanitizeCallArgs(args);
       const frame = {
         id: nextFrameId++,
         function: functionName || '<module>',
@@ -1666,14 +1774,37 @@ function createTraceRecorder(options = {}) {
         variable,
         kind,
         ...(Array.isArray(event.indices) && event.indices.length > 0
-          ? { indices: normalizeTraceIndices(event.indices) ?? undefined }
+          ? { indices: normalizeTraceIndices(event.indices, maxPathDepth) ?? undefined }
+          : {}),
+        ...(Array.isArray(event.indexSources) && event.indexSources.length > 0
+          ? { indexSources: normalizeTraceIndexSources(event.indexSources, maxPathDepth) ?? undefined }
           : {}),
         ...(typeof event.method === 'string' && event.method.length > 0
           ? { method: event.method }
           : {}),
-        ...(event.pathDepth === 1 || event.pathDepth === 2 || event.pathDepth === 3 ? { pathDepth: event.pathDepth } : {}),
+        ...(Array.isArray(event.args)
+          ? { args: event.args.map((arg) => this.serialize(arg)) }
+          : {}),
+        ...(Number.isInteger(event.pathDepth) && event.pathDepth > 0 && event.pathDepth <= maxPathDepth ? { pathDepth: event.pathDepth } : {}),
         ...(typeof event.scope === 'string' && event.scope.length > 0
           ? { scope: event.scope }
+          : {}),
+        ...(event.binding &&
+        typeof event.binding === 'object' &&
+        typeof event.binding.variable === 'string' &&
+        event.binding.variable.length > 0
+          ? {
+              binding: {
+                ...(event.binding.kind === 'iteration' ? { kind: 'iteration' } : {}),
+                variable: event.binding.variable,
+              },
+            }
+          : {}),
+        ...(Number.isFinite(event.line) && event.line > 0
+          ? { line: Math.trunc(event.line) }
+          : {}),
+        ...(Number.isFinite(event.column) && event.column >= 0
+          ? { column: Math.trunc(event.column) }
           : {}),
         ...(Object.prototype.hasOwnProperty.call(event, 'value')
           ? { value: this.serialize(event.value) }
@@ -1740,6 +1871,12 @@ function createTraceRecorder(options = {}) {
     traceCondition(value) {
       this.attachPendingAccessesToPreviousLine();
       return value;
+    },
+    tracePostLineCondition(evaluate) {
+      if (typeof evaluate !== 'function') {
+        return evaluate;
+      }
+      return evaluate();
     },
     line(lineNumber, snapshotFactory, functionNameOverride, functionStartLine) {
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
@@ -2058,18 +2195,30 @@ function createSyntheticRuntimeTrace(payload, codeResult, language) {
   const file = defaultRuntimeTraceFile(language);
   const events = [];
   for (const step of syntheticTrace) {
+    const stack = Array.isArray(step.callStack) ? step.callStack : [];
     const base = {
       runId,
       file,
       line: step.line,
       frameId: runtimeTraceFrameIdForSyntheticStep(step),
+      ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
     };
     if (step.event === 'call') {
-      events.push({ ...base, kind: 'call', function: step.function, args: step.callStack?.at(-1)?.args });
+      events.push({
+        ...base,
+        kind: 'call',
+        function: step.function,
+        args: stack.at(-1)?.args,
+      });
     } else if (step.event === 'line') {
       events.push({ ...base, kind: 'line', function: step.function });
     } else if (step.event === 'return') {
-      events.push({ ...base, kind: 'return', function: step.function, value: step.returnValue });
+      events.push({
+        ...base,
+        kind: 'return',
+        function: step.function,
+        value: step.returnValue,
+      });
     }
     for (const [variable, value] of Object.entries(step.variables ?? {})) {
       events.push({ ...base, kind: 'snapshot', target: { variable }, value });
@@ -2215,6 +2364,51 @@ function addBindingNames(ts, nameNode, names) {
   }
 }
 
+function collectBindingNames(ts, nameNode) {
+  const names = new Set();
+  addBindingNames(ts, nameNode, names);
+  return [...names];
+}
+
+function addAssignmentTargetNames(ts, node, names) {
+  if (!node) return;
+  if (ts.isParenthesizedExpression(node)) {
+    addAssignmentTargetNames(ts, node.expression, names);
+    return;
+  }
+  if (ts.isIdentifier(node)) {
+    if (!node.text.startsWith('__trace')) names.add(node.text);
+    return;
+  }
+  if (ts.isArrayLiteralExpression(node)) {
+    for (const element of node.elements) {
+      if (ts.isSpreadElement(element)) {
+        addAssignmentTargetNames(ts, element.expression, names);
+      } else {
+        addAssignmentTargetNames(ts, element, names);
+      }
+    }
+    return;
+  }
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties) {
+      if (ts.isShorthandPropertyAssignment(property)) {
+        addAssignmentTargetNames(ts, property.name, names);
+      } else if (ts.isPropertyAssignment(property)) {
+        addAssignmentTargetNames(ts, property.initializer, names);
+      } else if (ts.isSpreadAssignment(property)) {
+        addAssignmentTargetNames(ts, property.expression, names);
+      }
+    }
+  }
+}
+
+function collectAssignmentTargetNames(ts, node) {
+  const names = new Set();
+  addAssignmentTargetNames(ts, node, names);
+  return [...names];
+}
+
 function collectTraceVariableNames(ts, sourceFile) {
   const names = new Set();
 
@@ -2228,11 +2422,10 @@ function collectTraceVariableNames(ts, sourceFile) {
     } else if (
       ts.isBinaryExpression(node) &&
       node.left &&
-      ts.isIdentifier(node.left) &&
       node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
       node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
     ) {
-      names.add(node.left.text);
+      addAssignmentTargetNames(ts, node.left, names);
     }
     ts.forEachChild(node, visit);
   }
@@ -2261,14 +2454,59 @@ function shouldMapStatementLineForFunctionContext(ts, statement) {
   );
 }
 
-function isPostLineStateStatement(ts, statement) {
+function isSingleLineNode(sourceFile, node) {
+  const start = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
+  const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd()).line;
+  return start === end;
+}
+
+function statementBypassesFollowingTraceLine(ts, statement) {
+  if (
+    ts.isBreakStatement(statement) ||
+    ts.isContinueStatement(statement) ||
+    ts.isReturnStatement(statement) ||
+    ts.isThrowStatement(statement)
+  ) {
+    return true;
+  }
+  if (ts.isBlock(statement)) {
+    return statement.statements.some((nested) => statementBypassesFollowingTraceLine(ts, nested));
+  }
+  return false;
+}
+
+function shouldTraceIfStatementPostLine(ts, sourceFile, statement) {
+  if (!isSingleLineNode(sourceFile, statement)) {
+    return false;
+  }
+  if (statementBypassesFollowingTraceLine(ts, statement.thenStatement)) {
+    return false;
+  }
+  if (statement.elseStatement && statementBypassesFollowingTraceLine(ts, statement.elseStatement)) {
+    return false;
+  }
+  return true;
+}
+
+function isPostLineStateStatement(ts, sourceFile, statement) {
   if (ts.isVariableStatement(statement)) {
+    return true;
+  }
+  if (ts.isIfStatement(statement) && shouldTraceIfStatementPostLine(ts, sourceFile, statement)) {
     return true;
   }
   if (!ts.isExpressionStatement(statement)) {
     return false;
   }
   const expression = statement.expression;
+  if (
+    (ts.isPrefixUnaryExpression(expression) || ts.isPostfixUnaryExpression(expression)) &&
+    ts.isIdentifier(expression.operand) &&
+    (expression.operator === ts.SyntaxKind.PlusPlusToken ||
+      expression.operator === ts.SyntaxKind.MinusMinusToken)
+  ) {
+    return true;
+  }
   if (
     ts.isBinaryExpression(expression) &&
     isAssignmentOperatorToken(ts, expression.operatorToken.kind) &&
@@ -2292,6 +2530,7 @@ function isTraceStateMutationHelperCall(ts, expression) {
     '__traceWriteIndex',
     '__traceAugAssignIndex',
     '__traceUpdateIndex',
+    '__traceUpdateScalar',
   ].includes(current.expression.text);
 }
 
@@ -2498,11 +2737,12 @@ function isNestedElementAccessExpression(ts, node) {
   return Boolean(parent && ts.isElementAccessExpression(parent) && parent.expression === node);
 }
 
-function extractTraceableElementAccess(ts, node) {
+function extractTraceableElementAccess(ts, node, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   const indices = [];
   let current = unwrapParenthesizedExpression(ts, node);
+  const effectiveMaxPathDepth = getMaxPathDepthOption(maxPathDepth);
 
-  while (current && indices.length < 3) {
+  while (current && indices.length < effectiveMaxPathDepth) {
     if (ts.isElementAccessExpression(current)) {
       indices.unshift(current.argumentExpression);
       current = unwrapParenthesizedExpression(ts, current.expression);
@@ -2516,7 +2756,7 @@ function extractTraceableElementAccess(ts, node) {
     break;
   }
 
-  if (!current || indices.length === 0 || indices.length > 2) {
+  if (!current || indices.length === 0 || indices.length > effectiveMaxPathDepth) {
     return null;
   }
   if (ts.isThis(current)) {
@@ -2562,12 +2802,35 @@ function extractTraceablePropertyAccess(ts, node) {
   };
 }
 
+function extractTraceableMembershipTarget(ts, node, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
+  const current = unwrapParenthesizedExpression(ts, node);
+  if (!current) return null;
+
+  if (ts.isIdentifier(current)) {
+    return {
+      variableName: current.text,
+      receiverExpression: ts.factory.createIdentifier(current.text),
+      indices: [],
+    };
+  }
+
+  if (ts.isThis(current)) {
+    return {
+      variableName: 'this',
+      receiverExpression: ts.factory.createThis(),
+      indices: [],
+    };
+  }
+
+  return extractTraceableElementAccess(ts, current, maxPathDepth);
+}
+
 function runtimeScopeForTraceableReceiver(receiverName, localVariableNames) {
   if (receiverName === 'this') return 'receiver';
   return localVariableNames.has(receiverName) ? 'local' : 'global';
 }
 
-function extractTraceableMutatingCall(ts, node) {
+function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
     return null;
   }
@@ -2599,7 +2862,7 @@ function extractTraceableMutatingCall(ts, node) {
     };
   }
 
-  const indexedReceiver = extractTraceableElementAccess(ts, receiver);
+  const indexedReceiver = extractTraceableElementAccess(ts, receiver, maxPathDepth);
   if (indexedReceiver) {
     return {
       variableName: indexedReceiver.variableName,
@@ -2624,7 +2887,7 @@ function extractTraceableMutatingCall(ts, node) {
         indices: [receiver.arguments[0]],
       };
     }
-    const tracedMapReceiver = extractTraceableElementAccess(ts, mapReceiver);
+    const tracedMapReceiver = extractTraceableElementAccess(ts, mapReceiver, maxPathDepth);
     if (tracedMapReceiver) {
       return {
         variableName: tracedMapReceiver.variableName,
@@ -2636,6 +2899,91 @@ function extractTraceableMutatingCall(ts, node) {
   }
 
   return null;
+}
+
+function extractTraceableIterableSource(ts, expression, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
+  const current = unwrapParenthesizedExpression(ts, expression);
+  if (!current) return null;
+
+  if (ts.isIdentifier(current)) {
+    return {
+      variableName: current.text,
+      expression: current,
+      indices: [],
+    };
+  }
+
+  const indexedSource = extractTraceableElementAccess(ts, current, maxPathDepth);
+  if (indexedSource) {
+    return {
+      variableName: indexedSource.variableName,
+      expression: current,
+      indices: indexedSource.indices,
+    };
+  }
+
+  if (
+    ts.isCallExpression(current) &&
+    ts.isPropertyAccessExpression(current.expression)
+  ) {
+    const methodName = current.expression.name.text;
+    const receiver = unwrapParenthesizedExpression(ts, current.expression.expression);
+    if (['entries', 'values', 'keys'].includes(methodName) && receiver) {
+      if (ts.isIdentifier(receiver)) {
+        return {
+          variableName: receiver.text,
+          expression: current,
+          indices: [],
+        };
+      }
+      const indexedReceiver = extractTraceableElementAccess(ts, receiver, maxPathDepth);
+      if (indexedReceiver) {
+        return {
+          variableName: indexedReceiver.variableName,
+          expression: current,
+          indices: indexedReceiver.indices,
+        };
+      }
+    }
+    if (methodName === 'get' && current.arguments.length === 1 && receiver) {
+      if (ts.isIdentifier(receiver)) {
+        return {
+          variableName: receiver.text,
+          expression: current,
+          indices: [current.arguments[0]],
+        };
+      }
+      const indexedReceiver = extractTraceableElementAccess(ts, receiver, maxPathDepth);
+      if (indexedReceiver) {
+        return {
+          variableName: indexedReceiver.variableName,
+          expression: current,
+          indices: [...indexedReceiver.indices, current.arguments[0]],
+        };
+      }
+    }
+  }
+
+  if (
+    ts.isBinaryExpression(current) &&
+    (current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      current.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  ) {
+    return extractTraceableIterableSource(ts, current.left, maxPathDepth);
+  }
+
+  return null;
+}
+
+function expressionLabelText(ts, sourceFile, expression) {
+  let text = '';
+  try {
+    text = typeof expression?.getText === 'function' ? expression.getText(sourceFile).trim().replace(/\s+/g, ' ') : '';
+  } catch {
+    text = '';
+  }
+  if (!text) return '<iterable>';
+  return text.length <= 120 ? text : `${text.slice(0, 117)}...`;
 }
 
 function getCompoundAssignmentOperatorName(ts, tokenKind) {
@@ -2671,22 +3019,131 @@ function createIndicesArrayExpression(ts, indices) {
   return ts.factory.createArrayLiteralExpression(indices, false);
 }
 
-function createTraceReadIndexExpression(ts, variableName, indices) {
+function createIndexSourcesArrayExpression(ts, sourceFile, indices) {
+  return ts.factory.createArrayLiteralExpression(
+    indices.map((index) => {
+      const source = indexSourceExpressionText(ts, sourceFile, index);
+      return source ? ts.factory.createStringLiteral(source) : ts.factory.createNull();
+    }),
+    false
+  );
+}
+
+function indexSourceExpressionText(ts, sourceFile, index) {
+  if (ts.isIdentifier(index)) return index.text;
+  if (typeof index.pos === 'number' && index.pos < 0) return null;
+  let text = '';
+  try {
+    text = typeof index.getText === 'function' ? index.getText(sourceFile).trim().replace(/\s+/g, ' ') : '';
+  } catch {
+    text = '';
+  }
+  if (!text) return null;
+  return isSafeIndexSourceExpression(ts, index) ? text : null;
+}
+
+function isSafeIndexSourceExpression(ts, node) {
+  const unwrapped = unwrapParenthesizedExpression(ts, node);
+  if (!unwrapped) return false;
+  if (ts.isIdentifier(unwrapped) || ts.isNumericLiteral(unwrapped) || ts.isStringLiteral(unwrapped)) {
+    return true;
+  }
+  if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) {
+    return true;
+  }
+  if (ts.isPrefixUnaryExpression(unwrapped)) {
+    if (
+      (unwrapped.operator === ts.SyntaxKind.PlusPlusToken || unwrapped.operator === ts.SyntaxKind.MinusMinusToken) &&
+      ts.isIdentifier(unwrapped.operand)
+    ) {
+      return true;
+    }
+    return (
+      (unwrapped.operator === ts.SyntaxKind.PlusToken || unwrapped.operator === ts.SyntaxKind.MinusToken) &&
+      isSafeIndexSourceExpression(ts, unwrapped.operand)
+    );
+  }
+  if (ts.isPostfixUnaryExpression(unwrapped)) {
+    return (
+      (unwrapped.operator === ts.SyntaxKind.PlusPlusToken || unwrapped.operator === ts.SyntaxKind.MinusMinusToken) &&
+      ts.isIdentifier(unwrapped.operand)
+    );
+  }
+  if (ts.isPropertyAccessExpression(unwrapped)) {
+    return isSafeIndexSourceExpression(ts, unwrapped.expression);
+  }
+  if (ts.isElementAccessExpression(unwrapped)) {
+    return (
+      isSafeIndexSourceExpression(ts, unwrapped.expression) &&
+      Boolean(unwrapped.argumentExpression) &&
+      isSafeIndexSourceExpression(ts, unwrapped.argumentExpression)
+    );
+  }
+  if (ts.isCallExpression(unwrapped)) {
+    const expression = unwrapParenthesizedExpression(ts, unwrapped.expression);
+    if (!expression || !ts.isPropertyAccessExpression(expression)) return false;
+    const safeIndexMethods = new Set(['at', 'charAt', 'charCodeAt', 'codePointAt']);
+    const safeZeroArgIndexMethods = new Set(['pop', 'shift']);
+    if (safeZeroArgIndexMethods.has(expression.name.text)) {
+      return unwrapped.arguments.length === 0 && isSafeIndexSourceExpression(ts, expression.expression);
+    }
+    return (
+      safeIndexMethods.has(expression.name.text) &&
+      isSafeIndexSourceExpression(ts, expression.expression) &&
+      unwrapped.arguments.every((argument) => isSafeIndexSourceExpression(ts, argument))
+    );
+  }
+  if (ts.isBinaryExpression(unwrapped)) {
+    const allowedOperators = new Set([
+      ts.SyntaxKind.PlusToken,
+      ts.SyntaxKind.MinusToken,
+      ts.SyntaxKind.AsteriskToken,
+      ts.SyntaxKind.SlashToken,
+      ts.SyntaxKind.PercentToken,
+    ]);
+    return (
+      allowedOperators.has(unwrapped.operatorToken.kind) &&
+      isSafeIndexSourceExpression(ts, unwrapped.left) &&
+      isSafeIndexSourceExpression(ts, unwrapped.right)
+    );
+  }
+  return false;
+}
+
+function createTraceReadIndexExpression(ts, sourceFile, node, variableName, indices, indexSourceExpressions = indices) {
   const receiverExpression = variableName === 'this'
     ? ts.factory.createThis()
     : ts.factory.createIdentifier(variableName);
-  return createTraceReadIndexExpressionForReceiver(ts, variableName, receiverExpression, indices);
+  return createTraceReadIndexExpressionForReceiver(
+    ts,
+    sourceFile,
+    node,
+    variableName,
+    receiverExpression,
+    indices,
+    indexSourceExpressions
+  );
 }
 
-function createTraceReadIndexExpressionForReceiver(ts, variableName, receiverExpression, indices) {
+function createTraceReadIndexExpressionForReceiver(
+  ts,
+  sourceFile,
+  node,
+  variableName,
+  receiverExpression,
+  indices,
+  indexSourceExpressions = indices
+) {
   return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadIndex'), undefined, [
     ts.factory.createStringLiteral(variableName),
     receiverExpression,
     createIndicesArrayExpression(ts, indices),
+    createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
+    createSourceLocationObject(ts, sourceFile, node),
   ]);
 }
 
-function createTraceWriteIndexExpression(ts, variableName, indices, value) {
+function createTraceWriteIndexExpression(ts, sourceFile, node, variableName, indices, value, indexSourceExpressions = indices) {
   const receiverExpression = variableName === 'this'
     ? ts.factory.createThis()
     : ts.factory.createIdentifier(variableName);
@@ -2694,11 +3151,24 @@ function createTraceWriteIndexExpression(ts, variableName, indices, value) {
     ts.factory.createStringLiteral(variableName),
     receiverExpression,
     createIndicesArrayExpression(ts, indices),
+    createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
     value,
+    createSourceLocationObject(ts, sourceFile, node),
   ]);
 }
 
-function createTraceReadPropertyExpression(ts, variableName, propertyName, scope) {
+function createSourceLocationObject(ts, sourceFile, node) {
+  const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+  return ts.factory.createObjectLiteralExpression(
+    [
+      ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(position.line + 1)),
+      ts.factory.createPropertyAssignment('column', ts.factory.createNumericLiteral(position.character + 1)),
+    ],
+    false
+  );
+}
+
+function createTraceReadPropertyExpression(ts, sourceFile, node, variableName, propertyName, scope) {
   const receiverExpression = variableName === 'this'
     ? ts.factory.createThis()
     : ts.factory.createIdentifier(variableName);
@@ -2710,14 +3180,228 @@ function createTraceReadPropertyExpression(ts, variableName, propertyName, scope
   if (scope) {
     args.push(ts.factory.createStringLiteral(scope));
   }
+  args.push(createSourceLocationObject(ts, sourceFile, node));
   return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceReadProperty'), undefined, args);
 }
 
-function createTraceWritePropertyExpression(ts, variableName, propertyName, value) {
-  return createTraceWriteIndexExpression(ts, variableName, [ts.factory.createStringLiteral(propertyName)], value);
+function createTraceWritePropertyExpression(ts, sourceFile, node, variableName, propertyName, value) {
+  const receiverExpression = variableName === 'this'
+    ? ts.factory.createThis()
+    : ts.factory.createIdentifier(variableName);
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceWriteIndex'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    receiverExpression,
+    createIndicesArrayExpression(ts, [ts.factory.createStringLiteral(propertyName)]),
+    ts.factory.createArrayLiteralExpression([ts.factory.createNull()], false),
+    value,
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
 }
 
-function createTraceAugAssignExpression(ts, variableName, indices, operatorName, rhs) {
+function createTraceHasIndexExpressionForReceiver(
+  ts,
+  sourceFile,
+  node,
+  variableName,
+  receiverExpression,
+  indices,
+  indexSourceExpressions,
+  keyExpression
+) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceHasIndex'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    receiverExpression,
+    createIndicesArrayExpression(ts, indices),
+    createIndexSourcesArrayExpression(ts, sourceFile, [...indexSourceExpressions, keyExpression]),
+    keyExpression,
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
+}
+
+function createTraceScalarWriteExpression(ts, sourceFile, node, variableName, value) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceAssignScalar'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    value,
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
+}
+
+function createTraceScalarUpdateExpression(ts, sourceFile, node, variableName, operatorName, isPrefix) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceUpdateScalar'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    ts.factory.createArrowFunction(
+      undefined,
+      undefined,
+      [],
+      undefined,
+      ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+      isPrefix
+        ? ts.factory.createPrefixUnaryExpression(
+            operatorName === 'inc' ? ts.SyntaxKind.PlusPlusToken : ts.SyntaxKind.MinusMinusToken,
+            ts.factory.createIdentifier(variableName)
+          )
+        : ts.factory.createPostfixUnaryExpression(
+            ts.factory.createIdentifier(variableName),
+            operatorName === 'inc' ? ts.SyntaxKind.PlusPlusToken : ts.SyntaxKind.MinusMinusToken
+          )
+    ),
+    ts.factory.createArrowFunction(
+      undefined,
+      undefined,
+      [],
+      undefined,
+      ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+      ts.factory.createIdentifier(variableName)
+    ),
+    isPrefix ? ts.factory.createTrue() : ts.factory.createFalse(),
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
+}
+
+function createTraceScalarWriteStatement(ts, sourceFile, node, variableName) {
+  return ts.factory.createExpressionStatement(
+    ts.factory.createCallExpression(ts.factory.createIdentifier('__traceScalarWrite'), undefined, [
+      ts.factory.createStringLiteral(variableName),
+      ts.factory.createIdentifier(variableName),
+      createSourceLocationObject(ts, sourceFile, node),
+    ])
+  );
+}
+
+function traceScalarWriteStatementsForVariableStatement(ts, sourceFile, statement) {
+  if (!ts.isVariableStatement(statement)) return [];
+  const statements = [];
+  for (const declaration of statement.declarationList.declarations) {
+    if (!declaration.initializer) continue;
+    if (
+      ts.isArrowFunction(declaration.initializer) ||
+      ts.isFunctionExpression(declaration.initializer) ||
+      ts.isClassExpression(declaration.initializer)
+    ) {
+      continue;
+    }
+    for (const variableName of collectBindingNames(ts, declaration.name)) {
+      statements.push(createTraceScalarWriteStatement(ts, sourceFile, declaration.name, variableName));
+    }
+  }
+  return statements;
+}
+
+function traceScalarWriteStatementsForDestructuringAssignmentStatement(ts, sourceFile, statement) {
+  if (!ts.isExpressionStatement(statement)) return [];
+  const expression = ts.isParenthesizedExpression(statement.expression)
+    ? statement.expression.expression
+    : statement.expression;
+  if (!ts.isBinaryExpression(expression) || expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    return [];
+  }
+  if (!ts.isArrayLiteralExpression(expression.left) && !ts.isObjectLiteralExpression(expression.left)) {
+    return [];
+  }
+  return collectAssignmentTargetNames(ts, expression.left)
+    .map((variableName) => createTraceScalarWriteStatement(ts, sourceFile, expression.left, variableName));
+}
+
+function addDestructuringAssignmentWriteStatements(
+  ts,
+  sourceFile,
+  node,
+  statements,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
+) {
+  if (!node) return;
+  const current = unwrapParenthesizedExpression(ts, node);
+  if (!current) return;
+
+  if (ts.isSpreadElement(current)) {
+    addDestructuringAssignmentWriteStatements(ts, sourceFile, current.expression, statements, maxPathDepth);
+    return;
+  }
+
+  if (ts.isArrayLiteralExpression(current)) {
+    for (const element of current.elements) {
+      addDestructuringAssignmentWriteStatements(ts, sourceFile, element, statements, maxPathDepth);
+    }
+    return;
+  }
+
+  if (ts.isObjectLiteralExpression(current)) {
+    for (const property of current.properties) {
+      if (ts.isPropertyAssignment(property)) {
+        addDestructuringAssignmentWriteStatements(ts, sourceFile, property.initializer, statements, maxPathDepth);
+      } else if (ts.isSpreadAssignment(property)) {
+        addDestructuringAssignmentWriteStatements(ts, sourceFile, property.expression, statements, maxPathDepth);
+      }
+    }
+    return;
+  }
+
+  const tracedIndexedTarget = extractTraceableElementAccess(ts, current, maxPathDepth);
+  if (tracedIndexedTarget) {
+    statements.push(
+      ts.factory.createExpressionStatement(
+        createTraceWriteIndexExpression(
+          ts,
+          sourceFile,
+          current,
+          tracedIndexedTarget.variableName,
+          tracedIndexedTarget.indices,
+          current,
+          tracedIndexedTarget.indices
+        )
+      )
+    );
+    return;
+  }
+
+  const tracedPropertyTarget = extractTraceablePropertyAccess(ts, current);
+  if (tracedPropertyTarget) {
+    statements.push(
+      ts.factory.createExpressionStatement(
+        createTraceWritePropertyExpression(
+          ts,
+          sourceFile,
+          current,
+          tracedPropertyTarget.variableName,
+          tracedPropertyTarget.propertyName,
+          current
+        )
+      )
+    );
+  }
+}
+
+function traceIndexedWriteStatementsForDestructuringAssignmentStatement(
+  ts,
+  sourceFile,
+  statement,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
+) {
+  if (!ts.isExpressionStatement(statement)) return [];
+  const expression = ts.isParenthesizedExpression(statement.expression)
+    ? statement.expression.expression
+    : statement.expression;
+  if (!ts.isBinaryExpression(expression) || expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    return [];
+  }
+  if (!ts.isArrayLiteralExpression(expression.left) && !ts.isObjectLiteralExpression(expression.left)) {
+    return [];
+  }
+  const statements = [];
+  addDestructuringAssignmentWriteStatements(ts, sourceFile, expression.left, statements, maxPathDepth);
+  return statements;
+}
+
+function createTraceAugAssignExpression(
+  ts,
+  sourceFile,
+  node,
+  variableName,
+  indices,
+  operatorName,
+  rhs,
+  indexSourceExpressions = indices
+) {
   return ts.factory.createCallExpression(
     ts.factory.createIdentifier('__traceAugAssignIndex'),
     undefined,
@@ -2725,13 +3409,24 @@ function createTraceAugAssignExpression(ts, variableName, indices, operatorName,
       ts.factory.createStringLiteral(variableName),
       ts.factory.createIdentifier(variableName),
       createIndicesArrayExpression(ts, indices),
+      createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
       ts.factory.createStringLiteral(operatorName),
       rhs,
+      createSourceLocationObject(ts, sourceFile, node),
     ]
   );
 }
 
-function createTraceUpdateExpression(ts, variableName, indices, operatorName, isPrefix) {
+function createTraceUpdateExpression(
+  ts,
+  sourceFile,
+  node,
+  variableName,
+  indices,
+  operatorName,
+  isPrefix,
+  indexSourceExpressions = indices
+) {
   return ts.factory.createCallExpression(
     ts.factory.createIdentifier('__traceUpdateIndex'),
     undefined,
@@ -2739,20 +3434,54 @@ function createTraceUpdateExpression(ts, variableName, indices, operatorName, is
       ts.factory.createStringLiteral(variableName),
       ts.factory.createIdentifier(variableName),
       createIndicesArrayExpression(ts, indices),
+      createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
       ts.factory.createStringLiteral(operatorName),
       isPrefix ? ts.factory.createTrue() : ts.factory.createFalse(),
+      createSourceLocationObject(ts, sourceFile, node),
     ]
   );
 }
 
-function createTraceMutatingCallExpression(ts, variableName, methodName, args, indices = []) {
+function createTraceMutatingCallExpression(
+  ts,
+  sourceFile,
+  node,
+  variableName,
+  methodName,
+  args,
+  indices = [],
+  indexSourceExpressions = indices
+) {
   const receiverExpression = variableName === 'this'
     ? ts.factory.createThis()
     : ts.factory.createIdentifier(variableName);
-  return createTraceMutatingCallExpressionForReceiver(ts, variableName, receiverExpression, methodName, args, indices);
+  return createTraceMutatingCallExpressionForReceiver(
+    ts,
+    sourceFile,
+    node,
+    variableName,
+    receiverExpression,
+    methodName,
+    args,
+    indices,
+    indexSourceExpressions
+  );
 }
 
-function createTraceMutatingCallExpressionForReceiver(ts, variableName, receiverExpression, methodName, args, indices = []) {
+function createTraceMutatingCallExpressionForReceiver(
+  ts,
+  sourceFile,
+  node,
+  variableName,
+  receiverExpression,
+  methodName,
+  args,
+  indices = [],
+  indexSourceExpressions = indices
+) {
+  const effectiveIndexSourceExpressions = ['set', 'get', 'has', 'delete'].includes(methodName) && args.length > 0
+    ? [...indexSourceExpressions, args[0]]
+    : indexSourceExpressions;
   return ts.factory.createCallExpression(
     ts.factory.createIdentifier('__traceMutatingCall'),
     undefined,
@@ -2760,7 +3489,9 @@ function createTraceMutatingCallExpressionForReceiver(ts, variableName, receiver
       ts.factory.createStringLiteral(variableName),
       receiverExpression,
       createIndicesArrayExpression(ts, indices),
+      createIndexSourcesArrayExpression(ts, sourceFile, effectiveIndexSourceExpressions),
       ts.factory.createStringLiteral(methodName),
+      createSourceLocationObject(ts, sourceFile, node),
       ...args,
     ]
   );
@@ -2916,14 +3647,25 @@ function ensureBlockStatement(ts, statement) {
   return ts.factory.createBlock([statement], true);
 }
 
-function wrapTraceCondition(ts, expression) {
+function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
+  const recorderMethod = deferAccessesToNextLine ? 'tracePostLineCondition' : 'traceCondition';
+  const argument = deferAccessesToNextLine
+    ? ts.factory.createArrowFunction(
+        undefined,
+        undefined,
+        [],
+        undefined,
+        ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+        expression
+      )
+    : expression;
   return ts.factory.createCallExpression(
     ts.factory.createPropertyAccessExpression(
       ts.factory.createIdentifier('__traceRecorder'),
-      ts.factory.createIdentifier('traceCondition')
+      ts.factory.createIdentifier(recorderMethod)
     ),
     undefined,
-    [expression]
+    [argument]
   );
 }
 
@@ -2977,27 +3719,100 @@ function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNam
       wrapTraceCondition(ts, condition)
     )
   );
-  return ts.factory.updateForStatement(
+  const initializerWriteStatements = [];
+  if (forStatement.initializer && ts.isVariableDeclarationList(forStatement.initializer)) {
+    for (const declaration of forStatement.initializer.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      initializerWriteStatements.push(createTraceScalarWriteStatement(ts, sourceFile, originalNode, declaration.name.text));
+    }
+  }
+  const rewrittenFor = ts.factory.updateForStatement(
     forStatement,
-    forStatement.initializer,
+    initializerWriteStatements.length > 0 ? undefined : forStatement.initializer,
     tracedCondition,
     forStatement.incrementor,
     forStatement.statement
   );
+  if (initializerWriteStatements.length === 0 || !forStatement.initializer || !ts.isVariableDeclarationList(forStatement.initializer)) {
+    return rewrittenFor;
+  }
+  return ts.factory.createBlock(
+    [
+      ts.factory.createVariableStatement(undefined, forStatement.initializer),
+      ...initializerWriteStatements,
+      rewrittenFor,
+    ],
+    true
+  );
 }
 
-function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement, variableNames, lineFunctionMap, defaultFunctionName) {
+function rewriteForOfStatementForTracing(
+  ts,
+  sourceFile,
+  context,
+  forOfStatement,
+  variableNames,
+  lineFunctionMap,
+  defaultFunctionName,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
+) {
   const originalNode = ts.getOriginalNode(forOfStatement) ?? forOfStatement;
   const visitedBodyBlock = ensureBlockStatement(ts, forOfStatement.statement);
+  const originalExpression = originalNode.expression ?? forOfStatement.expression;
+  const iterableSource = extractTraceableIterableSource(ts, originalExpression, maxPathDepth);
+  const bindingName =
+    ts.isVariableDeclarationList(forOfStatement.initializer) &&
+    forOfStatement.initializer.declarations.length === 1 &&
+    collectBindingNames(ts, forOfStatement.initializer.declarations[0].name).length > 0
+      ? collectBindingNames(ts, forOfStatement.initializer.declarations[0].name).join(',')
+      : ts.isIdentifier(forOfStatement.initializer)
+        ? forOfStatement.initializer.text
+        : null;
+  const lineNumber = sourceFile.getLineAndCharacterOfPosition(originalNode.getStart(sourceFile)).line + 1;
+  const tracedExpression =
+    iterableSource && bindingName && iterableSource.indices.length > 0
+      ? ts.factory.createCallExpression(
+          ts.factory.createIdentifier('__traceIterableBindIndexed'),
+          undefined,
+          [
+            ts.factory.createStringLiteral(iterableSource.variableName),
+            forOfStatement.expression,
+            createIndicesArrayExpression(ts, iterableSource.indices),
+            createIndexSourcesArrayExpression(ts, sourceFile, iterableSource.indices),
+            ts.factory.createStringLiteral(bindingName),
+            ts.factory.createObjectLiteralExpression([
+              ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
+            ]),
+          ]
+        )
+      : iterableSource && bindingName
+      ? ts.factory.createCallExpression(
+          ts.factory.createIdentifier('__traceIterableBind'),
+          undefined,
+          [
+            ts.factory.createStringLiteral(iterableSource.variableName),
+            forOfStatement.expression,
+            ts.factory.createStringLiteral(bindingName),
+            ts.factory.createObjectLiteralExpression([
+              ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
+            ]),
+          ]
+        )
+      : bindingName
+      ? ts.factory.createCallExpression(
+          ts.factory.createIdentifier('__traceIterableBind'),
+          undefined,
+          [
+            ts.factory.createStringLiteral(expressionLabelText(ts, sourceFile, originalExpression)),
+            forOfStatement.expression,
+            ts.factory.createStringLiteral(bindingName),
+            ts.factory.createObjectLiteralExpression([
+              ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
+            ]),
+          ]
+        )
+      : forOfStatement.expression;
   const createHeaderLine = () => createTraceLineStatement(
-    ts,
-    sourceFile,
-    originalNode,
-    variableNames,
-    lineFunctionMap,
-    defaultFunctionName
-  );
-  const initialTracedLine = createTraceLineStatement(
     ts,
     sourceFile,
     originalNode,
@@ -3025,21 +3840,20 @@ function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement
   };
   const bodyStatements = visitedBodyBlock.statements.map((statement) => ts.visitNode(statement, rewriteContinueForHeader));
   const bodyBlock = ts.factory.updateBlock(visitedBodyBlock, [
-    createAttachPendingAccessesStatement(ts),
-    ...bodyStatements,
     bodyTracedLine,
+    ...bodyStatements,
   ]);
 
   return ts.factory.createBlock(
     [
-      initialTracedLine,
       ts.factory.updateForOfStatement(
         forOfStatement,
         forOfStatement.awaitModifier,
         forOfStatement.initializer,
-        forOfStatement.expression,
+        tracedExpression,
         bodyBlock
       ),
+      createHeaderLine(),
       createAttachPendingAccessesStatement(ts),
     ],
     true
@@ -3053,7 +3867,8 @@ function instrumentStatementList(
   visitedStatements,
   variableNames,
   lineFunctionMap,
-  defaultFunctionName
+  defaultFunctionName,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
 ) {
   const nextStatements = [];
   for (let index = 0; index < visitedStatements.length; index += 1) {
@@ -3071,8 +3886,9 @@ function instrumentStatementList(
         lineFunctionMap,
         defaultFunctionName
       );
-      if (isPostLineStateStatement(ts, visitedStatement)) {
+      if (isPostLineStateStatement(ts, sourceFile, originalStatement)) {
         nextStatements.push(visitedStatement);
+        nextStatements.push(...traceScalarWriteStatementsForVariableStatement(ts, sourceFile, originalStatement));
         nextStatements.push(tracedLineStatement);
         continue;
       }
@@ -3080,6 +3896,9 @@ function instrumentStatementList(
         tracedLineStatement
       );
       nextStatements.push(visitedStatement);
+      nextStatements.push(...traceScalarWriteStatementsForVariableStatement(ts, sourceFile, originalStatement));
+      nextStatements.push(...traceScalarWriteStatementsForDestructuringAssignmentStatement(ts, sourceFile, originalStatement));
+      nextStatements.push(...traceIndexedWriteStatementsForDestructuringAssignmentStatement(ts, sourceFile, originalStatement, maxPathDepth));
       nextStatements.push(createAttachPendingAccessesStatement(ts));
       continue;
     }
@@ -3250,7 +4069,8 @@ function wrapFunctionBodyForTracing(
   context,
   functionLikeNode,
   functionBody,
-  defaultFunctionName
+  defaultFunctionName,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
 ) {
   const traceFunctionName = inferTraceFunctionName(ts, functionLikeNode, defaultFunctionName);
   const functionStartLine = sourceFile.getLineAndCharacterOfPosition(functionLikeNode.getStart(sourceFile)).line + 1;
@@ -3302,12 +4122,13 @@ function wrapFunctionBodyForTracing(
   return updateFunctionLikeWithBody(ts, functionLikeNode, wrappedBody);
 }
 
-async function instrumentCodeForTracing(sourceCode, language, traceFunctionName) {
+async function instrumentCodeForTracing(sourceCode, language, traceFunctionName, maxPathDepthOption) {
   await ensureTypeScriptCompiler();
   const ts = getTypeScriptCompiler();
   if (!ts || typeof sourceCode !== 'string') {
     return null;
   }
+  const maxPathDepth = getMaxPathDepthOption(maxPathDepthOption);
 
   const scriptKind = language === 'typescript' ? ts.ScriptKind.TS : ts.ScriptKind.JS;
   const sourceFile = ts.createSourceFile(
@@ -3329,7 +4150,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
   const transformer = (context) => {
     const visit = (node) => {
       if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
-        const tracedOperand = extractTraceableElementAccess(ts, node.operand);
+        const tracedOperand = extractTraceableElementAccess(ts, node.operand, maxPathDepth);
         const operatorName =
           node.operator === ts.SyntaxKind.PlusPlusToken
             ? 'inc'
@@ -3340,8 +4161,21 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           const visitedIndices = tracedOperand.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
           return createTraceUpdateExpression(
             ts,
+            sourceFile,
+            node,
             tracedOperand.variableName,
             visitedIndices,
+            operatorName,
+            ts.isPrefixUnaryExpression(node),
+            tracedOperand.indices
+          );
+        }
+        if (ts.isIdentifier(node.operand) && operatorName) {
+          return createTraceScalarUpdateExpression(
+            ts,
+            sourceFile,
+            node,
+            node.operand.text,
             operatorName,
             ts.isPrefixUnaryExpression(node)
           );
@@ -3353,16 +4187,37 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
       }
 
       if (ts.isBinaryExpression(node)) {
-        const tracedLeft = extractTraceableElementAccess(ts, node.left);
+        if (node.operatorToken.kind === ts.SyntaxKind.InKeyword) {
+          const tracedMembershipTarget = extractTraceableMembershipTarget(ts, node.right, maxPathDepth);
+          if (tracedMembershipTarget) {
+            const visitedKey = ts.visitNode(node.left, visit);
+            const visitedIndices = tracedMembershipTarget.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
+            return createTraceHasIndexExpressionForReceiver(
+              ts,
+              sourceFile,
+              node,
+              tracedMembershipTarget.variableName,
+              tracedMembershipTarget.receiverExpression,
+              visitedIndices,
+              tracedMembershipTarget.indices,
+              visitedKey
+            );
+          }
+        }
+
+        const tracedLeft = extractTraceableElementAccess(ts, node.left, maxPathDepth);
         if (tracedLeft && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
           const visitedIndices = tracedLeft.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
           const visitedRight = ts.visitNode(node.right, visit);
           if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
             return createTraceWriteIndexExpression(
               ts,
+              sourceFile,
+              node.left,
               tracedLeft.variableName,
               visitedIndices,
-              visitedRight
+              visitedRight,
+              tracedLeft.indices
             );
           }
 
@@ -3370,12 +4225,32 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           if (operatorName) {
             return createTraceAugAssignExpression(
               ts,
+              sourceFile,
+              node.left,
               tracedLeft.variableName,
               visitedIndices,
               operatorName,
-              visitedRight
+              visitedRight,
+              tracedLeft.indices
             );
           }
+        }
+
+        if (ts.isIdentifier(node.left) && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
+          const visitedRight = ts.visitNode(node.right, visit);
+          const rewrittenAssignment = ts.factory.updateBinaryExpression(
+            node,
+            node.left,
+            node.operatorToken,
+            visitedRight
+          );
+          return createTraceScalarWriteExpression(
+            ts,
+            sourceFile,
+            node.left,
+            node.left.text,
+            rewrittenAssignment
+          );
         }
 
         const tracedPropertyLeft = extractTraceablePropertyAccess(ts, node.left);
@@ -3383,6 +4258,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           const visitedRight = ts.visitNode(node.right, visit);
           return createTraceWritePropertyExpression(
             ts,
+            sourceFile,
+            node.left,
             tracedPropertyLeft.variableName,
             tracedPropertyLeft.propertyName,
             visitedRight
@@ -3394,16 +4271,19 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         if (isConsoleLogCall(ts, node)) {
           return createTraceStdoutExpression(ts, sourceFile, node);
         }
-        const tracedCall = extractTraceableMutatingCall(ts, node);
+        const tracedCall = extractTraceableMutatingCall(ts, node, maxPathDepth);
         if (tracedCall) {
           const visitedArgs = node.arguments.map((arg) => ts.visitNode(arg, visit));
           return createTraceMutatingCallExpressionForReceiver(
             ts,
+            sourceFile,
+            node,
             tracedCall.variableName,
             tracedCall.receiverExpression,
             tracedCall.methodName,
             visitedArgs,
-            tracedCall.indices?.map((indexExpr) => ts.visitNode(indexExpr, visit)) ?? []
+            tracedCall.indices?.map((indexExpr) => ts.visitNode(indexExpr, visit)) ?? [],
+            tracedCall.indices ?? []
           );
         }
       }
@@ -3412,7 +4292,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         const visited = ts.visitEachChild(node, visit, context);
         return ts.factory.updateIfStatement(
           visited,
-          wrapTraceCondition(ts, visited.expression),
+          wrapTraceCondition(ts, visited.expression, shouldTraceIfStatementPostLine(ts, sourceFile, node)),
           visited.thenStatement,
           visited.elseStatement
         );
@@ -3430,10 +4310,17 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           return ts.visitEachChild(node, visit, context);
         }
 
-        const tracedAccess = extractTraceableElementAccess(ts, node);
+        const tracedAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
         if (tracedAccess) {
           const visitedIndices = tracedAccess.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
-          return createTraceReadIndexExpression(ts, tracedAccess.variableName, visitedIndices);
+          return createTraceReadIndexExpression(
+            ts,
+            sourceFile,
+            node,
+            tracedAccess.variableName,
+            visitedIndices,
+            tracedAccess.indices
+          );
         }
       }
 
@@ -3454,10 +4341,25 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           return ts.visitEachChild(node, visit, context);
         }
 
+        const tracedIndexedPropertyAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
+        if (tracedIndexedPropertyAccess && tracedIndexedPropertyAccess.indices.length > 1) {
+          const visitedIndices = tracedIndexedPropertyAccess.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
+          return createTraceReadIndexExpression(
+            ts,
+            sourceFile,
+            node,
+            tracedIndexedPropertyAccess.variableName,
+            visitedIndices,
+            tracedIndexedPropertyAccess.indices
+          );
+        }
+
         const tracedAccess = extractTraceablePropertyAccess(ts, node);
         if (tracedAccess) {
           return createTraceReadPropertyExpression(
             ts,
+            sourceFile,
+            node,
             tracedAccess.variableName,
             tracedAccess.propertyName,
             tracedAccess.scope ?? runtimeScopeForTraceableReceiver(tracedAccess.variableName, localVariableNames)
@@ -3476,7 +4378,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           context,
           visitedFunction,
           visitedFunction.body,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -3491,7 +4394,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -3507,7 +4411,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -3520,7 +4425,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           visited,
           variableNames,
           lineFunctionMap,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -3532,7 +4438,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           visited,
           variableNames,
           lineFunctionMap,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -3545,7 +4452,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           visited,
           variableNames,
           lineFunctionMap,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -3561,7 +4469,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -3577,7 +4486,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -3604,9 +4514,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
 function buildScriptExecutionRunner(code) {
   return new Function(
     'console',
-    `"use strict";
-${JAVASCRIPT_RUNTIME_PRELUDE}
-let result;
+    `${JAVASCRIPT_RUNTIME_PRELUDE}
 ${code}
 if (typeof result === 'undefined') {
   return null;
@@ -3616,13 +4524,22 @@ return result;`
 }
 
 const TRACING_RUNTIME_HELPERS_SOURCE = `
-function __traceNormalizeIndices(__indices, __maxDepth = 2) {
+function __traceNormalizeIndices(__indices, __maxDepth = __TRACE_V4_MAX_PATH_DEPTH) {
   if (!Array.isArray(__indices) || __indices.length === 0 || __indices.length > __maxDepth) return null;
   if (!__indices.every((__index) =>
     (typeof __index === 'number' && Number.isInteger(__index)) ||
     (typeof __index === 'string' && __index.length > 0)
   )) return null;
   return __indices.map((__index) => typeof __index === 'number' ? Math.trunc(__index) : __index);
+}
+
+function __traceNormalizeIndexSources(__indexSources, __pathLength) {
+  if (!Array.isArray(__indexSources) || !Number.isInteger(__pathLength) || __pathLength <= 0) return null;
+  const __normalized = __indexSources.slice(0, __pathLength).map((__source) =>
+    typeof __source === 'string' && __source.length > 0 ? __source : null
+  );
+  while (__normalized.length < __pathLength) __normalized.push(null);
+  return __normalized.some((__source) => __source !== null) ? __normalized : null;
 }
 
 function __traceReadValueAtIndices(__container, __indices) {
@@ -3659,17 +4576,153 @@ function __traceWriteValueAtIndices(__container, __indices, __value) {
   return __value;
 }
 
-function __traceReadIndex(__varName, __container, __indices) {
+function __traceReadIndex(__varName, __container, __indices, __indexSources, __location) {
   const __normalized = __traceNormalizeIndices(__indices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
+  const __value = __traceReadValueAtIndices(__container, Array.isArray(__indices) ? __indices : []);
   if (__normalized) {
     __traceRecorder.recordAccess({
       variable: __varName,
       kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
       indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
       pathDepth: __normalized.length,
+      value: __value,
+      ...__traceNormalizeSourceLocation(__location),
     });
   }
-  return __traceReadValueAtIndices(__container, Array.isArray(__indices) ? __indices : []);
+  return __value;
+}
+
+function __traceHasIndex(__varName, __container, __indices, __indexSources, __key, __location) {
+  const __baseIndices = Array.isArray(__indices) ? __indices : [];
+  const __target = __traceReadValueAtIndices(__container, __baseIndices);
+  const __result = __key in __target;
+  const __path = [...__baseIndices, __key];
+  const __normalized = __traceNormalizeIndices(__path);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
+  if (__normalized) {
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
+      indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+      pathDepth: __normalized.length,
+      value: __result,
+      ...__traceNormalizeSourceLocation(__location),
+    });
+  }
+  return __result;
+}
+
+function __traceSplitBindingNames(__bindingName) {
+  if (typeof __bindingName !== 'string' || !__bindingName.includes(',')) return [];
+  return __bindingName
+    .split(',')
+    .map((__name) => __name.trim())
+    .filter((__name) => __name.length > 0);
+}
+
+function __traceRecordDestructuredIterationBindings(__varName, __basePath, __baseSources, __iterationIndex, __value, __bindingName, __location) {
+  const __bindingNames = __traceSplitBindingNames(__bindingName);
+  if (__bindingNames.length === 0) return;
+  const __values = Array.isArray(__value) ? __value : Array.from(__value ?? []);
+  for (let __slot = 0; __slot < __bindingNames.length; __slot += 1) {
+    const __path = [...__basePath, __iterationIndex, __slot];
+    const __normalized = __traceNormalizeIndices(__path);
+    if (!__normalized) continue;
+    const __sources = Array.isArray(__baseSources)
+      ? [...__baseSources, null, null]
+      : null;
+    const __normalizedSources = __traceNormalizeIndexSources(__sources, __normalized.length);
+    const __iterationSources = Array.isArray(__normalizedSources)
+      ? __normalizedSources
+      : (Array.isArray(__sources) && __sources.length === __normalized.length ? __sources : null);
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
+      indices: __normalized,
+      pathDepth: __normalized.length,
+      value: __values[__slot],
+      ...(Array.isArray(__iterationSources) ? { indexSources: __iterationSources } : {}),
+      binding: { kind: 'iteration', variable: __bindingNames[__slot] },
+      ...__traceNormalizeSourceLocation(__location),
+    });
+  }
+}
+
+function* __traceIterableBind(__varName, __iterable, __bindingName, __location) {
+  if (
+    typeof __varName !== 'string' ||
+    typeof __bindingName !== 'string' ||
+    (__iterable === null || __iterable === undefined) ||
+    typeof __iterable[Symbol.iterator] !== 'function'
+  ) {
+    yield* __iterable;
+    return;
+  }
+  let __index = 0;
+  for (const __value of __iterable) {
+    const __sources = [null];
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: 'indexed-read',
+      indices: [__index],
+      pathDepth: 1,
+      indexSources: __sources,
+      value: __value,
+      binding: { kind: 'iteration', variable: __bindingName },
+      ...__traceNormalizeSourceLocation(__location),
+    });
+    __traceRecordDestructuredIterationBindings(__varName, [], [], __index, __value, __bindingName, __location);
+    __index += 1;
+    yield __value;
+  }
+}
+
+function* __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __indexSources, __bindingName, __location) {
+  if (
+    typeof __varName !== 'string' ||
+    typeof __bindingName !== 'string' ||
+    (__iterable === null || __iterable === undefined) ||
+    typeof __iterable[Symbol.iterator] !== 'function'
+  ) {
+    yield* __iterable;
+    return;
+  }
+  const __base = __traceNormalizeIndices(__baseIndices);
+  const __baseSources = __traceNormalizeIndexSources(__indexSources, __base?.length ?? 0);
+  if (__base) {
+    __traceRecorder.recordAccess({
+      variable: __varName,
+      kind: __base.length === 2 ? 'cell-read' : 'indexed-read',
+      indices: __base,
+      pathDepth: __base.length,
+      value: serializeValue(__iterable),
+      ...(Array.isArray(__baseSources) ? { indexSources: __baseSources } : {}),
+      ...__traceNormalizeSourceLocation(__location),
+    });
+  }
+  let __index = 0;
+  for (const __value of __iterable) {
+    if (__base) {
+      const __path = [...__base, __index];
+      const __sources = Array.isArray(__baseSources) ? [...__baseSources, null] : null;
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: __path.length === 2 ? 'cell-read' : 'indexed-read',
+        indices: __path,
+        pathDepth: __path.length,
+        value: __value,
+        ...(Array.isArray(__sources) ? { indexSources: __sources } : {}),
+        binding: { kind: 'iteration', variable: __bindingName },
+        ...__traceNormalizeSourceLocation(__location),
+      });
+      __traceRecordDestructuredIterationBindings(__varName, __base, __baseSources, __index, __value, __bindingName, __location);
+    }
+    __index += 1;
+    yield __value;
+  }
 }
 
 function __traceIsMetadataProperty(__container, __propertyName) {
@@ -3682,32 +4735,67 @@ function __traceIsMetadataProperty(__container, __propertyName) {
   return false;
 }
 
-function __traceReadProperty(__varName, __container, __propertyName, __scope) {
-  if (!__traceIsMetadataProperty(__container, __propertyName)) {
-    __traceRecorder.recordAccess({
-      variable: __varName,
-      kind: 'indexed-read',
-      indices: [__propertyName],
-      pathDepth: 1,
-      ...(__scope ? { scope: __scope } : {}),
-    });
-  }
+function __traceNormalizeSourceLocation(__location) {
+  if (!__location || typeof __location !== 'object') return {};
+  const __line = Number(__location.line);
+  const __column = Number(__location.column);
+  return {
+    ...(Number.isFinite(__line) && __line > 0 ? { line: Math.trunc(__line) } : {}),
+    ...(Number.isFinite(__column) && __column >= 0 ? { column: Math.trunc(__column) } : {}),
+  };
+}
+
+function __traceReadProperty(__varName, __container, __propertyName, __scopeOrLocation, __maybeLocation) {
+  const __scope = typeof __scopeOrLocation === 'string' ? __scopeOrLocation : undefined;
+  const __location = typeof __scopeOrLocation === 'string' ? __maybeLocation : __scopeOrLocation;
+  __traceRecorder.recordAccess({
+    variable: __varName,
+    kind: 'indexed-read',
+    indices: [__propertyName],
+    pathDepth: 1,
+    ...(__scope ? { scope: __scope } : {}),
+    ...__traceNormalizeSourceLocation(__location),
+  });
   return __container?.[__propertyName];
 }
 
-function __traceWriteIndex(__varName, __container, __indices, __value) {
+function __traceWriteIndex(__varName, __container, __indices, __indexSources, __value, __location) {
   const __normalized = __traceNormalizeIndices(__indices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
   const __result = __traceWriteValueAtIndices(__container, Array.isArray(__indices) ? __indices : [], __value);
   if (__normalized) {
     __traceRecorder.recordAccess({
       variable: __varName,
       kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
       indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
       pathDepth: __normalized.length,
       value: __result,
+      ...__traceNormalizeSourceLocation(__location),
     });
   }
   return __result;
+}
+
+function __traceScalarWrite(__varName, __value, __location) {
+  __traceRecorder.recordAccess({
+    variable: __varName,
+    kind: 'indexed-write',
+    value: __value,
+    ...__traceNormalizeSourceLocation(__location),
+  });
+  return __value;
+}
+
+function __traceAssignScalar(__varName, __value, __location) {
+  return __traceScalarWrite(__varName, __value, __location);
+}
+
+function __traceUpdateScalar(__varName, __update, __current, __isPrefix, __location) {
+  const __result = typeof __update === 'function' ? __update() : undefined;
+  const __value = typeof __current === 'function' ? __current() : __result;
+  __traceScalarWrite(__varName, __value, __location);
+  return __isPrefix ? __value : __result;
 }
 
 function __traceApplyAugmentedValue(__current, __op, __rhs) {
@@ -3727,8 +4815,9 @@ function __traceApplyAugmentedValue(__current, __op, __rhs) {
   }
 }
 
-function __traceAugAssignIndex(__varName, __container, __indices, __op, __rhs) {
+function __traceAugAssignIndex(__varName, __container, __indices, __indexSources, __op, __rhs, __location) {
   const __normalized = __traceNormalizeIndices(__indices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
   const __effectiveIndices = Array.isArray(__indices) ? __indices : [];
   const __current = __traceReadValueAtIndices(__container, __effectiveIndices);
   if (__normalized) {
@@ -3736,7 +4825,9 @@ function __traceAugAssignIndex(__varName, __container, __indices, __op, __rhs) {
       variable: __varName,
       kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
       indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
       pathDepth: __normalized.length,
+      ...__traceNormalizeSourceLocation(__location),
     });
   }
   const __next = __traceApplyAugmentedValue(__current, __op, __rhs);
@@ -3746,15 +4837,18 @@ function __traceAugAssignIndex(__varName, __container, __indices, __op, __rhs) {
       variable: __varName,
       kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
       indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
       pathDepth: __normalized.length,
       value: __next,
+      ...__traceNormalizeSourceLocation(__location),
     });
   }
   return __next;
 }
 
-function __traceUpdateIndex(__varName, __container, __indices, __op, __isPrefix) {
+function __traceUpdateIndex(__varName, __container, __indices, __indexSources, __op, __isPrefix, __location) {
   const __normalized = __traceNormalizeIndices(__indices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
   const __effectiveIndices = Array.isArray(__indices) ? __indices : [];
   const __current = __traceReadValueAtIndices(__container, __effectiveIndices);
   if (__normalized) {
@@ -3762,7 +4856,9 @@ function __traceUpdateIndex(__varName, __container, __indices, __op, __isPrefix)
       variable: __varName,
       kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
       indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
       pathDepth: __normalized.length,
+      ...__traceNormalizeSourceLocation(__location),
     });
   }
   const __delta = __op === 'dec' ? -1 : 1;
@@ -3773,8 +4869,10 @@ function __traceUpdateIndex(__varName, __container, __indices, __op, __isPrefix)
       variable: __varName,
       kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
       indices: __normalized,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
       pathDepth: __normalized.length,
       value: __next,
+      ...__traceNormalizeSourceLocation(__location),
     });
   }
   return __isPrefix ? __next : __current;
@@ -3796,72 +4894,134 @@ function __traceExceptionValue(__line, __error) {
   return __error;
 }
 
-function __traceMutatingCall(__varName, __container, __indices, __method, ...__args) {
+function __traceMutatingCall(__varName, __container, __indices, __indexSources, __method, __location, ...__args) {
+  const __sourceLocation = __traceNormalizeSourceLocation(__location);
   let __target = __container;
   for (const __index of __indices || []) {
     __target = __traceIsMapLike(__target) ? __target.get(__index) : __target?.[__index];
   }
+  const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'add', 'insert', 'delete', 'clear'].includes(__method);
   const __result = __target[__method](...__args);
-  if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'delete'].includes(__method)) {
+  if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(__method)) {
     const __path = __indices || [];
     const __isMapLike = __traceIsMapLike(__target);
     const __isNestedMap = __path.length > 0 && __traceIsMapLike(__target);
     if (__isMapLike && __method === 'set') {
+      const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
+      const __targetPath = [...__path, __args[0]];
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-write',
-        indices: [...__path, __args[0]],
+        indices: __targetPath,
         pathDepth: __path.length + 1,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        value: serializeValue(__args[1]),
+        ...__sourceLocation,
+      });
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: 'mutating-call',
+        method: __traceNormalizeMethodName(__target, __method, __args),
+        args: __args,
+        indices: __targetPath,
+        pathDepth: __path.length + 1,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        ...__sourceLocation,
       });
       return __result;
     }
     if (__isMapLike && (__method === 'get' || __method === 'has')) {
+      const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-read',
         indices: [...__path, __args[0]],
         pathDepth: __path.length + 1,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        value: serializeValue(__result),
+        ...__sourceLocation,
+      });
+      return __result;
+    }
+    if (__isMapLike && __method === 'delete') {
+      const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: 'mutating-call',
+        method: __traceNormalizeMethodName(__target, __method, __args),
+        args: __args,
+        indices: [...__path, __args[0]],
+        pathDepth: __path.length + 1,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        ...__sourceLocation,
       });
       return __result;
     }
     if (__target instanceof Set && __method === 'has') {
+      const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-read',
         indices: [...__path, __args[0]],
         pathDepth: __path.length + 1,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        ...__sourceLocation,
+      });
+      return __result;
+    }
+    if (__target instanceof Set && __method === 'delete') {
+      const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: 'mutating-call',
+        method: __traceNormalizeMethodName(__target, __method, __args),
+        args: __args,
+        indices: [...__path, __args[0]],
+        pathDepth: __path.length + 1,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        ...__sourceLocation,
       });
       return __result;
     }
     if (__path.length > 0) {
+      const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length);
       __traceRecorder.recordAccess({
         variable: __varName,
         kind: 'indexed-read',
         indices: __path,
         pathDepth: __path.length,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        ...__sourceLocation,
       });
     }
+    const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length);
     __traceRecorder.recordAccess({
       variable: __varName,
       kind: 'mutating-call',
       method: __traceNormalizeMethodName(__target, __method, __args),
+      args: __args,
       indices: __path,
       pathDepth: __path.length,
+      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+      ...__sourceLocation,
     });
   }
   return __result;
 }
 `;
 
-function buildScriptTracingRunner(code) {
+function getTracingRuntimeHelpersSource(maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
+  return `const __TRACE_V4_MAX_PATH_DEPTH = ${getMaxPathDepthOption(maxPathDepth)};
+${TRACING_RUNTIME_HELPERS_SOURCE}`;
+}
+
+function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   return new Function(
     'console',
     '__traceRecorder',
     '__traceCtx',
-    `"use strict";
-${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
-let result;
+    `${JAVASCRIPT_RUNTIME_PRELUDE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 if (typeof result === 'undefined') {
   return null;
@@ -3968,7 +5128,7 @@ return __out;`
   throw new Error(`Execution style "${executionStyle}" is not supported for JavaScript runtime yet.`);
 }
 
-function buildFunctionTracingRunner(code, executionStyle, argNames) {
+function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -3978,7 +5138,7 @@ function buildFunctionTracingRunner(code, executionStyle, argNames) {
       ...argNames,
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
@@ -4003,7 +5163,7 @@ return __target(${argNames.map((name) => `__tracecodeMaterializeCustomObject(${n
       ...argNames,
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
@@ -4028,7 +5188,7 @@ return __method.call(__solver, ${argNames.map((name) => `__tracecodeMaterializeC
       '__arguments',
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
@@ -4168,7 +5328,8 @@ async function executeWithTracing(payload) {
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
   const traceFunctionName = hasNamedFunction ? functionName : '<module>';
-  const traceRecorder = createTraceRecorder(options);
+  const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
+  const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth });
 
   let traceLineBounds = { startLine: 1, endLine: 1 };
 
@@ -4186,10 +5347,10 @@ async function executeWithTracing(payload) {
     let instrumentedCode = null;
     try {
       if (language === 'typescript') {
-        const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName);
+        const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
         instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
       } else {
-        instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName);
+        instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
       }
     } catch (instrumentationError) {
       const message =
@@ -4238,7 +5399,7 @@ async function executeWithTracing(payload) {
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, []);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth);
         output = await Promise.resolve(
           runner(
             consoleProxy,
@@ -4253,7 +5414,7 @@ async function executeWithTracing(payload) {
         const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
         const argValues = inputKeys.map((key) => materializedInputs[key]);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth);
         output = await Promise.resolve(
           runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues)
         );
@@ -4262,7 +5423,7 @@ async function executeWithTracing(payload) {
       if (executionStyle !== 'function') {
         throw new Error('Script-mode execution only supports executionStyle="function".');
       }
-      const runner = buildScriptTracingRunner(instrumentedCode);
+      const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth);
       output = await Promise.resolve(
         runner(consoleProxy, traceRecorder, { functionName: traceFunctionName })
       );

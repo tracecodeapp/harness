@@ -1,0 +1,70 @@
+{
+  "id": "computed-index-source-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "readPrevious": {
+      "python": "value = prefix[len(prefix) - 1]",
+      "javascript": "const value = prefix[prefix.length - 1];",
+      "typescript": "const value = prefix[prefix.length - 1];",
+      "java": "int value = prefix.get(prefix.size() - 1);",
+      "csharp": "int value = prefix[prefix.Count - 1];",
+      "cpp": "int value = prefix[prefix.size() - 1];"
+    }
+  },
+  "expect": {
+    "readPrevious": {
+      "eventKinds": ["line", "read", "snapshot", "write"],
+      "variableSnapshots": ["prefix", "value"],
+      "accessTargets": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1 },
+        { "kind": "write", "variable": "value" }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "java": {
+      "readPrevious": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["prefix"],
+        "accessTargets": [
+          { "kind": "read", "variable": "prefix", "pathDepth": 1 },
+          { "kind": "write", "variable": "value" }
+        ]
+      }
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "readPrevious": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["len(prefix) - 1"], "value": 0 }
+      ]
+    },
+    "javascript": {
+      "readPrevious": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["prefix.length - 1"], "value": 0 }
+      ]
+    },
+    "typescript": {
+      "readPrevious": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["prefix.length - 1"], "value": 0 }
+      ]
+    },
+    "java": {
+      "readPrevious": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["prefix.size() - 1"], "value": 0 }
+      ]
+    },
+    "csharp": {
+      "readPrevious": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["prefix.Count - 1"], "value": 0 }
+      ]
+    },
+    "cpp": {
+      "readPrevious": [
+        { "kind": "read", "variable": "prefix", "pathDepth": 1, "indexSources": ["prefix.size() - 1"], "value": 0 }
+      ]
+    }
+  }
+}

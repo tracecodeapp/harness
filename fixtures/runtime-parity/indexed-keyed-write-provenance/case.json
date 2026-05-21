@@ -1,0 +1,482 @@
+{
+  "id": "indexed-keyed-write-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "items": [
+      "a",
+      "b"
+    ]
+  },
+  "anchors": {
+    "bind": {
+      "python": "for item in items:",
+      "javascript": "for (const item of items) {",
+      "typescript": "for (const item of items) {",
+      "java": "for (String item : items) {",
+      "csharp": "foreach (var item in items)",
+      "cpp": "for (const auto& item : items) {"
+    },
+    "write": {
+      "python": "seen[item] = len(item)",
+      "javascript": "seen.set(item, item.length);",
+      "typescript": "seen.set(item, item.length);",
+      "java": "seen.put(item, item.length());",
+      "csharp": "seen[item] = item.Length;",
+      "cpp": "seen[item] = (int)item.size();"
+    }
+  },
+  "expect": {
+    "bind": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "item",
+        "items",
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "items",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "write": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "item",
+        "items",
+        "seen"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "seen",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "bind": [
+      {
+        "kind": "read",
+        "variable": "items",
+        "pathDepth": 1,
+        "bindingVariable": "item"
+      }
+    ],
+    "write": [
+      {
+        "kind": "write",
+        "variable": "seen",
+        "pathDepth": 1,
+        "indexSources": [
+          "item"
+        ]
+      }
+    ]
+  },
+  "expectByLanguage": {
+    "java": {
+      "bind": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "items",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "write": {
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "seen",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "javascript": {
+      "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "seen"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    },
+    "typescript": {
+      "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "seen"
+          },
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    },
+    "python": {
+      "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    },
+    "csharp": {
+      "bind": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "items"
+          },
+          {
+            "kind": "write",
+            "variable": "item"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "item"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    },
+    "cpp": {
+      "bind": {
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "items",
+            "pathDepth": 1
+          }
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "pathDepth": 1,
+            "variable": "seen"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "mutate",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "item",
+          "items",
+          "seen"
+        ]
+      }
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "java": {
+      "write": [
+        {
+          "kind": "write",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ]
+        },
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ],
+          "method": "put"
+        }
+      ]
+    },
+    "javascript": {
+      "write": [
+        {
+          "kind": "write",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ]
+        },
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ],
+          "method": "set",
+          "args": [
+            "a",
+            1
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "write": [
+        {
+          "kind": "write",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ]
+        },
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ],
+          "method": "set",
+          "args": [
+            "a",
+            1
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "write": [
+        {
+          "kind": "write",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ]
+        },
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "item"
+          ],
+          "method": "set",
+          "args": [
+            "a",
+            1
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -40,11 +40,69 @@
     "cpp": {
       "helperEntry": {
         "eventKinds": [
-          "call"
+          "call",
+          "line"
         ],
         "variableSnapshots": [],
         "accessTargets": []
       }
     }
-  }
+  },
+  "expectFrameEvents": {
+    "helperEntry": [
+      {
+        "kind": "snapshot",
+        "function": "helper",
+        "args": {
+          "x": 2
+        },
+        "callStackDepth": 2
+      }
+    ]
+  },
+  "expectFrameEventsByLanguage": {
+    "csharp": {
+      "helperEntry": [
+        {
+          "kind": "call",
+          "function": "helper",
+          "args": {
+            "x": 2
+          },
+          "callStackDepth": 2
+        }
+      ]
+    },
+    "cpp": {
+      "helperEntry": [
+        {
+          "kind": "line",
+          "function": "helper",
+          "args": {
+            "x": 2
+          },
+          "callStackDepth": 2
+        }
+      ]
+    }
+  },
+  "expectReturns": [
+    {
+      "function": "helper",
+      "value": 3,
+      "args": {
+        "x": 2
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "value": 3,
+      "args": {
+        "n": 2
+      },
+      "callStackDepth": 1
+    }
+  ],
+  "expectBalancedCallReturns": true
 }

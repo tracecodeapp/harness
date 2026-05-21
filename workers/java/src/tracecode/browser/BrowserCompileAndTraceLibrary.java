@@ -22,9 +22,9 @@ import javax.tools.JavaCompiler;
 import javax.tools.StandardJavaFileManager;
 import javax.tools.StandardLocation;
 import javax.tools.ToolProvider;
+import tracecode.user.TraceHooks;
 
 public final class BrowserCompileAndTraceLibrary {
-  private static final String LEGACY_PACKAGE = "spi" + "ke.browser.";
   private static final String RUN_CACHE_VERSION = "tracecode-java-run-v1";
 
   private BrowserCompileAndTraceLibrary() {}
@@ -36,15 +36,7 @@ public final class BrowserCompileAndTraceLibrary {
       String compileClasspath,
       String compilerProfile
   ) throws Exception {
-    Method method = legacyClass().getMethod(
-        "compileAndTrace",
-        String.class,
-        String.class,
-        String.class,
-        String.class,
-        String.class
-    );
-    return (String) method.invoke(null, sourcePath, classesDir, entryClass, compileClasspath, compilerProfile);
+    return compileAndTrace(sourcePath, classesDir, entryClass, compileClasspath, compilerProfile, 50000);
   }
 
   public static String compileAndTrace(
@@ -55,16 +47,114 @@ public final class BrowserCompileAndTraceLibrary {
       String compilerProfile,
       String maxStoredEvents
   ) throws Exception {
-    Method method = legacyClass().getMethod(
-        "compileAndTrace",
-        String.class,
-        String.class,
-        String.class,
-        String.class,
-        String.class,
-        String.class
-    );
-    return (String) method.invoke(null, sourcePath, classesDir, entryClass, compileClasspath, compilerProfile, maxStoredEvents);
+    int parsedMaxEvents;
+    try {
+      parsedMaxEvents = Integer.parseInt(maxStoredEvents);
+    } catch (Exception ignored) {
+      parsedMaxEvents = 50000;
+    }
+    return compileAndTrace(sourcePath, classesDir, entryClass, compileClasspath, compilerProfile, parsedMaxEvents);
+  }
+
+  public static String compileAndTrace(
+      String sourcePath,
+      String classesDir,
+      String entryClass,
+      String compileClasspath,
+      String compilerProfile,
+      int maxStoredEvents
+  ) throws Exception {
+    Path sourceFile = Paths.get(sourcePath);
+    Path classesPath = Paths.get(classesDir);
+    Files.createDirectories(classesPath);
+
+    String source = Files.readString(sourceFile, StandardCharsets.UTF_8);
+    String compilerDebugArg = compilerDebugArgForProfile(compilerProfile);
+    String cacheKey = hashSource(source, compileClasspath, entryClass, compilerDebugArg);
+    Path cacheKeyPath = classesPath.resolve(".tracecode-cache-key");
+
+    StringWriter compilerStdout = new StringWriter();
+    StringWriter compilerStderr = new StringWriter();
+    PrintWriter compilerStdoutWriter = new PrintWriter(compilerStdout, true);
+    PrintWriter compilerStderrWriter = new PrintWriter(compilerStderr, true);
+
+    long compileStart = System.nanoTime();
+    boolean compiled;
+    boolean compileCacheHit = false;
+    if (canReuseCompiledClasses(classesPath, cacheKeyPath, cacheKey, entryClass)) {
+      compiled = true;
+      compileCacheHit = true;
+    } else {
+      resetDirectory(classesPath);
+      compiled = compileSource(
+          sourcePath,
+          classesDir,
+          compileClasspath,
+          compilerDebugArg,
+          compilerStdoutWriter,
+          compilerStderrWriter);
+      if (compiled) {
+        Files.writeString(cacheKeyPath, cacheKey, StandardCharsets.UTF_8);
+      }
+    }
+    long compileEnd = System.nanoTime();
+
+    long classLoadStart = System.nanoTime();
+    long classLoadEnd = classLoadStart;
+    long runStart = 0;
+    long runEnd = 0;
+    Object output = null;
+    String runtimeError = null;
+    List<String> events = new ArrayList<>();
+    boolean success = compiled;
+
+    if (compiled) {
+      TraceHooks.reset(maxStoredEvents);
+      try (URLClassLoader loader = new URLClassLoader(
+          new URL[] { classesPath.toUri().toURL() },
+          BrowserCompileAndTraceLibrary.class.getClassLoader())) {
+        Class<?> entry = Class.forName(entryClass, true, loader);
+        Method run = entry.getMethod("run");
+        run.setAccessible(true);
+        classLoadEnd = System.nanoTime();
+        runStart = System.nanoTime();
+        output = run.invoke(null);
+        runEnd = System.nanoTime();
+      } catch (InvocationTargetException error) {
+        Throwable cause = error.getCause() == null ? error : error.getCause();
+        runEnd = System.nanoTime();
+        runtimeError = stackTrace(cause);
+        success = false;
+      } catch (Throwable error) {
+        long end = System.nanoTime();
+        if (runStart == 0) {
+          classLoadEnd = end;
+        } else {
+          runEnd = end;
+        }
+        runtimeError = stackTrace(error);
+        success = false;
+      } finally {
+        events = TraceHooks.drainEvents();
+      }
+    } else {
+      runtimeError = null;
+    }
+
+    return buildTraceReportJson(
+        success,
+        output == null ? null : String.valueOf(output),
+        events,
+        compilerStdout.toString(),
+        compilerStderr.toString(),
+        runtimeError,
+        millisBetween(compileStart, compileEnd),
+        millisBetween(classLoadStart, classLoadEnd),
+        runStart == 0 ? 0 : millisBetween(runStart, runEnd),
+        compileCacheHit,
+        compilerProfile,
+        TraceHooks.traceLimitExceeded(),
+        TraceHooks.droppedEventCount());
   }
 
   public static String compileAndRun(
@@ -636,10 +726,6 @@ public final class BrowserCompileAndTraceLibrary {
         compilerProfile);
   }
 
-  private static Class<?> legacyClass() throws ClassNotFoundException {
-    return Class.forName(LEGACY_PACKAGE + "BrowserCompileAndTraceLibrary");
-  }
-
   private static boolean compileSource(
       String sourcePath,
       String classesDir,
@@ -1167,6 +1253,49 @@ public final class BrowserCompileAndTraceLibrary {
     out.append(",\"compileTimeMs\":").append(compileTimeMs);
     out.append(",\"compileCacheHit\":").append(compileCacheHit);
     out.append(",\"compilerDebugProfile\":").append(quote(compilerProfile == null ? "" : compilerProfile));
+    if (runtimeError != null) {
+      out.append(",\"runtimeError\":").append(quote(runtimeError));
+    }
+    out.append('}');
+    return out.toString();
+  }
+
+  private static String buildTraceReportJson(
+      boolean success,
+      String output,
+      List<String> events,
+      String compilerStdout,
+      String compilerStderr,
+      String runtimeError,
+      long compileTimeMs,
+      long classLoadTimeMs,
+      long runTimeMs,
+      boolean compileCacheHit,
+      String compilerProfile,
+      boolean traceLimitExceeded,
+      int droppedEventCount
+  ) {
+    StringBuilder out = new StringBuilder();
+    out.append('{');
+    out.append("\"success\":").append(success);
+    if (output != null) {
+      out.append(",\"output\":").append(quote(output));
+    }
+    out.append(",\"events\":[");
+    for (int index = 0; index < events.size(); index++) {
+      if (index > 0) out.append(',');
+      out.append(quote(events.get(index)));
+    }
+    out.append(']');
+    out.append(",\"compilerStdout\":").append(quote(compilerStdout == null ? "" : compilerStdout));
+    out.append(",\"compilerStderr\":").append(quote(compilerStderr == null ? "" : compilerStderr));
+    out.append(",\"compileTimeMs\":").append(compileTimeMs);
+    out.append(",\"classLoadTimeMs\":").append(classLoadTimeMs);
+    out.append(",\"runTimeMs\":").append(runTimeMs);
+    out.append(",\"compileCacheHit\":").append(compileCacheHit);
+    out.append(",\"compilerDebugProfile\":").append(quote(compilerProfile == null ? "" : compilerProfile));
+    out.append(",\"traceLimitExceeded\":").append(traceLimitExceeded);
+    out.append(",\"droppedEventCount\":").append(droppedEventCount);
     if (runtimeError != null) {
       out.append(",\"runtimeError\":").append(quote(runtimeError));
     }

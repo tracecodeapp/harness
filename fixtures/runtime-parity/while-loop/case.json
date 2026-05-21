@@ -32,16 +32,122 @@
   "expectByLanguage": {
     "csharp": {
       "body": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
         "eventKinds": [
           "line",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "i",
           "n",
           "total"
+        ]
+      }
+    },
+    "python": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "total"
+          }
         ],
-        "accessTargets": []
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "total"
+        ]
+      }
+    },
+    "javascript": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "total"
+        ]
+      }
+    },
+    "typescript": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "total"
+        ]
+      }
+    },
+    "java": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "total"
+        ]
+      }
+    },
+    "cpp": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "i",
+          "n",
+          "total"
+        ]
       }
     }
   }

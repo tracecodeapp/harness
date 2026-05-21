@@ -919,6 +919,9 @@ function buildDynamicInputHelperMethods() {
 }
 
 function buildHelperMethods(features) {
+  if (features.skipInputMaterializers) {
+    return '';
+  }
   const members = [];
   if (features.hasDynamicInputs) {
     members.push(buildDynamicInputHelperMethods());
@@ -1129,6 +1132,66 @@ function buildHelperMethods(features) {
 `);
   }
   return members.join('\n');
+}
+
+function sourceDeclaresJavaClass(source, className) {
+  const escapedName = String(className).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\bclass\\s+${escapedName}\\b`).test(String(source ?? ''));
+}
+
+function buildNodePreludeSource(source, options = {}) {
+  if (options.scriptMode === true) {
+    return '';
+  }
+
+  const declarations = [];
+  if (!sourceDeclaresJavaClass(source, 'ListNode')) {
+    declarations.push(`class ListNode {
+  int val;
+  int value;
+  ListNode next;
+
+  ListNode() {
+    this(0, null);
+  }
+
+  ListNode(int val) {
+    this(val, null);
+  }
+
+  ListNode(int val, ListNode next) {
+    this.val = val;
+    this.value = val;
+    this.next = next;
+  }
+}`);
+  }
+
+  if (!sourceDeclaresJavaClass(source, 'TreeNode')) {
+    declarations.push(`class TreeNode {
+  int val;
+  int value;
+  TreeNode left;
+  TreeNode right;
+
+  TreeNode() {
+    this(0, null, null);
+  }
+
+  TreeNode(int val) {
+    this(val, null, null);
+  }
+
+  TreeNode(int val, TreeNode left, TreeNode right) {
+    this.val = val;
+    this.value = val;
+    this.left = left;
+    this.right = right;
+  }
+}`);
+  }
+
+  return declarations.length > 0 ? `${declarations.join('\n\n')}\n\n` : '';
 }
 
 function extractMethodParameters(source, methodName) {
@@ -1546,6 +1609,30 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isInsideJavaStringLiteral(line, offset) {
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < offset; index += 1) {
+    const ch = line[index];
+    const next = line[index + 1] ?? '';
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '/' && next === '/') return false;
+    if (ch === '"' || ch === "'") quote = ch;
+  }
+  return quote !== null;
+}
+
 function parseNativeTraceLine(line) {
   const match = line.match(/TraceHooks\.emit(?:Line|Call|Return)AtLine\((\d+)\b/);
   if (!match) return null;
@@ -1558,7 +1645,6 @@ function augmentTraceCallArgumentSnapshots(source) {
   const methodStack = [];
   const methodStartPattern =
     /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
-
   return lines.map((line) => {
     const methodMatch = line.match(methodStartPattern);
     if (methodMatch) {
@@ -1693,25 +1779,76 @@ function guardJavaLineEmit(line) {
   );
 }
 
+function appendJavaScalarDeclarationWrites(line, lineNumber) {
+  if (line.includes('TraceHooks.emitScalarWriteAtLine(')) return line;
+  if (/TraceHooks\.read[A-Za-z0-9_]*AtLine\(/.test(line)) return line;
+  if (/^\s*(?:for|if|while|switch|catch)\s*\(/.test(line)) return line;
+  if (!/;\s*$/.test(line)) return line;
+  const declarations = collectJavaLocalDeclarations(line);
+  if (declarations.length === 0) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  const writes = declarations
+    .map((name) => `${indent}TraceHooks.emitScalarWriteAtLine(${lineNumber}, "${name}", ${name});`)
+    .join('\n');
+  return `${line}\n${writes}`;
+}
+
+function appendJavaPendingScalarDeclarationWrites(line, lineNumber, declarations) {
+  if (!Array.isArray(declarations) || declarations.length === 0) return line;
+  if (!/;\s*$/.test(line)) return line;
+  const indent = line.match(/^(\s*)/)?.[1] ?? '';
+  const writes = declarations
+    .map((name) => `${indent}TraceHooks.emitScalarWriteAtLine(${lineNumber}, "${name}", ${name});`)
+    .join('\n');
+  return writes ? `${line}\n${writes}` : line;
+}
+
 function augmentJavaLocalSnapshots(source) {
   const lines = source.split('\n');
   const output = [];
   const scopeStack = [];
+  let currentTraceLine = null;
+  let pendingScalarDeclarationWrites = null;
+  let methodDepth = 0;
+  let generatedExportsClassDepth = null;
   const methodStartPattern =
     /^(\s*)(?:(?:public|private|protected|static|final|synchronized)\s+)*(?:[A-Za-z_][A-Za-z0-9_<>\[\], ?]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{\s*$/;
+  const generatedExportsClassPattern = /^\s*(?:(?:public|private|protected|static|final)\s+)*class\s+Exports[A-Za-z0-9_]*\s*\{/;
 
   for (const line of lines) {
+    if (generatedExportsClassDepth !== null) {
+      output.push(line);
+      generatedExportsClassDepth += braceDelta(line);
+      if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+      continue;
+    }
+    if (generatedExportsClassPattern.test(line)) {
+      output.push(line);
+      generatedExportsClassDepth = Math.max(0, braceDelta(line));
+      if (generatedExportsClassDepth <= 0) generatedExportsClassDepth = null;
+      continue;
+    }
+    if (methodDepth <= 0) {
+      const methodMatch = line.match(methodStartPattern);
+      if (methodMatch) {
+        methodDepth = Math.max(0, braceDelta(line));
+        const params = parseJavaParameterNames(methodMatch[3] ?? '');
+        scopeStack.length = 0;
+        scopeStack.push({ names: params });
+        output.push(line);
+        if (methodDepth <= 0) {
+          scopeStack.length = 0;
+          pendingScalarDeclarationWrites = null;
+        }
+        continue;
+      }
+      output.push(line);
+      continue;
+    }
+
     const leadingClosingCount = line.match(/^\s*}+/)?.[0].replace(/\s/g, '').length ?? 0;
     for (let index = 0; index < leadingClosingCount; index += 1) {
       if (scopeStack.length > 0) scopeStack.pop();
-    }
-
-    const methodMatch = line.match(methodStartPattern);
-    if (methodMatch) {
-      const params = parseJavaParameterNames(methodMatch[3] ?? '');
-      scopeStack.push({ names: params });
-      output.push(line);
-      continue;
     }
 
     const transformedLine = guardJavaLineEmit(appendJavaLocalSnapshotsAfterMutations(
@@ -1719,8 +1856,33 @@ function augmentJavaLocalSnapshots(source) {
       scopeStack
     ));
     output.push(transformedLine);
+    const emittedTraceLine = parseNativeTraceLine(output[output.length - 1]);
+    if (emittedTraceLine !== null) currentTraceLine = emittedTraceLine;
 
     const declarations = collectJavaLocalDeclarations(line);
+    if (declarations.length > 0 && currentTraceLine !== null) {
+      const lastIndex = output.length - 1;
+      output[lastIndex] = appendJavaScalarDeclarationWrites(output[lastIndex], currentTraceLine);
+      if (
+        !isControlHeaderDeclarationLine(line) &&
+        line.includes('=') &&
+        !line.includes('->') &&
+        !/;\s*$/.test(line)
+      ) {
+        pendingScalarDeclarationWrites = {
+          lineNumber: currentTraceLine,
+          declarations: [...declarations],
+        };
+      }
+    } else if (pendingScalarDeclarationWrites && /;\s*$/.test(line)) {
+      const lastIndex = output.length - 1;
+      output[lastIndex] = appendJavaPendingScalarDeclarationWrites(
+        output[lastIndex],
+        pendingScalarDeclarationWrites.lineNumber,
+        pendingScalarDeclarationWrites.declarations
+      );
+      pendingScalarDeclarationWrites = null;
+    }
     const declarationsBelongToCurrentScope =
       declarations.length > 0 && !isControlHeaderDeclarationLine(line);
     if (declarationsBelongToCurrentScope) {
@@ -1731,8 +1893,9 @@ function augmentJavaLocalSnapshots(source) {
         }
       }
     }
-    const openingCount = (line.match(/{/g) ?? []).length;
-    const closingCount = Math.max(0, (line.match(/}/g) ?? []).length - leadingClosingCount);
+    const braceCounts = javaBraceCounts(line);
+    const openingCount = braceCounts.open;
+    const closingCount = Math.max(0, braceCounts.close - leadingClosingCount);
     for (let index = 0; index < openingCount; index += 1) {
       scopeStack.push({ names: index === 0 && !declarationsBelongToCurrentScope ? declarations : [] });
     }
@@ -1751,6 +1914,12 @@ function augmentJavaLocalSnapshots(source) {
     }
     for (let index = 0; index < closingCount; index += 1) {
       if (scopeStack.length > 0) scopeStack.pop();
+    }
+    methodDepth += braceCounts.delta;
+    if (methodDepth <= 0) {
+      methodDepth = 0;
+      scopeStack.length = 0;
+      pendingScalarDeclarationWrites = null;
     }
   }
 
@@ -1820,7 +1989,7 @@ function augmentJavaObjectFieldOperations(source) {
           const indent = writeMatch[1] ?? '';
           const field = writeMatch[2];
           const rhs = writeMatch[3];
-          nextLine = `${indent}{ ${name}.${field} = ${rhs}; TraceHooks.emitFieldWriteAtLine(${lineNumber}, "${name}", "${field}", ${name}.${field}); }`;
+          nextLine = `${indent}{ ${name}.${field} = ${rhs}; TraceHooks.emitFieldWriteAtLine(${lineNumber}, "${name}", "${field}", ${name}.${field}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${field}", ${name}.${field}); }`;
           break;
         }
       }
@@ -1953,10 +2122,10 @@ function augmentArrayLengthReads(source) {
       ) {
         for (const arrayName of currentMethod.arrayNames) {
           const lengthPattern = new RegExp(`\\b${escapeRegExp(arrayName)}\\.length\\b`, 'g');
-          nextLine = nextLine.replace(
-            lengthPattern,
-            `TraceHooks.readArrayLengthAtLine(${currentMethod.currentTraceLine}, "${arrayName}", ${arrayName})`
-          );
+          nextLine = nextLine.replace(lengthPattern, (match, offset) => {
+            if (isInsideJavaStringLiteral(nextLine, offset)) return match;
+            return `TraceHooks.readArrayLengthAtLine(${currentMethod.currentTraceLine}, "${arrayName}", ${arrayName})`;
+          });
         }
       }
 
@@ -2004,7 +2173,7 @@ function augmentTraceReturnValueSnapshots(source) {
         const returnExpression = returnMatch[2].trim();
         output.push(`${indent}${currentMethod.returnType} ${tempName} = ${returnExpression};`);
         output.push(
-          `${indent}TraceHooks.emitReturnAtLine(${returnEmitMatch[2]}, "${currentMethod.name}", ${tempName});`
+          `${indent}TraceHooks.emitSerializedReturnAtLine(${returnEmitMatch[2]}, "${currentMethod.name}", TraceHooks.serializeResult(${tempName}));`
         );
         output.push(`${returnMatch[1] ?? indent}return ${tempName};`);
         currentMethod.depth += braceDelta(line) + braceDelta(nextLine);
@@ -2081,24 +2250,54 @@ function isTopLevelMethodStart(line) {
   return /^(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:[\w<>\[\], ?]+\s+)+[A-Za-z_][A-Za-z0-9_]*\s*\([^;]*\)\s*\{/.test(trimmed);
 }
 
-function braceDelta(line) {
-  let delta = 0;
+function isTopLevelTypeStart(line) {
+  const trimmed = line.trim();
+  return /^(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:final\s+|abstract\s+)?(?:class|interface|enum|record)\s+[A-Za-z_][A-Za-z0-9_]*\b/.test(trimmed);
+}
+
+function isTopLevelMemberStart(line) {
+  return isTopLevelMethodStart(line) || isTopLevelTypeStart(line);
+}
+
+function javaBraceCounts(line) {
+  let open = 0;
+  let close = 0;
   let quote = null;
+  let escaped = false;
   for (let index = 0; index < line.length; index += 1) {
     const ch = line[index];
-    const prev = index > 0 ? line[index - 1] : '';
+    const next = line[index + 1] ?? '';
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
     if (quote) {
-      if (ch === quote && prev !== '\\') quote = null;
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '/' && next === '/') break;
+    if (ch === '/' && next === '*') {
+      const end = line.indexOf('*/', index + 2);
+      if (end === -1) break;
+      index = end + 1;
       continue;
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
       continue;
     }
-    if (ch === '{') delta += 1;
-    if (ch === '}') delta -= 1;
+    if (ch === '{') open += 1;
+    if (ch === '}') close += 1;
   }
-  return delta;
+  return { open, close, delta: open - close };
+}
+
+function braceDelta(line) {
+  return javaBraceCounts(line).delta;
 }
 
 function splitScriptMembersAndStatements(lines) {
@@ -2108,7 +2307,7 @@ function splitScriptMembersAndStatements(lines) {
   for (let index = 0; index < lines.length; index += 1) {
     const entry = lines[index];
     const line = typeof entry === 'string' ? entry : entry.line;
-    if (statementDepth !== 0 || !isTopLevelMethodStart(line)) {
+    if (statementDepth !== 0 || !isTopLevelMemberStart(line)) {
       statementLines.push(entry);
       statementDepth += braceDelta(line);
       if (statementDepth < 0) statementDepth = 0;
@@ -2363,8 +2562,12 @@ function dynamicInputByKey(dynamicInputs) {
 }
 
 function buildExportsSource(source, functionName, executionStyle, input, options = {}) {
-  const features = detectFeatures(source, input, options);
+  const features = {
+    ...detectFeatures(source, input, options),
+    skipInputMaterializers: options.scriptMode === true,
+  };
   const helperMethods = buildHelperMethods(features);
+  const nodePreludeSource = buildNodePreludeSource(source, options);
   const dynamicInputsByKey = dynamicInputByKey(options.dynamicInputs ?? []);
 
   if (executionStyle === 'ops-class') {
@@ -2406,7 +2609,7 @@ function buildExportsSource(source, functionName, executionStyle, input, options
       }
     });
 
-    return `public class Exports {
+    return `${nodePreludeSource}public class Exports {
 ${helperMethods}
 
   public static String run() {
@@ -2442,7 +2645,7 @@ ${lines.join('\n')}
     ? `    solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(null);`
     : `    ${returnType || 'Object'} ${resultLocalName} = solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(${resultLocalName});`;
 
-  return `public class Exports {
+  return `${nodePreludeSource}public class Exports {
 ${helperMethods}
 
   public static String run() {
@@ -2601,6 +2804,7 @@ async function rewriteSource(payload, compileId, dynamicInputs) {
     {
       dynamicInputs,
       hasDynamicInputs: dynamicInputs.length > 0,
+      scriptMode: payload.scriptMode === true,
     }
   );
   const rewrittenSource = await rewriteLibraryClass.rewriteSource(
@@ -2629,6 +2833,7 @@ function buildPlainRunnableSource(payload, compileId, dynamicInputs) {
     {
       dynamicInputs,
       hasDynamicInputs: dynamicInputs.length > 0,
+      scriptMode: payload.scriptMode === true,
     }
   ).replaceAll(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
 
@@ -2670,6 +2875,7 @@ function buildBatchRunnableSource(payload, compileId, inputBatch, dynamicInputBa
       {
         dynamicInputs,
         hasDynamicInputs: dynamicInputs.length > 0,
+        scriptMode: payload.scriptMode === true,
       }
     ).replaceAll(
       /\bpublic class Exports\b/g,
@@ -2690,7 +2896,10 @@ function buildCompileProbeSource(payload, requestId, probeClassName, probePackag
     payload.code,
     payload.functionName,
     payload.executionStyle,
-    payload.inputs ?? {}
+    payload.inputs ?? {},
+    {
+      scriptMode: payload.scriptMode === true,
+    }
   ).replaceAll(/\bpublic class Exports\b/g, `public class ${probeClassName}`);
   return [
     `package ${probePackageName};`,

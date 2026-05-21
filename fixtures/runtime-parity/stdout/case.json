@@ -73,7 +73,8 @@
       "print": {
         "eventKinds": [
           "line",
-          "snapshot"
+          "snapshot",
+          "stdout"
         ],
         "variableSnapshots": [
           "n"
@@ -85,13 +86,94 @@
       "print": {
         "eventKinds": [
           "line",
-          "snapshot"
+          "snapshot",
+          "stdout"
         ],
         "variableSnapshots": [
           "n"
         ],
         "accessTargets": []
       }
+    }
+  },
+  "expectFrameEventsByLanguage": {
+    "python": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "javascript": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "typescript": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "java": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "cpp": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
+    },
+    "csharp": {
+      "print": [
+        {
+          "kind": "stdout",
+          "function": "solve",
+          "args": {
+            "n": 7
+          },
+          "text": "7",
+          "callStackDepth": 1
+        }
+      ]
     }
   }
 }

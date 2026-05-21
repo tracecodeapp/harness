@@ -35,13 +35,19 @@
     "makeAlias": {
       "eventKinds": [
         "line",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "alias",
         "head"
       ],
-      "accessTargets": []
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "alias"
+        }
+      ]
     },
     "readThroughAlias": {
       "eventKinds": [
@@ -58,9 +64,74 @@
         {
           "kind": "read",
           "variable": "alias",
-          "pathDepth": 1
+          "pathDepth": 2
         }
       ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "readThroughAlias": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "alias",
+          "head"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "alias",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "java": {
+      "readThroughAlias": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "alias",
+          "head"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "alias",
+            "pathDepth": 1
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "readThroughAlias": {
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "alias",
+          "head"
+        ],
+        "accessTargets": [
+          {
+            "kind": "read",
+            "variable": "alias",
+            "pathDepth": 1
+          }
+        ]
+      }
     }
   }
 }

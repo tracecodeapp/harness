@@ -31,20 +31,9 @@
     "loopCondition": {
       "eventKinds": [
         "line",
-        "snapshot"
-      ],
-      "variableSnapshots": [
-        "i",
-        "nums",
-        "total"
-      ],
-      "accessTargets": []
-    },
-    "elementRead": {
-      "eventKinds": [
-        "line",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "i",
@@ -56,33 +45,36 @@
           "kind": "read",
           "variable": "nums",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "i"
         }
       ]
-    }
-  },
-  "expectSummary": {
-    "accessTargets": [
-      {
-        "kind": "read",
-        "variable": "nums",
-        "pathDepth": 1,
-        "count": 3
-      }
-    ]
-  },
-  "expectByLanguage": {
-    "csharp": {
-      "loopCondition": {
-        "eventKinds": [
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "nums",
-          "total"
-        ],
-        "accessTargets": []
-      }
+    },
+    "elementRead": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "total"
+        }
+      ]
     }
   }
 }

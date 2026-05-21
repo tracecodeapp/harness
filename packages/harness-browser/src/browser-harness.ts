@@ -42,6 +42,10 @@ export interface CreateBrowserHarnessOptions {
     workerIdleTimeoutMs?: number;
   };
   cpp?: {
+    initTimeoutMs?: number;
+    executionTimeoutMs?: number;
+    tracingTimeoutMs?: number;
+    interviewTimeoutMs?: number;
     workerIdleTimeoutMs?: number;
   };
 }
@@ -102,6 +106,10 @@ class BrowserHarnessRuntime implements BrowserHarness {
       runtimeHeaderUrl: this.assets.cppRuntimeHeader,
       compilerBundleUrl: this.assets.cppCompilerBundle,
       debug: options.debug,
+      initTimeoutMs: options.cpp?.initTimeoutMs,
+      executionTimeoutMs: options.cpp?.executionTimeoutMs,
+      tracingTimeoutMs: options.cpp?.tracingTimeoutMs,
+      interviewTimeoutMs: options.cpp?.interviewTimeoutMs,
       workerIdleTimeoutMs: options.cpp?.workerIdleTimeoutMs,
     });
     this.clients = {

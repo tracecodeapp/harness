@@ -9,16 +9,21 @@ public static class RuntimeTraceSink
     private static readonly List<RuntimeTraceCallFrame> CallStack = new();
     private static readonly HashSet<string> SnapshottedVariablesInCurrentLine = new(StringComparer.Ordinal);
     private static readonly Dictionary<int, int> LineHitCounts = new();
+    private static readonly Stack<Dictionary<string, string>> VariableAliasScopes = new();
+    private static readonly Stack<IReadOnlyList<string?>?> ScopedIndexSources = new();
+    private static readonly Dictionary<object, string> TraceReferenceIds = new(ReferenceEqualityComparer.Instance);
     private static DateTime deadlineUtc;
     private static int? maxTraceSteps;
     private static int? maxLineEvents;
     private static int? maxSingleLineHits;
     private static int? maxStoredEvents;
     private static int currentLine;
+    private static int scopedSourceLine;
     private static int lineEventCount;
     private static string? timeoutReason;
     private static bool minimalTrace;
     private static bool traceLimitExceeded;
+    private static int nextTraceReferenceId;
 
     public static void Reset()
     {
@@ -26,16 +31,21 @@ public static class RuntimeTraceSink
         CallStack.Clear();
         SnapshottedVariablesInCurrentLine.Clear();
         LineHitCounts.Clear();
+        VariableAliasScopes.Clear();
+        ScopedIndexSources.Clear();
+        TraceReferenceIds.Clear();
         deadlineUtc = DateTime.UtcNow.AddSeconds(2);
         maxTraceSteps = null;
         maxLineEvents = null;
         maxSingleLineHits = null;
         maxStoredEvents = null;
         currentLine = 0;
+        scopedSourceLine = 0;
         lineEventCount = 0;
         timeoutReason = null;
         minimalTrace = false;
         traceLimitExceeded = false;
+        nextTraceReferenceId = 0;
     }
 
     public static void Configure(
@@ -69,6 +79,8 @@ public static class RuntimeTraceSink
     public static bool TraceLimitExceeded => traceLimitExceeded;
 
     public static string? TimeoutReason => timeoutReason;
+
+    public static int EventCount => Events.Count;
 
     public static void Line(int line, string? function)
     {
@@ -134,6 +146,33 @@ public static class RuntimeTraceSink
         });
     }
 
+    public static void Call(string function, int line, IReadOnlyDictionary<string, object?> args)
+    {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
+        Dictionary<string, object?> argsByName = args.ToDictionary(
+            entry => entry.Key,
+            entry => entry.Value,
+            StringComparer.Ordinal
+        );
+        CallStack.Add(new RuntimeTraceCallFrame
+        {
+            Function = function,
+            Line = line,
+            Args = argsByName,
+        });
+        Add(new RuntimeTraceEvent
+        {
+            Kind = "call",
+            Line = line,
+            Function = function,
+            Args = argsByName,
+        });
+    }
+
     public static void Return(string function, int line, object? value = null)
     {
         if (traceLimitExceeded)
@@ -189,6 +228,21 @@ public static class RuntimeTraceSink
         });
     }
 
+    public static void Stdout(string text)
+    {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
+        Add(new RuntimeTraceEvent
+        {
+            Kind = "stdout",
+            Line = ScopedSourceLine > 0 ? ScopedSourceLine : null,
+            Text = text,
+        });
+    }
+
     public static void Write(string variable, object? value, int line)
     {
         if (traceLimitExceeded)
@@ -200,17 +254,12 @@ public static class RuntimeTraceSink
         {
             Kind = "write",
             Line = line,
-            Target = new RuntimeTraceTarget { Variable = variable },
+            Target = new RuntimeTraceTarget { Variable = ResolveVariableAlias(variable) },
             Value = value,
         });
     }
 
-    public static void IndexedRead(string variable, object index, object? value, int line)
-    {
-        IndexedRead(variable, new object?[] { index }, value, line);
-    }
-
-    public static void IndexedRead(string variable, IReadOnlyList<object?> path, object? value, int line)
+    public static void Read(string variable, object? value, int line)
     {
         if (traceLimitExceeded)
         {
@@ -221,13 +270,282 @@ public static class RuntimeTraceSink
         {
             Kind = "read",
             Line = line,
-            Target = new RuntimeTraceTarget
-            {
-                Variable = variable,
-                Path = path.ToList(),
-            },
+            Target = new RuntimeTraceTarget { Variable = ResolveVariableAlias(variable) },
             Value = value,
         });
+    }
+
+    public static void IndexedRead(string variable, object index, object? value, int line)
+    {
+        IndexedRead(variable, new object?[] { index }, value, line);
+    }
+
+    public static void IndexedRead(string variable, object index, object? value, int line, string? bindingVariable, IReadOnlyList<string?>? indexSources)
+    {
+        IndexedRead(variable, new object?[] { index }, value, line, bindingVariable, indexSources);
+    }
+
+    public static void IndexedRead(string variable, IReadOnlyList<object?> path, object? value, int line)
+    {
+        IndexedRead(variable, path, value, line, null);
+    }
+
+    public static void IndexedRead(string variable, IReadOnlyList<object?> path, object? value, int line, string? bindingVariable)
+    {
+        IndexedRead(variable, path, value, line, bindingVariable, null);
+    }
+
+    public static void IndexedRead(string variable, IReadOnlyList<object?> path, object? value, int line, string? bindingVariable, IReadOnlyList<string?>? indexSources)
+    {
+        if (traceLimitExceeded)
+        {
+            return;
+        }
+
+        RuntimeTraceEvent traceEvent = new RuntimeTraceEvent
+        {
+            Kind = "read",
+            Line = line,
+            Target = new RuntimeTraceTarget
+            {
+                Variable = ResolveVariableAlias(variable),
+                Path = path.ToList(),
+                IndexSources = NormalizeIndexSources(indexSources, path.Count),
+            },
+            Value = value,
+        };
+        if (!string.IsNullOrWhiteSpace(bindingVariable))
+        {
+            traceEvent.Binding = new RuntimeTraceBinding
+            {
+                Kind = "iteration",
+                Variable = bindingVariable,
+            };
+        }
+        Add(traceEvent);
+    }
+
+    public static IEnumerable<T> IterationBind<T>(
+        IEnumerable<T> values,
+        string variable,
+        string bindingVariable,
+        int line,
+        string? function = null,
+        bool emitInitialLine = true,
+        Action? snapshot = null
+    )
+    {
+        int index = 0;
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
+        {
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
+        }
+
+        do
+        {
+            T item = enumerator.Current;
+            string sourceVariable = !string.IsNullOrWhiteSpace(variable) ? variable : bindingVariable;
+            if (!string.IsNullOrWhiteSpace(sourceVariable))
+            {
+                IndexedRead(sourceVariable, new object?[] { index }, item, line, bindingVariable);
+            }
+            if (!string.IsNullOrWhiteSpace(bindingVariable))
+            {
+                Write(bindingVariable, item, line);
+            }
+            index++;
+            Line(line, function);
+            snapshot?.Invoke();
+            yield return item;
+        }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
+    }
+
+    public static IEnumerable<T> NestedIterationBind<T>(
+        IEnumerable<T> values,
+        string variable,
+        object? parentIndex,
+        string? parentIndexSource,
+        string bindingVariable,
+        int line,
+        string? function = null,
+        bool emitInitialLine = true,
+        Action? snapshot = null
+    )
+    {
+        int index = 0;
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
+        {
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
+        }
+
+        do
+        {
+            T item = enumerator.Current;
+            if (!string.IsNullOrWhiteSpace(variable))
+            {
+                IndexedRead(
+                    variable,
+                    new object?[] { parentIndex, index },
+                    item,
+                    line,
+                    bindingVariable,
+                    new string?[] { parentIndexSource, null }
+                );
+            }
+            if (!string.IsNullOrWhiteSpace(bindingVariable))
+            {
+                Write(bindingVariable, item, line);
+            }
+            index++;
+            Line(line, function);
+            snapshot?.Invoke();
+            yield return item;
+        }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
+    }
+
+    public static IEnumerable<T> TupleIterationBind<T>(
+        IEnumerable<T> values,
+        string variable,
+        IReadOnlyList<string> bindingVariables,
+        int line,
+        string? function = null,
+        bool emitInitialLine = true,
+        Action? snapshot = null
+    )
+    {
+        int index = 0;
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
+        {
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
+        }
+
+        do
+        {
+            T item = enumerator.Current;
+            EmitTupleIterationReads(variable, new object?[] { index }, item, bindingVariables, line, new string?[] { null });
+            index++;
+            Line(line, function);
+            snapshot?.Invoke();
+            yield return item;
+        }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
+    }
+
+    public static IEnumerable<T> TupleNestedIterationBind<T>(
+        IEnumerable<T> values,
+        string variable,
+        object? parentIndex,
+        string? parentIndexSource,
+        IReadOnlyList<string> bindingVariables,
+        int line,
+        string? function = null,
+        bool emitInitialLine = true,
+        Action? snapshot = null
+    )
+    {
+        int index = 0;
+        using IEnumerator<T> enumerator = values.GetEnumerator();
+        if (!enumerator.MoveNext())
+        {
+            if (emitInitialLine)
+            {
+                Line(line, function);
+                snapshot?.Invoke();
+            }
+            yield break;
+        }
+
+        do
+        {
+            T item = enumerator.Current;
+            EmitTupleIterationReads(
+                variable,
+                new object?[] { parentIndex, index },
+                item,
+                bindingVariables,
+                line,
+                new string?[] { parentIndexSource, null }
+            );
+            index++;
+            Line(line, function);
+            snapshot?.Invoke();
+            yield return item;
+        }
+        while (enumerator.MoveNext());
+        Line(line, function);
+        snapshot?.Invoke();
+    }
+
+    private static void EmitTupleIterationReads(
+        string variable,
+        object?[] basePath,
+        object? item,
+        IReadOnlyList<string> bindingVariables,
+        int line,
+        IReadOnlyList<string?> baseIndexSources
+    )
+    {
+        if (item is System.Runtime.CompilerServices.ITuple tuple)
+        {
+            int count = Math.Min(tuple.Length, bindingVariables.Count);
+            for (int index = 0; index < count; index++)
+            {
+                string bindingVariable = bindingVariables[index];
+                object? value = tuple[index];
+                if (!string.IsNullOrWhiteSpace(variable))
+                {
+                    IndexedRead(
+                        variable,
+                        basePath.Concat(new object?[] { index }).ToArray(),
+                        value,
+                        line,
+                        bindingVariable,
+                        baseIndexSources.Concat(new string?[] { null }).ToArray()
+                    );
+                }
+                if (!string.IsNullOrWhiteSpace(bindingVariable))
+                {
+                    Write(bindingVariable, value, line);
+                }
+            }
+            return;
+        }
+
+        string fallbackBinding = bindingVariables.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(variable))
+        {
+            IndexedRead(variable, basePath, item, line, fallbackBinding, baseIndexSources);
+        }
+        if (!string.IsNullOrWhiteSpace(fallbackBinding))
+        {
+            Write(fallbackBinding, item, line);
+        }
     }
 
     public static void IndexedWrite(string variable, object index, object? value, int line)
@@ -235,7 +553,17 @@ public static class RuntimeTraceSink
         IndexedWrite(variable, new object?[] { index }, value, line);
     }
 
+    public static void IndexedWrite(string variable, object index, object? value, int line, IReadOnlyList<string?>? indexSources)
+    {
+        IndexedWrite(variable, new object?[] { index }, value, line, indexSources);
+    }
+
     public static void IndexedWrite(string variable, IReadOnlyList<object?> path, object? value, int line)
+    {
+        IndexedWrite(variable, path, value, line, null);
+    }
+
+    public static void IndexedWrite(string variable, IReadOnlyList<object?> path, object? value, int line, IReadOnlyList<string?>? indexSources)
     {
         if (traceLimitExceeded)
         {
@@ -248,8 +576,9 @@ public static class RuntimeTraceSink
             Line = line,
             Target = new RuntimeTraceTarget
             {
-                Variable = variable,
+                Variable = ResolveVariableAlias(variable),
                 Path = path.ToList(),
+                IndexSources = NormalizeIndexSources(indexSources, path.Count),
             },
             Value = value,
         });
@@ -262,6 +591,11 @@ public static class RuntimeTraceSink
 
     public static void FieldRead(string variable, IReadOnlyList<object?> path, object? value, int line)
     {
+        FieldRead(variable, path, value, line, null);
+    }
+
+    public static void FieldRead(string variable, IReadOnlyList<object?> path, object? value, int line, IReadOnlyList<string?>? indexSources)
+    {
         if (traceLimitExceeded)
         {
             return;
@@ -273,8 +607,9 @@ public static class RuntimeTraceSink
             Line = line,
             Target = new RuntimeTraceTarget
             {
-                Variable = variable,
+                Variable = ResolveVariableAlias(variable),
                 Path = path.ToList(),
+                IndexSources = NormalizeIndexSources(indexSources, path.Count),
             },
             Value = value,
         });
@@ -287,6 +622,11 @@ public static class RuntimeTraceSink
 
     public static void FieldWrite(string variable, IReadOnlyList<object?> path, object? value, int line)
     {
+        FieldWrite(variable, path, value, line, null);
+    }
+
+    public static void FieldWrite(string variable, IReadOnlyList<object?> path, object? value, int line, IReadOnlyList<string?>? indexSources)
+    {
         if (traceLimitExceeded)
         {
             return;
@@ -298,8 +638,9 @@ public static class RuntimeTraceSink
             Line = line,
             Target = new RuntimeTraceTarget
             {
-                Variable = variable,
+                Variable = ResolveVariableAlias(variable),
                 Path = path.ToList(),
+                IndexSources = NormalizeIndexSources(indexSources, path.Count),
             },
             Value = value,
         });
@@ -310,7 +651,22 @@ public static class RuntimeTraceSink
         Mutate(variable, null, method, args);
     }
 
+    public static void Mutate(string variable, string method, IReadOnlyList<object?> args, int line)
+    {
+        Mutate(variable, null, method, args, line);
+    }
+
     public static void Mutate(string variable, IReadOnlyList<object?>? path, string method, IReadOnlyList<object?> args)
+    {
+        Mutate(variable, path, method, args, currentLine);
+    }
+
+    public static void Mutate(string variable, IReadOnlyList<object?>? path, string method, IReadOnlyList<object?> args, int line)
+    {
+        Mutate(variable, path, method, args, line, null);
+    }
+
+    public static void Mutate(string variable, IReadOnlyList<object?>? path, string method, IReadOnlyList<object?> args, int line, IReadOnlyList<string?>? indexSources)
     {
         if (traceLimitExceeded)
         {
@@ -320,15 +676,35 @@ public static class RuntimeTraceSink
         Add(new RuntimeTraceEvent
         {
             Kind = "mutate",
-            Line = currentLine,
+            Line = line,
             Target = new RuntimeTraceTarget
             {
-                Variable = variable,
+                Variable = ResolveVariableAlias(variable),
                 Path = path?.ToList(),
+                IndexSources = path is null ? null : NormalizeIndexSources(indexSources, path.Count),
             },
             Method = method,
             Args = args.ToList(),
         });
+    }
+
+    public static bool HasMutationSince(int startIndex, string variable, string method, int line)
+    {
+        string resolvedVariable = ResolveVariableAlias(variable);
+        int boundedStartIndex = Math.Clamp(startIndex, 0, Events.Count);
+        for (int index = boundedStartIndex; index < Events.Count; index++)
+        {
+            RuntimeTraceEvent traceEvent = Events[index];
+            if (traceEvent.Kind == "mutate"
+                && traceEvent.Line == line
+                && string.Equals(traceEvent.Method, method, StringComparison.Ordinal)
+                && string.Equals(traceEvent.Target?.Variable, resolvedVariable, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public static void Snapshot(string variable, object? value)
@@ -338,7 +714,8 @@ public static class RuntimeTraceSink
             return;
         }
 
-        if (!MarkSnapshot(variable, currentLine))
+        string resolvedVariable = ResolveVariableAlias(variable);
+        if (!MarkSnapshot(resolvedVariable, currentLine))
         {
             return;
         }
@@ -347,7 +724,7 @@ public static class RuntimeTraceSink
         {
             Kind = "snapshot",
             Line = currentLine,
-            Target = new RuntimeTraceTarget { Variable = variable },
+            Target = new RuntimeTraceTarget { Variable = resolvedVariable },
             Value = value,
         });
     }
@@ -359,7 +736,8 @@ public static class RuntimeTraceSink
             return;
         }
 
-        if (!MarkSnapshot(variable, line))
+        string resolvedVariable = ResolveVariableAlias(variable);
+        if (!MarkSnapshot(resolvedVariable, line))
         {
             return;
         }
@@ -368,7 +746,7 @@ public static class RuntimeTraceSink
         {
             Kind = "snapshot",
             Line = line,
-            Target = new RuntimeTraceTarget { Variable = variable },
+            Target = new RuntimeTraceTarget { Variable = resolvedVariable },
             Value = value,
         });
     }
@@ -378,7 +756,85 @@ public static class RuntimeTraceSink
         return SnapshottedVariablesInCurrentLine.Add($"{line}:{variable}");
     }
 
+    public static void WithVariableAlias(string actualVariable, string sourceVariable, Action action)
+    {
+        VariableAliasScopes.Push(new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [actualVariable] = sourceVariable,
+        });
+        try
+        {
+            action();
+        }
+        finally
+        {
+            VariableAliasScopes.Pop();
+        }
+    }
+
+    public static T WithVariableAlias<T>(string actualVariable, string sourceVariable, Func<T> action)
+    {
+        VariableAliasScopes.Push(new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [actualVariable] = sourceVariable,
+        });
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            VariableAliasScopes.Pop();
+        }
+    }
+
+    public static T WithIndexSources<T>(IReadOnlyList<string?>? indexSources, Func<T> action)
+    {
+        ScopedIndexSources.Push(indexSources);
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            ScopedIndexSources.Pop();
+        }
+    }
+
+    public static IReadOnlyList<string?>? CurrentScopedIndexSources =>
+        ScopedIndexSources.Count > 0 ? ScopedIndexSources.Peek() : null;
+
+    private static string ResolveVariableAlias(string variable)
+    {
+        foreach (Dictionary<string, string> scope in VariableAliasScopes)
+        {
+            if (scope.TryGetValue(variable, out string? alias))
+            {
+                return alias;
+            }
+        }
+
+        return variable;
+    }
+
     public static int CurrentLine => currentLine;
+
+    public static int ScopedSourceLine => scopedSourceLine > 0 ? scopedSourceLine : currentLine;
+
+    public static void SetCurrentLine(int line)
+    {
+        if (line > 0)
+        {
+            currentLine = line;
+        }
+    }
+
+    public static int CurrentScopedSourceLine => scopedSourceLine;
+
+    public static void SetScopedSourceLine(int line)
+    {
+        scopedSourceLine = Math.Max(0, line);
+    }
 
     public static void CheckTimeout()
     {
@@ -484,18 +940,36 @@ public static class RuntimeTraceSink
     {
         var references = new ReferenceTracker();
         traceEvent.Value = NormalizeTraceValue(traceEvent.Value, references);
-        traceEvent.Args = traceEvent.Args?.Select(arg => NormalizeTraceValue(arg, references)).ToList();
+        traceEvent.Args = NormalizeTraceArgs(traceEvent.Args, references);
         if (traceEvent.CallStack is not null)
         {
             foreach (RuntimeTraceCallFrame frame in traceEvent.CallStack)
             {
-                frame.Args = frame.Args?.Select(arg => NormalizeTraceValue(arg, references)).ToList();
+                frame.Args = NormalizeTraceArgs(frame.Args, references);
             }
         }
         if (traceEvent.Target?.Path is not null)
         {
             traceEvent.Target.Path = traceEvent.Target.Path.Select(NormalizeTracePathValue).ToList();
+            traceEvent.Target.IndexSources = NormalizeIndexSources(traceEvent.Target.IndexSources, traceEvent.Target.Path.Count);
         }
+    }
+
+    private static List<string?>? NormalizeIndexSources(IReadOnlyList<string?>? indexSources, int pathLength)
+    {
+        if (indexSources is null || pathLength <= 0)
+        {
+            return null;
+        }
+
+        List<string?> normalized = new();
+        for (int index = 0; index < pathLength; index++)
+        {
+            string? source = index < indexSources.Count ? indexSources[index] : null;
+            normalized.Add(string.IsNullOrWhiteSpace(source) ? null : source);
+        }
+
+        return normalized.Any(source => source is not null) ? normalized : null;
     }
 
     private static void AttachCallStack(RuntimeTraceEvent traceEvent)
@@ -510,9 +984,38 @@ public static class RuntimeTraceSink
             {
                 Function = frame.Function,
                 Line = frame.Line,
-                Args = frame.Args?.ToList(),
+                Args = CloneTraceArgs(frame.Args),
             })
             .ToList();
+    }
+
+    private static object? CloneTraceArgs(object? args)
+    {
+        return args switch
+        {
+            Dictionary<string, object?> named => named.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal),
+            IReadOnlyList<object?> positional => positional.ToList(),
+            _ => args,
+        };
+    }
+
+    private static object? NormalizeTraceArgs(object? args, ReferenceTracker references)
+    {
+        return args switch
+        {
+            Dictionary<string, object?> named => named.ToDictionary(
+                entry => entry.Key,
+                entry => NormalizeTraceValue(entry.Value, references),
+                StringComparer.Ordinal
+            ),
+            IReadOnlyDictionary<string, object?> named => named.ToDictionary(
+                entry => entry.Key,
+                entry => NormalizeTraceValue(entry.Value, references),
+                StringComparer.Ordinal
+            ),
+            IReadOnlyList<object?> positional => positional.Select(arg => NormalizeTraceValue(arg, references)).ToList(),
+            _ => args is null ? null : NormalizeTraceValue(args, references),
+        };
     }
 
     private static object? NormalizeTracePathValue(object? value)
@@ -579,6 +1082,16 @@ public static class RuntimeTraceSink
             return NormalizeValueTuple(value, depth, references);
         }
 
+        if (IsPriorityQueueType(type))
+        {
+            return NormalizePriorityQueue(value, depth, references);
+        }
+
+        if (value is System.Text.StringBuilder stringBuilder)
+        {
+            return NormalizeStringBuilder(stringBuilder);
+        }
+
         if (value is System.Collections.IDictionary dictionary)
         {
             return NormalizeDictionary(dictionary, depth, references);
@@ -589,7 +1102,7 @@ public static class RuntimeTraceSink
             return NormalizeArray(array, depth, references);
         }
 
-        if (value is System.Collections.IEnumerable enumerable)
+        if (value is System.Collections.IEnumerable enumerable && IsSafeFrameworkEnumerableType(type))
         {
             return NormalizeEnumerable(enumerable, depth, references);
         }
@@ -600,6 +1113,97 @@ public static class RuntimeTraceSink
             "TreeNode" => NormalizeTreeNode(value, depth, references),
             _ => NormalizeObject(value, depth, references),
         };
+    }
+
+    private static bool IsPriorityQueueType(Type type)
+    {
+        for (Type? current = type; current is not null; current = current.BaseType)
+        {
+            if (current.IsGenericType
+                && current.GetGenericTypeDefinition() == typeof(PriorityQueue<,>))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsSafeFrameworkEnumerableType(Type type)
+    {
+        if (type.IsArray)
+        {
+            return true;
+        }
+
+        string? fullName = type.FullName;
+        if (fullName is null)
+        {
+            return false;
+        }
+
+        return fullName.StartsWith("System.Collections.", StringComparison.Ordinal)
+            || fullName.StartsWith("System.Linq.", StringComparison.Ordinal)
+            || fullName.StartsWith("TraceCode.Internal.TraceCode", StringComparison.Ordinal)
+            || fullName.StartsWith("TraceCode.CSharpHost.TraceCode", StringComparison.Ordinal);
+    }
+
+    private static object? NormalizeStringBuilder(System.Text.StringBuilder builder)
+    {
+        var values = new List<object?>();
+        int limit = Math.Min(builder.Length, MaxCollectionItems);
+        for (int index = 0; index < limit; index++)
+        {
+            values.Add(builder[index].ToString());
+        }
+
+        return values;
+    }
+
+    private static object? NormalizePriorityQueue(object queue, int depth, ReferenceTracker references)
+    {
+        if (depth >= MaxNodeDepth)
+        {
+            return new List<object?>();
+        }
+        if (references.TryCreateReference(queue, queue.GetType().Name, out Dictionary<string, object?> reference))
+        {
+            return reference;
+        }
+        references.Track(queue, queue.GetType().Name);
+
+        object? unorderedItems = queue.GetType().GetProperty("UnorderedItems")?.GetValue(queue);
+        if (unorderedItems is not System.Collections.IEnumerable items)
+        {
+            return new List<object?>();
+        }
+
+        var values = new List<object?>();
+        foreach (object? item in items)
+        {
+            if (values.Count >= MaxCollectionItems)
+            {
+                break;
+            }
+
+            values.Add(NormalizeTraceValue(GetPriorityQueueElement(item), depth + 1, references));
+        }
+
+        return values;
+    }
+
+    private static object? GetPriorityQueueElement(object? item)
+    {
+        if (item is null)
+        {
+            return null;
+        }
+
+        Type itemType = item.GetType();
+        return itemType.GetField("Element")?.GetValue(item)
+            ?? itemType.GetProperty("Element")?.GetValue(item)
+            ?? itemType.GetField("Item1")?.GetValue(item)
+            ?? item;
     }
 
     private static object? NormalizeValueTuple(object tuple, int depth, ReferenceTracker references)
@@ -645,7 +1249,18 @@ public static class RuntimeTraceSink
             });
         }
 
-        return entries;
+        var result = new Dictionary<string, object?>
+        {
+            ["__type__"] = "map",
+            ["entries"] = entries,
+        };
+        if (entries.Count < dictionary.Count)
+        {
+            result["__truncated__"] = true;
+            result["remaining"] = dictionary.Count - entries.Count;
+        }
+
+        return result;
     }
 
     private static object? NormalizeArray(Array array, int depth, ReferenceTracker references)
@@ -803,6 +1418,7 @@ public static class RuntimeTraceSink
         int emittedFields = 0;
         foreach (System.Reflection.FieldInfo field in type.GetFields(
             System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.NonPublic
                 | System.Reflection.BindingFlags.Instance
         ))
         {
@@ -811,8 +1427,25 @@ public static class RuntimeTraceSink
                 return result;
             }
 
-            result[field.Name] = NormalizeTraceValue(field.GetValue(value), depth + 1, references);
-            emittedFields++;
+            if (field.IsSpecialName
+                || field.Name.Contains("k__BackingField", StringComparison.Ordinal)
+                || typeof(Delegate).IsAssignableFrom(field.FieldType)
+                || field.FieldType.IsByRef
+                || field.FieldType.IsByRefLike
+                || field.FieldType.IsPointer)
+            {
+                continue;
+            }
+
+            try
+            {
+                result[field.Name] = NormalizeTraceValue(field.GetValue(value), depth + 1, references);
+                emittedFields++;
+            }
+            catch
+            {
+                // Reflection over user helper objects should not make tracing fail.
+            }
         }
 
         foreach (System.Reflection.PropertyInfo property in type.GetProperties(
@@ -864,7 +1497,6 @@ public static class RuntimeTraceSink
         }
 
         private readonly Dictionary<object, Entry> entries = new(ReferenceEqualityComparer.Instance);
-        private int nextId;
 
         public void Track(object value, string typeName, IDictionary<string, object?>? anchor = null)
         {
@@ -882,7 +1514,7 @@ public static class RuntimeTraceSink
                 return false;
             }
 
-            string id = entry.Id ??= $"{entry.TypeName}:{++nextId}";
+            string id = entry.Id ??= GetStableTraceReferenceId(value, entry.TypeName);
             if (entry.Anchor is not null)
             {
                 entry.Anchor["__id__"] = id;
@@ -891,6 +1523,17 @@ public static class RuntimeTraceSink
             reference = new Dictionary<string, object?> { ["__ref__"] = id };
             return true;
         }
+    }
+
+    private static string GetStableTraceReferenceId(object value, string typeName)
+    {
+        if (!TraceReferenceIds.TryGetValue(value, out string? id))
+        {
+            id = $"{typeName}:{++nextTraceReferenceId}";
+            TraceReferenceIds[value] = id;
+        }
+
+        return id;
     }
 }
 

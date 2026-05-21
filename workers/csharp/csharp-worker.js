@@ -1282,8 +1282,51 @@ function normalizeCSharpFile(file) {
     : file;
 }
 
-function normalizeCSharpResult(result) {
+function normalizeMaxPathDepth(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(8, Math.max(1, Math.floor(value)));
+}
+
+function normalizeCSharpTraceEvent(event, maxPathDepth) {
+  const normalizedFile = normalizeCSharpFile(event.file);
+  const next = normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile };
+  const target = next.target;
+  if (
+    maxPathDepth !== undefined &&
+    target &&
+    typeof target === 'object' &&
+    Array.isArray(target.path) &&
+    target.path.length > maxPathDepth
+  ) {
+    const nextTarget = { ...target };
+    delete nextTarget.path;
+    delete nextTarget.indexSources;
+    return { ...next, target: nextTarget };
+  }
+  return next;
+}
+
+function normalizeCSharpResult(result, options = {}) {
   if (!result || typeof result !== 'object') return result;
+  const maxPathDepth = normalizeMaxPathDepth(options.maxPathDepth);
+  const normalizedEvents = Array.isArray(result.events)
+    ? result.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth))
+    : null;
+  const normalizedTrace =
+    result.trace && typeof result.trace === 'object' && Array.isArray(result.trace.events)
+      ? {
+          ...result.trace,
+          events: result.trace.events.map((event) => normalizeCSharpTraceEvent(event, maxPathDepth)),
+        }
+      : normalizedEvents
+        ? {
+            schemaVersion: result.schemaVersion,
+            language: 'csharp',
+            events: normalizedEvents,
+            lineEventCount: result.lineEventCount,
+            traceStepCount: result.traceStepCount,
+          }
+        : null;
   return {
     ...result,
     ...(Array.isArray(result.diagnostics)
@@ -1294,14 +1337,8 @@ function normalizeCSharpResult(result) {
           })),
         }
       : {}),
-    ...(Array.isArray(result.events)
-      ? {
-          events: result.events.map((event) => {
-            const normalizedFile = normalizeCSharpFile(event.file);
-            return normalizedFile === undefined ? { ...event } : { ...event, file: normalizedFile };
-          }),
-        }
-      : {}),
+    ...(normalizedEvents ? { events: normalizedEvents } : {}),
+    ...(normalizedTrace ? { trace: normalizedTrace } : {}),
   };
 }
 
@@ -1334,10 +1371,11 @@ async function handleMessage(message) {
       maxLineEvents: message.payload?.maxLineEvents,
       maxSingleLineHits: message.payload?.maxSingleLineHits,
       maxStoredEvents: message.payload?.maxStoredEvents,
+      maxPathDepth: message.payload?.maxPathDepth,
       minimalTrace: message.payload?.minimalTrace,
     };
     const hostCallStartedAt = now();
-    const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))));
+    const result = normalizeCSharpResult(JSON.parse(executeExport(JSON.stringify(request))), request);
     const hostCallMs = elapsedMs(hostCallStartedAt);
     return {
       ...result,

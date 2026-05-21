@@ -77,6 +77,44 @@
           }
         ]
       }
+    },
+    "java": {
+      "read": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 1,
+            "variable": "box"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "return",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "box"
+        ]
+      },
+      "write": {
+        "accessTargets": [
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "box"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "box",
+          "value"
+        ]
+      }
     }
   }
 }

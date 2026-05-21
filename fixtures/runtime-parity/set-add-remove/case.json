@@ -52,7 +52,8 @@
         {
           "kind": "mutate",
           "variable": "seen",
-          "method": "remove"
+          "method": "remove",
+          "pathDepth": 1
         }
       ]
     }
@@ -60,23 +61,35 @@
   "expectByLanguage": {
     "cpp": {
       "add": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "seen"
+          }
+        ],
         "eventKinds": [
           "line",
+          "mutate",
           "snapshot",
           "write"
         ],
         "variableSnapshots": [
           "seen"
-        ],
-        "accessTargets": [
-          {
-            "kind": "write",
-            "variable": "seen",
-            "pathDepth": 1
-          }
         ]
       },
       "remove": {
+        "accessTargets": [
+          {
+            "kind": "mutate",
+            "variable": "seen",
+            "pathDepth": 1
+          }
+        ],
         "eventKinds": [
           "line",
           "mutate",
@@ -84,13 +97,6 @@
         ],
         "variableSnapshots": [
           "seen"
-        ],
-        "accessTargets": [
-          {
-            "kind": "mutate",
-            "variable": "seen",
-            "method": "remove"
-          }
         ]
       }
     },
@@ -125,10 +131,127 @@
           {
             "kind": "mutate",
             "variable": "seen",
-            "method": "remove"
+            "method": "remove",
+            "pathDepth": 1
           }
         ]
       }
+    }
+  },
+  "expectEventAssertions": {
+    "add": [
+      {
+        "kind": "mutate",
+        "variable": "seen",
+        "args": [
+          2
+        ]
+      }
+    ],
+    "remove": [
+      {
+        "kind": "mutate",
+        "variable": "seen",
+        "args": [
+          2
+        ],
+        "pathDepth": 1
+      }
+    ]
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "remove",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "delete",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "delete",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "java": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "remove",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "csharp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "indexSources": [
+            "2"
+          ],
+          "method": "Remove",
+          "args": [
+            2
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "remove": [
+        {
+          "kind": "mutate",
+          "variable": "seen",
+          "pathDepth": 1,
+          "method": "erase",
+          "args": [
+            2
+          ]
+        }
+      ]
     }
   }
 }

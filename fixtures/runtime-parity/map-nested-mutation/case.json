@@ -41,5 +41,85 @@
         }
       ]
     }
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "append",
+          "args": [
+            1
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "push",
+          "args": [
+            1
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "push",
+          "args": [
+            1
+          ]
+        }
+      ]
+    },
+    "java": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "add",
+          "args": [
+            1
+          ]
+        }
+      ]
+    },
+    "csharp": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "Add",
+          "args": [
+            1
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "push_back",
+          "args": [
+            1
+          ]
+        }
+      ]
+    }
   }
 }

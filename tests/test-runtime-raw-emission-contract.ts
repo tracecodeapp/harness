@@ -209,10 +209,9 @@ function testCppKnownRuntimeTracePayloads(): void {
       target: { variable: 'adjacency' },
       value: [[1, 2], [2], []],
     },
-    { kind: 'read', runId: 'cpp:test', line: 6, target: { variable: 'adjacency', path: [0] }, value: [1, 2] },
-    { kind: 'mutate', runId: 'cpp:test', line: 7, target: { variable: 'adjacency', path: [1] }, method: 'push_back' },
-    { kind: 'write', runId: 'cpp:test', line: 8, target: { variable: 'distance', path: [2] }, value: 3 },
-    { kind: 'control', runId: 'cpp:test', line: 8, control: 'continue' },
+    { kind: 'read', runId: 'cpp:test', line: 6, target: { variable: 'adjacency', path: [0], indexSources: ['node'] }, value: [1, 2] },
+    { kind: 'mutate', runId: 'cpp:test', line: 7, target: { variable: 'adjacency', path: [1], indexSources: [null] }, method: 'push_back' },
+    { kind: 'write', runId: 'cpp:test', line: 8, target: { variable: 'distance', path: [2], indexSources: ['neighbor'] }, value: 3 },
     { kind: 'stdout', runId: 'cpp:test', text: 'ok' },
     {
       kind: 'return',
@@ -233,10 +232,62 @@ function testCppKnownRuntimeTracePayloads(): void {
   const summary = summarizeRuntimeTraceEmissions(cppTrace);
   assertSupportedRawEmissions(summary, 'cpp:known');
   assertCondition(summary.unsupported.length === 0, 'known C++ runtime trace payloads should be supported');
-  for (const kind of ['call', 'line', 'snapshot', 'read', 'write', 'mutate', 'control', 'stdout', 'return', 'timeout'] as const) {
+  for (const kind of ['call', 'line', 'snapshot', 'read', 'write', 'mutate', 'stdout', 'return', 'timeout'] as const) {
     assertCondition(summary.kinds.includes(kind), `C++ raw summary should include ${kind}`);
   }
   console.log('PASS: raw emission contract accepts C++ generic runtime trace payloads');
+}
+
+function testRuntimeTraceIndexSourceProvenancePayloads(): void {
+  const provenanceTrace = trace('python', [
+    { kind: 'line', runId: 'python:test', line: 1, function: 'solve' },
+    {
+      kind: 'read',
+      runId: 'python:test',
+      line: 1,
+      target: { variable: 'grid', path: [2, 3], indexSources: ['row', 'col'] },
+      value: 7,
+    },
+    {
+      kind: 'read',
+      runId: 'python:test',
+      line: 2,
+      target: { variable: 'dp', path: [4], indexSources: [null] },
+      value: 5,
+    },
+  ]);
+  const summary = summarizeRuntimeTraceEmissions(provenanceTrace);
+  assertSupportedRawEmissions(summary, 'python:index-sources');
+  assertCondition(summary.unsupported.length === 0, 'runtime trace contract should accept indexSources provenance');
+
+  const javaSummary = summarizeJavaRawEmissions([
+    `trace:${JSON.stringify({
+      kind: 'read',
+      line: 3,
+      target: { variable: 'nums', path: [1], indexSources: ['i'] },
+      value: 2,
+    })}`,
+  ]);
+  assertSupportedRawEmissions(javaSummary, 'java:index-sources');
+  assertCondition(javaSummary.unsupported.length === 0, 'Java raw contract should accept target indexSources provenance');
+  console.log('PASS: raw emission contract accepts indexed source provenance');
+}
+
+function testUnsupportedRuntimeTraceKindRejection(): void {
+  const summary = summarizeRuntimeTraceEmissions(trace('cpp', [
+    { kind: 'line', runId: 'cpp:test', line: 1 },
+    { kind: 'control', runId: 'cpp:test', line: 2, control: 'continue' } as unknown as RuntimeTrace['events'][number],
+  ]));
+  assertCondition(
+    summary.unsupported.length === 1 && summary.unsupported[0]?.includes('unsupported kind "control"'),
+    'raw contract should reject unsupported runtime trace event kinds'
+  );
+  assertThrows(
+    () => assertSupportedRawEmissions(summary, 'cpp:unsupported-kind'),
+    /unsupported kind "control"/,
+    'raw contract should reject C++ control events'
+  );
+  console.log('PASS: raw emission contract rejects unsupported runtime trace kinds');
 }
 
 function testRawParityComparison(): void {
@@ -264,6 +315,8 @@ testJavaUnknownPayloadRejection();
 testJavaKnownPayloads();
 testForbiddenRuntimeTracePayloadRejection();
 testCppKnownRuntimeTracePayloads();
+testRuntimeTraceIndexSourceProvenancePayloads();
+testUnsupportedRuntimeTraceKindRejection();
 testRawParityComparison();
 
 console.log('\nRuntime raw emission contract tests passed.');

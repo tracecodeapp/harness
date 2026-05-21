@@ -24,7 +24,8 @@
       "eventKinds": [
         "line",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "last",
@@ -36,31 +37,12 @@
           "kind": "read",
           "variable": "window",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "last"
         }
       ]
-    }
-  },
-  "expectByLanguage": {
-    "csharp": {
-      "read": {
-        "eventKinds": [
-          "line",
-          "read",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "last",
-          "nums",
-          "window"
-        ],
-        "accessTargets": [
-          {
-            "kind": "read",
-            "variable": "window",
-            "pathDepth": 1
-          }
-        ]
-      }
     }
   }
 }

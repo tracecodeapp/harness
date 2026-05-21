@@ -1,0 +1,239 @@
+{
+  "id": "scalar-update-expression",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "javascript",
+    "typescript",
+    "cpp"
+  ],
+  "inputs": {
+    "nums": [
+      10,
+      20,
+      30,
+      40,
+      50,
+      60,
+      70
+    ]
+  },
+  "anchors": {
+    "declareLeft": {
+      "javascript": "let left = 0;",
+      "typescript": "let left = 0;",
+      "cpp": "int left = 0;"
+    },
+    "declareRight": {
+      "javascript": "let right = nums.length - 1;",
+      "typescript": "let right = nums.length - 1;",
+      "cpp": "int right = (int)nums.size() - 1;"
+    },
+    "postfixLeft": {
+      "javascript": "left++;",
+      "typescript": "left++;",
+      "cpp": "left++;"
+    },
+    "prefixRight": {
+      "javascript": "--right;",
+      "typescript": "--right;",
+      "cpp": "--right;"
+    },
+    "indexedPostfix": {
+      "javascript": "const picked = nums[left++];",
+      "typescript": "const picked = nums[left++];",
+      "cpp": "int picked = nums[left++];"
+    },
+    "indexedReturn": {
+      "javascript": "return picked + nums[left] + nums[right];",
+      "typescript": "return picked + nums[left] + nums[right];",
+      "cpp": "return picked + nums[left] + nums[right];"
+    }
+  },
+  "expectLineSnapshots": [
+    {
+      "role": "declareLeft",
+      "includes": {
+        "left": 0
+      },
+      "excludes": [
+        "right"
+      ]
+    },
+    {
+      "role": "declareRight",
+      "includes": {
+        "left": 0,
+        "right": 6
+      }
+    },
+    {
+      "role": "postfixLeft",
+      "includes": {
+        "left": 1,
+        "right": 6
+      }
+    },
+    {
+      "role": "prefixRight",
+      "includes": {
+        "left": 1,
+        "right": 5
+      }
+    },
+    {
+      "role": "indexedPostfix",
+      "includes": {
+        "left": 2,
+        "right": 5,
+        "picked": 20
+      }
+    }
+  ],
+  "expect": {
+    "declareLeft": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "left"
+        }
+      ]
+    },
+    "declareRight": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "right"
+        }
+      ]
+    },
+    "postfixLeft": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "left"
+        }
+      ]
+    },
+    "prefixRight": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "right"
+        }
+      ]
+    },
+    "indexedPostfix": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "picked",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "left"
+        },
+        {
+          "kind": "write",
+          "variable": "picked"
+        }
+      ]
+    },
+    "indexedReturn": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "picked",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "indexedPostfix": [
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "indexSources": [
+          "left++"
+        ]
+      },
+      {
+        "kind": "write",
+        "variable": "left",
+        "value": 2
+      }
+    ]
+  }
+}

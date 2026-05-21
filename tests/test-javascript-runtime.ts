@@ -42,10 +42,13 @@ function assertCondition(condition: boolean, message: string): void {
 type RuntimeTraceEvent = {
   kind?: string;
   line?: number;
+  column?: number;
   function?: string;
   frameId?: string;
+  args?: unknown;
   value?: unknown;
-  target?: { variable?: string; path?: Array<string | number>; scope?: string };
+  target?: { variable?: string; path?: Array<string | number>; indexSources?: Array<string | null>; scope?: string };
+  binding?: { kind?: string; variable?: string };
   method?: string;
 };
 
@@ -330,6 +333,684 @@ async function main(): Promise<void> {
   );
   console.log('PASS: execute-with-tracing preserves Set for-of semantics');
 
+  const sameLineMapGuardTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const adj = new Map();
+  const ch = 'w';
+  if (!adj.has(ch)) adj.set(ch, new Set());
+  return adj.size;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    sameLineMapGuardTracing.success === true,
+    `Same-line Map guard tracing should succeed: ${sameLineMapGuardTracing.error ?? 'unknown error'}`
+  );
+  const sameLineMapGuardAccesses = traceAccessEvents(sameLineMapGuardTracing)
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.line === 4 && event.target?.variable === 'adj');
+  const hasReadIndex = sameLineMapGuardAccesses.findIndex(({ event }) =>
+    event.kind === 'read'
+    && JSON.stringify(event.target?.path) === JSON.stringify(['w'])
+    && event.value === false
+  );
+  const setWriteIndex = sameLineMapGuardAccesses.findIndex(({ event }) =>
+    event.kind === 'write'
+    && JSON.stringify(event.target?.path) === JSON.stringify(['w'])
+  );
+  assertCondition(
+    hasReadIndex >= 0 && setWriteIndex >= 0 && hasReadIndex < setWriteIndex,
+    `Same-line Map guard should emit has() read before set() write, received ${JSON.stringify(sameLineMapGuardAccesses)}`
+  );
+  console.log('PASS: execute-with-tracing preserves same-line Map guard access order');
+
+  const indexedForOfTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const graph = [[1], []];
+  const course = 0;
+  let seen = 0;
+  for (const nextCourse of graph[course]) {
+    seen += nextCourse;
+  }
+  return seen;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    indexedForOfTracing.success === true,
+    `Indexed for-of tracing should succeed: ${indexedForOfTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(indexedForOfTracing.output === 1, 'Indexed for-of tracing should preserve execution semantics');
+  const indexedForOfBinding = traceAccessEvents(indexedForOfTracing).find(
+    (event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'graph' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0, 0]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['course', null]) &&
+      JSON.stringify(event.binding) === JSON.stringify({ kind: 'iteration', variable: 'nextCourse' })
+  );
+  assertCondition(
+    Boolean(indexedForOfBinding),
+    `Indexed for-of tracing should emit element binding provenance, received ${JSON.stringify(indexedForOfTracing.trace?.events)}`
+  );
+  console.log('PASS: execute-with-tracing indexed for-of binding provenance');
+
+  const stringForOfBindingTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const seen = [];
+  const word = 'ab';
+  for (const ch of word) {
+    seen.push(ch);
+  }
+  return seen.join('');
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    stringForOfBindingTracing.success === true,
+    `String for-of binding tracing should succeed: ${stringForOfBindingTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(stringForOfBindingTracing.output === 'ab', 'String for-of binding tracing should preserve output');
+  {
+    const groups: RuntimeTraceEvent[][] = [];
+    let current: RuntimeTraceEvent[] = [];
+    for (const event of stringForOfBindingTracing.trace?.events ?? []) {
+      if (event.kind === 'line') {
+        if (current.length > 0) groups.push(current);
+        current = [event];
+      } else {
+        current.push(event);
+      }
+    }
+    if (current.length > 0) groups.push(current);
+    const forOfGroups = groups.filter((group) => group[0]?.line === 4);
+    assertCondition(forOfGroups.length >= 2, `String for-of should emit per-iteration header groups, received ${JSON.stringify(stringForOfBindingTracing.trace?.events)}`);
+    for (const group of forOfGroups) {
+      const bindingRead = group.find((event) =>
+        event.kind === 'read'
+        && event.target?.variable === 'word'
+        && event.binding?.kind === 'iteration'
+        && event.binding.variable === 'ch'
+      );
+      const chSnapshot = group.find((event) => event.kind === 'snapshot' && event.target?.variable === 'ch');
+      assertCondition(
+        bindingRead?.value === chSnapshot?.value,
+        `String for-of binding read should match same-header ch snapshot, received ${JSON.stringify(group)}`
+      );
+    }
+  }
+  console.log('PASS: execute-with-tracing string for-of binding aligns with header snapshot');
+
+  const indexedTypeScriptForOfTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve(): number {
+  const graph: number[][] = [[1], []];
+  const course = 0;
+  let seen = 0;
+  for (const nextCourse of graph[course]) {
+    seen += nextCourse;
+  }
+  return seen;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(
+    indexedTypeScriptForOfTracing.success === true,
+    `Indexed TypeScript for-of tracing should succeed: ${indexedTypeScriptForOfTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(indexedTypeScriptForOfTracing.output === 1, 'Indexed TypeScript for-of tracing should preserve execution semantics');
+  const indexedTypeScriptForOfBinding = traceAccessEvents(indexedTypeScriptForOfTracing).find(
+    (event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'graph' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0, 0]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['course', null]) &&
+      JSON.stringify(event.binding) === JSON.stringify({ kind: 'iteration', variable: 'nextCourse' })
+  );
+  assertCondition(Boolean(indexedTypeScriptForOfBinding), 'Indexed TypeScript for-of tracing should emit element binding provenance');
+  console.log('PASS: execute-with-tracing indexed TypeScript for-of binding provenance');
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const literalForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  let total = 0;
+  for (const x of [1, 2]) {
+    total += x;
+  }
+  return total;
+}`
+          : `function solve() {
+  let total = 0;
+  for (const x of [1, 2]) {
+    total += x;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      literalForOfTracing.success === true,
+      `${language} literal for-of tracing should succeed: ${literalForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(literalForOfTracing.output === 3, `${language} literal for-of should preserve output`);
+    const literalBinding = traceAccessEvents(literalForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === '[1, 2]' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'x' &&
+      event.value === 1
+    );
+    assertCondition(
+      Boolean(literalBinding),
+      `${language} literal for-of should emit iteration binding provenance, received ${JSON.stringify(literalForOfTracing.trace?.events)}`
+    );
+
+    const reverseSpreadForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): string {
+  const word = 'abc';
+  const seen: string[] = [];
+  for (const ch of [...word].reverse()) {
+    seen.push(ch);
+  }
+  return seen.join('');
+}`
+          : `function solve() {
+  const word = 'abc';
+  const seen = [];
+  for (const ch of [...word].reverse()) {
+    seen.push(ch);
+  }
+  return seen.join('');
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      reverseSpreadForOfTracing.success === true,
+      `${language} reverse-spread for-of tracing should succeed: ${reverseSpreadForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(reverseSpreadForOfTracing.output === 'cba', `${language} reverse-spread for-of should preserve output`);
+    const reverseSpreadBinding = traceAccessEvents(reverseSpreadForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === '[...word].reverse()' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'ch' &&
+      event.value === 'c'
+    );
+    assertCondition(
+      Boolean(reverseSpreadBinding),
+      `${language} reverse-spread for-of should emit derived iterable binding provenance, received ${JSON.stringify(reverseSpreadForOfTracing.trace?.events)}`
+    );
+
+    const fallbackIndexedForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const adj: number[][] = [[2, 3], []];
+  const u = 0;
+  let total = 0;
+  for (const v of (adj[u] || [])) {
+    total += v;
+  }
+  return total;
+}`
+          : `function solve() {
+  const adj = [[2, 3], []];
+  const u = 0;
+  let total = 0;
+  for (const v of (adj[u] || [])) {
+    total += v;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      fallbackIndexedForOfTracing.success === true,
+      `${language} fallback indexed for-of tracing should succeed: ${fallbackIndexedForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(fallbackIndexedForOfTracing.output === 5, `${language} fallback indexed for-of should preserve output`);
+    const fallbackBinding = traceAccessEvents(fallbackIndexedForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'adj' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0, 0]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['u', null]) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'v' &&
+      event.value === 2
+    );
+    assertCondition(
+      Boolean(fallbackBinding),
+      `${language} fallback indexed for-of should emit indexed iteration binding provenance, received ${JSON.stringify(fallbackIndexedForOfTracing.trace?.events)}`
+    );
+
+    const destructuredLiteralForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const r = 1;
+  const c = 2;
+  let total = 0;
+  for (const [nr, nc] of [[r + 1, c], [r, c + 1]]) {
+    total += nr + nc;
+  }
+  return total;
+}`
+          : `function solve() {
+  const r = 1;
+  const c = 2;
+  let total = 0;
+  for (const [nr, nc] of [[r + 1, c], [r, c + 1]]) {
+    total += nr + nc;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      destructuredLiteralForOfTracing.success === true,
+      `${language} destructured literal for-of tracing should succeed: ${destructuredLiteralForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(destructuredLiteralForOfTracing.output === 8, `${language} destructured literal for-of should preserve output`);
+    for (const [bindingVariable, expectedPath, expectedValue] of [
+      ['nr', [0, 0], 2],
+      ['nc', [0, 1], 2],
+    ] as Array<[string, Array<string | number>, number]>) {
+      const destructuredLiteralBinding = traceAccessEvents(destructuredLiteralForOfTracing).find((event) =>
+        event.kind === 'read' &&
+        event.target?.variable === '[[r + 1, c], [r, c + 1]]' &&
+        JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable &&
+        event.value === expectedValue
+      );
+      assertCondition(
+        Boolean(destructuredLiteralBinding),
+        `${language} destructured literal for-of should emit ${bindingVariable} binding provenance, received ${JSON.stringify(destructuredLiteralForOfTracing.trace?.events)}`
+      );
+    }
+  }
+  console.log('PASS: execute-with-tracing JS/TS derived for-of binding provenance');
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const entriesForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): string {
+  const groups = new Map<string, string[]>([['root', ['a', 'b']]]);
+  let out = '';
+  for (const [root, emails] of groups.entries()) {
+    out += root + ':' + emails.length;
+  }
+  return out;
+}`
+          : `function solve() {
+  const groups = new Map([['root', ['a', 'b']]]);
+  let out = '';
+  for (const [root, emails] of groups.entries()) {
+    out += root + ':' + emails.length;
+  }
+  return out;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      entriesForOfTracing.success === true,
+      `${language} Map.entries for-of tracing should succeed: ${entriesForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(entriesForOfTracing.output === 'root:2', `${language} Map.entries for-of should preserve output`);
+    const entriesBinding = traceAccessEvents(entriesForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'groups' &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'root,emails'
+    );
+    assertCondition(
+      Boolean(entriesBinding),
+      `${language} Map.entries for-of should emit destructuring binding provenance, received ${JSON.stringify(entriesForOfTracing.trace?.events)}`
+    );
+    for (const bindingVariable of ['root', 'emails']) {
+      const destructuredEntryBinding = traceAccessEvents(entriesForOfTracing).find((event) =>
+        event.kind === 'read' &&
+        event.target?.variable === 'groups' &&
+        event.target.path?.length === 2 &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable
+      );
+      assertCondition(
+        Boolean(destructuredEntryBinding),
+        `${language} Map.entries for-of should emit per-name destructuring binding for ${bindingVariable}, received ${JSON.stringify(entriesForOfTracing.trace?.events)}`
+      );
+    }
+
+    const tupleForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const edges: number[][] = [[0, 1, 5], [1, 2, 7]];
+  let total = 0;
+  for (const [u, v, w] of edges) {
+    total += u + v + w;
+  }
+  return total;
+}`
+          : `function solve() {
+  const edges = [[0, 1, 5], [1, 2, 7]];
+  let total = 0;
+  for (const [u, v, w] of edges) {
+    total += u + v + w;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      tupleForOfTracing.success === true,
+      `${language} tuple destructuring for-of tracing should succeed: ${tupleForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(tupleForOfTracing.output === 16, `${language} tuple destructuring for-of should preserve output`);
+    for (const [bindingVariable, expectedPath] of [
+      ['u', [0, 0]],
+      ['v', [0, 1]],
+      ['w', [0, 2]],
+    ] as Array<[string, Array<string | number>]>) {
+      const tupleBinding = traceAccessEvents(tupleForOfTracing).find((event) =>
+        event.kind === 'read' &&
+        event.target?.variable === 'edges' &&
+        JSON.stringify(event.target.path) === JSON.stringify(expectedPath) &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify([null, null]) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === bindingVariable
+      );
+      assertCondition(
+        Boolean(tupleBinding),
+        `${language} tuple for-of should emit per-name binding for ${bindingVariable}, received ${JSON.stringify(tupleForOfTracing.trace?.events)}`
+      );
+    }
+
+    const nullishGetForOfTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const email = 'a';
+  const valueToOwners = new Map<string, number[]>([['a', [1, 2]]]);
+  let total = 0;
+  for (const owner of valueToOwners.get(email) ?? []) {
+    total += owner;
+  }
+  return total;
+}`
+          : `function solve() {
+  const email = 'a';
+  const valueToOwners = new Map([['a', [1, 2]]]);
+  let total = 0;
+  for (const owner of valueToOwners.get(email) ?? []) {
+    total += owner;
+  }
+  return total;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      nullishGetForOfTracing.success === true,
+      `${language} Map.get nullish for-of tracing should succeed: ${nullishGetForOfTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(nullishGetForOfTracing.output === 3, `${language} Map.get nullish for-of should preserve output`);
+    const nullishBaseRead = traceAccessEvents(nullishGetForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'valueToOwners' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['a']) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['email'])
+    );
+    assertCondition(
+      Boolean(nullishBaseRead),
+      `${language} Map.get nullish for-of should emit the keyed lookup before element iteration, received ${JSON.stringify(nullishGetForOfTracing.trace?.events)}`
+    );
+    const nullishBinding = traceAccessEvents(nullishGetForOfTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'valueToOwners' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['a', 0]) &&
+      JSON.stringify(event.target.indexSources) === JSON.stringify(['email', null]) &&
+      JSON.stringify(event.binding) === JSON.stringify({ kind: 'iteration', variable: 'owner' })
+    );
+    assertCondition(
+      Boolean(nullishBinding),
+      `${language} Map.get nullish for-of should emit keyed element binding provenance, received ${JSON.stringify(nullishGetForOfTracing.trace?.events)}`
+    );
+
+    const singleLineForOfMutationTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `function solve(): number {
+  const adj = new Map<string, Set<string>>([['a', new Set<string>()], ['b', new Set<string>()]]);
+  const inDegree = new Map<string, number>();
+  for (const ch of adj.keys()) inDegree.set(ch, 0);
+  return inDegree.size;
+}`
+          : `function solve() {
+  const adj = new Map([['a', new Set()], ['b', new Set()]]);
+  const inDegree = new Map();
+  for (const ch of adj.keys()) inDegree.set(ch, 0);
+  return inDegree.size;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      singleLineForOfMutationTracing.success === true,
+      `${language} single-line for-of mutation tracing should succeed: ${singleLineForOfMutationTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(singleLineForOfMutationTracing.output === 2, `${language} single-line for-of mutation should preserve output`);
+    const singleLineIterationRead = traceAccessEvents(singleLineForOfMutationTracing).find((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'adj' &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'ch'
+    );
+    assertCondition(
+      Boolean(singleLineIterationRead),
+      `${language} single-line for-of should emit iteration read, received ${JSON.stringify(singleLineForOfMutationTracing.trace?.events)}`
+    );
+    const singleLineSetMutate = traceAccessEvents(singleLineForOfMutationTracing).find((event) =>
+      event.kind === 'mutate' &&
+      event.target?.variable === 'inDegree' &&
+      event.method === 'set' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['a'])
+    );
+    assertCondition(
+      Boolean(singleLineSetMutate),
+      `${language} single-line for-of body should emit Map.set mutation, received ${JSON.stringify(singleLineForOfMutationTracing.trace?.events)}`
+    );
+
+    const receiverInsertTracing = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Trie {
+  words: string[] = [];
+  insert(word: string): void {
+    this.words.push(word);
+  }
+}
+function solve(): number {
+  const trie = new Trie();
+  const word = 'oath';
+  trie.insert(word);
+  return trie.words.length;
+}`
+          : `class Trie {
+  constructor() {
+    this.words = [];
+  }
+  insert(word) {
+    this.words.push(word);
+  }
+}
+function solve() {
+  const trie = new Trie();
+  const word = 'oath';
+  trie.insert(word);
+  return trie.words.length;
+}`,
+      functionName: 'solve',
+      inputs: {},
+      executionStyle: 'function',
+      language,
+    });
+    assertCondition(
+      receiverInsertTracing.success === true,
+      `${language} receiver insert tracing should succeed: ${receiverInsertTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(receiverInsertTracing.output === 1, `${language} receiver insert tracing should preserve output`);
+    const receiverInsertMutate = traceAccessEvents(receiverInsertTracing).find((event) =>
+      event.kind === 'mutate' &&
+      event.target?.variable === 'trie' &&
+      event.method === 'insert' &&
+      JSON.stringify(event.args) === JSON.stringify(['oath'])
+    );
+    assertCondition(
+      Boolean(receiverInsertMutate),
+      `${language} receiver insert call should emit call-site mutate, received ${JSON.stringify(receiverInsertTracing.trace?.events)}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS Map-backed for-of binding provenance');
+
+  const typeScriptNestedMapSetTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve(): number {
+  const parent = new Map<string | number, string | number>([['a', 'root']]);
+  const email = 'a';
+  function find(x: string | number): string | number {
+    return x;
+  }
+  parent.set(email, find(parent.get(email) as string | number));
+  return parent.size;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'typescript',
+  });
+  assertCondition(
+    typeScriptNestedMapSetTracing.success === true,
+    `TypeScript nested Map.set tracing should succeed: ${typeScriptNestedMapSetTracing.error ?? 'unknown error'}`
+  );
+  const typeScriptNestedMapSetMutate = traceAccessEvents(typeScriptNestedMapSetTracing).find((event) =>
+    event.kind === 'mutate' &&
+    event.target?.variable === 'parent' &&
+    event.method === 'set' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['a'])
+  );
+  assertCondition(
+    Boolean(typeScriptNestedMapSetMutate),
+    `TypeScript nested Map.set should emit mutate access, received ${JSON.stringify(typeScriptNestedMapSetTracing.trace?.events)}`
+  );
+  console.log('PASS: execute-with-tracing TypeScript nested Map.set mutate provenance');
+
   const globalPropertyTracing = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -423,13 +1104,35 @@ result = twoSum([2, 7, 11, 15], 9);`,
   assertCondition(scriptOutput[0] === 0 && scriptOutput[1] === 1, 'Script execution output should equal [0, 1]');
   console.log('PASS: execute-code script mode result assignment');
 
+  const executeScriptConstResult = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `function sum(nums) {
+  let total = 0;
+  for (const value of nums) total += value;
+  return total;
+}
+
+const result = sum([2, 1, 5, 1, 3, 2]);`,
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    executeScriptConstResult.success === true,
+    `Script execution should allow user-declared const result, received ${executeScriptConstResult.error ?? 'unknown error'}`
+  );
+  assertCondition(executeScriptConstResult.output === 14, 'Script const result output should equal 14');
+  console.log('PASS: execute-code script mode const result declaration');
+
   const executeRuntimePreludeNodes = await harness.sendMessage<{
     success: boolean;
     output: unknown;
   }>('execute-code', {
     code: `const head = new ListNode(1, new ListNode(2, new ListNode(3)));
 const root = new TreeNode(2, new TreeNode(1), new TreeNode(3));
-result = [head.val, head.next.val, root.left.val, root.right.val];`,
+result = [head.val, head.value, head.next.val, head.next.value, root.left.val, root.left.value, root.right.val, root.right.value];`,
     inputs: {},
     executionStyle: 'function',
   });
@@ -437,8 +1140,8 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
   assertCondition(Array.isArray(executeRuntimePreludeNodes.output), 'Prelude class execution output should be an array');
   const preludeOutput = executeRuntimePreludeNodes.output as unknown[];
   assertCondition(
-    preludeOutput[0] === 1 && preludeOutput[1] === 2 && preludeOutput[2] === 1 && preludeOutput[3] === 3,
-    'Prelude class execution should preserve ListNode/TreeNode value wiring'
+    JSON.stringify(preludeOutput) === JSON.stringify([1, 1, 2, 2, 1, 1, 3, 3]),
+    'Prelude class execution should preserve TraceCode ListNode/TreeNode val/value aliases'
   );
   console.log('PASS: execute-code runtime ListNode/TreeNode prelude support');
 
@@ -486,6 +1189,59 @@ result = [head.val, head.next.val, root.left.val, root.right.val];`,
     'Linked-list ref input should be hydrated so identity-based cycle checks pass'
   );
   console.log('PASS: execute-code linked-list ref hydration contract');
+
+  const sharedLinkedListArrayInput = {
+    lists: [
+      {
+        __type__: 'ListNode',
+        val: 1,
+        next: {
+          __type__: 'ListNode',
+          val: 2,
+          next: null,
+        },
+      },
+    ],
+  };
+  const mutateSharedLinkedListArray = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+  }>('execute-code', {
+    code: `class Solution {
+  truncate(lists) {
+    lists[0].next = null;
+    return lists[0];
+  }
+}`,
+    functionName: 'truncate',
+    executionStyle: 'solution-method',
+    inputs: sharedLinkedListArrayInput,
+  });
+  assertCondition(mutateSharedLinkedListArray.success === true, 'Linked-list array mutation execution should succeed');
+  assertCondition(
+    ((sharedLinkedListArrayInput.lists[0].next as Record<string, unknown> | null)?.val ?? null) === 2,
+    'JavaScript worker execution should not mutate the caller-owned serialized linked-list input'
+  );
+  const readSharedLinkedListArray = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+  }>('execute-code', {
+    code: `class Solution {
+  second(lists: Array<ListNode | null>): number {
+    return lists[0]?.next?.val ?? -1;
+  }
+}`,
+    functionName: 'second',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: sharedLinkedListArrayInput,
+  });
+  assertCondition(readSharedLinkedListArray.success === true, 'Linked-list array reuse execution should succeed');
+  assertCondition(
+    readSharedLinkedListArray.output === 2,
+    'A later TypeScript run should see the original linked-list input, not a prior JavaScript mutation'
+  );
+  console.log('PASS: execute-code JS/TS linked-list input isolation contract');
 
   const executeTreeAliasRefs = await harness.sendMessage<{
     success: boolean;
@@ -943,18 +1699,296 @@ function smallest(nums: number[]): number {
     executeTypeScriptGraphConstructionState.success === true,
     'TypeScript graph construction tracing should succeed'
   );
-  const graphMutationSnapshots = traceSnapshotFrames(executeTypeScriptGraphConstructionState)
-    .filter((frame) => frame.line === 6)
-    .map((frame) => frame.snapshots.graph);
+  const graphMutationEvents = traceAccessEvents(executeTypeScriptGraphConstructionState).filter(
+    (event) => event.kind === 'mutate' && event.line === 6 && event.target?.variable === 'graph' && event.method === 'push'
+  );
+  const graphSnapshots = traceSnapshotFrames(executeTypeScriptGraphConstructionState).map((frame) => frame.snapshots.graph);
   assertCondition(
-    JSON.stringify(graphMutationSnapshots) === JSON.stringify([
-      [[], [0], []],
-      [[], [0], [0]],
-      [[], [0], [0, 1]],
-    ]),
-    `TypeScript mutating-call line snapshots should reflect post-line graph state, received ${JSON.stringify(graphMutationSnapshots)}`
+    graphMutationEvents.length === 3 && graphSnapshots.some((snapshot) => JSON.stringify(snapshot) === JSON.stringify([[], [0], [0, 1]])),
+    `TypeScript mutating-call trace should retain all graph mutations and final graph state, received ${JSON.stringify(
+      graphMutationEvents
+    )}`
+  );
+  const graphConstructionBindingReads = traceAccessEvents(executeTypeScriptGraphConstructionState).filter(
+    (event) =>
+      event.kind === 'read' &&
+      event.line === 5 &&
+      event.target?.variable === 'prerequisites' &&
+      Array.isArray(event.target.path) &&
+      event.binding?.kind === 'iteration' &&
+      event.binding.variable === 'course,prereq'
+  );
+  assertCondition(
+    graphConstructionBindingReads.length === 3,
+    `TypeScript destructured for-of should emit iteration binding reads, received ${JSON.stringify(
+      graphConstructionBindingReads
+    )}`
   );
   console.log('PASS: execute-with-tracing typescript mutating-call post-line state contract');
+
+  const executeTypeScriptSingleLineIfMutationState = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  findMatch(s: string, p: string): number[] {
+    const result: number[] = [];
+    if (s.length === p.length) result.push(0);
+    return result;
+  }
+}`,
+    functionName: 'findMatch',
+    className: 'Solution',
+    inputs: { s: 'a', p: 'a' },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    executeTypeScriptSingleLineIfMutationState.success === true,
+    'TypeScript single-line if mutation tracing should succeed'
+  );
+  const singleLineIfResultSnapshots = traceSnapshotFrames(executeTypeScriptSingleLineIfMutationState)
+    .filter((frame) => frame.line === 4)
+    .map((frame) => frame.snapshots.result);
+  assertCondition(
+    JSON.stringify(singleLineIfResultSnapshots) === JSON.stringify([[0]]),
+    `TypeScript single-line if mutating-call should snapshot post-line result state, received ${JSON.stringify(singleLineIfResultSnapshots)}`
+  );
+  console.log('PASS: execute-with-tracing typescript single-line if mutating-call post-line state contract');
+
+  const executeTypeScriptSingleLineIfReadLineState = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  probe(nums: number[]): number {
+    const heap: number[] = [];
+    heap.push(nums[0]);
+    let i = 0;
+    const parent = 0;
+    const isLess = (left: number, right: number): boolean => left < right;
+    if (!isLess(heap[i], heap[parent])) heap.push(nums[1]);
+    return heap.length;
+  }
+}`,
+    functionName: 'probe',
+    className: 'Solution',
+    inputs: { nums: [2, 3] },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    executeTypeScriptSingleLineIfReadLineState.success === true,
+    'TypeScript single-line if read alignment tracing should succeed'
+  );
+  const singleLineIfHeapReadLines = traceAccessEvents(executeTypeScriptSingleLineIfReadLineState)
+    .filter((event) => event.kind === 'read' && event.target?.variable === 'heap')
+    .map((event) => event.line);
+  assertCondition(
+    singleLineIfHeapReadLines.includes(8) &&
+      !singleLineIfHeapReadLines.includes(6) &&
+      !singleLineIfHeapReadLines.includes(7),
+    `TypeScript single-line if condition reads should attach to the if line, received ${JSON.stringify(singleLineIfHeapReadLines)}`
+  );
+  console.log('PASS: execute-with-tracing typescript single-line if condition read line contract');
+
+  const executeTypeScriptSingleLineWhileBodyReadLocation = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  probe(): number {
+    let fast: any = { next: { next: null } };
+    let slow: any = { next: { next: null } };
+    while (fast) { fast = fast.next; slow = slow.next; }
+    return slow ? 1 : 0;
+  }
+}`,
+    functionName: 'probe',
+    className: 'Solution',
+    inputs: {},
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    executeTypeScriptSingleLineWhileBodyReadLocation.success === true,
+    'TypeScript single-line while body read location tracing should succeed'
+  );
+  const singleLineWhileSlowReadColumns = traceAccessEvents(executeTypeScriptSingleLineWhileBodyReadLocation)
+    .filter((event) => event.kind === 'read' && event.target?.variable === 'slow')
+    .map((event) => event.column);
+  assertCondition(
+    singleLineWhileSlowReadColumns.some((column) => typeof column === 'number' && column > 35),
+    `TypeScript single-line while body property reads should carry expression columns, received ${JSON.stringify(singleLineWhileSlowReadColumns)}`
+  );
+  console.log('PASS: execute-with-tracing typescript single-line while body read column contract');
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const shortestPalindromeSingleLineWhile = await harness.sendMessage<{
+      success: boolean;
+      trace: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  shortestPalindrome(s: string): string {
+    const rev = s.split('').reverse().join('');
+    const t = s + '#' + rev;
+    const lps = new Array(t.length).fill(0);
+    for (let i = 1; i < t.length; i++) {
+      let j = lps[i - 1];
+      while (j > 0 && t[i] !== t[j]) j = lps[j - 1];
+      if (t[i] === t[j]) j++;
+      lps[i] = j;
+    }
+    const palinLen = lps[t.length - 1];
+    return rev.slice(0, s.length - palinLen) + s;
+  }
+}`
+          : `class Solution {
+  shortestPalindrome(s) {
+    const rev = s.split('').reverse().join('');
+    const t = s + '#' + rev;
+    const lps = new Array(t.length).fill(0);
+    for (let i = 1; i < t.length; i++) {
+      let j = lps[i - 1];
+      while (j > 0 && t[i] !== t[j]) j = lps[j - 1];
+      if (t[i] === t[j]) j++;
+      lps[i] = j;
+    }
+    const palinLen = lps[t.length - 1];
+    return rev.slice(0, s.length - palinLen) + s;
+  }
+}`,
+      functionName: 'shortestPalindrome',
+      className: 'Solution',
+      inputs: { s: 'aacecaaa' },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      shortestPalindromeSingleLineWhile.success === true,
+      `${language} shortest-palindrome single-line while tracing should succeed`
+    );
+    const shortestPalindromeAccesses = traceAccessEvents(shortestPalindromeSingleLineWhile);
+    assertCondition(
+      shortestPalindromeAccesses.some(
+        (event) =>
+          event.kind === 'read' &&
+          event.target?.variable === 'lps' &&
+          JSON.stringify(event.target.indexSources) === JSON.stringify(['j - 1'])
+      ) &&
+        shortestPalindromeAccesses.some(
+          (event) =>
+            event.kind === 'write' &&
+            event.target?.variable === 'j'
+        ),
+      `${language} shortest-palindrome single-line while body should emit lps[j - 1] read and j write, received ${JSON.stringify(shortestPalindromeAccesses)}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS shortest-palindrome single-line while body access contract');
+
+  const sortArrayTypeScriptSingleLineMerge = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  sortArray(nums: number[]): number[] {
+    const arr = nums;
+    if (arr.length <= 1) return arr;
+    const mid = arr.length >> 1;
+    const left = this.sortArray(arr.slice(0, mid));
+    const right = this.sortArray(arr.slice(mid));
+    const merged: number[] = [];
+    let i = 0, j = 0;
+    while (i < left.length && j < right.length) {
+      if (left[i] <= right[j]) merged.push(left[i++]);
+      else merged.push(right[j++]);
+    }
+    while (i < left.length) merged.push(left[i++]);
+    while (j < right.length) merged.push(right[j++]);
+    return merged;
+  }
+}`,
+    functionName: 'sortArray',
+    className: 'Solution',
+    inputs: { nums: [5, 2, 3, 1] },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    sortArrayTypeScriptSingleLineMerge.success === true,
+    'TypeScript sort-an-array single-line merge tracing should succeed'
+  );
+  const sortArrayAccesses = traceAccessEvents(sortArrayTypeScriptSingleLineMerge);
+  assertCondition(
+    sortArrayAccesses.some(
+      (event) =>
+        event.kind === 'read' &&
+        event.target?.variable === 'left' &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['i++'])
+    ) &&
+      sortArrayAccesses.some((event) => event.kind === 'write' && event.target?.variable === 'i') &&
+      sortArrayAccesses.some(
+        (event) =>
+          event.kind === 'read' &&
+          event.target?.variable === 'right' &&
+          JSON.stringify(event.target.indexSources) === JSON.stringify(['j++'])
+      ) &&
+      sortArrayAccesses.some((event) => event.kind === 'write' && event.target?.variable === 'j') &&
+      sortArrayAccesses.some(
+        (event) =>
+          event.kind === 'mutate' &&
+          event.target?.variable === 'merged' &&
+          event.method === 'push'
+      ),
+    `TypeScript sort-an-array single-line merge should emit incrementing argument reads/writes and merged.push mutations, received ${JSON.stringify(sortArrayAccesses)}`
+  );
+  console.log('PASS: execute-with-tracing TypeScript sort-an-array single-line merge access contract');
+
+  const executeTypeScriptSingleLineIfBreakReadLineState = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  probe(nums: number[]): number {
+    const heap: number[] = [];
+    heap.push(nums[0]);
+    heap.push(nums[1]);
+    let i = 1;
+    const parent = 0;
+    const isLess = (left: number, right: number): boolean => left < right;
+    while (i > 0) {
+      if (!isLess(heap[i], heap[parent])) break;
+      i--;
+    }
+    return heap.length;
+  }
+}`,
+    functionName: 'probe',
+    className: 'Solution',
+    inputs: { nums: [2, 3] },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    executeTypeScriptSingleLineIfBreakReadLineState.success === true,
+    'TypeScript single-line if break read alignment tracing should succeed'
+  );
+  const singleLineIfBreakHeapReadLines = traceAccessEvents(executeTypeScriptSingleLineIfBreakReadLineState)
+    .filter((event) =>
+      event.kind === 'read' &&
+      event.target?.variable === 'heap' &&
+      event.target.path?.[0] !== 'length'
+    )
+    .map((event) => event.line);
+  assertCondition(
+    singleLineIfBreakHeapReadLines.includes(10) &&
+      !singleLineIfBreakHeapReadLines.includes(12) &&
+      !singleLineIfBreakHeapReadLines.includes(13),
+    `TypeScript single-line if break condition reads should attach to the if line, received ${JSON.stringify(singleLineIfBreakHeapReadLines)}`
+  );
+  console.log('PASS: execute-with-tracing typescript single-line if break condition read line contract');
 
   const executeTypeScriptTopoLineMapping = await harness.sendMessage<{
     success: boolean;
@@ -1182,6 +2216,181 @@ function smallest(nums: number[]): number {
     'TypeScript destructuring property swap tracing should preserve execution semantics'
   );
   console.log('PASS: execute-with-tracing JS/TS destructuring property swap contract');
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const executeRecursiveUndefinedChildCallTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  maxPathSum(root: TreeNode | null): number {
+    const dfs = (node: TreeNode | null): number => {
+      if (!node) return 0;
+      return dfs(node.left) + dfs(node.right) + node.val;
+    };
+    return dfs(root);
+  }
+}`
+          : `class Solution {
+  maxPathSum(root) {
+    const dfs = (node) => {
+      if (!node) return 0;
+      return dfs(node.left) + dfs(node.right) + node.val;
+    };
+    return dfs(root);
+  }
+}`,
+      functionName: 'maxPathSum',
+      executionStyle: 'solution-method',
+      language,
+      inputs: {
+        root: { val: 4 },
+      },
+    });
+    assertCondition(
+      executeRecursiveUndefinedChildCallTracing.success === true,
+      `${language} recursive undefined-child call tracing should succeed: ${executeRecursiveUndefinedChildCallTracing.error ?? 'unknown error'}`
+    );
+    const recursiveCallArgs = traceEvents(executeRecursiveUndefinedChildCallTracing)
+      .filter((event) => event.kind === 'call' && event.function === 'dfs')
+      .map((event) => event.args);
+    assertCondition(
+      recursiveCallArgs.some((args) => args?.node === '<undefined>'),
+      `${language} recursive call events should preserve explicit undefined child arguments, received ${JSON.stringify(
+        recursiveCallArgs
+      )}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS recursive undefined-child call args contract');
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const executeDestructuringScalarAssignmentTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code: language === 'typescript'
+        ? `class Solution {
+  solve(a: number, b: number[][], c: number): number {
+    let n: number;
+    let edges: number[][];
+    let src: number;
+    [n, edges, src] = [a, b, c];
+    return n + edges.length + src;
+  }
+}`
+        : `class Solution {
+  solve(a, b, c) {
+    let n;
+    let edges;
+    let src;
+    [n, edges, src] = [a, b, c];
+    return n + edges.length + src;
+  }
+}`,
+      functionName: 'solve',
+      executionStyle: 'solution-method',
+      language,
+      inputs: { a: 4, b: [[0, 1, 1], [1, 2, 1]], c: 3 },
+    });
+    assertCondition(
+      executeDestructuringScalarAssignmentTracing.success === true,
+      `${language} destructuring scalar assignment tracing should succeed: ${executeDestructuringScalarAssignmentTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      executeDestructuringScalarAssignmentTracing.output === 9,
+      `${language} destructuring scalar assignment tracing should preserve execution semantics`
+    );
+    const writes = traceAccessEvents(executeDestructuringScalarAssignmentTracing).filter(
+      (event) => event.line === 6 && event.kind === 'write'
+    );
+    for (const variable of ['n', 'edges', 'src']) {
+      assertCondition(
+        writes.some((event) => event.target?.variable === variable),
+        `${language} destructuring assignment should emit scalar write for ${variable}, received ${JSON.stringify(writes)}`
+      );
+    }
+  }
+  console.log('PASS: execute-with-tracing JS/TS destructuring scalar assignment writes');
+
+  const executeTypeScriptNonFiniteArrayFillTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  solve(n: number): number {
+    const dist = new Array(n).fill(Infinity);
+    return dist.length;
+  }
+}`,
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: { n: 3 },
+  });
+  assertCondition(
+    executeTypeScriptNonFiniteArrayFillTracing.success === true,
+    `TypeScript non-finite array fill tracing should succeed: ${executeTypeScriptNonFiniteArrayFillTracing.error ?? 'unknown error'}`
+  );
+  const distWrite = traceAccessEvents(executeTypeScriptNonFiniteArrayFillTracing).find(
+    (event) => event.kind === 'write' && event.line === 3 && event.target?.variable === 'dist'
+  );
+  assertCondition(
+    JSON.stringify(distWrite?.value) === JSON.stringify(['Infinity', 'Infinity', 'Infinity']),
+    `TypeScript filled Infinity array write should preserve non-finite values, received ${JSON.stringify(distWrite)}`
+  );
+  console.log('PASS: execute-with-tracing TypeScript non-finite array fill serialization');
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const executeNestedLengthReadTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(grid: string[][]): number {
+    if (!grid || grid.length === 0 || grid[0].length === 0) return 0;
+    return grid[0].length;
+  }
+}`
+          : `class Solution {
+  solve(grid) {
+    if (!grid || grid.length === 0 || grid[0].length === 0) return 0;
+    return grid[0].length;
+  }
+}`,
+      functionName: 'solve',
+      executionStyle: 'solution-method',
+      language,
+      inputs: { grid: [['1', '0', '1']] },
+    });
+    assertCondition(
+      executeNestedLengthReadTracing.success === true,
+      `${language} nested length read tracing should succeed: ${executeNestedLengthReadTracing.error ?? 'unknown error'}`
+    );
+    const nestedLengthRead = traceAccessEvents(executeNestedLengthReadTracing).find(
+      (event) =>
+        event.kind === 'read' &&
+        event.line === 3 &&
+        event.target?.variable === 'grid' &&
+        JSON.stringify(event.target.path) === JSON.stringify([0, 'length'])
+    );
+    assertCondition(
+      nestedLengthRead?.value === 3,
+      `${language} grid[0].length should emit concrete nested metadata read, received ${JSON.stringify(nestedLengthRead)}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS nested indexed metadata reads');
 
   const executeTypeScriptReverseListTracing = await harness.sendMessage<{
     success: boolean;
@@ -1434,6 +2643,316 @@ function smallest(nums: number[]): number {
     ),
     'JavaScript tracing should emit cell-write access events for nested element assignments'
   );
+  const indexSourceTracing = await harness.sendMessage<{
+    success: boolean;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function inspect(nums, grid) {
+  let i = 1;
+  let row = 0;
+  let col = 1;
+  nums[i] = grid[row][col];
+  return nums[i];
+}`,
+    functionName: 'inspect',
+    inputs: { nums: [0, 0, 0], grid: [[4, 5], [6, 7]] },
+    executionStyle: 'function',
+  });
+  assertCondition(indexSourceTracing.success === true, 'JavaScript index-source tracing should succeed');
+  const indexSourceAccesses = traceAccessEvents(indexSourceTracing);
+  assertCondition(
+    indexSourceAccesses.some(
+      (access) =>
+        access.target?.variable === 'grid' &&
+        access.kind === 'read' &&
+        JSON.stringify(access.target.indexSources) === JSON.stringify(['row', 'col'])
+    ),
+    `JavaScript tracing should emit indexSources for grid[row][col], received ${JSON.stringify(indexSourceAccesses)}`
+  );
+  assertCondition(
+    indexSourceAccesses.some(
+      (access) =>
+        access.target?.variable === 'nums' &&
+        access.kind === 'write' &&
+        JSON.stringify(access.target.indexSources) === JSON.stringify(['i'])
+    ),
+    `JavaScript tracing should emit indexSources for nums[i] write, received ${JSON.stringify(indexSourceAccesses)}`
+  );
+  const charComputedIndexTracing = await harness.sendMessage<{
+    success: boolean;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve(text) {
+  const counts = Array(26).fill(0);
+  const base = 'a'.charCodeAt(0);
+  for (let i = 0; i < text.length; i++) {
+    counts[text.charCodeAt(i) - base] += 1;
+  }
+  return counts[0];
+}`,
+    functionName: 'solve',
+    inputs: { text: 'ab' },
+    executionStyle: 'function',
+  });
+  assertCondition(charComputedIndexTracing.success === true, 'JavaScript char-computed index tracing should succeed');
+  const charComputedIndexAccesses = traceAccessEvents(charComputedIndexTracing);
+  assertCondition(
+    charComputedIndexAccesses.some(
+      (access) =>
+        access.target?.variable === 'counts' &&
+        access.kind === 'read' &&
+        JSON.stringify(access.target.indexSources) === JSON.stringify(['text.charCodeAt(i) - base'])
+    ) &&
+      charComputedIndexAccesses.some(
+        (access) =>
+          access.target?.variable === 'counts' &&
+          access.kind === 'write' &&
+          JSON.stringify(access.target.indexSources) === JSON.stringify(['text.charCodeAt(i) - base'])
+      ),
+    `JavaScript tracing should emit indexSources for charCodeAt-derived computed indices, received ${JSON.stringify(charComputedIndexAccesses)}`
+  );
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const popIndexSourceTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(bars: number[]): number {
+    const stack: number[] = [1];
+    return bars[stack.pop()!];
+  }
+}`
+          : `class Solution {
+  solve(bars) {
+    const stack = [1];
+    return bars[stack.pop()];
+  }
+}`,
+      functionName: 'solve',
+      inputs: { bars: [4, 9, 16] },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      popIndexSourceTracing.success === true,
+      `${language} stack.pop index-source tracing should succeed: ${popIndexSourceTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(popIndexSourceTracing.output === 9, `${language} stack.pop index-source tracing should preserve output`);
+    const popIndexSourceAccesses = traceAccessEvents(popIndexSourceTracing);
+    const expectedPopSource = language === 'typescript' ? 'stack.pop()!' : 'stack.pop()';
+    assertCondition(
+      popIndexSourceAccesses.some(
+        (access) =>
+          access.target?.variable === 'bars' &&
+          access.kind === 'read' &&
+          JSON.stringify(access.target.indexSources) === JSON.stringify([expectedPopSource])
+      ),
+      `${language} tracing should preserve stack.pop() index provenance, received ${JSON.stringify(popIndexSourceAccesses)}`
+    );
+  }
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const membershipTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(word: string): boolean {
+    const node = { children: { a: 1 } as Record<string, number> };
+    const char = word[0];
+    return char in node.children;
+  }
+}`
+          : `class Solution {
+  solve(word) {
+    const node = { children: { a: 1 } };
+    const char = word[0];
+    return char in node.children;
+  }
+}`,
+      functionName: 'solve',
+      inputs: { word: 'apple' },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      membershipTracing.success === true,
+      `${language} object membership tracing should succeed: ${membershipTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(membershipTracing.output === true, `${language} object membership tracing should preserve output`);
+    const membershipAccesses = traceAccessEvents(membershipTracing);
+    assertCondition(
+      membershipAccesses.some(
+        (access) =>
+          access.target?.variable === 'node' &&
+          access.kind === 'read' &&
+          JSON.stringify(access.target.path) === JSON.stringify(['children', 'a']) &&
+          JSON.stringify(access.target.indexSources) === JSON.stringify([null, 'char'])
+      ),
+      `${language} tracing should emit concrete key/source for char in node.children, received ${JSON.stringify(membershipAccesses)}`
+    );
+  }
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const setHasTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(n: number): boolean {
+    const cols = new Set<number>([1]);
+    const diag1 = new Set<number>([99]);
+    const diag2 = new Set<number>([88]);
+    const row = 1;
+    const col = 2;
+    return !cols.has(col) && !diag1.has(row - col) && !diag2.has(row + col);
+  }
+}`
+          : `class Solution {
+  solve(n) {
+    const cols = new Set([1]);
+    const diag1 = new Set([99]);
+    const diag2 = new Set([88]);
+    const row = 1;
+    const col = 2;
+    return !cols.has(col) && !diag1.has(row - col) && !diag2.has(row + col);
+  }
+}`,
+      functionName: 'solve',
+      inputs: { n: 4 },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      setHasTracing.success === true,
+      `${language} Set.has tracing should succeed: ${setHasTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(setHasTracing.output === true, `${language} Set.has tracing should preserve output`);
+    const setHasAccesses = traceAccessEvents(setHasTracing);
+    assertCondition(
+      setHasAccesses.some(
+        (access) =>
+          access.target?.variable === 'cols' &&
+          access.kind === 'read' &&
+          JSON.stringify(access.target.path) === JSON.stringify([2]) &&
+          JSON.stringify(access.target.indexSources) === JSON.stringify(['col'])
+      ) &&
+        setHasAccesses.some(
+          (access) =>
+            access.target?.variable === 'diag1' &&
+            access.kind === 'read' &&
+            JSON.stringify(access.target.path) === JSON.stringify([-1]) &&
+            JSON.stringify(access.target.indexSources) === JSON.stringify(['row - col'])
+        ) &&
+        setHasAccesses.some(
+          (access) =>
+            access.target?.variable === 'diag2' &&
+            access.kind === 'read' &&
+            JSON.stringify(access.target.path) === JSON.stringify([3]) &&
+            JSON.stringify(access.target.indexSources) === JSON.stringify(['row + col'])
+        ),
+      `${language} tracing should emit key/source provenance for Set.has reads, received ${JSON.stringify(setHasAccesses)}`
+    );
+  }
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const destructuredIndexedSwapTracing = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  solve(nums: number[]): number[] {
+    const heap = nums.slice();
+    let parent = 0;
+    let i = 1;
+    [heap[parent], heap[i]] = [heap[i], heap[parent]];
+    return heap;
+  }
+}`
+          : `class Solution {
+  solve(nums) {
+    const heap = nums.slice();
+    let parent = 0;
+    let i = 1;
+    [heap[parent], heap[i]] = [heap[i], heap[parent]];
+    return heap;
+  }
+}`,
+      functionName: 'solve',
+      inputs: { nums: [3, 1] },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      destructuredIndexedSwapTracing.success === true,
+      `${language} destructuring indexed swap tracing should succeed: ${destructuredIndexedSwapTracing.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(destructuredIndexedSwapTracing.output) === JSON.stringify([1, 3]),
+      `${language} destructuring indexed swap tracing should preserve output`
+    );
+    const destructuredIndexedSwapWrites = traceAccessEvents(destructuredIndexedSwapTracing).filter(
+      (event) => event.target?.variable === 'heap' && event.kind === 'write'
+    );
+    assertCondition(
+      destructuredIndexedSwapWrites.some(
+        (event) =>
+          JSON.stringify(event.target?.path) === JSON.stringify([0]) &&
+          JSON.stringify(event.target?.indexSources) === JSON.stringify(['parent']) &&
+          event.value === 1
+      ) &&
+        destructuredIndexedSwapWrites.some(
+          (event) =>
+            JSON.stringify(event.target?.path) === JSON.stringify([1]) &&
+            JSON.stringify(event.target?.indexSources) === JSON.stringify(['i']) &&
+            event.value === 3
+        ),
+      `${language} destructuring indexed swap should emit writes for both targets, received ${JSON.stringify(destructuredIndexedSwapWrites)}`
+    );
+  }
+
+  const tuplePushArgsTracing = await harness.sendMessage<{
+    success: boolean;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `function solve() {
+  const edges = [];
+  const u = 1;
+  const v = 2;
+  const w = 3;
+  edges.push([u, v, w]);
+  return edges.length;
+}`,
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(tuplePushArgsTracing.success === true, 'JavaScript tuple push args tracing should succeed');
+  const tuplePushMutate = traceAccessEvents(tuplePushArgsTracing).find(
+    (event) => event.target?.variable === 'edges' && event.kind === 'mutate' && event.method === 'push'
+  );
+  assertCondition(
+    Boolean(tuplePushMutate) && JSON.stringify(tuplePushMutate?.args) === JSON.stringify([[1, 2, 3]]),
+    `JavaScript edges.push([u,v,w]) should preserve the single tuple argument contract, received ${JSON.stringify(tuplePushMutate)}`
+  );
+
   assertCondition(
     flatAccesses.some(
       (access) =>
@@ -1529,6 +3048,37 @@ result = twoSum([2, 7, 11, 15], 9);`,
     'Script tracing return step should include result variable'
   );
   console.log('PASS: execute-with-tracing script mode contract');
+
+  const scriptConstResultTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace: Array<{
+      event?: string;
+      function?: string;
+      variables?: Record<string, unknown>;
+    }>;
+  }>('execute-with-tracing', {
+    code: `function sum(nums) {
+  let total = 0;
+  for (const value of nums) total += value;
+  return total;
+}
+
+const result = sum([2, 1, 5, 1, 3, 2]);`,
+    inputs: {},
+    executionStyle: 'function',
+  });
+  assertCondition(
+    scriptConstResultTracing.success === true,
+    `Script tracing should allow user-declared const result, received ${scriptConstResultTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(scriptConstResultTracing.output === 14, 'Script tracing const result output should equal 14');
+  assertCondition(
+    traceEvents(scriptConstResultTracing).some((event) => event.function === '<module>'),
+    'Script const result tracing should include module events'
+  );
+  console.log('PASS: execute-with-tracing script mode const result declaration');
 
   const recursiveTreeTracing = await harness.sendMessage<{
     success: boolean;
@@ -1699,6 +3249,84 @@ class Trie {
       (childrenEntry as { __type__?: unknown }).__type__ === 'map',
     'TrieNode snapshot should preserve map-backed children fields'
   );
+  const trieAliasFrame = traceSnapshotFrames(typeScriptTrieObjectTracing).find((frame) => {
+    const receiver = frame.snapshots.this as { root?: { __id__?: unknown; __ref__?: unknown } } | undefined;
+    const receiverRoot = frame.snapshots['this.root'] as { __id__?: unknown; __ref__?: unknown } | undefined;
+    const node = frame.snapshots.node as { __id__?: unknown } | undefined;
+    const rootId = receiverRoot?.__id__ ?? receiverRoot?.__ref__ ?? receiver?.root?.__id__ ?? receiver?.root?.__ref__;
+    return (
+      typeof rootId === 'string' &&
+      typeof node?.__id__ === 'string' &&
+      rootId === node.__id__
+    );
+  });
+  assertCondition(
+    Boolean(trieAliasFrame),
+    'Trie tracing should preserve object identity when a local aliases this.root'
+  );
+  const javascriptTriePlainObjectAliasTracing = await harness.sendMessage<{
+    success: boolean;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class TrieNode {
+  constructor() {
+    this.children = {};
+    this.index = -1;
+  }
+}
+
+class WordFilter {
+  constructor(words) {
+    this.root = new TrieNode();
+    const word = words[0];
+    const key = word + '#' + word;
+    let node = this.root;
+    if (!('a' in node.children)) {
+      node.children['a'] = new TrieNode();
+    }
+    return undefined;
+  }
+}`,
+    functionName: 'WordFilter',
+    executionStyle: 'ops-class',
+    language: 'javascript',
+    inputs: {
+      operations: ['WordFilter'],
+      arguments: [[['apple']]],
+    },
+  });
+  assertCondition(
+    javascriptTriePlainObjectAliasTracing.success === true,
+    'JavaScript trie plain-object alias tracing should succeed'
+  );
+  const javascriptTrieAliasNodeIdsByLine = new Map<number, string>();
+  const javascriptTrieAliasRootIdsByLine = new Map<number, string>();
+  for (const event of traceEvents(javascriptTriePlainObjectAliasTracing)) {
+    if (event.kind === 'snapshot' && event.target?.variable === 'node') {
+      const node = event.value as { __id__?: unknown } | undefined;
+      if (typeof event.line === 'number' && typeof node?.__id__ === 'string') {
+        javascriptTrieAliasNodeIdsByLine.set(event.line, node.__id__);
+      }
+    }
+    if (
+      event.kind === 'read' &&
+      event.target?.variable === 'this' &&
+      JSON.stringify(event.target.path) === JSON.stringify(['root'])
+    ) {
+      const root = event.value as { __id__?: unknown; __ref__?: unknown } | undefined;
+      const rootId = root?.__id__ ?? root?.__ref__;
+      if (typeof event.line === 'number' && typeof rootId === 'string') {
+        javascriptTrieAliasRootIdsByLine.set(event.line, rootId);
+      }
+    }
+  }
+  const javascriptTrieAliasFrame = Array.from(javascriptTrieAliasRootIdsByLine).find(
+    ([line, rootId]) => javascriptTrieAliasNodeIdsByLine.get(line) === rootId
+  );
+  assertCondition(
+    Boolean(javascriptTrieAliasFrame),
+    'JavaScript trie tracing should preserve object identity when a local aliases this.root'
+  );
   const insertBodySteps = traceLineEvents(typeScriptTrieObjectTracing).filter(
     (event) => event.function === 'insert' && (event.line === 18 || event.line === 19 || event.line === 24)
   );
@@ -1742,6 +3370,69 @@ class Trie {
   );
   assertCondition(helperLine?.value === 2, 'TypeScript helper-function tracing should keep scalar locals');
   console.log('PASS: execute-with-tracing omits callable helper locals');
+
+  for (const language of ['javascript', 'typescript'] as const) {
+    const nestedArrowTracing = await harness.sendMessage<{
+      success: boolean;
+      error?: string;
+      trace?: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code:
+        language === 'typescript'
+          ? `class Solution {
+  countRangeSum(nums: number[], lower: number, upper: number): number {
+    const prefix = [0];
+    for (const num of nums) {
+      prefix.push(prefix[prefix.length - 1] + num);
+    }
+    const mergeSort = (lo: number, hi: number): number => {
+      if (lo >= hi) return 0;
+      const mid = Math.floor((lo + hi) / 2);
+      return mergeSort(lo, mid) + mergeSort(mid + 1, hi);
+    };
+    return mergeSort(0, prefix.length - 1);
+  }
+}`
+          : `class Solution {
+  countRangeSum(nums, lower, upper) {
+    const prefix = [0];
+    for (const num of nums) {
+      prefix.push(prefix[prefix.length - 1] + num);
+    }
+    const mergeSort = (lo, hi) => {
+      if (lo >= hi) return 0;
+      const mid = Math.floor((lo + hi) / 2);
+      return mergeSort(lo, mid) + mergeSort(mid + 1, hi);
+    };
+    return mergeSort(0, prefix.length - 1);
+  }
+}`,
+      functionName: 'countRangeSum',
+      executionStyle: 'solution-method',
+      language,
+      inputs: { nums: [-2, 5, -1], lower: -2, upper: 2 },
+    });
+    assertCondition(
+      nestedArrowTracing.success === true,
+      `${language} nested arrow tracing should succeed: ${nestedArrowTracing.error ?? 'unknown error'}`
+    );
+    const lineEvents = traceLineEvents(nestedArrowTracing);
+    assertCondition(
+      lineEvents.some((event) => event.function === 'mergeSort'),
+      `${language} nested arrow helper body should emit real line events, received ${JSON.stringify(lineEvents)}`
+    );
+    assertCondition(
+      traceEvents(nestedArrowTracing).some((event) => event.kind === 'call' && event.function === 'mergeSort'),
+      `${language} nested arrow helper should emit call events`
+    );
+    assertCondition(
+      traceAccessEvents(nestedArrowTracing).some(
+        (event) => event.kind === 'mutate' && event.target?.variable === 'prefix' && event.method === 'push'
+      ),
+      `${language} prefix construction should emit mutating-call access events`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS nested arrow helper instrumentation');
 
   const graphKindTracing = await harness.sendMessage<{
     success: boolean;

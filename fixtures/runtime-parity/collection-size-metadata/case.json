@@ -31,19 +31,33 @@
     "arraySize": {
       "eventKinds": [
         "line",
-        "snapshot"
+        "read",
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "n",
         "nums",
         "total"
       ],
-      "accessTargets": []
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "n"
+        }
+      ]
     },
     "mapSize": {
       "eventKinds": [
         "line",
-        "snapshot"
+        "read",
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "m",
@@ -52,30 +66,26 @@
         "seen",
         "total"
       ],
-      "accessTargets": []
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "seen",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "m"
+        }
+      ]
     }
   },
-  "expectSummary": {
-    "accessTargets": []
-  },
   "expectByLanguage": {
-    "csharp": {
-      "arraySize": {
-        "eventKinds": [
-          "line",
-          "snapshot"
-        ],
-        "variableSnapshots": [
-          "n",
-          "nums",
-          "total"
-        ],
-        "accessTargets": []
-      },
+    "java": {
       "mapSize": {
         "eventKinds": [
           "line",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "m",
@@ -84,7 +94,34 @@
           "seen",
           "total"
         ],
-        "accessTargets": []
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "m"
+          }
+        ]
+      }
+    },
+    "cpp": {
+      "mapSize": {
+        "eventKinds": [
+          "line",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "m",
+          "n",
+          "nums",
+          "seen",
+          "total"
+        ],
+        "accessTargets": [
+          {
+            "kind": "write",
+            "variable": "m"
+          }
+        ]
       }
     }
   }

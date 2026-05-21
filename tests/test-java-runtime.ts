@@ -113,7 +113,7 @@ function assertNativeJavaRewriterCompiles(source: string, entryName = 'solve'): 
 function assertJavaSourceCompiles(source: string, label: string): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-source-compile-'));
   try {
-    const publicClassName = source.match(/\bpublic\s+class\s+([A-Za-z_][A-Za-z0-9_]*)/)?.[1] ?? 'Main';
+    const publicClassName = source.match(/\bpublic\s+(?:final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)/)?.[1] ?? 'Main';
     const sourcePath = join(tmpRoot, `${publicClassName}.java`);
     const classesPath = join(tmpRoot, 'classes');
     writeFileSync(sourcePath, source, 'utf8');
@@ -129,6 +129,46 @@ function assertJavaSourceCompiles(source: string, label: string): void {
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
+}
+
+function testJavaHelperJarDoesNotExposeDeprecatedSpikePackages(): void {
+  const entries = execFileSync('jar', ['tf', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')], {
+    encoding: 'utf8',
+  }).split(/\r?\n/);
+  assertCondition(
+    !entries.some((entry) => entry.startsWith('spike/')),
+    'Java helper jar should not expose deprecated spike.* runtime packages'
+  );
+  console.log('PASS: java helper jar does not expose deprecated spike packages');
+}
+
+function loadSourceAugmentationsForTest(): {
+  augmentJavaCollectionOperations: (source: string, sourceText?: string) => string;
+  augmentJavaLocalSnapshots?: (source: string) => string;
+  augmentTraceCallArgumentSnapshots?: (source: string) => string;
+} {
+  const augmentationSource = readFileSync(join(process.cwd(), 'workers', 'java', 'java-source-augmentations.js'), 'utf8');
+  const moduleObject = { exports: {} };
+  const context = vm.createContext({
+    module: moduleObject,
+    exports: moduleObject.exports,
+    self: {},
+  });
+  vm.runInContext(augmentationSource, context, { filename: 'java-source-augmentations.js' });
+  return moduleObject.exports as {
+    augmentJavaCollectionOperations: (source: string, sourceText?: string) => string;
+    augmentJavaLocalSnapshots?: (source: string) => string;
+    augmentTraceCallArgumentSnapshots?: (source: string) => string;
+  };
+}
+
+function augmentRewrittenJavaForTest(source: string, entryName: string): string {
+  const augmentations = loadSourceAugmentationsForTest();
+  let rewritten = rewriteWithNativeJavaRewriter(source, entryName);
+  rewritten = augmentations.augmentTraceCallArgumentSnapshots?.(rewritten) ?? rewritten;
+  rewritten = augmentations.augmentJavaCollectionOperations(rewritten, source);
+  rewritten = augmentations.augmentJavaLocalSnapshots?.(rewritten) ?? rewritten;
+  return rewritten;
 }
 
 function testJavaRuntimeValueSerializationLimit(): void {
@@ -644,6 +684,319 @@ public class Main {
   }
 }
 
+function testJavaEnhancedForHeaderExpansionDropsStaleBindingSnapshots(): void {
+  const source = `class Solution {
+  int solve(Object[][] rates) {
+    for (Object[] rate : rates) {
+      int len = rate.length;
+    }
+    return 0;
+  }
+}`;
+  const trace = javaTraceHooksEventsToRuntimeTrace(
+    [
+      nativeJavaEvent({ kind: 'snapshot', line: 4, target: { variable: 'rate' }, value: ['USD', 'EUR', 0.9] }),
+      nativeJavaEvent({
+        kind: 'read',
+        line: 3,
+        target: { variable: 'rates', path: [1] },
+        value: ['EUR', 'USD', 1.1],
+        binding: { kind: 'iteration', variable: 'rate' },
+      }),
+      nativeJavaEvent({ kind: 'line', line: 4 }),
+      nativeJavaEvent({ kind: 'snapshot', line: 4, target: { variable: 'rate' }, value: ['EUR', 'USD', 1.1] }),
+    ],
+    source,
+    { runId: 'java:test' }
+  );
+  const headerRateSnapshots = trace.events.filter(
+    (event) =>
+      event.kind === 'snapshot' &&
+      event.line === 3 &&
+      'variable' in event.target &&
+      event.target.variable === 'rate'
+  );
+  assertCondition(
+    headerRateSnapshots.length === 1 &&
+      JSON.stringify(headerRateSnapshots[0]?.value) === JSON.stringify(['EUR', 'USD', 1.1]),
+    `Java enhanced-for header expansion should keep only the current binding snapshot, received ${JSON.stringify(headerRateSnapshots)}`
+  );
+  console.log('PASS: Java enhanced-for header expansion drops stale binding snapshots');
+}
+
+function testJavaRuntimeRecursiveCallStacks(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-recursive-callstack-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import tracecode.user.TraceHooks;
+
+public class Main {
+  static int dfs(Integer node) {
+    TraceHooks.emitCallAtLine(4, "dfs", "" + " node=" + TraceHooks.serializeResult(node));
+    TraceHooks.emitLineAtLine(5, "" + " node=" + TraceHooks.serializeResult(node));
+    if (node == null) {
+      TraceHooks.emitReturnAtLine(6, "dfs", 0);
+      return 0;
+    }
+    int child = dfs(null);
+    TraceHooks.emitScalarWriteAtLine(9, "child", child);
+    TraceHooks.emitReturnAtLine(10, "dfs", node);
+    return node;
+  }
+
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    dfs(2);
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const parsed = output.trim().split('\n').map(parseNativeJavaEvent).filter((event): event is Record<string, unknown> => Boolean(event));
+    const lineFiveEvents = parsed.filter((event) => event.kind === 'line' && event.line === 5);
+    assertCondition(lineFiveEvents.length === 2, 'Java recursive trace should emit both same-source-line dfs frames');
+    assertCondition(
+      lineFiveEvents.some((event) => JSON.stringify(event.callStack).includes('"args":{"node":2}')) &&
+        lineFiveEvents.some((event) => JSON.stringify(event.callStack).includes('"args":{"node":null}')),
+      `Java recursive same-line events should carry frame-specific callStack args, received ${JSON.stringify(lineFiveEvents)}`
+    );
+    const childWrite = parsed.find((event) => event.kind === 'write' && event.line === 9 && JSON.stringify(event.target) === JSON.stringify({ variable: 'child' }));
+    assertCondition(
+      Boolean(childWrite) &&
+        JSON.stringify(childWrite?.callStack).includes('"args":{"node":2}') &&
+        !JSON.stringify(childWrite?.callStack).includes('"args":{"node":null}'),
+      `Java post-recursion write should be scoped back to the parent frame, received ${JSON.stringify(childWrite)}`
+    );
+    console.log('PASS: Java native hooks emit frame-specific recursive call stacks');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
+function testJavaRuntimeMutationHooksEmitPostSnapshots(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-mutation-snapshots-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import java.util.*;
+import tracecode.user.TraceHooks;
+
+class Node {
+  Map<Character, Node> children = new HashMap<>();
+  boolean isEnd = false;
+}
+
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    Map<Integer, Integer> freq = new HashMap<>();
+    TraceHooks.emitLineAtLine(6);
+    int key = 1;
+    TraceHooks.putMapAtLine(6, "freq", freq, key, 1, "key");
+    List<String> words = Arrays.asList("za", "x");
+    for (String word : TraceHooks.iterationBindAtLine(7, "words", words, "word")) {
+      if (word.length() == 0) throw new RuntimeException("unreachable");
+    }
+    List<List<Integer>> graph = new ArrayList<>();
+    TraceHooks.emitLineAtLine(8);
+    graph.add(new ArrayList<>());
+    TraceHooks.emitMutatingCallAtLine(8, "graph", "add", graph.get(0));
+    TraceHooks.emitRuntimeSnapshotAtLine(8, "graph", graph);
+    graph.get(0).add(7);
+    for (Integer next : TraceHooks.iterationBindAtLine(9, "graph", 0, graph.get(0), "next", "course")) {
+      if (next == -1) throw new RuntimeException("unreachable");
+    }
+
+    Node node = new Node();
+    TraceHooks.emitLineAtLine(12);
+    TraceHooks.putFieldMapIfAbsentAtLine(12, "node", "children", node.children, 'a', new Node());
+    TraceHooks.emitLineAtLine(13);
+    node.isEnd = true;
+    TraceHooks.emitFieldWriteAtLine(13, "node", "isEnd", node.isEnd);
+
+    int[] matchRight = new int[] { 0, 0, 0 };
+    TraceHooks.emitLineAtLine(14);
+    TraceHooks.fillArrayAtLine(14, "matchRight", matchRight, -1);
+
+    Deque<Integer> deque = new ArrayDeque<>();
+    deque.addLast(1);
+    TraceHooks.emitMutatingCallAtLine(15, "deque", "addLast", 1);
+    TraceHooks.emitLineAtLine(16);
+    deque.removeFirst();
+    TraceHooks.emitMutatingCallAtLine(16, "deque", "removeFirst");
+    TraceHooks.emitRuntimeSnapshotAtLine(16, "deque", deque);
+
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const trace = javaTraceHooksEventsToRuntimeTrace(output.trim().split('\n'), undefined, { runId: 'java:test' });
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'snapshot' &&
+        event.line === 6 &&
+        'variable' in event.target &&
+        event.target.variable === 'freq' &&
+        JSON.stringify(event.value).includes('"1"')
+      ),
+      'Java Map mutation hooks should emit a post-mutation map snapshot on the same line'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'write' &&
+        event.line === 6 &&
+        'variable' in event.target &&
+        event.target.variable === 'freq' &&
+        Array.isArray(event.target.path) &&
+        event.target.path[0] === 1 &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['key'])
+      ),
+      'Java keyed mutation hooks should preserve simple index source provenance'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 6 &&
+        'variable' in event.target &&
+        event.target.variable === 'freq' &&
+        Array.isArray(event.target.path) &&
+        event.target.path[0] === 1 &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['key']) &&
+        event.method === 'put' &&
+        JSON.stringify(event.args) === JSON.stringify([1, 1])
+      ),
+      'Java keyed mutation hooks should emit key/value method args with index source provenance'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'read' &&
+        event.line === 7 &&
+        'variable' in event.target &&
+        event.target.variable === 'words' &&
+        Array.isArray(event.target.path) &&
+        event.target.path[0] === 0 &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === 'word' &&
+        event.value === 'za'
+      ),
+      'Java iteration binding hooks should emit indexed read bindings for enhanced-for values'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 8 &&
+        'variable' in event.target &&
+        event.target.variable === 'graph' &&
+        event.method === 'add' &&
+        JSON.stringify(event.args) === JSON.stringify([[]])
+      ),
+      'Java collection mutation hooks should emit runtime-evaluated method args for plain collection adds'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'read' &&
+        event.line === 9 &&
+        'variable' in event.target &&
+        event.target.variable === 'graph' &&
+        Array.isArray(event.target.path) &&
+        event.target.path[0] === 0 &&
+        event.target.path[1] === 0 &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['course', null]) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === 'next' &&
+        event.value === 7
+      ),
+      'Java nested iteration binding hooks should emit parent path provenance for enhanced-for values'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'write' &&
+        event.line === 12 &&
+        'variable' in event.target &&
+        event.target.variable === 'node' &&
+        Array.isArray(event.target.path) &&
+        event.target.path.length === 2 &&
+        event.target.path[0] === 'children' &&
+        event.target.path[1] === 'a'
+      ),
+      'Java object field map mutation hooks should emit a native field/key write without a synthetic field snapshot'
+    );
+    assertCondition(
+      !trace.events.some((event) =>
+        event.kind === 'snapshot' &&
+        'variable' in event.target &&
+        (event.target.variable === 'node.children' || event.target.variable === 'node.isEnd')
+      ),
+      'Java object field mutation hooks should not emit synthetic dotted field snapshots'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 14 &&
+        'variable' in event.target &&
+        event.target.variable === 'matchRight' &&
+        event.method === 'fill' &&
+        JSON.stringify(event.args) === JSON.stringify([-1])
+      ),
+      'Java Arrays.fill hook should emit a fill mutation with the runtime fill value'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'snapshot' &&
+        event.line === 14 &&
+        'variable' in event.target &&
+        event.target.variable === 'matchRight' &&
+        JSON.stringify(event.value) === JSON.stringify([-1, -1, -1])
+      ),
+      'Java Arrays.fill hook should emit a post-fill array snapshot'
+    );
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 16 &&
+        'variable' in event.target &&
+        event.target.variable === 'deque' &&
+        event.method === 'removeFirst' &&
+        JSON.stringify(event.args) === JSON.stringify([])
+      ),
+      'Java no-arg mutation helper overloads should emit an empty args array'
+    );
+    console.log('PASS: Java native mutation hooks emit post-line snapshots');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testNativeJavaRewriterRegressionGaps(): void {
   const reflectiveTypeSource = rewriteWithNativeJavaRewriter(`import java.lang.reflect.*;
 
@@ -717,6 +1070,65 @@ class Solution {
       !initializerSource.includes('TraceHooks.emitLineAtLine(8);\n      2.0'),
     'Java rewriter should not insert line hooks inside multiline array initializers'
   );
+  assertCondition(
+    initializerSource.includes('\\"line\\":6') &&
+      initializerSource.includes('\\"method\\":\\"add\\"') &&
+      initializerSource.includes('\\"args\\":[') &&
+      initializerSource.includes('TraceHooks.emitRuntimeSnapshotAtLine(6, "edges", edges);'),
+    'Java rewriter should emit a mutate event with args for multiline collection adds on the call source line'
+  );
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve() {
+    List<double[]> edges = new ArrayList<>();
+    edges.add(new double[] {
+      1.0,
+      2.0
+    });
+    return edges.size();
+  }
+}`);
+
+  const noArgMutationsSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Box {
+  List<Integer> values = new ArrayList<>();
+}
+
+class Solution {
+  int solve() {
+    Deque<Integer> queue = new ArrayDeque<>();
+    queue.addLast(1);
+    queue.removeFirst();
+    List<Box> boxes = new ArrayList<>();
+    boxes.add(new Box());
+    boxes.get(0).values.clear();
+    Set<Integer>[] sets = new Set[] { new HashSet<>() };
+    sets[0].clear();
+    return queue.size() + boxes.size() + sets.length;
+  }
+}`);
+  assertCondition(
+    noArgMutationsSource.includes('TraceHooks.emitNoArgMutatingCallAtLine(11, "queue", "removeFirst")') ||
+      (noArgMutationsSource.includes('\\"line\\":11') &&
+        noArgMutationsSource.includes('\\"method\\":\\"removeFirst\\"') &&
+        noArgMutationsSource.includes('\\"args\\":[]')),
+    'Java rewriter should route no-arg queue.removeFirst mutations through an empty-args mutate path'
+  );
+  assertCondition(
+    noArgMutationsSource.includes('\\"line\\":14') &&
+      noArgMutationsSource.includes('\\"method\\":\\"clear\\"') &&
+      noArgMutationsSource.includes('\\"args\\":[]') &&
+      noArgMutationsSource.includes(',\\"values\\"]'),
+    'Java rewriter should emit empty args for no-arg field-indexed collection mutations'
+  );
+  assertCondition(
+    noArgMutationsSource.includes('\\"line\\":16') &&
+      noArgMutationsSource.includes('\\"method\\":\\"clear\\"') &&
+      noArgMutationsSource.includes('\\"args\\":[]'),
+    'Java rewriter should emit empty args for no-arg array-indexed collection mutations'
+  );
 
   const unbracedLoopSource = assertNativeJavaRewriterCompiles(`class Solution {
   int solve(char[][] board) {
@@ -731,6 +1143,149 @@ class Solution {
   assertCondition(
     !unbracedLoopSource.includes('for (int j = 0; j < board[0].length; j++)\n        TraceHooks.emitLineAtLine'),
     'Java rewriter should not make a line hook the body of an unbraced nested loop'
+  );
+
+  const enhancedForArraySource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(Object[][] accounts) {
+    int total = 0;
+    for (Object[] account : accounts) {
+      Object owner = account[0];
+      for (int i = 1; i < account.length; i++) {
+        Object value = account[i];
+        total += String.valueOf(owner).length() + String.valueOf(value).length();
+      }
+    }
+    return total;
+  }
+}`);
+  assertCondition(
+    enhancedForArraySource.includes('for (Object[] account : TraceHooks.iterationBindAtLine(4, "accounts", accounts, "account")) {') &&
+      enhancedForArraySource.includes('TraceHooks.readObjectArrayAtLine(5, "account", account, 0, null)') &&
+      enhancedForArraySource.includes('TraceHooks.readObjectArrayAtLine(7, "account", account, i, "i")'),
+    'Java rewriter should register enhanced-for array aliases before instrumenting indexed reads from them'
+  );
+
+  const enhancedForBindingSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(Object[][] accounts) {
+    int total = 0;
+    for (Object[] account : accounts) {
+      total += account.length;
+    }
+    return total;
+  }
+}`);
+  assertCondition(
+    enhancedForBindingSource.includes('for (Object[] account : TraceHooks.iterationBindAtLine(4, "accounts", accounts, "account")) {'),
+    'Java native rewriter should wrap enhanced-for array bindings with iteration provenance before worker augmentation'
+  );
+
+  const objectLengthFieldSource = assertNativeJavaRewriterCompiles(`class Box {
+  int length;
+}
+
+class Solution {
+  int solve() {
+    Box box = new Box();
+    box.length = 4;
+    return box.length;
+  }
+}`);
+  assertCondition(
+    objectLengthFieldSource.includes('TraceHooks.readObjectFieldAtLine(9, "box", "length", box.length)'),
+    'Java rewriter should treat user object .length fields as field reads, not array length metadata'
+  );
+
+  const stringBuilderAppendSource = assertNativeJavaRewriterCompiles(`class Solution {
+  String solve(char ch) {
+    StringBuilder order = new StringBuilder();
+    order.append(ch);
+    return order.toString();
+  }
+}`);
+  assertCondition(
+    stringBuilderAppendSource.includes('TraceHooks.emitMutatingCallAtLine(4, "order", "append", ch);'),
+    'Java rewriter should emit mutate events for StringBuilder.append calls'
+  );
+
+  const expressionIndexSource = assertNativeJavaRewriterCompiles(`class Solution {
+  String solve(String[] words) {
+    int i = 0;
+    String w2 = words[i + 1];
+    return w2;
+  }
+}`);
+  assertCondition(
+    expressionIndexSource.includes('TraceHooks.readObjectArrayAtLine(4, "words", words, i + 1, "i + 1")'),
+    'Java rewriter should preserve single-variable arithmetic index provenance such as i + 1'
+  );
+
+  const expressionIndexWriteSource = assertNativeJavaRewriterCompiles(`class Solution {
+  long solve(int[] nums) {
+    long[] prefix = new long[nums.length + 1];
+    for (int i = 0; i < nums.length; i++) {
+      prefix[i + 1] = prefix[i] + nums[i];
+    }
+    return prefix[nums.length];
+  }
+}`);
+  assertCondition(
+    expressionIndexWriteSource.includes('TraceHooks.emitArrayWriteAtLine(5, "prefix", __tracecodeIndex5, (Object) prefix[__tracecodeIndex5], "i + 1")'),
+    'Java rewriter should preserve arithmetic index provenance on array writes'
+  );
+
+  const charComputedIndexSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(String p) {
+    int[] counts = new int[26];
+    int base = 'a';
+    for (int i = 0; i < p.length(); i++) {
+      counts[p.charAt(i) - base]++;
+    }
+    return counts[0];
+  }
+}`);
+  assertCondition(
+    charComputedIndexSource.includes('indexSources\\":[\\"p.charAt(i) - base\\"') &&
+      charComputedIndexSource.includes('TraceHooks.emitArrayWriteAtLine(6, "counts", p.charAt(i) - base, (Object) counts[p.charAt(i) - base], "p.charAt(i) - base")'),
+    'Java rewriter should preserve charAt-derived computed array index provenance'
+  );
+
+  const explicitNullReturnSource = assertNativeJavaRewriterCompiles(`class Solution {
+  Object solve(boolean done) {
+    if (done) return null;
+    return "open";
+  }
+}`);
+  assertCondition(
+    explicitNullReturnSource.includes('TraceHooks.emitSerializedReturnAtLine(3, "solve", TraceHooks.serializeResult(__tracecodeReturnValue3));') &&
+      explicitNullReturnSource.includes('Object __tracecodeReturnValue3 = null;'),
+    'Java rewriter should preserve explicit null return values in V4 return events'
+  );
+
+  const stringMatrixCharAtSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(String[] board) {
+    int count = 0;
+    for (int r = 0; r < board.length; r++) {
+      for (int c = 0; c < board[r].length(); c++) {
+        if (board[r].charAt(c) == '.') count++;
+      }
+    }
+    return count;
+  }
+}`);
+  assertCondition(
+    stringMatrixCharAtSource.includes('TraceHooks.readStringMatrixCharAtLine(6, "board", board, r, c, "r", "c")'),
+    'Java rewriter should instrument String[] row charAt reads as 2D indexed reads with row/col provenance'
+  );
+
+  const stringArrayLengthCallSource = assertNativeJavaRewriterCompiles(`class Solution {
+  int solve(String[] board) {
+    int cols = board[0].length();
+    return cols;
+  }
+}`);
+  assertCondition(
+    stringArrayLengthCallSource.includes('TraceHooks.readIndexedStringLengthAtLine(3, "board", board, 0, null)'),
+    'Java rewriter should instrument String[] element length() reads as indexed length reads'
   );
 
   const ternaryContinuationSource = assertNativeJavaRewriterCompiles(`import java.util.*;
@@ -750,6 +1305,48 @@ class Solution {
     !ternaryContinuationSource.includes('TraceHooks.emitLineAtLine(9') &&
       !ternaryContinuationSource.includes('TraceHooks.emitLineAtLine(10'),
     'Java rewriter should not inject standalone line hooks into ternary expression continuations'
+  );
+  assertCondition(
+    ternaryContinuationSource.includes('TraceHooks.popStackAtLine(8, "stack", stack)') &&
+      ternaryContinuationSource.includes('TraceHooks.popStackAtLine(9, "stack", stack)') &&
+      ternaryContinuationSource.includes('TraceHooks.popStackAtLine(10, "stack", stack)'),
+    'Java rewriter should preserve Stack.pop expression mutations as value-returning V4 hooks'
+  );
+
+  const stackPopIndexReadSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve(int[] heights) {
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    int poppedHeight = heights[stack.pop()];
+    return poppedHeight;
+  }
+}`);
+  assertCondition(
+    stackPopIndexReadSource.includes('TraceHooks.readIntArrayAtLine(7, "heights", heights, TraceHooks.popDequeAtLine(7, "stack", stack), "stack.pop()")'),
+    'Java rewriter should emit a value-returning Deque.pop hook when pop is used as an array-read index'
+  );
+
+  const stackPeekConditionIndexReadSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve(int[] heights) {
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    int best = 0;
+    for (int i = 1; i < heights.length; i++) {
+      while (!stack.isEmpty() && heights[stack.peek()] > heights[i]) {
+        best = Math.max(best, heights[stack.pop()]);
+      }
+      stack.push(i);
+    }
+    return best;
+  }
+}`);
+  assertCondition(
+    stackPeekConditionIndexReadSource.includes('TraceHooks.readIntArrayAtLine(9, "heights", heights, TraceHooks.readQueuePeekAtLine(9, "stack", stack), "stack.peek()")'),
+    'Java rewriter should preserve outer array-read provenance when a Deque.peek call is used as the index'
   );
 
   const mutatingIndexWriteSource = rewriteWithNativeJavaRewriter(`import java.util.*;
@@ -772,6 +1369,11 @@ class Solution {
       !mutatingIndexWriteSource.includes('TraceHooks.emitArrayWriteAtLine(8, "result", stack.pop()'),
     'Java rewriter should not duplicate mutating index expressions in array write hooks'
   );
+  assertCondition(
+    mutatingIndexWriteSource.includes('TraceHooks.emitArrayWriteAtLine(') &&
+      mutatingIndexWriteSource.includes('"result", __tracecodeIndex8, (Object) result[__tracecodeIndex8],'),
+    'Java rewriter should force 1D array-write hooks away from the 2D overload'
+  );
 
   const indexedSetMutationSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
@@ -786,6 +1388,141 @@ class Solution {
   assertCondition(
     indexedSetMutationSource.includes('((java.util.Set)((java.util.List)groups).get(0))'),
     'Java rewriter should cast indexed List<Set<...>> mutation targets to Set, not List'
+  );
+
+  const cloneGraphWindowSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+class Solution {
+  List<List<Integer>> solve(int[][] adjList) {
+    List<List<Integer>> cloned = new ArrayList<>();
+    cloned.add(new ArrayList<>());
+    int node = 0;
+    for (int neighbor : adjList[node]) {
+      cloned.get(node).add(neighbor);
+    }
+    return cloned;
+  }
+}`);
+  assertCondition(
+    cloneGraphWindowSource.includes('for (int neighbor : TraceHooks.iterationBindAtLine(7, "adjList", node, TraceHooks.readObjectArrayAtLine(7, "adjList", adjList, node, "node"), "neighbor", "node"))') &&
+      cloneGraphWindowSource.includes('"kind\\":\\"mutate\\",\\"line\\":8') &&
+      cloneGraphWindowSource.includes('\\"method\\":\\"add\\",\\"args\\":[" + TraceHooks.serializeResult(neighbor) + "]}'),
+    'Java rewriter should preserve clone-graph enhanced-for row reads and indexed cloned.add mutation args'
+  );
+
+  const courseScheduleSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  boolean solve(int numCourses) {
+    List<List<Integer>> graph = new ArrayList<>();
+    for (int i = 0; i < numCourses; i++) {
+      graph.add(new ArrayList<>());
+    }
+    Deque<Integer> queue = new ArrayDeque<>();
+    queue.addLast(0);
+    for (int next : graph.get(0)) {
+      queue.addLast(next);
+    }
+    return queue.size() > 0;
+  }
+}`, 'solve');
+  assertCondition(
+    courseScheduleSource.includes('TraceHooks.addCollectionAtLine(7, "graph", graph, new ArrayList<>())'),
+    'Java source augmentation should emit mutate args for plain adjacency-list initialization adds'
+  );
+  assertCondition(
+    courseScheduleSource.includes('TraceHooks.emitMutatingCallAtLine(10, "queue", "addLast", 0)'),
+    'Java source augmentation should preserve runtime args for queue addLast mutations'
+  );
+  const queueRemoveSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    Queue<Integer> queue = new ArrayDeque<>();
+    queue.offer(1);
+    int node = queue.remove();
+    return node == 1;
+  }
+}`, 'solve');
+  assertCondition(
+    queueRemoveSource.includes('TraceHooks.removeQueueAtLine(7, "queue", queue)') &&
+      !queueRemoveSource.includes('queue, )'),
+    'Java source augmentation should rewrite no-arg Queue.remove() through a value-returning V4 hook without emitting a trailing comma'
+  );
+  assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    Queue<Integer> queue = new ArrayDeque<>();
+    queue.offer(1);
+    int node = queue.remove();
+    return node == 1;
+  }
+}`, 'solve');
+  assertCondition(
+    courseScheduleSource.includes('TraceHooks.iterationBindAtLine(11, "graph", 0, TraceHooks.readObjectListAtLine(11, "graph", graph, 0, null), "next", null)') ||
+      courseScheduleSource.includes('TraceHooks.iterationBindAtLine(11, "graph", 0, TraceHooks.readListAtLine(11, "graph", graph, 0, null), "next", null)'),
+    'Java source augmentation should emit nested enhanced-for iteration binding over adjacency-list get(...) sources'
+  );
+
+  const arraysFillSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  int solve(int n) {
+    int[] matchRight = new int[n];
+    Arrays.fill(matchRight, -1);
+    return matchRight[0];
+  }
+}`, 'solve');
+  assertCondition(
+    arraysFillSource.includes('TraceHooks.fillArrayAtLine(6, "matchRight", matchRight, -1)'),
+    'Java source augmentation should rewrite Arrays.fill(array, value) as an array fill mutation hook'
+  );
+  assertJavaSourceCompiles(arraysFillSource, 'augmented Java Arrays.fill source');
+
+  const arraysSortSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  int solve(int[][] intervals) {
+    int[][] sorted = intervals.clone();
+    Arrays.sort(sorted, (left, right) -> Integer.compare(left[0], right[0]));
+    return sorted[0][0];
+  }
+}`, 'solve');
+  assertCondition(
+    arraysSortSource.includes('TraceHooks.sortArrayAtLine(6, "sorted", sorted, (left, right) -> Integer.compare(left[0], right[0]))'),
+    'Java source augmentation should rewrite Arrays.sort(array, comparator) as an array sort mutation hook'
+  );
+  assertJavaSourceCompiles(arraysSortSource, 'augmented Java Arrays.sort source');
+
+  const charLiteralBraceSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  public boolean isValid(String s) {
+    Deque<Character> stack = new ArrayDeque<>();
+    for (int i = 0; i < s.length(); i += 1) {
+      char ch = s.charAt(i);
+      if (ch == '(' || ch == '[' || ch == '{') {
+        stack.push(ch);
+      } else {
+        if (stack.isEmpty()) {
+          return false;
+        }
+        char open = stack.pop();
+        if ((ch == ')' && open != '(') || (ch == ']' && open != '[') || (ch == '}' && open != '{')) {
+          return false;
+        }
+      }
+    }
+    return stack.isEmpty();
+  }
+}`, 'isValid');
+  const returnIndex = charLiteralBraceSource.indexOf('return stack.isEmpty();');
+  const preReturnLines = charLiteralBraceSource.slice(0, returnIndex).split('\n');
+  const lastLineSnapshotBeforeReturn = preReturnLines.findLast((line) => line.includes('TraceHooks.emitLineAtLine(')) ?? '';
+  assertCondition(
+    !lastLineSnapshotBeforeReturn.includes('TraceHooks.serializeResult(i)') &&
+      !lastLineSnapshotBeforeReturn.includes('TraceHooks.serializeResult(ch)'),
+    'Java local snapshot augmentation should ignore braces inside char literals when closing loop-local scopes'
   );
 
   console.log('PASS: native Java rewriter preserves TC83 regression gap shapes');
@@ -924,6 +1661,16 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                   ],
                 });
               }
+              if (latestSource.includes('class TreeNode') && latestSource.includes('class ListNode') && latestSource.includes('class UnionFind')) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify([3, 2, 2]),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 42, function: '__tracecodeScript' }),
+                    nativeJavaEvent({ kind: 'return', line: 50, function: '__tracecodeScript' }),
+                  ],
+                });
+              }
               if (latestSource.includes('buildGraph')) {
                 return JSON.stringify({
                   success: true,
@@ -955,6 +1702,61 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                     nativeJavaEvent({ kind: 'line', line: 8, function: 'solve' }),
                     nativeJavaEvent({ kind: 'mutate', line: 8, function: 'solve', target: { variable: 'this', path: ['values'] }, method: 'add' }),
                     nativeJavaEvent({ kind: 'return', line: 9, function: 'solve', value: 1 }),
+                  ],
+                });
+              }
+              if (latestSource.includes('totalAccounts') && latestSource.includes('TraceHooks.iterationBindAtLine')) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(5),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 2, function: 'totalAccounts', args: { accounts: [['John', 'a@mail'], ['Ada', 'b@mail', 'c@mail']] } }),
+                    nativeJavaEvent({
+                      kind: 'read',
+                      line: 4,
+                      target: { variable: 'accounts', path: [0] },
+                      value: ['John', 'a@mail'],
+                      binding: { kind: 'iteration', variable: 'account' },
+                    }),
+                    nativeJavaEvent({ kind: 'write', line: 4, target: { variable: 'account' }, value: ['John', 'a@mail'] }),
+                    nativeJavaEvent({ kind: 'return', line: 7, function: 'totalAccounts', value: 5 }),
+                  ],
+                });
+              }
+              if (latestSource.includes('putMapIfAbsentAtLine') && latestSource.includes('inDegree')) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(2),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 4, function: 'order', args: { letters: ['z', 'a', 'z'] } }),
+                    nativeJavaEvent({
+                      kind: 'mutate',
+                      line: 7,
+                      target: { variable: 'inDegree', path: ['z'], indexSources: ['ch'] },
+                      method: 'putIfAbsent',
+                      args: ['z', 0],
+                    }),
+                    nativeJavaEvent({ kind: 'return', line: 9, function: 'order', value: 2 }),
+                  ],
+                });
+              }
+              if (
+                (latestSource.includes('putFieldMapIfAbsentAtLine') && latestSource.includes('children')) ||
+                (latestSource.includes('class TrieNode') && latestSource.includes('children.putIfAbsent'))
+              ) {
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(2),
+                  events: [
+                    nativeJavaEvent({ kind: 'call', line: 8, function: 'insert', args: { word: 'app' } }),
+                    nativeJavaEvent({
+                      kind: 'mutate',
+                      line: 10,
+                      target: { variable: 'node', path: ['children', 'a'], indexSources: [null, 'ch'] },
+                      method: 'putIfAbsent',
+                      args: ['a', 'tracecode.user.TrieNode@1'],
+                    }),
+                    nativeJavaEvent({ kind: 'return', line: 12, function: 'insert', value: 2 }),
                   ],
                 });
               }
@@ -1786,7 +2588,7 @@ class Solution {
       int mid = left + (right - left) / 2;
       TraceHooks.emitLineAtLine(7, "mid=" + mid);
       TraceHooks.emitLineAtLine(8);
-      if (TraceHooks.readIntArrayAtLine(8, "nums", nums, mid) < target)
+      if (TraceHooks.readIntArrayAtLine(8, "nums", nums, mid, "mid") < target)
         left = mid + 1;
       else
         right = mid;
@@ -1811,7 +2613,7 @@ class Solution {
     TraceHooks.emitLineAtLine(6);
     for (int i = 0; i < nums.length; i++) {
       TraceHooks.emitLineAtLine(7);
-      int complement = target - TraceHooks.readIntArrayAtLine(7, "nums", nums, i);
+      int complement = target - TraceHooks.readIntArrayAtLine(7, "nums", nums, i, "i");
       TraceHooks.emitLineAtLine(8);
       if (seen.containsKey(complement)) {
         TraceHooks.emitLineAtLine(9);
@@ -1820,7 +2622,7 @@ class Solution {
         return out;
       }
       TraceHooks.emitLineAtLine(11);
-      seen.put(TraceHooks.readIntArrayAtLine(11, "nums", nums, i), i);
+      seen.put(TraceHooks.readIntArrayAtLine(11, "nums", nums, i, "i"), i);
       TraceHooks.emitMutatingCallAtLine(11, "seen", "put");
     }
     TraceHooks.emitReturnAtLine(13, "twoSum");
@@ -1957,11 +2759,15 @@ ${exportsSource.replace('public class Exports', `public class ${exportsClassName
 }
 
 async function main(): Promise<void> {
+  testJavaHelperJarDoesNotExposeDeprecatedSpikePackages();
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
   testJavaBrowserHelperWorkspaceDirectories();
   testJavaProjectEventsRandomAccessKernelReads();
   testJavaRuntimeMultiSnapshotFragments();
+  testJavaEnhancedForHeaderExpansionDropsStaleBindingSnapshots();
+  testJavaRuntimeRecursiveCallStacks();
+  testJavaRuntimeMutationHooksEmitPostSnapshots();
 
   const workerSource = await loadWorkerSource();
   const augmentationSource = await loadJavaSourceAugmentationSource();
@@ -3778,6 +4584,89 @@ result = new int[] { 0, 1 };`;
     );
     console.log('PASS: java script mode normalizes to synthetic solution method');
 
+    const scriptWithLocalTypesCode = `import java.util.*;
+
+class TreeNode {
+  int val;
+  TreeNode left;
+  TreeNode right;
+  TreeNode(int val) {
+    this.val = val;
+  }
+}
+
+class ListNode {
+  int val;
+  ListNode next;
+  ListNode(int val) {
+    this.val = val;
+  }
+}
+
+class UnionFind {
+  int[] parent;
+  UnionFind(int n) {
+    parent = new int[n];
+    for (int i = 0; i < n; i++) parent[i] = i;
+  }
+  int find(int x) {
+    if (parent[x] != x) parent[x] = find(parent[x]);
+    return parent[x];
+  }
+}
+
+private static int maxDepth(TreeNode root) {
+  if (root == null) return 0;
+  return 1 + Math.max(maxDepth(root.left), maxDepth(root.right));
+}
+
+TreeNode root = new TreeNode(3);
+root.left = new TreeNode(9);
+root.right = new TreeNode(20);
+root.right.left = new TreeNode(15);
+ListNode head = new ListNode(1);
+head.next = new ListNode(2);
+UnionFind uf = new UnionFind(3);
+Object result = new Object[] { maxDepth(root), head.next.val, uf.find(2) };`;
+
+    const localTypesScriptExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+      sourceText?: string;
+      error?: string | null;
+    }>('execute-with-tracing', {
+      code: scriptWithLocalTypesCode,
+      functionName: '',
+      inputs: {},
+      executionStyle: 'function',
+    });
+
+    assertCondition(
+      localTypesScriptExecute.success === true,
+      `Java script execution with local classes should succeed: ${localTypesScriptExecute.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(localTypesScriptExecute.output) === JSON.stringify([3, 2, 2]),
+      `Java script local class output should serialize result, received ${JSON.stringify(localTypesScriptExecute.output)}`
+    );
+    const localTypesScriptRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      Boolean(
+        localTypesScriptRewrite?.source.includes('class TreeNode') &&
+          localTypesScriptRewrite.source.indexOf('class TreeNode') < localTypesScriptRewrite.source.indexOf('private static int maxDepth') &&
+          localTypesScriptRewrite.source.indexOf('private static int maxDepth') < localTypesScriptRewrite.source.indexOf('Object __tracecodeScript()')
+      ),
+      'Java script source should preserve local type declarations before helper methods and script statements'
+    );
+    assertCondition(
+      Boolean(localTypesScriptRewrite?.exportsSource.includes('Solution solution = new Solution();')) &&
+        !/\bprivate static TreeNode tree\(/.test(localTypesScriptRewrite?.exportsSource ?? '') &&
+        !/\bprivate static ListNode list\(/.test(localTypesScriptRewrite?.exportsSource ?? ''),
+      'Java script exports should not inject unqualified TreeNode/ListNode input materializers'
+    );
+    console.log('PASS: java script mode supports local classes');
+
     const loopCode = `class Solution {
   int uniquePaths(int rows, int cols) {
     int[][] dp = new int[rows][cols];
@@ -3832,6 +4721,30 @@ class Solution {
       treeRewrite?.exportsSource.includes('TreeNode root = buildTree(new Integer[] { 1, null, 2, 3 });'),
       'Java worker should materialize level-order TreeNode array inputs when the signature expects TreeNode'
     );
+    assertCondition(
+      !treeRewrite?.exportsSource.includes('class TreeNode {'),
+      'Java worker should not inject fallback TreeNode when user code declares TreeNode'
+    );
+
+    const defaultTreeInputCode = `class Solution {
+  int solve(TreeNode root) {
+    return root == null ? 0 : root.val + root.value;
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
+      code: defaultTreeInputCode,
+      functionName: 'solve',
+      inputs: { root: [4, null, 2] },
+      executionStyle: 'function',
+    });
+    const defaultTreeRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      defaultTreeRewrite?.exportsSource.includes('class TreeNode {') &&
+        defaultTreeRewrite.exportsSource.includes('int value;') &&
+        defaultTreeRewrite.exportsSource.includes('this.value = val;'),
+      'Java worker should inject TraceCode-compatible fallback TreeNode with val/value aliases'
+    );
 
     const listInputCode = `class ListNode {
   int val;
@@ -3857,6 +4770,30 @@ class Solution {
         'ListNode head = buildList(new Object[] { 1, 2, 3 }, sequentialNextIndices(3));'
       ),
       'Java worker should materialize array inputs as ListNode only when the signature expects ListNode'
+    );
+    assertCondition(
+      !listRewrite?.exportsSource.includes('class ListNode {'),
+      'Java worker should not inject fallback ListNode when user code declares ListNode'
+    );
+
+    const defaultListInputCode = `class Solution {
+  int solve(ListNode head) {
+    return head == null ? 0 : head.val + head.value;
+  }
+}`;
+
+    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
+      code: defaultListInputCode,
+      functionName: 'solve',
+      inputs: { head: [5, 6] },
+      executionStyle: 'function',
+    });
+    const defaultListRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      defaultListRewrite?.exportsSource.includes('class ListNode {') &&
+        defaultListRewrite.exportsSource.includes('int value;') &&
+        defaultListRewrite.exportsSource.includes('this.value = val;'),
+      'Java worker should inject TraceCode-compatible fallback ListNode with val/value aliases'
     );
 
     const objectArrayInputCode = `class Solution {
@@ -4099,6 +5036,29 @@ Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
       lowerBoundSource.includes('int right = TraceHooks.readArrayLengthAtLine(5, "nums", nums);'),
       'Java rewritten array length reads should emit runtime indexed-state context'
     );
+    const nestedArrayLengthSource = augmentRewrittenJavaForTest(`class Solution {
+  public int width(char[][] grid) {
+    if (grid == null || grid.length == 0 || grid[0].length == 0) return 0;
+    return grid[0].length;
+  }
+}`);
+    assertCondition(
+      nestedArrayLengthSource.includes('TraceHooks.readArrayLengthAtLine(3, "grid", TraceHooks.readObjectArrayAtLine(3, "grid", grid, 0, null), 0, null)') &&
+        nestedArrayLengthSource.includes('TraceHooks.readArrayLengthAtLine(4, "grid", TraceHooks.readObjectArrayAtLine(4, "grid", grid, 0, null), 0, null)'),
+      `Java rewritten nested array length reads should emit grid[0].length as a nested metadata read, received ${nestedArrayLengthSource}`
+    );
+    assertJavaSourceCompiles(nestedArrayLengthSource, 'augmented Java nested array length source');
+    const inlineReturnSource = assertNativeJavaRewriterCompiles(`class Solution {
+  public int dfs(Integer node) {
+    if (node == null) return 0;
+    return node;
+  }
+}`, 'dfs');
+    assertCondition(
+      inlineReturnSource.includes('TraceHooks.emitSerializedReturnAtLine(3, "dfs", TraceHooks.serializeResult(__tracecodeReturnValue3));') &&
+        inlineReturnSource.includes('int __tracecodeReturnValue3 = 0;'),
+      'Java rewritten inline returns should emit typed concrete return values'
+    );
     assertCondition(
       lowerBoundSource.includes(
         'TraceHooks.emitLineAtLine(8, "" + " nums=" + TraceHooks.serializeResult(nums) + " target=" + TraceHooks.serializeResult(target) + " left=" + TraceHooks.serializeResult(left) + " right=" + TraceHooks.serializeResult(right) + " mid=" + TraceHooks.serializeResult(mid));'
@@ -4108,12 +5068,144 @@ Object result = lowerBound(new int[] {1, 3, 3, 5, 8}, 4);`;
     assertCondition(
       lowerBoundSource.includes('int __tracecodeReturnValue0 = left;') &&
         lowerBoundSource.includes(
-          'TraceHooks.emitReturnAtLine(11, "lowerBound", __tracecodeReturnValue0);'
+          'TraceHooks.emitSerializedReturnAtLine(11, "lowerBound", TraceHooks.serializeResult(__tracecodeReturnValue0));'
         ) &&
         lowerBoundSource.includes('return __tracecodeReturnValue0;'),
       'Java rewritten return hooks should emit serialized return values like JS/Python'
     );
     console.log('PASS: java worker augments rewritten call hooks and return hooks with live snapshots');
+
+    const twoPointerScalarUpdateSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  public boolean two_pointers_converging(List<String> arr) {
+    if (arr.isEmpty()) return true;
+    int left = 0;
+    int right = arr.size() - 1;
+    while (left < right) {
+      if (!Objects.equals(arr.get(left), arr.get(right))) return false;
+      left += 1;
+      right -= 1;
+    }
+    return true;
+  }
+}`, 'two_pointers_converging');
+    assertCondition(
+      twoPointerScalarUpdateSource.includes('TraceHooks.emitRuntimeSnapshotAtLine(10, "left", left);') &&
+        twoPointerScalarUpdateSource.includes('TraceHooks.emitRuntimeSnapshotAtLine(11, "right", right);'),
+      'Java rewritten scalar compound assignments should emit same-line runtime snapshots'
+    );
+    console.log('PASS: java worker snapshots scalar compound updates on the update line');
+
+    const scalarDeclarationWriteSource = assertNativeJavaRewriterCompiles(`class TreeNode {
+  int val;
+  TreeNode left;
+  TreeNode right;
+}
+
+class Solution {
+  private int dfs(TreeNode node) {
+    if (node == null) return 0;
+    int leftGain = Math.max(0, dfs(node.left));
+    int rightGain = Math.max(0, dfs(node.right));
+    return node.val + Math.max(leftGain, rightGain);
+  }
+}`, 'dfs');
+    assertCondition(
+      scalarDeclarationWriteSource.includes('TraceHooks.emitScalarWriteAtLine(10, "leftGain", leftGain);') &&
+        scalarDeclarationWriteSource.includes('TraceHooks.emitScalarWriteAtLine(11, "rightGain", rightGain);'),
+      'Java rewritten scalar declarations with call initializers should emit same-line scalar write events'
+    );
+    console.log('PASS: java worker emits scalar write events for initialized local declarations');
+
+    const multilineCollectionDeclarationSource = augmentRewrittenJavaForTest(`import java.util.*;
+import java.util.stream.*;
+
+class Solution {
+  public boolean canSplitTeams(int n) {
+    List<List<Integer>> adj = IntStream
+        .range(0, n)
+        .mapToObj(i -> new ArrayList<Integer>())
+        .collect(Collectors.toList());
+    return adj.size() == n;
+  }
+}`, 'canSplitTeams');
+    assertCondition(
+      multilineCollectionDeclarationSource.includes('TraceHooks.emitScalarWriteAtLine(6, "adj", adj);'),
+      'Java rewritten multiline local declarations should emit a creation write at the declaration line'
+    );
+    assertJavaSourceCompiles(multilineCollectionDeclarationSource, 'augmented Java multiline collection declaration source');
+
+    const multilineArrayDeclarationSource = augmentRewrittenJavaForTest(`class Solution {
+  public int solve(int[] cell) {
+    int row = cell[0];
+    int col = cell[1];
+    int[][] neighbors = new int[][] {
+      new int[] { row + 1, col },
+      new int[] { row - 1, col }
+    };
+    return neighbors.length;
+  }
+    }`, 'solve');
+    assertCondition(
+      multilineArrayDeclarationSource.includes('TraceHooks.emitLineAtLine(5,') &&
+        multilineArrayDeclarationSource.includes('TraceHooks.emitScalarWriteAtLine(5, "neighbors", neighbors);') &&
+        !multilineArrayDeclarationSource.includes('TraceHooks.emitScalarWriteAtLine(4, "neighbors", neighbors);') &&
+        !multilineArrayDeclarationSource.includes('TraceHooks.emitScalarWriteAtLine(9, "neighbors", neighbors);'),
+      'Java rewritten multiline array declarations should emit creation writes on the declaration line, not the previous executable line or closing initializer line'
+    );
+    assertJavaSourceCompiles(multilineArrayDeclarationSource, 'augmented Java multiline array declaration source');
+    console.log('PASS: java worker emits scalar writes for multiline initialized local declarations');
+
+    const tracedArrayLengthIndexSource = assertNativeJavaRewriterCompiles(`class Solution {
+  public int solve(int[] days) {
+    int lastDay = days[days.length - 1];
+    return lastDay;
+  }
+}`, 'solve');
+    assertCondition(
+      tracedArrayLengthIndexSource.includes('TraceHooks.readIntArrayAtLine(3, "days", days, days.length - 1, "days.length - 1");') &&
+        !tracedArrayLengthIndexSource.includes('"TraceHooks.readArrayLengthAtLine'),
+      'Java array reads with traced length expressions should not emit unescaped TraceHooks source strings'
+    );
+
+    const multilineControlHeaderSource = assertNativeJavaRewriterCompiles(`class Solution {
+  public boolean solve(int[][] grid, boolean[][] visited, int nextRow, int nextCol, int n) {
+    if (
+      nextRow >= 0 && nextRow < n &&
+      nextCol >= 0 && nextCol < n &&
+      !visited[nextRow][nextCol] &&
+      grid[nextRow][nextCol] == 0
+    ) {
+      visited[nextRow][nextCol] = true;
+      return true;
+    }
+    return false;
+  }
+}`, 'solve');
+    assertCondition(
+      !multilineControlHeaderSource.includes('TraceHooks.emitLineAtLine(8') ||
+        multilineControlHeaderSource.indexOf('TraceHooks.emitLineAtLine(8') > multilineControlHeaderSource.indexOf(') {'),
+      'Java multiline control header closing line should not receive an injected line hook before the closing paren'
+    );
+
+    const lambdaInitializerSource = augmentRewrittenJavaForTest(`import java.util.PriorityQueue;
+
+class Solution {
+  public int solve(int[][] matrix) {
+    PriorityQueue<int[]> heap = new PriorityQueue<>((a, b) -> {
+      if (a[0] != b[0]) return Integer.compare(a[0], b[0]);
+      return Integer.compare(a[1], b[1]);
+    });
+    heap.offer(new int[] { matrix[0][0], 0 });
+    return heap.peek()[0];
+  }
+}`, 'solve');
+    assertJavaSourceCompiles(lambdaInitializerSource, 'augmented Java lambda initializer source');
+    assertCondition(
+      !lambdaInitializerSource.includes('TraceHooks.emitScalarWriteAtLine(5, "heap", heap);'),
+      'Java lambda/block initializers should not emit local declaration writes inside the initializer before assignment completes'
+    );
 
     const twoSumCode = `import java.util.*;
 
@@ -4140,16 +5232,16 @@ class Solution {
 
     const twoSumSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.emitCallAtLine(4, "twoSum"');
     assertCondition(
-      twoSumSource.includes('TraceHooks.containsMapKeyAtLine(8, "seen", seen, complement)'),
+      twoSumSource.includes('TraceHooks.containsMapKeyAtLine(8, "seen", seen, complement, "complement")'),
       'Java worker should rewrite Map.containsKey into keyed TraceHooks access'
     );
     assertCondition(
-      twoSumSource.includes('TraceHooks.readMapAtLine(9, "seen", seen, complement)'),
+      twoSumSource.includes('TraceHooks.readMapAtLine(9, "seen", seen, complement, "complement")'),
       'Java worker should rewrite Map.get into keyed TraceHooks read'
     );
     assertCondition(
-      twoSumSource.includes('TraceHooks.writeMapAtLine(11, "seen", seen, TraceHooks.readIntArrayAtLine(11, "nums", nums, i), i);'),
-      'Java worker should rewrite Map.put into keyed TraceHooks write while preserving argument instrumentation'
+      twoSumSource.includes('TraceHooks.writeMapAtLine(11, "seen", seen, TraceHooks.readIntArrayAtLine(11, "nums", nums, i, "i"), i, "nums[i]");'),
+      'Java worker should rewrite Map.put into keyed TraceHooks write while preserving key expression provenance'
     );
     assertCondition(
       !twoSumSource.includes('TraceHooks.emitMutatingCallAtLine(11, "seen", "put");'),
@@ -4163,6 +5255,105 @@ class Solution {
     );
     console.log('PASS: java worker rewrites Map operations to keyed runtime trace hooks');
 
+    const foreachCode = `import java.util.*;
+
+class Solution {
+  public int totalLength(List<String> words) {
+    int total = 0;
+    for (String word : words) {
+      total += word.length();
+    }
+    return total;
+  }
+}`;
+
+    const foreachExecute = await harness.sendMessage<{
+      success: boolean;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: foreachCode,
+      functionName: 'totalLength',
+      inputs: { words: ['za', 'x'] },
+      executionStyle: 'function',
+    });
+    assertCondition(foreachExecute.success === true, 'Java enhanced-for trace should execute successfully');
+    const foreachSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.iterationBindAtLine');
+    assertCondition(
+      foreachSource.includes('TraceHooks.iterationBindAtLine(') &&
+        foreachSource.includes('"words", words, "word"'),
+      'Java worker should wrap enhanced-for collection bindings with runtime iteration reads'
+    );
+
+    const foreachCharSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  public int countChars(List<String> words) {
+    int total = 0;
+    for (String word : words) {
+      for (char ch : word.toCharArray()) {
+        total += ch == 'a' ? 1 : 0;
+      }
+    }
+    return total;
+  }
+}`, 'countChars');
+    assertCondition(
+      foreachCharSource.includes('for (char ch : TraceHooks.iterationBindAtLine(7, "word", word.toCharArray(), "ch")) {'),
+      `Java worker should wrap foreach over word.toCharArray() with string character iteration binding reads, received ${foreachCharSource}`
+    );
+
+    const foreachArraySource = augmentRewrittenJavaForTest(`class Solution {
+  public int totalAccounts(Object[][] accounts) {
+    int total = 0;
+    for (Object[] account : accounts) {
+      total += account.length;
+    }
+    return total;
+  }
+}`, 'totalAccounts');
+    assertCondition(
+      foreachArraySource.includes('TraceHooks.iterationBindAtLine(4, "accounts", accounts, "account")'),
+      'Java worker should wrap enhanced-for bindings over multidimensional array parameters'
+    );
+
+    const foreachArrayExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: `class Solution {
+  public int totalAccounts(Object[][] accounts) {
+    int total = 0;
+    for (Object[] account : accounts) {
+      total += account.length;
+    }
+    return total;
+  }
+}`,
+      functionName: 'totalAccounts',
+      inputs: { accounts: [['John', 'a@mail'], ['Ada', 'b@mail', 'c@mail']] },
+      executionStyle: 'function',
+    });
+    assertCondition(foreachArrayExecute.success === true, 'Java Object[][] enhanced-for trace should execute successfully');
+    const foreachArrayTrace = javaTraceHooksEventsToRuntimeTrace(foreachArrayExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      foreachArrayTrace.events.some((event) =>
+        event.kind === 'read' &&
+        event.line === 4 &&
+        'variable' in event.target &&
+        event.target.variable === 'accounts' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+        event.binding?.kind === 'iteration' &&
+        event.binding.variable === 'account'
+      ),
+      `Java enhanced-for over Object[][] should emit an iteration binding read, received ${JSON.stringify(foreachArrayTrace.events)}`
+    );
+    console.log('PASS: java worker emits enhanced-for iteration binding reads');
+
     const defaultMapCode = `import java.util.*;
 
 class Solution {
@@ -4173,20 +5364,24 @@ class Solution {
   }
 }`;
 
-    await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
+    const defaultMapExecute = await harness.sendMessage<{
+      success: boolean;
+      events?: string[];
+    }>('execute-with-tracing', {
       code: defaultMapCode,
       functionName: 'solve',
       inputs: { nums: [1] },
       executionStyle: 'function',
     });
+    assertCondition(defaultMapExecute.success === true, 'Java Map.getOrDefault update execution should succeed');
 
     const defaultMapSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.readMapOrDefaultAtLine');
     assertCondition(
-      defaultMapSource.includes('TraceHooks.readMapOrDefaultAtLine(6, "freq", freq, 1, 0)'),
+      defaultMapSource.includes('TraceHooks.readMapOrDefaultAtLine(6, "freq", freq, 1, 0, null)'),
       'Java worker should rewrite Map.getOrDefault into keyed TraceHooks get access'
     );
     assertCondition(
-      defaultMapSource.includes('TraceHooks.writeMapAtLine(6, "freq", freq, 1, TraceHooks.readMapOrDefaultAtLine(6, "freq", freq, 1, 0) + 1);'),
+      defaultMapSource.includes('TraceHooks.writeMapAtLine(6, "freq", freq, 1, TraceHooks.readMapOrDefaultAtLine(6, "freq", freq, 1, 0, null) + 1, null);'),
       'Java worker should rewrite Map.put with literal keys while preserving getOrDefault instrumentation'
     );
     console.log('PASS: java worker rewrites Map.getOrDefault default updates');
@@ -4261,13 +5456,13 @@ class Solution {
     assertCondition(graphExecute.success === true, 'Java graph adjacency execution should succeed');
     const graphSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.emitCallAtLine(4, "buildGraph"');
     assertCondition(
-      graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, 0).add(1);') &&
-        graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", 0, "add");') &&
+      graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, 0, null).add(1);') &&
+        graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", 0, "add", null, 1);') &&
         !graphSource.includes('emit' + 'Graph' + 'AdjacencyStateAtLine'),
       'Java worker should rewrite indexed adjacency mutations with receiver indices without semantic graph state'
     );
     assertCondition(
-      graphSource.includes('for (int v : TraceHooks.readObjectListAtLine(11, "graph", graph, u))'),
+      graphSource.includes('for (int v : TraceHooks.readObjectListAtLine(11, "graph", graph, u, "u"))'),
       'Java worker should rewrite adjacency traversal graph.get(u) reads'
     );
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');
@@ -4288,7 +5483,7 @@ class Solution {
         event.target.variable === 'graph' &&
         event.method === 'add' &&
         'path' in event.target &&
-        JSON.stringify(event.target.path) === JSON.stringify([1])
+        JSON.stringify(event.target.path) === JSON.stringify([0])
       ),
       'Java graph adjacency runtime events should emit runtime trace indexed receiver mutations'
     );
@@ -4308,6 +5503,198 @@ class Solution {
       'Java runtime trace graph traces should not carry visualization classifications'
     );
     console.log('PASS: java worker indexed receiver graph operations emit neutral runtime trace accesses');
+
+    const cloneGraphCode = `import java.util.*;
+
+class Solution {
+  public int countReachable(int[][] adjList) {
+    boolean[] visited = new boolean[adjList.length];
+    dfs(0, adjList, visited);
+    int count = 0;
+    for (boolean flag : visited) {
+      if (flag) count++;
+    }
+    return count;
+  }
+
+  private void dfs(int node, int[][] adjList, boolean[] visited) {
+    if (visited[node]) return;
+    visited[node] = true;
+    for (int neighbor : adjList[node]) {
+      int neighborIndex = neighbor - 1;
+      if (neighborIndex >= 0 && neighborIndex < adjList.length && !visited[neighborIndex]) {
+        dfs(neighborIndex, adjList, visited);
+      }
+    }
+  }
+}`;
+
+    const cloneGraphSource = assertNativeJavaRewriterCompiles(cloneGraphCode, 'countReachable');
+    assertCondition(
+      cloneGraphSource.includes('TraceHooks.emitReturnAtLine(23, "dfs");'),
+      `Java rewriter should emit an implicit return hook before recursive void helper exit, received ${cloneGraphSource}`
+    );
+    console.log('PASS: java rewriter emits implicit returns for recursive void helpers');
+
+    const mutatingExpressionCode = `import java.util.*;
+class Solution {
+  int solve() {
+    PriorityQueue<Integer> heap = new PriorityQueue<>();
+    heap.offer(1);
+    int top = heap.poll();
+    top = heap.poll();
+    return top;
+  }
+}`;
+    const mutatingExpressionSource = augmentRewrittenJavaForTest(mutatingExpressionCode, 'solve');
+    assertCondition(
+      /int top = TraceHooks\.pollQueueAtLine\(\d+, "heap", heap\);/.test(mutatingExpressionSource),
+      'Java worker should rewrite queue poll declaration RHS mutations to value-returning V4 hooks'
+    );
+    assertCondition(
+      /top = TraceHooks\.pollQueueAtLine\(\d+, "heap", heap\);\s*\n\s*(?:TraceHooks\.emitScalarWriteAtLine\(\d+, "top", top\);\s*\n\s*)?TraceHooks\.emitRuntimeSnapshotAtLine\(\d+, "top", top\);/.test(mutatingExpressionSource),
+      'Java worker should rewrite queue poll assignment RHS mutations to value-returning V4 hooks'
+    );
+    console.log('PASS: java worker snapshots receiver state after mutating RHS expressions');
+
+    const heapSetCode = `import java.util.*;
+class Solution {
+  int solve() {
+    List<Integer> heap = new ArrayList<>();
+    heap.add(4);
+    heap.add(9);
+    int i = 1;
+    int parent = 0;
+    int tmp = heap.get(parent);
+    heap.set(parent, heap.get(i));
+    heap.set(i, tmp);
+    heap.set(0, heap.get(i));
+    return heap.get(0);
+  }
+}`;
+    const heapSetSource = assertNativeJavaRewriterCompiles(heapSetCode);
+    assertCondition(
+      heapSetSource.includes('TraceHooks.writeListAtLine(10, "heap", heap, parent, TraceHooks.readListAtLine(10, "heap", heap, i, "i"), "parent")') &&
+        heapSetSource.includes('TraceHooks.writeListAtLine(11, "heap", heap, i, tmp, "i")') &&
+        heapSetSource.includes('TraceHooks.writeListAtLine(12, "heap", heap, 0, TraceHooks.readListAtLine(12, "heap", heap, i, "i"), null)'),
+      'Java rewriter should route List.set heap mutations through writeListAtLine hooks'
+    );
+
+    const heapSetTmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-heap-set-hooks-'));
+    let heapSetHookEvents: string[] = [];
+    try {
+      const sourcePath = join(heapSetTmpRoot, 'Main.java');
+      const classesPath = join(heapSetTmpRoot, 'classes');
+      writeFileSync(
+        sourcePath,
+        `import tracecode.user.TraceHooks;
+import java.util.*;
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    List<Integer> heap = new ArrayList<>();
+    heap.add(4);
+    heap.add(9);
+    TraceHooks.writeListAtLine(10, "heap", heap, 0, heap.get(1), "parent");
+    TraceHooks.writeListAtLine(11, "heap", heap, 1, 4, "i");
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}`
+      );
+      execFileSync('mkdir', ['-p', classesPath]);
+      execFileSync('javac', ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath], {
+        cwd: process.cwd(),
+        stdio: 'pipe',
+      });
+      heapSetHookEvents = execFileSync('java', ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim().split(/\r?\n/).filter(Boolean);
+    } finally {
+      rmSync(heapSetTmpRoot, { recursive: true, force: true });
+    }
+    const heapSetTrace = javaTraceHooksEventsToRuntimeTrace(heapSetHookEvents, undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    const heapSetMutations = heapSetTrace.events.filter(
+      (event) =>
+        event.kind === 'mutate' &&
+        'variable' in event.target &&
+        event.target.variable === 'heap' &&
+        event.method === 'set'
+    );
+    assertCondition(
+      heapSetMutations.some((event) => JSON.stringify(event.args) === JSON.stringify([0, 9])) &&
+        heapSetMutations.some((event) => JSON.stringify(event.args) === JSON.stringify([1, 4])),
+      `Java List.set hooks should emit mutate events with evaluated [index,value] args, received ${JSON.stringify(heapSetMutations)}`
+    );
+    console.log('PASS: java worker emits List.set mutate events with evaluated args');
+
+    const stackPopIndexCode = `import java.util.*;
+class Solution {
+  int solve(int[] heights) {
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    int poppedHeight = heights[stack.pop()];
+    return poppedHeight;
+  }
+}`;
+    assertCondition(
+      assertNativeJavaRewriterCompiles(stackPopIndexCode).includes(
+        'TraceHooks.readIntArrayAtLine(6, "heights", heights, TraceHooks.popDequeAtLine(6, "stack", stack), "stack.pop()")'
+      ),
+      'Java rewriter should preserve array-read evidence while wrapping Deque.pop index mutations'
+    );
+    const stackPopTmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-stack-pop-hooks-'));
+    let stackPopHookEvents: string[] = [];
+    try {
+      const sourcePath = join(stackPopTmpRoot, 'Main.java');
+      const classesPath = join(stackPopTmpRoot, 'classes');
+      writeFileSync(
+        sourcePath,
+        `import tracecode.user.TraceHooks;
+import java.util.*;
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    Deque<Integer> stack = new ArrayDeque<>();
+    stack.push(0);
+    TraceHooks.popDequeAtLine(6, "stack", stack);
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}`
+      );
+      execFileSync('mkdir', ['-p', classesPath]);
+      execFileSync('javac', ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath], {
+        cwd: process.cwd(),
+        stdio: 'pipe',
+      });
+      stackPopHookEvents = execFileSync('java', ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim().split(/\r?\n/).filter(Boolean);
+    } finally {
+      rmSync(stackPopTmpRoot, { recursive: true, force: true });
+    }
+    const stackPopIndexTrace = javaTraceHooksEventsToRuntimeTrace(stackPopHookEvents, undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      stackPopIndexTrace.events.some(
+        (event) =>
+          event.kind === 'mutate' &&
+          'variable' in event.target &&
+          event.target.variable === 'stack' &&
+          event.method === 'pop' &&
+          JSON.stringify(event.args) === JSON.stringify([])
+      ),
+      `Java Deque.pop used as an array index should emit a no-arg mutate event, received ${JSON.stringify(stackPopIndexTrace.events)}`
+    );
+    console.log('PASS: java worker emits pop mutate events for array-index expressions');
 
     const fieldListCode = `import java.util.*;
 
@@ -4348,6 +5735,94 @@ class Solution {
       'Java field collection mutations should emit this-field mutate runtime events'
     );
     console.log('PASS: java worker rewrites field collection mutations as this-field runtime trace events');
+
+    const putIfAbsentCode = `import java.util.*;
+
+class Solution {
+  public int order(String[] letters) {
+    Map<String, Integer> inDegree = new HashMap<>();
+    for (String ch : letters) {
+      inDegree.putIfAbsent(ch, 0);
+    }
+    return inDegree.size();
+  }
+}`;
+    const putIfAbsentExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: putIfAbsentCode,
+      functionName: 'order',
+      inputs: { letters: ['z', 'a', 'z'] },
+      executionStyle: 'function',
+    });
+    assertCondition(putIfAbsentExecute.success === true, 'Java putIfAbsent trace should execute successfully');
+    const putIfAbsentTrace = javaTraceHooksEventsToRuntimeTrace(putIfAbsentExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      putIfAbsentTrace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 7 &&
+        'variable' in event.target &&
+        event.target.variable === 'inDegree' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify(['z']) &&
+        event.method === 'putIfAbsent' &&
+        JSON.stringify(event.args) === JSON.stringify(['z', 0]) &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify(['ch'])
+      ),
+      `Java putIfAbsent should emit keyed mutate args and index-source evidence, received ${JSON.stringify(putIfAbsentTrace.events)}`
+    );
+    console.log('PASS: java worker emits putIfAbsent mutation args and keyed evidence');
+
+    const fieldPutIfAbsentCode = `import java.util.*;
+
+class Solution {
+  static class TrieNode {
+    Map<Character, TrieNode> children = new HashMap<>();
+  }
+
+  public int insert(String word) {
+    TrieNode node = new TrieNode();
+    for (char ch : word.toCharArray()) {
+      node.children.putIfAbsent(ch, new TrieNode());
+    }
+    return node.children.size();
+  }
+}`;
+    const fieldPutIfAbsentExecute = await harness.sendMessage<{
+      success: boolean;
+      output: unknown;
+      events?: string[];
+    }>('execute-with-tracing', {
+      code: fieldPutIfAbsentCode,
+      functionName: 'insert',
+      inputs: { word: 'app' },
+      executionStyle: 'function',
+    });
+    assertCondition(fieldPutIfAbsentExecute.success === true, 'Java field putIfAbsent trace should execute successfully');
+    const fieldPutIfAbsentTrace = javaTraceHooksEventsToRuntimeTrace(fieldPutIfAbsentExecute.events ?? [], undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      fieldPutIfAbsentTrace.events.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 10 &&
+        'variable' in event.target &&
+        event.target.variable === 'node' &&
+        'path' in event.target &&
+        JSON.stringify(event.target.path) === JSON.stringify(['children', 'a']) &&
+        event.method === 'putIfAbsent' &&
+        event.args?.[0] === 'a' &&
+        JSON.stringify(event.target.indexSources) === JSON.stringify([null, 'ch'])
+      ),
+      `Java field putIfAbsent should emit keyed mutate args and index-source evidence, received ${JSON.stringify(fieldPutIfAbsentTrace.events)}`
+    );
+    console.log('PASS: java worker emits field putIfAbsent mutation args and keyed evidence');
 
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: `class Solution {

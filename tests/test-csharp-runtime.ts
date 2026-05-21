@@ -474,6 +474,37 @@ async function testWorkerResultMapping(): Promise<void> {
 
     MockCSharpWorker.responses.push({
       success: true,
+      output: { sum: 10 },
+      consoleOutput: [],
+      events: [{ kind: 'return', runId: 'csharp:run', file: 'solution.cs', line: 6, function: 'Run', value: { sum: 10 } }],
+      executionTimeMs: 6,
+    });
+    const scriptTrace = await workerClient.executeWithTracing(
+      [
+        'int[] nums = new int[] { 1, 2, 3, 4 };',
+        'int sum = 0;',
+        'foreach (int value in nums) {',
+        '  sum += value;',
+        '}',
+        'object result = new { sum = sum };',
+      ].join('\n'),
+      '',
+      {},
+      { maxTraceSteps: 200 },
+      'function'
+    );
+    assertCondition(scriptTrace.success, 'C# worker client should execute script-style tracing requests');
+    assertCondition(
+      MockCSharpWorker.received.some((message) =>
+        message.type === 'execute-with-tracing'
+        && (message.payload as { executionStyle?: string; functionName?: string; timeoutMs?: number } | undefined)?.executionStyle === 'function'
+        && (message.payload as { functionName?: string } | undefined)?.functionName === ''
+        && (message.payload as { timeoutMs?: number } | undefined)?.timeoutMs === 59_000),
+      'C# script-style tracing should get an extended outer worker deadline for cold playground runs'
+    );
+
+    MockCSharpWorker.responses.push({
+      success: true,
       output: 5,
       consoleOutput: ['interview'],
       executionTimeMs: 4,

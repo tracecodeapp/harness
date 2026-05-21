@@ -312,12 +312,15 @@ if (profile.capabilities.tracing.supported) {
 }
 
 console.log(info.versionLabel);
+console.log(info.description);
 console.log(pythonInfo.versionLabel);
 ```
 
 Runtime info is generated from worker constants, package manifests, and vendored runtime
-metadata. Run `pnpm generate:runtime-info` after runtime dependency changes, or
-`pnpm test:runtime-info-sync` to check whether the generated SDK data is current.
+metadata. Each info object also includes `description`, a natural-language runtime
+summary suitable for product UI. Run `pnpm generate:runtime-info` after runtime
+dependency changes, or `pnpm test:runtime-info-sync` to check whether the
+generated SDK data is current.
 
 For Java, `init()` only performs a light CheerpJ initialization. Call `warmLanguage('java')`
 after the user selects Java, or after editor-driven assist work, to warm the heavier javac

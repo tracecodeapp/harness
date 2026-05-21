@@ -185,6 +185,11 @@ async function main(): Promise<void> {
       'Browser harness should expose TypeScript runtime info'
     );
     assertCondition(
+      typescriptInfo.description.includes('Compiler options:') &&
+        typescriptInfo.description.includes('@datastructures-js/priority-queue'),
+      'Browser harness should expose natural-language TypeScript runtime info'
+    );
+    assertCondition(
       supportedInfos.some((info) => info.language === 'csharp' && Boolean(info.runtime.version)),
       'Browser harness should expose supported language runtime infos'
     );

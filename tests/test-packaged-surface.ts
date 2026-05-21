@@ -318,6 +318,9 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (javaInfo.versionLabel !== 'Java ' + javaInfo.runtime.version) {
         throw new Error('Root export should expose language runtime info');
       }
+      if (!javaInfo.description.includes('javac')) {
+        throw new Error('Root export should expose natural-language language runtime info');
+      }
       console.log('ok');
     })().catch((error) => {
       console.error(error);

@@ -47,30 +47,165 @@
     }
   },
   "expectByLanguage": {
-    "cpp": {
+    "python": {
       "body": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
         "eventKinds": [
           "line",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "grid",
           "i",
           "j",
           "total"
-        ],
+        ]
+      }
+    },
+    "javascript": {
+      "body": {
         "accessTargets": [
           {
             "kind": "read",
-            "variable": "grid",
-            "pathDepth": 1
+            "pathDepth": 2,
+            "variable": "grid"
           },
           {
-            "kind": "read",
-            "variable": "grid",
-            "pathDepth": 2
+            "kind": "write",
+            "variable": "total"
           }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "i",
+          "j",
+          "total"
+        ]
+      }
+    },
+    "typescript": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "i",
+          "j",
+          "total"
+        ]
+      }
+    },
+    "java": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "i",
+          "j",
+          "total"
+        ]
+      }
+    },
+    "csharp": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "i",
+          "j",
+          "total"
+        ]
+      }
+    },
+    "cpp": {
+      "body": {
+        "accessTargets": [
+          {
+            "kind": "read",
+            "pathDepth": 2,
+            "variable": "grid"
+          },
+          {
+            "kind": "write",
+            "variable": "total"
+          }
+        ],
+        "eventKinds": [
+          "line",
+          "read",
+          "snapshot",
+          "write"
+        ],
+        "variableSnapshots": [
+          "grid",
+          "i",
+          "j",
+          "total"
         ]
       }
     }

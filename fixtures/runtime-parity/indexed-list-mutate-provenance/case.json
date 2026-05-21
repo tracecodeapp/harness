@@ -1,0 +1,156 @@
+{
+  "id": "indexed-list-mutate-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "append": {
+      "python": "graph[i].append(j)",
+      "javascript": "graph[i].push(j);",
+      "typescript": "graph[i].push(j);",
+      "java": "graph.get(i).add(j);",
+      "csharp": "graph[i].Add(j);",
+      "cpp": "graph[i].push_back(j);"
+    }
+  },
+  "expect": {
+    "append": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "graph",
+        "i",
+        "j"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "graph",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "append": [
+      {
+        "kind": "mutate",
+        "variable": "graph",
+        "pathDepth": 1,
+        "indexSources": [
+          "i"
+        ],
+        "args": [
+          7
+        ]
+      }
+    ]
+  },
+  "expectEventAssertionsByLanguage": {
+    "python": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "append",
+          "indexSources": [
+            "i"
+          ],
+          "args": [
+            7
+          ]
+        }
+      ]
+    },
+    "javascript": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "push",
+          "indexSources": [
+            "i"
+          ],
+          "args": [
+            7
+          ]
+        }
+      ]
+    },
+    "typescript": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "push",
+          "indexSources": [
+            "i"
+          ],
+          "args": [
+            7
+          ]
+        }
+      ]
+    },
+    "java": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "add",
+          "indexSources": [
+            "i"
+          ],
+          "args": [
+            7
+          ]
+        }
+      ]
+    },
+    "csharp": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "Add",
+          "indexSources": [
+            "i"
+          ],
+          "args": [
+            7
+          ]
+        }
+      ]
+    },
+    "cpp": {
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "graph",
+          "pathDepth": 1,
+          "method": "push_back",
+          "indexSources": [
+            "i"
+          ],
+          "args": [
+            7
+          ]
+        }
+      ]
+    }
+  }
+}
