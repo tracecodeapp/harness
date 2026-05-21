@@ -177,14 +177,19 @@ The same surfaces are available as standalone language packages:
 The browser entrypoint is intentionally narrow. Low-level worker constructors, language gates, and isolation helpers are internal implementation details, not public SDK surface.
 Project mode is exposed through explicit `/project` subpaths so ordinary single-file consumers do not import the `just-bash` workspace layer by accident.
 
-## Project Workspace API
+## Project Mode / Tracekernel
 
-Project mode runs shell-like commands over a tracekernel workspace. By default
-the compatibility root is `/workspace`; when callers provide kernel identity,
-the canonical root becomes `/home/<user>/<project>` and `/workspace` remains an
-alias for older callers. The shell/parser layer is provided by `just-bash`;
-language execution is delegated through one shared
-`RuntimeProjectCommandRequest` shape for browser and native runners.
+Project mode is the multi-file workspace layer for browser IDEs, interview
+workspaces, and local project execution. It runs shell-like commands over a
+tracekernel workspace, streams stdout/stderr and file mutations as events, and
+keeps browser and native runners behind one shared
+`RuntimeProjectCommandRequest` shape.
+
+Tracekernel gives the workspace a stable system shape: configurable user and
+host identity, a canonical `/home/<user>/<project>` root, virtual `/dev` and
+`/proc` files, readonly/hidden session fixtures, and browser storage hooks. The
+shell/parser layer is provided by `just-bash`; language execution is delegated
+to the browser or native runtime runner for each command.
 
 Browser project workspace:
 
@@ -253,6 +258,8 @@ receive stdout/stderr chunks and live/final file mutation events with actor
 metadata.
 
 Project snapshots preserve generated/deleted files and empty directories so a browser app can keep an in-memory project synchronized with command results.
+
+For a fuller browser IDE reference, see [examples/project-ide](./examples/project-ide).
 
 ## Browser API
 
