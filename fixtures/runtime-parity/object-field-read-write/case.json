@@ -58,6 +58,20 @@
       ]
     }
   },
+  "expectEventOrder": {
+    "read": [
+      {
+        "before": {
+          "kind": "read",
+          "variable": "box",
+          "pathDepth": 1
+        },
+        "after": {
+          "kind": "return"
+        }
+      }
+    ]
+  },
   "expectByLanguage": {
     "csharp": {
       "write": {

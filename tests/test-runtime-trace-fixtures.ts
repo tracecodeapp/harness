@@ -116,6 +116,8 @@ interface FixtureCase {
   expectFrameEventsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceFrameEventAssertion[]>>>;
   expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
   expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
+  expectEventOrder?: Record<string, RuntimeTraceEventOrderAssertion[]>;
+  expectEventOrderByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventOrderAssertion[]>>>;
   expectOpaqueRefs?: boolean;
   knownGaps?: Partial<Record<Language, Record<string, string>>>;
 }
@@ -150,6 +152,11 @@ interface RuntimeTraceEventAssertion {
   method?: string;
   args?: unknown[];
   value?: unknown;
+}
+
+interface RuntimeTraceEventOrderAssertion {
+  before: RuntimeTraceEventAssertion;
+  after: RuntimeTraceEventAssertion;
 }
 
 type RuntimeCore = {
@@ -1173,6 +1180,30 @@ function assertRoleEventAssertions(
   }
 }
 
+function assertRoleEventOrder(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>,
+  assertionsByRole: Record<string, RuntimeTraceEventOrderAssertion[]>,
+  label: string
+): void {
+  for (const [role, assertions] of Object.entries(assertionsByRole)) {
+    const line = roleLines[role];
+    assertCondition(
+      typeof line === 'number' && line > 0,
+      `${label}: event order assertion role "${role}" does not have a resolved anchor line`
+    );
+    const roleEvents = trace.events.filter((event) => event.line === line);
+    for (const assertion of assertions) {
+      const beforeIndex = roleEvents.findIndex((event) => eventMatchesAssertion(event, assertion.before));
+      const afterIndex = roleEvents.findIndex((event) => eventMatchesAssertion(event, assertion.after));
+      assertCondition(
+        beforeIndex >= 0 && afterIndex >= 0 && beforeIndex < afterIndex,
+        `${label}: event order assertion failed for role "${role}".\nExpected before: ${stableStringify(assertion.before)}\nExpected after: ${stableStringify(assertion.after)}\nEvents: ${stableStringify(roleEvents)}`
+      );
+    }
+  }
+}
+
 function callActivationMatchesAssertion(
   event: RuntimeTrace['events'][number],
   assertion: RuntimeTraceCallActivationAssertion
@@ -1517,6 +1548,18 @@ async function runFixture(
         trace,
         roleLines,
         expectedEventAssertions,
+        `${fixture.id}:${language}`
+      );
+    }
+    const expectedEventOrder = {
+      ...(fixture.expectEventOrder ?? {}),
+      ...(fixture.expectEventOrderByLanguage?.[language] ?? {}),
+    };
+    if (Object.keys(expectedEventOrder).length > 0) {
+      assertRoleEventOrder(
+        trace,
+        roleLines,
+        expectedEventOrder,
         `${fixture.id}:${language}`
       );
     }

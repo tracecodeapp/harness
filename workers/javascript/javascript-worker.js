@@ -1929,6 +1929,7 @@ function createTraceRecorder(options = {}) {
       if (traceLimitExceeded) {
         return;
       }
+      this.attachPendingAccessesToPreviousLine();
       const normalizedLine = normalizeLine(lineNumber, callStack[callStack.length - 1]?.line ?? 1);
       const functionName =
         typeof functionNameOverride === 'string' && functionNameOverride.length > 0
