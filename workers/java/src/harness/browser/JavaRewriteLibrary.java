@@ -71,7 +71,7 @@ public final class JavaRewriteLibrary {
       "^([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
-  private static final Pattern MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
+  private static final Pattern MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(((?:[^()\\n;]|\\([^()]*\\))+?)\\)");
   private static final Pattern MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
   private static final Pattern MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
   private static final Pattern QUEUE_PEEK_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.peek\\(\\)");
@@ -1020,19 +1020,7 @@ public final class JavaRewriteLibrary {
       String col = match.group(3).trim();
       return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + row + ", " + col + ", " + indexSourceArgument(row) + ", " + indexSourceArgument(col) + ")";
     });
-    final String arrayReadSource = next;
-    next = replaceAll(ARRAY_READ, next, match -> {
-      String full = match.group(0);
-      if (full.contains("TraceHooks.")) return full;
-      if (isArrayAllocationTypeMatch(arrayReadSource, match.start())) return full;
-      if (isArrayWriteTarget(arrayReadSource, match.start(), match.end())) return full;
-      if (nextNonWhitespace(arrayReadSource, match.end()) == '[') return full;
-      String name = match.group(1);
-      String helper = arrayReadHelper(frame.typeOf(name));
-      if (helper == null) return full;
-      String index = match.group(2).trim();
-      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(index) + ")";
-    });
+    next = rewriteArrayReads(next, line, frame);
     next = replaceAll(QUEUE_REMOVE_CALL, next, match -> {
       String name = match.group(1);
       if (!isQueueLikeType(frame.typeOf(name))) return match.group(0);
@@ -1217,6 +1205,121 @@ public final class JavaRewriteLibrary {
     if (after.startsWith("=") && !after.startsWith("==")) return true;
     if (after.length() >= 2 && "+-*/%&|^".indexOf(after.charAt(0)) >= 0 && after.charAt(1) == '=') return true;
     return false;
+  }
+
+  private static String rewriteArrayReads(String source, int line, MethodFrame frame) {
+    StringBuilder out = new StringBuilder();
+    int index = 0;
+    while (index < source.length()) {
+      char current = source.charAt(index);
+      if (current == '"' || current == '\'') {
+        int literalEnd = skipJavaLiteral(source, index);
+        out.append(source, index, literalEnd);
+        index = literalEnd;
+        continue;
+      }
+      if (!isJavaIdentifierStart(current) || (index > 0 && isJavaIdentifierPart(source.charAt(index - 1)))) {
+        out.append(current);
+        index++;
+        continue;
+      }
+      int nameStart = index;
+      int nameEnd = index + 1;
+      while (nameEnd < source.length() && isJavaIdentifierPart(source.charAt(nameEnd))) nameEnd++;
+      String name = source.substring(nameStart, nameEnd);
+      int bracketStart = skipWhitespace(source, nameEnd);
+      if (
+          bracketStart >= source.length() ||
+          source.charAt(bracketStart) != '[' ||
+          (nameStart > 0 && source.charAt(nameStart - 1) == '.') ||
+          "TraceHooks".equals(name)
+      ) {
+        out.append(source, nameStart, nameEnd);
+        index = nameEnd;
+        continue;
+      }
+      int bracketEnd = findMatchingBracket(source, bracketStart);
+      if (bracketEnd < 0) {
+        out.append(source, nameStart, nameEnd);
+        index = nameEnd;
+        continue;
+      }
+      String full = source.substring(nameStart, bracketEnd + 1);
+      String helper = arrayReadHelper(frame.typeOf(name));
+      if (
+          helper == null ||
+          isArrayAllocationTypeMatch(source, nameStart) ||
+          isArrayWriteTarget(source, nameStart, bracketEnd + 1) ||
+          nextNonWhitespace(source, bracketEnd + 1) == '['
+      ) {
+        out.append(full);
+        index = bracketEnd + 1;
+        continue;
+      }
+      String rawIndex = source.substring(bracketStart + 1, bracketEnd).trim();
+      out.append("TraceHooks.")
+          .append(helper)
+          .append("(")
+          .append(line)
+          .append(", ")
+          .append(quote(name))
+          .append(", ")
+          .append(name)
+          .append(", ")
+          .append(rawIndex)
+          .append(", ")
+          .append(indexSourceArgument(rawIndex))
+          .append(")");
+      index = bracketEnd + 1;
+    }
+    return out.toString();
+  }
+
+  private static int findMatchingBracket(String source, int openIndex) {
+    int depth = 0;
+    for (int index = openIndex; index < source.length(); index++) {
+      char current = source.charAt(index);
+      if (current == '"' || current == '\'') {
+        index = skipJavaLiteral(source, index) - 1;
+        continue;
+      }
+      if (current == '[') {
+        depth++;
+      } else if (current == ']') {
+        depth--;
+        if (depth == 0) return index;
+      }
+    }
+    return -1;
+  }
+
+  private static int skipJavaLiteral(String source, int start) {
+    char quote = source.charAt(start);
+    int index = start + 1;
+    while (index < source.length()) {
+      char current = source.charAt(index);
+      if (current == '\\') {
+        index += 2;
+        continue;
+      }
+      index++;
+      if (current == quote) return index;
+    }
+    return source.length();
+  }
+
+  private static int skipWhitespace(String source, int start) {
+    int index = start;
+    while (index < source.length() && Character.isWhitespace(source.charAt(index))) index++;
+    return index;
+  }
+
+  private static boolean isJavaIdentifierStart(char value) {
+    return Character.isLetter(value) || value == '_' || value == '$';
+  }
+
+  private static boolean isJavaIdentifierPart(char value) {
+    return Character.isLetterOrDigit(value) || value == '_' || value == '$';
   }
 
   private static boolean hasIndexSideEffect(String source) {
@@ -1771,9 +1874,9 @@ public final class JavaRewriteLibrary {
 
   private static String indexSourceArgument(String value) {
     if (value != null) {
-      if (value.contains("TraceHooks.")) return "null";
       String tracedSource = tracedIndexedReadSource(value.trim());
       if (tracedSource != null) return quote(tracedSource);
+      if (value.contains("TraceHooks.")) return "null";
       java.util.regex.Matcher charAtIndex = java.util.regex.Pattern
         .compile("^[A-Za-z_][A-Za-z0-9_]*\\.charAt\\(\\s*([\\s\\S]+)\\s*\\)$")
         .matcher(value.trim());

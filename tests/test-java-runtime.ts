@@ -1349,6 +1349,29 @@ class Solution {
     'Java rewriter should preserve outer array-read provenance when a Deque.peek call is used as the index'
   );
 
+  const listGetConditionIndexReadSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+
+class Solution {
+  int solve(int[] temperatures) {
+    List<Integer> stack = new ArrayList<>();
+    stack.add(0);
+    int hotter = 0;
+    for (int i = 1; i < temperatures.length; i++) {
+      while (!stack.isEmpty() && temperatures[stack.get(stack.size() - 1)] < temperatures[i]) {
+        hotter++;
+        stack.remove(stack.size() - 1);
+      }
+      stack.add(i);
+    }
+    return hotter;
+  }
+}`);
+  assertCondition(
+    listGetConditionIndexReadSource.includes('TraceHooks.readIntArrayAtLine(9, "temperatures", temperatures, TraceHooks.readListAtLine(9, "stack", stack, stack.size() - 1, "stack.size() - 1"), "stack.size() - 1")') &&
+      listGetConditionIndexReadSource.includes('TraceHooks.readIntArrayAtLine(9, "temperatures", temperatures, i, "i")'),
+    'Java rewriter should emit both outer array reads when a List.get call is used as an array-read index'
+  );
+
   const mutatingIndexWriteSource = rewriteWithNativeJavaRewriter(`import java.util.*;
 
 class Solution {

@@ -1,0 +1,32 @@
+{
+  "id": "java-nested-list-index-array-condition",
+  "functionName": "countWarmer",
+  "executionStyle": "solution-method",
+  "languages": ["java"],
+  "inputs": {
+    "temperatures": [73, 74, 71, 72]
+  },
+  "expectOutput": 2,
+  "anchors": {
+    "whileCondition": {
+      "java": "while (!stack.isEmpty() && temperatures[stack.get(stack.size() - 1)] < temperatures[i]) {"
+    }
+  },
+  "expect": {
+    "whileCondition": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["i", "stack", "temperatures", "warmer"],
+      "accessTargets": [
+        { "kind": "read", "variable": "stack", "pathDepth": 1 },
+        { "kind": "read", "variable": "temperatures", "pathDepth": 1 }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "whileCondition": [
+      { "kind": "read", "variable": "stack", "pathDepth": 1, "indexSources": ["stack.size() - 1"] },
+      { "kind": "read", "variable": "temperatures", "pathDepth": 1, "indexSources": ["stack.size() - 1"], "value": 73 },
+      { "kind": "read", "variable": "temperatures", "pathDepth": 1, "indexSources": ["i"], "value": 74 }
+    ]
+  }
+}

@@ -4,9 +4,9 @@ const JDK17_COMPILER_JAR_PATH = '/app/workers/vendor/jdk.compiler-17.jar';
 const REWRITER_JAR_PATH = '/app/workers/vendor/java-rewriter.jar';
 const JAVAPARSER_JAR_PATH = '/app/workers/vendor/javaparser-core-3.25.10.jar';
 const FULL_CLASSPATH = [
+  REWRITER_JAR_PATH,
   HELPER_JAR_PATH,
   JDK17_COMPILER_JAR_PATH,
-  REWRITER_JAR_PATH,
   JAVAPARSER_JAR_PATH,
 ].join(':');
 const DEFAULT_COMPILER_DEBUG_PROFILE = 'full';

@@ -88,6 +88,14 @@ async function main(): Promise<void> {
   }
   console.log('PASS: java worker contract markers present');
 
+  const fullClasspathSource = workerSource.slice(workerSource.indexOf('const FULL_CLASSPATH'));
+  assertCondition(
+    fullClasspathSource.indexOf('REWRITER_JAR_PATH') >= 0 &&
+      fullClasspathSource.indexOf('REWRITER_JAR_PATH') < fullClasspathSource.indexOf('HELPER_JAR_PATH'),
+    'Java worker classpath should load java-rewriter.jar before java-browser-helper.jar so stale helper classes cannot shadow rewrite fixes'
+  );
+  console.log('PASS: java worker classpath prefers rewriter jar');
+
   const helperMarkers = [
     'compileAndRunProjectSourcesWithWorkspace',
     'compileAndRunProjectClassFilesWithWorkspace',
