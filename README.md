@@ -177,6 +177,8 @@ The same surfaces are available as standalone language packages:
 The browser entrypoint is intentionally narrow. Low-level worker constructors, language gates, and isolation helpers are internal implementation details, not public SDK surface.
 Project mode is exposed through explicit `/project` subpaths so ordinary single-file consumers do not import the `just-bash` workspace layer by accident.
 
+There is not currently an `@tracecode/kernel` package. The tracekernel environment is the shared project-mode workspace layer exposed through `@tracecode/harness/project`, `@tracecode/harness/project-node`, `@tracecode/harness/browser/project`, and the standalone `@tracecode/harness-project` package. If tracekernel becomes useful outside harness project mode, it can be promoted later without forcing single-file harness consumers to install `just-bash`.
+
 ## Project Workspace API
 
 Project mode runs shell-like commands over a tracekernel workspace. By default
