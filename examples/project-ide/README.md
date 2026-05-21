@@ -1,0 +1,45 @@
+# Example Project IDE
+
+Project-mode reference consumer for `@tracecode/harness` and tracekernel.
+
+This app exists to test the full browser workspace experience:
+
+- create a browser project workspace
+- boot a configurable tracekernel identity and `/home/<user>/<project>` root
+- persist the workspace through browser storage
+- expose a VS Code-like editor, explorer, and terminal shell
+- run project commands across Python, JavaScript, TypeScript, Java, C#, and C++
+- exercise live file mutation events, stdio streaming, `/dev`, `/proc`, readonly files, hidden fixtures, and session commands
+
+It is intentionally separate from `examples/web-ide`, which stays focused on tracing/problem-style runtime calls.
+
+## Run It
+
+From the repository root:
+
+```bash
+pnpm --dir examples/project-ide install
+pnpm --dir examples/project-ide dev
+```
+
+The app syncs harness worker assets into `public/workers` before `dev`, `build`, and `preview`.
+
+## What It Demonstrates
+
+- `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
+- `createIndexedDbKernelStorage(...)` for browser persistence
+- `ProjectSession` commands, readonly starter files, and hidden fixture data
+- shell-style project commands through tracekernel
+- live runtime filesystem and stdio events across browser runtimes
+
+## Production Note
+
+This example uses workspace packages during local development:
+
+```json
+"@tracecode/harness": "workspace:*"
+```
+
+Outside this repository, install the published package from npm and keep the same public API usage.
+
+Project site: [tracecode.app](https://tracecode.app)

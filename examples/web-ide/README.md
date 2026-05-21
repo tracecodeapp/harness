@@ -1,6 +1,6 @@
 # Example Web IDE
 
-Minimal reference consumer for `@tracecode/harness`.
+Minimal tracing/problem-style reference consumer for `@tracecode/harness`.
 
 This app is intentionally small. It exists to prove that a third-party browser app can:
 
@@ -8,9 +8,9 @@ This app is intentionally small. It exists to prove that a third-party browser a
 - sync the published worker assets
 - create an explicit browser harness instance
 - execute and trace Python, JavaScript, TypeScript, Java, C#, and C++
-- create a browser project workspace and run shell-style project commands
+- render execution output and full trace payloads
 
-It is not the canonical TraceCode product UI.
+It is not the canonical TraceCode product UI, and it does not exercise project-mode workspace semantics. Use `examples/project-ide` for the tracekernel project workspace example.
 
 ## Run It
 
@@ -26,11 +26,9 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 ## What It Demonstrates
 
 - `createBrowserHarness(...)` from `@tracecode/harness/browser`
-- `createBrowserProjectWorkspace(...)` from `@tracecode/harness/browser/project`
 - worker asset syncing through `tracecode-harness sync-assets`
 - runtime initialization for Python, JavaScript, TypeScript, Java, C#, and C++
 - execution output and full trace payload rendering
-- project command execution through the `/dev` pseudo-terminal
 
 ## Production Note
 

@@ -432,14 +432,16 @@ Current C# scope:
 
 ## Example Consumer
 
-A minimal reference browser IDE lives in [examples/web-ide](./examples/web-ide). It is intentionally small and exists to prove that a third-party app can:
+A minimal tracing/problem-style browser IDE lives in [examples/web-ide](./examples/web-ide). It is intentionally small and exists to prove that a third-party app can:
 
 - consume the public browser API
 - sync worker assets with the CLI
 - initialize all supported runtimes
 - execute and trace code without any app-specific state wiring
 
-It is a reference consumer for the SDK contract, not a canonical product UI.
+A separate project-mode IDE lives in [examples/project-ide](./examples/project-ide). It exercises tracekernel workspace behavior, browser persistence, project sessions, live filesystem mutation events, stdio streaming, and shell-style project commands.
+
+Both examples are reference consumers for the SDK contract, not canonical product UI.
 
 ## Development
 
