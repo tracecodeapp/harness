@@ -2883,6 +2883,35 @@ function rewritePointerAssignmentWriteInstrumentation(line, lineNumber) {
   return `${line}\n${buildScalarWriteInstrumentation(name, lineNumber, indent)}`;
 }
 
+function rewriteFieldContainerCountInstrumentation(line, lineNumber) {
+  if (line.includes('tracecode::trace_field_container_count')) return line;
+  const stripped = stripCppStringsAndComments(line);
+  if (!stripped.includes('.count')) return line;
+
+  let rewritten = line;
+  let cursor = 0;
+  const pattern = /\b([A-Za-z_]\w*)\s*(->|\.)\s*([A-Za-z_]\w*)\s*\.\s*count\s*\(/g;
+  while (true) {
+    pattern.lastIndex = cursor;
+    const match = pattern.exec(stripped);
+    if (!match) break;
+    const [source, objectName, operator, fieldName] = match;
+    const start = match.index ?? 0;
+    const openIndex = start + source.lastIndexOf('(');
+    const closeIndex = findMatchingParen(stripped, openIndex);
+    if (closeIndex < 0) break;
+    const keyExpression = stripped.slice(openIndex + 1, closeIndex).trim();
+    if (!keyExpression) {
+      cursor = closeIndex + 1;
+      continue;
+    }
+    const replacement = `tracecode::trace_field_container_count(${objectName}${operator}${fieldName}, ${cppStringLiteral(objectName)}, ${cppStringLiteral(fieldName)}, ${keyExpression}, ${lineNumber}, ${cppIndexSourceForExpression(keyExpression)})`;
+    rewritten = `${rewritten.slice(0, start)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+    cursor = start + replacement.length;
+  }
+  return rewritten;
+}
+
 function rewriteBareMemberAssignmentWriteInstrumentation(
   line,
   lineNumber,
@@ -3229,7 +3258,7 @@ function rewriteSingleLineControlBody(line, lineNumber, functionName, postLineIn
   if (emitInsideBody) {
     return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statementSource} ${postLineInstrumentation} }`;
   }
-  return `${indent}${control} { ${statementSource} }`;
+  return `${indent}${control} { ${buildCurrentLineInstrumentation(lineNumber)} ${statementSource} }`;
 }
 
 function buildInlineScalarWriteInstrumentation(statement, lineNumber, variables) {
@@ -3441,14 +3470,15 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         let memberIndex = nameIndex + name.length;
         while (/\s/.test(rewritten[memberIndex] || '')) memberIndex += 1;
         if (rewritten[memberIndex] === '.') {
-          const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*find\s*\(/);
+          const methodMatch = rewritten.slice(memberIndex).match(/^\.\s*(find|count)\s*\(/);
           if (methodMatch) {
             const openIndex = memberIndex + methodMatch[0].lastIndexOf('(');
             const closeIndex = findMatchingParen(rewritten, openIndex);
             if (closeIndex >= 0) {
               const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
               const indexSource = cppIndexSourceForExpression(keyExpression);
-              const replacement = `.find_with_index_source(${keyExpression}, ${indexSource})`;
+              const methodName = methodMatch[1];
+              const replacement = `.${methodName}_with_index_source(${keyExpression}, ${indexSource})`;
               rewritten = `${rewritten.slice(0, memberIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
               cursor = memberIndex + replacement.length;
               continue;
@@ -3476,6 +3506,14 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
           continue;
         }
         const elementType = vectorElementCppType(variables.get(name)?.type || '', aliases);
+        const memberSource = rewritten.slice(next.index);
+        const sizeMatch = memberSource.match(/^\.\s*size\s*\(\s*\)/);
+        if (sizeMatch && elementType?.replace(/^std::/, '').startsWith('vector<')) {
+          const replacement = `tracecode::trace_nested_size_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${lineNumber}, ${indexSource})`;
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(next.index + sizeMatch[0].length)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
         if (elementType?.replace(/^std::/, '').startsWith('vector<')) {
           cursor = closeIndex + 1;
           continue;
@@ -3649,14 +3687,15 @@ function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new M
       while (/\s/.test(rewritten[bracketIndex] || '')) bracketIndex += 1;
       if (rewritten[bracketIndex] !== '[') {
         if (rewritten[bracketIndex] === '.') {
-          const methodMatch = rewritten.slice(bracketIndex).match(/^\.\s*find\s*\(/);
+          const methodMatch = rewritten.slice(bracketIndex).match(/^\.\s*(find|count)\s*\(/);
           if (methodMatch) {
             const openIndex = bracketIndex + methodMatch[0].lastIndexOf('(');
             const closeIndex = findMatchingParen(rewritten, openIndex);
             if (closeIndex >= 0) {
               const keyExpression = rewritten.slice(openIndex + 1, closeIndex).trim();
               const indexSource = cppIndexSourceForExpression(keyExpression);
-              const replacement = `.find_with_index_source(${keyExpression}, ${indexSource})`;
+              const methodName = methodMatch[1];
+              const replacement = `.${methodName}_with_index_source(${keyExpression}, ${indexSource})`;
               rewritten = `${rewritten.slice(0, bracketIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
               cursor = bracketIndex + replacement.length;
               continue;
@@ -4756,6 +4795,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       lineForDriver = rewritePlainContainerMutationInstrumentation(lineForDriver, lineNumber, accessVariables, aliases, source);
       lineForDriver = rewritePlainContainerLookupInstrumentation(lineForDriver, lineNumber, accessVariables, aliases);
       lineForDriver = rewriteMapIteratorSecondMutationInstrumentation(lineForDriver, lineNumber, activeFrame.mapIterators);
+      lineForDriver = rewriteFieldContainerCountInstrumentation(lineForDriver, lineNumber);
       lineForDriver = rewriteIndexReadInstrumentation(lineForDriver, accessVariables, aliases, lineNumber);
       lineForDriver = rewriteStringPointerIndexedReadInstrumentation(lineForDriver, lineNumber, activeFrame.stringPointerAliases);
       lineForDriver = rewriteControlConditionLineScope(lineForDriver, lineNumber, accessVariables, aliases);

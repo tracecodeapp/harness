@@ -1,0 +1,66 @@
+{
+  "id": "cpp-inline-guarded-index-write",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "parent": [
+      1,
+      1
+    ],
+    "x": 0
+  },
+  "anchors": {
+    "guardedWrite": {
+      "cpp": "if (parent[x] != x) parent[x] = x;"
+    },
+    "returnRead": {
+      "cpp": "return parent[x];"
+    }
+  },
+  "expect": {
+    "guardedWrite": {
+      "eventKinds": [
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "parent"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "parent",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "parent",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "returnRead": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "parent",
+        "x"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "parent",
+          "pathDepth": 1
+        }
+      ]
+    }
+  }
+}

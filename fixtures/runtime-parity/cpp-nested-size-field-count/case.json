@@ -1,0 +1,77 @@
+{
+  "id": "cpp-nested-size-field-count",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "board": [
+      [
+        "a",
+        "b"
+      ]
+    ],
+    "key": "a"
+  },
+  "anchors": {
+    "writeKey": {
+      "cpp": "node.children[key] = 1;"
+    },
+    "guard": {
+      "cpp": "if (board.size() > 0 && board[0].size() > 0 && node.children.count(key)) return 1;"
+    }
+  },
+  "expect": {
+    "writeKey": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "board",
+        "key",
+        "node"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "node",
+          "pathDepth": 2
+        }
+      ]
+    },
+    "guard": {
+      "eventKinds": [
+        "line",
+        "read",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "board",
+        "key"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "board",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "board",
+          "pathDepth": 2,
+          "value": 2
+        },
+        {
+          "kind": "read",
+          "variable": "node",
+          "pathDepth": 2,
+          "value": true
+        }
+      ]
+    }
+  }
+}
