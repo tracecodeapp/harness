@@ -1881,6 +1881,38 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               const hasCustomKernelDevices = hasKernelDevices &&
                 decodedSourceManifest.includes('/dev/log') &&
                 decodedSourceManifest.includes('/dev/custom-in');
+              if (decodedSourceManifest.includes('boom-java-stack')) {
+                const rawStderr = [
+                  'Exception in thread "main" java.lang.RuntimeException: boom-java-stack',
+                  '\tat Main.inner(Unknown Source)',
+                  '\tat Main.main(Unknown Source)',
+                  '\tat java.lang.reflect.Method.invoke(Unknown Source)',
+                  '\tat tracecode.browser.BrowserCompileAndTraceLibrary.runEntryClass(Unknown Source)',
+                  '\tat tracecode.browser.BrowserCompileAndTraceLibrary.compileAndRunProjectSourcesWithWorkspace(Unknown Source)',
+                  '\tat com.leaningtech.cheerpj.CheerpJLibrary.run(Unknown Source)',
+                  '',
+                ].join('\n');
+                cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitOutputNative?.(
+                  null,
+                  'stderr',
+                  rawStderr
+                );
+                return JSON.stringify({
+                  success: true,
+                  output: JSON.stringify(JSON.stringify({
+                    stdout: '',
+                    stderr: rawStderr,
+                    exitCode: 1,
+                  })),
+                  compilerStdout: '',
+                  compilerStderr: '',
+                  compileTimeMs: 1,
+                  classLoadTimeMs: 1,
+                  runTimeMs: 1,
+                  compileCacheHit: true,
+                  compilerDebugProfile: compilerProfile,
+                });
+              }
               const stdout = `after-nio-writer-live\nafter-empty-nio-stream\nafter-empty-nio-writer\nafter-empty-nio-channel\nafter-empty-open-writer\nafter-empty-open-stream\nafter-filewriter-live\n5\njava_args=alpha,beta\njava_stdin=from-stdin\n${hasKernelProc ? 'proc-info\nproc-stream=tracekernel test\nproc-random=tracekernel test\nproc-write:IOException\nproc-list=info,version\nproc-stat=true:false:28\n' : ''}${hasKernelFiles ? 'custom-kernel=custom-kernel-file\ncustom-kernel-random=custom-kernel-file\ncustom-kernel-write:IOException\ncustom-kernel-mkdir:IOException\ncustom-kernel-file-api=true:true:true:false\n' : ''}${hasKernelDevices ? hasCustomKernelDevices ? 'dev-list=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-stream=capture,custom-in,log,null,stderr,stdin,stdout,tee,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-custom=from-stdin:true\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stream_custom=from-stdin\ndev_reader_custom=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\ncapture-devicestdout-after-capture\ntee-devicestdout-after-tee\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : 'dev-list=null,stderr,stdin,stdout,tty\ndev-stream=null,stderr,stdin,stdout,tty\ndev-glob=stderr,stdin,stdout\ndev-filter=stderr,stdout\ndev-stat=true:true:true:false\ndev-nio-stat=true:false:false:true:0\ndev-null=0\ndev-delete:IOException\ndev_stdin=from-stdin\ndev_stream_stdin=from-stdin\ndev_reader_stdin=from-stdin\ndev_nio_stream_stdin=from-stdin\ndev_nio_reader_stdin=from-stdin\ndev_read_all_lines=from-stdin\ndev_lines=from-stdin\ndev_channel_stdin=from-stdin\ndev_random_stdin=from-stdin\ndev_stdout\nfos_stdout\nfd_stdout\nfd_writer_stdout\nfd_stdin=from-stdin\ndev_writer\npw_stdout\nfw_tty\ndev_tty\nfrom-stdin\nstdout-read:IOException\nstdout-stream-read:IOException\nstdout-reader-read:IOException\nstdout-nio-stream-read:IOException\n' : ''}`;
               const stderr = hasKernelDevices ? hasCustomKernelDevices ? 'dev_log\npw_log\ndev_stderr\nfd_stderr\nps_stderr\n' : 'dev_stderr\nfd_stderr\nps_stderr\n' : '';
               cheerpjInitOptions?.natives?.Java_tracecode_browser_ProjectEvents_emitFileSnapshotNative?.(
@@ -3875,6 +3907,50 @@ async function main(): Promise<void> {
       'Java execute-project-java should pass full project workspace files to the browser helper'
     );
     console.log('PASS: java worker executes project requests through a multifile compile path');
+
+    const runtimeFailureProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; events?: Array<{ type: string; stream?: string; data?: string }> }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'Main',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          {
+            path: 'Main.java',
+            contents: [
+              'class Main {',
+              '  static void inner() { throw new RuntimeException("boom-java-stack"); }',
+              '  public static void main(String[] args) { inner(); }',
+              '}',
+              '',
+            ].join('\n'),
+          },
+        ],
+      },
+    });
+    const runtimeFailureStderr = [
+      runtimeFailureProjectExecute.stderr,
+      ...(runtimeFailureProjectExecute.events ?? [])
+        .filter((event) => event.type === 'output' && event.stream === 'stderr')
+        .map((event) => event.data ?? ''),
+    ].join('\n');
+    assertCondition(runtimeFailureProjectExecute.exitCode === 1, 'Java execute-project-java should return runtime failure exit codes');
+    assertCondition(
+      runtimeFailureProjectExecute.stderr.includes('RuntimeException: boom-java-stack') &&
+        runtimeFailureProjectExecute.stderr.includes('at Main.inner') &&
+        runtimeFailureProjectExecute.stderr.includes('at Main.main'),
+      `Java execute-project-java should preserve user runtime stack frames: ${runtimeFailureProjectExecute.stderr}`
+    );
+    assertCondition(
+      !runtimeFailureStderr.includes('tracecode.browser') &&
+        !runtimeFailureStderr.includes('CheerpJLibrary') &&
+        !runtimeFailureStderr.includes('java.lang.reflect.Method.invoke'),
+      `Java execute-project-java should not leak harness stack frames through stderr/events: ${runtimeFailureStderr}`
+    );
+    console.log('PASS: java worker sanitizes browser project runtime stack traces');
 
     const transitiveJavacProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
       code: '',

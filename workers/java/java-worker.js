@@ -81,6 +81,26 @@ function postMessageResponse(message) {
   self.postMessage(message);
 }
 
+function isJavaHarnessStackFrame(line) {
+  const trimmed = String(line ?? '').trim();
+  return (
+    trimmed.startsWith('at tracecode.browser.') ||
+    trimmed.startsWith('at com.leaningtech.cheerpj.CheerpJLibrary.') ||
+    trimmed.startsWith('at jdk.internal.reflect.') ||
+    trimmed.startsWith('at java.lang.reflect.Method.invoke') ||
+    trimmed.startsWith('at sun.reflect.')
+  );
+}
+
+function sanitizeJavaRuntimeStderr(stderr) {
+  if (typeof stderr !== 'string' || stderr.length === 0) return stderr;
+  return stderr
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((line) => !isJavaHarnessStackFrame(line))
+    .join('\n');
+}
+
 function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
   if (!activeJavaProjectIo?.messageId || typeof data !== 'string' || data.length === 0) return;
   const normalizedStream = stream === 'stderr' ? 'stderr' : 'stdout';
@@ -89,6 +109,8 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
   const outputDevicePath = kernelDeviceOutputTarget(requestedOutputDevice, activeJavaProjectIo.request)
     || (normalizedStream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
   const eventStream = outputDevicePath === '/dev/stderr' ? 'stderr' : normalizedStream;
+  const outputData = eventStream === 'stderr' ? sanitizeJavaRuntimeStderr(data) : data;
+  if (outputData.length === 0) return;
   if (eventStream === 'stderr') {
     activeJavaProjectIo.stderrEmitted = true;
   } else {
@@ -101,7 +123,7 @@ function emitLiveJavaProjectOutput(stream, data, sourceDevice, outputDevice) {
     ...(sourceDevicePath && sourceDevicePath !== outputDevicePath && kernelDeviceOutputTarget(sourceDevicePath, activeJavaProjectIo.request) === outputDevicePath
       ? { sourceDevice: sourceDevicePath }
       : {}),
-    data,
+    data: outputData,
   });
 }
 
@@ -3225,7 +3247,7 @@ function javaProjectFailureStderr(report, sourceRoot, projectRoot) {
     sourceRoot,
     projectRoot
   );
-  const runtimeError = typeof report?.runtimeError === 'string' ? report.runtimeError.trim() : '';
+  const runtimeError = typeof report?.runtimeError === 'string' ? sanitizeJavaRuntimeStderr(report.runtimeError).trim() : '';
   if (compilerOutput.length > 0) {
     if (!runtimeError || runtimeError === 'Java compilation failed' || compilerOutput.includes(runtimeError)) {
       return compilerOutput;
@@ -4283,7 +4305,7 @@ function commandResultFromJavaProjectReport(report, totalEnd, totalStart, librar
 
   return {
     stdout: typeof parsedPayload?.stdout === 'string' ? parsedPayload.stdout : '',
-    stderr: `${compilerOutput}${typeof parsedPayload?.stderr === 'string' ? parsedPayload.stderr : ''}`,
+    stderr: `${compilerOutput}${sanitizeJavaRuntimeStderr(typeof parsedPayload?.stderr === 'string' ? parsedPayload.stderr : '')}`,
     exitCode: Number.isInteger(parsedPayload?.exitCode) ? parsedPayload.exitCode : 1,
     files: [
       ...projectCompiledFiles(report, outputDir),

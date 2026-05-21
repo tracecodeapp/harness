@@ -104,7 +104,7 @@ async function createExternalCSharpDllBase64(): Promise<string> {
       [
         '<Project Sdk="Microsoft.NET.Sdk">',
         '  <PropertyGroup>',
-        '    <TargetFramework>net8.0</TargetFramework>',
+        '    <TargetFramework>net10.0</TargetFramework>',
         '    <ImplicitUsings>enable</ImplicitUsings>',
         '    <Nullable>disable</Nullable>',
         '  </PropertyGroup>',
@@ -119,7 +119,7 @@ async function createExternalCSharpDllBase64(): Promise<string> {
       'utf8'
     );
     await execFileAsync('dotnet', ['build', projectPath, '-c', 'Release', '-v', 'quiet', '--nologo']);
-    return (await readFile(join(root, 'bin', 'Release', 'net8.0', 'ExternalLib.dll'))).toString('base64');
+    return (await readFile(join(root, 'bin', 'Release', 'net10.0', 'ExternalLib.dll'))).toString('base64');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1051,10 +1051,10 @@ async function testCSharpCommandAdapter(): Promise<void> {
     `dotnet run adapter should receive run request, received ${JSON.stringify(run.stdout)}`
   );
 
-  const configuredRun = await workspace.runCommand('dotnet run --project apps/App.csproj --configuration Release --framework net8.0 --no-restore -- data/*.txt');
+  const configuredRun = await workspace.runCommand('dotnet run --project apps/App.csproj --configuration Release --framework net10.0 --no-restore -- data/*.txt');
   assertCondition(configuredRun.exitCode === 0, 'dotnet run adapter should preserve build-affecting options');
   assertCondition(
-    configuredRun.stdout === 'source=run\nscript=apps/App.csproj\nargs=data/a.txt,data/b.txt\nbuildArgs=--configuration,Release,--framework,net8.0,--no-restore\nfiles=apps/App.csproj,build/.keep,data/a.txt,data/b.txt,generated.txt,Helper.cs,Program.cs\n',
+    configuredRun.stdout === 'source=run\nscript=apps/App.csproj\nargs=data/a.txt,data/b.txt\nbuildArgs=--configuration,Release,--framework,net10.0,--no-restore\nfiles=apps/App.csproj,build/.keep,data/a.txt,data/b.txt,generated.txt,Helper.cs,Program.cs\n',
     `dotnet run adapter should pass build-affecting options separately from program args, received ${JSON.stringify(configuredRun.stdout)}`
   );
 
@@ -2463,6 +2463,15 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const evalArgvResult = await workspace.runCommand('node -e "console.log(process.argv.slice(1).join(\\"\\,\\"))" alpha beta');
   assertCondition(evalArgvResult.exitCode === 0, `browser node -e argv should succeed: ${evalArgvResult.stderr}`);
   assertCondition(evalArgvResult.stdout === 'alpha,beta\n', `browser node -e argv should match desktop semantics: ${evalArgvResult.stdout}`);
+
+  const runtimeErrorResult = await workspace.runCommand('node -e "function outer(){ inner(); } function inner(){ throw new Error(\\"boom-browser-js\\"); } outer();"');
+  assertCondition(runtimeErrorResult.exitCode === 1, `browser node runtime exception should fail: ${JSON.stringify(runtimeErrorResult)}`);
+  assertCondition(
+    runtimeErrorResult.stderr.includes('Error: boom-browser-js') &&
+      runtimeErrorResult.stderr.includes('at inner') &&
+      runtimeErrorResult.stderr.includes('at outer'),
+    `browser node runtime exception should surface stack frames: ${JSON.stringify(runtimeErrorResult)}`
+  );
 
   const rootRequireResult = await workspace.runCommand('node -e "const { add } = require(\\"lib/math\\"); console.log(add(1, 4))"');
   assertCondition(rootRequireResult.exitCode === 0, `browser node root require should succeed: ${rootRequireResult.stderr}`);
@@ -5267,7 +5276,7 @@ async function testNativeCSharpProjectRunnerAbsoluteWorkspaceProjectPath(): Prom
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -5308,7 +5317,7 @@ async function testNativeCSharpEmbeddedResourceProjectRunner(): Promise<void> {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
@@ -5355,7 +5364,7 @@ async function testNativeCSharpLibraryProjectRunner(): Promise<void> {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Library</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -5394,7 +5403,7 @@ async function testNativeCSharpHintPathReferenceProjectRunner(): Promise<void> {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -5427,7 +5436,7 @@ async function testNativeCSharpProjectReferenceProjectRunner(): Promise<void> {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -5444,7 +5453,7 @@ async function testNativeCSharpProjectReferenceProjectRunner(): Promise<void> {
         contents: [
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -5471,7 +5480,7 @@ async function testNativeCSharpProjectFileBoundaryProjectRunner(): Promise<void>
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '  </PropertyGroup>',
           '  <ItemGroup>',
           '    <Compile Include="/outside/Program.cs" />',
@@ -5497,7 +5506,7 @@ async function testNativeCSharpProjectFileBoundaryProjectRunner(): Promise<void>
       '<Project Sdk="Microsoft.NET.Sdk">',
       '  <PropertyGroup>',
       '    <OutputType>Exe</OutputType>',
-      '    <TargetFramework>net8.0</TargetFramework>',
+      '    <TargetFramework>net10.0</TargetFramework>',
       '  </PropertyGroup>',
       '  <ItemGroup>',
       '    <ProjectReference Include="/outside/Lib.csproj" />',
@@ -5518,7 +5527,7 @@ async function testNativeCSharpProjectFileBoundaryProjectRunner(): Promise<void>
       '<Project Sdk="Microsoft.NET.Sdk">',
       '  <PropertyGroup>',
       '    <OutputType>Exe</OutputType>',
-      '    <TargetFramework>net8.0</TargetFramework>',
+      '    <TargetFramework>net10.0</TargetFramework>',
       '  </PropertyGroup>',
       '  <ItemGroup>',
       '    <Reference Include="ExternalLib">',
@@ -5541,7 +5550,7 @@ async function testNativeCSharpProjectRunnerCwdProjectSelection(): Promise<void>
     '<Project Sdk="Microsoft.NET.Sdk">',
     '  <PropertyGroup>',
     '    <OutputType>Exe</OutputType>',
-    '    <TargetFramework>net8.0</TargetFramework>',
+    '    <TargetFramework>net10.0</TargetFramework>',
     '    <ImplicitUsings>enable</ImplicitUsings>',
     '    <Nullable>disable</Nullable>',
     '  </PropertyGroup>',
@@ -5572,7 +5581,7 @@ async function testNativeCSharpCommandLinePropertiesProjectRunner(): Promise<voi
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -6812,7 +6821,7 @@ async function testBrowserProjectWorkspaceAdvancedCommandTranslation(): Promise<
         path: 'app/App.csproj',
         contents: [
           '<Project Sdk="Microsoft.NET.Sdk">',
-          '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>',
+          '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup>',
           '</Project>',
           '',
         ].join('\n'),
@@ -6946,7 +6955,7 @@ async function testNativeProjectWorkspaceFactory(): Promise<void> {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '  </PropertyGroup>',
           '</Project>',
@@ -8258,7 +8267,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
         },
       },
       files: [
-        { path: 'Weather.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n' },
+        { path: 'Weather.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n' },
         { path: 'Program.cs', contents: 'Console.WriteLine(Weather.Normalizer.City(" New York "));\n' },
         { path: 'Normalizer.cs', contents: 'namespace Weather; public static class Normalizer { public static string City(string value) => value.Trim().ToLower().Replace(" ", "-"); }\n' },
         { path: 'Broken.csproj', contents: '<Project></Project>\n' },
@@ -8622,7 +8631,7 @@ async function testConfiguredKernelNativeCompiledRunners(): Promise<void> {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -8683,7 +8692,7 @@ async function testConfiguredKernelAliasGlobCommandTranslation(): Promise<void> 
         path: 'app/App.csproj',
         contents: [
           '<Project Sdk="Microsoft.NET.Sdk">',
-          '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>',
+          '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup>',
           '</Project>',
           '',
         ].join('\n'),

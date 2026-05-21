@@ -243,7 +243,7 @@ function createExternalCSharpDllBase64(): string {
       [
         '<Project Sdk="Microsoft.NET.Sdk">',
         '  <PropertyGroup>',
-        '    <TargetFramework>net8.0</TargetFramework>',
+        '    <TargetFramework>net10.0</TargetFramework>',
         '    <ImplicitUsings>enable</ImplicitUsings>',
         '    <Nullable>disable</Nullable>',
         '  </PropertyGroup>',
@@ -258,7 +258,7 @@ function createExternalCSharpDllBase64(): string {
       'utf8'
     );
     execFileSync('dotnet', ['build', projectPath, '-c', 'Release', '-v', 'quiet', '--nologo'], { stdio: 'pipe' });
-    return readFileSync(join(root, 'bin', 'Release', 'net8.0', 'ExternalLib.dll')).toString('base64');
+    return readFileSync(join(root, 'bin', 'Release', 'net10.0', 'ExternalLib.dll')).toString('base64');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -5214,7 +5214,7 @@ async function main(): Promise<void> {
         stdin: '',
         project: {
           files: [
-            { path: 'src/App.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n' },
+            { path: 'src/App.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n' },
             { path: 'src/Program.cs', contents: 'Console.WriteLine("build");\n' },
           ],
         },
@@ -5224,7 +5224,7 @@ async function main(): Promise<void> {
     assertCondition(projectBuild.exitCode === 0, `C# project worker should build multifile project: ${projectBuild.stderr}`);
     assertCondition(
       projectBuild.stdout.includes('  Determining projects to restore...\n') &&
-        projectBuild.stdout.includes('  App -> /workspace/src/bin/Debug/net8.0/App.dll\n') &&
+        projectBuild.stdout.includes('  App -> /workspace/src/bin/Debug/net10.0/App.dll\n') &&
         projectBuild.stdout.includes('Build succeeded.\n') &&
         projectBuild.stdout.includes('0 Error(s)'),
       `C# project worker should surface dotnet build output, received ${JSON.stringify(projectBuild.stdout)}`
@@ -5235,6 +5235,48 @@ async function main(): Promise<void> {
         .map((event) => event.data)
         .join('') === projectBuild.stdout,
       `C# project worker should stream dotnet build stdout events, received ${JSON.stringify(projectBuild.events)}`
+    );
+
+    const projectRuntimeError = await runProjectWorkerCase(
+      page,
+      {
+        source: 'run',
+        scriptPath: '<project>',
+        args: [],
+        cwd: '/workspace/errcs',
+        env: {},
+        stdin: '',
+        project: {
+          files: [
+            {
+              path: 'errcs/ErrorProbe.csproj',
+              contents:
+                '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n',
+            },
+            {
+              path: 'errcs/Program.cs',
+              contents: [
+                'using System;',
+                'class Program {',
+                '  static void Main() {',
+                '    Console.WriteLine("before");',
+                '    throw new InvalidOperationException("boom-csharp-project");',
+                '  }',
+                '}',
+                '',
+              ].join('\n'),
+            },
+          ],
+        },
+      },
+      assetBaseUrl
+    );
+    assertCondition(projectRuntimeError.exitCode === 1, `C# project worker runtime exception should fail: ${JSON.stringify(projectRuntimeError)}`);
+    assertCondition(projectRuntimeError.stdout === 'before\n', `C# project worker should preserve stdout before runtime exception: ${JSON.stringify(projectRuntimeError)}`);
+    assertCondition(
+      projectRuntimeError.stderr.includes('Unhandled exception. System.InvalidOperationException: boom-csharp-project') &&
+        projectRuntimeError.stderr.includes('at Program.Main()'),
+      `C# project worker should surface runtime exception stack traces, received ${JSON.stringify(projectRuntimeError.stderr)}`
     );
 
     const canonicalProjectRun = await runProjectWorkerCase(
@@ -5316,7 +5358,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '    <ImplicitUsings>enable</ImplicitUsings>',
                 '    <Nullable>disable</Nullable>',
                 '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
@@ -5417,7 +5459,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
@@ -5460,7 +5502,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
@@ -5504,7 +5546,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Library</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '</Project>',
                 '',
@@ -5525,7 +5567,7 @@ async function main(): Promise<void> {
     );
     assertCondition(
       libraryProjectCompile.files?.some((file) =>
-        file.path === 'lib/bin/Debug/net8.0/Lib.dll' &&
+        file.path === 'lib/bin/Debug/net10.0/Lib.dll' &&
         file.encoding === 'base64' &&
         typeof file.contents === 'string' &&
         file.contents.length > 0
@@ -5550,7 +5592,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Library</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '</Project>',
                 '',
@@ -5588,7 +5630,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
                 '    <Reference Include="ExternalLib">',
@@ -5629,7 +5671,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
                 '    <Reference Include="ExternalLib">',
@@ -5669,7 +5711,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
@@ -5721,7 +5763,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
                 '    <ProjectReference Include="../reflib/Lib.csproj" />',
@@ -5736,7 +5778,7 @@ async function main(): Promise<void> {
               contents: [
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '</Project>',
                 '',
@@ -5771,7 +5813,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
                 '    <ProjectReference Include="/outside/Lib.csproj" />',
@@ -5809,7 +5851,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '  <ItemGroup>',
                 '    <Compile Remove="Removed.cs" />',
@@ -5850,7 +5892,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '    <StartupObject>Picked.Program</StartupObject>',
                 '  </PropertyGroup>',
                 '</Project>',
@@ -5909,7 +5951,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '    <DefineConstants>TRACE_BROWSER;FEATURE_ON</DefineConstants>',
                 '  </PropertyGroup>',
                 '</Project>',
@@ -5955,7 +5997,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '</Project>',
                 '',
@@ -5999,7 +6041,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '</Project>',
                 '',
@@ -6043,7 +6085,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '</Project>',
                 '',
@@ -6088,7 +6130,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>',
                 '  </PropertyGroup>',
                 '</Project>',
@@ -6134,7 +6176,7 @@ async function main(): Promise<void> {
                 '<Project Sdk="Microsoft.NET.Sdk">',
                 '  <PropertyGroup>',
                 '    <OutputType>Exe</OutputType>',
-                '    <TargetFramework>net8.0</TargetFramework>',
+                '    <TargetFramework>net10.0</TargetFramework>',
                 '  </PropertyGroup>',
                 '</Project>',
                 '',

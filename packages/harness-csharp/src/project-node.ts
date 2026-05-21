@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { delimiter, dirname, join, relative } from 'node:path';
 import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
@@ -391,7 +391,7 @@ async function ensureProjectFile(root: string, request: CSharpProjectCommandRequ
       '<Project Sdk="Microsoft.NET.Sdk">',
       '  <PropertyGroup>',
       '    <OutputType>Exe</OutputType>',
-      '    <TargetFramework>net8.0</TargetFramework>',
+      '    <TargetFramework>net10.0</TargetFramework>',
       '    <ImplicitUsings>enable</ImplicitUsings>',
       '    <Nullable>disable</Nullable>',
       '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
@@ -507,13 +507,16 @@ function runProcess(
 
 async function resolveDotnetCommand(command: string): Promise<string> {
   if (command !== 'dotnet') return command;
+  const pathCandidates = (process.env.PATH ?? '')
+    .split(delimiter)
+    .filter(Boolean)
+    .map((directory) => join(directory, 'dotnet'));
   for (const candidate of [
-    'dotnet',
-    '/usr/local/share/dotnet/dotnet',
-    '/usr/local/bin/dotnet',
+    ...pathCandidates,
     '/opt/homebrew/bin/dotnet',
+    '/usr/local/bin/dotnet',
+    '/usr/local/share/dotnet/dotnet',
   ]) {
-    if (candidate === 'dotnet') continue;
     try {
       await access(candidate);
       return candidate;

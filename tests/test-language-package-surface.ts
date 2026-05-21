@@ -397,7 +397,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       assertCondition(
         projectBrowser.includes('sourceDevice') &&
           projectBrowser.includes('io.output(stream, data, device, sourceDevice)') &&
-          projectBrowser.includes('device !== outputDevice ? device :'),
+          projectBrowser.includes('device !== outputDevice ? { sourceDevice: device } :'),
         '@tracecode/harness-javascript browser project runner should ship routed source device output events'
       );
       assertCondition(
@@ -1015,7 +1015,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
               '<Project Sdk="Microsoft.NET.Sdk">',
               '  <PropertyGroup>',
               '    <OutputType>Exe</OutputType>',
-              '    <TargetFramework>net8.0</TargetFramework>',
+              '    <TargetFramework>net10.0</TargetFramework>',
               '    <ImplicitUsings>enable</ImplicitUsings>',
               '  </PropertyGroup>',
               '</Project>',

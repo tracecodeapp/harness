@@ -253,7 +253,7 @@ public static partial class CompilerHost
             return SerializeProject(new CSharpProjectCommandResponse
             {
                 Stdout = capturedOut.ToString(),
-                Stderr = capturedError.ToString() + error.GetBaseException().Message + "\n",
+                Stderr = capturedError.ToString() + FormatProjectUnhandledException(error),
                 ExitCode = 1,
             });
         }
@@ -298,10 +298,10 @@ public static partial class CompilerHost
             assemblyName = "TraceCodeProject";
         }
 
-        string targetFramework = ResolveProjectPropertyValue(request, "TargetFramework") ?? "net8.0";
+        string targetFramework = ResolveProjectPropertyValue(request, "TargetFramework") ?? "net10.0";
         if (string.IsNullOrWhiteSpace(targetFramework))
         {
-            targetFramework = "net8.0";
+            targetFramework = "net10.0";
         }
 
         string outputPath = string.IsNullOrEmpty(projectDirectory)
@@ -490,12 +490,12 @@ public static partial class CompilerHost
         List<SyntaxTree> syntaxTrees = new()
         {
             CSharpSyntaxTree.ParseText(
-                GenerateGlobalUsingsSource(),
+                SourceText.From(GenerateGlobalUsingsSource(), Encoding.UTF8),
                 ParseOptions,
                 path: "TraceCodeGlobalUsings.cs"
             ),
             CSharpSyntaxTree.ParseText(
-                GenerateProjectRuntimeSource(),
+                SourceText.From(GenerateProjectRuntimeSource(), Encoding.UTF8),
                 ParseOptions,
                 path: "TraceCodeProjectRuntime.cs"
             ),
@@ -511,7 +511,7 @@ public static partial class CompilerHost
                 continue;
             }
             SyntaxTree projectTree = CSharpSyntaxTree.ParseText(
-                DecodeProjectFileContents(file),
+                SourceText.From(DecodeProjectFileContents(file), Encoding.UTF8),
                 projectParseOptions,
                 path: path
             );
@@ -2140,6 +2140,17 @@ public sealed class ProjectFileStream : System.IO.FileStream
             builder.AppendLine(mapped.Message);
         }
         return builder.ToString();
+    }
+
+    private static string FormatProjectUnhandledException(Exception error)
+    {
+        Exception exception = error.GetBaseException();
+        string text = exception.ToString();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            text = exception.Message;
+        }
+        return "Unhandled exception. " + text.TrimEnd() + "\n";
     }
 
     private static void InvokeProjectEntryPoint(Assembly assembly, string[] args)

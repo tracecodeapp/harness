@@ -1513,6 +1513,45 @@ function formatConsoleValues(values: unknown[]): string {
     .join(' ');
 }
 
+function formatBrowserJavaScriptErrorForStderr(error: unknown): string {
+  if (error instanceof Error) {
+    const text = typeof error.stack === 'string' && error.stack.trim()
+      ? error.stack
+      : error.message;
+    return `${text.trimEnd()}\n`;
+  }
+  return `${String(error)}\n`;
+}
+
+function sanitizeBrowserJavaScriptStack(error: unknown, sourcePath: string): unknown {
+  if (!(error instanceof Error) || typeof error.stack !== 'string' || !error.stack.trim()) {
+    return error;
+  }
+
+  const mappedStack = error.stack.replace(
+    /\(eval at [^,]+ \([^)]*\), <anonymous>:(\d+):(\d+)\)/g,
+    (_match, line, column) => `(${sourcePath}:${Math.max(1, Number(line) - 2)}:${column})`
+  );
+  const lines: string[] = [];
+  for (const line of mappedStack.split('\n')) {
+    if (
+      line.includes('/@fs/') ||
+      line.includes('/dist/browser/project.js') ||
+      line.includes('runBrowserJavaScriptProjectRequest') ||
+      line.includes('executeEntrypoint') ||
+      line.includes('executeModule')
+    ) {
+      break;
+    }
+    lines.push(line);
+  }
+  Object.defineProperty(error, 'stack', {
+    configurable: true,
+    value: (lines.length > 0 ? lines : [mappedStack.split('\n')[0] ?? error.message]).join('\n'),
+  });
+  return error;
+}
+
 function processArgvForRequest(request: JavaScriptProjectCommandRequest): string[] {
   if (request.source === 'argument') {
     return ['node', ...request.args];
@@ -4768,24 +4807,28 @@ async function runBrowserJavaScriptProjectRequest(
         'queueMicrotask',
         executableCode
       );
-      fn(
-        localRequire,
-        localImport,
-        module,
-        module.exports,
-        consoleApi,
-        processApi,
-        BrowserBuffer,
-        workspaceFilename(normalizedPath, workspaceRoot),
-        workspaceDirname(normalizedPath, workspaceRoot),
-        eventLoopApi.setTimeout,
-        eventLoopApi.clearTimeout,
-        eventLoopApi.setInterval,
-        eventLoopApi.clearInterval,
-        eventLoopApi.setImmediate,
-        eventLoopApi.clearImmediate,
-        eventLoopApi.queueMicrotask
-      );
+      try {
+        fn(
+          localRequire,
+          localImport,
+          module,
+          module.exports,
+          consoleApi,
+          processApi,
+          BrowserBuffer,
+          workspaceFilename(normalizedPath, workspaceRoot),
+          workspaceDirname(normalizedPath, workspaceRoot),
+          eventLoopApi.setTimeout,
+          eventLoopApi.clearTimeout,
+          eventLoopApi.setInterval,
+          eventLoopApi.clearInterval,
+          eventLoopApi.setImmediate,
+          eventLoopApi.clearImmediate,
+          eventLoopApi.queueMicrotask
+        );
+      } catch (error) {
+        throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
+      }
       module.loaded = true;
       return module.exports;
     };
@@ -4838,24 +4881,28 @@ async function runBrowserJavaScriptProjectRequest(
         'queueMicrotask',
         executableCode
       );
-      await fn(
-        localRequire,
-        localImport,
-        module,
-        module.exports,
-        consoleApi,
-        processApi,
-        BrowserBuffer,
-        workspaceFilename(normalizedPath, workspaceRoot),
-        workspaceDirname(normalizedPath, workspaceRoot),
-        eventLoopApi.setTimeout,
-        eventLoopApi.clearTimeout,
-        eventLoopApi.setInterval,
-        eventLoopApi.clearInterval,
-        eventLoopApi.setImmediate,
-        eventLoopApi.clearImmediate,
-        eventLoopApi.queueMicrotask
-      );
+      try {
+        await fn(
+          localRequire,
+          localImport,
+          module,
+          module.exports,
+          consoleApi,
+          processApi,
+          BrowserBuffer,
+          workspaceFilename(normalizedPath, workspaceRoot),
+          workspaceDirname(normalizedPath, workspaceRoot),
+          eventLoopApi.setTimeout,
+          eventLoopApi.clearTimeout,
+          eventLoopApi.setInterval,
+          eventLoopApi.clearInterval,
+          eventLoopApi.setImmediate,
+          eventLoopApi.clearImmediate,
+          eventLoopApi.queueMicrotask
+        );
+      } catch (error) {
+        throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
+      }
       module.loaded = true;
       await Promise.resolve();
     };
@@ -4903,24 +4950,28 @@ async function runBrowserJavaScriptProjectRequest(
           'queueMicrotask',
           transformDynamicImports(evalCode)
         );
-        await fn(
-          requireFromRoot,
-          importFromRoot,
-          module,
-          module.exports,
-          consoleApi,
-          processApi,
-          BrowserBuffer,
-          `${workspaceRoot}/[eval]`,
-          cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot,
-          eventLoopApi.setTimeout,
-          eventLoopApi.clearTimeout,
-          eventLoopApi.setInterval,
-          eventLoopApi.clearInterval,
-          eventLoopApi.setImmediate,
-          eventLoopApi.clearImmediate,
-          eventLoopApi.queueMicrotask
-        );
+        try {
+          await fn(
+            requireFromRoot,
+            importFromRoot,
+            module,
+            module.exports,
+            consoleApi,
+            processApi,
+            BrowserBuffer,
+            `${workspaceRoot}/[eval]`,
+            cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot,
+            eventLoopApi.setTimeout,
+            eventLoopApi.clearTimeout,
+            eventLoopApi.setInterval,
+            eventLoopApi.clearInterval,
+            eventLoopApi.setImmediate,
+            eventLoopApi.clearImmediate,
+            eventLoopApi.queueMicrotask
+          );
+        } catch (error) {
+          throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`);
+        }
         await Promise.resolve();
       }
 
@@ -4958,9 +5009,7 @@ async function runBrowserJavaScriptProjectRequest(
         : 1;
       const stderrSuffix = (error as { suppressStderr?: unknown }).suppressStderr
         ? ''
-        : error instanceof Error
-          ? `${error.message}\n`
-          : `${String(error)}\n`;
+        : formatBrowserJavaScriptErrorForStderr(error);
       if (stderrSuffix) emitOutput('stderr', stderrSuffix);
       try {
         await liveIo.flush();

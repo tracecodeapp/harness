@@ -750,7 +750,7 @@ int main() {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '  </PropertyGroup>',
@@ -982,7 +982,7 @@ if (args.Length > 0) {
           '<Project Sdk="Microsoft.NET.Sdk">',
           '  <PropertyGroup>',
           '    <OutputType>Exe</OutputType>',
-          '    <TargetFramework>net8.0</TargetFramework>',
+          '    <TargetFramework>net10.0</TargetFramework>',
           '    <ImplicitUsings>enable</ImplicitUsings>',
           '    <Nullable>disable</Nullable>',
           '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>',
@@ -1233,7 +1233,7 @@ int main(int argc, char** argv) {
       setup: async () => {
         await workspace.writeFile(
           'mvp-csharp/MvpCSharp.csproj',
-          '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\n'
+          '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n'
         );
         await workspace.writeFile(
           'mvp-csharp/Program.cs',

@@ -6398,17 +6398,44 @@ function diffProjectFs(before, fs) {
   return changes;
 }
 
-function createProjectEventBridge(messageId) {
+function cppUserFacingDiagnosticFile(request) {
+  const scriptPath = relativeProjectPath(request?.scriptPath || '', request?.project || request);
+  return scriptPath || 'main.cpp';
+}
+
+function sanitizeCppProjectDiagnostics(value, request) {
+  if (typeof value !== 'string' || value.length === 0) return value;
+  const userFile = cppUserFacingDiagnosticFile(request);
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/\/tmp\/TraceCodeDriver\.cpp/g, userFile)
+    .replace(/\bTraceCodeDriver\.cpp\b/g, userFile)
+    .split('\n')
+    .filter((line) => {
+      const lowered = line.toLowerCase();
+      return !(
+        lowered.includes('tracecode_runtime.hpp') ||
+        lowered.includes('tracecode_statvfs.c') ||
+        lowered.includes('/tracecode_runtime.hpp') ||
+        lowered.includes('tracecode::')
+      );
+    })
+    .join('\n');
+}
+
+function createProjectEventBridge(messageId, sanitizeOutput) {
   return {
     output(stream, data, device, outputDevice) {
       if (!data) return;
+      const outputData = typeof sanitizeOutput === 'function' ? sanitizeOutput(stream, data) : data;
+      if (!outputData) return;
       const resolvedOutputDevice = outputDevice || (stream === 'stderr' ? '/dev/stderr' : '/dev/stdout');
       postProjectEvent(messageId, {
         type: 'output',
         stream,
         device: resolvedOutputDevice,
         ...(device && device !== resolvedOutputDevice ? { sourceDevice: device } : {}),
-        data,
+        data: outputData,
       });
     },
     fileChange(change) {
@@ -6428,12 +6455,17 @@ function emitProjectResultOutputEvents(events, result) {
 }
 
 async function handleProjectCpp(request, messageId) {
-  const events = createProjectEventBridge(messageId);
+  const events = createProjectEventBridge(messageId, (stream, data) =>
+    stream === 'stderr' ? sanitizeCppProjectDiagnostics(data, request) : data
+  );
   if (request?.source === 'compile') {
     const startedAt = now();
     const compileResult = await compileProjectOutsideMainWorker(request);
     if (!compileResult.success) {
-      const stderr = [compileResult.stderr, compileResult.error].filter(Boolean).join('\n').trim();
+      const stderr = sanitizeCppProjectDiagnostics(
+        [compileResult.stderr, compileResult.error].filter(Boolean).join('\n').trim(),
+        request
+      );
       const failureResult = {
         stdout: compileResult.stdout || '',
         stderr: stderr ? `${stderr}\n` : 'C++ compilation failed.\n',
@@ -6446,7 +6478,7 @@ async function handleProjectCpp(request, messageId) {
     const programBytes = new Uint8Array(compileResult.programBuffer);
     const result = {
       stdout: compileResult.stdout || '',
-      stderr: compileResult.stderr || '',
+      stderr: sanitizeCppProjectDiagnostics(compileResult.stderr || '', request),
       exitCode: 0,
       files: [encodeProjectFileChange(outputPath, programBytes)],
       timings: {
@@ -6488,7 +6520,7 @@ async function handleProjectCpp(request, messageId) {
   });
   return {
     stdout: program.stdout,
-    stderr: program.stderr,
+    stderr: sanitizeCppProjectDiagnostics(program.stderr, request),
     exitCode: program.exitCode,
     files: diffProjectFs(before, fs),
     timings: {

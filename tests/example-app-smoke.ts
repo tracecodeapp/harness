@@ -910,7 +910,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
     const takehomeCppReport = await safeReadFile('takehome/cpp/summary.txt');
     await workspace.writeFile('takehome/csharp/app/App.csproj', [
       '<Project Sdk="Microsoft.NET.Sdk">',
-      '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>',
+      '  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup>',
       '</Project>',
       '',
     ].join('\\n'));
@@ -1047,7 +1047,7 @@ async function runDevTerminalSmoke(page: import('playwright').Page, previewUrl: 
           },
           {
             path: 'readonly-csharp/ReadonlyCsharp.csproj',
-            contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>\\n',
+            contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\\n',
           },
           {
             path: 'readonly-csharp/Program.cs',
