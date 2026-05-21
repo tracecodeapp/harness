@@ -1312,7 +1312,10 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         IfStatementSyntax expanded = ifStatement.WithStatement(ExpandEmbeddedStatement(ifStatement.Statement, conditionLine, statementFallbackLine));
         if (ifStatement.Else is { Statement: StatementSyntax elseStatement } elseClause)
         {
-            expanded = expanded.WithElse(elseClause.WithStatement(ExpandEmbeddedStatement(elseStatement, conditionLine)));
+            int? elseExactLine = elseStatement is IfStatementSyntax
+                ? null
+                : GetUnbracedElseBodyLineOrFallback(elseClause, conditionLine);
+            expanded = expanded.WithElse(elseClause.WithStatement(ExpandEmbeddedStatement(elseStatement, conditionLine, elseExactLine)));
         }
 
         return expanded;
@@ -1718,8 +1721,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 }
 
                 string pathExpression = CreateObjectArrayExpression(Array.Empty<string>(), index, keyExpression);
+                string invocationExpression = CreateScopedIndexSourceExpression(invocation.ToString(), CreateIndexSourcesExpression(index));
                 replacement = SyntaxFactory.ParseExpression(
-                    $"TraceCode.Internal.TraceCodeTrace.ContainsRead({invocation}, {Literal(variable)}, {pathExpression}, {line}, {CreateIndexSourcesExpression(index, keyExpression)})"
+                    $"TraceCode.Internal.TraceCodeTrace.ContainsRead({invocationExpression}, {Literal(variable)}, {pathExpression}, {line}, {CreateIndexSourcesExpression(index, keyExpression)})"
                 );
                 return true;
             }
@@ -1732,8 +1736,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 }
 
                 string pathExpression = CreateObjectArrayExpression(fieldPath, fieldIndex, keyExpression);
+                string invocationExpression = CreateScopedIndexSourceExpression(invocation.ToString(), CreateFieldIndexSourcesExpression(fieldPath, fieldIndex));
                 replacement = SyntaxFactory.ParseExpression(
-                    $"TraceCode.Internal.TraceCodeTrace.ContainsRead({invocation}, {Literal(fieldVariable)}, {pathExpression}, {line}, {CreateFieldIndexSourcesExpression(fieldPath, fieldIndex, keyExpression)})"
+                    $"TraceCode.Internal.TraceCodeTrace.ContainsRead({invocationExpression}, {Literal(fieldVariable)}, {pathExpression}, {line}, {CreateFieldIndexSourcesExpression(fieldPath, fieldIndex, keyExpression)})"
                 );
                 return true;
             }
@@ -3438,6 +3443,11 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         return $"new string?[] {{ {string.Join(", ", sources)} }}";
     }
 
+    private static string CreateScopedIndexSourceExpression(string expression, string indexSourcesExpression)
+    {
+        return $"TraceCode.Internal.TraceCodeTrace.WithIndexSources({indexSourcesExpression}, () => {expression})";
+    }
+
     private static string CreateIndexedMetadataIndexSourcesExpression(string indexExpression)
     {
         return $"new string?[] {{ {CreateIndexSourceLiteral(indexExpression)}, null }}";
@@ -3879,6 +3889,75 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         return fallbackLine;
+    }
+
+    private int GetUnbracedElseBodyLineOrFallback(ElseClauseSyntax elseClause, int fallbackLine)
+    {
+        if (elseClause.Statement is BlockSyntax)
+        {
+            return fallbackLine;
+        }
+
+        SourceText sourceText = originalSourceText;
+        int searchIndex = Math.Max(0, fallbackLine - 1);
+        for (int index = searchIndex; index < sourceText.Lines.Count; index++)
+        {
+            string lineText = sourceText.Lines[index].ToString();
+            int elseIndex = FindLikelyElseKeywordIndex(lineText);
+            if (elseIndex < 0)
+            {
+                continue;
+            }
+
+            string trailingBody = lineText[(elseIndex + "else".Length)..].Trim();
+            if (!string.IsNullOrWhiteSpace(trailingBody) && trailingBody != "{" && !trailingBody.StartsWith("//", StringComparison.Ordinal))
+            {
+                return index + 1;
+            }
+
+            for (int bodyIndex = index + 1; bodyIndex < sourceText.Lines.Count; bodyIndex++)
+            {
+                string trimmed = sourceText.Lines[bodyIndex].ToString().Trim();
+                if (string.IsNullOrWhiteSpace(trimmed) || trimmed is "{" or "}")
+                {
+                    continue;
+                }
+                return bodyIndex + 1;
+            }
+
+            break;
+        }
+
+        return fallbackLine;
+    }
+
+    private static int FindLikelyElseKeywordIndex(string lineText)
+    {
+        int index = lineText.IndexOf("else", StringComparison.Ordinal);
+        while (index >= 0)
+        {
+            int afterIndex = index + "else".Length;
+            bool hasIdentifierBefore = index > 0 && IsIdentifierPart(lineText[index - 1]);
+            bool hasIdentifierAfter = afterIndex < lineText.Length && IsIdentifierPart(lineText[afterIndex]);
+            string before = lineText[..index].TrimEnd();
+            bool followsCompletedThenStatement =
+                before.Length == 0 ||
+                before.EndsWith("}", StringComparison.Ordinal) ||
+                before.EndsWith(";", StringComparison.Ordinal);
+            if (!hasIdentifierBefore && !hasIdentifierAfter && followsCompletedThenStatement)
+            {
+                return index;
+            }
+
+            index = lineText.IndexOf("else", afterIndex, StringComparison.Ordinal);
+        }
+
+        return -1;
+    }
+
+    private static bool IsIdentifierPart(char value)
+    {
+        return char.IsLetterOrDigit(value) || value == '_';
     }
 
     private static int GetIfConditionLineOrFallback(IfStatementSyntax ifStatement, int fallbackLine)

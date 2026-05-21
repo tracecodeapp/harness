@@ -33,6 +33,7 @@
   "expect": {
     "callSite": {
       "eventKinds": [
+        "call",
         "line",
         "snapshot",
         "write"
@@ -49,7 +50,6 @@
     },
     "lambdaEntry": {
       "eventKinds": [
-        "call",
         "line"
       ],
       "variableSnapshots": [],

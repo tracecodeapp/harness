@@ -1,0 +1,105 @@
+{
+  "id": "cpp-local-lambda-callsite",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "emails": [
+      "a@example.com",
+      "b@example.com"
+    ]
+  },
+  "anchors": {
+    "lambdaEntry": {
+      "cpp": "auto unite = [&](string firstEmail, string email) {"
+    },
+    "bodyUpdate": {
+      "cpp": "merged += 1;"
+    },
+    "uniteCall": {
+      "cpp": "unite(firstEmail, email);"
+    }
+  },
+  "expectLineSequence": [
+    "uniteCall",
+    "lambdaEntry",
+    "bodyUpdate",
+    "uniteCall"
+  ],
+  "expect": {
+    "lambdaEntry": {
+      "eventKinds": [
+        "line"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    },
+    "bodyUpdate": {
+      "eventKinds": [
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "email",
+        "firstEmail"
+      ],
+      "accessTargets": []
+    },
+    "uniteCall": {
+      "eventKinds": [
+        "call",
+        "line",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "email",
+        "emails",
+        "firstEmail",
+        "merged"
+      ],
+      "accessTargets": []
+    }
+  },
+  "expectEventOrder": {
+    "uniteCall": [
+      {
+        "before": {
+          "kind": "line"
+        },
+        "after": {
+          "kind": "call"
+        }
+      }
+    ]
+  },
+  "expectCallActivations": [
+    {
+      "function": "unite",
+      "args": {
+        "firstEmail": "a@example.com",
+        "email": "b@example.com"
+      },
+      "callStackDepth": 2
+    }
+  ],
+  "expectReturns": [
+    {
+      "function": "unite",
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "value": 1,
+      "args": {
+        "emails": [
+          "a@example.com",
+          "b@example.com"
+        ]
+      },
+      "callStackDepth": 1
+    }
+  ],
+  "expectBalancedCallReturns": true
+}

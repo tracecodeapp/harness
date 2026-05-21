@@ -3268,6 +3268,56 @@ function createTraceScalarUpdateExpression(ts, sourceFile, node, variableName, o
   ]);
 }
 
+function createTraceDeferredPostUpdateScalarExpression(ts, sourceFile, node, variableName, operatorName) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier('__traceDeferredPostUpdateScalar'), undefined, [
+    ts.factory.createStringLiteral(variableName),
+    ts.factory.createArrowFunction(
+      undefined,
+      undefined,
+      [],
+      undefined,
+      ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+      ts.factory.createPostfixUnaryExpression(
+        ts.factory.createIdentifier(variableName),
+        operatorName === 'inc' ? ts.SyntaxKind.PlusPlusToken : ts.SyntaxKind.MinusMinusToken
+      )
+    ),
+    ts.factory.createArrowFunction(
+      undefined,
+      undefined,
+      [],
+      undefined,
+      ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+      ts.factory.createIdentifier(variableName)
+    ),
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
+}
+
+function createTraceIndexOperandExpression(ts, sourceFile, node, visit) {
+  const unwrapped = unwrapParenthesizedExpression(ts, node);
+  if (
+    unwrapped &&
+    ts.isPostfixUnaryExpression(unwrapped) &&
+    (unwrapped.operator === ts.SyntaxKind.PlusPlusToken ||
+      unwrapped.operator === ts.SyntaxKind.MinusMinusToken) &&
+    ts.isIdentifier(unwrapped.operand)
+  ) {
+    return createTraceDeferredPostUpdateScalarExpression(
+      ts,
+      sourceFile,
+      unwrapped,
+      unwrapped.operand.text,
+      unwrapped.operator === ts.SyntaxKind.PlusPlusToken ? 'inc' : 'dec'
+    );
+  }
+  return ts.visitNode(node, visit);
+}
+
+function createTraceIndexOperandExpressions(ts, sourceFile, indices, visit) {
+  return indices.map((indexExpr) => createTraceIndexOperandExpression(ts, sourceFile, indexExpr, visit));
+}
+
 function createTraceScalarWriteStatement(ts, sourceFile, node, variableName) {
   return ts.factory.createExpressionStatement(
     ts.factory.createCallExpression(ts.factory.createIdentifier('__traceScalarWrite'), undefined, [
@@ -4169,7 +4219,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
               ? 'dec'
               : null;
         if (tracedOperand && operatorName) {
-          const visitedIndices = tracedOperand.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
+          const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedOperand.indices, visit);
           return createTraceUpdateExpression(
             ts,
             sourceFile,
@@ -4202,7 +4252,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
           const tracedMembershipTarget = extractTraceableMembershipTarget(ts, node.right, maxPathDepth);
           if (tracedMembershipTarget) {
             const visitedKey = ts.visitNode(node.left, visit);
-            const visitedIndices = tracedMembershipTarget.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
+            const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedMembershipTarget.indices, visit);
             return createTraceHasIndexExpressionForReceiver(
               ts,
               sourceFile,
@@ -4218,7 +4268,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 
         const tracedLeft = extractTraceableElementAccess(ts, node.left, maxPathDepth);
         if (tracedLeft && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
-          const visitedIndices = tracedLeft.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
+          const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedLeft.indices, visit);
           const visitedRight = ts.visitNode(node.right, visit);
           if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
             return createTraceWriteIndexExpression(
@@ -4293,7 +4343,9 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             tracedCall.receiverExpression,
             tracedCall.methodName,
             visitedArgs,
-            tracedCall.indices?.map((indexExpr) => ts.visitNode(indexExpr, visit)) ?? [],
+            tracedCall.indices
+              ? createTraceIndexOperandExpressions(ts, sourceFile, tracedCall.indices, visit)
+              : [],
             tracedCall.indices ?? []
           );
         }
@@ -4323,7 +4375,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 
         const tracedAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
         if (tracedAccess) {
-          const visitedIndices = tracedAccess.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
+          const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedAccess.indices, visit);
           return createTraceReadIndexExpression(
             ts,
             sourceFile,
@@ -4354,7 +4406,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 
         const tracedIndexedPropertyAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
         if (tracedIndexedPropertyAccess && tracedIndexedPropertyAccess.indices.length > 1) {
-          const visitedIndices = tracedIndexedPropertyAccess.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
+          const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedIndexedPropertyAccess.indices, visit);
           return createTraceReadIndexExpression(
             ts,
             sourceFile,
@@ -4535,13 +4587,52 @@ return result;`
 }
 
 const TRACING_RUNTIME_HELPERS_SOURCE = `
+const __TRACE_DEFERRED_SCALAR_UPDATE = Symbol.for('tracecode.deferredScalarUpdate');
+
+function __traceDeferredPostUpdateScalar(__varName, __update, __current, __location) {
+  const __result = typeof __update === 'function' ? __update() : undefined;
+  const __value = typeof __current === 'function' ? __current() : __result;
+  let __flushed = false;
+  return {
+    [__TRACE_DEFERRED_SCALAR_UPDATE]: true,
+    value: __result,
+    flush() {
+      if (__flushed) return;
+      __flushed = true;
+      __traceScalarWrite(__varName, __value, __location);
+    },
+  };
+}
+
+function __traceIsDeferredScalarUpdate(__value) {
+  return Boolean(__value && typeof __value === 'object' && __value[__TRACE_DEFERRED_SCALAR_UPDATE] === true);
+}
+
+function __traceResolvedIndexValue(__index) {
+  return __traceIsDeferredScalarUpdate(__index) ? __index.value : __index;
+}
+
+function __traceResolveIndexValues(__indices) {
+  return Array.isArray(__indices) ? __indices.map((__index) => __traceResolvedIndexValue(__index)) : __indices;
+}
+
+function __traceFlushDeferredScalarUpdates(__indices) {
+  if (!Array.isArray(__indices)) return;
+  for (const __index of __indices) {
+    if (__traceIsDeferredScalarUpdate(__index) && typeof __index.flush === 'function') {
+      __index.flush();
+    }
+  }
+}
+
 function __traceNormalizeIndices(__indices, __maxDepth = __TRACE_V4_MAX_PATH_DEPTH) {
-  if (!Array.isArray(__indices) || __indices.length === 0 || __indices.length > __maxDepth) return null;
-  if (!__indices.every((__index) =>
+  const __resolved = __traceResolveIndexValues(__indices);
+  if (!Array.isArray(__resolved) || __resolved.length === 0 || __resolved.length > __maxDepth) return null;
+  if (!__resolved.every((__index) =>
     (typeof __index === 'number' && Number.isInteger(__index)) ||
     (typeof __index === 'string' && __index.length > 0)
   )) return null;
-  return __indices.map((__index) => typeof __index === 'number' ? Math.trunc(__index) : __index);
+  return __resolved.map((__index) => typeof __index === 'number' ? Math.trunc(__index) : __index);
 }
 
 function __traceNormalizeIndexSources(__indexSources, __pathLength) {
@@ -4555,7 +4646,7 @@ function __traceNormalizeIndexSources(__indexSources, __pathLength) {
 
 function __traceReadValueAtIndices(__container, __indices) {
   let __current = __container;
-  for (const __index of __indices) {
+  for (const __index of __traceResolveIndexValues(__indices)) {
     if (__current === null || __current === undefined) return undefined;
     __current = __traceIsMapLike(__current) ? __current.get(__index) : __current[__index];
   }
@@ -4573,16 +4664,17 @@ function __traceIsMapLike(__value) {
 }
 
 function __traceWriteValueAtIndices(__container, __indices, __value) {
-  if (__indices.length === 1) {
-    __container[__indices[0]] = __value;
+  const __effectiveIndices = __traceResolveIndexValues(__indices);
+  if (__effectiveIndices.length === 1) {
+    __container[__effectiveIndices[0]] = __value;
     return __value;
   }
   let __parent = __container;
-  for (let __i = 0; __i < __indices.length - 1; __i++) {
-    __parent = __parent?.[__indices[__i]];
+  for (let __i = 0; __i < __effectiveIndices.length - 1; __i++) {
+    __parent = __parent?.[__effectiveIndices[__i]];
   }
   if (__parent !== null && __parent !== undefined) {
-    __parent[__indices[__indices.length - 1]] = __value;
+    __parent[__effectiveIndices[__effectiveIndices.length - 1]] = __value;
   }
   return __value;
 }
@@ -4602,11 +4694,13 @@ function __traceReadIndex(__varName, __container, __indices, __indexSources, __l
       ...__traceNormalizeSourceLocation(__location),
     });
   }
+  __traceFlushDeferredScalarUpdates(__indices);
   return __value;
 }
 
 function __traceHasIndex(__varName, __container, __indices, __indexSources, __key, __location) {
-  const __baseIndices = Array.isArray(__indices) ? __indices : [];
+  const __rawBaseIndices = Array.isArray(__indices) ? __indices : [];
+  const __baseIndices = __traceResolveIndexValues(__rawBaseIndices);
   const __target = __traceReadValueAtIndices(__container, __baseIndices);
   const __result = __key in __target;
   const __path = [...__baseIndices, __key];
@@ -4623,6 +4717,7 @@ function __traceHasIndex(__varName, __container, __indices, __indexSources, __ke
       ...__traceNormalizeSourceLocation(__location),
     });
   }
+  __traceFlushDeferredScalarUpdates(__rawBaseIndices);
   return __result;
 }
 
@@ -4714,6 +4809,7 @@ function* __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __ind
       ...__traceNormalizeSourceLocation(__location),
     });
   }
+  __traceFlushDeferredScalarUpdates(__baseIndices);
   let __index = 0;
   for (const __value of __iterable) {
     if (__base) {
@@ -4773,7 +4869,8 @@ function __traceReadProperty(__varName, __container, __propertyName, __scopeOrLo
 function __traceWriteIndex(__varName, __container, __indices, __indexSources, __value, __location) {
   const __normalized = __traceNormalizeIndices(__indices);
   const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
-  const __result = __traceWriteValueAtIndices(__container, Array.isArray(__indices) ? __indices : [], __value);
+  const __effectiveIndices = Array.isArray(__indices) ? __indices : [];
+  const __result = __traceWriteValueAtIndices(__container, __effectiveIndices, __value);
   if (__normalized) {
     __traceRecorder.recordAccess({
       variable: __varName,
@@ -4785,6 +4882,7 @@ function __traceWriteIndex(__varName, __container, __indices, __indexSources, __
       ...__traceNormalizeSourceLocation(__location),
     });
   }
+  __traceFlushDeferredScalarUpdates(__effectiveIndices);
   return __result;
 }
 
@@ -4854,6 +4952,7 @@ function __traceAugAssignIndex(__varName, __container, __indices, __indexSources
       ...__traceNormalizeSourceLocation(__location),
     });
   }
+  __traceFlushDeferredScalarUpdates(__effectiveIndices);
   return __next;
 }
 
@@ -4886,6 +4985,7 @@ function __traceUpdateIndex(__varName, __container, __indices, __indexSources, _
       ...__traceNormalizeSourceLocation(__location),
     });
   }
+  __traceFlushDeferredScalarUpdates(__effectiveIndices);
   return __isPrefix ? __next : __current;
 }
 
@@ -4907,14 +5007,15 @@ function __traceExceptionValue(__line, __error) {
 
 function __traceMutatingCall(__varName, __container, __indices, __indexSources, __method, __location, ...__args) {
   const __sourceLocation = __traceNormalizeSourceLocation(__location);
+  const __rawPath = Array.isArray(__indices) ? __indices : [];
+  const __path = __traceResolveIndexValues(__rawPath);
   let __target = __container;
-  for (const __index of __indices || []) {
+  for (const __index of __path) {
     __target = __traceIsMapLike(__target) ? __target.get(__index) : __target?.[__index];
   }
   const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'add', 'insert', 'delete', 'clear'].includes(__method);
   const __result = __target[__method](...__args);
   if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(__method)) {
-    const __path = __indices || [];
     const __isMapLike = __traceIsMapLike(__target);
     const __isNestedMap = __path.length > 0 && __traceIsMapLike(__target);
     if (__isMapLike && __method === 'set') {
@@ -4939,6 +5040,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
         ...__sourceLocation,
       });
+      __traceFlushDeferredScalarUpdates(__rawPath);
       return __result;
     }
     if (__isMapLike && (__method === 'get' || __method === 'has')) {
@@ -4952,6 +5054,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         value: serializeValue(__result),
         ...__sourceLocation,
       });
+      __traceFlushDeferredScalarUpdates(__rawPath);
       return __result;
     }
     if (__isMapLike && __method === 'delete') {
@@ -4966,6 +5069,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
         ...__sourceLocation,
       });
+      __traceFlushDeferredScalarUpdates(__rawPath);
       return __result;
     }
     if (__target instanceof Set && __method === 'has') {
@@ -4978,6 +5082,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
         ...__sourceLocation,
       });
+      __traceFlushDeferredScalarUpdates(__rawPath);
       return __result;
     }
     if (__target instanceof Set && __method === 'delete') {
@@ -4992,6 +5097,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
         ...__sourceLocation,
       });
+      __traceFlushDeferredScalarUpdates(__rawPath);
       return __result;
     }
     if (__path.length > 0) {
@@ -5017,6 +5123,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
       ...__sourceLocation,
     });
   }
+  __traceFlushDeferredScalarUpdates(__rawPath);
   return __result;
 }
 `;

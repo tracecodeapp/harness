@@ -1,0 +1,79 @@
+{
+  "id": "cpp-variant-local-initializer",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "values": [
+      "alpha",
+      7
+    ]
+  },
+  "anchors": {
+    "helperEntry": {
+      "cpp": "std::string stringify(const Value& v) {"
+    },
+    "initializer": {
+      "cpp": "Value picked = values[0];"
+    }
+  },
+  "expect": {
+    "helperEntry": {
+      "eventKinds": [
+        "call",
+        "line"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    },
+    "initializer": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "picked",
+        "values"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "values",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "picked"
+        }
+      ]
+    }
+  },
+  "expectCallActivations": [
+    {
+      "function": "stringify",
+      "args": {
+        "v": "alpha"
+      },
+      "callStackDepth": 2
+    }
+  ],
+  "expectEventAssertions": {
+    "initializer": [
+      {
+        "kind": "read",
+        "variable": "values",
+        "pathDepth": 1,
+        "value": "alpha"
+      },
+      {
+        "kind": "write",
+        "variable": "picked",
+        "value": "alpha"
+      }
+    ]
+  }
+}

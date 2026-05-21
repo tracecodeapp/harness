@@ -1,0 +1,51 @@
+{
+  "id": "python-scalar-augassign-expression",
+  "languages": ["python"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "aug": {
+      "python": "left += width * 2"
+    }
+  },
+  "expectLineSnapshots": [
+    {
+      "role": "aug",
+      "includes": {
+        "left": 4,
+        "width": 1
+      }
+    }
+  ],
+  "expect": {
+    "aug": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["left", "width"],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "left"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "aug": [
+      {
+        "kind": "write",
+        "variable": "left",
+        "value": 4
+      }
+    ]
+  },
+  "rejectEventAssertions": {
+    "aug": [
+      {
+        "kind": "write",
+        "variable": "left",
+        "value": 2
+      }
+    ]
+  }
+}

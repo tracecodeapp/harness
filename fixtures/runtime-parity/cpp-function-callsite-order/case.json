@@ -1,0 +1,79 @@
+{
+  "id": "cpp-function-callsite-order",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "n": 2
+  },
+  "anchors": {
+    "helperEntry": {
+      "cpp": "int helper(int x) {"
+    },
+    "helperCall": {
+      "cpp": "value = helper(value);"
+    }
+  },
+  "expectLineSequence": [
+    "helperCall",
+    "helperEntry",
+    "helperCall"
+  ],
+  "expect": {
+    "helperEntry": {
+      "eventKinds": [
+        "call",
+        "line"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    },
+    "helperCall": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "n",
+        "value"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "value"
+        }
+      ]
+    }
+  },
+  "expectCallActivations": [
+    {
+      "function": "helper",
+      "args": {
+        "x": 2
+      },
+      "callStackDepth": 2
+    }
+  ],
+  "expectReturns": [
+    {
+      "function": "helper",
+      "value": 3,
+      "args": {
+        "x": 2
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "value": 3,
+      "args": {
+        "n": 2
+      },
+      "callStackDepth": 1
+    }
+  ],
+  "expectBalancedCallReturns": true
+}

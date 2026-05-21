@@ -49,6 +49,7 @@ type RuntimeTraceEvent = {
   };
   value?: unknown;
   args?: unknown[];
+  callStack?: Array<{ function?: string; args?: Record<string, unknown> }>;
 };
 
 type RuntimeCore = {
@@ -1981,6 +1982,42 @@ print(json.dumps({
 
   const activationCalls = parsed.runtimeTrace.events.filter(
     (event) => event.kind === 'call' && event.function === 'backtrack'
+  );
+  const recursiveActivationIndex = parsed.runtimeTrace.events.findIndex(
+    (event) =>
+      event.kind === 'call' &&
+      event.function === 'backtrack' &&
+      event.args &&
+      !Array.isArray(event.args) &&
+      event.args.start === 0 &&
+      event.args.remaining === 2
+  );
+  const parentCallsiteLineIndex = parsed.runtimeTrace.events.findIndex(
+    (event, index) =>
+      index < recursiveActivationIndex &&
+      event.kind === 'line' &&
+      event.line === recursiveCallLine &&
+      event.function === 'backtrack' &&
+      event.callStack?.at(-1)?.args?.remaining === 4
+  );
+  const firstChildLineIndex = parsed.runtimeTrace.events.findIndex(
+    (event, index) =>
+      index > recursiveActivationIndex &&
+      event.kind === 'line' &&
+      event.function === 'backtrack' &&
+      event.callStack?.at(-1)?.args?.remaining === 2
+  );
+  assertCondition(
+    recursiveActivationIndex >= 0,
+    `Python recursive activation should be present, got ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+  assertCondition(
+    parentCallsiteLineIndex >= 0 && parentCallsiteLineIndex < recursiveActivationIndex,
+    `Python recursive call-site line should precede child activation. callsite=${parentCallsiteLineIndex}, call=${recursiveActivationIndex}, events=${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+  assertCondition(
+    firstChildLineIndex > recursiveActivationIndex,
+    `Python recursive child work should begin after child activation. call=${recursiveActivationIndex}, childLine=${firstChildLineIndex}, events=${JSON.stringify(parsed.runtimeTrace.events)}`
   );
   assertCondition(
     activationCalls.some(

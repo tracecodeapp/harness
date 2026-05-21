@@ -1,0 +1,123 @@
+{
+  "id": "java-empty-for-body-update-line-anchor",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "java"
+  ],
+  "inputs": {
+    "nums": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "anchors": {
+    "header": {
+      "java": "for (int left = 0; left < nums.length;) {"
+    },
+    "body": {
+      "java": "total += nums[left];"
+    },
+    "update": {
+      "java": "left += 2;"
+    }
+  },
+  "expect": {
+    "header": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "left"
+        }
+      ]
+    },
+    "body": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "total"
+        }
+      ]
+    },
+    "update": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "left",
+        "nums",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "left"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "update": [
+      {
+        "kind": "write",
+        "variable": "left",
+        "value": 2
+      },
+      {
+        "kind": "write",
+        "variable": "left",
+        "value": 4
+      }
+    ]
+  },
+  "rejectEventAssertions": {
+    "header": [
+      {
+        "kind": "write",
+        "variable": "left",
+        "value": 2
+      },
+      {
+        "kind": "write",
+        "variable": "left",
+        "value": 4
+      }
+    ]
+  }
+}

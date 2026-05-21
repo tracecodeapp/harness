@@ -410,6 +410,11 @@ Events should be attached to the source line that caused them.
   The call-site expression itself is represented by its own `line` event and
   subsequent call-stack context; do not require a second call event on the
   call-site line unless the language runtime explicitly supports that model.
+- Local function-object/lambda calls may anchor the `call` event to the
+  invocation line when the runtime can observe that line without guessing. In
+  that model, the lambda body should still emit a frame-entry `line` event for
+  the lambda declaration/body line so playback can distinguish invocation from
+  entered body.
 - Script mode starts at top-level executable statements, then enters function
   bodies when calls occur.
 - Unbraced control-flow bodies attach to the body statement line, not the

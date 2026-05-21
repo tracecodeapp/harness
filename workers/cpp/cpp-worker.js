@@ -2932,7 +2932,7 @@ function buildGeneratedIncludes(source, signature) {
 function buildTraceArgsJsonExpression(signature, variableNameForParameter = (_parameter, index) => `__tc_arg_${index}`, aliases = new Map()) {
   const pieces = [];
   signature.parameters.forEach((parameter, index) => {
-    const normalizedType = normalizeCppType(parameter.type);
+    const normalizedType = normalizeCppType(parameter.type, aliases);
     if (
       normalizedType === 'auto' ||
       /\bauto\b/.test(parameter.type) ||
@@ -3127,6 +3127,7 @@ function isSnapshotSerializableCppType(type, aliases = new Map()) {
   if (/^(?:bool|char|string|size_t|std::size_t|(?:unsigned)?(?:short|int|long|longlong|longlongint)|float|double|longdouble)$/.test(normalized)) {
     return true;
   }
+  if (normalized.startsWith('variant<') || normalized.startsWith('optional<')) return true;
   return (
     normalized.startsWith('vector<') ||
     normalized.startsWith('array<') ||
@@ -3363,14 +3364,19 @@ function rewriteBareMemberReadInstrumentation(
   ].join('\n');
 }
 
-function buildCallInstrumentation(lineNumber, signature) {
+function buildCallInstrumentation(lineNumber, signature, aliases = new Map()) {
   const callLine = signature.callLine ?? lineNumber;
-  const callEventPrefix = `{"kind":"call","line":${callLine},"function":${jsonStringLiteral(signature.name)},"args":`;
-  const argsExpression = buildTraceArgsJsonExpression(signature, (parameter) => parameter.name);
+  const callLineName = `__tc_call_line_${lineNumber}`;
+  const callLineExpression = signature.dynamicCallLine ? 'tracecode::trace_event_line()' : String(callLine);
+  const callEventPrefix = `{"kind":"call","line":`;
+  const callEventSuffix = `,"function":${jsonStringLiteral(signature.name)},"args":`;
+  const entryLine = signature.entryLine ?? callLine;
+  const argsExpression = buildTraceArgsJsonExpression(signature, (parameter) => parameter.name, aliases);
   return [
+    `int ${callLineName} = ${callLineExpression};`,
     `std::string __tc_args_json_${lineNumber} = std::string("{") + ${argsExpression} + "}";`,
-    `tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json_${lineNumber} + "}", ${callLine});`,
-    `tracecode::emit_line(${callLine}, ${cppStringLiteral(signature.name)});`,
+    `tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + tracecode::to_json(${callLineName}) + ${cppStringLiteral(callEventSuffix)} + __tc_args_json_${lineNumber} + "}", ${callLineName});`,
+    `tracecode::emit_line(${entryLine}, ${cppStringLiteral(signature.name)});`,
   ].join('\n');
 }
 
@@ -3450,6 +3456,41 @@ function shouldEmitCppImplicitFrameReturn(signature, aliases) {
   if (!signature) return false;
   const normalizedReturnType = normalizeCppType(signature.returnType, aliases);
   return normalizedReturnType === 'void' || (signature.lambda && normalizedReturnType === 'auto');
+}
+
+function cppCallNameMatchesAt(line, name, start) {
+  const before = line.slice(Math.max(0, start - 6), start);
+  if (before.endsWith('::')) return false;
+  if (before.endsWith('.')) return false;
+  if (before.endsWith('->') && !before.endsWith('this->')) return false;
+  return true;
+}
+
+function cppLineCallsName(line, name) {
+  if (!name || name.startsWith('<')) return false;
+  const pattern = new RegExp(`\\b${escapeRegExp(name)}\\s*\\(`, 'g');
+  let match;
+  while ((match = pattern.exec(line))) {
+    if (cppCallNameMatchesAt(line, name, match.index)) return true;
+  }
+  return false;
+}
+
+function shouldEmitCppCallSiteLine(line, activeSignature, callSiteNames) {
+  const stripped = stripCppStringsAndComments(line);
+  if (!stripped.includes('(')) return false;
+  for (const name of callSiteNames) {
+    if (cppLineCallsName(stripped, name)) return true;
+  }
+  const selfParameter = activeSignature?.lambda ? activeSignature.parameters?.[0] : null;
+  if (
+    selfParameter &&
+    /\b(?:auto|function)\b|&&/.test(selfParameter.type || '') &&
+    cppLineCallsName(stripped, selfParameter.name)
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function startsCppLocalLambdaDeclaration(line) {
@@ -4999,6 +5040,11 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     });
     signatures.sort((left, right) => left.line - right.line || left.bodyLine - right.bodyLine);
   }
+  const callSiteNames = new Set(
+    signatures
+      .filter((signature) => !signature.skipInstrumentation && signature.name && !signature.name.startsWith('<'))
+      .map((signature) => signature.name)
+  );
   const lines = source.split(/\r?\n/);
   const output = [];
   let nextSignatureIndex = 0;
@@ -5263,6 +5309,15 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       output.push(buildReturnInstrumentation(lineNumber, activeSignature));
     }
 
+    if (
+      shouldInstrumentLine &&
+      !unbracedControlHeaderLine &&
+      shouldEmitCppCallSiteLine(line, activeSignature, callSiteNames)
+    ) {
+      output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
+      output.push(buildLineInstrumentation(lineNumber, activeSignature.name));
+    }
+
     output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
     output.push(lineForDriver);
     if (
@@ -5326,8 +5381,12 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           if (functionName === CPP_SCRIPT_FUNCTION_NAME && nextSignature.lambda) {
             nextSignature.callLine = nextSignature.line;
           }
+          if (nextSignature.lambda) {
+            nextSignature.dynamicCallLine = true;
+            nextSignature.entryLine = nextSignature.line;
+          }
           output.push(`#line ${lineNumber} "${CPP_USER_SOURCE_FILE}"`);
-          output.push(buildCallInstrumentation(lineNumber, nextSignature));
+          output.push(buildCallInstrumentation(lineNumber, nextSignature, aliases));
         }
         const scopedTraceNames = buildScopedTraceNameInstrumentation(lineNumber, nextSignature, aliases);
         if (scopedTraceNames) {

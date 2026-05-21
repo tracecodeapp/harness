@@ -70,6 +70,28 @@ function traceAccessEvents(result: { trace?: { events?: RuntimeTraceEvent[] } })
   );
 }
 
+function traceLineFrames(result: { trace?: { events?: RuntimeTraceEvent[] } }, line: number): RuntimeTraceEvent[][] {
+  const frames: RuntimeTraceEvent[][] = [];
+  let currentFrame: RuntimeTraceEvent[] | null = null;
+  for (const event of traceEvents(result)) {
+    if (event.kind === 'line') {
+      currentFrame = event.line === line ? [event] : null;
+      if (currentFrame) {
+        frames.push(currentFrame);
+      }
+      continue;
+    }
+    if (event.kind === 'call' || event.kind === 'return') {
+      currentFrame = null;
+      continue;
+    }
+    if (currentFrame) {
+      currentFrame.push(event);
+    }
+  }
+  return frames;
+}
+
 function traceSnapshotFrames(result: { trace?: { events?: RuntimeTraceEvent[] } }): Array<{
   line: number;
   snapshots: Record<string, unknown>;
@@ -1871,6 +1893,10 @@ function smallest(nums: number[]): number {
       `${language} shortest-palindrome single-line while tracing should succeed`
     );
     const shortestPalindromeAccesses = traceAccessEvents(shortestPalindromeSingleLineWhile);
+    const falseConditionFrames = traceLineFrames(shortestPalindromeSingleLineWhile, 9).filter((frame) => {
+      const tReads = frame.filter((event) => event.kind === 'read' && event.target?.variable === 't');
+      return tReads.some((event) => event.value === '#') && tReads.some((event) => event.value === 'a');
+    });
     assertCondition(
       shortestPalindromeAccesses.some(
         (event) =>
@@ -1884,6 +1910,13 @@ function smallest(nums: number[]): number {
             event.target?.variable === 'j'
         ),
       `${language} shortest-palindrome single-line while body should emit lps[j - 1] read and j write, received ${JSON.stringify(shortestPalindromeAccesses)}`
+    );
+    assertCondition(
+      falseConditionFrames.length > 0 &&
+        falseConditionFrames.every((frame) =>
+          !frame.some((event) => event.kind === 'write' && event.target?.variable === 'j')
+        ),
+      `${language} shortest-palindrome false single-line if branch should not emit j write, received ${JSON.stringify(falseConditionFrames)}`
     );
   }
   console.log('PASS: execute-with-tracing JS/TS shortest-palindrome single-line while body access contract');

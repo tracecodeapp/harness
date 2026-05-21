@@ -1,0 +1,62 @@
+{
+  "id": "csharp-indexed-contains-receiver-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "contains": {
+      "csharp": "if (!adj[c1].Contains(c2))"
+    }
+  },
+  "expect": {
+    "contains": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "adj",
+        "c1",
+        "c2"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "adj",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "adj",
+          "pathDepth": 2
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "contains": [
+      {
+        "kind": "read",
+        "variable": "adj",
+        "pathDepth": 1,
+        "indexSources": [
+          "c1"
+        ]
+      },
+      {
+        "kind": "read",
+        "variable": "adj",
+        "pathDepth": 2,
+        "indexSources": [
+          "c1",
+          "c2"
+        ],
+        "value": false
+      }
+    ]
+  }
+}

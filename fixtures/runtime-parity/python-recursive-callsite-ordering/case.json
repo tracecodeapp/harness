@@ -1,0 +1,110 @@
+{
+  "id": "python-recursive-callsite-ordering",
+  "languages": ["python"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "n": 1
+  },
+  "anchors": {
+    "init": {
+      "python": "seen = []"
+    },
+    "enter": {
+      "python": "seen.append(depth)"
+    },
+    "check": {
+      "python": "if depth == 0:"
+    },
+    "recurse": {
+      "python": "walk(depth - 1)"
+    },
+    "cleanup": {
+      "python": "seen.pop()"
+    }
+  },
+  "expectLineSequence": [
+    "init",
+    "enter",
+    "check",
+    "recurse",
+    "enter",
+    "check",
+    "cleanup"
+  ],
+  "expect": {
+    "init": {
+      "eventKinds": ["line", "snapshot", "write"],
+      "variableSnapshots": ["n", "seen"],
+      "accessTargets": [
+        { "kind": "write", "variable": "seen" }
+      ]
+    },
+    "enter": {
+      "eventKinds": ["line", "mutate", "snapshot"],
+      "variableSnapshots": ["depth", "seen"],
+      "accessTargets": [
+        { "kind": "mutate", "variable": "seen" }
+      ]
+    },
+    "check": {
+      "eventKinds": ["line", "snapshot"],
+      "variableSnapshots": ["depth", "seen"],
+      "accessTargets": []
+    },
+    "recurse": {
+      "eventKinds": ["line", "snapshot"],
+      "variableSnapshots": ["depth", "seen"],
+      "accessTargets": []
+    },
+    "cleanup": {
+      "eventKinds": ["line", "mutate", "snapshot"],
+      "variableSnapshots": ["depth", "seen"],
+      "accessTargets": [
+        { "kind": "mutate", "variable": "seen" }
+      ]
+    }
+  },
+  "expectFrameEvents": {
+    "recurse": [
+      {
+        "kind": "line",
+        "function": "walk",
+        "args": {
+          "depth": 1,
+          "seen": []
+        },
+        "callStackDepth": 2
+      }
+    ],
+    "enter": [
+      {
+        "kind": "line",
+        "function": "walk",
+        "args": {
+          "depth": 0,
+          "seen": [1]
+        },
+        "callStackDepth": 3
+      }
+    ]
+  },
+  "expectCallActivations": [
+    {
+      "function": "walk",
+      "args": {
+        "depth": 1,
+        "seen": []
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "walk",
+      "args": {
+        "depth": 0,
+        "seen": [1]
+      },
+      "callStackDepth": 3
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "id": "csharp-compact-if-else-line-anchor",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {
+    "left": [
+      1,
+      5
+    ],
+    "right": [
+      2,
+      3
+    ]
+  },
+  "anchors": {
+    "conditionThen": {
+      "csharp": "if (left[i] <= right[j]) merged[k++] = left[i++];"
+    },
+    "elseWrite": {
+      "csharp": "else merged[k++] = right[j++];"
+    }
+  },
+  "expect": {
+    "conditionThen": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "i",
+        "j",
+        "k",
+        "left",
+        "merged",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "left",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "right",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "elseWrite": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "i",
+        "j",
+        "k",
+        "left",
+        "merged",
+        "right"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "right",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "merged",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "elseWrite": [
+      {
+        "kind": "write",
+        "variable": "merged",
+        "pathDepth": 1,
+        "value": 3
+      }
+    ]
+  },
+  "rejectEventAssertions": {
+    "conditionThen": [
+      {
+        "kind": "write",
+        "variable": "merged",
+        "pathDepth": 1,
+        "value": 3
+      }
+    ]
+  }
+}

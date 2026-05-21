@@ -1,0 +1,38 @@
+{
+  "id": "js-single-line-if-false-scalar-update",
+  "languages": ["javascript", "typescript"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "falseCondition": {
+      "javascript": "if (t[i] === t[j]) j++;",
+      "typescript": "if (t[i] === t[j]) j++;"
+    }
+  },
+  "expectLineSnapshots": [
+    {
+      "role": "falseCondition",
+      "includes": {
+        "i": 0,
+        "j": 1,
+        "t": ["#", "a"]
+      }
+    }
+  ],
+  "expect": {
+    "falseCondition": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["i", "j", "t"],
+      "accessTargets": [
+        { "kind": "read", "variable": "t", "pathDepth": 1 }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "falseCondition": [
+      { "kind": "read", "variable": "t", "pathDepth": 1, "indexSources": ["i"], "value": "#" },
+      { "kind": "read", "variable": "t", "pathDepth": 1, "indexSources": ["j"], "value": "a" }
+    ]
+  }
+}

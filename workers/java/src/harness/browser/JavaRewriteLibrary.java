@@ -12,7 +12,10 @@ import java.util.regex.Pattern;
 
 public final class JavaRewriteLibrary {
   private static final Pattern METHOD_START = Pattern.compile(
-      "^(\\s*)(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*\\{\\s*$");
+      "^(\\s*)(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*(?:throws\\s+[^\\{]+)?\\{\\s*$",
+      Pattern.DOTALL);
+  private static final Pattern METHOD_HEADER_START = Pattern.compile(
+      "^\\s*(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+[A-Za-z_][A-Za-z0-9_]*\\s*\\(");
   private static final Pattern RETURN_STMT = Pattern.compile("^(\\s*)return(?:\\s+(.+?))?;\\s*$");
   private static final Pattern ARRAY_WRITE_2D = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]]+)\\]\\s*\\[([^;\\]]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
@@ -62,6 +65,10 @@ public final class JavaRewriteLibrary {
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.(put|merge)\\((.*)\\);\\s*$");
   private static final Pattern LIST_ARRAY_WRITE = Pattern.compile(
       "^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\s*\\[([^;\\]\\[]+)\\]\\s*=(?!=)\\s*(.+);\\s*$");
+  private static final Pattern ARRAYS_FILL_STATEMENT = Pattern.compile(
+      "^(\\s*)(?:java\\.util\\.)?Arrays\\.fill\\((.*)\\);\\s*$");
+  private static final Pattern INDEXED_ARRAY_TARGET = Pattern.compile(
+      "^([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
   private static final Pattern MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
@@ -126,10 +133,31 @@ public final class JavaRewriteLibrary {
     String[] lines = source.split("\\r?\\n", -1);
     Deque<MethodFrame> methods = new ArrayDeque<>();
     Map<String, String> fields = new HashMap<>();
+    PendingMethodHeader pendingMethodHeader = null;
 
     for (int index = 0; index < lines.length; index++) {
       String line = lines[index];
       int sourceLine = index + 1;
+      if (pendingMethodHeader != null) {
+        out.append(line).append('\n');
+        pendingMethodHeader.appendLine(line);
+        if (line.contains("{")) {
+          MethodSignature signature = parseMethodSignature(pendingMethodHeader.source());
+          if (signature != null) {
+            methods.push(new MethodFrame(
+                signature.name,
+                signature.returnType,
+                braceDelta(line),
+                fields,
+                signature.parametersSource));
+            out.append(signature.indent).append("  TraceHooks.emitCallAtLine(")
+                .append(pendingMethodHeader.startLine).append(", ").append(quote(signature.name)).append(", \"\");\n");
+          }
+          pendingMethodHeader = null;
+        }
+        continue;
+      }
+
       Matcher method = METHOD_START.matcher(line);
       if (method.matches()) {
         out.append(line).append('\n');
@@ -142,6 +170,11 @@ public final class JavaRewriteLibrary {
 
       MethodFrame current = methods.peek();
       if (current == null) {
+        if (startsMultilineMethodHeader(line)) {
+          pendingMethodHeader = new PendingMethodHeader(line, sourceLine);
+          out.append(line).append('\n');
+          continue;
+        }
         registerFieldDeclaration(fields, line);
         out.append(line).append('\n');
         continue;
@@ -296,6 +329,16 @@ public final class JavaRewriteLibrary {
       String name = forDeclaration.group(3);
       registerLocalDeclarators(frame, type, name + " = " + forDeclaration.group(4).trim());
       String bodyIndent = indent + "  ";
+      if (isEmptyForUpdateClause(forDeclaration.group(5))) {
+        String guardName = "__tracecodeForInit" + sourceLine + "_" + name;
+        return indent + "boolean " + guardName + " = true;\n" +
+            line + "\n" +
+            bodyIndent + "if (" + guardName + ") {\n" +
+            bodyIndent + "  " + guardName + " = false;\n" +
+            bodyIndent + "  TraceHooks.emitScalarWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");\n" +
+            bodyIndent + "  TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");\n" +
+            bodyIndent + "}";
+      }
       return line + "\n" +
           bodyIndent + "TraceHooks.emitScalarWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");\n" +
           bodyIndent + "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
@@ -574,6 +617,27 @@ public final class JavaRewriteLibrary {
       String readEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"read\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + row + ") + \",\" + TraceHooks.serializeResult(" + col + ") + \"]" + escapedIndexSourcesTargetSegment(rawRow, rawCol) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + "[" + col + "]) + \"}\");";
       String writeEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"write\\\",\\\"line\\\":" + sourceLine + ",\\\"target\\\":{\\\"variable\\\":\\\"" + name + "\\\",\\\"path\\\":[\" + TraceHooks.serializeResult(" + row + ") + \",\" + TraceHooks.serializeResult(" + col + ") + \"]" + escapedIndexSourcesTargetSegment(rawRow, rawCol) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + value + ") + \"}\");";
       return indent + "{ int[] " + temp + " = " + target + "; " + readEvent + " " + temp + "[" + col + "] = " + value + "; " + writeEvent + " }";
+    }
+
+    Matcher arraysFill = ARRAYS_FILL_STATEMENT.matcher(line);
+    if (arraysFill.matches()) {
+      String indent = arraysFill.group(1);
+      java.util.List<String> args = splitTopLevel(arraysFill.group(2).trim());
+      if (args.size() == 2) {
+        String target = args.get(0).trim();
+        String value = rewriteReads(args.get(1).trim(), sourceLine, frame);
+        if (isSimpleIdentifierExpression(target) && isArrayType(frame.typeOf(target))) {
+          return indent + "TraceHooks.fillArrayAtLine(" + sourceLine + ", " + quote(target) + ", " + target + ", " + value + ");";
+        }
+        Matcher indexedTarget = INDEXED_ARRAY_TARGET.matcher(target);
+        if (indexedTarget.matches() && isNestedArrayType(frame.typeOf(indexedTarget.group(1)))) {
+          String name = indexedTarget.group(1);
+          String rawIndex = indexedTarget.group(2).trim();
+          String index = rewriteReads(rawIndex, sourceLine, frame);
+          return indent + "TraceHooks.fillArrayAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ", " +
+              index + ", " + indexSourceArgument(rawIndex) + ", " + value + ");";
+        }
+      }
     }
 
     Matcher arrayIndexedMutatingCall = ARRAY_INDEXED_MUTATING_CALL_STATEMENT.matcher(line);
@@ -1222,6 +1286,14 @@ public final class JavaRewriteLibrary {
     return "String[]".equals(type == null ? null : normalizeJavaType(type));
   }
 
+  private static boolean isArrayType(String type) {
+    return type != null && normalizeJavaType(type).endsWith("[]");
+  }
+
+  private static boolean isNestedArrayType(String type) {
+    return type != null && normalizeJavaType(type).endsWith("[][]");
+  }
+
   private static boolean isArrayOfMapType(String type) {
     if (type == null) return false;
     String normalized = normalizeJavaType(type);
@@ -1621,6 +1693,31 @@ public final class JavaRewriteLibrary {
         "finally".equals(value) || "do".equals(value) || "try".equals(value);
   }
 
+  private static boolean startsMultilineMethodHeader(String line) {
+    String trimmed = stripTrailingLineComment(line).trim();
+    if (trimmed.isEmpty() || trimmed.startsWith("@")) return false;
+    if (trimmed.contains("{") || trimmed.endsWith(";")) return false;
+    if (trimmed.startsWith("class ") || trimmed.startsWith("interface ") || trimmed.startsWith("enum ") || trimmed.startsWith("record ")) {
+      return false;
+    }
+    if (isControlKeyword(trimmed.split("\\s+", 2)[0])) return false;
+    return METHOD_HEADER_START.matcher(trimmed).find();
+  }
+
+  private static MethodSignature parseMethodSignature(String source) {
+    Matcher method = METHOD_START.matcher(source);
+    if (!method.matches()) return null;
+    String name = method.group(2);
+    return new MethodSignature(method.group(1), name, extractReturnType(source, name), method.group(3));
+  }
+
+  private static boolean isEmptyForUpdateClause(String conditionAndUpdateClause) {
+    if (conditionAndUpdateClause == null) return false;
+    int delimiter = conditionAndUpdateClause.lastIndexOf(';');
+    if (delimiter < 0) return false;
+    return conditionAndUpdateClause.substring(delimiter + 1).trim().isEmpty();
+  }
+
   private static String quote(String value) {
     return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
   }
@@ -1818,6 +1915,38 @@ public final class JavaRewriteLibrary {
       int close = source.lastIndexOf(')');
       if (open < 0 || close <= open) return "";
       return source.substring(open + 1, close).trim();
+    }
+  }
+
+  private static final class PendingMethodHeader {
+    final StringBuilder header;
+    final int startLine;
+
+    PendingMethodHeader(String line, int startLine) {
+      this.header = new StringBuilder(line);
+      this.startLine = startLine;
+    }
+
+    void appendLine(String line) {
+      header.append('\n').append(line);
+    }
+
+    String source() {
+      return header.toString();
+    }
+  }
+
+  private static final class MethodSignature {
+    final String indent;
+    final String name;
+    final String returnType;
+    final String parametersSource;
+
+    MethodSignature(String indent, String name, String returnType, String parametersSource) {
+      this.indent = indent;
+      this.name = name;
+      this.returnType = returnType;
+      this.parametersSource = parametersSource;
     }
   }
 

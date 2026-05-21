@@ -1,0 +1,128 @@
+{
+  "id": "java-arrays-fill-row-mutation",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "java"
+  ],
+  "inputs": {
+    "n": 2
+  },
+  "anchors": {
+    "fillRow": {
+      "java": "Arrays.fill(board[r], '.');"
+    }
+  },
+  "expect": {
+    "fillRow": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "board",
+        "n",
+        "r"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "board",
+          "pathDepth": 1
+        },
+        {
+          "kind": "read",
+          "variable": "board",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "board",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "fillRow": [
+      {
+        "kind": "read",
+        "variable": "board",
+        "pathDepth": 1,
+        "indexSources": [
+          "r"
+        ]
+      },
+      {
+        "kind": "write",
+        "variable": "board",
+        "pathDepth": 1,
+        "indexSources": [
+          "r"
+        ],
+        "value": [
+          ".",
+          "."
+        ]
+      },
+      {
+        "kind": "mutate",
+        "variable": "board",
+        "pathDepth": 1,
+        "indexSources": [
+          "r"
+        ],
+        "method": "fill",
+        "args": [
+          "."
+        ]
+      },
+      {
+        "kind": "snapshot",
+        "variable": "board",
+        "value": [
+          [
+            ".",
+            "."
+          ],
+          [
+            ".",
+            "."
+          ]
+        ]
+      }
+    ]
+  },
+  "expectEventOrder": {
+    "fillRow": [
+      {
+        "before": {
+          "kind": "read",
+          "variable": "board",
+          "pathDepth": 1
+        },
+        "after": {
+          "kind": "write",
+          "variable": "board",
+          "pathDepth": 1
+        }
+      },
+      {
+        "before": {
+          "kind": "write",
+          "variable": "board",
+          "pathDepth": 1
+        },
+        "after": {
+          "kind": "mutate",
+          "variable": "board",
+          "pathDepth": 1,
+          "method": "fill"
+        }
+      }
+    ]
+  }
+}

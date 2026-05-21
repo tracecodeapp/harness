@@ -1,0 +1,128 @@
+{
+  "id": "cpp-self-recursive-lambda-callsite",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {
+    "n": 1
+  },
+  "anchors": {
+    "lambdaEntry": {
+      "cpp": "auto count = [&](auto&& self, int value) -> int {"
+    },
+    "recursiveCall": {
+      "cpp": "return 1 + self(self, value - 1);"
+    },
+    "outerCall": {
+      "cpp": "return count(count, n);"
+    }
+  },
+  "expectLineSequence": [
+    "outerCall",
+    "lambdaEntry",
+    "recursiveCall",
+    "lambdaEntry",
+    "recursiveCall",
+    "outerCall"
+  ],
+  "expect": {
+    "lambdaEntry": {
+      "eventKinds": [
+        "line"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    },
+    "recursiveCall": {
+      "eventKinds": [
+        "call",
+        "line",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "value"
+      ],
+      "accessTargets": []
+    },
+    "outerCall": {
+      "eventKinds": [
+        "call",
+        "line",
+        "return",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "n"
+      ],
+      "accessTargets": []
+    }
+  },
+  "expectEventOrder": {
+    "recursiveCall": [
+      {
+        "before": {
+          "kind": "line"
+        },
+        "after": {
+          "kind": "call"
+        }
+      }
+    ],
+    "outerCall": [
+      {
+        "before": {
+          "kind": "line"
+        },
+        "after": {
+          "kind": "call"
+        }
+      }
+    ]
+  },
+  "expectCallActivations": [
+    {
+      "function": "count",
+      "args": {
+        "value": 1
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "count",
+      "args": {
+        "value": 0
+      },
+      "callStackDepth": 3
+    }
+  ],
+  "expectReturns": [
+    {
+      "function": "count",
+      "value": 0,
+      "args": {
+        "value": 0
+      },
+      "callStackDepth": 3
+    },
+    {
+      "function": "count",
+      "value": 1,
+      "args": {
+        "value": 1
+      },
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "value": 1,
+      "args": {
+        "n": 1
+      },
+      "callStackDepth": 1
+    }
+  ],
+  "expectBalancedCallReturns": true
+}

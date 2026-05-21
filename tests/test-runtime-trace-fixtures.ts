@@ -116,6 +116,8 @@ interface FixtureCase {
   expectFrameEventsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceFrameEventAssertion[]>>>;
   expectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
   expectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
+  rejectEventAssertions?: Record<string, RuntimeTraceEventAssertion[]>;
+  rejectEventAssertionsByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventAssertion[]>>>;
   expectEventOrder?: Record<string, RuntimeTraceEventOrderAssertion[]>;
   expectEventOrderByLanguage?: Partial<Record<Language, Record<string, RuntimeTraceEventOrderAssertion[]>>>;
   expectOpaqueRefs?: boolean;
@@ -1220,6 +1222,28 @@ function assertRoleEventAssertions(
   }
 }
 
+function assertRoleRejectedEventAssertions(
+  trace: RuntimeTrace,
+  roleLines: Record<string, number>,
+  assertionsByRole: Record<string, RuntimeTraceEventAssertion[]>,
+  label: string
+): void {
+  for (const [role, assertions] of Object.entries(assertionsByRole)) {
+    const line = roleLines[role];
+    assertCondition(
+      typeof line === 'number' && line > 0,
+      `${label}: rejected event assertion role "${role}" does not have a resolved anchor line`
+    );
+    const roleEvents = trace.events.filter((event) => event.line === line);
+    for (const assertion of assertions) {
+      assertCondition(
+        !roleEvents.some((event) => eventMatchesAssertion(event, assertion)),
+        `${label}: rejected event assertion matched for role "${role}".\nRejected: ${stableStringify(assertion)}\nEvents: ${stableStringify(roleEvents)}`
+      );
+    }
+  }
+}
+
 function assertRoleEventOrder(
   trace: RuntimeTrace,
   roleLines: Record<string, number>,
@@ -1603,6 +1627,18 @@ async function runFixture(
         trace,
         roleLines,
         expectedEventAssertions,
+        `${fixture.id}:${language}`
+      );
+    }
+    const rejectedEventAssertions = {
+      ...(fixture.rejectEventAssertions ?? {}),
+      ...(fixture.rejectEventAssertionsByLanguage?.[language] ?? {}),
+    };
+    if (Object.keys(rejectedEventAssertions).length > 0) {
+      assertRoleRejectedEventAssertions(
+        trace,
+        roleLines,
+        rejectedEventAssertions,
         `${fixture.id}:${language}`
       );
     }

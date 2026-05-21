@@ -1842,12 +1842,12 @@ class KeyedRangeReadIterator {
  private:
   void emit_iteration_bind_read() const {
     if (key_binding_name_ && *key_binding_name_) {
-      container_.emit_iteration_bind_read(iterator_->first, iterator_->second, line_, key_binding_name_);
+      container_.emit_iteration_bind_read(iterator_->first, to_json(iterator_->first), line_, key_binding_name_);
     } else {
       container_.emit_read(iterator_->first, line_, to_json(iterator_->second));
     }
     if (value_binding_name_ && *value_binding_name_) {
-      container_.emit_iteration_bind_read(iterator_->first, iterator_->second, line_, value_binding_name_);
+      container_.emit_iteration_bind_read(iterator_->first, to_json(iterator_->second), line_, value_binding_name_);
     }
   }
 
@@ -4649,12 +4649,12 @@ class UnorderedMap : public std::unordered_map<K, V> {
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
-  void emit_iteration_bind_read(const K& key, const V& value, int line, const char* binding_name) const {
+  void emit_iteration_bind_read(const K& key, const std::string& value_json, int line, const char* binding_name) const {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json_key(key) +
-      ",\"value\":" + to_json(value) +
+      ",\"value\":" + value_json +
       ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name) + "}}",
       line
     );
@@ -5246,12 +5246,12 @@ class Map : public std::map<K, V> {
     if (!path_prefix_json_.empty()) emit_snapshot(line);
   }
 
-  void emit_iteration_bind_read(const K& key, const V& value, int line, const char* binding_name) const {
+  void emit_iteration_bind_read(const K& key, const std::string& value_json, int line, const char* binding_name) const {
     if (!trace_) return;
     write_trace_event_json(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
       ",\"target\":" + target_json_key(key) +
-      ",\"value\":" + to_json(value) +
+      ",\"value\":" + value_json +
       ",\"binding\":{\"kind\":\"iteration\",\"variable\":" + to_json(binding_name) + "}}",
       line
     );

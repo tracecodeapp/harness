@@ -1,0 +1,105 @@
+{
+  "id": "java-recursive-helper-call-stack",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "java"
+  ],
+  "inputs": {
+    "n": 3
+  },
+  "anchors": {
+    "helperEntry": {
+      "java": "private int helper("
+    },
+    "baseReturn": {
+      "java": "return value;"
+    },
+    "recursiveReturn": {
+      "java": "return helper(value + 1, limit);"
+    }
+  },
+  "expect": {
+    "helperEntry": {
+      "eventKinds": [
+        "call"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    },
+    "baseReturn": {
+      "eventKinds": [
+        "line",
+        "return"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    },
+    "recursiveReturn": {
+      "eventKinds": [
+        "line",
+        "return"
+      ],
+      "variableSnapshots": [],
+      "accessTargets": []
+    }
+  },
+  "expectCallActivations": [
+    {
+      "function": "helper",
+      "callStackDepth": 2
+    },
+    {
+      "function": "helper",
+      "callStackDepth": 3
+    },
+    {
+      "function": "helper",
+      "callStackDepth": 4
+    }
+  ],
+  "expectFrameEvents": {
+    "baseReturn": [
+      {
+        "kind": "return",
+        "function": "helper",
+        "callStackDepth": 4
+      }
+    ],
+    "recursiveReturn": [
+      {
+        "kind": "return",
+        "function": "helper",
+        "callStackDepth": 3
+      },
+      {
+        "kind": "return",
+        "function": "helper",
+        "callStackDepth": 2
+      }
+    ]
+  },
+  "expectReturns": [
+    {
+      "function": "helper",
+      "value": 3,
+      "callStackDepth": 4
+    },
+    {
+      "function": "helper",
+      "value": 3,
+      "callStackDepth": 3
+    },
+    {
+      "function": "helper",
+      "value": 3,
+      "callStackDepth": 2
+    },
+    {
+      "function": "solve",
+      "value": 3,
+      "callStackDepth": 1
+    }
+  ],
+  "expectBalancedCallReturns": true
+}

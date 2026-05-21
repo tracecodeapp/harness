@@ -4042,7 +4042,7 @@ public class TreeNode
             get
             {
                 T value = base[index];
-                TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
+                TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, index, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, null, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 return value;
             }
             set
@@ -4144,7 +4144,7 @@ public class TreeNode
             get
             {
                 TValue value = base[key];
-                TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
+                TraceCode.CSharpHost.RuntimeTraceSink.IndexedRead(variable, key, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, null, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 return value;
             }
             set

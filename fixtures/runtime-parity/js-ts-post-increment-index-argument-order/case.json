@@ -1,0 +1,43 @@
+{
+  "id": "js-ts-post-increment-index-argument-order",
+  "languages": ["javascript", "typescript"],
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "pushArgument": {
+      "javascript": "out.push(values[i++]);",
+      "typescript": "out.push(values[i++]);"
+    }
+  },
+  "expect": {
+    "pushArgument": {
+      "eventKinds": ["line", "mutate", "read", "snapshot", "write"],
+      "variableSnapshots": ["i", "out", "values"],
+      "accessTargets": [
+        { "kind": "mutate", "variable": "out" },
+        { "kind": "read", "variable": "values", "pathDepth": 1 },
+        { "kind": "write", "variable": "i" }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "pushArgument": [
+      { "kind": "read", "variable": "values", "pathDepth": 1, "indexSources": ["i"], "value": 11 },
+      { "kind": "write", "variable": "i", "value": 1 },
+      { "kind": "mutate", "variable": "out", "method": "push", "args": [11] }
+    ]
+  },
+  "expectEventOrder": {
+    "pushArgument": [
+      {
+        "before": { "kind": "read", "variable": "values", "pathDepth": 1, "indexSources": ["i"], "value": 11 },
+        "after": { "kind": "write", "variable": "i", "value": 1 }
+      },
+      {
+        "before": { "kind": "write", "variable": "i", "value": 1 },
+        "after": { "kind": "mutate", "variable": "out", "method": "push", "args": [11] }
+      }
+    ]
+  }
+}

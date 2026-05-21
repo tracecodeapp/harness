@@ -1,0 +1,76 @@
+{
+  "id": "cpp-unordered-map-structured-binding-iteration-provenance",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "loop": {
+      "cpp": "for (const auto& [ch, nexts] : adj) {"
+    }
+  },
+  "expect": {
+    "loop": {
+      "eventKinds": [
+        "line",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "adj",
+        "ch",
+        "nexts",
+        "total"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "adj",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "loop": [
+      {
+        "kind": "read",
+        "variable": "adj",
+        "pathDepth": 1,
+        "bindingVariable": "ch",
+        "value": "t"
+      },
+      {
+        "kind": "read",
+        "variable": "adj",
+        "pathDepth": 1,
+        "bindingVariable": "nexts",
+        "value": [
+          "f"
+        ]
+      }
+    ]
+  },
+  "rejectEventAssertions": {
+    "loop": [
+      {
+        "kind": "read",
+        "variable": "adj",
+        "pathDepth": 1,
+        "bindingVariable": "ch",
+        "value": [
+          "f"
+        ]
+      },
+      {
+        "kind": "read",
+        "variable": "adj",
+        "pathDepth": 1,
+        "bindingVariable": "nexts",
+        "value": "t"
+      }
+    ]
+  }
+}

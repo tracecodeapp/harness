@@ -188,6 +188,69 @@ public final class TraceHooks {
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
+  public static void fillArrayAtLine(int line, String name, int[][] values, int index, String indexSource, int value) {
+    int[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static void fillArrayAtLine(int line, String name, long[][] values, int index, String indexSource, long value) {
+    long[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static void fillArrayAtLine(int line, String name, boolean[][] values, int index, String indexSource, boolean value) {
+    boolean[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static void fillArrayAtLine(int line, String name, char[][] values, int index, String indexSource, char value) {
+    char[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static void fillArrayAtLine(int line, String name, byte[][] values, int index, String indexSource, byte value) {
+    byte[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static void fillArrayAtLine(int line, String name, short[][] values, int index, String indexSource, short value) {
+    short[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static void fillArrayAtLine(int line, String name, float[][] values, int index, String indexSource, float value) {
+    float[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static void fillArrayAtLine(int line, String name, double[][] values, int index, String indexSource, double value) {
+    double[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
+  public static <T> void fillArrayAtLine(int line, String name, T[][] values, int index, String indexSource, T value) {
+    T[] row = values[index];
+    emitArrayRowReadAtLine(line, name, index, indexSource, row);
+    java.util.Arrays.fill(row, value);
+    emitArrayRowFillAtLine(line, name, values, index, indexSource, row, value);
+  }
+
   public static void sortArrayAtLine(int line, String name, int[] values) {
     java.util.Arrays.sort(values);
     emitTraceMutate(line, name, null, "sort", null, "[]");
@@ -1366,6 +1429,10 @@ public final class TraceHooks {
     emit(out.toString());
   }
 
+  private static void emitArrayRowReadAtLine(int line, String name, int index, String indexSource, Object row) {
+    emitTraceRead(line, name, "[" + serializeResult(index) + "]", row, indexSourcesJson(indexSource));
+  }
+
   private static void emitTraceReadWithIterationBinding(int line, String name, String pathJson, Object value, String bindingVariable) {
     emitTraceReadWithIterationBinding(line, name, pathJson, value, bindingVariable, null);
   }
@@ -1394,6 +1461,21 @@ public final class TraceHooks {
     if (indexSourcesJson != null) out.append(",\"indexSources\":").append(indexSourcesJson);
     out.append("},\"value\":").append(serializeResult(value)).append("}");
     emit(out.toString());
+  }
+
+  private static void emitArrayRowFillAtLine(
+      int line,
+      String name,
+      Object parent,
+      int index,
+      String indexSource,
+      Object row,
+      Object value) {
+    String pathJson = "[" + serializeResult(index) + "]";
+    String indexSourcesJson = indexSourcesJson(indexSource);
+    emitTraceWrite(line, name, pathJson, row, indexSourcesJson);
+    emitTraceMutate(line, name, pathJson, "fill", indexSourcesJson, "[" + serializeResult(value) + "]");
+    emitRuntimeSnapshotAtLine(line, name, parent);
   }
 
   private static void emitTraceMutate(int line, String name, String pathJson, String method) {
