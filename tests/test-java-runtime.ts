@@ -5619,8 +5619,8 @@ class Solution {
       'Java worker should rewrite indexed adjacency mutations with receiver indices without semantic graph state'
     );
     assertCondition(
-      graphSource.includes('for (int v : TraceHooks.readObjectListAtLine(11, "graph", graph, u, "u"))'),
-      'Java worker should rewrite adjacency traversal graph.get(u) reads'
+      graphSource.includes('for (int v : TraceHooks.iterationBindAtLine(11, "graph", u, TraceHooks.readObjectListAtLine(11, "graph", graph, u, "u"), "v", "u"))'),
+      'Java worker should rewrite adjacency traversal graph.get(u) reads with iteration binding provenance'
     );
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');
     assertCondition(

@@ -819,6 +819,7 @@
           nextLine = nextLine.replace(listGetPattern, (_match, indexSource) =>
             `TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${String(indexSource).trim()}, ${indexSourceArgument(indexSource)})`
           );
+          nextLine = rewriteEnhancedForIterationBind(nextLine, lineNumber, currentMethod);
         }
 
         for (const name of currentMethod.maps) {

@@ -21,8 +21,7 @@
       "variableSnapshots": [
         "graph",
         "next",
-        "node",
-        "total"
+        "node"
       ],
       "accessTargets": [
         {
@@ -48,8 +47,7 @@
           "node"
         ],
         "value": [
-          1,
-          2
+          1
         ]
       },
       {
