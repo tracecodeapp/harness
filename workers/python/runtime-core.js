@@ -29,6 +29,16 @@ except Exception:
     pass
 `;
 
+const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
+const MAX_TRACE_MAX_PATH_DEPTH = 8;
+
+function getTraceMaxPathDepth(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_TRACE_MAX_PATH_DEPTH;
+  }
+  return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, Math.floor(value)));
+}
+
 function generateTracingCode(deps, userCode, functionName, inputs, executionStyle = 'function', options = {}) {
   const inputSetup = Object.entries(inputs)
     .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
@@ -44,6 +54,7 @@ function generateTracingCode(deps, userCode, functionName, inputs, executionStyl
   const maxLineEvents = options.maxLineEvents || 10000;
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
+  const maxPathDepth = getTraceMaxPathDepth(options.maxPathDepth);
   // Keep stdout capture deterministic for the app UI; worker-console mirroring
   // can cause recursive print chains across mixed runs in dev.
   const mirrorPrintToConsole = false;
@@ -68,6 +79,7 @@ _tracecode_builtin_id = _builtins.id
 _target_function = "${targetFunction}"
 _MIRROR_PRINT_TO_WORKER_CONSOLE = ${mirrorPrintToConsole ? 'True' : 'False'}
 _MINIMAL_TRACE = ${minimalTrace ? 'True' : 'False'}
+_TRACE_MAX_PATH_DEPTH = ${maxPathDepth}
 _SCRIPT_MODE = ${functionName ? 'False' : 'True'}
 _TRACE_INPUT_NAMES = set(${JSON.stringify(Object.keys(inputs))})
 
@@ -715,7 +727,9 @@ def __tracecode_normalize_index_component(index):
         return normalized
     return None
 
-def __tracecode_normalize_indices(indices, max_depth=3):
+def __tracecode_normalize_indices(indices, max_depth=None):
+    if max_depth is None:
+        max_depth = _TRACE_MAX_PATH_DEPTH
     if not isinstance(indices, (list, _builtins.tuple)) or len(indices) == 0 or len(indices) > max_depth:
         return None
     normalized = []
@@ -766,9 +780,12 @@ def __tracecode_make_access_event(var_name, kind, indices=None, method_name=None
         'kind': kind,
     }
     if indices is not None:
-        event['indices'] = list(indices)
-        event['pathDepth'] = len(indices)
-        normalized_sources = __tracecode_normalize_index_sources(index_sources, len(indices))
+        normalized_indices = __tracecode_normalize_indices(indices)
+        if normalized_indices is None:
+            return event
+        event['indices'] = list(normalized_indices)
+        event['pathDepth'] = len(normalized_indices)
+        normalized_sources = __tracecode_normalize_index_sources(index_sources, len(normalized_indices))
         if normalized_sources is not None:
             event['indexSources'] = normalized_sources
     if method_name is not None:
@@ -1376,13 +1393,13 @@ def __tracecode_attach_parents(node, parent=None):
 def _tracecode_extract_named_subscript(node):
     indices = []
     current = node
-    while isinstance(current, ast.Subscript) and len(indices) < 3:
+    while isinstance(current, ast.Subscript) and len(indices) < _TRACE_MAX_PATH_DEPTH:
         indices.insert(0, current.slice)
         current = current.value
-    while isinstance(current, ast.Attribute) and len(indices) < 3:
+    while isinstance(current, ast.Attribute) and len(indices) < _TRACE_MAX_PATH_DEPTH:
         indices.insert(0, ast.Constant(value=current.attr))
         current = current.value
-    if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > 3:
+    if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > _TRACE_MAX_PATH_DEPTH:
         return None
     return current.id, indices
 

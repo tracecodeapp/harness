@@ -75,6 +75,7 @@ interface FixtureCase {
   functionName: string;
   executionStyle: RuntimeExecutionStyle;
   languages?: Language[];
+  traceOptions?: Record<string, unknown>;
   inputs: Record<string, unknown>;
   anchors: Record<string, Record<Language, string>>;
   lineSequenceAnchors?: Record<string, Record<Language, string>>;
@@ -196,6 +197,49 @@ function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function parsePositiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  assertCondition(
+    Number.isInteger(value) && value > 0,
+    `${name} must be a positive integer, got ${JSON.stringify(raw)}`
+  );
+  return value;
+}
+
+function runtimeTraceOptions(fixture: FixtureCase): Record<string, unknown> {
+  const envMaxPathDepth = parsePositiveIntegerEnv('TRACECODE_V4_MAX_PATH_DEPTH');
+  return {
+    maxTraceSteps: 1000,
+    maxLineEvents: 2000,
+    ...(envMaxPathDepth !== undefined ? { maxPathDepth: envMaxPathDepth } : {}),
+    ...(fixture.traceOptions ?? {}),
+  };
+}
+
+function runtimeTraceMaxPathDepth(fixture: FixtureCase): number | undefined {
+  const value = runtimeTraceOptions(fixture).maxPathDepth;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(8, Math.max(1, Math.floor(value)))
+    : undefined;
+}
+
+function normalizeFixtureTraceEventPathDepth<T extends RuntimeTrace['events'][number]>(
+  event: T,
+  fixture: FixtureCase
+): T {
+  const maxPathDepth = runtimeTraceMaxPathDepth(fixture);
+  if (maxPathDepth === undefined || !('target' in event)) return event;
+  const target = event.target;
+  if (!target || typeof target !== 'object' || !('path' in target) || !Array.isArray(target.path)) return event;
+  if (target.path.length <= maxPathDepth) return event;
+  const nextTarget = { ...target };
+  delete nextTarget.path;
+  delete nextTarget.indexSources;
+  return { ...event, target: nextTarget } as T;
 }
 
 function stableStringify(value: unknown): string {
@@ -387,7 +431,7 @@ async function executePythonTrace(code: string, fixture: FixtureCase): Promise<F
     fixture.functionName,
     fixture.inputs,
     fixture.executionStyle,
-    { maxTraceSteps: 1000, maxLineEvents: 2000 }
+    runtimeTraceOptions(fixture)
   );
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
@@ -500,7 +544,7 @@ async function executeJavaScriptTrace(
     inputs: fixture.inputs,
     executionStyle: fixture.executionStyle,
     language,
-    options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
+    options: runtimeTraceOptions(fixture),
   });
   assertCondition(result.success === true, `${language} tracing failed: ${result.error ?? 'unknown error'}`);
   const rawSummary = summarizeRuntimeTraceEmissions(result.trace);
@@ -559,6 +603,7 @@ async function loadCSharpExecuteExport(): Promise<CSharpExecute> {
 
 async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<FixtureTraceRun> {
   const execute = await loadCSharpExecuteExport();
+  const options = runtimeTraceOptions(fixture);
   const raw = execute(JSON.stringify({
     source: code,
     functionName: fixture.functionName,
@@ -566,7 +611,7 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
     executionStyle: fixture.executionStyle,
     trace: true,
     timeoutMs: 19_000,
-    maxTraceSteps: 1000,
+    ...options,
   }));
   const parsed = JSON.parse(raw) as {
     success: boolean;
@@ -578,7 +623,8 @@ async function executeCSharpTrace(code: string, fixture: FixtureCase): Promise<F
     throw new Error(`C# tracing failed for ${fixture.id}: ${parsed.error ?? 'unknown error'}`);
   }
 
-  const baseEvents = Array.isArray(parsed.events) ? parsed.events : [];
+  const baseEvents = (Array.isArray(parsed.events) ? parsed.events : [])
+    .map((event) => normalizeFixtureTraceEventPathDepth(event, fixture));
   const consoleOutput = parsed.consoleOutput ?? [];
   const hostEmittedStdout = baseEvents.some((event) => event.kind === 'stdout');
   const events = [
@@ -805,6 +851,7 @@ function createLocalJavaWorkerClient(): JavaWorkerClient {
             ? javaTraceHooksEventsToRuntimeTrace(response.events, response.sourceText, {
                 runId: 'java:run',
                 file: 'solution.java',
+                maxPathDepth: typeof options?.maxPathDepth === 'number' ? options.maxPathDepth : undefined,
               })
             : createEmptyRuntimeTrace('java', { runId: 'java:run', file: 'solution.java' }),
         };
@@ -833,7 +880,7 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
       code,
       fixture.functionName ?? '',
       fixture.inputs,
-      { maxTraceSteps: 1000, maxLineEvents: 2000 },
+      runtimeTraceOptions(fixture),
       fixture.executionStyle as Parameters<JavaWorkerClient['executeWithTracing']>[4]
     );
     if (!rawResult.success) {
@@ -847,7 +894,7 @@ async function executeJavaTrace(code: string, fixture: FixtureCase): Promise<Fix
       code,
       fixture.functionName,
       fixture.inputs,
-      { maxTraceSteps: 1000, maxLineEvents: 2000 },
+      runtimeTraceOptions(fixture),
       fixture.executionStyle
     );
     if (!result.success) {
@@ -957,7 +1004,7 @@ async function executeCppTrace(
     functionName: fixture.functionName,
     inputs: fixture.inputs,
     executionStyle: fixture.executionStyle,
-    options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
+    options: runtimeTraceOptions(fixture),
   });
   assertCondition(result.success === true, `C++ tracing failed: ${result.error ?? 'unknown error'}`);
   const rawSummary = summarizeRuntimeTraceEmissions(result.trace);

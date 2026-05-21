@@ -1,5 +1,6 @@
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
+  withRuntimeTraceOptions,
   type RuntimeTrace,
   type RuntimeTraceEvent,
 } from '../../harness-core/src/runtime-trace';
@@ -549,6 +550,7 @@ export class CSharpWorkerClient {
               maxLineEvents: options?.maxLineEvents,
               maxSingleLineHits: options?.maxSingleLineHits,
               maxStoredEvents: options?.maxStoredEvents,
+              maxPathDepth: options?.maxPathDepth,
               minimalTrace: options?.minimalTrace,
               ...this.workerOptionsPayload(),
             },
@@ -594,7 +596,7 @@ export class CSharpWorkerClient {
             text,
           }))),
     ];
-    const trace = this.createTrace(events);
+    const trace = this.createTrace(events, { maxPathDepth: options?.maxPathDepth });
 
     if (!result.success) {
       const firstUserDiagnostic = result.diagnostics?.find(isCSharpUserDiagnostic);
@@ -632,15 +634,15 @@ export class CSharpWorkerClient {
     };
   }
 
-  private createTrace(events: RuntimeTraceEvent[]): RuntimeTrace {
-    return {
+  private createTrace(events: RuntimeTraceEvent[], options: { maxPathDepth?: number } = {}): RuntimeTrace {
+    return withRuntimeTraceOptions({
       schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
       language: 'csharp',
       runId: 'csharp:run',
       events: events.map(normalizeCSharpTraceEventFile),
       lineEventCount: events.filter((event) => event.kind === 'line').length,
       traceStepCount: events.length,
-    };
+    }, options);
   }
 
   private isInterviewTimeoutLike(result: CSharpWorkerExecuteResult): boolean {

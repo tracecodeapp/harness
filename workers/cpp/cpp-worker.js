@@ -5240,9 +5240,27 @@ function enrichCppRuntimeTraceCallStacks(events) {
   });
 }
 
+function normalizeMaxPathDepth(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(8, Math.max(1, Math.floor(value)));
+}
+
+function normalizeRuntimeTraceEventTargetDepth(event, maxPathDepth) {
+  if (maxPathDepth === undefined || !event || typeof event !== 'object') return event;
+  const target = event.target;
+  if (!target || typeof target !== 'object' || !Array.isArray(target.path) || target.path.length <= maxPathDepth) {
+    return event;
+  }
+  const nextTarget = { ...target };
+  delete nextTarget.path;
+  delete nextTarget.indexSources;
+  return { ...event, target: nextTarget };
+}
+
 function finalizeRuntimeTrace(events, options = {}) {
   const runId = options.runId || 'cpp:run';
   const file = options.file || CPP_USER_SOURCE_FILE;
+  const maxPathDepth = normalizeMaxPathDepth(options.maxPathDepth);
   const maxEvents = Number.isFinite(options.maxStoredEvents)
     ? Number(options.maxStoredEvents)
     : Number.isFinite(options.maxTraceSteps)
@@ -5250,12 +5268,12 @@ function finalizeRuntimeTrace(events, options = {}) {
       : DEFAULT_MAX_STORED_EVENTS;
   const normalizedEvents = enrichCppRuntimeTraceCallStacks(events).map((event) => {
     const activeFunction = Array.isArray(event.callStack) ? event.callStack[event.callStack.length - 1]?.function : undefined;
-    return {
+    return normalizeRuntimeTraceEventTargetDepth({
       ...event,
       ...(event.kind === 'line' && !event.function && activeFunction ? { function: activeFunction } : {}),
       runId,
       file,
-    };
+    }, maxPathDepth);
   });
   const traceLimitExceeded = maxEvents !== undefined && normalizedEvents.length > maxEvents;
   let storedEvents = traceLimitExceeded ? normalizedEvents.slice(0, Math.max(0, maxEvents)) : normalizedEvents;

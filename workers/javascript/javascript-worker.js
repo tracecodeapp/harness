@@ -1113,6 +1113,14 @@ function getNumericOption(value, fallback) {
   return Math.floor(value);
 }
 
+const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
+const MAX_TRACE_MAX_PATH_DEPTH = 8;
+
+function getMaxPathDepthOption(value) {
+  const numeric = getNumericOption(value, DEFAULT_TRACE_MAX_PATH_DEPTH);
+  return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, numeric));
+}
+
 function isTraceablePathSegment(value) {
   return (typeof value === 'number' && Number.isInteger(value)) ||
     (typeof value === 'string' && value.length > 0);
@@ -1185,6 +1193,7 @@ function createTraceRecorder(options = {}) {
   const maxLineEvents = getNumericOption(options.maxLineEvents, 12000);
   const maxSingleLineHits = getNumericOption(options.maxSingleLineHits, 1000);
   const maxCallDepth = getNumericOption(options.maxCallDepth, 2000);
+  const maxPathDepth = getMaxPathDepthOption(options.maxPathDepth);
 
   let lineEventCount = 0;
   let traceLimitExceeded = false;
@@ -1765,10 +1774,10 @@ function createTraceRecorder(options = {}) {
         variable,
         kind,
         ...(Array.isArray(event.indices) && event.indices.length > 0
-          ? { indices: normalizeTraceIndices(event.indices) ?? undefined }
+          ? { indices: normalizeTraceIndices(event.indices, maxPathDepth) ?? undefined }
           : {}),
         ...(Array.isArray(event.indexSources) && event.indexSources.length > 0
-          ? { indexSources: normalizeTraceIndexSources(event.indexSources) ?? undefined }
+          ? { indexSources: normalizeTraceIndexSources(event.indexSources, maxPathDepth) ?? undefined }
           : {}),
         ...(typeof event.method === 'string' && event.method.length > 0
           ? { method: event.method }
@@ -1776,7 +1785,7 @@ function createTraceRecorder(options = {}) {
         ...(Array.isArray(event.args)
           ? { args: event.args.map((arg) => this.serialize(arg)) }
           : {}),
-        ...(event.pathDepth === 1 || event.pathDepth === 2 || event.pathDepth === 3 ? { pathDepth: event.pathDepth } : {}),
+        ...(Number.isInteger(event.pathDepth) && event.pathDepth > 0 && event.pathDepth <= maxPathDepth ? { pathDepth: event.pathDepth } : {}),
         ...(typeof event.scope === 'string' && event.scope.length > 0
           ? { scope: event.scope }
           : {}),
@@ -2728,11 +2737,12 @@ function isNestedElementAccessExpression(ts, node) {
   return Boolean(parent && ts.isElementAccessExpression(parent) && parent.expression === node);
 }
 
-function extractTraceableElementAccess(ts, node) {
+function extractTraceableElementAccess(ts, node, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   const indices = [];
   let current = unwrapParenthesizedExpression(ts, node);
+  const effectiveMaxPathDepth = getMaxPathDepthOption(maxPathDepth);
 
-  while (current && indices.length < 3) {
+  while (current && indices.length < effectiveMaxPathDepth) {
     if (ts.isElementAccessExpression(current)) {
       indices.unshift(current.argumentExpression);
       current = unwrapParenthesizedExpression(ts, current.expression);
@@ -2746,7 +2756,7 @@ function extractTraceableElementAccess(ts, node) {
     break;
   }
 
-  if (!current || indices.length === 0 || indices.length > 3) {
+  if (!current || indices.length === 0 || indices.length > effectiveMaxPathDepth) {
     return null;
   }
   if (ts.isThis(current)) {
@@ -2792,7 +2802,7 @@ function extractTraceablePropertyAccess(ts, node) {
   };
 }
 
-function extractTraceableMembershipTarget(ts, node) {
+function extractTraceableMembershipTarget(ts, node, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   const current = unwrapParenthesizedExpression(ts, node);
   if (!current) return null;
 
@@ -2812,7 +2822,7 @@ function extractTraceableMembershipTarget(ts, node) {
     };
   }
 
-  return extractTraceableElementAccess(ts, current);
+  return extractTraceableElementAccess(ts, current, maxPathDepth);
 }
 
 function runtimeScopeForTraceableReceiver(receiverName, localVariableNames) {
@@ -2820,7 +2830,7 @@ function runtimeScopeForTraceableReceiver(receiverName, localVariableNames) {
   return localVariableNames.has(receiverName) ? 'local' : 'global';
 }
 
-function extractTraceableMutatingCall(ts, node) {
+function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
     return null;
   }
@@ -2852,7 +2862,7 @@ function extractTraceableMutatingCall(ts, node) {
     };
   }
 
-  const indexedReceiver = extractTraceableElementAccess(ts, receiver);
+  const indexedReceiver = extractTraceableElementAccess(ts, receiver, maxPathDepth);
   if (indexedReceiver) {
     return {
       variableName: indexedReceiver.variableName,
@@ -2877,7 +2887,7 @@ function extractTraceableMutatingCall(ts, node) {
         indices: [receiver.arguments[0]],
       };
     }
-    const tracedMapReceiver = extractTraceableElementAccess(ts, mapReceiver);
+    const tracedMapReceiver = extractTraceableElementAccess(ts, mapReceiver, maxPathDepth);
     if (tracedMapReceiver) {
       return {
         variableName: tracedMapReceiver.variableName,
@@ -2891,7 +2901,7 @@ function extractTraceableMutatingCall(ts, node) {
   return null;
 }
 
-function extractTraceableIterableSource(ts, expression) {
+function extractTraceableIterableSource(ts, expression, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   const current = unwrapParenthesizedExpression(ts, expression);
   if (!current) return null;
 
@@ -2903,7 +2913,7 @@ function extractTraceableIterableSource(ts, expression) {
     };
   }
 
-  const indexedSource = extractTraceableElementAccess(ts, current);
+  const indexedSource = extractTraceableElementAccess(ts, current, maxPathDepth);
   if (indexedSource) {
     return {
       variableName: indexedSource.variableName,
@@ -2926,7 +2936,7 @@ function extractTraceableIterableSource(ts, expression) {
           indices: [],
         };
       }
-      const indexedReceiver = extractTraceableElementAccess(ts, receiver);
+      const indexedReceiver = extractTraceableElementAccess(ts, receiver, maxPathDepth);
       if (indexedReceiver) {
         return {
           variableName: indexedReceiver.variableName,
@@ -2943,7 +2953,7 @@ function extractTraceableIterableSource(ts, expression) {
           indices: [current.arguments[0]],
         };
       }
-      const indexedReceiver = extractTraceableElementAccess(ts, receiver);
+      const indexedReceiver = extractTraceableElementAccess(ts, receiver, maxPathDepth);
       if (indexedReceiver) {
         return {
           variableName: indexedReceiver.variableName,
@@ -2959,7 +2969,7 @@ function extractTraceableIterableSource(ts, expression) {
     (current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
       current.operatorToken.kind === ts.SyntaxKind.BarBarToken)
   ) {
-    return extractTraceableIterableSource(ts, current.left);
+    return extractTraceableIterableSource(ts, current.left, maxPathDepth);
   }
 
   return null;
@@ -3292,19 +3302,25 @@ function traceScalarWriteStatementsForDestructuringAssignmentStatement(ts, sourc
     .map((variableName) => createTraceScalarWriteStatement(ts, sourceFile, expression.left, variableName));
 }
 
-function addDestructuringAssignmentWriteStatements(ts, sourceFile, node, statements) {
+function addDestructuringAssignmentWriteStatements(
+  ts,
+  sourceFile,
+  node,
+  statements,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
+) {
   if (!node) return;
   const current = unwrapParenthesizedExpression(ts, node);
   if (!current) return;
 
   if (ts.isSpreadElement(current)) {
-    addDestructuringAssignmentWriteStatements(ts, sourceFile, current.expression, statements);
+    addDestructuringAssignmentWriteStatements(ts, sourceFile, current.expression, statements, maxPathDepth);
     return;
   }
 
   if (ts.isArrayLiteralExpression(current)) {
     for (const element of current.elements) {
-      addDestructuringAssignmentWriteStatements(ts, sourceFile, element, statements);
+      addDestructuringAssignmentWriteStatements(ts, sourceFile, element, statements, maxPathDepth);
     }
     return;
   }
@@ -3312,15 +3328,15 @@ function addDestructuringAssignmentWriteStatements(ts, sourceFile, node, stateme
   if (ts.isObjectLiteralExpression(current)) {
     for (const property of current.properties) {
       if (ts.isPropertyAssignment(property)) {
-        addDestructuringAssignmentWriteStatements(ts, sourceFile, property.initializer, statements);
+        addDestructuringAssignmentWriteStatements(ts, sourceFile, property.initializer, statements, maxPathDepth);
       } else if (ts.isSpreadAssignment(property)) {
-        addDestructuringAssignmentWriteStatements(ts, sourceFile, property.expression, statements);
+        addDestructuringAssignmentWriteStatements(ts, sourceFile, property.expression, statements, maxPathDepth);
       }
     }
     return;
   }
 
-  const tracedIndexedTarget = extractTraceableElementAccess(ts, current);
+  const tracedIndexedTarget = extractTraceableElementAccess(ts, current, maxPathDepth);
   if (tracedIndexedTarget) {
     statements.push(
       ts.factory.createExpressionStatement(
@@ -3355,7 +3371,12 @@ function addDestructuringAssignmentWriteStatements(ts, sourceFile, node, stateme
   }
 }
 
-function traceIndexedWriteStatementsForDestructuringAssignmentStatement(ts, sourceFile, statement) {
+function traceIndexedWriteStatementsForDestructuringAssignmentStatement(
+  ts,
+  sourceFile,
+  statement,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
+) {
   if (!ts.isExpressionStatement(statement)) return [];
   const expression = ts.isParenthesizedExpression(statement.expression)
     ? statement.expression.expression
@@ -3367,7 +3388,7 @@ function traceIndexedWriteStatementsForDestructuringAssignmentStatement(ts, sour
     return [];
   }
   const statements = [];
-  addDestructuringAssignmentWriteStatements(ts, sourceFile, expression.left, statements);
+  addDestructuringAssignmentWriteStatements(ts, sourceFile, expression.left, statements, maxPathDepth);
   return statements;
 }
 
@@ -3725,11 +3746,20 @@ function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNam
   );
 }
 
-function rewriteForOfStatementForTracing(ts, sourceFile, context, forOfStatement, variableNames, lineFunctionMap, defaultFunctionName) {
+function rewriteForOfStatementForTracing(
+  ts,
+  sourceFile,
+  context,
+  forOfStatement,
+  variableNames,
+  lineFunctionMap,
+  defaultFunctionName,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
+) {
   const originalNode = ts.getOriginalNode(forOfStatement) ?? forOfStatement;
   const visitedBodyBlock = ensureBlockStatement(ts, forOfStatement.statement);
   const originalExpression = originalNode.expression ?? forOfStatement.expression;
-  const iterableSource = extractTraceableIterableSource(ts, originalExpression);
+  const iterableSource = extractTraceableIterableSource(ts, originalExpression, maxPathDepth);
   const bindingName =
     ts.isVariableDeclarationList(forOfStatement.initializer) &&
     forOfStatement.initializer.declarations.length === 1 &&
@@ -3837,7 +3867,8 @@ function instrumentStatementList(
   visitedStatements,
   variableNames,
   lineFunctionMap,
-  defaultFunctionName
+  defaultFunctionName,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
 ) {
   const nextStatements = [];
   for (let index = 0; index < visitedStatements.length; index += 1) {
@@ -3867,7 +3898,7 @@ function instrumentStatementList(
       nextStatements.push(visitedStatement);
       nextStatements.push(...traceScalarWriteStatementsForVariableStatement(ts, sourceFile, originalStatement));
       nextStatements.push(...traceScalarWriteStatementsForDestructuringAssignmentStatement(ts, sourceFile, originalStatement));
-      nextStatements.push(...traceIndexedWriteStatementsForDestructuringAssignmentStatement(ts, sourceFile, originalStatement));
+      nextStatements.push(...traceIndexedWriteStatementsForDestructuringAssignmentStatement(ts, sourceFile, originalStatement, maxPathDepth));
       nextStatements.push(createAttachPendingAccessesStatement(ts));
       continue;
     }
@@ -4038,7 +4069,8 @@ function wrapFunctionBodyForTracing(
   context,
   functionLikeNode,
   functionBody,
-  defaultFunctionName
+  defaultFunctionName,
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
 ) {
   const traceFunctionName = inferTraceFunctionName(ts, functionLikeNode, defaultFunctionName);
   const functionStartLine = sourceFile.getLineAndCharacterOfPosition(functionLikeNode.getStart(sourceFile)).line + 1;
@@ -4090,12 +4122,13 @@ function wrapFunctionBodyForTracing(
   return updateFunctionLikeWithBody(ts, functionLikeNode, wrappedBody);
 }
 
-async function instrumentCodeForTracing(sourceCode, language, traceFunctionName) {
+async function instrumentCodeForTracing(sourceCode, language, traceFunctionName, maxPathDepthOption) {
   await ensureTypeScriptCompiler();
   const ts = getTypeScriptCompiler();
   if (!ts || typeof sourceCode !== 'string') {
     return null;
   }
+  const maxPathDepth = getMaxPathDepthOption(maxPathDepthOption);
 
   const scriptKind = language === 'typescript' ? ts.ScriptKind.TS : ts.ScriptKind.JS;
   const sourceFile = ts.createSourceFile(
@@ -4117,7 +4150,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
   const transformer = (context) => {
     const visit = (node) => {
       if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
-        const tracedOperand = extractTraceableElementAccess(ts, node.operand);
+        const tracedOperand = extractTraceableElementAccess(ts, node.operand, maxPathDepth);
         const operatorName =
           node.operator === ts.SyntaxKind.PlusPlusToken
             ? 'inc'
@@ -4155,7 +4188,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
 
       if (ts.isBinaryExpression(node)) {
         if (node.operatorToken.kind === ts.SyntaxKind.InKeyword) {
-          const tracedMembershipTarget = extractTraceableMembershipTarget(ts, node.right);
+          const tracedMembershipTarget = extractTraceableMembershipTarget(ts, node.right, maxPathDepth);
           if (tracedMembershipTarget) {
             const visitedKey = ts.visitNode(node.left, visit);
             const visitedIndices = tracedMembershipTarget.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
@@ -4172,7 +4205,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           }
         }
 
-        const tracedLeft = extractTraceableElementAccess(ts, node.left);
+        const tracedLeft = extractTraceableElementAccess(ts, node.left, maxPathDepth);
         if (tracedLeft && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
           const visitedIndices = tracedLeft.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
           const visitedRight = ts.visitNode(node.right, visit);
@@ -4238,7 +4271,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
         if (isConsoleLogCall(ts, node)) {
           return createTraceStdoutExpression(ts, sourceFile, node);
         }
-        const tracedCall = extractTraceableMutatingCall(ts, node);
+        const tracedCall = extractTraceableMutatingCall(ts, node, maxPathDepth);
         if (tracedCall) {
           const visitedArgs = node.arguments.map((arg) => ts.visitNode(arg, visit));
           return createTraceMutatingCallExpressionForReceiver(
@@ -4277,7 +4310,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           return ts.visitEachChild(node, visit, context);
         }
 
-        const tracedAccess = extractTraceableElementAccess(ts, node);
+        const tracedAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
         if (tracedAccess) {
           const visitedIndices = tracedAccess.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
           return createTraceReadIndexExpression(
@@ -4308,7 +4341,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           return ts.visitEachChild(node, visit, context);
         }
 
-        const tracedIndexedPropertyAccess = extractTraceableElementAccess(ts, node);
+        const tracedIndexedPropertyAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
         if (tracedIndexedPropertyAccess && tracedIndexedPropertyAccess.indices.length > 1) {
           const visitedIndices = tracedIndexedPropertyAccess.indices.map((indexExpr) => ts.visitNode(indexExpr, visit));
           return createTraceReadIndexExpression(
@@ -4345,7 +4378,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           context,
           visitedFunction,
           visitedFunction.body,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -4360,7 +4394,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -4376,7 +4411,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -4389,7 +4425,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           visited,
           variableNames,
           lineFunctionMap,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -4401,7 +4438,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           visited,
           variableNames,
           lineFunctionMap,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -4414,7 +4452,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
           visited,
           variableNames,
           lineFunctionMap,
-          effectiveFunctionName
+          effectiveFunctionName,
+          maxPathDepth
         );
       }
 
@@ -4430,7 +4469,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -4446,7 +4486,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName)
             visited.statements,
             variableNames,
             lineFunctionMap,
-            effectiveFunctionName
+            effectiveFunctionName,
+            maxPathDepth
           )
         );
       }
@@ -4483,7 +4524,7 @@ return result;`
 }
 
 const TRACING_RUNTIME_HELPERS_SOURCE = `
-function __traceNormalizeIndices(__indices, __maxDepth = 3) {
+function __traceNormalizeIndices(__indices, __maxDepth = __TRACE_V4_MAX_PATH_DEPTH) {
   if (!Array.isArray(__indices) || __indices.length === 0 || __indices.length > __maxDepth) return null;
   if (!__indices.every((__index) =>
     (typeof __index === 'number' && Number.isInteger(__index)) ||
@@ -4969,13 +5010,18 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
 }
 `;
 
-function buildScriptTracingRunner(code) {
+function getTracingRuntimeHelpersSource(maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
+  return `const __TRACE_V4_MAX_PATH_DEPTH = ${getMaxPathDepthOption(maxPathDepth)};
+${TRACING_RUNTIME_HELPERS_SOURCE}`;
+}
+
+function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   return new Function(
     'console',
     '__traceRecorder',
     '__traceCtx',
     `${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 if (typeof result === 'undefined') {
   return null;
@@ -5082,7 +5128,7 @@ return __out;`
   throw new Error(`Execution style "${executionStyle}" is not supported for JavaScript runtime yet.`);
 }
 
-function buildFunctionTracingRunner(code, executionStyle, argNames) {
+function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -5092,7 +5138,7 @@ function buildFunctionTracingRunner(code, executionStyle, argNames) {
       ...argNames,
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
@@ -5117,7 +5163,7 @@ return __target(${argNames.map((name) => `__tracecodeMaterializeCustomObject(${n
       ...argNames,
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
@@ -5142,7 +5188,7 @@ return __method.call(__solver, ${argNames.map((name) => `__tracecodeMaterializeC
       '__arguments',
       `"use strict";
 ${JAVASCRIPT_RUNTIME_PRELUDE}
-${TRACING_RUNTIME_HELPERS_SOURCE}
+${getTracingRuntimeHelpersSource(maxPathDepth)}
 ${code}
 ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
@@ -5282,7 +5328,8 @@ async function executeWithTracing(payload) {
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
   const traceFunctionName = hasNamedFunction ? functionName : '<module>';
-  const traceRecorder = createTraceRecorder(options);
+  const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
+  const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth });
 
   let traceLineBounds = { startLine: 1, endLine: 1 };
 
@@ -5300,10 +5347,10 @@ async function executeWithTracing(payload) {
     let instrumentedCode = null;
     try {
       if (language === 'typescript') {
-        const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName);
+        const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
         instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
       } else {
-        instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName);
+        instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
       }
     } catch (instrumentationError) {
       const message =
@@ -5352,7 +5399,7 @@ async function executeWithTracing(payload) {
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, []);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth);
         output = await Promise.resolve(
           runner(
             consoleProxy,
@@ -5367,7 +5414,7 @@ async function executeWithTracing(payload) {
         const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
         const argValues = inputKeys.map((key) => materializedInputs[key]);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth);
         output = await Promise.resolve(
           runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues)
         );
@@ -5376,7 +5423,7 @@ async function executeWithTracing(payload) {
       if (executionStyle !== 'function') {
         throw new Error('Script-mode execution only supports executionStyle="function".');
       }
-      const runner = buildScriptTracingRunner(instrumentedCode);
+      const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth);
       output = await Promise.resolve(
         runner(consoleProxy, traceRecorder, { functionName: traceFunctionName })
       );

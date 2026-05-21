@@ -70,6 +70,7 @@ export interface JavaTraceExecutionOptions {
   maxLineEvents?: number;
   maxSingleLineHits?: number;
   maxStoredEvents?: number;
+  maxPathDepth?: number;
   minimalTrace?: boolean;
 }
 
@@ -411,6 +412,7 @@ export class JavaWorkerClient {
         ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
             runId: 'java:run',
             file: JAVA_DEFAULT_FILE,
+            maxPathDepth: options?.maxPathDepth,
           })
         : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
     };

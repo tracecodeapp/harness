@@ -1,5 +1,6 @@
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
+  withRuntimeTraceOptions,
   type RuntimeTraceEvent,
   type RuntimeTrace,
   type RuntimeTraceOptions,
@@ -283,14 +284,14 @@ function nativeJavaTraceEventsToTrace(
   parsedEvents = removeSameLineMutationDeclarationSnapshotEvents(parsedEvents, sourceText);
   parsedEvents = expandJavaLoopHeaderTraceEvents(parsedEvents, sourceText);
 
-  return {
+  return withRuntimeTraceOptions({
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
     language: 'java',
     runId,
     events: parsedEvents,
     lineEventCount: parsedEvents.filter((event) => event.kind === 'line').length,
     traceStepCount: parsedEvents.length,
-  };
+  }, options);
 }
 
 export function javaTraceHooksEventsToRuntimeTrace(

@@ -78,6 +78,7 @@ export interface RuntimeTraceIterationBinding {
 export interface RuntimeTraceOptions {
   runId?: string;
   file?: string;
+  maxPathDepth?: number;
 }
 
 export function createEmptyRuntimeTrace(
@@ -121,15 +122,39 @@ export function withRuntimeTraceOptions(
   options: RuntimeTraceOptions = {}
 ): RuntimeTrace {
   const runId = options.runId ?? trace.runId;
+  const maxPathDepth = normalizeMaxPathDepth(options.maxPathDepth);
   return {
     ...trace,
     runId,
-    events: trace.events.map((event) => ({
+    events: trace.events.map((event) => normalizeRuntimeTraceEventOptions({
       ...event,
       runId,
       ...(options.file ? { file: options.file } : {}),
-    })),
+    }, maxPathDepth)),
   };
+}
+
+function normalizeMaxPathDepth(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.min(8, Math.max(1, Math.floor(value)));
+}
+
+function normalizeRuntimeTraceEventOptions<T extends RuntimeTraceEvent>(
+  event: T,
+  maxPathDepth: number | undefined
+): T {
+  if (maxPathDepth === undefined || !('target' in event)) return event;
+  const target = event.target;
+  if (!target || typeof target !== 'object' || !('path' in target) || !Array.isArray(target.path)) {
+    return event;
+  }
+  if (target.path.length <= maxPathDepth) {
+    return event;
+  }
+  const nextTarget = { ...target };
+  delete nextTarget.path;
+  delete nextTarget.indexSources;
+  return { ...event, target: nextTarget } as T;
 }
 
 export function buildRuntimeTraceParitySignature(trace: RuntimeTrace): RuntimeTraceParitySignature {

@@ -1,0 +1,82 @@
+{
+  "id": "matrix-write-depth1",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {
+    "grid": [
+      [
+        0,
+        0
+      ]
+    ]
+  },
+  "anchors": {
+    "write": {
+      "python": "grid[0][1] = 7",
+      "javascript": "grid[0][1] = 7;",
+      "typescript": "grid[0][1] = 7;",
+      "java": "grid[0][1] = 7;",
+      "csharp": "grid[0][1] = 7;",
+      "cpp": "grid[0][1] = 7;"
+    }
+  },
+  "expect": {
+    "write": {
+      "eventKinds": [
+        "line",
+        "snapshot",
+        "write"
+      ],
+      "variableSnapshots": [
+        "grid"
+      ],
+      "accessTargets": [
+        {
+          "kind": "write",
+          "variable": "grid"
+        }
+      ]
+    }
+  },
+  "traceOptions": {
+    "maxPathDepth": 1
+  },
+  "expectByLanguage": {
+    "python": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "grid"
+        ],
+        "accessTargets": []
+      }
+    },
+    "javascript": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "grid"
+        ],
+        "accessTargets": []
+      }
+    },
+    "typescript": {
+      "write": {
+        "eventKinds": [
+          "line",
+          "snapshot"
+        ],
+        "variableSnapshots": [
+          "grid"
+        ],
+        "accessTargets": []
+      }
+    }
+  }
+}

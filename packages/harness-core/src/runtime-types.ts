@@ -64,6 +64,7 @@ export interface TraceBudget {
   maxLineEvents?: number;
   maxSingleLineHits?: number;
   maxStoredEvents?: number;
+  maxPathDepth?: number;
 }
 
 export interface TraceExecutionOptions extends TraceBudget {
