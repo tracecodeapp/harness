@@ -1,0 +1,104 @@
+{
+  "id": "cpp-trace-wrapped-parameter-mutate-once",
+  "functionName": "solve",
+  "executionStyle": "solution-method",
+  "languages": [
+    "cpp"
+  ],
+  "inputs": {},
+  "anchors": {
+    "push": {
+      "cpp": "current.push_back(nums[0]);"
+    },
+    "pop": {
+      "cpp": "current.pop_back();"
+    }
+  },
+  "expect": {
+    "push": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "current",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "current"
+        },
+        {
+          "kind": "read",
+          "variable": "nums",
+          "pathDepth": 1
+        }
+      ]
+    },
+    "pop": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "current",
+        "nums"
+      ],
+      "accessTargets": [
+        {
+          "kind": "mutate",
+          "variable": "current"
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "push": [
+      {
+        "kind": "mutate",
+        "variable": "current",
+        "method": "push_back",
+        "args": [
+          1
+        ]
+      }
+    ],
+    "pop": [
+      {
+        "kind": "mutate",
+        "variable": "current",
+        "method": "pop_back",
+        "args": []
+      }
+    ]
+  },
+  "expectSummary": {
+    "accessTargets": [
+      {
+        "kind": "mutate",
+        "variable": "current",
+        "count": 2
+      },
+      {
+        "kind": "read",
+        "variable": "nums",
+        "pathDepth": 1,
+        "count": 1
+      },
+      {
+        "kind": "write",
+        "variable": "current",
+        "count": 1
+      },
+      {
+        "kind": "write",
+        "variable": "nums",
+        "count": 1
+      }
+    ]
+  }
+}

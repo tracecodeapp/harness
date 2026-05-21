@@ -4450,7 +4450,17 @@ function rewritePlainIndexedWriteInstrumentation(line, lineNumber, variables, al
 
 function shouldEmitPlainContainerMutation(variable, name, aliases = new Map(), source = '') {
   if (!variable || !isSnapshotSerializableCppType(variable.type, aliases)) return false;
-  if (variable.parameter && /\bstd::/.test(variable.type)) return true;
+  if (variable.parameter && /\bstd::/.test(variable.type)) {
+    if (
+      !variable.lambdaParameter &&
+      isTraceWrappedCppType(variable.type, aliases) &&
+      !parameterAddressEscapes(source, name) &&
+      !hasUnsafeMapProxyAutoReferenceBinding(variable.type, source, name, aliases)
+    ) {
+      return false;
+    }
+    return true;
+  }
   if (!isTraceWrappedCppType(variable.type, aliases)) return true;
   const normalized = normalizeCppType(variable.type, aliases);
   return normalized === 'vector<string>' && !localVectorStringFeedsTraceWrappedParameter(source, name, aliases);
@@ -5498,7 +5508,12 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
         const variables = new Map();
         for (const parameter of nextSignature.parameters) {
           if (isSnapshotSerializableCppType(parameter.type, aliases)) {
-            variables.set(parameter.name, { type: parameter.type, scopeDepth: 1, parameter: true });
+            variables.set(parameter.name, {
+              type: parameter.type,
+              scopeDepth: 1,
+              parameter: true,
+              lambdaParameter: Boolean(nextSignature.lambda),
+            });
           }
         }
         frameStack.push({ signature: nextSignature, depth: delta, variables, mapIterators: new Map(), stringPointerAliases: new Map() });
