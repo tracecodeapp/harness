@@ -1,0 +1,301 @@
+:root {
+  --bg-app: #1e1f22;
+  --bg-surface: #2b2d30;
+  --bg-panel: #313335;
+  --bg-hover: #4e5157;
+  --bg-terminal: #1e1f22;
+  --border-color: #393b40;
+  --border-light: #4e5157;
+  --text-main: #dfe1e5;
+  --text-muted: #8c8c8c;
+  --accent-color: #4d78cc;
+  --error-color: #db5860;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body,
+html {
+  height: 100vh;
+  width: 100vw;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  opacity: 1;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-light);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+:focus-visible {
+  outline: 1px solid var(--accent-color);
+  outline-offset: -1px;
+}
+
+.dev-terminal-root {
+  height: 100vh;
+  width: 100vw;
+  min-width: 0;
+  min-height: 0;
+  background: #161719;
+  color: var(--text-main);
+  display: flex;
+  flex-direction: column;
+}
+
+.dev-menubar {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 10px;
+  background: #24272d;
+  border-bottom: 1px solid #343841;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.dev-menu-group {
+  position: relative;
+  height: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.dev-menu-trigger {
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: #d2d7df;
+  padding: 0 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-menu-trigger:hover,
+.dev-menu-group:focus-within .dev-menu-trigger,
+.dev-menu-group:hover .dev-menu-trigger {
+  background: #343941;
+}
+
+.dev-menu-popover {
+  position: absolute;
+  left: 0;
+  top: 31px;
+  z-index: 20;
+  min-width: 190px;
+  padding: 5px;
+  display: none;
+  background: #252930;
+  border: 1px solid #444a55;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.36);
+}
+
+.dev-menu-group:hover .dev-menu-popover,
+.dev-menu-group:focus-within .dev-menu-popover {
+  display: block;
+}
+
+.dev-menu-popover button {
+  width: 100%;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: #dfe1e5;
+  text-align: left;
+  padding: 0 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-menu-popover button:hover {
+  background: #355f9d;
+}
+
+.dev-menu-popover button:disabled {
+  color: #7f858f;
+  cursor: default;
+}
+
+.dev-menu-popover button:disabled:hover {
+  background: transparent;
+}
+
+.dev-menu-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: #3a404a;
+}
+
+.dev-menu-session-commands:empty {
+  display: none;
+}
+
+.dev-menu-spacer {
+  flex: 1;
+}
+
+.dev-workspace-name {
+  color: #9ca6b5;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.dev-terminal-status {
+  color: #7ed88d;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin-left: 12px;
+}
+
+.dev-terminal {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 38px),
+    #101215;
+  cursor: text;
+}
+
+.dev-terminal:focus-within {
+  box-shadow: inset 0 0 0 1px rgba(111, 161, 255, 0.16);
+}
+
+.dev-terminal-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  scrollbar-color: #3c424d transparent;
+}
+
+.dev-terminal-line {
+  min-height: 18px;
+  color: #c9d1dc;
+}
+
+.dev-terminal-line.command {
+  color: #e5eaf2;
+  font-weight: 500;
+}
+
+.dev-terminal-line.status {
+  color: #76808f;
+}
+
+.dev-terminal-line.stdout {
+  color: #b8c8b9;
+}
+
+.dev-terminal-line.stdin {
+  color: #d7dee9;
+}
+
+.dev-terminal-line.stderr,
+.dev-terminal-line.exit {
+  color: var(--error-color);
+}
+
+.dev-terminal-form {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  background: transparent;
+  border-top: 0;
+  font-family: var(--font-mono);
+  white-space: normal;
+}
+
+.dev-terminal-prompt {
+  color: #74c883;
+  font-size: 12px;
+  line-height: 22px;
+  white-space: nowrap;
+}
+
+.dev-terminal-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #e5eaf2;
+  caret-color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 22px;
+}
+
+.dev-terminal-input:disabled {
+  color: #707987;
+}
+
+.dev-terminal-error {
+  height: 100vh;
+  width: 100vw;
+  padding: 16px;
+  background: var(--bg-terminal);
+  color: var(--error-color);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 680px) {
+  .dev-menubar {
+    padding: 0 6px;
+  }
+
+  .dev-workspace-name {
+    display: none;
+  }
+
+  .dev-terminal-output {
+    padding: 10px;
+  }
+}

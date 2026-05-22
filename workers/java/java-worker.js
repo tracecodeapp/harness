@@ -3791,8 +3791,9 @@ function projectEnvironmentManifest(payload) {
     .join('\n');
 }
 
-function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '', envManifest = '', virtualWorkspaceRoot = '/workspace', workspaceAlias = '/workspace', internalWorkspaceRoot = '') {
+function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '', envManifest = '', virtualWorkspaceRoot = '/workspace', workspaceAlias = '/workspace', internalWorkspaceRoot = '', reflectiveMain = false) {
   const argsSource = args.map((arg) => javaStringLiteral(arg)).join(', ');
+  const mainClassSource = javaStringLiteral(mainClassName);
   const stdinSource = javaStringLiteral(stdin);
   const kernelDeviceManifestSource = javaStringLiteral(kernelDeviceManifest);
   const kernelFileManifestSource = javaStringLiteral(kernelFileManifest);
@@ -3804,7 +3805,18 @@ function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, co
   const propertyValuesSource = systemProperties.map(([, value]) => javaStringLiteral(value)).join(', ');
   const invocation = compileOnly
     ? ''
-    : `      ${mainClassName}.main(new String[] { ${argsSource} });`;
+    : reflectiveMain
+      ? `      try {
+        Class<?> __tracecodeMainClass = Class.forName(${mainClassSource});
+        java.lang.reflect.Method __tracecodeMain = __tracecodeMainClass.getMethod("main", String[].class);
+        __tracecodeMain.invoke(null, (Object) new String[] { ${argsSource} });
+      } catch (java.lang.reflect.InvocationTargetException error) {
+        Throwable cause = error.getCause();
+        if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+        if (cause instanceof Error) throw (Error) cause;
+        throw new RuntimeException(cause);
+      }`
+      : `      ${mainClassName}.main(new String[] { ${argsSource} });`;
 
   return `
 import tracecode.user.TraceHooks;
@@ -4016,7 +4028,8 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
       projectEnvironmentManifest(payload),
       projectCwd,
       workspaceAlias,
-      workspaceRoot
+      workspaceRoot,
+      true
     ).trim(),
   };
 
@@ -4458,7 +4471,10 @@ function javaCompileOutputDir(args, project, relativeCwd = '', projectCwd = '/wo
         : '.';
     }
   }
-  return relativeCwd || '.';
+  const sourcePaths = javaCompileEffectiveSourcePaths(args, project, relativeCwd, projectCwd);
+  const firstSourcePath = sourcePaths[0];
+  const file = firstSourcePath ? projectFileMap(project).get(firstSourcePath) : null;
+  return firstSourcePath && file ? javaPackageRootForSource(firstSourcePath, file.contents) || '.' : relativeCwd || '.';
 }
 
 function normalizeJavaOutputDir(path) {

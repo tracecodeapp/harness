@@ -1622,6 +1622,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
     classManifest: string;
     mainClassName: string;
     runtimeClasspath: string;
+    sourceManifest?: string;
     workspaceManifest?: string;
     workspaceRoot?: string;
     workspaceCwd?: string;
@@ -2536,6 +2537,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               compilerProfile: string
             ) => {
               projectCompileCalls.push({ sourcePaths: sourceManifest, mainClassName: '<javac>', resourceManifest, compileClasspath, compileSourcePaths, compileSourceRootPaths });
+              const compiledPath = sourceManifest.includes('java/TicketTriage.java') ? 'TicketTriage.class' : 'app/Main.class';
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify({
@@ -2546,7 +2548,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
                 compilerStdout: '',
                 compilerStderr: '',
                 compiledFiles: [
-                  { path: 'app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
+                  { path: compiledPath, contents: 'yv66vg==', encoding: 'base64' },
                 ],
                 compileTimeMs: 1,
                 classLoadTimeMs: 0,
@@ -2566,7 +2568,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               _compileClasspath: string,
               compilerProfile: string
             ) => {
-              projectClassCompileCalls.push({ classManifest, mainClassName, runtimeClasspath });
+              projectClassCompileCalls.push({ classManifest, mainClassName, runtimeClasspath, sourceManifest: _sourceManifest });
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify(JSON.stringify({
@@ -2597,7 +2599,7 @@ function createWorkerHarness(workerSource: string, augmentationSource: string) {
               _compileClasspath: string,
               compilerProfile: string
             ) => {
-              projectClassCompileCalls.push({ classManifest, mainClassName, runtimeClasspath, workspaceManifest, workspaceRoot, workspaceCwd });
+              projectClassCompileCalls.push({ classManifest, mainClassName, runtimeClasspath, sourceManifest: _sourceManifest, workspaceManifest, workspaceRoot, workspaceCwd });
               return JSON.stringify({
                 success: true,
                 output: JSON.stringify(JSON.stringify({
@@ -4532,7 +4534,74 @@ async function main(): Promise<void> {
         classpathCall.workspaceRoot?.endsWith('/workspace'),
       'Java execute-project-java should use persisted class files for explicit classpath runs'
     );
+    const classpathAdapterSource = Buffer.from(
+      classpathCall?.sourceManifest?.split('\t')[1]?.trim() ?? '',
+      'base64'
+    ).toString('utf8');
+    assertCondition(
+      classpathAdapterSource.includes('Class.forName("app.Main")') &&
+        classpathAdapterSource.includes('getMethod("main", String[].class)') &&
+        classpathAdapterSource.includes('__tracecodeMain.invoke(null, (Object) new String[] { "alpha", "beta" });') &&
+        !classpathAdapterSource.includes('app.Main.main('),
+      `Java execute-project-java should invoke explicit classpath main classes reflectively: ${classpathAdapterSource}`
+    );
     console.log('PASS: java worker runs explicit project classpath requests from persisted class files');
+
+    const defaultPackageCompileProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number; files?: Array<{ path: string; contents?: string; encoding?: string }> }>('execute-project-java', {
+      code: '',
+      source: 'compile',
+      scriptPath: 'java/TicketTriage.java',
+      args: ['java/TicketTriage.java'],
+      cwd: '/workspace',
+      env: {},
+      stdin: '',
+      project: {
+        files: [
+          { path: 'java/TicketTriage.java', contents: 'public class TicketTriage { public static void main(String[] args) {} }\n' },
+        ],
+      },
+    });
+    assertCondition(defaultPackageCompileProjectExecute.exitCode === 0, 'Java execute-project-java should compile source-directory default-package classes');
+    assertCondition(
+      defaultPackageCompileProjectExecute.files?.some((file) => file.path === 'java/TicketTriage.class' && file.encoding === 'base64') === true,
+      `Java execute-project-java should persist no--d default-package class files next to source: ${JSON.stringify(defaultPackageCompileProjectExecute.files)}`
+    );
+    console.log('PASS: java worker persists no--d default-package class files next to source');
+
+    const defaultPackageClasspathProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
+      code: '',
+      source: 'run',
+      scriptPath: 'TicketTriage',
+      args: [],
+      cwd: '/workspace',
+      env: {},
+      stdin: 'Acme\n5\n',
+      options: { classpath: 'java' },
+      project: {
+        files: [
+          { path: 'java/TicketTriage.class', contents: 'yv66vg==', encoding: 'base64' },
+          { path: 'java/TicketTriage.java', contents: 'public class TicketTriage { public static void main(String[] args) {} }\n' },
+        ],
+      },
+    });
+    assertCondition(defaultPackageClasspathProjectExecute.exitCode === 0, 'Java execute-project-java should run default-package classpath class files');
+    const defaultPackageClasspathCall = harness.projectClassCompileCalls.at(-1);
+    const defaultPackageAdapterSource = Buffer.from(
+      defaultPackageClasspathCall?.sourceManifest?.split('\t')[1]?.trim() ?? '',
+      'base64'
+    ).toString('utf8');
+    assertCondition(
+      defaultPackageClasspathCall?.classManifest.includes('java/TicketTriage.class') &&
+        defaultPackageClasspathCall.runtimeClasspath.includes('/classpath/java') &&
+        defaultPackageClasspathCall.workspaceManifest?.includes('java/TicketTriage.java') &&
+        defaultPackageAdapterSource.includes('Class.forName("TicketTriage")') &&
+        !defaultPackageAdapterSource.includes('TicketTriage.main('),
+      `Java execute-project-java should invoke default-package classpath main classes reflectively: ${JSON.stringify({
+        defaultPackageClasspathCall,
+        defaultPackageAdapterSource,
+      })}`
+    );
+    console.log('PASS: java worker runs default-package project classpath requests reflectively');
 
     const envClasspathProjectExecute = await harness.sendMessage<{ stdout: string; stderr: string; exitCode: number }>('execute-project-java', {
       code: '',

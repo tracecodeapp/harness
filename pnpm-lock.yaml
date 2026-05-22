@@ -99,6 +99,31 @@ importers:
         specifier: ^7.3.2
         version: 7.3.2(@types/node@20.19.37)(tsx@4.21.0)(yaml@2.9.0)
 
+  examples/project-terminal:
+    dependencies:
+      '@tracecode/harness':
+        specifier: workspace:*
+        version: link:../..
+      '@tracecode/harness-java':
+        specifier: workspace:*
+        version: link:../../packages/harness-java
+      '@tracecode/harness-javascript':
+        specifier: workspace:*
+        version: link:../../packages/harness-javascript
+      '@tracecode/harness-project':
+        specifier: workspace:*
+        version: link:../../packages/harness-project
+      '@tracecode/harness-python':
+        specifier: workspace:*
+        version: link:../../packages/harness-python
+    devDependencies:
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.2(@types/node@20.19.37)(tsx@4.21.0)(yaml@2.9.0)
+
   examples/web-ide:
     dependencies:
       '@tracecode/harness':

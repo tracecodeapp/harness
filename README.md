@@ -451,7 +451,9 @@ A minimal tracing/problem-style browser IDE lives in [examples/web-ide](./exampl
 
 A separate project-mode IDE lives in [examples/project-ide](./examples/project-ide). It exercises tracekernel workspace behavior, browser persistence, project sessions, live filesystem mutation events, stdio streaming, and shell-style project commands.
 
-Both examples are reference consumers for the SDK contract, not canonical product UI.
+A fullscreen project terminal lives in [examples/project-terminal](./examples/project-terminal). It uses the same project harness and tracekernel terminal path without the IDE editor or explorer surface.
+
+All examples are reference consumers for the SDK contract, not canonical product UI.
 
 ## Development
 
