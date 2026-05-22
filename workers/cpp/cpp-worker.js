@@ -1796,6 +1796,35 @@ function findMatchingBrace(source, openIndex) {
   return -1;
 }
 
+function findMatchingAngleBracket(source, openIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const ch = source[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '<') depth += 1;
+    if (ch === '>') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
 function parseMethodSignature(source, functionName, options = {}) {
   if (Number.isFinite(options.parameterCount)) {
     const inputNames = new Set(options.inputNames || []);
@@ -2007,8 +2036,6 @@ function collectTraceContainerMemberNames(source, aliases = new Map(), className
     const normalizedType = normalizeCppType(member.type, aliases);
     const innerType = normalizedType.startsWith('vector<') ? normalizedType.slice('vector<'.length, -1).trim() : '';
     if (
-      isUnorderedMapCppType(member.type, aliases) ||
-      isMapCppType(member.type, aliases) ||
       (isVectorCppType(member.type, aliases) && innerType !== 'string')
     ) {
       names.add(name);
@@ -2141,6 +2168,57 @@ function cppStdFunctionReturnType(type) {
     }
   }
   return null;
+}
+
+function rewriteCppStdFunctionTraceTypes(line, aliases = new Map()) {
+  if (!line.includes('function')) return line;
+  let rewritten = line;
+  const pattern = /\b(?:std::)?function\s*</g;
+  let match;
+  while ((match = pattern.exec(rewritten))) {
+    const typeStart = match.index;
+    const openAngleIndex = rewritten.indexOf('<', typeStart);
+    const closeAngleIndex = findMatchingAngleBracket(rewritten, openAngleIndex);
+    if (openAngleIndex < 0 || closeAngleIndex < 0) {
+      pattern.lastIndex = typeStart + match[0].length;
+      continue;
+    }
+
+    const signature = rewritten.slice(openAngleIndex + 1, closeAngleIndex).trim();
+    const openParenIndex = signature.indexOf('(');
+    if (openParenIndex < 0) {
+      pattern.lastIndex = closeAngleIndex + 1;
+      continue;
+    }
+    const closeParenIndex = findMatchingParen(signature, openParenIndex);
+    if (closeParenIndex < 0) {
+      pattern.lastIndex = closeAngleIndex + 1;
+      continue;
+    }
+
+    const returnType = signature.slice(0, openParenIndex).trim();
+    const argsSource = signature.slice(openParenIndex + 1, closeParenIndex);
+    const args = splitTopLevelCommaList(argsSource);
+    const rewrittenArgs = args.map((arg) => {
+      const trimmed = arg.trim();
+      if (!trimmed || trimmed === 'void' || /\bconst\b/.test(trimmed)) return trimmed;
+      const referenceSuffix = trimmed.endsWith('&&') ? '&&' : trimmed.endsWith('&') ? '&' : '';
+      const baseType = referenceSuffix ? trimmed.slice(0, -referenceSuffix.length).trim() : trimmed;
+      return isTraceWrappedCppType(baseType, aliases)
+        ? `${cppTraceType(baseType, aliases)}${referenceSuffix}`
+        : trimmed;
+    });
+    if (args.length === rewrittenArgs.length && args.every((arg, index) => arg.trim() === rewrittenArgs[index])) {
+      pattern.lastIndex = closeAngleIndex + 1;
+      continue;
+    }
+
+    const functionPrefix = rewritten.slice(typeStart, openAngleIndex);
+    const replacement = `${functionPrefix}<${returnType}(${rewrittenArgs.join(', ')})>`;
+    rewritten = `${rewritten.slice(0, typeStart)}${replacement}${rewritten.slice(closeAngleIndex + 1)}`;
+    pattern.lastIndex = typeStart + replacement.length;
+  }
+  return rewritten;
 }
 
 function parseCppLambdaSignatures(source) {
@@ -5280,7 +5358,8 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     let lineForDriver = pendingSignature
       ? rewriteTraceContainerParameters(line, pendingSignature, aliases, source)
       : line;
-    if (pendingSignature && options.traceMemberClassName && pendingSignature.name !== functionName) {
+    lineForDriver = rewriteCppStdFunctionTraceTypes(lineForDriver, aliases);
+    if (pendingSignature && options.traceMemberClassName && pendingSignature.name !== functionName && !pendingSignature.lambda) {
       lineForDriver = line;
     }
     if (inFunctionBodyBeforeLine && !skipActiveInstrumentation && !unbracedControlHeaderLine && !unbracedControlBodyLine && !inMultilineControlCondition && !inMultilineStatement) {
@@ -5306,7 +5385,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
           continue;
         }
       }
-      lineForDriver = rewriteTraceContainerLocal(line, lineNumber, aliases, source);
+      lineForDriver = rewriteTraceContainerLocal(lineForDriver, lineNumber, aliases, source);
       let lexicalAccessVariables = buildCppLexicalAccessVariables(frameStack);
       const rangeAccessVariables =
         activeClassName === (options.traceMemberClassName || 'Solution')

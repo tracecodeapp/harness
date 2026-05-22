@@ -7,7 +7,12 @@ function assertCondition(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
-const workerSource = await readFile('workers/cpp/cpp-worker.js', 'utf8');
+const sharedKernelPolicySource = (await readFile('workers/shared/runtime-kernel-policy.js', 'utf8'))
+  .replace(/\bexport\s+/g, '');
+const workerSource = (await readFile('workers/cpp/cpp-worker.js', 'utf8')).replace(
+  /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
+  ''
+);
 const sandbox: Record<string, unknown> = {
   console,
   TextEncoder,
@@ -34,9 +39,14 @@ sandbox.self = sandbox;
 
 const context = vm.createContext(sandbox);
 vm.runInContext(
-  `${workerSource}
+  `${sharedKernelPolicySource}
+const isRuntimeDeviceDirectory = isRuntimeKernelDeviceDirectory;
+const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;
+const isRuntimeProcPath = isRuntimeKernelProcPath;
+${workerSource}
 globalThis.__tracecodeCppRewriter = {
   buildDriverSource,
+  buildOpsClassDriverSource,
   instrumentCppSourceForTracing,
   parseCppFunctionSignatures,
 };`,
@@ -46,6 +56,12 @@ globalThis.__tracecodeCppRewriter = {
 
 const rewriter = sandbox.__tracecodeCppRewriter as {
   buildDriverSource: (
+    source: string,
+    functionName: string,
+    inputs: Record<string, unknown>,
+    options?: Record<string, unknown>
+  ) => string;
+  buildOpsClassDriverSource: (
     source: string,
     functionName: string,
     inputs: Record<string, unknown>,
@@ -121,6 +137,80 @@ const lambdaDriver = rewriter.buildDriverSource(lambdaSource, 'reachable', { gra
 assertCondition(lambdaDriver.includes('\\"node\\":'), 'self-recursive lambda tracing should keep data arguments');
 assertCondition(!lambdaDriver.includes('\\"self\\":'), 'self-recursive lambda tracing should not serialize callable self');
 assertCondition(lambdaDriver.includes('tracecode::Vector<int> seen'), 'driver should trace-wrap local vector declarations');
+
+const scriptFunctionLambdaSource = [
+  'auto __tracecode_script_main() {',
+  '  function<int(unordered_map<string, vector<string>>, string)> bfs;',
+  '  bfs = [&](unordered_map<string, vector<string>> graph, string start) -> int {',
+  '    for (string neighbor : graph[start]) {',
+  '      return 1;',
+  '    }',
+  '    return 0;',
+  '  };',
+  '  unordered_map<string, vector<string>> graph;',
+  '  graph["A"] = vector<string>{"B"};',
+  '  return bfs(graph, "A");',
+  '}',
+].join('\n');
+const scriptFunctionLambdaDriver = rewriter.instrumentCppSourceForTracing(
+  scriptFunctionLambdaSource,
+  '__tracecode_script_main'
+);
+assertCondition(
+  scriptFunctionLambdaDriver.includes('function<int(tracecode::UnorderedMap<string, vector<string>>, string)> bfs'),
+  'script std::function declarations should trace-wrap container arguments'
+);
+assertCondition(
+  scriptFunctionLambdaDriver.includes('tracecode::UnorderedMap<string, vector<string>> graph'),
+  'script lambda parameters should stay trace-wrapped after local declaration rewriting'
+);
+assertCondition(
+  scriptFunctionLambdaDriver.includes('graph.with_index_source(start, "start"'),
+  'script lambda map index reads should target the traced wrapper receiver'
+);
+
+const opsLambdaMapSource = [
+  'class Tracker {',
+  '  unordered_map<string, vector<int>> groups;',
+  'public:',
+  '  Tracker() {}',
+  '  void add(string key, vector<int> nums) {',
+  '    function<void(vector<int>&)> helper;',
+  '    helper = [&](vector<int>& xs) -> void {',
+  '      groups[key].push_back(xs[0]);',
+  '    };',
+  '    helper(nums);',
+  '  }',
+  '  int count(string key) {',
+  '    return groups[key].size();',
+  '  }',
+  '};',
+].join('\n');
+const opsLambdaMapDriver = rewriter.buildOpsClassDriverSource(
+  opsLambdaMapSource,
+  'Tracker',
+  {
+    operations: ['Tracker', 'add', 'count'],
+    arguments: [[], ['a', [3, 4]], ['a']],
+  },
+  { tracing: true }
+);
+assertCondition(
+  opsLambdaMapDriver.includes('function<void(tracecode::Vector<int>&)> helper'),
+  'ops-class std::function declarations should preserve reference-wrapped container arguments'
+);
+assertCondition(
+  opsLambdaMapDriver.includes('helper = [&](tracecode::Vector<int>& xs) -> void'),
+  'ops-class lambda parameters should preserve reference-wrapped container arguments'
+);
+assertCondition(
+  opsLambdaMapDriver.includes('groups.with_index_source(key, "key", 8).push_back'),
+  'map values that are vectors should keep proxy method calls for nested write tracing'
+);
+assertCondition(
+  !opsLambdaMapDriver.includes('groups.with_index_source(key, "key", 8)->push_back'),
+  'map vector proxy method calls should not be rewritten to raw pointer access'
+);
 
 const multilineNoCaptureLambdaSource = [
   'struct ListNode { int val; ListNode* next; };',
@@ -253,7 +343,7 @@ assertCondition(
   'class map field find should preserve key provenance'
 );
 assertCondition(
-  classMapFieldDriver.includes('parent.with_index_source(email, "email") = email;'),
+  classMapFieldDriver.includes('parent.with_index_source(email, "email", 6) = email;'),
   'class map field keyed write should preserve key provenance'
 );
 
