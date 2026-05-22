@@ -584,6 +584,32 @@ public static class RuntimeTraceSink
         });
     }
 
+    public static void IndexedInsertedWrite(string variable, object? receiver, object? value, int line)
+    {
+        IndexedInsertedWrite(variable, Array.Empty<object?>(), receiver, value, line, null);
+    }
+
+    public static void IndexedInsertedWrite(
+        string variable,
+        IReadOnlyList<object?> pathPrefix,
+        object? receiver,
+        object? value,
+        int line,
+        IReadOnlyList<string?>? indexSources
+    )
+    {
+        if (receiver is not System.Collections.IList list || list.Count <= 0)
+        {
+            return;
+        }
+
+        List<object?> path = pathPrefix.ToList();
+        path.Add(list.Count - 1);
+        List<string?>? sources = indexSources?.ToList();
+        sources?.Add(null);
+        IndexedWrite(variable, path, value, line, sources);
+    }
+
     public static void FieldRead(string variable, string field, object? value, int line)
     {
         FieldRead(variable, new object?[] { field }, value, line);

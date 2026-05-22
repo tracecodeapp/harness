@@ -2333,7 +2333,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             string value = invocation.ArgumentList.Arguments[0].Expression.ToString();
             yield return TraceStatement(
-                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, new object?[] {{ ((System.Collections.ICollection){variable}).Count - 1 }}, {value}, {line});"
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedInsertedWrite({Literal(variable)}, {variable}, {value}, {line});"
             );
         }
     }
@@ -2359,7 +2359,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal("Add")}, new object?[] {{ {argument} }}, {line});"
         );
         yield return TraceStatement(
-            $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, new object?[] {{ ((System.Collections.ICollection){variable}).Count - 1 }}, {argument}, {line});"
+            $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedInsertedWrite({Literal(variable)}, {variable}, {argument}, {line});"
         );
     }
 
@@ -2391,7 +2391,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         {
             string value = invocation.ArgumentList.Arguments[0].Expression.ToString();
             yield return TraceStatement(
-                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, new object?[] {{ {index}, ((System.Collections.ICollection){variable}[{index}]).Count - 1 }}, {value}, {line}, new string?[] {{ {CreateIndexSourceLiteral(index)}, null }});"
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedInsertedWrite({Literal(variable)}, new object?[] {{ {index} }}, {variable}[{index}], {value}, {line}, new string?[] {{ {CreateIndexSourceLiteral(index)} }});"
             );
         }
     }

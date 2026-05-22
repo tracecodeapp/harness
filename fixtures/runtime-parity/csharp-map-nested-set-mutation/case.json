@@ -1,0 +1,72 @@
+{
+  "id": "csharp-map-nested-set-mutation",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": [
+    "csharp"
+  ],
+  "inputs": {
+    "accounts": [
+      ["John", "a"],
+      ["Jane", "a"]
+    ]
+  },
+  "anchors": {
+    "addOwner": {
+      "csharp": "valueToOwners[value].Add(ownerText);"
+    }
+  },
+  "expect": {
+    "addOwner": {
+      "eventKinds": [
+        "line",
+        "mutate",
+        "read",
+        "snapshot"
+      ],
+      "variableSnapshots": [
+        "account",
+        "accounts",
+        "i",
+        "owner",
+        "ownerText",
+        "value",
+        "valueToOwners"
+      ],
+      "accessTargets": [
+        {
+          "kind": "read",
+          "variable": "valueToOwners",
+          "pathDepth": 1
+        },
+        {
+          "kind": "mutate",
+          "variable": "valueToOwners",
+          "pathDepth": 1
+        }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "addOwner": [
+      {
+        "kind": "mutate",
+        "variable": "valueToOwners",
+        "pathDepth": 1,
+        "method": "Add",
+        "args": [
+          "John"
+        ]
+      }
+    ]
+  },
+  "rejectEventAssertions": {
+    "addOwner": [
+      {
+        "kind": "write",
+        "variable": "valueToOwners",
+        "pathDepth": 2
+      }
+    ]
+  }
+}
