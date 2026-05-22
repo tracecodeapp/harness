@@ -18,7 +18,8 @@
       "eventKinds": [
         "line",
         "mutate",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "c",
@@ -29,6 +30,11 @@
         {
           "kind": "mutate",
           "variable": "cells"
+        },
+        {
+          "kind": "write",
+          "variable": "cells",
+          "pathDepth": 1
         }
       ]
     }

@@ -5055,6 +5055,9 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
   for (const __index of __path) {
     __target = __traceIsMapLike(__target) ? __target.get(__index) : __target?.[__index];
   }
+  const __sequenceInsertStartIndex = Array.isArray(__target) && (__method === 'push' || __method === 'unshift')
+    ? (__method === 'push' ? __target.length : 0)
+    : undefined;
   const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'add', 'insert', 'delete', 'clear'].includes(__method);
   const __result = __target[__method](...__args);
   if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(__method)) {
@@ -5167,6 +5170,24 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
       ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
       ...__sourceLocation,
     });
+    if (__sequenceInsertStartIndex !== undefined) {
+      for (let __offset = 0; __offset < __args.length; __offset += 1) {
+        const __writePath = [...__path, __sequenceInsertStartIndex + __offset];
+        const __writeSources = __traceNormalizeIndexSources(
+          Array.isArray(__normalizedSources) ? [...__normalizedSources, null] : undefined,
+          __writePath.length
+        );
+        __traceRecorder.recordAccess({
+          variable: __varName,
+          kind: __writePath.length === 2 ? 'cell-write' : 'indexed-write',
+          indices: __writePath,
+          pathDepth: __writePath.length,
+          ...(Array.isArray(__writeSources) ? { indexSources: __writeSources } : {}),
+          value: serializeValue(__target[__sequenceInsertStartIndex + __offset]),
+          ...__sourceLocation,
+        });
+      }
+    }
   }
   __traceFlushDeferredScalarUpdates(__rawPath);
   return __result;

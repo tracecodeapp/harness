@@ -1091,6 +1091,15 @@ def _tracecode_augassign_index(var_name, container, indices, index_sources, op_n
 
 def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
     index_sources = kwargs.pop('__tracecode_index_sources', None)
+    before_len = None
+    try:
+        container_class_name = getattr(getattr(container, '__class__', None), '__name__', '')
+        if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'} and (
+            isinstance(container, _builtins.list) or container_class_name == 'deque'
+        ):
+            before_len = len(container)
+    except Exception:
+        before_len = None
     result = getattr(container, method_name)(*args, **kwargs)
     if method_name in _TRACE_MUTATING_METHODS:
         if (
@@ -1116,11 +1125,37 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
             sys._getframe(1),
             __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name, args=__tracecode_serialize_call_args(args, kwargs)),
         )
+        if before_len is not None:
+            if method_name == 'append' and len(args) >= 1:
+                __tracecode_record_access(
+                    sys._getframe(1),
+                    __tracecode_make_access_event(var_name, 'indexed-write', [before_len], value=_serialize(args[0])),
+                )
+            elif method_name == 'appendleft' and len(args) >= 1:
+                __tracecode_record_access(
+                    sys._getframe(1),
+                    __tracecode_make_access_event(var_name, 'indexed-write', [0], value=_serialize(args[0])),
+                )
+            elif method_name == 'extend' and len(args) >= 1:
+                try:
+                    for offset, value in enumerate(args[0]):
+                        __tracecode_record_access(
+                            sys._getframe(1),
+                            __tracecode_make_access_event(var_name, 'indexed-write', [before_len + offset], value=_serialize(value)),
+                        )
+                except Exception:
+                    pass
     return result
 
 def _tracecode_mutating_index_call(var_name, container, indices, index_sources, method_name, *args, **kwargs):
     effective_indices = list(indices)
     target = __tracecode_read_value(container, effective_indices)
+    before_len = None
+    try:
+        if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'}:
+            before_len = len(target)
+    except Exception:
+        before_len = None
     result = getattr(target, method_name)(*args, **kwargs)
     normalized = __tracecode_normalize_indices(effective_indices)
     if method_name in _TRACE_MUTATING_METHODS:
@@ -1132,6 +1167,26 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
             sys._getframe(1),
             __tracecode_make_access_event(var_name, 'mutating-call', normalized, method_name, index_sources=index_sources, args=__tracecode_serialize_call_args(args, kwargs)),
         )
+        if normalized is not None and before_len is not None:
+            if method_name == 'append' and len(args) >= 1:
+                __tracecode_record_access(
+                    sys._getframe(1),
+                    __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [before_len], index_sources=list(index_sources or []) + [None], value=_serialize(args[0])),
+                )
+            elif method_name == 'appendleft' and len(args) >= 1:
+                __tracecode_record_access(
+                    sys._getframe(1),
+                    __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [0], index_sources=list(index_sources or []) + [None], value=_serialize(args[0])),
+                )
+            elif method_name == 'extend' and len(args) >= 1:
+                try:
+                    for offset, value in enumerate(args[0]):
+                        __tracecode_record_access(
+                            sys._getframe(1),
+                            __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [before_len + offset], index_sources=list(index_sources or []) + [None], value=_serialize(value)),
+                        )
+                except Exception:
+                    pass
     return result
 
 def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, **kwargs):

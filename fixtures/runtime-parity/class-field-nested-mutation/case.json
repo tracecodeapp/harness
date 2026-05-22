@@ -29,7 +29,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "n",
@@ -46,6 +47,11 @@
           "kind": "read",
           "variable": "this",
           "pathDepth": 2
+        },
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 3
         }
       ]
     },
@@ -75,7 +81,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "n",
@@ -92,6 +99,11 @@
             "kind": "read",
             "variable": "self",
             "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "self",
+            "pathDepth": 3
           }
         ]
       },
@@ -120,7 +132,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "graph",
@@ -137,6 +150,11 @@
             "kind": "read",
             "variable": "this",
             "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 3
           }
         ]
       },
@@ -165,7 +183,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "n"
@@ -186,6 +205,11 @@
             "kind": "read",
             "variable": "graph",
             "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 3
           }
         ]
       },

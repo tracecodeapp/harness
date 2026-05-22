@@ -74,7 +74,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "deck",
@@ -90,6 +91,11 @@
           "kind": "read",
           "variable": "nums",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "deck",
+          "pathDepth": 1
         }
       ]
     },
@@ -98,7 +104,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "deck",
@@ -113,6 +120,11 @@
         {
           "kind": "read",
           "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "deck",
           "pathDepth": 1
         }
       ]
@@ -194,7 +206,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "deck",
@@ -209,6 +222,11 @@
         {
           "kind": "read",
           "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "deck",
           "pathDepth": 1
         }
       ]

@@ -4066,8 +4066,11 @@ public class TreeNode
 
         public new void Add(T item)
         {
+            int index = Count;
             base.Add(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Add", new object?[] { item }, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, item, line);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
@@ -4321,7 +4324,9 @@ public class TreeNode
         public new void Enqueue(T item)
         {
             base.Enqueue(item);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { item }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { item }, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, Count - 1, item, line);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
@@ -4433,7 +4438,9 @@ public class TreeNode
         public new LinkedListNode<T> AddLast(T value)
         {
             LinkedListNode<T> node = base.AddLast(value);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "append", new object?[] { value }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "append", new object?[] { value }, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, Count - 1, value, line);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return node;
         }
@@ -4441,7 +4448,9 @@ public class TreeNode
         public new LinkedListNode<T> AddFirst(T value)
         {
             LinkedListNode<T> node = base.AddFirst(value);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "appendleft", new object?[] { value }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "appendleft", new object?[] { value }, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, 0, value, line);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return node;
         }

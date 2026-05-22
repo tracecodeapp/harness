@@ -472,10 +472,18 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + (" + index + ") + \"]},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + (" + index + ") + \"]},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
+      java.util.List<String> rawArgs = splitTopLevel(fieldIndexedMutatingCall.group(6).trim());
+      String writeEvent = "";
+      if ("add".equals(method) && rawArgs.size() == 1) {
+        String value = rewriteReads(rawArgs.get(0), sourceLine, frame);
+        writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+            ", new Object[] { " + quote(field) + ", " + index + ", ((java.util.List) " + target + ").size() - 1 }, " +
+            value + ", null, " + indexSourceArgument(index) + ", null);";
+      }
       String snapshotEvent = "this".equals(name) && frame.isField(field)
           ? "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(field) + ", " + field + ");"
           : "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher frontFieldMutatingCall = FRONT_FIELD_MUTATING_CALL_STATEMENT.matcher(line);
@@ -491,8 +499,21 @@ public final class JavaRewriteLibrary {
           pathPrefix + ",\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
+      java.util.List<String> rawArgs = splitTopLevel(frontFieldMutatingCall.group(5).trim());
+      String writeEvent = "";
+      if (rawArgs.size() == 1 && !rewrittenArgs.callArgs.trim().isEmpty()) {
+        if ("add".equals(method) || "push".equals(method) || "offer".equals(method) ||
+            "addLast".equals(method) || "offerLast".equals(method)) {
+          writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+              ", new Object[] { 0, " + quote(field) + ", ((java.util.Collection) " + target + ").size() - 1 }, " +
+              rewrittenArgs.callArgs + ", null, null, null);";
+        } else if ("addFirst".equals(method) || "offerFirst".equals(method)) {
+          writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+              ", new Object[] { 0, " + quote(field) + ", 0 }, " + rewrittenArgs.callArgs + ", null, null, null);";
+        }
+      }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher fieldMutatingCall = FIELD_MUTATING_CALL_STATEMENT.matcher(line);
@@ -524,10 +545,19 @@ public final class JavaRewriteLibrary {
       MutatingArgs rewrittenArgs = mutatingArgs(rawArgs, sourceLine, frame);
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
+      String writeEvent = "";
+      if (("add".equals(method) || "push".equals(method) || "addLast".equals(method) || "offerLast".equals(method)) && splitTopLevel(rawArgs).size() == 1) {
+        writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+            ", new Object[] { " + quote(field) + ", ((java.util.Collection) " + target + ").size() - 1 }, " +
+            rewrittenArgs.callArgs + ", null, null);";
+      } else if (("addFirst".equals(method) || "offerFirst".equals(method)) && splitTopLevel(rawArgs).size() == 1) {
+        writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+            ", new Object[] { " + quote(field) + ", 0 }, " + rewrittenArgs.callArgs + ", null, null);";
+      }
       String snapshotEvent = "this".equals(name) && frame.isField(field)
           ? "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(field) + ", " + field + ");"
           : "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher computeMutatingCall = COMPUTE_IF_ABSENT_MUTATING_CALL_STATEMENT.matcher(line);
@@ -585,8 +615,16 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + temp + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex) + "},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
+      java.util.List<String> rawArgs = splitTopLevel(indexedMutatingCall.group(5).trim());
+      String writeEvent = "";
+      if ("add".equals(method) && rawArgs.size() == 1) {
+        String value = rewriteReads(rawArgs.get(0), sourceLine, frame);
+        writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+            ", new Object[] { " + index + ", ((java.util.List) " + temp + ").size() - 1 }, " +
+            value + ", " + indexSourceArgument(rawIndex) + ", null);";
+      }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ var " + temp + " = " + target + "; " + readEvent + " " + rewrittenArgs.prefix + temp + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher arrayIndexedMapWrite = ARRAY_INDEXED_MAP_WRITE_STATEMENT.matcher(line);
@@ -667,8 +705,14 @@ public final class JavaRewriteLibrary {
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex) + "},\\\"value\\\":\" + TraceHooks.serializeResult(" + target + ") + \"}\");";
       String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
           pathPrefix + "\" + TraceHooks.serializeResult(" + index + ") + \"]" + escapedIndexSourcesTargetSegment(rawIndex) + "},\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
+      String writeEvent = "";
+      if (("add".equals(method) || "push".equals(method)) && splitTopLevel(arrayIndexedMutatingCall.group(5).trim()).size() == 1) {
+        writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+            ", new Object[] { " + index + ", ((java.util.Collection) " + target + ").size() - 1 }, " +
+            rewrittenArgs.callArgs + ", " + indexSourceArgument(rawIndex) + ", null);";
+      }
       String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+      return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + target + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
     }
 
     Matcher update2d = ARRAY_UPDATE_2D.matcher(line);
@@ -820,13 +864,16 @@ public final class JavaRewriteLibrary {
         MutatingArgs rewrittenArgs = mutatingArgs(rawArgs, sourceLine, frame);
         String mutateEvent = "TraceHooks.emit(\"trace:{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":" + sourceLine + "," +
             pathPrefix + ",\\\"method\\\":\\\"" + method + "\\\"" + rewrittenArgs.eventSegment + "}\");";
+        String writeEvent = sequenceAppendWriteHook(sourceLine, name, frame.typeOf(name), method, rawArgs, rewrittenArgs.callArgs);
         String snapshotEvent = "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
-        return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + name + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + " " + snapshotEvent + " }";
+        return indent + "{ " + readEvent + " " + rewrittenArgs.prefix + name + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateEvent + writeEvent + " " + snapshotEvent + " }";
       }
+      MutatingArgs rewrittenArgs = mutatingArgs(rawArgs, sourceLine, frame);
       String mutateHook = rawArgs.isEmpty()
           ? "TraceHooks.emitNoArgMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ")"
-          : "TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ", " + args + ")";
-      return indent + name + "." + method + "(" + args + "); " + mutateHook + "; TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+          : "TraceHooks.emitMutatingCallAtLine(" + sourceLine + ", " + quote(name) + ", " + quote(method) + ", " + rewrittenArgs.callArgs + ")";
+      String writeEvent = sequenceAppendWriteHook(sourceLine, name, frame.typeOf(name), method, rawArgs, rewrittenArgs.callArgs);
+      return indent + "{ " + rewrittenArgs.prefix + name + "." + method + "(" + rewrittenArgs.callArgs + "); " + mutateHook + ";" + writeEvent + " TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + "); }";
     }
 
     return rewriteReads(line, sourceLine, frame);
@@ -913,53 +960,64 @@ public final class JavaRewriteLibrary {
     String next = replaceAll(STRING_ARRAY_CHAR_AT, source, match -> {
       String name = match.group(1);
       if (!isStringArrayType(frame.typeOf(name))) return match.group(0);
-      String row = match.group(2).trim();
-      String col = match.group(3).trim();
-      return "TraceHooks.readStringMatrixCharAtLine(" + line + ", " + quote(name) + ", " + name + ", " + row + ", " + col + ", " + indexSourceArgument(row) + ", " + indexSourceArgument(col) + ")";
+      String rawRow = match.group(2).trim();
+      String rawCol = match.group(3).trim();
+      String row = rewriteReads(rawRow, line, frame);
+      String col = rewriteReads(rawCol, line, frame);
+      return "TraceHooks.readStringMatrixCharAtLine(" + line + ", " + quote(name) + ", " + name + ", " + row + ", " + col + ", " + indexSourceArgument(rawRow) + ", " + indexSourceArgument(rawCol) + ")";
     });
     next = replaceAll(STRING_ARRAY_LENGTH_CALL, next, match -> {
       String name = match.group(1);
       if (!isStringArrayType(frame.typeOf(name))) return match.group(0);
-      String index = match.group(2).trim();
-      return "TraceHooks.readIndexedStringLengthAtLine(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(index) + ")";
+      String rawIndex = match.group(2).trim();
+      String index = rewriteReads(rawIndex, line, frame);
+      return "TraceHooks.readIndexedStringLengthAtLine(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(rawIndex) + ")";
     });
     next = replaceAll(STRING_CHAR_AT, next, match -> {
-      String index = match.group(2).trim();
-      return "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + index + ", " + indexSourceArgument(index) + ")";
+      String rawIndex = match.group(2).trim();
+      String index = rewriteReads(rawIndex, line, frame);
+      return "TraceHooks.readStringCharAtLine(" + line + ", " + quote(match.group(1)) + ", " + match.group(1) + ", " + index + ", " + indexSourceArgument(rawIndex) + ")";
     });
     next = replaceAll(LIST_ARRAY_READ, next, match -> {
       String name = match.group(1);
       String helper = listArrayReadHelper(frame.typeOf(name));
       if (helper == null) return match.group(0);
-      String row = match.group(2).trim();
-      String col = match.group(3).trim();
-      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + row + ", " + col + ", " + indexSourceArgument(row) + ", " + indexSourceArgument(col) + ")";
+      String rawRow = match.group(2).trim();
+      String rawCol = match.group(3).trim();
+      String row = rewriteReads(rawRow, line, frame);
+      String col = rewriteReads(rawCol, line, frame);
+      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + row + ", " + col + ", " + indexSourceArgument(rawRow) + ", " + indexSourceArgument(rawCol) + ")";
     });
     next = replaceAll(THIS_FIELD_MAP_CONTAINS_KEY_CALL, next, match -> {
       String field = match.group(1);
       if (!isMapType(frame.typeOf(field))) return match.group(0);
-      String key = match.group(2).trim();
-      return "TraceHooks.containsFieldMapKeyAtLine(" + line + ", \"this\", " + quote(field) + ", this." + field + ", " + key + ", " + indexSourceArgument(key) + ")";
+      String rawKey = match.group(2).trim();
+      String key = rewriteReads(rawKey, line, frame);
+      return "TraceHooks.containsFieldMapKeyAtLine(" + line + ", \"this\", " + quote(field) + ", this." + field + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(THIS_FIELD_MAP_GET_OR_DEFAULT_CALL, next, match -> {
       String field = match.group(1);
       if (!isMapType(frame.typeOf(field))) return match.group(0);
       java.util.List<String> args = splitTopLevel(match.group(2).trim());
       if (args.size() != 2) return match.group(0);
-      return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", \"this\", " + quote(field) + ", this." + field + ", " + args.get(0) + ", " + args.get(1) + ", " + indexSourceArgument(args.get(0)) + ")";
+      String rawKey = args.get(0);
+      String rawDefault = args.get(1);
+      return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", \"this\", " + quote(field) + ", this." + field + ", " + rewriteReads(rawKey, line, frame) + ", " + rewriteReads(rawDefault, line, frame) + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(THIS_FIELD_MAP_GET_CALL, next, match -> {
       String field = match.group(1);
       if (!isMapType(frame.typeOf(field))) return match.group(0);
-      String key = match.group(2).trim();
-      return "TraceHooks.readFieldMapAtLine(" + line + ", \"this\", " + quote(field) + ", this." + field + ", " + key + ", " + indexSourceArgument(key) + ")";
+      String rawKey = match.group(2).trim();
+      String key = rewriteReads(rawKey, line, frame);
+      return "TraceHooks.readFieldMapAtLine(" + line + ", \"this\", " + quote(field) + ", this." + field + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(OBJECT_FIELD_MAP_CONTAINS_KEY_CALL, next, match -> {
       String name = match.group(1);
       String field = match.group(2);
       if (!isMapType(frame.typeOf(field))) return match.group(0);
-      String key = match.group(3).trim();
-      return "TraceHooks.containsFieldMapKeyAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + key + ", " + indexSourceArgument(key) + ")";
+      String rawKey = match.group(3).trim();
+      String key = rewriteReads(rawKey, line, frame);
+      return "TraceHooks.containsFieldMapKeyAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(OBJECT_FIELD_MAP_GET_OR_DEFAULT_CALL, next, match -> {
       String name = match.group(1);
@@ -967,55 +1025,66 @@ public final class JavaRewriteLibrary {
       if (!isMapType(frame.typeOf(field))) return match.group(0);
       java.util.List<String> args = splitTopLevel(match.group(3).trim());
       if (args.size() != 2) return match.group(0);
-      return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + args.get(0) + ", " + args.get(1) + ", " + indexSourceArgument(args.get(0)) + ")";
+      String rawKey = args.get(0);
+      String rawDefault = args.get(1);
+      return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + rewriteReads(rawKey, line, frame) + ", " + rewriteReads(rawDefault, line, frame) + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(OBJECT_FIELD_MAP_GET_CALL, next, match -> {
       String name = match.group(1);
       String field = match.group(2);
       if (!isMapType(frame.typeOf(field))) return match.group(0);
-      String key = match.group(3).trim();
-      return "TraceHooks.readFieldMapAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + key + ", " + indexSourceArgument(key) + ")";
+      String rawKey = match.group(3).trim();
+      String key = rewriteReads(rawKey, line, frame);
+      return "TraceHooks.readFieldMapAtLine(" + line + ", " + quote(name) + ", " + quote(field) + ", " + name + "." + field + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(MAP_CONTAINS_KEY_CALL, next, match -> {
       String name = match.group(1);
       if (!isMapType(frame.typeOf(name))) return match.group(0);
       if (frame.isField(name)) {
-        String key = match.group(2).trim();
-        return "TraceHooks.containsFieldMapKeyAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(key) + ")";
+        String rawKey = match.group(2).trim();
+        String key = rewriteReads(rawKey, line, frame);
+        return "TraceHooks.containsFieldMapKeyAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
       }
-      String key = match.group(2).trim();
-      return "TraceHooks.containsMapKeyAtLine(" + line + ", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(key) + ")";
+      String rawKey = match.group(2).trim();
+      String key = rewriteReads(rawKey, line, frame);
+      return "TraceHooks.containsMapKeyAtLine(" + line + ", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(COLLECTION_CONTAINS_CALL, next, match -> {
       String name = match.group(1);
       if (!isSetType(frame.typeOf(name))) return match.group(0);
-      String key = match.group(2).trim();
-      return "TraceHooks.readSetAtLine(" + line + ", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(key) + ")";
+      String rawKey = match.group(2).trim();
+      String key = rewriteReads(rawKey, line, frame);
+      return "TraceHooks.readSetAtLine(" + line + ", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(MAP_GET_OR_DEFAULT_CALL, next, match -> {
       String name = match.group(1);
       if (!isMapType(frame.typeOf(name))) return match.group(0);
       java.util.List<String> args = splitTopLevel(match.group(2).trim());
       if (args.size() != 2) return match.group(0);
+      String rawKey = args.get(0);
+      String rawDefault = args.get(1);
       if (frame.isField(name)) {
-        return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + args.get(0) + ", " + args.get(1) + ", " + indexSourceArgument(args.get(0)) + ")";
+        return "TraceHooks.readFieldMapOrDefaultAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + rewriteReads(rawKey, line, frame) + ", " + rewriteReads(rawDefault, line, frame) + ", " + indexSourceArgument(rawKey) + ")";
       }
-        return "TraceHooks.readMapOrDefaultAtLine(" + line + ", " + quote(name) + ", " + name + ", " + args.get(0) + ", " + args.get(1) + ", " + indexSourceArgument(args.get(0)) + ")";
+        return "TraceHooks.readMapOrDefaultAtLine(" + line + ", " + quote(name) + ", " + name + ", " + rewriteReads(rawKey, line, frame) + ", " + rewriteReads(rawDefault, line, frame) + ", " + indexSourceArgument(rawKey) + ")";
     });
     next = replaceAll(MAP_GET_CALL, next, match -> {
       String name = match.group(1);
       String receiverType = frame.typeOf(name);
       if (isMapType(receiverType)) {
         if (frame.isField(name)) {
-          String key = match.group(2).trim();
-          return "TraceHooks.readFieldMapAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(key) + ")";
+          String rawKey = match.group(2).trim();
+          String key = rewriteReads(rawKey, line, frame);
+          return "TraceHooks.readFieldMapAtLine(" + line + ", \"this\", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
         }
-        String key = match.group(2).trim();
-        return "TraceHooks.readMapAtLine(" + line + ", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(key) + ")";
+        String rawKey = match.group(2).trim();
+        String key = rewriteReads(rawKey, line, frame);
+        return "TraceHooks.readMapAtLine(" + line + ", " + quote(name) + ", " + name + ", " + key + ", " + indexSourceArgument(rawKey) + ")";
       }
       if (isListType(receiverType)) {
-        String index = match.group(2).trim();
-        return "TraceHooks.readListAtLine(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(index) + ")";
+        String rawIndex = match.group(2).trim();
+        String index = rewriteReads(rawIndex, line, frame);
+        return "TraceHooks.readListAtLine(" + line + ", " + quote(name) + ", " + name + ", " + index + ", " + indexSourceArgument(rawIndex) + ")";
       }
       return match.group(0);
     });
@@ -1029,9 +1098,11 @@ public final class JavaRewriteLibrary {
       if (nextNonWhitespace(matrixReadSource, match.end()) == '[') return full;
       String helper = matrixReadHelper(frame.typeOf(name));
       if (helper == null) return full;
-      String row = match.group(2).trim();
-      String col = match.group(3).trim();
-      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + row + ", " + col + ", " + indexSourceArgument(row) + ", " + indexSourceArgument(col) + ")";
+      String rawRow = match.group(2).trim();
+      String rawCol = match.group(3).trim();
+      String row = rewriteReads(rawRow, line, frame);
+      String col = rewriteReads(rawCol, line, frame);
+      return "TraceHooks." + helper + "(" + line + ", " + quote(name) + ", " + name + ", " + row + ", " + col + ", " + indexSourceArgument(rawRow) + ", " + indexSourceArgument(rawCol) + ")";
     });
     next = rewriteArrayReads(next, line, frame);
     next = replaceAll(QUEUE_REMOVE_CALL, next, match -> {
@@ -1270,6 +1341,7 @@ public final class JavaRewriteLibrary {
         continue;
       }
       String rawIndex = source.substring(bracketStart + 1, bracketEnd).trim();
+      String indexExpression = rewriteReads(rawIndex, line, frame);
       out.append("TraceHooks.")
           .append(helper)
           .append("(")
@@ -1279,7 +1351,7 @@ public final class JavaRewriteLibrary {
           .append(", ")
           .append(name)
           .append(", ")
-          .append(rawIndex)
+          .append(indexExpression)
           .append(", ")
           .append(indexSourceArgument(rawIndex))
           .append(")");
@@ -1642,6 +1714,20 @@ public final class JavaRewriteLibrary {
         "remove".equals(method) || "clear".equals(method) || "poll".equals(method) ||
         "pollFirst".equals(method) || "removeFirst".equals(method) || "set".equals(method) ||
         "pollLast".equals(method) || "removeLast".equals(method) || "pop".equals(method);
+  }
+
+  private static String sequenceAppendWriteHook(int sourceLine, String name, String receiverType, String method, String rawArgs, String callArgs) {
+    java.util.List<String> rawParts = splitTopLevel(rawArgs);
+    if (rawParts.size() != 1 || callArgs.trim().isEmpty()) return "";
+    String normalizedType = receiverType == null ? "" : normalizeJavaType(receiverType);
+    boolean backAppend =
+        ("add".equals(method) && isListType(receiverType)) ||
+        (("push".equals(method) || "offer".equals(method)) && isQueueLikeType(receiverType)) ||
+        (("addLast".equals(method) || "offerLast".equals(method)) && isDequeType(receiverType));
+    boolean frontAppend = ("addFirst".equals(method) || "offerFirst".equals(method)) && isDequeType(receiverType);
+    if (!backAppend && !frontAppend) return "";
+    String index = frontAppend ? "0" : "((" + (normalizedType.contains("List<") ? "java.util.List" : "java.util.Collection") + ") " + name + ").size() - 1";
+    return " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) + ", new Object[] { " + index + " }, " + callArgs + ", null);";
   }
   private static int braceDelta(String line) {
     int delta = 0;

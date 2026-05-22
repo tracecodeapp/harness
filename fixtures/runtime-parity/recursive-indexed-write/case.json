@@ -1,0 +1,93 @@
+{
+  "id": "recursive-indexed-write",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "writeRecursive": {
+      "python": "arr[arr2[1]] = 99",
+      "javascript": "arr[arr2[1]] = 99;",
+      "typescript": "arr[arr2[1]] = 99;",
+      "java": "arr.set(arr2.get(1), 99);",
+      "csharp": "arr[arr2[1]] = 99;",
+      "cpp": "arr[arr2[1]] = 99;"
+    }
+  },
+  "expect": {
+    "writeRecursive": {
+      "eventKinds": ["line", "mutate", "read", "snapshot", "write"],
+      "variableSnapshots": ["arr", "arr2"],
+      "accessTargets": [
+        { "kind": "read", "variable": "arr2", "pathDepth": 1 },
+        { "kind": "write", "variable": "arr", "pathDepth": 1 },
+        { "kind": "mutate", "variable": "arr" }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "python": {
+      "writeRecursive": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["arr", "arr2"],
+        "accessTargets": [
+          { "kind": "read", "variable": "arr2", "pathDepth": 1 },
+          { "kind": "write", "variable": "arr", "pathDepth": 1 }
+        ]
+      }
+    },
+    "javascript": {
+      "writeRecursive": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["arr", "arr2"],
+        "accessTargets": [
+          { "kind": "read", "variable": "arr2", "pathDepth": 1 },
+          { "kind": "write", "variable": "arr", "pathDepth": 1 }
+        ]
+      }
+    },
+    "typescript": {
+      "writeRecursive": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["arr", "arr2"],
+        "accessTargets": [
+          { "kind": "read", "variable": "arr2", "pathDepth": 1 },
+          { "kind": "write", "variable": "arr", "pathDepth": 1 }
+        ]
+      }
+    },
+    "csharp": {
+      "writeRecursive": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["arr", "arr2"],
+        "accessTargets": [
+          { "kind": "read", "variable": "arr2", "pathDepth": 1 },
+          { "kind": "write", "variable": "arr", "pathDepth": 1 }
+        ]
+      }
+    },
+    "cpp": {
+      "writeRecursive": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["arr", "arr2"],
+        "accessTargets": [
+          { "kind": "read", "variable": "arr2", "pathDepth": 1 },
+          { "kind": "write", "variable": "arr", "pathDepth": 1 }
+        ]
+      }
+    }
+  },
+  "expectEventAssertions": {
+    "writeRecursive": [
+      { "kind": "read", "variable": "arr2", "path": [1], "value": 2 },
+      { "kind": "write", "variable": "arr", "path": [2], "value": 99 }
+    ]
+  },
+  "expectEventOrder": {
+    "writeRecursive": [
+      {
+        "before": { "kind": "read", "variable": "arr2", "path": [1], "value": 2 },
+        "after": { "kind": "write", "variable": "arr", "path": [2], "value": 99 }
+      }
+    ]
+  }
+}

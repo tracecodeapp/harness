@@ -11,7 +11,7 @@
       "javascript": "stack[stack.length - 1].items.push(value);",
       "typescript": "stack[stack.length - 1].items.push(value);",
       "java": "stack.peek().items.add(value);",
-      "cpp": "tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"snapshot\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\"},\\\"value\\\":[]}\", tracecode::current_trace_line()); tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"read\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\",\\\"path\\\":[\\\"top\\\",\\\"items\\\"]},\\\"value\\\":[]}\", tracecode::current_trace_line()); stack.back().items.push_back(value); tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\",\\\"path\\\":[\\\"top\\\",\\\"items\\\"]},\\\"method\\\":\\\"append\\\"}\", tracecode::current_trace_line());",
+      "cpp": "tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"snapshot\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\"},\\\"value\\\":[]}\", tracecode::current_trace_line()); tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"read\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\",\\\"path\\\":[\\\"top\\\",\\\"items\\\"]},\\\"value\\\":[]}\", tracecode::current_trace_line()); stack.back().items.push_back(value); tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"mutate\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\",\\\"path\\\":[\\\"top\\\",\\\"items\\\"]},\\\"method\\\":\\\"append\\\"}\", tracecode::current_trace_line()); tracecode::write_trace_event_json(std::string(\"{\\\"kind\\\":\\\"write\\\",\\\"line\\\":\") + std::to_string(tracecode::current_trace_line()) + \",\\\"target\\\":{\\\"variable\\\":\\\"stack\\\",\\\"path\\\":[\\\"top\\\",\\\"items\\\",0]},\\\"value\\\":\" + tracecode::to_json(value) + \"}\", tracecode::current_trace_line());",
       "csharp": "stack[stack.Count - 1].items.Add(value);"
     }
   },
@@ -21,7 +21,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "stack",
@@ -38,6 +39,11 @@
           "kind": "read",
           "variable": "stack",
           "pathDepth": 2
+        },
+        {
+          "kind": "write",
+          "variable": "stack",
+          "pathDepth": 3
         }
       ]
     }
@@ -62,6 +68,12 @@
         "variable": "stack",
         "pathDepth": 2,
         "count": 1
+      },
+      {
+        "kind": "write",
+        "variable": "stack",
+        "pathDepth": 3,
+        "count": 1
       }
     ]
   },
@@ -72,7 +84,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "stack",
@@ -94,6 +107,11 @@
             "kind": "read",
             "variable": "stack",
             "pathDepth": 2
+          },
+          {
+            "kind": "write",
+            "variable": "stack",
+            "pathDepth": 3
           }
         ]
       }
@@ -115,13 +133,19 @@
             "kind": "read",
             "pathDepth": 2,
             "variable": "stack"
+          },
+          {
+            "kind": "write",
+            "variable": "stack",
+            "pathDepth": 3
           }
         ],
         "eventKinds": [
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "stack",
@@ -146,13 +170,19 @@
             "kind": "read",
             "pathDepth": 2,
             "variable": "stack"
+          },
+          {
+            "kind": "write",
+            "variable": "stack",
+            "pathDepth": 3
           }
         ],
         "eventKinds": [
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "stack",
@@ -184,10 +214,22 @@
         {
           "count": 1,
           "kind": "write",
+          "pathDepth": 1,
           "variable": "stack"
         },
         {
-          "count": 2,
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 3,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "variable": "stack"
+        },
+        {
+          "count": 3,
           "kind": "read",
           "pathDepth": 1,
           "variable": "stack"
@@ -211,6 +253,18 @@
           "count": 1,
           "kind": "read",
           "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 3,
           "variable": "stack"
         },
         {
@@ -248,6 +302,18 @@
         {
           "count": 1,
           "kind": "write",
+          "pathDepth": 1,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 3,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
           "variable": "stack"
         }
       ]
@@ -280,6 +346,18 @@
         {
           "count": 1,
           "kind": "write",
+          "pathDepth": 1,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 3,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
           "variable": "stack"
         }
       ]
@@ -301,6 +379,18 @@
           "count": 1,
           "kind": "read",
           "pathDepth": 2,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 1,
+          "variable": "stack"
+        },
+        {
+          "count": 1,
+          "kind": "write",
+          "pathDepth": 3,
           "variable": "stack"
         },
         {

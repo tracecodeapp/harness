@@ -1,0 +1,55 @@
+{
+  "id": "destructured-iteration-bindings",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "languages": ["python", "javascript", "typescript", "csharp", "cpp"],
+  "inputs": {},
+  "anchors": {
+    "loop": {
+      "python": "for course, prereq in prerequisites:",
+      "javascript": "for (const [course, prereq] of prerequisites) {",
+      "typescript": "for (const [course, prereq] of prerequisites) {",
+      "csharp": "foreach (var (course, prereq) in prerequisites) {",
+      "cpp": "for (auto [course, prereq] : prerequisites) {"
+    }
+  },
+  "expect": {
+    "loop": {
+      "eventKinds": ["line", "read", "snapshot"],
+      "variableSnapshots": ["course", "prereq", "prerequisites", "total"],
+      "accessTargets": [
+        { "kind": "read", "variable": "prerequisites", "pathDepth": 1 },
+        { "kind": "read", "variable": "prerequisites", "pathDepth": 2 }
+      ]
+    }
+  },
+  "expectByLanguage": {
+    "csharp": {
+      "loop": {
+        "eventKinds": ["line", "read", "snapshot", "write"],
+        "variableSnapshots": ["course", "prereq", "prerequisites", "total"],
+        "accessTargets": [
+          { "kind": "read", "variable": "prerequisites", "pathDepth": 2 },
+          { "kind": "write", "variable": "course" },
+          { "kind": "write", "variable": "prereq" }
+        ]
+      }
+    },
+    "cpp": {
+      "loop": {
+        "eventKinds": ["line", "read", "snapshot"],
+        "variableSnapshots": ["prerequisites", "total"],
+        "accessTargets": [
+          { "kind": "read", "variable": "prerequisites", "pathDepth": 1 },
+          { "kind": "read", "variable": "prerequisites", "pathDepth": 2 }
+        ]
+      }
+    }
+  },
+  "expectEventAssertions": {
+    "loop": [
+      { "kind": "read", "variable": "prerequisites", "path": [0, 0], "bindingVariable": "course", "value": 1 },
+      { "kind": "read", "variable": "prerequisites", "path": [0, 1], "bindingVariable": "prereq", "value": 0 }
+    ]
+  }
+}

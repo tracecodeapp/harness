@@ -610,6 +610,7 @@
     let cursor = 0;
     let match;
     while ((match = callPattern.exec(source)) !== null) {
+      if (isInsideJavaStringLiteral(source, match.index)) continue;
       const argsStart = match.index + match[0].length;
       let depth = 1;
       let index = argsStart;
@@ -812,7 +813,7 @@
           nextLine = nextLine.replace(indexedAddPattern, (_match, indexSource, valueSource) => {
             const indexExpression = String(indexSource).trim();
             const value = String(valueSource).trim();
-            return `{ TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}, ${indexSourceArgument(indexExpression)}).add(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add", ${indexSourceArgument(indexExpression)}, ${value}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
+            return `{ java.util.List __tracecodeTarget = TraceHooks.readObjectListAtLine(${lineNumber}, "${name}", ${name}, ${indexExpression}, ${indexSourceArgument(indexExpression)}); __tracecodeTarget.add(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${indexExpression}, "add", ${indexSourceArgument(indexExpression)}, ${value}); TraceHooks.emitIndexedWriteAtLine(${lineNumber}, "${name}", new Object[] { ${indexExpression}, __tracecodeTarget.size() - 1 }, ${value}, ${indexSourceArgument(indexExpression)}, null); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
 
           const listGetPattern = new RegExp(`\\b${escapeRegExp(name)}\\.get\\(([^()\\n;]+)\\)`, 'g');
@@ -832,7 +833,7 @@
             const method = String(methodSource).trim();
             const value = String(valueSource).trim();
             const target = `((java.util.Collection) (${name}).get(${keyExpression}))`;
-            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyExpression}) + "]${escapedIndexSourcesTargetSegment(keyExpression)}},\\"value\\":null}"); ${target}.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}", ${indexSourceArgument(keyExpression)}, ${value}); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
+            return `{ TraceHooks.emit("trace:{\\"kind\\":\\"read\\",\\"line\\":${lineNumber},\\"target\\":{\\"variable\\":\\"${name}\\",\\"path\\":[" + TraceHooks.serializeResult(${keyExpression}) + "]${escapedIndexSourcesTargetSegment(keyExpression)}},\\"value\\":null}"); java.util.Collection __tracecodeTarget = ${target}; __tracecodeTarget.${method}(${value}); TraceHooks.emitMutatingCallAtLine(${lineNumber}, "${name}", ${keyExpression}, "${method}", ${indexSourceArgument(keyExpression)}, ${value}); if (__tracecodeTarget instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(${lineNumber}, "${name}", new Object[] { ${keyExpression}, ((java.util.List) __tracecodeTarget).size() - 1 }, ${value}, ${indexSourceArgument(keyExpression)}, null); TraceHooks.emitRuntimeSnapshotAtLine(${lineNumber}, "${name}", ${name}); }`;
           });
           nextLine = replaceJavaReceiverCall(nextLine, name, 'containsKey', (key) =>
             `TraceHooks.containsMapKeyAtLine(${lineNumber}, "${name}", ${name}, ${key}, ${indexSourceArgument(key)})`
@@ -880,6 +881,18 @@
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'offer', (valueSource) =>
             `TraceHooks.offerQueueAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'addLast', (valueSource) =>
+            `TraceHooks.addDequeLastAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'offerLast', (valueSource) =>
+            `TraceHooks.offerDequeLastAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'addFirst', (valueSource) =>
+            `TraceHooks.addDequeFirstAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'offerFirst', (valueSource) =>
+            `TraceHooks.offerDequeFirstAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'remove', (indexSource) => {
             if (currentMethod.queues.has(name) && String(indexSource).trim() === '') {

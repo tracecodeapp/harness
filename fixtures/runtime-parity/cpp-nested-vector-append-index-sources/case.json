@@ -17,7 +17,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "adj",
@@ -40,6 +41,11 @@
           "kind": "read",
           "variable": "e",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "adj",
+          "pathDepth": 2
         }
       ]
     }
@@ -96,6 +102,20 @@
         "args": [
           2
         ]
+      },
+      {
+        "kind": "write",
+        "variable": "adj",
+        "path": [
+          1,
+          0
+        ],
+        "pathDepth": 2,
+        "indexSources": [
+          "e[0]",
+          null
+        ],
+        "value": 2
       }
     ]
   }

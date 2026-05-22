@@ -126,6 +126,21 @@ Examples:
   `path:[0, "length"]`, because the string length is metadata on the indexed
   receiver element
 
+Runtime access effects should be recursive through the executed expression. If
+a read is used to compute another access target or a mutation argument, that
+read is still part of the raw runtime contract:
+
+- `arr[arr[2]] = value` emits a `read` for `arr[2]`, then a `write` to
+  `arr[valueOf(arr[2])]`
+- `arr.set(arr2.get(1), value)` emits a `read` for `arr2[1]`, then a `write`
+  to `arr[valueOf(arr2.get(1))]`
+- `arr.get(arr2.get(1))` emits a `read` for `arr2[1]`, then a `read` for
+  `arr[valueOf(arr2.get(1))]`
+- `grid[rows[i]][cols[j]] = value` emits reads for `rows[i]` and `cols[j]`,
+  then a write to `grid[rowValue][colValue]`
+- `out.append(nums[i])` emits a `read` for `nums[i]`, a `mutate` for the
+  append call, and a concrete `write` to the inserted `out` cell
+
 Access event values must be captured at the moment the access is observed.
 They must not be reconstructed later from post-line snapshots, because the
 same source line may mutate the receiver after the read. For example,
@@ -175,6 +190,25 @@ that path and any available source-expression provenance for the path. A keyed
 map put should also emit the corresponding `write` fact for the key when the
 runtime can observe it.
 
+Append-like sequence mutations must emit both levels of truth:
+
+- the source-level `mutate` call, preserving method name and evaluated args
+- the concrete inserted-cell `write`, preserving the final receiver path and
+  available source-expression provenance
+
+Examples:
+
+- `out.append(value)` / `out.push(value)` / `out.Add(value)` /
+  `out.push_back(value)` => `mutate target:out args:[value]` and
+  `write target:out path:[insertedIndex] value`
+- `graph[i].append(j)` / `graph[i].push(j)` / `graph[i].Add(j)` /
+  `graph[i].push_back(j)` => `mutate target:graph path:[iValue]
+  indexSources:["i"] args:[jValue]` and `write target:graph
+  path:[iValue, insertedIndex] indexSources:["i", null] value:jValue`
+- `queue.push(value)` / `queue.Enqueue(value)` should similarly expose the
+  inserted position when the runtime wrapper can observe a sequence-like queue
+  backing store
+
 Mutation `args` should be the source-level method arguments in order after
 runtime evaluation. For keyed writes this means key and value, not value alone:
 
@@ -221,9 +255,9 @@ The binding event is a `read` from the iterated collection with:
 - `target.variable`: source collection variable
 - `target.path`: concrete element position or key when available
 - `binding.kind`: `iteration`
-- `binding.variable`: loop binding variable. For destructuring bindings, use a
-  stable comma-separated list of bound source names, for example
-  `course,prereq` for `for (const [course, prereq] of prerequisites)`.
+- `binding.variable`: loop binding variable. For destructuring bindings, each
+  observable destructured slot must also emit its own binding read with the
+  slot's variable name.
 - `value`: concrete element value
 
 Example:
@@ -256,6 +290,18 @@ Iteration bindings should also emit scalar state for the produced binding on
 the same header line. A consumer should not need to infer `account = accounts[0]`
 only from binding metadata; it should see both the collection read and a
 same-line `write` for `account` with the same value.
+
+Destructuring iteration is not satisfied by only emitting the whole produced
+element. If the source element is indexable or tuple-like, the harness should
+emit per-slot component reads. For example, Python
+`for course, prereq in prerequisites:` and JavaScript
+`for (const [course, prereq] of prerequisites)` should expose both
+`prerequisites[path:[k,0]]` with
+`binding:{kind:"iteration",variable:"course"}` and
+`prerequisites[path:[k,1]]` with
+`binding:{kind:"iteration",variable:"prereq"}`. A whole-element read from
+`prerequisites[path:[k]]` may also be emitted for context, but it does not
+replace the per-slot reads.
 
 C++ range-for syntax with qualified reference types is included in this rule.
 For example, `for (const std::string& s : strs)` must emit an iteration read
@@ -445,11 +491,12 @@ event stream already carries a frame identifier.
 
 Collection-backed loop bindings should emit provenance for the source element
 that produced the loop variable. This applies to simple and destructuring
-targets. For example, Python `for u, v, w in edges:` should emit an
-iteration-binding read from `edges[path:[k]]` with
-`binding:{kind:"iteration", variable:"u,v,w"}` and the concrete triple value.
-The scalar writes to `u`, `v`, and `w` are useful state evidence, but they do
-not replace source-element provenance.
+targets. For example, Python `for u, v, w in edges:` should emit per-slot
+iteration-binding reads from `edges[path:[k,0]]`, `edges[path:[k,1]]`, and
+`edges[path:[k,2]]` with `binding.variable` set to `u`, `v`, and `w`
+respectively. A whole-element read from `edges[path:[k]]` may also be emitted
+for context. The scalar writes to `u`, `v`, and `w` are useful state evidence,
+but they do not replace source-element provenance.
 
 ## Destructuring Writes
 

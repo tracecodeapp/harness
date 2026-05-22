@@ -2329,6 +2329,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
         );
+        if (string.Equals(method, "Add", StringComparison.Ordinal) && invocation.ArgumentList.Arguments.Count == 1)
+        {
+            string value = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, new object?[] {{ ((System.Collections.ICollection){variable}).Count - 1 }}, {value}, {line});"
+            );
+        }
     }
 
     private IEnumerable<StatementSyntax> CreateIdentifierReceiverMutationStatements(StatementSyntax statement, int line)
@@ -2350,6 +2357,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         string argument = invocation.ArgumentList.Arguments[0].Expression.ToString();
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal("Add")}, new object?[] {{ {argument} }}, {line});"
+        );
+        yield return TraceStatement(
+            $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, new object?[] {{ ((System.Collections.ICollection){variable}).Count - 1 }}, {argument}, {line});"
         );
     }
 
@@ -2377,6 +2387,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {index}, {Literal(method)}, new object?[] {{ {args} }}, {line}, {indexSourcesExpression});"
         );
+        if (string.Equals(method, "Add", StringComparison.Ordinal) && invocation.ArgumentList.Arguments.Count == 1)
+        {
+            string value = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, new object?[] {{ {index}, ((System.Collections.ICollection){variable}[{index}]).Count - 1 }}, {value}, {line}, new string?[] {{ {CreateIndexSourceLiteral(index)}, null }});"
+            );
+        }
     }
 
     private IEnumerable<StatementSyntax> CreateMemberReceiverMutationStatements(StatementSyntax statement, int line)
@@ -2405,6 +2422,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {pathExpression}, {Literal(method)}, new object?[] {{ {args} }}, {line});"
         );
+        if (string.Equals(method, "Add", StringComparison.Ordinal) && invocation.ArgumentList.Arguments.Count == 1)
+        {
+            string value = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            string writePathExpression = CreateObjectArrayExpression(path, $"((System.Collections.ICollection){receiver}).Count - 1");
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, {writePathExpression}, {value}, {line});"
+            );
+        }
     }
 
     private IEnumerable<StatementSyntax> CreateFieldIndexedReceiverMutationStatements(StatementSyntax statement, int line)
@@ -2427,6 +2452,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {pathExpression}, {Literal("Add")}, new object?[] {{ {args} }}, {line});"
         );
+        if (invocation.ArgumentList.Arguments.Count == 1)
+        {
+            string value = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            string writePathExpression = CreateObjectArrayExpression(path, index, $"((System.Collections.ICollection){receiver}).Count - 1");
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, {writePathExpression}, {value}, {line});"
+            );
+        }
     }
 
     private IEnumerable<StatementSyntax> CreateIndexedFieldReceiverMutationStatements(StatementSyntax statement, int line)
@@ -2454,6 +2487,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {pathExpression}, {Literal("Add")}, new object?[] {{ {args} }}, {line});"
         );
+        if (invocation.ArgumentList.Arguments.Count == 1)
+        {
+            string value = invocation.ArgumentList.Arguments[0].Expression.ToString();
+            string writePathExpression = $"new object?[] {{ {index}, {Literal(field)}, ((System.Collections.ICollection){receiverField}).Count - 1 }}";
+            yield return TraceStatement(
+                $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite({Literal(variable)}, {writePathExpression}, {value}, {line});"
+            );
+        }
     }
 
     private IEnumerable<StatementSyntax> CreateStringBuilderMutationStatements(StatementSyntax statement, int line)

@@ -1,0 +1,42 @@
+{
+  "id": "recursive-indexed-read",
+  "functionName": "solve",
+  "executionStyle": "function",
+  "inputs": {},
+  "anchors": {
+    "readRecursive": {
+      "python": "value = arr[arr2[1]]",
+      "javascript": "const value = arr[arr2[1]];",
+      "typescript": "const value = arr[arr2[1]];",
+      "java": "int value = arr.get(arr2.get(1));",
+      "csharp": "int value = arr[arr2[1]];",
+      "cpp": "int value = arr[arr2[1]];"
+    }
+  },
+  "expect": {
+    "readRecursive": {
+      "eventKinds": ["line", "read", "snapshot", "write"],
+      "variableSnapshots": ["arr", "arr2", "value"],
+      "accessTargets": [
+        { "kind": "read", "variable": "arr", "pathDepth": 1 },
+        { "kind": "read", "variable": "arr2", "pathDepth": 1 },
+        { "kind": "write", "variable": "value" }
+      ]
+    }
+  },
+  "expectEventAssertions": {
+    "readRecursive": [
+      { "kind": "read", "variable": "arr2", "path": [1], "value": 2 },
+      { "kind": "read", "variable": "arr", "path": [2], "value": 30 },
+      { "kind": "write", "variable": "value", "value": 30 }
+    ]
+  },
+  "expectEventOrder": {
+    "readRecursive": [
+      {
+        "before": { "kind": "read", "variable": "arr2", "path": [1], "value": 2 },
+        "after": { "kind": "read", "variable": "arr", "path": [2], "value": 30 }
+      }
+    ]
+  }
+}

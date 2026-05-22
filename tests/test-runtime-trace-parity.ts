@@ -98,18 +98,23 @@ function runListAppendParity(): void {
     { kind: 'line', line: 3, function: 'solve' },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [1] },
     { kind: 'mutate', line: 3, target: { variable: 'out' }, method: 'append' },
+    { kind: 'write', line: 3, target: { variable: 'out', path: [0] }, value: 1 },
   ] satisfies Array<Omit<RuntimeTraceEvent, 'runId'>>;
   const javaEvents = [
     { kind: 'line', line: 3, function: 'solve' },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [] },
     { kind: 'mutate', line: 3, target: { variable: 'out' }, method: 'append' },
+    { kind: 'write', line: 3, target: { variable: 'out', path: [0] }, value: 1 },
     { kind: 'snapshot', line: 3, target: { variable: 'out' }, value: [1] },
   ] satisfies Array<Omit<RuntimeTraceEvent, 'runId'>>;
   assertParity('list-append', { python: trace('python', common), javascript: trace('javascript', common), typescript: trace('typescript', common), java: javaTrace(javaEvents) }, {
     lineSequence: [3],
-    eventKindsByLine: { 3: ['line', 'mutate', 'snapshot'] },
+    eventKindsByLine: { 3: ['line', 'mutate', 'snapshot', 'write'] },
     variableSnapshotsByLine: { 3: ['out'] },
-    accessTargetsByLine: { 3: [{ kind: 'mutate', variable: 'out', pathDepth: undefined }] },
+    accessTargetsByLine: { 3: [
+      { kind: 'mutate', variable: 'out', pathDepth: undefined },
+      { kind: 'write', variable: 'out', pathDepth: 1 },
+    ] },
     callReturnShape: [],
   });
 }

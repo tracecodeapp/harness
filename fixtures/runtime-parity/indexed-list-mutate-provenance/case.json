@@ -19,7 +19,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "graph",
@@ -36,6 +37,11 @@
           "kind": "read",
           "variable": "graph",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "pathDepth": 2
         }
       ]
     }
@@ -52,6 +58,19 @@
         "args": [
           7
         ]
+      },
+      {
+        "kind": "write",
+        "variable": "graph",
+        "path": [
+          1,
+          0
+        ],
+        "indexSources": [
+          "i",
+          null
+        ],
+        "value": 7
       }
     ]
   },
@@ -69,6 +88,19 @@
           "args": [
             7
           ]
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "path": [
+            1,
+            0
+          ],
+          "indexSources": [
+            "i",
+            null
+          ],
+          "value": 7
         }
       ]
     },
@@ -85,6 +117,19 @@
           "args": [
             7
           ]
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "path": [
+            1,
+            0
+          ],
+          "indexSources": [
+            "i",
+            null
+          ],
+          "value": 7
         }
       ]
     },
@@ -101,6 +146,19 @@
           "args": [
             7
           ]
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "path": [
+            1,
+            0
+          ],
+          "indexSources": [
+            "i",
+            null
+          ],
+          "value": 7
         }
       ]
     },
@@ -117,6 +175,19 @@
           "args": [
             7
           ]
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "path": [
+            1,
+            0
+          ],
+          "indexSources": [
+            "i",
+            null
+          ],
+          "value": 7
         }
       ]
     },
@@ -133,6 +204,19 @@
           "args": [
             7
           ]
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "path": [
+            1,
+            0
+          ],
+          "indexSources": [
+            "i",
+            null
+          ],
+          "value": 7
         }
       ]
     },
@@ -149,6 +233,19 @@
           "args": [
             7
           ]
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "path": [
+            1,
+            0
+          ],
+          "indexSources": [
+            "i",
+            null
+          ],
+          "value": 7
         }
       ]
     }

@@ -19,7 +19,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "graph"
@@ -35,6 +36,11 @@
           "kind": "read",
           "variable": "graph",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "pathDepth": 2
         }
       ]
     }

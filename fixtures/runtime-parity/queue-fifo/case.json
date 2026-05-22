@@ -31,7 +31,8 @@
       "eventKinds": [
         "line",
         "mutate",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "num",
@@ -43,6 +44,11 @@
           "kind": "mutate",
           "variable": "queue",
           "method": "append"
+        },
+        {
+          "kind": "write",
+          "variable": "queue",
+          "pathDepth": 1
         }
       ]
     },
@@ -66,15 +72,23 @@
     }
   },
   "expectEventAssertions": {
-    "append": [
-      {
-        "kind": "mutate",
-        "variable": "queue",
-        "args": [
-          1
-        ]
-      }
-    ]
+      "append": [
+        {
+          "kind": "mutate",
+          "variable": "queue",
+          "args": [
+            1
+          ]
+        },
+        {
+          "kind": "write",
+          "variable": "queue",
+          "path": [
+            0
+          ],
+          "value": 1
+        }
+      ]
   },
   "expectByLanguage": {
     "python": {
@@ -110,12 +124,18 @@
           {
             "kind": "mutate",
             "variable": "queue"
+          },
+          {
+            "kind": "write",
+            "pathDepth": 1,
+            "variable": "queue"
           }
         ],
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "num",
@@ -209,7 +229,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "num",
@@ -221,6 +242,11 @@
             "kind": "mutate",
             "variable": "queue",
             "method": "append"
+          },
+          {
+            "kind": "write",
+            "variable": "queue",
+            "pathDepth": 1
           }
         ]
       },

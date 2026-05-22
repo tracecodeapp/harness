@@ -23,7 +23,8 @@
       "eventKinds": [
         "line",
         "mutate",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "num",
@@ -35,6 +36,11 @@
           "kind": "mutate",
           "variable": "out",
           "method": "append"
+        },
+        {
+          "kind": "write",
+          "variable": "out",
+          "pathDepth": 1
         }
       ]
     }
@@ -46,6 +52,14 @@
         "args": [
           1
         ]
+      },
+      {
+        "kind": "write",
+        "variable": "out",
+        "path": [
+          0
+        ],
+        "value": 1
       }
     ]
   },
@@ -55,7 +69,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "num",
@@ -67,9 +82,28 @@
             "kind": "mutate",
             "variable": "outList",
             "method": "append"
+          },
+          {
+            "kind": "write",
+            "variable": "outList",
+            "pathDepth": 1
           }
         ]
       }
+    }
+  },
+  "expectEventAssertionsByLanguage": {
+    "csharp": {
+      "append": [
+        {
+          "kind": "write",
+          "variable": "outList",
+          "path": [
+            0
+          ],
+          "value": 1
+        }
+      ]
     }
   }
 }

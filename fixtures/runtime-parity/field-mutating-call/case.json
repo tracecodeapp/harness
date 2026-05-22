@@ -30,7 +30,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "this",
@@ -47,6 +48,11 @@
           "kind": "read",
           "variable": "this",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "this",
+          "pathDepth": 2
         }
       ]
     }
@@ -58,7 +64,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "self",
@@ -75,6 +82,11 @@
             "kind": "read",
             "variable": "self",
             "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "self",
+            "pathDepth": 2
           }
         ]
       }
@@ -85,7 +97,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "items",
@@ -100,6 +113,11 @@
           {
             "kind": "read",
             "variable": "items"
+          },
+          {
+            "kind": "write",
+            "variable": "items",
+            "pathDepth": 1
           }
         ]
       }
@@ -110,7 +128,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "value"
@@ -126,6 +145,11 @@
             "kind": "read",
             "variable": "this",
             "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "this",
+            "pathDepth": 2
           }
         ]
       }

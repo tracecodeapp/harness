@@ -144,6 +144,16 @@ public final class TraceHooks {
     emitTraceWrite(line, name, "[" + serializeResult(row) + "," + serializeResult(col) + "]", value, indexSourcesJson(rowSource, colSource));
   }
 
+  public static void emitIndexedWriteAtLine(int line, String name, Object[] path, Object value, String... indexSources) {
+    StringBuilder pathJson = new StringBuilder("[");
+    for (int index = 0; index < path.length; index++) {
+      if (index > 0) pathJson.append(",");
+      pathJson.append(serializeResult(path[index]));
+    }
+    pathJson.append("]");
+    emitTraceWrite(line, name, pathJson.toString(), value, indexSourcesJson(indexSources));
+  }
+
   public static void fillArrayAtLine(int line, String name, int[] values, int value) {
     java.util.Arrays.fill(values, value);
     emitTraceMutate(line, name, null, "fill", null, "[" + serializeResult(value) + "]");
@@ -997,6 +1007,43 @@ public final class TraceHooks {
   public static <T> boolean offerQueueAtLine(int line, String name, java.util.Queue<T> values, T value) {
     boolean changed = values.offer(value);
     emitTraceMutate(line, name, null, "offer", null, "[" + serializeResult(value) + "]");
+    if (changed) {
+      emitTraceWrite(line, name, "[" + serializeResult(values.size() - 1) + "]", value);
+    }
+    emitRuntimeSnapshotAtLine(line, name, values);
+    return changed;
+  }
+
+  public static <T> void addDequeLastAtLine(int line, String name, java.util.Deque<T> values, T value) {
+    values.addLast(value);
+    emitTraceMutate(line, name, null, "addLast", null, "[" + serializeResult(value) + "]");
+    emitTraceWrite(line, name, "[" + serializeResult(values.size() - 1) + "]", value);
+    emitRuntimeSnapshotAtLine(line, name, values);
+  }
+
+  public static <T> boolean offerDequeLastAtLine(int line, String name, java.util.Deque<T> values, T value) {
+    boolean changed = values.offerLast(value);
+    emitTraceMutate(line, name, null, "offerLast", null, "[" + serializeResult(value) + "]");
+    if (changed) {
+      emitTraceWrite(line, name, "[" + serializeResult(values.size() - 1) + "]", value);
+    }
+    emitRuntimeSnapshotAtLine(line, name, values);
+    return changed;
+  }
+
+  public static <T> void addDequeFirstAtLine(int line, String name, java.util.Deque<T> values, T value) {
+    values.addFirst(value);
+    emitTraceMutate(line, name, null, "addFirst", null, "[" + serializeResult(value) + "]");
+    emitTraceWrite(line, name, "[0]", value);
+    emitRuntimeSnapshotAtLine(line, name, values);
+  }
+
+  public static <T> boolean offerDequeFirstAtLine(int line, String name, java.util.Deque<T> values, T value) {
+    boolean changed = values.offerFirst(value);
+    emitTraceMutate(line, name, null, "offerFirst", null, "[" + serializeResult(value) + "]");
+    if (changed) {
+      emitTraceWrite(line, name, "[0]", value);
+    }
     emitRuntimeSnapshotAtLine(line, name, values);
     return changed;
   }

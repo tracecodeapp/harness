@@ -20,7 +20,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "current",
@@ -34,6 +35,11 @@
         {
           "kind": "read",
           "variable": "nums",
+          "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "current",
           "pathDepth": 1
         }
       ]
@@ -65,6 +71,14 @@
         "args": [
           1
         ]
+      },
+      {
+        "kind": "write",
+        "variable": "current",
+        "path": [
+          0
+        ],
+        "value": 1
       }
     ],
     "pop": [
@@ -92,6 +106,12 @@
       {
         "kind": "write",
         "variable": "current",
+        "count": 1
+      },
+      {
+        "kind": "write",
+        "variable": "current",
+        "pathDepth": 1,
         "count": 1
       },
       {

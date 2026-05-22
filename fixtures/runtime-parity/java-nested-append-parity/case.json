@@ -29,7 +29,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "graph",
@@ -46,6 +47,11 @@
           "kind": "read",
           "variable": "graph",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "graph",
+          "pathDepth": 2
         }
       ]
     },
@@ -54,7 +60,8 @@
         "line",
         "mutate",
         "read",
-        "snapshot"
+        "snapshot",
+        "write"
       ],
       "variableSnapshots": [
         "bucket",
@@ -72,6 +79,11 @@
           "kind": "read",
           "variable": "bucket",
           "pathDepth": 1
+        },
+        {
+          "kind": "write",
+          "variable": "bucket",
+          "pathDepth": 2
         }
       ]
     }
@@ -82,7 +94,8 @@
         "eventKinds": [
           "line",
           "mutate",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "bucket",
@@ -95,6 +108,11 @@
             "variable": "bucket",
             "method": "append",
             "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "bucket",
+            "pathDepth": 2
           }
         ]
       },
@@ -103,7 +121,8 @@
           "line",
           "mutate",
           "read",
-          "snapshot"
+          "snapshot",
+          "write"
         ],
         "variableSnapshots": [
           "graph",
@@ -120,6 +139,11 @@
             "kind": "read",
             "variable": "graph",
             "pathDepth": 1
+          },
+          {
+            "kind": "write",
+            "variable": "graph",
+            "pathDepth": 2
           }
         ]
       }

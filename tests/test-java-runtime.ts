@@ -5612,14 +5612,25 @@ class Solution {
 
     assertCondition(graphExecute.success === true, 'Java graph adjacency execution should succeed');
     const graphSource = latestSourceContaining(harness.stringFiles, 'TraceHooks.emitCallAtLine(4, "buildGraph"');
+    const graphHasAugmentedIndexedAppend =
+      graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, 0, null)') &&
+      graphSource.includes('__tracecodeTarget.add(1);') &&
+      graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", 0, "add", null, 1);') &&
+      graphSource.includes('TraceHooks.emitIndexedWriteAtLine(7, "graph", new Object[] { 0, __tracecodeTarget.size() - 1 }, 1, null, null);');
+    const graphHasNativeIndexedAppend =
+      graphSource.includes('var __tracecodeIndexedTarget7 =') &&
+      graphSource.includes('__tracecodeIndexedTarget7.add(1);') &&
+      graphSource.includes('\\"kind\\":\\"mutate\\",\\"line\\":7') &&
+      graphSource.includes('TraceHooks.emitIndexedWriteAtLine(7, "graph", new Object[] { 0, ((java.util.List) __tracecodeIndexedTarget7).size() - 1 }, 1, null, null);');
     assertCondition(
-      graphSource.includes('TraceHooks.readObjectListAtLine(7, "graph", graph, 0, null).add(1);') &&
-        graphSource.includes('TraceHooks.emitMutatingCallAtLine(7, "graph", 0, "add", null, 1);') &&
+      (graphHasAugmentedIndexedAppend || graphHasNativeIndexedAppend) &&
         !graphSource.includes('emit' + 'Graph' + 'AdjacencyStateAtLine'),
-      'Java worker should rewrite indexed adjacency mutations with receiver indices without semantic graph state'
+      'Java worker should rewrite indexed adjacency mutations with receiver indices and inserted-cell writes without semantic graph state'
     );
     assertCondition(
-      graphSource.includes('for (int v : TraceHooks.iterationBindAtLine(11, "graph", u, TraceHooks.readObjectListAtLine(11, "graph", graph, u, "u"), "v", "u"))'),
+      graphSource.includes('for (int v : TraceHooks.iterationBindAtLine(11, "graph", u,') &&
+        (graphSource.includes('TraceHooks.readObjectListAtLine(11, "graph", graph, u, "u")') ||
+          graphSource.includes('TraceHooks.readListAtLine(11, "graph", graph, u, "u")')),
       'Java worker should rewrite adjacency traversal graph.get(u) reads with iteration binding provenance'
     );
     assertCondition(JSON.stringify(graphExecute.output) === JSON.stringify([0, 1, 2]), 'Java graph adjacency output should serialize result');
