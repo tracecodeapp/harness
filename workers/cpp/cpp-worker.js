@@ -5259,8 +5259,15 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     const activeSignature = activeFrame?.signature || null;
     const skipActiveInstrumentation = Boolean(activeSignature?.skipInstrumentation);
     const activeClassName = classStack.at(-1)?.name || null;
-    const localClassDeclarationLine = Boolean(activeFrame) && /\b(?:class|struct)\s+[A-Za-z_]\w*\b/.test(stripCppStringsAndComments(line));
-    const insideLocalClassDeclaration = Boolean(activeFrame) && (classStack.some((entry) => entry.local) || localClassDeclarationLine);
+    const scriptWrapperFrame = activeSignature?.name === CPP_SCRIPT_FUNCTION_NAME;
+    const classDeclarationLine = Boolean(activeFrame) && /\b(?:class|struct)\s+[A-Za-z_]\w*\b/.test(stripCppStringsAndComments(line));
+    const localClassDeclarationLine = classDeclarationLine && !scriptWrapperFrame;
+    const scriptWrapperClassScope = scriptWrapperFrame && (classDeclarationLine || classStack.some((entry) => entry.scriptWrapperLocal));
+    const insideLocalClassDeclaration = Boolean(activeFrame) && (
+      classStack.some((entry) => entry.local) ||
+      localClassDeclarationLine ||
+      scriptWrapperClassScope
+    );
     if (!pendingSignature && nextSignatureIndex < signatures.length && lineNumber >= signatures[nextSignatureIndex].line) {
       pendingSignature = signatures[nextSignatureIndex];
       nextSignatureIndex += 1;
@@ -5638,7 +5645,12 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     const classDecl = stripCppStringsAndComments(line).match(/\b(?:class|struct)\s+([A-Za-z_]\w*)\b/);
     const classDelta = braceDeltaForLine(line);
     if (classDecl && classDelta > 0) {
-      classStack.push({ name: classDecl[1], depth: classDelta, local: Boolean(activeFrame) });
+      classStack.push({
+        name: classDecl[1],
+        depth: classDelta,
+        local: Boolean(activeFrame) && activeSignature?.name !== CPP_SCRIPT_FUNCTION_NAME,
+        scriptWrapperLocal: Boolean(activeFrame) && activeSignature?.name === CPP_SCRIPT_FUNCTION_NAME,
+      });
     } else if (classStack.length > 0) {
       classStack[classStack.length - 1].depth += classDelta;
       while (classStack.length > 0 && classStack[classStack.length - 1].depth <= 0) {
@@ -5998,6 +6010,23 @@ function normalizeRuntimeTraceEventTargetDepth(event, maxPathDepth) {
   return { ...event, target: nextTarget };
 }
 
+function isCppSyntheticHelperFunctionName(name) {
+  return typeof name === 'string' && /^tracecode[A-Z]/.test(name);
+}
+
+function stripCppSyntheticHelperFrames(event) {
+  if (!event || typeof event !== 'object' || !Array.isArray(event.callStack)) return event;
+  const callStack = event.callStack.filter((frame) => !isCppSyntheticHelperFunctionName(frame?.function));
+  return callStack.length === event.callStack.length ? event : { ...event, callStack };
+}
+
+function isDroppableCppSyntheticHelperEvent(event) {
+  return (
+    isCppSyntheticHelperFunctionName(event?.function) &&
+    (event.kind === 'call' || event.kind === 'line' || event.kind === 'return')
+  );
+}
+
 function finalizeRuntimeTrace(events, options = {}) {
   const runId = options.runId || 'cpp:run';
   const file = options.file || CPP_USER_SOURCE_FILE;
@@ -6007,14 +6036,16 @@ function finalizeRuntimeTrace(events, options = {}) {
     : Number.isFinite(options.maxTraceSteps)
       ? Number(options.maxTraceSteps)
       : DEFAULT_MAX_STORED_EVENTS;
-  const normalizedEvents = enrichCppRuntimeTraceCallStacks(events).map((event) => {
+  const normalizedEvents = enrichCppRuntimeTraceCallStacks(events).flatMap((event) => {
     const activeFunction = Array.isArray(event.callStack) ? event.callStack[event.callStack.length - 1]?.function : undefined;
-    return normalizeRuntimeTraceEventTargetDepth({
+    const normalized = stripCppSyntheticHelperFrames({
       ...event,
       ...(event.kind === 'line' && !event.function && activeFunction ? { function: activeFunction } : {}),
       runId,
       file,
-    }, maxPathDepth);
+    });
+    if (isDroppableCppSyntheticHelperEvent(normalized)) return [];
+    return [normalizeRuntimeTraceEventTargetDepth(normalized, maxPathDepth)];
   });
   const traceLimitExceeded = maxEvents !== undefined && normalizedEvents.length > maxEvents;
   let storedEvents = traceLimitExceeded ? normalizedEvents.slice(0, Math.max(0, maxEvents)) : normalizedEvents;

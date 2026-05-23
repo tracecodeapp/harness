@@ -49,7 +49,7 @@ function generateTracingCode(deps, userCode, functionName, inputs, executionStyl
   
   // Configurable limits
   const maxTraceSteps = options.maxTraceSteps || 2000;
-  const maxStoredEvents = options.maxStoredEvents || maxTraceSteps;
+  const maxStoredEvents = options.maxStoredEvents || Math.max(maxTraceSteps * 10, maxTraceSteps);
   const effectiveMaxTraceSteps = Math.min(maxTraceSteps, maxStoredEvents);
   const maxLineEvents = options.maxLineEvents || 10000;
   const maxSingleLineHits = options.maxSingleLineHits || 500;

@@ -1632,6 +1632,85 @@ function smallest(nums: number[]): number {
   );
   console.log('PASS: execute-with-tracing ops-class methods snapshot receiver state');
 
+  const executeJavaScriptOpsClassMapSizeTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `class LRUCache {
+  constructor(capacity) {
+    this.capacity = capacity;
+    this.cache = new Map();
+    this.head = {};
+    this.tail = {};
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+  }
+
+  _remove(node) {
+    const prevNode = node.prev;
+    const nextNode = node.next;
+    prevNode.next = nextNode;
+    nextNode.prev = prevNode;
+  }
+
+  _addToFront(node) {
+    node.prev = this.head;
+    node.next = this.head.next;
+    this.head.next.prev = node;
+    this.head.next = node;
+  }
+
+  put(key, value) {
+    if (this.cache.has(key)) {
+      const node = this.cache.get(key);
+      node.val = value;
+      this._remove(node);
+      this._addToFront(node);
+      return null;
+    }
+
+    if (this.cache.size >= this.capacity) {
+      const lru = this.tail.prev;
+      this._remove(lru);
+      this.cache.delete(lru.key);
+    }
+
+    const newNode = { key, val: value };
+    this.cache.set(key, newNode);
+    this._addToFront(newNode);
+    return null;
+  }
+
+  get(key) {
+    if (!this.cache.has(key)) {
+      return -1;
+    }
+
+    const node = this.cache.get(key);
+    this._remove(node);
+    this._addToFront(node);
+    return node.val;
+  }
+}`,
+    functionName: 'LRUCache',
+    executionStyle: 'ops-class',
+    language: 'javascript',
+    inputs: {
+      operations: ['LRUCache', 'put', 'put', 'get', 'put', 'get', 'put', 'get', 'get', 'get'],
+      arguments: [[2], [1, 1], [2, 2], [1], [3, 3], [2], [4, 4], [1], [3], [4]],
+    },
+  });
+  assertCondition(
+    executeJavaScriptOpsClassMapSizeTracing.success === true,
+    `JavaScript traced LRU ops-class should succeed: ${executeJavaScriptOpsClassMapSizeTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(executeJavaScriptOpsClassMapSizeTracing.output) === JSON.stringify([null, null, null, 1, null, -1, null, -1, 3, 4]),
+    `JavaScript tracing should preserve Map.size semantics in ops-class code, received ${JSON.stringify(executeJavaScriptOpsClassMapSizeTracing.output)}`
+  );
+  console.log('PASS: execute-with-tracing preserves JS Map.size runtime semantics in ops-class');
+
   const executeTypeScriptBfsLineMapping = await harness.sendMessage<{
     success: boolean;
     trace: Array<{

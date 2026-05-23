@@ -4686,8 +4686,16 @@ function __traceNormalizeIndexSources(__indexSources, __pathLength) {
 
 function __traceReadValueAtIndices(__container, __indices) {
   let __current = __container;
-  for (const __index of __traceResolveIndexValues(__indices)) {
+  const __resolvedIndices = __traceResolveIndexValues(__indices);
+  for (let __i = 0; __i < __resolvedIndices.length; __i += 1) {
+    const __index = __resolvedIndices[__i];
     if (__current === null || __current === undefined) return undefined;
+    if (
+      __i === __resolvedIndices.length - 1 &&
+      __traceIsMetadataProperty(__current, __index)
+    ) {
+      return __current[__index];
+    }
     __current = __traceIsMapLike(__current) ? __current.get(__index) : __current[__index];
   }
   return __current;
@@ -5303,7 +5311,8 @@ for (let __i = 0; __i < __operations.length; __i++) {
   if (!__instance || typeof __instance[__op] !== 'function') {
     throw new Error('Required method "' + __op + '" is not implemented on ' + (__className || 'target class'));
   }
-  __out.push(__instance[__op](...__callArgs));
+  const __opResult = __instance[__op](...__callArgs);
+  __out.push(__opResult === undefined ? null : __opResult);
 }
 return __out;`
     );
@@ -5410,7 +5419,8 @@ for (let __i = 0; __i < __operations.length; __i++) {
   if (!__instance || typeof __instance[__op] !== 'function') {
     throw new Error('Required method "' + __op + '" is not implemented on ' + (__className || 'target class'));
   }
-  __out.push(__instance[__op](...__callArgs));
+  const __opResult = __instance[__op](...__callArgs);
+  __out.push(__opResult === undefined ? null : __opResult);
 }
 return __out;`
     );

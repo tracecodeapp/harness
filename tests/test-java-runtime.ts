@@ -5741,6 +5741,29 @@ class Solution {
     );
     console.log('PASS: java worker indexed receiver graph operations emit neutral runtime trace accesses');
 
+    const nestedListSetCode = `import java.util.*;
+
+class Solution {
+  int solve() {
+    List<List<Integer>> dp = new ArrayList<>();
+    dp.add(new ArrayList<>(Arrays.asList(0, 0)));
+    int j = 1;
+    dp.get(0).set(j, 7);
+    return dp.get(0).get(j);
+  }
+}`;
+
+    const nestedListSetSource = assertNativeJavaRewriterCompiles(nestedListSetCode, 'solve');
+    assertCondition(
+      !nestedListSetSource.includes(' + "," + "," + "" + '),
+      `Java nested List.set mutate source should not emit malformed JSON separators, received ${nestedListSetSource}`
+    );
+    assertCondition(
+      nestedListSetSource.includes('\\"args\\":[" + TraceHooks.serializeResult(j) + "," + TraceHooks.serializeResult(7) + "]'),
+      `Java nested List.set mutate source should emit valid [index,value] args, received ${nestedListSetSource}`
+    );
+    console.log('PASS: java worker emits valid nested List.set mutate args');
+
     const cloneGraphCode = `import java.util.*;
 
 class Solution {

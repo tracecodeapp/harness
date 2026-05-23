@@ -2037,7 +2037,7 @@ public final class JavaRewriteLibrary {
     if (args.isEmpty()) return ",\\\"args\\\":[]";
     StringBuilder out = new StringBuilder(",\\\"args\\\":[");
     for (int index = 0; index < args.size(); index++) {
-      if (index > 0) out.append(",\" + \",\" + \"");
+      if (index > 0) out.append(",");
       out.append("\" + TraceHooks.serializeResult(")
           .append(rewriteReads(args.get(index), sourceLine, frame))
           .append(") + \"");
@@ -2068,7 +2068,7 @@ public final class JavaRewriteLibrary {
     }
     StringBuilder event = new StringBuilder(",\\\"args\\\":[");
     for (int index = 0; index < eventArgs.size(); index++) {
-      if (index > 0) event.append(",\" + \",\" + \"");
+      if (index > 0) event.append(",");
       event.append("\" + TraceHooks.serializeResult(").append(eventArgs.get(index)).append(") + \"");
     }
     event.append("]");

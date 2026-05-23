@@ -1632,6 +1632,85 @@ print(json.dumps({
   console.log('PASS: Python runtime trace capture limit preserves output');
 }
 
+async function assertDefaultStoredRuntimeEventBudgetAllowsScriptReturns(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `def find_order(num_courses, prerequisites):
+    graph = []
+    for _ in range(num_courses):
+        graph.append([])
+    in_degree = [0] * num_courses
+
+    for course, prereq in prerequisites:
+        graph[prereq].append(course)
+        in_degree[course] += 1
+
+    queue = [i for i in range(num_courses) if in_degree[i] == 0]
+    order = []
+
+    while queue:
+        node = queue.pop(0)
+        order.append(node)
+
+        for neighbor in graph[node]:
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    return order if len(order) == num_courses else []
+
+result = find_order(4, [[1, 0], [2, 0], [3, 1], [3, 2]])
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    '',
+    {},
+    'function',
+    { maxTraceSteps: 4000, maxLineEvents: 20000, maxSingleLineHits: 4000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result),
+    'traceLimitExceeded': _trace_limit_exceeded,
+    'timeoutReason': _timeout_reason
+}))
+`);
+  const parsed = JSON.parse(stdout) as {
+    runtimeTrace: { events: RuntimeTraceEvent[] };
+    result: unknown;
+    traceLimitExceeded?: boolean;
+    timeoutReason?: string;
+  };
+
+  assertCondition(
+    JSON.stringify(parsed.result) === JSON.stringify([0, 1, 2, 3]),
+    `Python script-mode topological sort should return expected output, got ${JSON.stringify(parsed.result)}`
+  );
+  assertCondition(
+    parsed.traceLimitExceeded !== true,
+    `Default Python runtime event budget should not truncate this script, reason=${parsed.timeoutReason ?? 'none'}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => event.kind === 'return' && event.function === 'find_order'),
+    `Default Python runtime event budget should preserve function returns, got ${JSON.stringify(parsed.runtimeTrace.events.slice(-20))}`
+  );
+
+  console.log('PASS: Python default runtime event budget preserves script returns');
+}
+
 async function assertRuntimeValueSerializationCap(): Promise<void> {
   const stdout = await runPythonScript(`import builtins as _builtins
 import json
@@ -2316,6 +2395,7 @@ async function main(): Promise<void> {
   await assertObjectFieldSubscriptReadCarriesValue();
   await assertAttributeReadCarriesPreMutationValue();
   await assertTraceCaptureLimitPreservesOutput();
+  await assertDefaultStoredRuntimeEventBudgetAllowsScriptReturns();
   await assertRuntimeValueSerializationCap();
   await assertDefaultPreludeImportsAreAvailable();
   await assertScriptModePreservesResultSerializer();

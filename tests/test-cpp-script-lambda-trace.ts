@@ -16,7 +16,12 @@ type RuntimeTraceEvent = {
 };
 
 async function createCppWorkerHarness() {
-  const workerSource = await readFile('workers/cpp/cpp-worker.js', 'utf8');
+  const sharedKernelPolicySource = (await readFile('workers/shared/runtime-kernel-policy.js', 'utf8'))
+    .replace(/\bexport\s+/g, '');
+  const workerSource = (await readFile('workers/cpp/cpp-worker.js', 'utf8')).replace(
+    /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
+    ''
+  );
   const compilerBundle = await import(pathToFileURL(`${process.cwd()}/node_modules/@yowasp/clang/gen/bundle.js`).href);
   const readAsset = async (url: string) => {
     const pathname = String(url).replace('file://', '');
@@ -58,7 +63,12 @@ async function createCppWorkerHarness() {
 
   const context = vm.createContext(sandbox);
   const script = new vm.Script(
-    `${workerSource}\nglobalThis.__tracecodeCppScriptLambdaTest = { handleInit, handleExecuteWithTracing };`,
+    sharedKernelPolicySource + '\n' +
+      'const isRuntimeDeviceDirectory = isRuntimeKernelDeviceDirectory;\n' +
+      'const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;\n' +
+      'const isRuntimeProcPath = isRuntimeKernelProcPath;\n' +
+      workerSource +
+      '\nglobalThis.__tracecodeCppScriptLambdaTest = { handleInit, handleExecuteWithTracing };',
     {
       importModuleDynamically(specifier) {
         return import(String(specifier));
@@ -223,6 +233,77 @@ assert.ok(
 assert.ok(
   snapshotValues(vectorSumEvents, 'result').some((value) => value === 10),
   `C++ vector-sum script should snapshot result, received ${JSON.stringify(vectorSumEvents)}`
+);
+
+const scriptStructCode = [
+  'struct Box {',
+  '    vector<int> values;',
+  '    Box() {',
+  '        values = vector<int>{1, 2, 3};',
+  '    }',
+  '    int setAndGet(int index, int value) {',
+  '        this->values[index] = value;',
+  '        return this->values[index];',
+  '    }',
+  '};',
+  'Box box;',
+  'int result = box.setAndGet(1, 5);',
+].join('\n');
+
+const scriptStructResult = await harness.handleExecuteWithTracing({
+  code: scriptStructCode,
+  functionName: '',
+  inputs: {},
+  executionStyle: 'function',
+  options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
+});
+
+assert.equal(scriptStructResult.success, true, `C++ script struct trace failed: ${scriptStructResult.error ?? 'unknown error'}`);
+assert.equal(scriptStructResult.output, 5, 'C++ script struct should return method result');
+
+const scriptStructEvents = scriptStructResult.trace?.events ?? [];
+assert.ok(
+  scriptStructEvents.some((event) => event.kind === 'call' && event.function === 'setAndGet'),
+  `C++ script struct should emit method calls, received ${JSON.stringify(scriptStructEvents)}`
+);
+assert.ok(
+  scriptStructEvents.some((event) => event.kind === 'write' && event.target?.variable === 'this' && event.target.path?.includes('values')),
+  `C++ script struct should emit member writes inside methods, received ${JSON.stringify(scriptStructEvents)}`
+);
+assert.ok(
+  scriptStructEvents.some((event) => event.kind === 'read' && event.target?.variable === 'this' && event.target.path?.includes('values') && event.value === 5),
+  `C++ script struct should emit member reads inside methods, received ${JSON.stringify(scriptStructEvents)}`
+);
+
+const helperScriptCode = [
+  'auto tracecodeIntRangeWhere = [](int start, int end, auto predicate) {',
+  '    vector<int> values;',
+  '    for (int value = start; value < end; value++) if (predicate(value)) values.push_back(value);',
+  '    return values;',
+  '};',
+  'vector<int> nums = vector<int>{0, 1, 2, 3};',
+  'vector<int> result = tracecodeIntRangeWhere(0, nums.size(), [&](int i) { return nums[i] % 2 == 0; });',
+].join('\n');
+
+const helperScriptResult = await harness.handleExecuteWithTracing({
+  code: helperScriptCode,
+  functionName: '',
+  inputs: {},
+  executionStyle: 'function',
+  options: { maxTraceSteps: 1000, maxLineEvents: 2000 },
+});
+
+assert.equal(helperScriptResult.success, true, `C++ helper script trace failed: ${helperScriptResult.error ?? 'unknown error'}`);
+assert.deepEqual(helperScriptResult.output, [0, 2], 'C++ helper script should return filtered values');
+
+const helperScriptEvents = helperScriptResult.trace?.events ?? [];
+assert.ok(
+  helperScriptEvents.every((event) => event.function !== 'tracecodeIntRangeWhere'),
+  `C++ generated helper function should be hidden, received ${JSON.stringify(helperScriptEvents)}`
+);
+assert.ok(
+  helperScriptEvents.every((event) => !event.callStack?.some((frame) => frame.function === 'tracecodeIntRangeWhere')),
+  `C++ generated helper call-stack frame should be hidden, received ${JSON.stringify(helperScriptEvents)}`
 );
 
 console.log('PASS: C++ script lambda trace snapshots');
