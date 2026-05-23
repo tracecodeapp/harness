@@ -3355,6 +3355,39 @@ function javaReportConsoleOutput(report) {
   );
 }
 
+function truncateJavaWorkerDiagnostic(value, maxLength = 6000) {
+  const text = typeof value === 'string'
+    ? value
+    : value === undefined || value === null
+      ? ''
+      : JSON.stringify(value, null, 2);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}\n... <truncated ${text.length - maxLength} chars>` : text;
+}
+
+function javaReportFailureMessage(report, fallback = 'Java execution failed') {
+  const parts = [];
+  const compilerStdout = typeof report?.compilerStdout === 'string' ? report.compilerStdout.trim() : '';
+  const compilerStderr = typeof report?.compilerStderr === 'string' ? report.compilerStderr.trim() : '';
+  const runtimeError = typeof report?.runtimeError === 'string' ? sanitizeJavaRuntimeStderr(report.runtimeError).trim() : '';
+  if (compilerStdout) parts.push(`compilerStdout:\n${truncateJavaWorkerDiagnostic(compilerStdout)}`);
+  if (compilerStderr) parts.push(`compilerStderr:\n${truncateJavaWorkerDiagnostic(compilerStderr)}`);
+  if (runtimeError && !compilerStdout.includes(runtimeError) && !compilerStderr.includes(runtimeError)) {
+    parts.push(`runtimeError:\n${truncateJavaWorkerDiagnostic(runtimeError)}`);
+  }
+  if (Array.isArray(report?.events)) parts.push(`eventCount: ${report.events.length}`);
+  if (Array.isArray(report?.results)) {
+    const failedResults = report.results
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry?.success !== true);
+    if (failedResults.length > 0) {
+      parts.push(`failedResultIndices: ${failedResults.map(({ index }) => index).join(', ')}`);
+    }
+  }
+  if (report?.traceLimitExceeded !== undefined) parts.push(`traceLimitExceeded: ${Boolean(report.traceLimitExceeded)}`);
+  if (report?.droppedEventCount !== undefined) parts.push(`droppedEventCount: ${report.droppedEventCount}`);
+  return parts.length > 0 ? parts.join('\n') : fallback;
+}
+
 function javaNormalizeProjectCompilerOutput(output, sourceRoot, projectRoot = '') {
   const root = String(sourceRoot ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
   if (!root) return output;
@@ -4629,11 +4662,7 @@ async function runJavaTraceRequest(payload, requestId) {
       ...(normalizedPayload.sourceText ? { sourceText: normalizedPayload.sourceText } : {}),
       executionTimeMs: totalEnd - totalStart,
       consoleOutput,
-      error:
-        report.runtimeError ||
-        report.compilerStderr ||
-        report.compilerStdout ||
-        'Java execution failed',
+      error: javaReportFailureMessage(report, 'Java trace failed without compiler/runtime diagnostics'),
       ...(report.traceLimitExceeded !== undefined
         ? {
             traceLimitExceeded: Boolean(report.traceLimitExceeded),
@@ -4758,11 +4787,7 @@ async function runJavaCodeRequest(payload) {
       output: null,
       executionTimeMs: totalEnd - totalStart,
       consoleOutput,
-      error:
-        report.runtimeError ||
-        report.compilerStderr ||
-        report.compilerStdout ||
-        'Java execution failed',
+      error: javaReportFailureMessage(report, 'Java execution failed without compiler/runtime diagnostics'),
       timings,
     };
   }
@@ -5037,7 +5062,7 @@ async function runJavaCodeBatchRequest(payload) {
       success,
       output: success ? parseJavaReportOutput(entry.output) : null,
       consoleOutput,
-      ...(success ? {} : { error: entry?.runtimeError || report.runtimeError || 'Java execution failed' }),
+      ...(success ? {} : { error: javaReportFailureMessage({ ...report, ...entry }, 'Java batch item failed without compiler/runtime diagnostics') }),
       timings: {
         compileMs: 0,
         classLoadMs,
@@ -5063,7 +5088,7 @@ async function runJavaCodeBatchRequest(payload) {
     results,
     executionTimeMs: totalEnd - totalStart,
     consoleOutput,
-    ...(report.success === true ? {} : { error: report.runtimeError || 'Java batch execution failed' }),
+    ...(report.success === true ? {} : { error: javaReportFailureMessage(report, 'Java batch execution failed without compiler/runtime diagnostics') }),
     timings: {
       hostCallMs: libraryCallEnd - libraryCallStart,
       totalMs: totalEnd - totalStart,
