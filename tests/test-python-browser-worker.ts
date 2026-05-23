@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { runCommand, waitForHttp } from './example-app-smoke';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 interface PythonProjectWorkerFile {
   path: string;
@@ -49,7 +50,17 @@ async function main(): Promise<void> {
   await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', workersRoot], process.cwd());
   await writeFile(join(tempRoot, 'index.html'), '<!doctype html><title>Python worker smoke</title>', 'utf8');
 
-  const server = spawn('python3', ['-m', 'http.server', String(port), '--bind', '127.0.0.1', '--directory', tempRoot], {
+  const server = spawn('python3', ['-c', [
+    'from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler',
+    'import os',
+    'class Handler(SimpleHTTPRequestHandler):',
+    '    def end_headers(self):',
+    '        self.send_header("Cross-Origin-Opener-Policy", "same-origin")',
+    '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
+    '        super().end_headers()',
+    `os.chdir(${JSON.stringify(tempRoot)})`,
+    `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
+  ].join('\n')], {
     cwd: process.cwd(),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -67,6 +78,16 @@ async function main(): Promise<void> {
       const worker = new Worker('/workers/pyodide-worker.js');
       let nextId = 0;
       const pending = new Map();
+      const createRuntimeCommandStdinPipeFromText = (text) => {
+        const encoded = new TextEncoder().encode(text);
+        const capacity = Math.max(65536, encoded.byteLength + 1);
+        const buffer = new SharedArrayBuffer(12 + capacity);
+        const header = new Int32Array(buffer, 0, 3);
+        new Uint8Array(buffer, 12).set(encoded);
+        Atomics.store(header, 1, encoded.byteLength % capacity);
+        Atomics.store(header, 2, 1);
+        return { buffer };
+      };
 
       worker.onmessage = (event) => {
         const { id, type, payload } = event.data || {};
@@ -301,7 +322,7 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace',
         env: { MODE: 'browser-python-project' },
-        stdin: 'from-stdin\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('from-stdin\\n'),
         project: { cwd: '/workspace', files: projectFiles, kernelDevices: traceKernelDevices },
       });
 
@@ -311,7 +332,6 @@ async function main(): Promise<void> {
         args: ['module-arg'],
         cwd: '/workspace',
         env: { PYTHONPATH: '/workspace/libs' },
-        stdin: '',
         project: {
           cwd: '/workspace',
           files: [
@@ -327,7 +347,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/build',
         env: { PYTHONPATH: '../libs' },
-        stdin: '',
         project: {
           cwd: '/workspace',
           files: [
@@ -344,7 +363,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: {
           cwd: '/workspace',
           files: [
@@ -360,7 +378,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: 'stdin-data\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('stdin-data\\n'),
         project: {
           cwd: '/workspace',
           files: [],
@@ -375,7 +393,6 @@ async function main(): Promise<void> {
         args: ['x', 'y'],
         cwd: '/workspace',
         env: {},
-        stdin: '',
         project: { cwd: '/workspace', files: [] },
       });
 
@@ -395,7 +412,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: '',
         project: { cwd: '/workspace', files: [] },
       });
 
@@ -446,7 +462,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: 'manifest-stdin\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('manifest-stdin\\n'),
         project: {
           cwd: '/workspace',
           files: [],
@@ -472,7 +488,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: 'one\\ntwo\\nthree\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('one\\ntwo\\nthree\\n'),
         project: {
           cwd: '/workspace',
           files: [],
@@ -499,7 +515,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: 'dev-one\\ndev-two\\ndev-three\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('dev-one\\ndev-two\\ndev-three\\n'),
         project: {
           cwd: '/workspace',
           files: [],
@@ -551,7 +567,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: 'dup-stdin\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('dup-stdin\\n'),
         project: {
           cwd: '/workspace',
           files: [],
@@ -594,7 +610,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: 'readv-one\\nreadv-two\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('readv-one\\nreadv-two\\n'),
         project: {
           cwd: '/workspace',
           files: [],
@@ -609,7 +625,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: '',
         project: { cwd: '/workspace', directories: ['empty/child'], files: [] },
       });
 
@@ -643,7 +658,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: '',
         project: { cwd: '/workspace', files: [] },
       });
 
@@ -670,7 +684,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: '',
         project: {
           cwd: '/workspace',
           files: [],
@@ -708,7 +721,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: '',
         project: {
           cwd: '/workspace',
           files: [],
@@ -725,7 +737,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: { PYTHONPATH: '/home/ada/weather-api/libs' },
-        stdin: '',
         project: {
           cwd: '/home/ada/weather-api',
           workspaceRoot: '/home/ada/weather-api',
@@ -842,7 +853,6 @@ async function main(): Promise<void> {
           args: [],
           cwd: '/outside',
           env: {},
-          stdin: '',
           project: { cwd: '/workspace', files: projectFiles },
         });
       } catch (error) {

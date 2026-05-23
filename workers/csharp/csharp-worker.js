@@ -26,6 +26,11 @@ const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
 const CSHARP_PROJECT_WORKSPACE_ROOT = '/tmp/tracecode-csharp-project';
 const DEFAULT_IDLE_TIMEOUT_MS = 90_000;
+const STDIN_PIPE_HEADER_INTS = 3;
+const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const STDIN_PIPE_READ_INDEX = 0;
+const STDIN_PIPE_WRITE_INDEX = 1;
+const STDIN_PIPE_CLOSED_INDEX = 2;
 const CSHARP_WARMUP_REQUEST = Object.freeze({
   source: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
   functionName: 'Add',
@@ -34,6 +39,44 @@ const CSHARP_WARMUP_REQUEST = Object.freeze({
   trace: false,
   timeoutMs: 1_000,
 });
+
+function stdinPipeState(pipe) {
+  const buffer = pipe?.buffer;
+  if (
+    typeof SharedArrayBuffer === 'undefined' ||
+    !(buffer instanceof SharedArrayBuffer) ||
+    buffer.byteLength <= STDIN_PIPE_HEADER_BYTES
+  ) {
+    return null;
+  }
+  return {
+    header: new Int32Array(buffer, 0, STDIN_PIPE_HEADER_INTS),
+    bytes: new Uint8Array(buffer, STDIN_PIPE_HEADER_BYTES),
+  };
+}
+
+function stdinPipeAvailable(state, readIndex, writeIndex) {
+  const capacity = state.bytes.byteLength;
+  return readIndex <= writeIndex
+    ? writeIndex - readIndex
+    : capacity - readIndex + writeIndex;
+}
+
+function readStdinPipeByte(state) {
+  if (!state) return null;
+  const capacity = state.bytes.byteLength;
+  while (true) {
+    const readIndex = Atomics.load(state.header, STDIN_PIPE_READ_INDEX);
+    const writeIndex = Atomics.load(state.header, STDIN_PIPE_WRITE_INDEX);
+    if (stdinPipeAvailable(state, readIndex, writeIndex) > 0) {
+      const byte = state.bytes[readIndex];
+      Atomics.store(state.header, STDIN_PIPE_READ_INDEX, (readIndex + 1) % capacity);
+      return byte;
+    }
+    if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) !== 0) return null;
+    Atomics.wait(state.header, STDIN_PIPE_WRITE_INDEX, writeIndex);
+  }
+}
 
 let queue = Promise.resolve();
 let idleTimer = null;
@@ -559,10 +602,6 @@ function materializeKernelDevices(request) {
   }
 }
 
-function projectRuntimeStdin(request) {
-  return kernelDeviceInputSource('/dev/stdin', request) ? String(request?.stdin || '') : '';
-}
-
 function projectRuntimeRequest(request) {
   const project = request?.project && typeof request.project === 'object'
     ? {
@@ -580,7 +619,6 @@ function projectRuntimeRequest(request) {
     : request?.env;
   return {
     ...request,
-    stdin: projectRuntimeStdin(request),
     cwd: mapProjectRuntimePath(request?.cwd, request),
     scriptPath: mapProjectRuntimePath(request?.scriptPath, request),
     args: Array.isArray(request?.args)
@@ -765,8 +803,8 @@ function readProjectInputByte(devicePath = '/dev/stdin') {
   if (!context) return null;
   const inputDevice = kernelDeviceInputSource(devicePath, context.request);
   if (!inputDevice || inputDevice === '/dev/null') return null;
-  if (context.stdinIndex >= context.stdinBytes.length) return null;
-  return context.stdinBytes[context.stdinIndex++];
+  if (context.stdinPipe) return readStdinPipeByte(context.stdinPipe);
+  return null;
 }
 
 function emitProjectFileSnapshot(path) {
@@ -1429,8 +1467,7 @@ async function handleMessage(message) {
     const projectIo = {
       messageId: message.id,
       request,
-      stdinBytes: encodeUtf8(String(request?.stdin || '')),
-      stdinIndex: 0,
+      stdinPipe: stdinPipeState(request?.stdinPipe),
       stdoutBytes: [],
       stderrBytes: [],
       eventStdout: [],

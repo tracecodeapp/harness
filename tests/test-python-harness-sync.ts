@@ -4,6 +4,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import {
+import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
   PYTHON_CLASS_DEFINITIONS,
   PYTHON_CONVERSION_HELPERS,
   PYTHON_EXECUTE_SERIALIZE_FUNCTION,
@@ -215,7 +216,6 @@ async function assertProjectPythonEnvContract(workerSource: string): Promise<voi
     args: [],
     cwd: '/workspace',
     env: { PYTHONPATH: '/workspace/vendor', MODE: 'project' },
-    stdin: '',
     project: {
       files: [
         { path: 'vendor/pkgtools.py', contents: 'def value(): return 42\n' },

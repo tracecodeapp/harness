@@ -76,6 +76,65 @@ let initLoadTimeMs = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let runWarmupPromise = null;
 let activeJavaProjectIo = null;
+const STDIN_PIPE_HEADER_INTS = 3;
+const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const STDIN_PIPE_READ_INDEX = 0;
+const STDIN_PIPE_WRITE_INDEX = 1;
+const STDIN_PIPE_CLOSED_INDEX = 2;
+
+function stdinPipeState(pipe) {
+  const buffer = pipe?.buffer;
+  if (
+    typeof SharedArrayBuffer === 'undefined' ||
+    !(buffer instanceof SharedArrayBuffer) ||
+    buffer.byteLength <= STDIN_PIPE_HEADER_BYTES
+  ) {
+    return null;
+  }
+  return {
+    header: new Int32Array(buffer, 0, STDIN_PIPE_HEADER_INTS),
+    bytes: new Uint8Array(buffer, STDIN_PIPE_HEADER_BYTES),
+  };
+}
+
+function stdinPipeAvailable(state, readIndex, writeIndex) {
+  const capacity = state.bytes.byteLength;
+  return readIndex <= writeIndex
+    ? writeIndex - readIndex
+    : capacity - readIndex + writeIndex;
+}
+
+function readJavaProjectInputByte(device, block = true) {
+  const context = activeJavaProjectIo;
+  if (!context?.stdinPipe) return -1;
+  const inputDevice = kernelDeviceInputSource(String(device || '/dev/stdin'), context.request);
+  if (!inputDevice || inputDevice === '/dev/null') return -1;
+  const state = context.stdinPipe;
+  const capacity = state.bytes.byteLength;
+  while (true) {
+    const readIndex = Atomics.load(state.header, STDIN_PIPE_READ_INDEX);
+    const writeIndex = Atomics.load(state.header, STDIN_PIPE_WRITE_INDEX);
+    if (stdinPipeAvailable(state, readIndex, writeIndex) > 0) {
+      const byte = state.bytes[readIndex];
+      Atomics.store(state.header, STDIN_PIPE_READ_INDEX, (readIndex + 1) % capacity);
+      return byte;
+    }
+    const closed = Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) !== 0;
+    if (closed || !block) return -1;
+    Atomics.wait(state.header, STDIN_PIPE_WRITE_INDEX, writeIndex);
+  }
+}
+
+function javaProjectInputAvailable(device) {
+  const context = activeJavaProjectIo;
+  if (!context?.stdinPipe) return 0;
+  const inputDevice = kernelDeviceInputSource(String(device || '/dev/stdin'), context.request);
+  if (!inputDevice || inputDevice === '/dev/null') return 0;
+  const state = context.stdinPipe;
+  const readIndex = Atomics.load(state.header, STDIN_PIPE_READ_INDEX);
+  const writeIndex = Atomics.load(state.header, STDIN_PIPE_WRITE_INDEX);
+  return stdinPipeAvailable(state, readIndex, writeIndex);
+}
 
 function postMessageResponse(message) {
   self.postMessage(message);
@@ -193,6 +252,15 @@ function javaProjectNativeBridge() {
     Java_tracecode_browser_ProjectEvents_emitDirectoryDeleteNative: (_library, path) => {
       emitLiveJavaProjectDirectoryDelete(String(path ?? ''));
     },
+    Java_tracecode_browser_ProjectEvents_readInputNative: (_library, device) => (
+      readJavaProjectInputByte(String(device ?? '/dev/stdin'), true)
+    ),
+    Java_tracecode_browser_ProjectEvents_readInputAvailableNative: (_library, device) => (
+      readJavaProjectInputByte(String(device ?? '/dev/stdin'), false)
+    ),
+    Java_tracecode_browser_ProjectEvents_inputAvailableNative: (_library, device) => (
+      javaProjectInputAvailable(String(device ?? '/dev/stdin'))
+    ),
   };
 }
 
@@ -3615,6 +3683,20 @@ function kernelDeviceOutputTarget(path, request) {
   return null;
 }
 
+function kernelDeviceInputSource(path, request) {
+  const policy = self.TraceRuntimeKernelPolicy;
+  if (typeof policy?.runtimeKernelDeviceInputSource === 'function') {
+    return policy.runtimeKernelDeviceInputSource(Array.isArray(request?.project?.kernelDevices) ? request.project.kernelDevices : [], path) || null;
+  }
+  const normalized = normalizeKernelDeviceReference(path);
+  const devices = Array.isArray(request?.project?.kernelDevices) ? request.project.kernelDevices : [];
+  for (const device of devices) {
+    if (normalizeKernelDeviceReference(device?.path) !== normalized || device?.readable !== true) continue;
+    return normalizeKernelDeviceReference(device?.inputDevice) || normalized;
+  }
+  return null;
+}
+
 function normalizeKernelVirtualFilePath(path) {
   const policy = self.TraceRuntimeKernelPolicy;
   const normalized = typeof policy?.normalizeRuntimeKernelPath === 'function'
@@ -3725,6 +3807,8 @@ function augmentJavaProjectFileMutations(source) {
     .replace(/(?<![\w.])File\.createTempFile\s*\(/g, 'tracecode.browser.ProjectEvents.createTempFile(')
     .replace(/\bjava\.lang\.System\.getenv\s*\(/g, 'tracecode.browser.ProjectEvents.getenv(')
     .replace(/\bSystem\.getenv\s*\(/g, 'tracecode.browser.ProjectEvents.getenv(')
+    .replace(/\bjava\.lang\.System\.in\b/g, 'tracecode.browser.ProjectEvents.inputStream()')
+    .replace(/\bSystem\.in\b/g, 'tracecode.browser.ProjectEvents.inputStream()')
     .replace(/\bnew\s+java\.io\.FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/(?<![\w.])new\s+FileWriter\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileWriter(')
     .replace(/\bnew\s+java\.io\.FileInputStream\s*\(/g, 'new tracecode.browser.ProjectEvents.ProjectFileInputStream(')
@@ -3824,10 +3908,9 @@ function projectEnvironmentManifest(payload) {
     .join('\n');
 }
 
-function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, stdin = '', systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '', envManifest = '', virtualWorkspaceRoot = '/workspace', workspaceAlias = '/workspace', internalWorkspaceRoot = '', reflectiveMain = false) {
+function buildProjectJavaAdapterSource(exportsClassName, mainClassName, args, compileOnly, systemProperties = [], kernelDeviceManifest = '', kernelFileManifest = '', envManifest = '', virtualWorkspaceRoot = '/workspace', workspaceAlias = '/workspace', internalWorkspaceRoot = '', reflectiveMain = false) {
   const argsSource = args.map((arg) => javaStringLiteral(arg)).join(', ');
   const mainClassSource = javaStringLiteral(mainClassName);
-  const stdinSource = javaStringLiteral(stdin);
   const kernelDeviceManifestSource = javaStringLiteral(kernelDeviceManifest);
   const kernelFileManifestSource = javaStringLiteral(kernelFileManifest);
   const envManifestSource = javaStringLiteral(envManifest);
@@ -3914,7 +3997,7 @@ public class ${exportsClassName} {
       ProjectEvents.setProjectEventBridgeEnabled(true);
       ProjectEvents.setProjectWorkspaceRoot(tracecodeWorkspaceRoot);
       ProjectEvents.setProjectVirtualWorkspaceRoot(${virtualWorkspaceRootSource}, ${workspaceAliasSource});
-      ProjectEvents.setKernelDevices(${kernelDeviceManifestSource}, ${stdinSource});
+      ProjectEvents.setKernelDevices(${kernelDeviceManifestSource});
       ProjectEvents.setKernelFiles(${kernelFileManifestSource});
       ProjectEvents.setEnvironment(${envManifestSource});
       System.setOut(new java.io.PrintStream(ProjectEvents.streamingOutput(stdoutBytes, "stdout"), true, "UTF-8"));
@@ -3989,7 +4072,6 @@ function buildProjectJavaRunnableSource(payload, compileId) {
           mainClassName,
           Array.isArray(payload.args) ? payload.args : [],
           false,
-          String(payload.stdin ?? ''),
           javaProjectSystemProperties(payload),
           projectKernelDeviceManifest(payload.project),
           projectKernelFileManifest(payload.project),
@@ -4054,7 +4136,6 @@ function buildProjectJavaClassRunnableSource(payload, compileId) {
       mainClassName,
       Array.isArray(payload.args) ? payload.args : [],
       false,
-      String(payload.stdin ?? ''),
       javaProjectSystemProperties(payload),
       projectKernelDeviceManifest(payload.project),
       projectKernelFileManifest(payload.project),
@@ -4851,6 +4932,7 @@ async function runJavaProjectRequest(payload, requestId) {
   const projectIo = {
     messageId: requestId,
     request: payload,
+    stdinPipe: stdinPipeState(payload?.stdinPipe),
     stdoutEmitted: false,
     stderrEmitted: false,
     kernelDevicePaths: new Set(

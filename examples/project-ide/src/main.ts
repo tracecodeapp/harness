@@ -6,7 +6,7 @@ import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
 import { getRuntimeProjectIoCapabilityMatrix } from '@tracecode/harness/browser';
-import type { Language, RuntimeCommandEvent } from '@tracecode/harness/core';
+import type { Language, RuntimeCommandEvent, RuntimeWorkspaceEvent } from '@tracecode/harness/core';
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup
@@ -1044,6 +1044,19 @@ int main(int argc, char** argv) {
     },
   });
 
+  let reloadingForTraceKernelReset = false;
+  const unsubscribeWorkspaceEvents = workspace.watch((event: RuntimeWorkspaceEvent) => {
+    if (
+      event.type === 'lifecycle' &&
+      event.phase === 'session-destroyed' &&
+      event.detail.reason === 'tracekernelctl-reset' &&
+      !reloadingForTraceKernelReset
+    ) {
+      reloadingForTraceKernelReset = true;
+      window.location.reload();
+    }
+  });
+
   const terminalSession = workspace.createTerminalSession();
   const visibleProjectCommands = (): NonNullable<typeof workspace.projectSession>['commands'] => {
     const commands = workspace.projectSession?.commands ?? {};
@@ -1516,6 +1529,7 @@ int main(int argc, char** argv) {
   });
 
   const disposeTerminal = (): void => {
+    unsubscribeWorkspaceEvents();
     workspace.dispose();
   };
 

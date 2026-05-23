@@ -21,7 +21,7 @@ const LIVE_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['proj
     directories: true,
   },
   stdio: {
-    stdin: true,
+    liveStdin: true,
     outputEvents: true,
     deviceFiles: true,
   },
@@ -42,7 +42,7 @@ const BRIDGED_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['p
     directories: true,
   },
   stdio: {
-    stdin: true,
+    liveStdin: true,
     outputEvents: true,
     deviceFiles: true,
   },
@@ -63,7 +63,7 @@ const FINAL_DIFF_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']
     directories: true,
   },
   stdio: {
-    stdin: false,
+    liveStdin: false,
     outputEvents: true,
     deviceFiles: false,
   },
@@ -84,7 +84,7 @@ const NO_PROJECT_IO_CAPABILITIES: LanguageRuntimeProfile['capabilities']['projec
     directories: false,
   },
   stdio: {
-    stdin: false,
+    liveStdin: false,
     outputEvents: false,
     deviceFiles: false,
   },
@@ -98,6 +98,7 @@ const UNSUPPORTED_PROJECT_IO_SUPPORT: RuntimeProjectIoSupport = Object.freeze({
   finalDiff: false,
   providerLiveInterception: false,
   streamingStdio: false,
+  liveStdin: false,
   deviceFiles: false,
 });
 
@@ -109,6 +110,7 @@ const NODE_FINAL_DIFF_PROJECT_IO_SUPPORT: RuntimeProjectIoSupport = Object.freez
   finalDiff: true,
   providerLiveInterception: false,
   streamingStdio: true,
+  liveStdin: true,
   deviceFiles: false,
 });
 
@@ -520,7 +522,8 @@ export function getRuntimeProjectIoSupport(profileOrLanguage: LanguageRuntimePro
   const liveMutationEvents = project.filesystem.liveMutationEvents;
   const finalDiff = project.filesystem.finalDiff;
   const providerLiveInterception = project.filesystem.providerLiveInterception;
-  const streamingStdio = project.stdio.stdin && project.stdio.outputEvents;
+  const liveStdin = project.stdio.liveStdin;
+  const streamingStdio = project.stdio.liveStdin && project.stdio.outputEvents;
   const deviceFiles = project.stdio.deviceFiles;
   let tier: RuntimeProjectIoTier = 'unsupported';
 
@@ -542,6 +545,7 @@ export function getRuntimeProjectIoSupport(profileOrLanguage: LanguageRuntimePro
     finalDiff,
     providerLiveInterception,
     streamingStdio,
+    liveStdin,
     deviceFiles,
   };
 }

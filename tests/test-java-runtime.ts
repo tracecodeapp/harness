@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/harness-core/src/trace-adapters/java';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 interface WorkerMessage {
   id?: string;
@@ -262,7 +263,7 @@ public class ProjectWorkspaceDirectorySmoke {
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, manifest));
     String kernelManifest = "/proc/kernel/version\\t" + java.util.Base64.getEncoder().encodeToString("kernel".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     System.out.println(collectChangedProjectFilesJson.invoke(null, root, kernelManifest));
-    ProjectEvents.setKernelDevices("L2Rldi9zdGRpbg==\\tMQ==\\t\\tL2Rldi9zdGRpbg==\\t", "from-channel\\n");
+    ProjectEvents.setKernelDevices("L2Rldi9zdGRpbg==\\tMQ==\\t\\tL2Rldi9zdGRpbg==\\t");
     try (var channel = ProjectEvents.newByteChannel(Paths.get("/dev/stdin"), StandardOpenOption.READ)) {
       ByteBuffer bytes = ByteBuffer.allocate(64);
       channel.read(bytes);
@@ -271,7 +272,7 @@ public class ProjectWorkspaceDirectorySmoke {
     } finally {
       ProjectEvents.clearKernelDevices();
     }
-    ProjectEvents.setKernelDevices("L2Rldi9jdXN0b20taW4=\\tMQ==\\tMA==\\tL2Rldi9jdXN0b20tc291cmNl\\t", "from-custom-source\\n");
+    ProjectEvents.setKernelDevices("L2Rldi9jdXN0b20taW4=\\tMQ==\\tMA==\\tL2Rldi9jdXN0b20tc291cmNl\\t");
     try {
       System.out.println(ProjectEvents.readString(Paths.get("/dev/custom-in")).trim());
     } finally {
@@ -285,7 +286,7 @@ public class ProjectWorkspaceDirectorySmoke {
       device.apply(new String[] { "/dev/stdin", "1", "0", "/dev/stdin", "" }),
       device.apply(new String[] { "/dev/tty", "1", "1", "/dev/stdin", "/dev/stdout" }),
       device.apply(new String[] { "/dev/custom-in", "1", "0", "/dev/stdin", "" })
-    ), "abcdef");
+    ));
     try {
       System.setIn(ProjectEvents.inputStream());
       int systemByte = System.in.read();
@@ -299,7 +300,7 @@ public class ProjectWorkspaceDirectorySmoke {
       }
       String ttyRest = ProjectEvents.readString(Paths.get("/dev/tty"));
       String customRest = ProjectEvents.readString(Paths.get("/dev/custom-in"));
-      System.out.println("shared-stdin=" + (char) systemByte + ":" + (char) streamByte + ":" + (char) readerChar + ":" + ttyRest + ":" + customRest);
+      System.out.println("shared-stdin=" + systemByte + ":" + streamByte + ":" + readerChar + ":" + ttyRest + ":" + customRest);
     } finally {
       System.setIn(previousIn);
       ProjectEvents.clearKernelDevices();
@@ -310,7 +311,7 @@ public class ProjectWorkspaceDirectorySmoke {
       device.apply(new String[] { "/dev/stdout", "0", "1", "", "/dev/stdout" }),
       device.apply(new String[] { "/dev/tty", "1", "1", "/dev/stdin", "/dev/stdout" }),
       device.apply(new String[] { "/dev/log", "0", "1", "", "/dev/stderr" })
-    ), "from-device\\n");
+    ));
     try {
       var stdoutCapture = new java.io.ByteArrayOutputStream();
       var stderrCapture = new java.io.ByteArrayOutputStream();
@@ -319,7 +320,8 @@ public class ProjectWorkspaceDirectorySmoke {
       String fileDescriptorReaderInput;
       try (var reader = new ProjectEvents.ProjectFileReader(java.io.FileDescriptor.in)) {
         char[] buffer = new char[64];
-        fileDescriptorReaderInput = new String(buffer, 0, reader.read(buffer)).trim();
+        int read = reader.read(buffer);
+        fileDescriptorReaderInput = read < 0 ? "" : new String(buffer, 0, read).trim();
       }
       try (var writer = new ProjectEvents.ProjectFileWriter("/dev/stdout", StandardCharsets.UTF_8)) {
         writer.write("file-writer-out\\n");
@@ -491,24 +493,24 @@ public class ProjectWorkspaceDirectorySmoke {
       'Java browser helper should not report kernel virtual manifest entries as workspace deletions'
     );
     assertCondition(
-      deviceChannelInput === 'from-channel',
-      `Java browser helper should read kernel stdin through newByteChannel: ${output}`
+      deviceChannelInput === '',
+      `Java browser helper should expose EOF for stdin without a live host pipe through newByteChannel: ${output}`
     );
     assertCondition(
-      customDeviceInput === 'from-custom-source',
-      `Java browser helper should read custom input devices independently of /dev/stdin: ${output}`
+      customDeviceInput === '',
+      `Java browser helper should expose EOF for custom input devices without a live host pipe: ${output}`
     );
     assertCondition(
-      sharedStdinOutput === 'shared-stdin=a:b:c::',
-      `Java browser helper should share one kernel stdin cursor across System.in and device inputs: ${output}`
+      sharedStdinOutput === 'shared-stdin=-1:-1:-1::',
+      `Java browser helper should route System.in and device inputs through live host input only: ${output}`
     );
     assertCondition(
       deviceWriterOutput === 'file-writer-out|print-writer-out|tty-writer-out|print-writer-err|',
       `Java browser helper should route FileWriter and PrintWriter through kernel devices: ${output}`
     );
     assertCondition(
-      fileDescriptorReaderOutput === 'fd-reader=from-device',
-      `Java browser helper should route FileReader(FileDescriptor.in) through kernel stdin: ${output}`
+      fileDescriptorReaderOutput === 'fd-reader=',
+      `Java browser helper should expose EOF for FileReader(FileDescriptor.in) without a live host pipe: ${output}`
     );
     assertCondition(
       fileApiOutput === 'file-api=true:true:true:false:true:true:false:true:true:false:false:false:0:false:false:false:log,null,stdin,stdout,tty:stdout:log,null,stdout,tty',
@@ -567,7 +569,7 @@ public class ProjectEventsRandomAccessSmoke {
       (value) -> java.util.Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8));
     java.util.function.Function<String[], String> device = (fields) ->
       b64.apply(fields[0]) + "\\t" + b64.apply(fields[1]) + "\\t" + b64.apply(fields[2]) + "\\t" + b64.apply(fields[3]) + "\\t" + b64.apply(fields[4]);
-    ProjectEvents.setKernelDevices(device.apply(new String[] { "/dev/stdin", "1", "0", "/dev/stdin", "" }), "from-random-stdin\\n");
+    ProjectEvents.setKernelDevices(device.apply(new String[] { "/dev/stdin", "1", "0", "/dev/stdin", "" }));
     ProjectEvents.setKernelFiles(b64.apply("/tracekernel/custom") + "\\t" + b64.apply("custom-kernel-file\\n"));
     try {
       System.out.println("custom-random=" + readRandom("/tracekernel/custom").trim());
@@ -611,7 +613,7 @@ public class ProjectEventsRandomAccessSmoke {
       stdio: 'pipe',
     });
     assertCondition(
-      output.trim() === 'custom-random=custom-kernel-file\nstdin-random=from-random-stdin\ncustom-rw=IOException',
+      output.trim() === 'custom-random=custom-kernel-file\nstdin-random=\ncustom-rw=IOException',
       `Java ProjectEvents should route RandomAccessFile through kernel reads: ${output}`
     );
     console.log('PASS: Java ProjectEvents RandomAccessFile kernel reads');
@@ -2970,7 +2972,7 @@ async function main(): Promise<void> {
       args: ['alpha', 'beta'],
       cwd: '/workspace',
       env: {},
-      stdin: 'from-stdin\n',
+      stdinPipe: createRuntimeCommandStdinPipeFromText('from-stdin\n'),
       project: {
         directories: ['empty/child'],
         files: [
@@ -3974,7 +3976,6 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4018,7 +4019,6 @@ async function main(): Promise<void> {
       args: ['Main.java'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4050,7 +4050,6 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace/src',
       env: {},
-      stdin: '',
       project: {
         cwd: '/workspace',
         files: [
@@ -4072,7 +4071,6 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       options: { systemProperties: { 'trace.mode': 'browser', 'empty.value': '' } },
       project: {
         files: [
@@ -4119,7 +4117,6 @@ async function main(): Promise<void> {
       args: ['alpha', 'beta'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       options: { jarPath: 'app.jar', classpath: 'app.jar', jarMainClass: 'app.Main', systemProperties: { 'trace.mode': 'jar' } },
       project: {
         files: [
@@ -4157,7 +4154,6 @@ async function main(): Promise<void> {
       args: ['alpha', 'beta'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           { path: 'src/app/Helper.java', contents: 'package app;\nclass Helper { static int add(int a, int b) { return a + b; } }\n' },
@@ -4207,7 +4203,6 @@ async function main(): Promise<void> {
       args: ['@javac.args'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4254,7 +4249,6 @@ async function main(): Promise<void> {
       args: ['-verbose', '-d', 'out', '-sourcepath', 'src', 'src/app/Main.java'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4279,7 +4273,6 @@ async function main(): Promise<void> {
       args: ['-cp', '../lib/external.jar', '-d', '../rel-out', '-sourcepath', '../src', '../src/app/Main.java'],
       cwd: '/workspace/build',
       env: {},
-      stdin: '',
       project: {
         cwd: '/workspace',
         files: [
@@ -4319,7 +4312,6 @@ async function main(): Promise<void> {
       ],
       cwd: '/home/ada/weather-api/src',
       env: {},
-      stdin: '',
       project: {
         cwd: '/home/ada/weather-api',
         workspaceRoot: '/home/ada/weather-api',
@@ -4352,7 +4344,6 @@ async function main(): Promise<void> {
       args: ['-d', 'out', 'src/app/Main.java'],
       cwd: '/workspace',
       env: { CLASSPATH: '/workspace/lib/external.jar' },
-      stdin: '',
       project: {
         files: [
           {
@@ -4380,7 +4371,6 @@ async function main(): Promise<void> {
       args: ['-d', 'out', '-cp', '/outside/lib/external.jar', 'src/app/Main.java'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4403,7 +4393,6 @@ async function main(): Promise<void> {
       args: ['-d', 'out', '-cp', '../outside/lib/external.jar', 'src/app/Main.java'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4427,7 +4416,6 @@ async function main(): Promise<void> {
       args: ['--enable-preview', 'Main.java'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4454,7 +4442,6 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       options: { enablePreview: true },
       project: {
         files: [
@@ -4482,7 +4469,6 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           {
@@ -4512,7 +4498,6 @@ async function main(): Promise<void> {
       args: ['alpha', 'beta'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       options: { classpath: 'out' },
       project: {
         files: [
@@ -4554,7 +4539,6 @@ async function main(): Promise<void> {
       args: ['java/TicketTriage.java'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [
           { path: 'java/TicketTriage.java', contents: 'public class TicketTriage { public static void main(String[] args) {} }\n' },
@@ -4575,7 +4559,7 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: 'Acme\n5\n',
+      stdinPipe: createRuntimeCommandStdinPipeFromText('Acme\n5\n'),
       options: { classpath: 'java' },
       project: {
         files: [
@@ -4610,7 +4594,6 @@ async function main(): Promise<void> {
       args: ['gamma'],
       cwd: '/workspace',
       env: { CLASSPATH: '/workspace/out' },
-      stdin: '',
       project: {
         files: [
           { path: 'out/app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
@@ -4637,7 +4620,6 @@ async function main(): Promise<void> {
       args: ['delta'],
       cwd: '/workspace/build',
       env: { CLASSPATH: '../out:../lib/external.jar' },
-      stdin: '',
       project: {
         cwd: '/workspace',
         files: [
@@ -4665,7 +4647,6 @@ async function main(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: { CLASSPATH: '/outside/out' },
-      stdin: '',
       project: {
         files: [
           { path: 'out/app/Main.class', contents: 'yv66vg==', encoding: 'base64' },
@@ -4935,62 +4916,6 @@ class Solution {
     return root == null ? 0 : root.val;
   }
 }`;
-
-    const fieldMapReadCode = `import java.util.*;
-
-class Solution {
-  static class TrieNode {
-    Map<String, TrieNode> children = new HashMap<>();
-  }
-
-  public int walk(String word) {
-    TrieNode node = new TrieNode();
-    for (char ch : word.toCharArray()) {
-      if (!node.children.containsKey(String.valueOf(ch))) {
-        node.children.put(String.valueOf(ch), new TrieNode());
-      }
-      node = node.children.get(String.valueOf(ch));
-    }
-    return node.children.size();
-  }
-}`;
-    const fieldMapReadSource = assertNativeJavaRewriterCompiles(fieldMapReadCode, 'walk');
-    assertCondition(
-      fieldMapReadSource.includes('TraceHooks.containsFieldMapKeyAtLine') &&
-        fieldMapReadSource.includes('TraceHooks.readFieldMapAtLine') &&
-        fieldMapReadSource.includes('String.valueOf(ch)'),
-      `Java field map containsKey/get with computed keys should rewrite to keyed reads, received ${fieldMapReadSource}`
-    );
-    console.log('PASS: java rewriter emits keyed field-map reads for computed containsKey/get keys');
-
-    const fieldPathWriteCode = `class Node {
-  Node next;
-  Node prev;
-}
-
-class Solution {
-  Node head;
-  Node tail;
-
-  public int wire() {
-    this.head = new Node();
-    this.tail = new Node();
-    this.head.next = this.tail;
-    this.tail.prev = this.head;
-    head.next.prev = tail;
-    return 0;
-  }
-}`;
-    const fieldPathWriteSource = assertNativeJavaRewriterCompiles(fieldPathWriteCode, 'wire');
-    assertCondition(
-      fieldPathWriteSource.includes('TraceHooks.readFieldPathAtLine') &&
-        fieldPathWriteSource.includes('TraceHooks.emitFieldPathWriteAtLine') &&
-        fieldPathWriteSource.includes('new String[] { "head", "next" }') &&
-        fieldPathWriteSource.includes('new String[] { "tail", "prev" }') &&
-        fieldPathWriteSource.includes('new String[] { "next", "prev" }'),
-      `Java nested field assignments should rewrite to field-path writes, received ${fieldPathWriteSource}`
-    );
-    console.log('PASS: java rewriter emits field-path writes for nested object assignments');
 
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: treeInputCode,
@@ -6139,6 +6064,62 @@ class Solution {
       `Java field putIfAbsent should emit keyed mutate args and index-source evidence, received ${JSON.stringify(fieldPutIfAbsentTrace.events)}`
     );
     console.log('PASS: java worker emits field putIfAbsent mutation args and keyed evidence');
+
+    const fieldMapReadCode = `import java.util.*;
+
+class Solution {
+  static class TrieNode {
+    Map<String, TrieNode> children = new HashMap<>();
+  }
+
+  public int walk(String word) {
+    TrieNode node = new TrieNode();
+    for (char ch : word.toCharArray()) {
+      if (!node.children.containsKey(String.valueOf(ch))) {
+        node.children.put(String.valueOf(ch), new TrieNode());
+      }
+      node = node.children.get(String.valueOf(ch));
+    }
+    return node.children.size();
+  }
+}`;
+    const fieldMapReadSource = assertNativeJavaRewriterCompiles(fieldMapReadCode, 'walk');
+    assertCondition(
+      fieldMapReadSource.includes('TraceHooks.containsFieldMapKeyAtLine') &&
+        fieldMapReadSource.includes('TraceHooks.readFieldMapAtLine') &&
+        fieldMapReadSource.includes('String.valueOf(ch)'),
+      `Java field map containsKey/get with computed keys should rewrite to keyed reads, received ${fieldMapReadSource}`
+    );
+    console.log('PASS: java rewriter emits keyed field-map reads for computed containsKey/get keys');
+
+    const fieldPathWriteCode = `class Node {
+  Node next;
+  Node prev;
+}
+
+class Solution {
+  Node head;
+  Node tail;
+
+  public int wire() {
+    this.head = new Node();
+    this.tail = new Node();
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+    head.next.prev = tail;
+    return 0;
+  }
+}`;
+    const fieldPathWriteSource = assertNativeJavaRewriterCompiles(fieldPathWriteCode, 'wire');
+    assertCondition(
+      fieldPathWriteSource.includes('TraceHooks.readFieldPathAtLine') &&
+        fieldPathWriteSource.includes('TraceHooks.emitFieldPathWriteAtLine') &&
+        fieldPathWriteSource.includes('new String[] { "head", "next" }') &&
+        fieldPathWriteSource.includes('new String[] { "tail", "prev" }') &&
+        fieldPathWriteSource.includes('new String[] { "next", "prev" }'),
+      `Java nested field assignments should rewrite to field-path writes, received ${fieldPathWriteSource}`
+    );
+    console.log('PASS: java rewriter emits field-path writes for nested object assignments');
 
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: `class Solution {

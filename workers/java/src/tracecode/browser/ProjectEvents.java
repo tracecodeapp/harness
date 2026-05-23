@@ -61,10 +61,6 @@ public final class ProjectEvents {
       ThreadLocal.withInitial(HashMap::new);
   private static final ThreadLocal<Map<String, byte[]>> KERNEL_VIRTUAL_FILES =
       ThreadLocal.withInitial(HashMap::new);
-  private static final ThreadLocal<byte[]> KERNEL_STDIN =
-      ThreadLocal.withInitial(() -> new byte[0]);
-  private static final ThreadLocal<Integer> KERNEL_STDIN_OFFSET =
-      ThreadLocal.withInitial(() -> 0);
   private static final ThreadLocal<ByteArrayOutputStream> STDOUT_CAPTURE = new ThreadLocal<>();
   private static final ThreadLocal<ByteArrayOutputStream> STDERR_CAPTURE = new ThreadLocal<>();
   private static final ThreadLocal<OutputFileTargetInfo> LAST_OUTPUT_FILE_TARGET = new ThreadLocal<>();
@@ -96,10 +92,8 @@ public final class ProjectEvents {
     return new HashMap<>(PROJECT_ENVIRONMENT.get());
   }
 
-  public static void setKernelDevices(String manifest, String stdin) {
+  public static void setKernelDevices(String manifest) {
     KERNEL_DEVICES.set(parseKernelDevices(manifest));
-    KERNEL_STDIN.set(stdin == null ? new byte[0] : stdin.getBytes(StandardCharsets.UTF_8));
-    KERNEL_STDIN_OFFSET.set(0);
   }
 
   public static void setKernelFiles(String manifest) {
@@ -109,8 +103,6 @@ public final class ProjectEvents {
   public static void clearKernelDevices() {
     KERNEL_DEVICES.remove();
     KERNEL_VIRTUAL_FILES.remove();
-    KERNEL_STDIN.remove();
-    KERNEL_STDIN_OFFSET.remove();
     STDOUT_CAPTURE.remove();
     STDERR_CAPTURE.remove();
     PROJECT_ENVIRONMENT.remove();
@@ -1724,6 +1716,9 @@ public final class ProjectEvents {
   private static native void emitFileDeleteNative(String path);
   private static native void emitDirectoryCreateNative(String path);
   private static native void emitDirectoryDeleteNative(String path);
+  private static native int readInputNative(String device);
+  private static native int readInputAvailableNative(String device);
+  private static native int inputAvailableNative(String device);
 
   private static Map<String, KernelDevice> parseKernelDevices(String manifest) {
     Map<String, KernelDevice> devices = new HashMap<>();
@@ -2000,17 +1995,26 @@ public final class ProjectEvents {
   private static byte[] readKernelDevice(KernelDevice device) {
     if (!device.readable) return new byte[0];
     if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return new byte[0];
-    byte[] stdin = KERNEL_STDIN.get();
-    int offset = Math.max(0, Math.min(KERNEL_STDIN_OFFSET.get(), stdin.length));
-    byte[] bytes = java.util.Arrays.copyOfRange(stdin, offset, stdin.length);
-    KERNEL_STDIN_OFFSET.set(stdin.length);
-    return bytes;
+    int firstByte = readHostInputByte(device.path);
+    if (firstByte >= 0) {
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      out.write(firstByte);
+      while (true) {
+        int nextByte = readHostInputAvailableByte(device.path);
+        if (nextByte < 0) break;
+        out.write(nextByte);
+      }
+      return out.toByteArray();
+    }
+    return new byte[0];
   }
 
   private static int readKernelDeviceByte(KernelDevice device) {
     if (!device.readable) return -1;
     if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return -1;
-    return readKernelStdinByte();
+    int hostByte = readHostInputByte(device.path);
+    if (hostByte >= 0) return hostByte;
+    return -1;
   }
 
   private static int readKernelDeviceBytes(KernelDevice device, byte[] bytes, int offset, int length) {
@@ -2019,71 +2023,152 @@ public final class ProjectEvents {
     return readKernelStdinBytes(bytes, offset, length);
   }
 
+  private static int readKernelDeviceAvailableBytes(KernelDevice device, byte[] bytes, int offset, int length) {
+    if (!device.readable) return -1;
+    if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return length == 0 ? 0 : -1;
+    return readKernelStdinAvailableBytes(bytes, offset, length);
+  }
+
   private static long skipKernelDeviceBytes(KernelDevice device, long count) {
     if (!device.readable || count <= 0) return 0;
     if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return 0;
-    int skipped = Math.min((int) Math.min(count, Integer.MAX_VALUE), kernelStdinAvailable());
-    KERNEL_STDIN_OFFSET.set(KERNEL_STDIN_OFFSET.get() + skipped);
-    return skipped;
+    return 0;
   }
 
   private static int kernelDeviceAvailable(KernelDevice device) {
     if (!device.readable) return 0;
     if ("/dev/null".equals(device.inputDevice) || "/dev/null".equals(device.path)) return 0;
-    return kernelStdinAvailable();
+    return inputAvailable(device.path);
   }
 
   private static int readKernelStdinByte() {
-    byte[] stdin = KERNEL_STDIN.get();
-    int offset = Math.max(0, Math.min(KERNEL_STDIN_OFFSET.get(), stdin.length));
-    if (offset >= stdin.length) return -1;
-    KERNEL_STDIN_OFFSET.set(offset + 1);
-    return stdin[offset] & 0xff;
+    int hostByte = readHostInputByte("/dev/stdin");
+    if (hostByte >= 0) return hostByte;
+    return -1;
   }
 
   private static int readKernelStdinBytes(byte[] bytes, int offset, int length) {
     if (length == 0) return 0;
-    byte[] stdin = KERNEL_STDIN.get();
-    int stdinOffset = Math.max(0, Math.min(KERNEL_STDIN_OFFSET.get(), stdin.length));
-    if (stdinOffset >= stdin.length) return -1;
-    int count = Math.min(length, stdin.length - stdinOffset);
-    System.arraycopy(stdin, stdinOffset, bytes, offset, count);
-    KERNEL_STDIN_OFFSET.set(stdinOffset + count);
-    return count;
+    int firstByte = readHostInputByte("/dev/stdin");
+    if (firstByte >= 0) {
+      bytes[offset] = (byte) firstByte;
+      int count = 1;
+      while (count < length) {
+        int nextByte = readHostInputAvailableByte("/dev/stdin");
+        if (nextByte < 0) break;
+        bytes[offset + count] = (byte) nextByte;
+        count += 1;
+      }
+      return count;
+    }
+    return -1;
+  }
+
+  private static int readKernelStdinAvailableBytes(byte[] bytes, int offset, int length) {
+    if (length == 0) return 0;
+    int firstByte = readHostInputAvailableByte("/dev/stdin");
+    if (firstByte >= 0) {
+      bytes[offset] = (byte) firstByte;
+      int count = 1;
+      while (count < length) {
+        int nextByte = readHostInputAvailableByte("/dev/stdin");
+        if (nextByte < 0) break;
+        bytes[offset + count] = (byte) nextByte;
+        count += 1;
+      }
+      return count;
+    }
+    return -1;
   }
 
   private static int kernelStdinAvailable() {
-    byte[] stdin = KERNEL_STDIN.get();
-    int offset = Math.max(0, Math.min(KERNEL_STDIN_OFFSET.get(), stdin.length));
-    return stdin.length - offset;
+    return inputAvailable("/dev/stdin");
+  }
+
+  private static int inputAvailable(String device) {
+    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return 0;
+    try {
+      return inputAvailableNative(device == null ? "/dev/stdin" : device);
+    } catch (UnsatisfiedLinkError | SecurityException ignored) {
+      return 0;
+    }
+  }
+
+  private static int readHostInputByte(String device) {
+    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return -1;
+    try {
+      return readInputNative(device == null ? "/dev/stdin" : device);
+    } catch (UnsatisfiedLinkError | SecurityException ignored) {
+      return -1;
+    }
+  }
+
+  private static int readHostInputAvailableByte(String device) {
+    if (!PROJECT_EVENT_BRIDGE_ENABLED.get()) return -1;
+    try {
+      return readInputAvailableNative(device == null ? "/dev/stdin" : device);
+    } catch (UnsatisfiedLinkError | SecurityException ignored) {
+      return -1;
+    }
   }
 
   private static final class ProjectInputStream extends InputStream {
     private final KernelDevice device;
+    private byte[] pending = new byte[0];
+    private int pendingOffset = 0;
 
     ProjectInputStream(KernelDevice device) {
       this.device = device;
     }
 
+    private int fillPending() {
+      pending = new byte[0];
+      pendingOffset = 0;
+      byte[] oneByte = new byte[1];
+      int count = device != null
+          ? readKernelDeviceBytes(device, oneByte, 0, 1)
+          : readKernelStdinBytes(oneByte, 0, 1);
+      if (count <= 0) return count;
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      out.write(oneByte[0]);
+      while (oneByte[0] != (byte) '\n') {
+        count = device != null
+            ? readKernelDeviceAvailableBytes(device, oneByte, 0, 1)
+            : readKernelStdinAvailableBytes(oneByte, 0, 1);
+        if (count <= 0) break;
+        out.write(oneByte[0]);
+      }
+      pending = out.toByteArray();
+      return pending.length;
+    }
+
     @Override
     public int read() {
-      if (device != null) return readKernelDeviceByte(device);
-      return readKernelStdinByte();
+      if (pendingOffset >= pending.length) {
+        int count = fillPending();
+        if (count <= 0) return -1;
+      }
+      return pending[pendingOffset++] & 0xff;
     }
 
     @Override
     public int read(byte[] bytes, int offset, int length) {
-      if (device != null) return readKernelDeviceBytes(device, bytes, offset, length);
-      return readKernelStdinBytes(bytes, offset, length);
+      if (length == 0) return 0;
+      if (pendingOffset >= pending.length) {
+        int count = fillPending();
+        if (count <= 0) return count;
+      }
+      int count = Math.min(length, pending.length - pendingOffset);
+      System.arraycopy(pending, pendingOffset, bytes, offset, count);
+      pendingOffset += count;
+      return count;
     }
 
     @Override
     public long skip(long count) {
       if (count <= 0) return 0;
       if (device != null) return skipKernelDeviceBytes(device, count);
-      int skipped = Math.min((int) Math.min(count, Integer.MAX_VALUE), kernelStdinAvailable());
-      KERNEL_STDIN_OFFSET.set(KERNEL_STDIN_OFFSET.get() + skipped);
-      return skipped;
+      return 0;
     }
 
     @Override

@@ -22,6 +22,7 @@ export interface RuntimeProjectIoSupport {
   finalDiff: boolean;
   providerLiveInterception: boolean;
   streamingStdio: boolean;
+  liveStdin: boolean;
   deviceFiles: boolean;
 }
 
@@ -62,7 +63,7 @@ export interface RuntimeCapabilities {
       directories: boolean;
     };
     stdio: {
-      stdin: boolean;
+      liveStdin: boolean;
       outputEvents: boolean;
       deviceFiles: boolean;
     };

@@ -1,8 +1,14 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
-import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import {
+  emitRuntimeCommandFileChanges,
+  emitRuntimeCommandOutput,
+  readRuntimeCommandStdinPipeBytes,
+  runtimeCommandStdinPipeClosed,
+} from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -12,6 +18,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
+  RuntimeCommandStdinSharedBuffer,
 } from '../../harness-core/src/runtime-project';
 
 export type CppProjectFileEncoding = RuntimeFileEncoding;
@@ -377,7 +384,8 @@ function runProcess(
   options: {
     cwd: string;
     env: Record<string, string>;
-    stdin: string;
+    inputText?: string;
+    stdinPipe?: RuntimeCommandStdinSharedBuffer;
     timeoutMs: number;
     timeoutLabel: string;
     onEvent?: RuntimeCommandEventHandler;
@@ -446,8 +454,27 @@ function runProcess(
       });
     });
 
-    child.stdin.end(options.stdin);
+    if (options.stdinPipe) {
+      void pumpStdinPipeToChild(options.stdinPipe, child.stdin).catch(() => undefined);
+    } else {
+      child.stdin.end(options.inputText ?? '');
+    }
   });
+}
+
+async function pumpStdinPipeToChild(pipe: RuntimeCommandStdinSharedBuffer, stdin: NonNullable<ReturnType<typeof spawn>['stdin']>): Promise<void> {
+  while (true) {
+    const bytes = readRuntimeCommandStdinPipeBytes(pipe);
+    if (bytes.byteLength > 0) {
+      if (!stdin.write(Buffer.from(bytes))) {
+        await once(stdin, 'drain').catch(() => undefined);
+      }
+      continue;
+    }
+    if (runtimeCommandStdinPipeClosed(pipe)) break;
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  stdin.end();
 }
 
 export function createNativeCppProjectRunner(
@@ -476,7 +503,7 @@ export function createNativeCppProjectRunner(
         const result = await runProcess(compilerCommand, compileArgs, {
           cwd,
           env: mapCompileEnv(root, cwd, request.env, request.project),
-          stdin: request.stdin,
+          inputText: request.code,
           timeoutMs,
           timeoutLabel: compilerCommand,
           onEvent: request.onEvent,
@@ -492,7 +519,7 @@ export function createNativeCppProjectRunner(
       const result = await runProcess(executablePath, request.args, {
         cwd,
         env: request.env,
-        stdin: request.stdin,
+        stdinPipe: request.stdinPipe,
         timeoutMs,
         timeoutLabel: request.scriptPath || './a.out',
         onEvent: request.onEvent,

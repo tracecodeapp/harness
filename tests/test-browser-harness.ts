@@ -2,6 +2,7 @@
 
 import { createBrowserHarness, resolveBrowserHarnessAssets } from '../packages/harness-browser/src';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -398,7 +399,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/home/user/project',
         env: {},
-        stdin: '',
         project: {
           cwd: '/home/user/project',
           workspaceRoot: '/home/user/project',

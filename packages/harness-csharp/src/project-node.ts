@@ -1,8 +1,14 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { access, chmod, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative } from 'node:path';
-import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import {
+  emitRuntimeCommandFileChanges,
+  emitRuntimeCommandOutput,
+  readRuntimeCommandStdinPipeBytes,
+  runtimeCommandStdinPipeClosed,
+} from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -12,6 +18,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
+  RuntimeCommandStdinSharedBuffer,
 } from '../../harness-core/src/runtime-project';
 
 export type CSharpProjectFileEncoding = RuntimeFileEncoding;
@@ -428,7 +435,7 @@ function runProcess(
   options: {
     cwd: string;
     env: Record<string, string>;
-    stdin: string;
+    stdinPipe?: RuntimeCommandStdinSharedBuffer;
     timeoutMs: number;
     timeoutLabel: string;
     onEvent?: RuntimeCommandEventHandler;
@@ -501,8 +508,27 @@ function runProcess(
       });
     });
 
-    child.stdin.end(options.stdin);
+    if (options.stdinPipe) {
+      void pumpStdinPipeToChild(options.stdinPipe, child.stdin).catch(() => undefined);
+    } else {
+      child.stdin.end();
+    }
   });
+}
+
+async function pumpStdinPipeToChild(pipe: RuntimeCommandStdinSharedBuffer, stdin: NonNullable<ReturnType<typeof spawn>['stdin']>): Promise<void> {
+  while (true) {
+    const bytes = readRuntimeCommandStdinPipeBytes(pipe);
+    if (bytes.byteLength > 0) {
+      if (!stdin.write(Buffer.from(bytes))) {
+        await once(stdin, 'drain').catch(() => undefined);
+      }
+      continue;
+    }
+    if (runtimeCommandStdinPipeClosed(pipe)) break;
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  stdin.end();
 }
 
 async function resolveDotnetCommand(command: string): Promise<string> {
@@ -556,7 +582,7 @@ export function createNativeCSharpProjectRunner(
         const result = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, request.args, request.project)], {
           cwd,
           env: request.env,
-          stdin: request.stdin,
+          stdinPipe: request.stdinPipe,
           timeoutMs,
           timeoutLabel: 'dotnet build',
           onEvent: request.onEvent,
@@ -571,7 +597,6 @@ export function createNativeCSharpProjectRunner(
         const build = await runProcess(resolvedDotnetCommand, ['build', projectArg, '--nologo', ...mappedDotnetArgs(root, buildArgsForRequest(request), request.project)], {
           cwd,
           env: request.env,
-          stdin: '',
           timeoutMs,
           timeoutLabel: 'dotnet build',
           onEvent: request.onEvent,
@@ -584,7 +609,7 @@ export function createNativeCSharpProjectRunner(
       const run = await runProcess(resolvedDotnetCommand, ['run', '--project', projectArg, '--no-build', '--no-launch-profile', '--', ...request.args], {
         cwd,
         env: request.env,
-        stdin: request.stdin,
+        stdinPipe: request.stdinPipe,
         timeoutMs,
         timeoutLabel: 'dotnet run',
         onEvent: request.onEvent,

@@ -1,8 +1,14 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
-import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import {
+  emitRuntimeCommandFileChanges,
+  emitRuntimeCommandOutput,
+  readRuntimeCommandStdinPipeBytes,
+  runtimeCommandStdinPipeClosed,
+} from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -12,6 +18,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
+  RuntimeCommandStdinSharedBuffer,
 } from '../../harness-core/src/runtime-project';
 
 export type PythonProjectFileEncoding = RuntimeFileEncoding;
@@ -345,6 +352,21 @@ function mapPythonPathList(value: unknown, root: string, cwd: string, project: P
     .join(delimiter);
 }
 
+async function pumpStdinPipeToChild(pipe: RuntimeCommandStdinSharedBuffer, stdin: NonNullable<ReturnType<typeof spawn>['stdin']>): Promise<void> {
+  while (true) {
+    const bytes = readRuntimeCommandStdinPipeBytes(pipe);
+    if (bytes.byteLength > 0) {
+      if (!stdin.write(Buffer.from(bytes))) {
+        await once(stdin, 'drain').catch(() => undefined);
+      }
+      continue;
+    }
+    if (runtimeCommandStdinPipeClosed(pipe)) break;
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  stdin.end();
+}
+
 export function createNativePythonProjectRunner(
   options: NativePythonProjectRunnerOptions = {}
 ): PythonProjectCommandRunner {
@@ -431,7 +453,11 @@ export function createNativePythonProjectRunner(
           });
         });
 
-        child.stdin.end(request.source === 'stdin' ? request.code : request.stdin);
+        if (request.stdinPipe && request.source !== 'stdin') {
+          void pumpStdinPipeToChild(request.stdinPipe, child.stdin).catch(() => undefined);
+        } else {
+          child.stdin.end(request.source === 'stdin' ? request.code : '');
+        }
       });
 
       const files = await changedProjectFiles(root, request.project);

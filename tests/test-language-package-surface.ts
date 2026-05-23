@@ -401,12 +401,15 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         '@tracecode/harness-javascript browser project runner should ship routed source device output events'
       );
       assertCondition(
-        projectBrowser.includes('let stdinOffset = 0') &&
+        projectBrowser.includes('readRuntimeCommandStdinPipeBytes') &&
+          projectBrowser.includes('runtimeCommandStdinPipeRemainingBytes') &&
+          projectBrowser.includes('runtimeCommandStdinPipeClosed') &&
           projectBrowser.includes('const readDeviceBytes = (device, size) =>') &&
           projectBrowser.includes('const stdinDevice = createReadableStdinDevice(') &&
           projectBrowser.includes('(size) => readDeviceBytes("/dev/stdin", size)') &&
+          projectBrowser.includes('eventLoopApi.setTimeout') &&
           projectBrowser.includes('if (entry.kind === "device") return readDeviceBytes(entry.device ?? "/dev/stdin");'),
-        '@tracecode/harness-javascript browser project runner should share process.stdin and device stdin cursor'
+        '@tracecode/harness-javascript browser project runner should share process.stdin and device stdin cursor through live stdin pipes'
       );
       assertCondition(
         projectBrowser.includes('io.fileChange({ path, directory: true }, "live")') &&

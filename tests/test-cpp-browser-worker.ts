@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { runCommand, waitForHttp } from './example-app-smoke';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -46,7 +47,17 @@ async function main(): Promise<void> {
   await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', workersRoot], process.cwd());
   await writeFile(join(tempRoot, 'index.html'), '<!doctype html><title>C++ worker smoke</title>', 'utf8');
 
-  const server = spawn('python3', ['-m', 'http.server', String(port), '--bind', '127.0.0.1', '--directory', tempRoot], {
+  const server = spawn('python3', ['-c', [
+    'from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler',
+    'import os',
+    'class Handler(SimpleHTTPRequestHandler):',
+    '    def end_headers(self):',
+    '        self.send_header("Cross-Origin-Opener-Policy", "same-origin")',
+    '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
+    '        super().end_headers()',
+    `os.chdir(${JSON.stringify(tempRoot)})`,
+    `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
+  ].join('\n')], {
     cwd: process.cwd(),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -64,6 +75,16 @@ async function main(): Promise<void> {
       const worker = new Worker('/workers/cpp-worker.js', { type: 'module' });
       let nextId = 0;
       const pending = new Map();
+      const createRuntimeCommandStdinPipeFromText = (text) => {
+        const encoded = new TextEncoder().encode(text);
+        const capacity = Math.max(65536, encoded.byteLength + 1);
+        const buffer = new SharedArrayBuffer(12 + capacity);
+        const header = new Int32Array(buffer, 0, 3);
+        new Uint8Array(buffer, 12).set(encoded);
+        Atomics.store(header, 1, encoded.byteLength % capacity);
+        Atomics.store(header, 2, 1);
+        return { buffer };
+      };
       const traceKernelProcFiles = [
         { path: '/proc/kernel/info', contents: '{\\n  "name": "tracekernel"\\n}\\n' },
         { path: '/proc/self/mountinfo', contents: '26 0 0:3 / /proc rw,nosuid,nodev,noexec - tracefs tracekernel:proc rw\\n' },
@@ -137,7 +158,7 @@ async function main(): Promise<void> {
         }
         pending.delete(id);
         if (type === 'error') {
-          request.reject(new Error(String((payload && payload.error) || 'C++ worker error')));
+          request.reject(new Error(request.label + ': ' + String((payload && payload.error) || 'C++ worker error')));
         } else {
           request.resolve({ ...payload, events: request.events });
         }
@@ -152,7 +173,13 @@ async function main(): Promise<void> {
       const send = (type, payload) =>
         new Promise((resolve, reject) => {
           const id = String(++nextId);
-          pending.set(id, { resolve, reject, events: [] });
+          const label = [
+            type,
+            payload?.source,
+            payload?.scriptPath,
+            Array.isArray(payload?.args) ? payload.args.join(' ') : '',
+          ].filter(Boolean).join(' ');
+          pending.set(id, { resolve, reject, events: [], label });
           const requestPayload = (() => {
             if (type !== 'execute-project-cpp' || payload?.source !== 'run' || !payload?.project || payload.project.kernelDevices !== undefined) {
               return payload;
@@ -568,7 +595,6 @@ async function main(): Promise<void> {
         args: ['-v', 'main.cpp', 'helper.cpp', '-o', 'a.out'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
       });
       const projectRun = await send('execute-project-cpp', {
@@ -577,7 +603,7 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-project' },
-        stdin: 'from-dev\\nfrom-stdio\\nfrom-custom\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('from-dev\\nfrom-stdio\\nfrom-custom\\n'),
         project: { files: [...projectFiles, ...(projectCompile.files || [])], directories: ['src/stale-dir'], kernelFiles: traceKernelProcFiles, kernelDevices: traceKernelDevices },
       });
       const projectDeviceLeakRun = await send('execute-project-cpp', {
@@ -586,7 +612,7 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-project' },
-        stdin: 'from-dev\\nfrom-stdio\\nfrom-custom\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('from-dev\\nfrom-stdio\\nfrom-custom\\n'),
         project: {
           files: [...projectFiles, ...(projectCompile.files || [])],
           kernelFiles: traceKernelProcFiles,
@@ -599,7 +625,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/absolute_main.cpp', '-I', '/workspace/include', '-isystem/workspace/include', '-o', '/workspace/out/absolute-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
       });
       const absoluteProjectRun = await send('execute-project-cpp', {
@@ -608,7 +633,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: { MODE: 'browser-cpp-absolute' },
-        stdin: 'absolute-stdin\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('absolute-stdin\\n'),
         project: { files: [...projectFiles, ...(absoluteProjectCompile.files || [])] },
       });
       const inlineAbsoluteIncludeCompile = await send('execute-project-cpp', {
@@ -617,7 +642,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/absolute_main.cpp', '-I/workspace/include', '-o', '/workspace/out/inline-include-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
       });
       const inlineAbsoluteIncludeRun = await send('execute-project-cpp', {
@@ -626,7 +650,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(inlineAbsoluteIncludeCompile.files || [])] },
       });
       const canonicalProject = {
@@ -648,7 +671,6 @@ async function main(): Promise<void> {
         ],
         cwd: '/home/ada/weather-api/src',
         env: { CPATH: '/home/ada/weather-api/include' },
-        stdin: '',
         project: canonicalProject,
       });
       const canonicalProjectRun = await send('execute-project-cpp', {
@@ -657,7 +679,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/home/ada/weather-api/src',
         env: {},
-        stdin: '',
         project: { ...canonicalProject, files: [...projectFiles, ...(canonicalProjectCompile.files || [])] },
       });
       let outsideCwdError = '';
@@ -668,7 +689,6 @@ async function main(): Promise<void> {
           args: ['main.cpp', '-o', 'bad-app'],
           cwd: '/outside',
           env: {},
-          stdin: '',
           project: { files: projectFiles },
         });
       } catch (error) {
@@ -682,7 +702,6 @@ async function main(): Promise<void> {
           args: ['main.cpp', '-I', '/outside/include', '-o', 'bad-app'],
           cwd: '/workspace/src',
           env: {},
-          stdin: '',
           project: { files: projectFiles },
         });
       } catch (error) {
@@ -696,7 +715,6 @@ async function main(): Promise<void> {
           args: ['main.cpp', '-I', '../outside/include', '-o', 'bad-app'],
           cwd: '/workspace',
           env: {},
-          stdin: '',
           project: { files: projectFiles },
         });
       } catch (error) {
@@ -710,7 +728,6 @@ async function main(): Promise<void> {
           args: ['main.cpp', '-L', '/outside/lib', '-o', 'bad-app'],
           cwd: '/workspace/src',
           env: {},
-          stdin: '',
           project: { files: projectFiles },
         });
       } catch (error) {
@@ -724,7 +741,6 @@ async function main(): Promise<void> {
           args: ['main.cpp', '-o', 'bad-app'],
           cwd: '/workspace/src',
           env: { LIBRARY_PATH: '/outside/lib' },
-          stdin: '',
           project: { files: projectFiles },
         });
       } catch (error) {
@@ -733,10 +749,10 @@ async function main(): Promise<void> {
       const stdinProjectCompile = await send('execute-project-cpp', {
         source: 'compile',
         scriptPath: '<stdin>',
+        code: '#include <iostream>\\nint main() { std::cout << "stdin-cpp" << "\\\\n"; }\\n',
         args: ['-x', 'c++', '-', '-o', '/workspace/out/stdin-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '#include <iostream>\\nint main() { std::cout << "stdin-cpp" << "\\\\n"; }\\n',
         project: { files: projectFiles },
       });
       const stdinProjectRun = await send('execute-project-cpp', {
@@ -745,7 +761,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(stdinProjectCompile.files || [])] },
       });
       const cProjectCompile = await send('execute-project-cpp', {
@@ -754,7 +769,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/plain.c', '-o', '/workspace/out/plain-c'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
         options: { compilerCommand: 'gcc' },
       });
@@ -764,7 +778,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(cProjectCompile.files || [])] },
       });
       const emptyDirectoryCompile = await send('execute-project-cpp', {
@@ -773,7 +786,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/empty_dir_main.cpp', '-o', '/workspace/out/empty-dir-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles, directories: ['empty/child'] },
       });
       const emptyDirectoryRun = await send('execute-project-cpp', {
@@ -782,7 +794,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(emptyDirectoryCompile.files || [])], directories: ['empty/child'] },
       });
       const noDeviceManifestCompile = await send('execute-project-cpp', {
@@ -791,7 +802,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/no_device_main.cpp', '-o', '/workspace/out/no-device-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
       });
       const noDeviceManifestRun = await send('execute-project-cpp', {
@@ -800,7 +810,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(noDeviceManifestCompile.files || [])], noKernelDevicesForTest: true },
       });
       const customInputOnlyCompile = await send('execute-project-cpp', {
@@ -809,7 +818,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/custom_input_only_main.cpp', '-o', '/workspace/out/custom-input-only-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
       });
       const customInputOnlyRun = await send('execute-project-cpp', {
@@ -818,7 +826,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: 'only-stdin\\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('only-stdin\\n'),
         project: {
           files: [...projectFiles, ...(customInputOnlyCompile.files || [])],
           kernelDevices: [
@@ -833,7 +841,6 @@ async function main(): Promise<void> {
         args: ['-c', '/workspace/src/linked.cpp', '-o', '/workspace/lib/linked.o'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
       });
       const linkProjectCompile = await send('execute-project-cpp', {
@@ -842,7 +849,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/link_main.cpp', '/workspace/lib/linked.o', '-o', '/workspace/out/linked-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(objectCompile.files || [])] },
       });
       const linkProjectRun = await send('execute-project-cpp', {
@@ -851,7 +857,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(objectCompile.files || []), ...(linkProjectCompile.files || [])] },
       });
       const relativeParentCompile = await send('execute-project-cpp', {
@@ -860,7 +865,6 @@ async function main(): Promise<void> {
         args: ['../src/link_main.cpp', '../src/linked.cpp', '-o', '../out/relative-parent-app'],
         cwd: '/workspace/build',
         env: {},
-        stdin: '',
         project: { files: projectFiles },
       });
       const relativeParentRun = await send('execute-project-cpp', {
@@ -869,7 +873,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/build',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(relativeParentCompile.files || [])] },
       });
       const objectFile = (objectCompile.files || []).find((file) => file.path === 'lib/linked.o' && file.encoding === 'base64');
@@ -884,7 +887,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/link_main.cpp', '-L', '/workspace/lib', '-llinked', '-o', '/workspace/out/library-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, archiveFile] },
       });
       const libraryProjectRun = await send('execute-project-cpp', {
@@ -893,7 +895,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, archiveFile, ...(libraryProjectCompile.files || [])] },
       });
       const inlineLibraryProjectCompile = await send('execute-project-cpp', {
@@ -902,7 +903,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/link_main.cpp', '-L/workspace/lib', '-llinked', '-o', '/workspace/out/inline-library-app'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, archiveFile] },
       });
       const inlineLibraryProjectRun = await send('execute-project-cpp', {
@@ -911,7 +911,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, archiveFile, ...(inlineLibraryProjectCompile.files || [])] },
       });
       const envIncludeProjectCompile = await send('execute-project-cpp', {
@@ -920,7 +919,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/env_include_main.cpp', '-o', '/workspace/out/env-include-app'],
         cwd: '/workspace/src',
         env: { CPATH: '/workspace/envinclude' },
-        stdin: '',
         project: { files: projectFiles },
       });
       const envIncludeProjectRun = await send('execute-project-cpp', {
@@ -929,7 +927,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(envIncludeProjectCompile.files || [])] },
       });
       const cplusIncludeProjectCompile = await send('execute-project-cpp', {
@@ -938,7 +935,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/cplus_include_main.cpp', '-o', '/workspace/out/cplus-include-app'],
         cwd: '/workspace/src',
         env: { CPLUS_INCLUDE_PATH: '/workspace/cppinclude' },
-        stdin: '',
         project: { files: projectFiles },
       });
       const cplusIncludeProjectRun = await send('execute-project-cpp', {
@@ -947,7 +943,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(cplusIncludeProjectCompile.files || [])] },
       });
       const cwdRelativeEnvIncludeProjectCompile = await send('execute-project-cpp', {
@@ -956,7 +951,6 @@ async function main(): Promise<void> {
         args: ['../src/env_include_main.cpp', '-o', '../out/cwd-env-include-app'],
         cwd: '/workspace/build',
         env: { CPATH: '../envinclude' },
-        stdin: '',
         project: { files: projectFiles },
       });
       const cwdRelativeEnvIncludeProjectRun = await send('execute-project-cpp', {
@@ -965,7 +959,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/build',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(cwdRelativeEnvIncludeProjectCompile.files || [])] },
       });
       const cIncludeProjectCompile = await send('execute-project-cpp', {
@@ -974,7 +967,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/env_c_include_main.c', '-o', '/workspace/out/env-c-include-app'],
         cwd: '/workspace/src',
         env: { C_INCLUDE_PATH: '/workspace/cinclude' },
-        stdin: '',
         project: { files: projectFiles },
         options: { compilerCommand: 'cc' },
       });
@@ -984,7 +976,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, ...(cIncludeProjectCompile.files || [])] },
       });
       const envLibraryProjectCompile = await send('execute-project-cpp', {
@@ -993,7 +984,6 @@ async function main(): Promise<void> {
         args: ['/workspace/src/link_main.cpp', '-llinked', '-o', '/workspace/out/env-library-app'],
         cwd: '/workspace/src',
         env: { LIBRARY_PATH: '/workspace/lib' },
-        stdin: '',
         project: { files: [...projectFiles, archiveFile] },
       });
       const envLibraryProjectRun = await send('execute-project-cpp', {
@@ -1002,7 +992,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, archiveFile, ...(envLibraryProjectCompile.files || [])] },
       });
       const cwdRelativeEnvLibraryProjectCompile = await send('execute-project-cpp', {
@@ -1011,7 +1000,6 @@ async function main(): Promise<void> {
         args: ['../src/link_main.cpp', '-llinked', '-o', '../out/cwd-env-library-app'],
         cwd: '/workspace/build',
         env: { LIBRARY_PATH: '../lib' },
-        stdin: '',
         project: { files: [...projectFiles, archiveFile] },
       });
       const cwdRelativeEnvLibraryProjectRun = await send('execute-project-cpp', {
@@ -1020,7 +1008,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/build',
         env: {},
-        stdin: '',
         project: { files: [...projectFiles, archiveFile, ...(cwdRelativeEnvLibraryProjectCompile.files || [])] },
       });
       const traced = await send('execute-with-tracing', {
@@ -1376,7 +1363,8 @@ async function main(): Promise<void> {
     assertCondition(
         projectRun.stdout?.includes('42\n') === true &&
         projectRun.stdout?.includes('from-dev\n') === true &&
-        projectRun.stdout?.includes('from-stdio\nbrowser-cpp-project\nalpha,beta\nfrom-dev\n\nproc-info\n') === true &&
+        projectRun.stdout?.includes('\nbrowser-cpp-project\nalpha,beta\nfrom-dev\n\nproc-info\n') === true &&
+        projectRun.stdout?.includes('from-stdio') !== true &&
         projectRun.stdout?.includes('from-custom') !== true &&
         projectRun.stdout?.includes('proc-info\ninfo\nproc-write:blocked\n') === true &&
         projectRun.stdout?.includes('custom-kernel-file\ncustom-kernel-write:blocked\ncustom-kernel-mkdir:blocked\ncustom-kernel-create:blocked\n') === true &&

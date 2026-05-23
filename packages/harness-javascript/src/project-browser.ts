@@ -13,6 +13,13 @@ import type {
   RuntimeProjectSnapshot,
 } from '../../harness-core/src/runtime-project';
 import {
+  RuntimeProjectLiveIoController,
+  createRuntimeProjectIoBridge,
+  readRuntimeCommandStdinPipeBytes,
+  runtimeCommandStdinPipeClosed,
+  runtimeCommandStdinPipeRemainingBytes,
+} from '../../harness-core/src/runtime-project';
+import {
   createTypeScriptProjectRunner,
   type TypeScriptProjectCompiler,
 } from './typescript-project';
@@ -26,7 +33,6 @@ export {
   type TypeScriptProjectRunnerOptions,
   type TypeScriptProjectSnapshot,
 } from './typescript-project';
-import { RuntimeProjectLiveIoController, createRuntimeProjectIoBridge } from '../../harness-core/src/runtime-project';
 import {
   runtimeDeviceDirEntries,
   runtimeDeviceEntryKind,
@@ -731,9 +737,15 @@ function createZlibApi() {
   };
 }
 
-function createReadableStdinDevice(readBytes: (size?: number) => Uint8Array, remainingBytes: () => number) {
+function createReadableStdinDevice(
+  readBytes: (size?: number) => Uint8Array,
+  remainingBytes: () => number,
+  isClosed: () => boolean = () => true,
+  schedulePoll: (callback: () => void, delay: number) => unknown = (callback, delay) => setTimeout(callback, delay)
+) {
   let encoding: string | undefined;
   let flowScheduled = false;
+  let pollScheduled = false;
   let destroyed = false;
   let ended = false;
   let readableFlowing: boolean | null = null;
@@ -745,7 +757,7 @@ function createReadableStdinDevice(readBytes: (size?: number) => Uint8Array, rem
   );
   const read = (size?: number): BrowserBuffer | string | null => {
     if (remainingBytes() <= 0) {
-      ended = true;
+      ended = isClosed();
       return null;
     }
     const requested = typeof size === 'number' && size >= 0 ? Math.floor(size) : undefined;
@@ -762,6 +774,24 @@ function createReadableStdinDevice(readBytes: (size?: number) => Uint8Array, rem
       const chunk = read();
       if (chunk !== null) {
         for (const listener of dataListeners) listener(chunk);
+        if (ended) {
+          for (const listener of endListeners) listener();
+        } else {
+          flowScheduled = false;
+          scheduleFlow();
+        }
+        return;
+      }
+      if (!isClosed()) {
+        flowScheduled = false;
+        if (!pollScheduled) {
+          pollScheduled = true;
+          schedulePoll(() => {
+            pollScheduled = false;
+            scheduleFlow();
+          }, 8);
+        }
+        return;
       }
       ended = true;
       for (const listener of endListeners) listener();
@@ -1745,21 +1775,25 @@ async function runBrowserJavaScriptProjectRequest(
       emitOutput(route.stream, data, route.outputDevice, route.sourceDevice);
     };
 
-    const stdinBytes = utf8Bytes(request.stdin);
-    let stdinOffset = 0;
     const readDeviceBytes = (device: RuntimeKernelDevicePath, size?: number): Uint8Array => {
       const inputRoute = runtimeKernelDeviceInputRoute(kernelDevices, device);
       if (!inputRoute) return new Uint8Array();
-      const remaining = Math.max(0, stdinBytes.byteLength - stdinOffset);
-      const count = typeof size === 'number' && size >= 0 ? Math.min(Math.floor(size), remaining) : remaining;
-      const bytes = stdinBytes.slice(stdinOffset, stdinOffset + count);
-      stdinOffset += count;
-      return bytes;
+      if (request.stdinPipe) {
+        return readRuntimeCommandStdinPipeBytes(request.stdinPipe, size);
+      }
+      return new Uint8Array();
     };
     const remainingDeviceBytes = (device: RuntimeKernelDevicePath): number => (
       runtimeKernelDeviceInputRoute(kernelDevices, device)
-        ? Math.max(0, stdinBytes.byteLength - stdinOffset)
+        ? request.stdinPipe
+          ? runtimeCommandStdinPipeRemainingBytes(request.stdinPipe)
+          : 0
         : 0
+    );
+    const deviceInputClosed = (device: RuntimeKernelDevicePath): boolean => (
+      runtimeKernelDeviceInputRoute(kernelDevices, device)
+        ? request.stdinPipe ? runtimeCommandStdinPipeClosed(request.stdinPipe) : true
+        : true
     );
     const readDevice = (device: RuntimeKernelDevicePath): string => textFromBytes(readDeviceBytes(device));
 
@@ -1880,9 +1914,12 @@ async function runBrowserJavaScriptProjectRequest(
       return stream;
     };
 
+    const eventLoopApi = createBrowserEventLoopApi(executionState);
     const stdinDevice = createReadableStdinDevice(
       (size) => readDeviceBytes('/dev/stdin', size),
-      () => remainingDeviceBytes('/dev/stdin')
+      () => remainingDeviceBytes('/dev/stdin'),
+      () => deviceInputClosed('/dev/stdin'),
+      eventLoopApi.setTimeout
     );
     const processApi = {
       argv: processArgvForRequest(request),
@@ -1898,7 +1935,6 @@ async function runBrowserJavaScriptProjectRequest(
         });
       },
     };
-    const eventLoopApi = createBrowserEventLoopApi(executionState);
     const nodePathSearchEntries = nodePathEntries(request, cwdPath, workspacePathContext);
     const syncTextModule = (path: string, bytes: Uint8Array): void => {
       const text = textFromBytes(bytes);

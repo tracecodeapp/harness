@@ -427,10 +427,10 @@ async function compileProjectWithYowasp(payload) {
     ? payload.args.map((arg) => String(arg) === '-' ? stdinSourcePath : String(arg))
     : [];
   if (requestedArgs.includes(stdinSourcePath)) {
-    const stdinBytes = encodeUtf8(String(payload?.stdin ?? ''));
-    sourceFiles[stdinSourcePath] = stdinBytes;
+    const sourceInputBytes = encodeUtf8(String(payload?.sourceInput ?? ''));
+    sourceFiles[stdinSourcePath] = sourceInputBytes;
     if (cwd && stdinSourcePath.startsWith(`${cwd}/`)) {
-      sourceFiles[stdinSourcePath.slice(cwd.length + 1)] = stdinBytes;
+      sourceFiles[stdinSourcePath.slice(cwd.length + 1)] = sourceInputBytes;
     }
   }
   const linkTracekernelStatvfs = shouldLinkTracekernelStatvfs(requestedArgs);

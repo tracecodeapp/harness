@@ -1138,19 +1138,57 @@ function normalizeProjectKernelDevices(value) {
   return devices;
 }
 
-function installPyodideProjectStdioBridge(kernelDevices, stdin) {
+const STDIN_PIPE_HEADER_INTS = 3;
+const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const STDIN_PIPE_READ_INDEX = 0;
+const STDIN_PIPE_WRITE_INDEX = 1;
+const STDIN_PIPE_CLOSED_INDEX = 2;
+
+function stdinPipeState(pipe) {
+  const buffer = pipe?.buffer;
+  if (
+    typeof SharedArrayBuffer === 'undefined' ||
+    !(buffer instanceof SharedArrayBuffer) ||
+    buffer.byteLength <= STDIN_PIPE_HEADER_BYTES
+  ) {
+    return null;
+  }
+  return {
+    header: new Int32Array(buffer, 0, STDIN_PIPE_HEADER_INTS),
+    bytes: new Uint8Array(buffer, STDIN_PIPE_HEADER_BYTES),
+  };
+}
+
+function stdinPipeAvailable(state, readIndex, writeIndex) {
+  const capacity = state.bytes.byteLength;
+  return readIndex <= writeIndex
+    ? writeIndex - readIndex
+    : capacity - readIndex + writeIndex;
+}
+
+function readStdinPipeByte(state) {
+  if (!state) return -1;
+  const capacity = state.bytes.byteLength;
+  while (true) {
+    const readIndex = Atomics.load(state.header, STDIN_PIPE_READ_INDEX);
+    const writeIndex = Atomics.load(state.header, STDIN_PIPE_WRITE_INDEX);
+    if (stdinPipeAvailable(state, readIndex, writeIndex) > 0) {
+      const byte = state.bytes[readIndex];
+      Atomics.store(state.header, STDIN_PIPE_READ_INDEX, (readIndex + 1) % capacity);
+      return byte;
+    }
+    if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) !== 0) return -1;
+    Atomics.wait(state.header, STDIN_PIPE_WRITE_INDEX, writeIndex);
+  }
+}
+
+function installPyodideProjectStdioBridge(kernelDevices, stdinPipe) {
   if (!pyodide) return () => {};
 
   const devices = normalizeProjectKernelDevices(kernelDevices);
   const kernelPolicy = self.TraceRuntimeKernelPolicy;
   const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder('utf-8') : null;
-  const encodeUtf8 = (value) => {
-    const text = String(value ?? '');
-    if (typeof TextEncoder === 'function') return new TextEncoder().encode(text);
-    return Uint8Array.from(unescape(encodeURIComponent(text)), (char) => char.charCodeAt(0));
-  };
-  const stdinBytes = encodeUtf8(stdin);
-  let stdinOffset = 0;
+  const stdinPipeReader = stdinPipeState(stdinPipe);
   const previousReadProjectStdinByte = self.__tracecodeReadProjectStdinByte;
   const deviceInputSource = (device) => (
     kernelPolicy && typeof kernelPolicy.runtimeKernelDeviceInputSource === 'function'
@@ -1166,10 +1204,8 @@ function installPyodideProjectStdioBridge(kernelDevices, stdin) {
   const readProjectStdinByte = (device = '/dev/stdin') => {
     const inputDevice = deviceInputSource(device);
     if (!inputDevice || inputDevice === '/dev/null') return -1;
-    if (stdinOffset >= stdinBytes.byteLength) return -1;
-    const value = stdinBytes[stdinOffset];
-    stdinOffset += 1;
-    return value;
+    if (stdinPipeReader) return readStdinPipeByte(stdinPipeReader);
+    return -1;
   };
   self.__tracecodeReadProjectStdinByte = readProjectStdinByte;
 
@@ -1286,7 +1322,7 @@ async function executeProjectPython(request, messageId) {
   self.__tracecodeInstallProjectFsMutationEvents = installPyodideProjectFsMutationEvents;
   const restoreProviderStdioBridge = installPyodideProjectStdioBridge(
     request?.project?.kernelDevices,
-    request?.stdin ?? ''
+    request?.stdinPipe
   );
   const projectCode = `
 import base64

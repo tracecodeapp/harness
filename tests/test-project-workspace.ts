@@ -11,13 +11,20 @@ import {
   type CppProjectCommandRequest,
   type CSharpProjectCommandRequest,
   type PythonProjectCommandRequest,
+  type RuntimeCommandOptions,
   type RuntimeCommandResult,
   type RuntimeCommandEvent,
+  type RuntimeWorkspace,
   type RuntimeWorkspaceEvent,
   createRuntimeWorkspace,
   normalizeRuntimeProjectPath,
 } from '../packages/harness-project/src/index';
-import { RuntimeProjectEventQueue } from '../packages/harness-core/src/runtime-project';
+import {
+  createRuntimeCommandStdinPipe,
+  createRuntimeCommandStdinPipeFromText,
+  RuntimeProjectEventQueue,
+  readRuntimeCommandStdinPipeBytes,
+} from '../packages/harness-core/src/runtime-project';
 import { createNativePythonProjectRunner } from '../packages/harness-python/src/project-node';
 import {
   createBrowserPythonProjectRunner,
@@ -35,11 +42,58 @@ import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src
 import { createNativeProjectWorkspace } from '../src/project-node';
 
 const execFileAsync = promisify(execFile);
+const testTextDecoder = new TextDecoder();
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function stdinPipe(text: string) {
+  return createRuntimeCommandStdinPipeFromText(text);
+}
+
+async function runCommandWithLiveInput(
+  workspace: RuntimeWorkspace,
+  command: string,
+  promptText: string,
+  inputText: string,
+  options: RuntimeCommandOptions = {}
+): Promise<RuntimeCommandResult> {
+  const stdin = createRuntimeCommandStdinPipe();
+  let stdout = '';
+  let wrote = false;
+  const result = await workspace.runCommand(command, {
+    ...options,
+    stdinPipe: stdin,
+    onEvent: (event) => {
+      options.onEvent?.(event);
+      if (event.type !== 'output' || event.stream !== 'stdout') return;
+      stdout += event.data;
+      if (wrote || !stdout.includes(promptText)) return;
+      wrote = true;
+      stdin.write(inputText);
+      stdin.close();
+    },
+  });
+  if (!wrote) {
+    stdin.close();
+    throw new Error(`Live stdin prompt was not observed for ${command}: ${JSON.stringify({ promptText, result })}`);
+  }
+  return result;
+}
+
+function readTestRequestStdin(request: Pick<PythonProjectCommandRequest, 'stdinPipe'>): string {
+  if (!request.stdinPipe) return '';
+  let stdin = '';
+  while (true) {
+    const chunk = readRuntimeCommandStdinPipeBytes(request.stdinPipe);
+    if (chunk.byteLength === 0) break;
+    stdin += testTextDecoder.decode(chunk, { stream: true });
+  }
+  stdin += testTextDecoder.decode();
+  return stdin;
 }
 
 async function createExternalJavaJarBase64(): Promise<string> {
@@ -984,13 +1038,15 @@ async function testCppCommandAdapter(): Promise<void> {
     `./app adapter should expand argv globs on repeated named executable runs, received ${JSON.stringify(repeatedNamedRun.stdout)}`
   );
 
-  const explicitRun = await workspace.runCommand('cpp-run bin/*.out data/*.txt');
-  assertCondition(explicitRun.exitCode === 0, 'cpp-run adapter should expand explicit executable and argv globs');
+  const explicitCompile = await workspace.runCommand('clang++ -std=c++17 main.cpp helper.cpp -o bin/app.out');
+  assertCondition(explicitCompile.exitCode === 0, 'clang++ adapter should compile executable outputs for direct path glob runs');
+  const explicitRun = await workspace.runCommand('./bin/*.out data/*.txt');
+  assertCondition(explicitRun.exitCode === 0, 'virtual executable loader should expand executable and argv globs');
   assertCondition(
     explicitRun.stdout === 'source=run\nscript=bin/app.out\nargs=data/a.txt,data/b.txt\nfiles=a.out,bin/app.out,data/a.txt,data/b.txt,generated.txt,helper.hpp,main.cpp\n',
-    `cpp-run adapter should expand script and argv globs, received ${JSON.stringify(explicitRun.stdout)}`
+    `virtual executable loader should expand script and argv globs, received ${JSON.stringify(explicitRun.stdout)}`
   );
-  assertCondition(requests.length === 9, 'cpp runner should be invoked for compile variants and direct executable runs');
+  assertCondition(requests.length === 10, 'cpp runner should be invoked for compile variants and direct executable runs');
 }
 
 async function testCSharpCommandAdapter(): Promise<void> {
@@ -1492,7 +1548,7 @@ async function testNativePythonProjectRunnerDirectAbsoluteScriptPath(): Promise<
     args: ['alpha'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
+    stdinPipe: stdinPipe('from-tty\n'),
     project: {
       cwd: '/workspace',
       files: [
@@ -1518,7 +1574,6 @@ async function testNativePythonProjectRunnerDirectAbsoluteScriptPath(): Promise<
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: { cwd: '/workspace', files: [{ path: 'main.py', contents: 'print("bad")\n' }] },
     }),
     'native python direct runner should reject absolute scriptPath outside the workspace'
@@ -1531,7 +1586,6 @@ async function testNativePythonProjectRunnerDirectAbsoluteScriptPath(): Promise<
       args: [],
       cwd: '/outside',
       env: {},
-      stdin: '',
       project: { cwd: '/workspace', files: [{ path: 'main.py', contents: 'print("bad")\n' }] },
     }),
     'native python direct runner should reject cwd outside the workspace'
@@ -1955,7 +2009,7 @@ async function testProjectJavaScriptRunnersDirectAbsoluteScriptPath(): Promise<v
     args: ['alpha', 'beta'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
+    stdinPipe: stdinPipe('one\ntwo\nthree\n'),
     project: {
       cwd: '/workspace',
       files: [
@@ -2035,7 +2089,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
+    stdinPipe: stdinPipe('hidden\n'),
     project: {
       cwd: '/workspace',
       files: [],
@@ -2072,7 +2126,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
+    stdinPipe: stdinPipe('from-tty\n'),
     project: {
       cwd: '/workspace',
       files: [],
@@ -2120,7 +2174,7 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
+    stdinPipe: stdinPipe('one\ntwo\nthree\n'),
     project: {
       cwd: '/workspace',
       files: [],
@@ -2158,7 +2212,6 @@ async function testBrowserJavaScriptProjectRunnerApplyFileChangeHook(): Promise<
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [],
@@ -2220,7 +2273,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: 'from-tty\n',
+    stdinPipe: stdinPipe('from-tty\n'),
     project: {
       cwd: '/workspace',
       files: [{ path: 'message.txt', contents: 'copy-device\n' }],
@@ -2321,7 +2374,7 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: 'one\ntwo\nthree\n',
+    stdinPipe: stdinPipe('one\ntwo\nthree\n'),
     project: {
       cwd: '/workspace',
       files: [],
@@ -2357,7 +2410,6 @@ async function testBrowserJavaScriptProjectRunnerKernelDeviceInventory(): Promis
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: 'hidden\n',
     project: {
       cwd: '/workspace',
       files: [],
@@ -2388,7 +2440,6 @@ async function testProjectJavaScriptRunnersPreserveEmptyDirectories(): Promise<v
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       directories: ['empty/child'],
@@ -3398,7 +3449,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     'node',
     '-e',
     '"const fs = require(\\"node:fs\\"); console.log(fs.readFileSync(0, \\"utf8\\").trim()); console.log(\\"second:\\" + fs.readFileSync(0, \\"utf8\\").length); process.stdout.write(\\"stream-out\\\\n\\"); fs.writeFileSync(1, \\"fd-out\\\\n\\"); process.stderr.write(\\"stream-err\\\\n\\"); fs.writeFileSync(2, \\"fd-err\\\\n\\");"',
-  ].join(' '), { stdin: 'from-fd\n', onEvent: (event) => stdioFdEvents.push(event) });
+  ].join(' '), { stdinPipe: stdinPipe('from-fd\n'), onEvent: (event) => stdioFdEvents.push(event) });
   assertCondition(stdioFdResult.exitCode === 0, `browser node stdio fd workflow should succeed: ${stdioFdResult.stderr}`);
   assertCondition(
     stdioFdResult.stdout === 'from-fd\nsecond:0\nstream-out\nfd-out\n' &&
@@ -3431,7 +3482,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     'node',
     '-e',
     '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const chunks = []; await new Promise((resolve, reject) => fs.createReadStream(null, { fd: 0, encoding: \\"utf8\\" }).on(\\"error\\", reject).on(\\"data\\", (chunk) => chunks.push(chunk)).on(\\"end\\", resolve)); console.log(chunks.join(\\"\\").trim()); const handle = await fsp.open(\\"/dev/stdin\\", \\"r\\"); console.log(\\"handle:\\" + (await handle.readFile(\\"utf8\\")).trim()); console.log(\\"handle-second:\\" + (await handle.readFile(\\"utf8\\")).length); await handle.close(); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stdout\\").on(\\"error\\", reject).end(\\"device-stream-out\\\\n\\", resolve)); await new Promise((resolve, reject) => fs.createWriteStream(\\"/dev/stderr\\").on(\\"error\\", reject).end(\\"device-stream-err\\\\n\\", resolve));"',
-  ].join(' '), { stdin: 'from-stream\n', onEvent: (event) => stdioDeviceStreamEvents.push(event) });
+  ].join(' '), { stdinPipe: stdinPipe('from-stream\n'), onEvent: (event) => stdioDeviceStreamEvents.push(event) });
   assertCondition(stdioDeviceStreamResult.exitCode === 0, `browser node stdio device stream workflow should succeed: ${stdioDeviceStreamResult.stderr}`);
   assertCondition(
     stdioDeviceStreamResult.stdout === 'from-stream\nhandle:\nhandle-second:0\ndevice-stream-out\n' &&
@@ -3488,7 +3539,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     'node',
     '-e',
     '"process.stdin.setEncoding(\\"utf8\\"); console.log(process.stdin.read().trim());"',
-  ].join(' '), { stdin: 'from-process\n' });
+  ].join(' '), { stdinPipe: stdinPipe('from-process\n') });
   assertCondition(processStdinResult.exitCode === 0, `browser node process.stdin workflow should succeed: ${processStdinResult.stderr}`);
   assertCondition(
     processStdinResult.stdout === 'from-process\n',
@@ -3499,7 +3550,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     'node',
     '-e',
     '"process.stdin.setEncoding(\\"utf8\\"); console.log(process.stdin.readable + \\":\\" + process.stdin.readableEnded + \\":\\" + process.stdin.readableEncoding + \\":\\" + process.stdin.readableLength + \\":\\" + String(process.stdin.readableFlowing)); const first = process.stdin.read(4); console.log(first + \\":\\" + process.stdin.readableLength + \\":\\" + process.stdin.readableEnded); process.stdin.pause(); const events = []; process.stdin.on(\\"data\\", (chunk) => events.push(\\"data:\\" + chunk)); process.stdin.on(\\"end\\", () => events.push(\\"end\\")); await new Promise((resolve) => queueMicrotask(resolve)); console.log(String(process.stdin.readableFlowing) + \\":\\" + events.join(\\"|\\")); process.stdin.resume(); await new Promise((resolve) => queueMicrotask(resolve)); console.log(String(process.stdin.readableFlowing) + \\":\\" + events.join(\\"|\\")); console.log(process.stdin.readableEnded + \\":\\" + process.stdin.readableLength);"',
-  ].join(' '), { stdin: 'stdin-state\n' });
+  ].join(' '), { stdinPipe: stdinPipe('stdin-state\n') });
   assertCondition(processStdinStateResult.exitCode === 0, `browser node process.stdin state workflow should succeed: ${processStdinStateResult.stderr}`);
   assertCondition(
     processStdinStateResult.stdout === 'true:false:utf8:12:null\nstdi:8:false\nfalse:\ntrue:data:n-state\n|end\ntrue:0\n',
@@ -3510,7 +3561,7 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     'node',
     '-e',
     '"process.stdin.setEncoding(\\"utf8\\"); const chunks = []; const removed = () => chunks.push(\\"removed\\"); process.stdin.addListener(\\"data\\", removed); process.stdin.removeListener(\\"data\\", removed); process.stdin.addListener(\\"data\\", (chunk) => chunks.push(chunk)); process.stdin.once(\\"end\\", () => { chunks.push(\\"end\\"); console.log(chunks.join(\\"|\\")); }); process.stdin.resume();"',
-  ].join(' '), { stdin: 'stdin-alias\n' });
+  ].join(' '), { stdinPipe: stdinPipe('stdin-alias\n') });
   assertCondition(processStdinAliasResult.exitCode === 0, `browser node process.stdin listener alias workflow should succeed: ${processStdinAliasResult.stderr}`);
   assertCondition(
     processStdinAliasResult.stdout === 'stdin-alias\n|end\n',
@@ -4239,7 +4290,6 @@ async function testNativeJavaProjectRunner(): Promise<void> {
       args: ['Main.java'],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [{ path: 'Main.java', contents: 'class Main { public static void main(String[] args) {} }\n' }],
       },
@@ -4272,7 +4322,6 @@ async function testNativeJavaProjectRunner(): Promise<void> {
     args: ['Main.java'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'Main.java', contents: 'class Main { public static void main(String[] args) {} }\n' }],
     },
@@ -4573,7 +4622,7 @@ async function testNativeJavaProjectRunnerStdin(): Promise<void> {
     javaRunner: createNativeJavaProjectRunner(),
   });
 
-  const run = await workspace.runCommand('java InputMain', { stdin: 'from-native\n' });
+  const run = await workspace.runCommand('java InputMain', { stdinPipe: stdinPipe('from-native\n') });
   assertCondition(run.exitCode === 0, `native java stdin should succeed: ${run.stderr}`);
   assertCondition(run.stdout === 'stdin=from-native\n', `native java stdin should be passed to the process: ${run.stdout}`);
 }
@@ -4642,7 +4691,6 @@ async function testNativeJavaProjectRunnerDirectCwdBoundary(): Promise<void> {
     args: ['Main.java'],
     cwd: '/outside',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [
@@ -4666,7 +4714,6 @@ async function testNativeJavaProjectRunnerDirectAbsoluteOperandBoundaries(): Pro
     args: ['Main.java'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [
@@ -4714,7 +4761,6 @@ async function testNativeCppProjectRunnerDirectCwdBoundary(): Promise<void> {
     args: ['main.cpp', '-o', 'app'],
     cwd: '/outside',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
@@ -4737,7 +4783,6 @@ async function testNativeCppProjectRunnerDirectAbsoluteDefaultScriptPath(): Prom
     args: [],
     cwd: '/workspace/src',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [{ path: 'src/main.cpp', contents: '#include <iostream>\nint main() { std::cout << "direct-cpp\\n"; }\n' }],
@@ -4758,7 +4803,6 @@ async function testNativeCppProjectRunnerDirectAbsoluteDefaultScriptPath(): Prom
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: { cwd: '/workspace', files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }] },
       options: { compilerCommand: 'clang++' },
     }),
@@ -4775,7 +4819,6 @@ async function testNativeCppProjectRunnerDirectAbsoluteOperandBoundaries(): Prom
     args: ['main.cpp', '-o', 'app'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
@@ -4856,7 +4899,7 @@ async function testNativeCppProjectRunner(): Promise<void> {
   const run = await workspace.runCommand('./app alpha beta', {
     cwd: 'src',
     env: { MODE: 'native-cpp' },
-    stdin: 'from-stdin\n',
+    stdinPipe: stdinPipe('from-stdin\n'),
   });
   assertCondition(run.exitCode === 0, `native C++ executable should run: ${run.stderr}`);
   assertCondition(
@@ -4880,7 +4923,6 @@ async function testNativeCppProjectRunner(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [
         {
@@ -4916,7 +4958,6 @@ async function testNativeCppProjectRunner(): Promise<void> {
     args: ['src/main.cpp', '-o', 'src/app'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'src/main.cpp', contents: 'int main() { return 0; }\n' }],
     },
@@ -4994,9 +5035,9 @@ async function testNativeCppProjectRunnerAbsoluteWorkspacePaths(): Promise<void>
   assertCondition(gccRun.exitCode === 0, `native gcc-built C executable should run: ${gccRun.stderr}`);
   assertCondition(gccRun.stdout === 'plain-c\n', `native gcc-built C executable should emit stdout: ${gccRun.stdout}`);
 
-  const stdinCompile = await workspace.runCommand('clang++ -std=c++17 -x c++ - -o /workspace/out/stdin-app', {
-    stdin: '#include <iostream>\nint main() { std::cout << "stdin-cpp\\n"; }\n',
-  });
+  const stdinCompile = await workspace.runCommand(
+    'printf \'#include <iostream>\\nint main() { std::cout << "stdin-cpp\\\\n"; }\\n\' | clang++ -std=c++17 -x c++ - -o /workspace/out/stdin-app'
+  );
   assertCondition(stdinCompile.exitCode === 0, `native clang++ should compile source from stdin: ${stdinCompile.stderr}`);
   const stdinRun = await workspace.runCommand('/workspace/out/stdin-app');
   assertCondition(stdinRun.exitCode === 0, `native C++ should run stdin-compiled output: ${stdinRun.stderr}`);
@@ -5119,7 +5160,7 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
   const run = await workspace.runCommand('dotnet run alpha beta', {
     cwd: 'src',
     env: { MODE: 'native-csharp' },
-    stdin: 'from-stdin\n',
+    stdinPipe: stdinPipe('from-stdin\n'),
   });
   assertCondition(run.exitCode === 0, `native dotnet run should execute project: ${run.stderr}`);
   assertCondition(
@@ -5136,7 +5177,7 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
   const launchProfileRun = await workspace.runCommand('dotnet run --launch-profile MissingProfile --no-launch-profile launch', {
     cwd: 'src',
     env: { MODE: 'native-csharp-launch' },
-    stdin: 'launch-stdin\n',
+    stdinPipe: stdinPipe('launch-stdin\n'),
   });
   assertCondition(launchProfileRun.exitCode === 0, `native dotnet run should consume launch profile options: ${launchProfileRun.stderr}`);
   assertCondition(
@@ -5148,7 +5189,7 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
   const noBuildRun = await workspace.runCommand('dotnet run --no-build -- stale', {
     cwd: 'src',
     env: { MODE: 'native-csharp-nobuild' },
-    stdin: 'no-build-stdin\n',
+    stdinPipe: stdinPipe('no-build-stdin\n'),
   });
   assertCondition(noBuildRun.exitCode === 0, `native dotnet run --no-build should execute persisted build output: ${noBuildRun.stderr}`);
   assertCondition(
@@ -5170,7 +5211,6 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
       args: [],
       cwd: '/workspace',
       env: {},
-      stdin: '',
       project: {
         files: [{ path: 'Program.cs', contents: 'Console.WriteLine("timeout");\n' }],
       },
@@ -5203,7 +5243,6 @@ async function testNativeCSharpProjectRunner(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'Program.cs', contents: 'Console.WriteLine("ok");\n' }],
     },
@@ -5231,7 +5270,6 @@ async function testNativeCSharpProjectRunnerDirectCwdBoundary(): Promise<void> {
     args: [],
     cwd: '/outside',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [{ path: 'Program.cs', contents: 'Console.WriteLine("ok");\n' }],
@@ -5253,7 +5291,6 @@ async function testNativeCSharpProjectRunnerDirectAbsoluteOperandBoundary(): Pro
     args: ['/outside/Host.csproj'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       files: [{ path: 'Program.cs', contents: 'Console.WriteLine("ok");\n' }],
@@ -5616,6 +5653,131 @@ async function testNativeCSharpCommandLinePropertiesProjectRunner(): Promise<voi
   assertCondition(run.stdout.endsWith('789\n'), `native dotnet run should execute property-built output: ${run.stdout}`);
 }
 
+async function testLiveStdinAcrossProjectRunners(): Promise<void> {
+  const pythonWorkspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'ask.py',
+      contents: [
+        'import sys',
+        'sys.stdout.write("py> ")',
+        'sys.stdout.flush()',
+        'print("py=" + sys.stdin.readline().strip())',
+        '',
+      ].join('\n'),
+    }],
+    pythonRunner: createNativePythonProjectRunner(),
+  });
+  const pythonResult = await runCommandWithLiveInput(pythonWorkspace, 'python3 ask.py', 'py> ', 'native-python\n');
+  assertCondition(pythonResult.exitCode === 0, `native Python live stdin should succeed: ${pythonResult.stderr}`);
+  assertCondition(pythonResult.stdout === 'py> py=native-python\n', `native Python should receive stdin after prompting: ${pythonResult.stdout}`);
+  pythonWorkspace.dispose();
+
+  const nativeNodeWorkspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'ask.js',
+      contents: [
+        'process.stdout.write("node> ");',
+        'process.stdin.setEncoding("utf8");',
+        'process.stdin.once("data", (chunk) => console.log("node=" + chunk.trim()));',
+        'process.stdin.resume();',
+        '',
+      ].join('\n'),
+    }],
+    nodeRunner: createNativeJavaScriptProjectRunner(),
+  });
+  const nativeNodeResult = await runCommandWithLiveInput(nativeNodeWorkspace, 'node ask.js', 'node> ', 'native-node\n');
+  assertCondition(nativeNodeResult.exitCode === 0, `native Node live stdin should succeed: ${nativeNodeResult.stderr}`);
+  assertCondition(nativeNodeResult.stdout === 'node> node=native-node\n', `native Node should receive stdin after prompting: ${nativeNodeResult.stdout}`);
+  nativeNodeWorkspace.dispose();
+
+  const browserNodeWorkspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'ask.js',
+      contents: [
+        'process.stdout.write("browser-node> ");',
+        'process.stdin.setEncoding("utf8");',
+        'process.stdin.once("data", (chunk) => console.log("browser-node=" + chunk.trim()));',
+        'process.stdin.resume();',
+        '',
+      ].join('\n'),
+    }],
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
+  });
+  const browserNodeResult = await runCommandWithLiveInput(browserNodeWorkspace, 'node ask.js', 'browser-node> ', 'browser-node\n');
+  assertCondition(browserNodeResult.exitCode === 0, `browser Node live stdin should succeed: ${browserNodeResult.stderr}`);
+  assertCondition(
+    browserNodeResult.stdout === 'browser-node> browser-node=browser-node\n',
+    `browser Node should receive stdin after prompting: ${browserNodeResult.stdout}`
+  );
+  browserNodeWorkspace.dispose();
+
+  const javaWorkspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'Ask.java',
+      contents: [
+        'public class Ask {',
+        '  public static void main(String[] args) throws Exception {',
+        '    System.out.print("java> ");',
+        '    System.out.flush();',
+        '    java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(System.in));',
+        '    System.out.println("java=" + reader.readLine());',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    }],
+    javaRunner: createNativeJavaProjectRunner(),
+  });
+  const javaResult = await runCommandWithLiveInput(javaWorkspace, 'java Ask', 'java> ', 'native-java\n');
+  assertCondition(javaResult.exitCode === 0, `native Java live stdin should succeed: ${javaResult.stderr}`);
+  assertCondition(javaResult.stdout === 'java> java=native-java\n', `native Java should receive stdin after prompting: ${javaResult.stdout}`);
+  javaWorkspace.dispose();
+
+  const cppWorkspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'ask.cpp',
+      contents: [
+        '#include <iostream>',
+        '#include <string>',
+        'int main() {',
+        '  std::cout << "cpp> " << std::flush;',
+        '  std::string value;',
+        '  std::getline(std::cin, value);',
+        '  std::cout << "cpp=" << value << "\\n";',
+        '}',
+        '',
+      ].join('\n'),
+    }],
+    cppRunner: createNativeCppProjectRunner(),
+  });
+  const cppCompile = await cppWorkspace.runCommand('clang++ -std=c++17 ask.cpp -o ask');
+  assertCondition(cppCompile.exitCode === 0, `native C++ live stdin fixture should compile: ${cppCompile.stderr}`);
+  const cppResult = await runCommandWithLiveInput(cppWorkspace, './ask', 'cpp> ', 'native-cpp\n');
+  assertCondition(cppResult.exitCode === 0, `native C++ live stdin should succeed: ${cppResult.stderr}`);
+  assertCondition(cppResult.stdout === 'cpp> cpp=native-cpp\n', `native C++ should receive stdin after prompting: ${cppResult.stdout}`);
+  cppWorkspace.dispose();
+
+  const csharpWorkspace = await createRuntimeWorkspace({
+    files: [{
+      path: 'Program.cs',
+      contents: [
+        'Console.Write("csharp> ");',
+        'Console.Out.Flush();',
+        'Console.WriteLine("csharp=" + Console.ReadLine());',
+        '',
+      ].join('\n'),
+    }],
+    csharpRunner: createNativeCSharpProjectRunner(),
+  });
+  const csharpResult = await runCommandWithLiveInput(csharpWorkspace, 'dotnet run', 'csharp> ', 'native-csharp\n');
+  assertCondition(csharpResult.exitCode === 0, `native C# live stdin should succeed: ${csharpResult.stderr}`);
+  assertCondition(
+    csharpResult.stdout.endsWith('csharp> csharp=native-csharp\n'),
+    `native C# should receive stdin after prompting: ${csharpResult.stdout}`
+  );
+  csharpWorkspace.dispose();
+}
+
 async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
   let received: JavaProjectCommandRequest | null = null;
   let callCount = 0;
@@ -5655,7 +5817,6 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     args: ['alpha'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [
         { path: 'Main.java', contents: 'class Main { public static void main(String[] args) { System.out.println(Helper.value()); } }\n' },
@@ -5732,7 +5893,6 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     },
@@ -5766,7 +5926,6 @@ async function testBrowserJavaProjectRunnerAdapter(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
     },
@@ -5829,7 +5988,6 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [
         { path: 'main.py', contents: 'from helper import value\nprint(value())\n' },
@@ -5889,7 +6047,6 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'main.py', contents: 'print("hello")\n' }],
     },
@@ -5924,7 +6081,6 @@ async function testPyodidePythonProjectRunnerAdapter(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'main.py', contents: 'print("hello")\n' }],
     },
@@ -5974,7 +6130,6 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     args: ['alpha', 'beta'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [
         { path: 'Program.cs', contents: 'Console.WriteLine(Helper.Value());\n' },
@@ -6042,7 +6197,6 @@ async function testBrowserCSharpProjectRunnerAdapter(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [{ path: 'Program.cs', contents: 'Console.WriteLine("hello");\n' }],
     },
@@ -6086,7 +6240,6 @@ async function testBrowserCppProjectRunnerAdapter(): Promise<void> {
     args: ['main.cpp', 'helper.cpp', '-o', 'a.out'],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       files: [
         { path: 'main.cpp', contents: '#include "helper.hpp"\nint main() { return value(); }\n' },
@@ -6283,6 +6436,59 @@ async function testBrowserProjectWorkspaceFactory(): Promise<void> {
     `browser project destroy should clear kernel storage after flushing pending writes: ${JSON.stringify(storageEvents)}`
   );
   await assertRejectsAsync(() => storageWorkspace.readFile('persisted.txt'), 'destroyed browser project workspace should reject reads');
+
+  const resetStorageEvents: string[] = [];
+  const resetStorageWorkspace = await createBrowserProjectWorkspace({
+    files: [{ path: 'persisted.txt', contents: 'persisted\n' }],
+    kernelStorage: {
+      async load() {
+        return null;
+      },
+      async save(snapshot) {
+        resetStorageEvents.push(`save:${snapshot.files.length}`);
+      },
+      async clear() {
+        resetStorageEvents.push('clear');
+      },
+      async flush() {
+        resetStorageEvents.push('flush');
+      },
+    },
+    pythonWorkerClient: {
+      async executeProjectPython() {
+        throw new Error('unexpected Python runner call');
+      },
+      terminate() {},
+    },
+    javaWorkerClient: {
+      async executeProjectJava() {
+        throw new Error('unexpected Java runner call');
+      },
+      terminate() {},
+    },
+    csharpWorkerClient: {
+      async executeProjectCSharp() {
+        throw new Error('unexpected C# runner call');
+      },
+      terminate() {},
+    },
+    cppWorkerClient: {
+      async executeProjectCpp() {
+        throw new Error('unexpected C++ runner call');
+      },
+      terminate() {},
+    },
+  });
+  await resetStorageWorkspace.writeFile('persisted.txt', 'changed\n');
+  const resetStorageResult = await resetStorageWorkspace.runCommand('tracekernelctl reset');
+  assertCondition(
+    resetStorageResult.exitCode === 0 &&
+      resetStorageResult.stdout === 'tracekernelctl: reset complete\n' &&
+      resetStorageEvents.includes('clear') &&
+      resetStorageEvents.indexOf('clear') > resetStorageEvents.findIndex((event) => event.startsWith('save:')),
+    `tracekernelctl reset should clear browser kernel storage after flushing pending writes: ${JSON.stringify({ resetStorageResult, resetStorageEvents })}`
+  );
+  await assertRejectsAsync(() => resetStorageWorkspace.readFile('persisted.txt'), 'tracekernelctl reset should destroy browser project workspace');
 
   let pythonTimeoutMs: number | undefined;
   let javaTimeoutMs: number | undefined;
@@ -6929,7 +7135,7 @@ async function testBrowserProjectWorkspaceAdvancedCommandTranslation(): Promise<
       `browser workspace advanced C++ should preserve link args and env: ${JSON.stringify(cppRequests[0])}`
     );
 
-    const cppRun = await workspace.runCommand('cpp-run out/app gamma');
+    const cppRun = await workspace.runCommand('./out/app gamma');
     assertCondition(cppRun.exitCode === 0, `browser workspace advanced C++ run should route through runner: ${cppRun.stderr}`);
     assertCondition(
       cppRequests[1]?.source === 'run' &&
@@ -7095,7 +7301,6 @@ async function testProjectWorkspaceCommandEvents(): Promise<void> {
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: {
       cwd: '/workspace',
       directories: ['direct-empty/deep'],
@@ -7536,7 +7741,7 @@ async function testWorkspaceKernelEvents(): Promise<void> {
   const deviceWatchEvents: RuntimeWorkspaceEvent[] = [];
   const deviceCommandEvents: RuntimeCommandEvent[] = [];
   deviceWorkspace.watch((event) => deviceWatchEvents.push(event));
-  const stdinResult = await deviceWorkspace.runCommand('cat /dev/stdin', { stdin: 'from-stdin\n' });
+  const stdinResult = await deviceWorkspace.runCommand('cat /dev/stdin', { stdinPipe: stdinPipe('from-stdin\n') });
   assertCondition(stdinResult.stdout === 'from-stdin\n', `/dev/stdin should feed command stdin: ${JSON.stringify(stdinResult)}`);
   const stdoutResult = await deviceWorkspace.runCommand('printf "device-out\\n" > /dev/stdout', {
     onEvent: (event) => deviceCommandEvents.push(event),
@@ -7732,6 +7937,20 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
 
   const cdParent = await session.run('cd ..');
   assertCondition(cdParent.exitCode === 0 && session.cwd === '/home/obi/weather-api', `terminal cd .. should return to root: ${session.cwd}`);
+  const compoundCd = await session.run('cd src && pwd');
+  assertCondition(
+    compoundCd.exitCode === 0 &&
+      compoundCd.stdout === '/home/obi/weather-api/src\n' &&
+      session.cwd === '/home/obi/weather-api/src',
+    `terminal compound cd should update session cwd after command completion: ${JSON.stringify({ compoundCd, cwd: session.cwd })}`
+  );
+  const compoundCdBack = await session.run('cd .. && pwd');
+  assertCondition(
+    compoundCdBack.exitCode === 0 &&
+      compoundCdBack.stdout === '/home/obi/weather-api\n' &&
+      session.cwd === '/home/obi/weather-api',
+    `terminal compound cd .. should update session cwd after command completion: ${JSON.stringify({ compoundCdBack, cwd: session.cwd })}`
+  );
   const cdHome = await session.run('cd ..');
   assertCondition(cdHome.exitCode === 0 && session.cwd === '/home/obi', `terminal cd .. should allow read-only home navigation: ${session.cwd}`);
   assertCondition(session.prompt.text === 'obi@tracevm ~ %', `terminal prompt should label home cwd: ${session.prompt.text}`);
@@ -7779,7 +7998,7 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
         check: {
           steps: [
             'python3 main.py',
-            { command: 'python3 -m unittest discover tests', cwd: '.', env: { TEST_MODE: 'visible' }, stdin: 'step-input\n' },
+            { command: 'printf "step-input\\n" | python3 -m unittest discover tests', cwd: '.', env: { TEST_MODE: 'visible' } },
           ],
         },
         persist: {
@@ -7851,8 +8070,9 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
           exitCode: 9,
         };
       }
+      const stdin = readTestRequestStdin(request);
       return {
-        stdout: `${request.scriptPath}:${request.cwd}:${request.env.MODE}:${request.env.TEST_MODE ?? ''}${request.stdin ? `:${request.stdin}` : '\n'}`,
+        stdout: `${request.scriptPath}:${request.cwd}:${request.env.MODE}:${request.env.TEST_MODE ?? ''}${stdin ? `:${stdin}` : '\n'}`,
         stderr: '',
         exitCode: 0,
         ...(request.scriptPath.endsWith('mutate_readonly.py')
@@ -8315,6 +8535,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
   );
   csharpWorkspace.dispose();
 
+  const cppRequests: CppProjectCommandRequest[] = [];
   const cppWorkspace = await createRuntimeWorkspace({
     projectSession: {
       id: 'cpp-takehome',
@@ -8343,6 +8564,7 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
       ],
     },
     cppRunner: async (request): Promise<RuntimeCommandResult> => {
+      cppRequests.push(request);
       if (request.source === 'compile' && request.args.some((arg) => arg.endsWith('broken.cpp'))) {
         return { stdout: '', stderr: 'src/broken.cpp:1:21: error: use of undeclared identifier missing\n', exitCode: 1 };
       }
@@ -8360,8 +8582,9 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
         };
       }
       const fixture = request.project.files.find((file) => file.path === '.trace/fixtures/weather.txt')?.contents.trim();
+      const stdin = request.args[0] === 'stdin' ? readTestRequestStdin(request) : '';
       return {
-        stdout: `cpp:${request.cwd}:${request.env.MODE}:${fixture}:${request.args.join(',')}\n`,
+        stdout: `cpp:${request.cwd}:${request.env.MODE}:${fixture}:${request.args.join(',')}${stdin ? `:${stdin.trim()}` : ''}\n`,
         stderr: '',
         exitCode: 0,
         files: [{ path: 'reports/cpp-summary.txt', contents: `${fixture}\n` }],
@@ -8379,6 +8602,46 @@ async function testHardLanguageTakehomeMvpGate(): Promise<void> {
   assertCondition(
     cppBroken.exitCode !== 0 && cppBroken.stderr.includes('use of undeclared identifier missing'),
     `C++ takehome gate should surface expected compile failures: ${JSON.stringify(cppBroken)}`
+  );
+  const cppCompound = await cppWorkspace.runCommand('clang++ src/main.cpp src/normalizer.cpp -o build/weather-app && ./build/weather-app chain', {
+    env: { MODE: 'compound' },
+  });
+  assertCondition(
+    cppCompound.exitCode === 0 &&
+      cppCompound.stdout === 'cpp:/home/user/cpp-weather-api:compound:new-york:chain\n' &&
+      cppRequests.at(-1)?.source === 'run' &&
+      cppRequests.at(-1)?.scriptPath === './build/weather-app',
+    `C++ compiled executables should run inside shell chains: ${JSON.stringify({ cppCompound, lastRequest: cppRequests.at(-1) })}`
+  );
+  const cppNestedCompound = await cppWorkspace.runCommand('cd src && clang++ main.cpp normalizer.cpp -o ../build/weather-app && ../build/weather-app nested', {
+    env: { MODE: 'compound' },
+  });
+  assertCondition(
+    cppNestedCompound.exitCode === 0 &&
+      cppNestedCompound.stdout === 'cpp:/home/user/cpp-weather-api/src:compound:new-york:nested\n' &&
+      cppRequests.at(-1)?.source === 'run' &&
+      cppRequests.at(-1)?.scriptPath === '../build/weather-app',
+    `C++ compiled executable routing should preserve relative paths inside shell chains: ${JSON.stringify({ cppNestedCompound, lastRequest: cppRequests.at(-1) })}`
+  );
+  const cppInteractiveCompound = await cppWorkspace.runCommand('clang++ src/main.cpp src/normalizer.cpp -o build/weather-app && ./build/weather-app stdin', {
+    env: { MODE: 'compound' },
+    stdinPipe: stdinPipe('live-chain\n'),
+  });
+  assertCondition(
+    cppInteractiveCompound.exitCode === 0 &&
+      cppInteractiveCompound.stdout === 'cpp:/home/user/cpp-weather-api:compound:new-york:stdin:live-chain\n' &&
+      cppRequests.at(-1)?.source === 'run' &&
+      cppRequests.at(-1)?.stdinPipe !== undefined,
+    `C++ compiled executables should receive live stdin inside shell chains: ${JSON.stringify({ cppInteractiveCompound, lastRequest: cppRequests.at(-1) })}`
+  );
+  const cppWrongPathRunsBefore = cppRequests.filter((request) => request.source === 'run').length;
+  const cppWrongPath = await cppWorkspace.runCommand('cd src && clang++ main.cpp normalizer.cpp -o ../build/weather-app && ./build/weather-app wrong');
+  const cppWrongPathRunsAfter = cppRequests.filter((request) => request.source === 'run').length;
+  assertCondition(
+    cppWrongPath.exitCode !== 0 &&
+      cppWrongPathRunsAfter === cppWrongPathRunsBefore &&
+      cppWrongPath.stderr.includes('./build/weather-app'),
+    `C++ compiled executable routing should not mask invalid relative paths: ${JSON.stringify(cppWrongPath)}`
   );
   cppWorkspace.dispose();
 }
@@ -8459,6 +8722,38 @@ async function testProjectSessionLifecycle(): Promise<void> {
   });
   await destroyWorkspace.checkExpiration('2026-01-01T00:00:00.000Z');
   await assertRejectsAsync(() => destroyWorkspace.readFile('main.txt'), 'expirationBehavior destroy should destroy the workspace when checked');
+
+  const controlCalls: string[] = [];
+  const controlWorkspace = await createRuntimeWorkspace({
+    files: [{ path: 'main.txt', contents: 'active\n' }],
+    kernelControl: {
+      async reset() {
+        controlCalls.push('reset');
+      },
+    },
+  });
+  const status = await controlWorkspace.runCommand('tracekernelctl status');
+  assertCondition(
+    status.exitCode === 0 &&
+      status.stdout.includes('tracekernel ') &&
+      status.stdout.includes('workspace=/workspace'),
+    `tracekernelctl status should expose kernel identity: ${JSON.stringify(status)}`
+  );
+  const resetEvents: RuntimeWorkspaceEvent[] = [];
+  controlWorkspace.watch((event) => resetEvents.push(event));
+  const reset = await controlWorkspace.runCommand('tracekernelctl reset');
+  assertCondition(
+    reset.exitCode === 0 &&
+      reset.stdout === 'tracekernelctl: reset complete\n' &&
+      controlCalls.join(',') === 'reset' &&
+      resetEvents.some((event) =>
+        event.type === 'lifecycle' &&
+          event.phase === 'session-destroyed' &&
+          event.detail.reason === 'tracekernelctl-reset'
+      ),
+    `tracekernelctl reset should run the reset hook and destroy the workspace: ${JSON.stringify({ reset, controlCalls, resetEvents })}`
+  );
+  await assertRejectsAsync(() => controlWorkspace.readFile('main.txt'), 'tracekernelctl reset should destroy the workspace');
 }
 
 async function testTraceKernelInfoConfig(): Promise<void> {
@@ -8856,6 +9151,7 @@ async function main(): Promise<void> {
   await testNativeCSharpProjectFileBoundaryProjectRunner();
   await testNativeCSharpProjectRunnerCwdProjectSelection();
   await testNativeCSharpCommandLinePropertiesProjectRunner();
+  await testLiveStdinAcrossProjectRunners();
   await testBrowserJavaProjectRunnerAdapter();
   await testPyodidePythonProjectRunnerAdapter();
   await testBrowserCSharpProjectRunnerAdapter();

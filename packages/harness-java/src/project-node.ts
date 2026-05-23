@@ -1,8 +1,14 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative, resolve } from 'node:path';
-import { emitRuntimeCommandFileChanges, emitRuntimeCommandOutput } from '../../harness-core/src/runtime-project';
+import {
+  emitRuntimeCommandFileChanges,
+  emitRuntimeCommandOutput,
+  readRuntimeCommandStdinPipeBytes,
+  runtimeCommandStdinPipeClosed,
+} from '../../harness-core/src/runtime-project';
 import type {
   RuntimeCommandResult,
   RuntimeCommandEventHandler,
@@ -12,6 +18,7 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectSnapshot,
+  RuntimeCommandStdinSharedBuffer,
 } from '../../harness-core/src/runtime-project';
 
 export type JavaProjectFileEncoding = RuntimeFileEncoding;
@@ -503,7 +510,7 @@ function runProcess(
   options: {
     cwd: string;
     env: Record<string, string>;
-    stdin: string;
+    stdinPipe?: RuntimeCommandStdinSharedBuffer;
     timeoutMs: number;
     timeoutLabel: string;
     onEvent?: RuntimeCommandEventHandler;
@@ -572,8 +579,27 @@ function runProcess(
       });
     });
 
-    child.stdin.end(options.stdin);
+    if (options.stdinPipe) {
+      void pumpStdinPipeToChild(options.stdinPipe, child.stdin).catch(() => undefined);
+    } else {
+      child.stdin.end();
+    }
   });
+}
+
+async function pumpStdinPipeToChild(pipe: RuntimeCommandStdinSharedBuffer, stdin: NonNullable<ReturnType<typeof spawn>['stdin']>): Promise<void> {
+  while (true) {
+    const bytes = readRuntimeCommandStdinPipeBytes(pipe);
+    if (bytes.byteLength > 0) {
+      if (!stdin.write(Buffer.from(bytes))) {
+        await once(stdin, 'drain').catch(() => undefined);
+      }
+      continue;
+    }
+    if (runtimeCommandStdinPipeClosed(pipe)) break;
+    await new Promise((resolve) => setTimeout(resolve, 8));
+  }
+  stdin.end();
 }
 
 export function createNativeJavaProjectRunner(
@@ -602,7 +628,7 @@ export function createNativeJavaProjectRunner(
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-jar', jarPath, ...request.args], {
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
-          stdin: request.stdin,
+          stdinPipe: request.stdinPipe,
           timeoutMs,
           timeoutLabel: 'java',
           onEvent: request.onEvent,
@@ -619,7 +645,7 @@ export function createNativeJavaProjectRunner(
         const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
           cwd,
           env: mapJavaEnv(root, cwd, request.env, request.project),
-          stdin: request.stdin,
+          stdinPipe: request.stdinPipe,
           timeoutMs,
           timeoutLabel: 'java',
           onEvent: request.onEvent,
@@ -634,7 +660,6 @@ export function createNativeJavaProjectRunner(
       const compile = await runProcess(javacCommand, javacArgsForRequest(request, root, cwd), {
         cwd,
         env: mapJavaEnv(root, cwd, request.env, request.project),
-        stdin: '',
         timeoutMs,
         timeoutLabel: 'javac',
         onEvent: request.onEvent,
@@ -654,7 +679,7 @@ export function createNativeJavaProjectRunner(
       const run = await runProcess(javaCommand, [...javaRuntimeOptionArgs(request), ...javaSystemPropertyArgs(request), '-cp', runClasspath, mainClass ?? '<main>', ...request.args], {
         cwd,
         env: mapJavaEnv(root, cwd, request.env, request.project),
-        stdin: request.stdin,
+        stdinPipe: request.stdinPipe,
         timeoutMs,
         timeoutLabel: 'java',
         onEvent: request.onEvent,

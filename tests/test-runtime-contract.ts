@@ -64,6 +64,7 @@ import {
 } from '../packages/harness-core/src/runtime-kernel';
 import {
   RuntimeProjectLiveIoController,
+  createRuntimeCommandStdinPipeFromText,
   createRuntimeProjectIoBridge,
   runRuntimeProjectWorkerBridge,
   type RuntimeCommandEvent,
@@ -633,7 +634,7 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     args: ['alpha'],
     cwd: '/workspace',
     env: {},
-    stdin: 'input\n',
+    stdinPipe: createRuntimeCommandStdinPipeFromText('input\n'),
     project: {
       files: [{ path: 'main.txt', contents: 'main\n' }],
     },
@@ -655,7 +656,7 @@ async function assertRuntimeProjectWorkerBridgeContract(): Promise<void> {
     run: async (workerRequest, onEvent) => {
       assertCondition(
         !('onEvent' in workerRequest) &&
-          workerRequest.stdin === 'input\n' &&
+          workerRequest.stdinPipe?.buffer instanceof SharedArrayBuffer &&
           workerRequest.project.files.length === 1,
         `runtime worker bridge should pass a serializable project request: ${stableStringify(workerRequest)}`
       );
@@ -863,7 +864,7 @@ const PROJECT_IO_COVERAGE = [
   'project.filesystem.liveMutationEvents',
   'project.filesystem.binaryFiles',
   'project.filesystem.directories',
-  'project.stdio.stdin',
+  'project.stdio.liveStdin',
   'project.stdio.outputEvents',
   'project.stdio.deviceFiles',
 ] as const satisfies readonly string[];
@@ -906,7 +907,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.filesystem.liveMutationEvents',
     'project.filesystem.binaryFiles',
     'project.filesystem.directories',
-    'project.stdio.stdin',
+    'project.stdio.liveStdin',
     'project.stdio.outputEvents',
     'project.stdio.deviceFiles',
     'tracing.supported',
@@ -945,7 +946,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.filesystem.liveMutationEvents',
     'project.filesystem.binaryFiles',
     'project.filesystem.directories',
-    'project.stdio.stdin',
+    'project.stdio.liveStdin',
     'project.stdio.outputEvents',
     'project.stdio.deviceFiles',
     'tracing.supported',
@@ -989,7 +990,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'project.filesystem.liveMutationEvents',
     'project.filesystem.binaryFiles',
     'project.filesystem.directories',
-    'project.stdio.stdin',
+    'project.stdio.liveStdin',
     'project.stdio.outputEvents',
     'project.stdio.deviceFiles',
     'tracing.supported',
@@ -1066,7 +1067,7 @@ function createUnsupportedProfile(
           directories: false,
         },
         stdio: {
-          stdin: false,
+          liveStdin: false,
           outputEvents: false,
           deviceFiles: false,
         },

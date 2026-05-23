@@ -1000,14 +1000,14 @@ body {
   padding: 10px 14px;
   font-family: var(--font-mono);
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 22px;
   white-space: pre-wrap;
   word-break: break-word;
   scrollbar-color: #3c424d transparent;
 }
 
 .dev-terminal-line {
-  min-height: 18px;
+  min-height: 22px;
   color: #c9d1dc;
 }
 
@@ -1030,7 +1030,7 @@ body {
 }
 
 .dev-terminal-form {
-  min-height: 30px;
+  min-height: 22px;
   display: flex;
   align-items: center;
   gap: 7px;

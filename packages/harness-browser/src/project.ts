@@ -31,6 +31,7 @@ import {
   hydrateBrowserKernelStorage,
   persistInitialBrowserKernelSnapshot,
   type BrowserKernelStorage,
+  type BrowserKernelStorageBinding,
 } from './kernel-storage';
 
 export {
@@ -153,6 +154,7 @@ export async function createBrowserProjectWorkspace(
   if (!providedCppWorkerClient) ownedWorkers.push(cppWorkerClient);
 
   let workspace: BrowserProjectWorkspace;
+  let storageBinding: BrowserKernelStorageBinding | undefined;
   const sessionReadonlyFiles = readonlySessionFiles(workspaceOptions);
   const applyWorkerFileChange: NonNullable<Parameters<typeof createBrowserPythonProjectRunner>[1]>['applyFileChange'] =
     async (change, phase) => {
@@ -214,17 +216,27 @@ export async function createBrowserProjectWorkspace(
       timeoutMs: cppProjectTimeoutMs,
       applyFileChange: applyWorkerFileChange,
     }),
+    kernelControl: {
+      async reset() {
+        storageBinding?.dispose();
+        await storageBinding?.flush();
+        await kernelStorage?.clear?.();
+        for (const worker of ownedWorkers) {
+          worker.terminate();
+        }
+      },
+    },
   });
 
-  const storageBinding = bindBrowserKernelStorage(workspace, kernelStorage);
+  storageBinding = bindBrowserKernelStorage(workspace, kernelStorage);
   await persistInitialBrowserKernelSnapshot(workspace, kernelStorage);
   const disposeWorkspace = workspace.dispose.bind(workspace);
   const destroyWorkspace = workspace.destroy.bind(workspace);
 
   return Object.assign(workspace, {
     async destroy(options?: { reason?: string; clearStorage?: boolean }) {
-      storageBinding.dispose();
-      await storageBinding.flush();
+      storageBinding?.dispose();
+      await storageBinding?.flush();
       if (options?.clearStorage) {
         await kernelStorage?.clear?.();
       }
@@ -234,8 +246,8 @@ export async function createBrowserProjectWorkspace(
       }
     },
     dispose() {
-      storageBinding.dispose();
-      void storageBinding.flush();
+      storageBinding?.dispose();
+      void storageBinding?.flush();
       disposeWorkspace();
       for (const worker of ownedWorkers) {
         worker.terminate();

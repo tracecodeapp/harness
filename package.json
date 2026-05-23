@@ -120,7 +120,7 @@
     "test:example-app": "pnpm exec tsx tests/test-example-app.ts",
     "test:java-example-app": "pnpm exec tsx tests/test-java-example-app.ts",
     "test:project-ide-example": "pnpm --dir examples/project-ide build",
-    "test:project-terminal-example": "pnpm --dir examples/project-terminal build",
+    "test:project-terminal-example": "pnpm exec tsx tests/test-project-terminal-example.ts",
     "test:example-app-packaged": "pnpm exec tsx tests/test-example-app-packaged.ts",
     "test:java-example-app-packaged": "pnpm exec tsx tests/test-java-example-app-packaged.ts",
     "test:standalone-boundary": "pnpm exec tsx tests/test-standalone-boundary.ts",

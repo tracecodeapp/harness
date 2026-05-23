@@ -132,7 +132,6 @@ export interface RuntimeProjectSessionCommandStep extends RuntimeProjectSessionC
   command: string;
   cwd?: string;
   env?: Record<string, string>;
-  stdin?: string;
 }
 
 export interface RuntimeProjectSessionCommandGroup extends RuntimeProjectSessionCommandMetadata {
@@ -188,10 +187,136 @@ export interface RuntimeProjectSessionInfo {
 export interface RuntimeCommandOptions {
   cwd?: string;
   env?: Record<string, string>;
-  stdin?: string;
+  stdinPipe?: RuntimeCommandStdinPipe;
   signal?: AbortSignal;
   args?: string[];
   onEvent?: RuntimeCommandEventHandler;
+}
+
+export interface RuntimeCommandStdinSharedBuffer {
+  readonly buffer: SharedArrayBuffer;
+}
+
+export interface RuntimeCommandStdinPipe extends RuntimeCommandStdinSharedBuffer {
+  write(data: string): void;
+  close(): void;
+}
+
+const RUNTIME_STDIN_PIPE_HEADER_INTS = 3;
+const RUNTIME_STDIN_PIPE_HEADER_BYTES = RUNTIME_STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const RUNTIME_STDIN_PIPE_READ_INDEX = 0;
+const RUNTIME_STDIN_PIPE_WRITE_INDEX = 1;
+const RUNTIME_STDIN_PIPE_CLOSED_INDEX = 2;
+const RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY = 64 * 1024;
+
+function assertRuntimeCommandStdinPipeAvailable(): void {
+  if (typeof SharedArrayBuffer === 'undefined' || typeof Atomics === 'undefined') {
+    throw new Error('Live stdin requires SharedArrayBuffer and Atomics.');
+  }
+}
+
+export function canCreateRuntimeCommandStdinPipe(): boolean {
+  return typeof SharedArrayBuffer !== 'undefined' && typeof Atomics !== 'undefined';
+}
+
+export function createRuntimeCommandStdinPipe(capacity = RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY): RuntimeCommandStdinPipe {
+  assertRuntimeCommandStdinPipeAvailable();
+  const byteCapacity = Math.max(2, Math.floor(capacity));
+  const buffer = new SharedArrayBuffer(RUNTIME_STDIN_PIPE_HEADER_BYTES + byteCapacity);
+  const header = new Int32Array(buffer, 0, RUNTIME_STDIN_PIPE_HEADER_INTS);
+  const bytes = new Uint8Array(buffer, RUNTIME_STDIN_PIPE_HEADER_BYTES);
+  const encoder = new TextEncoder();
+
+  const availableWriteSlots = (): number => {
+    const readIndex = Atomics.load(header, RUNTIME_STDIN_PIPE_READ_INDEX);
+    const writeIndex = Atomics.load(header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+    return readIndex <= writeIndex
+      ? byteCapacity - (writeIndex - readIndex) - 1
+      : readIndex - writeIndex - 1;
+  };
+
+  return {
+    buffer,
+    write(data: string): void {
+      if (!data) return;
+      if (Atomics.load(header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) !== 0) {
+        throw new Error('Cannot write to closed live stdin pipe.');
+      }
+      const encoded = encoder.encode(data);
+      if (encoded.byteLength > availableWriteSlots()) {
+        throw new Error('Live stdin pipe is full.');
+      }
+      let writeIndex = Atomics.load(header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+      for (const byte of encoded) {
+        bytes[writeIndex] = byte;
+        writeIndex = (writeIndex + 1) % byteCapacity;
+      }
+      Atomics.store(header, RUNTIME_STDIN_PIPE_WRITE_INDEX, writeIndex);
+      Atomics.notify(header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+    },
+    close(): void {
+      Atomics.store(header, RUNTIME_STDIN_PIPE_CLOSED_INDEX, 1);
+      Atomics.notify(header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+    },
+  };
+}
+
+export function createRuntimeCommandStdinPipeFromText(
+  text: string,
+  capacity = Math.max(RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY, new TextEncoder().encode(text).byteLength + 1)
+): RuntimeCommandStdinPipe {
+  const pipe = createRuntimeCommandStdinPipe(capacity);
+  pipe.write(text);
+  pipe.close();
+  return pipe;
+}
+
+function runtimeCommandStdinPipeState(pipe: RuntimeCommandStdinSharedBuffer): {
+  header: Int32Array;
+  bytes: Uint8Array;
+} {
+  return {
+    header: new Int32Array(pipe.buffer, 0, RUNTIME_STDIN_PIPE_HEADER_INTS),
+    bytes: new Uint8Array(pipe.buffer, RUNTIME_STDIN_PIPE_HEADER_BYTES),
+  };
+}
+
+function runtimeCommandStdinPipeAvailable(state: { header: Int32Array; bytes: Uint8Array }): number {
+  const readIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
+  const writeIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_WRITE_INDEX);
+  const capacity = state.bytes.byteLength;
+  return readIndex <= writeIndex
+    ? writeIndex - readIndex
+    : capacity - readIndex + writeIndex;
+}
+
+export function runtimeCommandStdinPipeClosed(pipe: RuntimeCommandStdinSharedBuffer): boolean {
+  const { header } = runtimeCommandStdinPipeState(pipe);
+  return Atomics.load(header, RUNTIME_STDIN_PIPE_CLOSED_INDEX) !== 0;
+}
+
+export function runtimeCommandStdinPipeRemainingBytes(pipe: RuntimeCommandStdinSharedBuffer): number {
+  return runtimeCommandStdinPipeAvailable(runtimeCommandStdinPipeState(pipe));
+}
+
+export function readRuntimeCommandStdinPipeBytes(
+  pipe: RuntimeCommandStdinSharedBuffer,
+  maxLength = RUNTIME_STDIN_PIPE_DEFAULT_CAPACITY
+): Uint8Array {
+  const state = runtimeCommandStdinPipeState(pipe);
+  const available = runtimeCommandStdinPipeAvailable(state);
+  if (available <= 0 || maxLength <= 0) return new Uint8Array();
+  const readIndex = Atomics.load(state.header, RUNTIME_STDIN_PIPE_READ_INDEX);
+  const capacity = state.bytes.byteLength;
+  const length = Math.min(Math.floor(maxLength), available);
+  const out = new Uint8Array(length);
+  const firstLength = Math.min(length, capacity - readIndex);
+  out.set(state.bytes.subarray(readIndex, readIndex + firstLength), 0);
+  if (firstLength < length) {
+    out.set(state.bytes.subarray(0, length - firstLength), firstLength);
+  }
+  Atomics.store(state.header, RUNTIME_STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
+  return out;
 }
 
 export interface RuntimeCommandResult {
@@ -416,6 +541,7 @@ export class RuntimeProjectLiveIoController {
   private readonly outputTracker = new RuntimeProjectOutputTracker();
   private readonly eventQueue: RuntimeProjectEventQueue | null;
   private readonly appliedFileChangePaths = new Set<string>();
+  private pendingFileChanges = 0;
 
   constructor(private readonly options: RuntimeProjectLiveIoControllerOptions) {
     this.eventQueue = options.applyFileChange ? new RuntimeProjectEventQueue() : null;
@@ -427,16 +553,25 @@ export class RuntimeProjectLiveIoController {
   }
 
   handleRuntimeEvent(event: RuntimeCommandEvent): void {
+    if (event.type !== 'file-change' && this.pendingFileChanges === 0) {
+      this.emit(event);
+      return;
+    }
     if (!this.eventQueue) {
       this.emit(event);
       return;
     }
+    if (event.type === 'file-change') this.pendingFileChanges += 1;
     this.eventQueue.enqueue(event, {
       actor: this.options.actor,
       applyFileChange: async (change, phase) => {
-        const shouldEmit = await this.options.applyFileChange?.(change, phase);
-        this.appliedFileChangePaths.add(runtimeFileChangePath(change));
-        return shouldEmit;
+        try {
+          const shouldEmit = await this.options.applyFileChange?.(change, phase);
+          this.appliedFileChangePaths.add(runtimeFileChangePath(change));
+          return shouldEmit;
+        } finally {
+          this.pendingFileChanges = Math.max(0, this.pendingFileChanges - 1);
+        }
       },
       emit: (nextEvent) => this.emit(nextEvent),
     });
@@ -585,7 +720,7 @@ export interface RuntimeProjectCommandRequest<
   args: string[];
   cwd: string;
   env: Record<string, string>;
-  stdin: string;
+  stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;
   options?: Record<string, unknown>;
   onEvent?: RuntimeCommandEventHandler;

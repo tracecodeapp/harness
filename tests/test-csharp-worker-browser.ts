@@ -8,6 +8,7 @@ import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { createBrowserCSharpProjectRunner } from '../packages/harness-csharp/src/project-browser';
+import { createRuntimeCommandStdinPipeFromText, readRuntimeCommandStdinPipeBytes } from '../packages/harness-core/src/runtime-project';
 import type { RuntimeCommandEvent } from '../packages/harness-core/src/runtime-project';
 
 interface CSharpWorkerResponse {
@@ -72,7 +73,7 @@ type CSharpProjectWorkerRequest = {
   args: string[];
   cwd: string;
   env: Record<string, string>;
-  stdin: string;
+  stdinPipe?: { buffer: SharedArrayBuffer };
   project: {
     files: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
     kernelFiles?: Array<{ path: string; contents: string; encoding?: 'utf8' | 'base64' }>;
@@ -86,6 +87,17 @@ type CSharpProjectWorkerRequest = {
     directories?: string[];
   };
 };
+
+type SerializedCSharpProjectWorkerRequest = Omit<CSharpProjectWorkerRequest, 'stdinPipe'> & {
+  stdinPipeBytes?: number[];
+};
+
+function serializeProjectWorkerRequest(request: CSharpProjectWorkerRequest): SerializedCSharpProjectWorkerRequest {
+  if (!request.stdinPipe) return request;
+  const stdinPipeBytes = Array.from(readRuntimeCommandStdinPipeBytes(request.stdinPipe));
+  const { stdinPipe: _stdinPipe, ...rest } = request;
+  return { ...rest, stdinPipeBytes };
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FIXTURE_ROOT = join(ROOT, 'spikes', 'csharp-wasm-roslyn', 'fixtures');
@@ -156,7 +168,6 @@ async function testBrowserCSharpProjectBridgeFinalDiffApplication(): Promise<voi
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: { files: [] },
     onEvent: (event) => observed.push(event),
   });
@@ -196,7 +207,6 @@ async function testBrowserCSharpProjectBridgeUnsupportedNoBuildEvents(): Promise
     args: [],
     cwd: '/workspace',
     env: {},
-    stdin: '',
     project: { files: [] },
     options: { noBuild: true },
     onEvent: (event) => observed.push(event),
@@ -415,8 +425,22 @@ async function runProjectWorkerCase(
   request: CSharpProjectWorkerRequest,
   assetBaseUrl: string
 ): Promise<CSharpProjectWorkerResponse> {
+  const serializableRequest = serializeProjectWorkerRequest(request);
   return page.evaluate(
     async ({ request, assetBaseUrl, workerRequestTimeoutMs }) => {
+      function requestWithBrowserStdinPipe(request) {
+        const bytes = Array.isArray(request.stdinPipeBytes) ? request.stdinPipeBytes : undefined;
+        if (!bytes) return request;
+        const buffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3 + Math.max(2, bytes.length + 1));
+        const header = new Int32Array(buffer, 0, 3);
+        const body = new Uint8Array(buffer, Int32Array.BYTES_PER_ELEMENT * 3);
+        body.set(Uint8Array.from(bytes));
+        Atomics.store(header, 1, bytes.length);
+        Atomics.store(header, 2, 1);
+        const { stdinPipeBytes: _stdinPipeBytes, ...rest } = request;
+        return { ...rest, stdinPipe: { buffer } };
+      }
+
       const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
       let nextId = 0;
       const pending = new Map();
@@ -465,12 +489,12 @@ async function runProjectWorkerCase(
 
       try {
         await send('init', { assetBaseUrl });
-        return await send('execute-project-csharp', { ...request, assetBaseUrl });
+        return await send('execute-project-csharp', { ...requestWithBrowserStdinPipe(request), assetBaseUrl });
       } finally {
         terminate();
       }
     },
-    { request, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
+    { request: serializableRequest, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
   ) as Promise<CSharpProjectWorkerResponse>;
 }
 
@@ -479,8 +503,22 @@ async function runProjectWorkerSequenceCase(
   requests: CSharpProjectWorkerRequest[],
   assetBaseUrl: string
 ): Promise<CSharpProjectWorkerResponse[]> {
+  const serializableRequests = requests.map(serializeProjectWorkerRequest);
   return page.evaluate(
     async ({ requests, assetBaseUrl, workerRequestTimeoutMs }) => {
+      function requestWithBrowserStdinPipe(request) {
+        const bytes = Array.isArray(request.stdinPipeBytes) ? request.stdinPipeBytes : undefined;
+        if (!bytes) return request;
+        const buffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3 + Math.max(2, bytes.length + 1));
+        const header = new Int32Array(buffer, 0, 3);
+        const body = new Uint8Array(buffer, Int32Array.BYTES_PER_ELEMENT * 3);
+        body.set(Uint8Array.from(bytes));
+        Atomics.store(header, 1, bytes.length);
+        Atomics.store(header, 2, 1);
+        const { stdinPipeBytes: _stdinPipeBytes, ...rest } = request;
+        return { ...rest, stdinPipe: { buffer } };
+      }
+
       const worker = new Worker('/workers/csharp/csharp-worker.js', { type: 'module' });
       let nextId = 0;
       const pending = new Map();
@@ -531,14 +569,14 @@ async function runProjectWorkerSequenceCase(
         await send('init', { assetBaseUrl });
         const results = [];
         for (const request of requests) {
-          results.push(await send('execute-project-csharp', { ...request, assetBaseUrl }));
+          results.push(await send('execute-project-csharp', { ...requestWithBrowserStdinPipe(request), assetBaseUrl }));
         }
         return results;
       } finally {
         terminate();
       }
     },
-    { requests, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
+    { requests: serializableRequests, assetBaseUrl, workerRequestTimeoutMs: WORKER_REQUEST_TIMEOUT_MS }
   ) as Promise<CSharpProjectWorkerResponse[]>;
 }
 
@@ -4419,7 +4457,7 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace/src',
         env: { MODE: 'browser-csharp-project' },
-        stdin: 'from-stdin\nfrom-device\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('from-stdin\nfrom-device\n'),
         project: {
           directories: ['src/empty/child'],
           kernelFiles: TRACE_KERNEL_PROC_FILES,
@@ -5040,7 +5078,6 @@ async function main(): Promise<void> {
           args: [],
           cwd: '/workspace/src',
           env: {},
-          stdin: '',
           project: {
             kernelFiles: TRACE_KERNEL_PROC_FILES,
             files: [
@@ -5057,7 +5094,6 @@ async function main(): Promise<void> {
           args: [],
           cwd: '/workspace/src',
           env: {},
-          stdin: '',
           project: {
             files: [
               {
@@ -5097,7 +5133,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: 'manifest-stdin\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('manifest-stdin\n'),
         project: {
           kernelDevices: TRACE_KERNEL_DEVICES,
           files: [
@@ -5145,7 +5181,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: 'custom-only-stdin\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('custom-only-stdin\n'),
         project: {
           kernelDevices: [
             { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
@@ -5182,7 +5218,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: 'one\ntwo\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('one\ntwo\n'),
         project: {
           kernelDevices: TRACE_KERNEL_DEVICES,
           files: [
@@ -5215,7 +5251,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: 'one\ntwo\nthree\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('one\ntwo\nthree\n'),
         project: {
           kernelDevices: TRACE_KERNEL_DEVICES,
           files: [
@@ -5249,7 +5285,6 @@ async function main(): Promise<void> {
           args: [],
           cwd: '/workspace/src',
           env: {},
-          stdin: '',
           project: {
             kernelDevices: TRACE_KERNEL_DEVICES,
             files: [
@@ -5266,7 +5301,6 @@ async function main(): Promise<void> {
           args: [],
           cwd: '/workspace/src',
           env: {},
-          stdin: '',
           project: {
             kernelDevices: TRACE_KERNEL_DEVICES.filter((device) => device.path !== '/dev/log'),
             files: [
@@ -5308,7 +5342,7 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/src',
         env: {},
-        stdin: 'hidden-stdin\n',
+        stdinPipe: createRuntimeCommandStdinPipeFromText('hidden-stdin\n'),
         project: {
           kernelDevices: [
             { path: '/dev/stdin', readable: false, writable: false },
@@ -5356,7 +5390,6 @@ async function main(): Promise<void> {
         args: ['--verbosity', 'normal'],
         cwd: '/workspace/src',
         env: {},
-        stdin: '',
         project: {
           files: [
             { path: 'src/App.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n' },
@@ -5390,7 +5423,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/errcs',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5432,7 +5464,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/home/ada/weather-api/src',
         env: {},
-        stdin: '',
         project: {
           cwd: '/home/ada/weather-api',
           workspaceAlias: '/workspace',
@@ -5471,7 +5502,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/outside',
         env: {},
-        stdin: '',
         project: {
           files: [
             { path: 'Program.cs', contents: 'Console.WriteLine("bad");\n' },
@@ -5494,7 +5524,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/absoluteitem',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5536,7 +5565,6 @@ async function main(): Promise<void> {
           args: [],
           cwd: '/workspace/env',
           env: { MODE: 'first', TRACE_ENV_BLEED: 'request-value' },
-          stdin: '',
           project: {
             files: [
               {
@@ -5558,7 +5586,6 @@ async function main(): Promise<void> {
           args: [],
           cwd: '/workspace/env',
           env: { MODE: 'second' },
-          stdin: '',
           project: {
             files: [
               {
@@ -5595,7 +5622,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/app',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5637,7 +5663,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/build',
         env: {},
-        stdin: '',
         project: {
           files: [
             { path: 'build/.keep', contents: '' },
@@ -5682,7 +5707,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/lib',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5728,7 +5752,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/lib',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5766,7 +5789,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/hintref',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5807,7 +5829,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/hintescape',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5847,7 +5868,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/resources',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5899,7 +5919,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/refapp',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5949,7 +5968,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/refescape',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -5987,7 +6005,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/remove',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -6028,7 +6045,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/startup',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -6087,7 +6103,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/defines',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -6133,7 +6148,6 @@ async function main(): Promise<void> {
         args: ['-p:DefineConstants=CLI_ONE%3BCLI_TWO'],
         cwd: '/workspace/clidefines',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -6177,7 +6191,6 @@ async function main(): Promise<void> {
         args: ['--property:DefineConstants=SEPARATED_SYMBOL'],
         cwd: '/workspace/cliseparated',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -6221,7 +6234,6 @@ async function main(): Promise<void> {
         args: ['alpha', 'beta'],
         cwd: '/workspace/clidefines',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -6266,7 +6278,6 @@ async function main(): Promise<void> {
         args: [],
         cwd: '/workspace/unsafe',
         env: {},
-        stdin: '',
         project: {
           files: [
             {
@@ -6312,7 +6323,6 @@ async function main(): Promise<void> {
         args: ['--property:AllowUnsafeBlocks=true'],
         cwd: '/workspace/cliunsafe',
         env: {},
-        stdin: '',
         project: {
           files: [
             {

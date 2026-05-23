@@ -687,6 +687,45 @@ class MemoryView {
   }
 }
 
+const STDIN_PIPE_HEADER_INTS = 3;
+const STDIN_PIPE_HEADER_BYTES = STDIN_PIPE_HEADER_INTS * Int32Array.BYTES_PER_ELEMENT;
+const STDIN_PIPE_READ_INDEX = 0;
+const STDIN_PIPE_WRITE_INDEX = 1;
+const STDIN_PIPE_CLOSED_INDEX = 2;
+
+function stdinPipeState(pipe) {
+  const buffer = pipe?.buffer;
+  if (
+    typeof SharedArrayBuffer === 'undefined' ||
+    !(buffer instanceof SharedArrayBuffer) ||
+    buffer.byteLength <= STDIN_PIPE_HEADER_BYTES
+  ) {
+    return null;
+  }
+  return {
+    header: new Int32Array(buffer, 0, STDIN_PIPE_HEADER_INTS),
+    bytes: new Uint8Array(buffer, STDIN_PIPE_HEADER_BYTES),
+  };
+}
+
+function stdinPipeAvailable(state, readIndex, writeIndex) {
+  const capacity = state.bytes.byteLength;
+  return readIndex <= writeIndex
+    ? writeIndex - readIndex
+    : capacity - readIndex + writeIndex;
+}
+
+function createStdinPipeFromText(text) {
+  const encoded = encodeUtf8(String(text || ''));
+  const capacity = Math.max(65536, encoded.byteLength + 1);
+  const buffer = new SharedArrayBuffer(STDIN_PIPE_HEADER_BYTES + capacity);
+  const header = new Int32Array(buffer, 0, STDIN_PIPE_HEADER_INTS);
+  new Uint8Array(buffer, STDIN_PIPE_HEADER_BYTES).set(encoded);
+  Atomics.store(header, STDIN_PIPE_WRITE_INDEX, encoded.byteLength % capacity);
+  Atomics.store(header, STDIN_PIPE_CLOSED_INDEX, 1);
+  return { buffer };
+}
+
 class WasiProcess {
   constructor(options) {
     this.args = options.args || [];
@@ -694,7 +733,7 @@ class WasiProcess {
     this.fs = options.fs;
     this.cwd = normalizePath(options.cwd || '/');
     this.fs.addDirectory(this.cwd);
-    this.stdin = encodeUtf8(options.stdin || '');
+    this.stdinPipe = stdinPipeState(options.stdinPipe);
     this.inputDeviceOffsets = new Map();
     this.stdoutChunks = [];
     this.stderrChunks = [];
@@ -998,8 +1037,11 @@ class WasiProcess {
   fd_read(fd, iovs, iovsLen, nreadOut) {
     const entry = this.fds.get(fd);
     if (!entry || !entry.readable) return EBADF;
+    if (entry.kind === 'stdio' && entry.inputDevice && entry.inputDevice !== '/dev/null' && this.stdinPipe) {
+      return this.fd_read_stdin_pipe(iovs, iovsLen, nreadOut);
+    }
     const source = entry.kind === 'stdio' && entry.inputDevice && entry.inputDevice !== '/dev/null'
-      ? this.stdin
+      ? new Uint8Array()
       : entry.kind === 'file'
         ? this.fs.readFile(entry.path)
         : new Uint8Array();
@@ -1019,6 +1061,46 @@ class WasiProcess {
     entry.offset = sourceOffset;
     if (entry.kind === 'stdio' && entry.inputDevice) {
       this.inputDeviceOffsets.set(entry.inputDevice, sourceOffset);
+    }
+    this.mem.writeU32(nreadOut, total);
+    return ESUCCESS;
+  }
+
+  readStdinPipeBytes(maxLength, block) {
+    const state = this.stdinPipe;
+    if (!state || maxLength <= 0) return new Uint8Array();
+    const capacity = state.bytes.byteLength;
+    while (true) {
+      const readIndex = Atomics.load(state.header, STDIN_PIPE_READ_INDEX);
+      const writeIndex = Atomics.load(state.header, STDIN_PIPE_WRITE_INDEX);
+      const available = stdinPipeAvailable(state, readIndex, writeIndex);
+      if (available > 0) {
+        const length = Math.min(maxLength, available);
+        const out = new Uint8Array(length);
+        const firstLength = Math.min(length, capacity - readIndex);
+        out.set(state.bytes.subarray(readIndex, readIndex + firstLength), 0);
+        if (firstLength < length) {
+          out.set(state.bytes.subarray(0, length - firstLength), firstLength);
+        }
+        Atomics.store(state.header, STDIN_PIPE_READ_INDEX, (readIndex + length) % capacity);
+        return out;
+      }
+      if (Atomics.load(state.header, STDIN_PIPE_CLOSED_INDEX) !== 0 || !block) {
+        return new Uint8Array();
+      }
+      Atomics.wait(state.header, STDIN_PIPE_WRITE_INDEX, writeIndex);
+    }
+  }
+
+  fd_read_stdin_pipe(iovs, iovsLen, nreadOut) {
+    let total = 0;
+    for (let index = 0; index < iovsLen; index += 1) {
+      const ptr = this.mem.readU32(iovs + index * 8);
+      const len = this.mem.readU32(iovs + index * 8 + 4);
+      const chunk = this.readStdinPipeBytes(len, total === 0);
+      this.mem.writeBytes(ptr, chunk);
+      total += chunk.length;
+      if (chunk.length < len) break;
     }
     this.mem.writeU32(nreadOut, total);
     return ESUCCESS;
@@ -1401,7 +1483,7 @@ async function runWasi(module, args, fs, options = {}) {
     args,
     fs,
     cwd: options.cwd || '/',
-    stdin: options.stdin || '',
+    stdinPipe: options.stdinPipe,
     env: options.env || { USER: 'tracecode' },
     kernelDevices: options.kernelDevices,
     filestatSizeOffset: options.filestatSizeOffset,
@@ -6460,7 +6542,7 @@ function compileProjectOutsideMainWorker(request) {
     cwd: requestCwdRelative(request),
     args: projectCompileArgs(request),
     compilerCommand: projectCompilerCommand(request),
-    stdin: request?.stdin || '',
+    sourceInput: request?.code || '',
     includePaths: projectCompileIncludePaths(request),
     workspaceOutputPath: projectCompileWorkspaceOutputPath(request),
     standard: CPP_STANDARD,
@@ -6898,8 +6980,12 @@ function diffProjectFs(before, fs) {
 }
 
 function cppUserFacingDiagnosticFile(request) {
-  const scriptPath = relativeProjectPath(request?.scriptPath || '', request?.project || request);
-  return scriptPath || 'main.cpp';
+  try {
+    const scriptPath = projectPathRelativeToWorkspace(request, request?.scriptPath || '');
+    return scriptPath || 'main.cpp';
+  } catch {
+    return basename(String(request?.scriptPath || 'main.cpp')) || 'main.cpp';
+  }
 }
 
 function sanitizeCppProjectDiagnostics(value, request) {
@@ -7012,7 +7098,7 @@ async function handleProjectCpp(request, messageId) {
   const module = await WebAssembly.compile(fs.readFile(executablePath));
   const program = await runWasi(module, [basename(executablePath), ...(request?.args || []).map(String)], fs, {
     cwd: `/${requestCwdRelative(request)}`,
-    stdin: request?.stdin || '',
+    stdinPipe: request?.stdinPipe,
     env: request?.env || { USER: 'tracecode' },
     kernelDevices: projectKernelDevices(request?.project),
     onOutput: (stream, data, device, outputDevice) => events.output(stream, data, device, outputDevice),
@@ -7171,7 +7257,7 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
   try {
     const runStartedAt = now();
     const program = await runWasi(programModule, ['program.wasm'], fs, {
-      stdin: JSON.stringify(inputs || {}),
+      stdinPipe: createStdinPipeFromText(JSON.stringify(inputs || {})),
     });
     timings.runMs = elapsedMs(runStartedAt);
     let parsed;
@@ -7320,7 +7406,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
   try {
     const runStartedAt = now();
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
-      stdin: JSON.stringify(inputs || {}),
+      stdinPipe: createStdinPipeFromText(JSON.stringify(inputs || {})),
     });
     timings.runMs = elapsedMs(runStartedAt);
     let parsed;
@@ -7481,7 +7567,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
   try {
     const runStartedAt = now();
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
-      stdin: JSON.stringify(inputs || {}),
+      stdinPipe: createStdinPipeFromText(JSON.stringify(inputs || {})),
     });
     timings.runMs = elapsedMs(runStartedAt);
     let parsed;

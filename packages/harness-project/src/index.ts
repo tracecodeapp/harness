@@ -5,7 +5,10 @@ import {
 } from 'just-bash/browser';
 import {
   applyRuntimeCommandResultFiles,
+  createRuntimeCommandStdinPipeFromText,
   createRuntimeProjectIoBridge,
+  readRuntimeCommandStdinPipeBytes,
+  runtimeCommandStdinPipeClosed,
   RuntimeProjectLiveIoController,
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
@@ -145,6 +148,10 @@ export type CSharpProjectCommandRequest = RuntimeProjectCommandRequest<'compile'
 
 export type CSharpProjectCommandRunner = RuntimeProjectCommandRunner<CSharpProjectCommandRequest>;
 
+export interface RuntimeTraceKernelControlOptions {
+  reset?: () => Promise<void> | void;
+}
+
 export interface CreateRuntimeWorkspaceOptions {
   projectSession?: RuntimeProjectSession;
   files?: readonly RuntimeFile[];
@@ -164,6 +171,7 @@ export interface CreateRuntimeWorkspaceOptions {
   javascript?: boolean | ProjectWorkspaceJavaScriptConfig;
   executionLimits?: ProjectWorkspaceExecutionLimits;
   kernel?: RuntimeTraceKernelConfig;
+  kernelControl?: RuntimeTraceKernelControlOptions;
 }
 
 export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
@@ -221,7 +229,17 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       return { stdout: `${this.currentCwd}\n`, stderr: '', exitCode: 0 };
     }
 
-    return this.options.runCommand(trimmed, {
+    let nextCwd: string | null = null;
+    const leadingCdTarget = leadingPersistentCdTarget(trimmed);
+    if (leadingCdTarget !== null) {
+      try {
+        nextCwd = await this.options.resolveCwd(this.currentCwd, leadingCdTarget ?? this.options.workspaceRoot);
+      } catch {
+        nextCwd = null;
+      }
+    }
+
+    const result = await this.options.runCommand(trimmed, {
       ...options,
       cwd: this.currentCwd,
       env: {
@@ -230,13 +248,26 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         PWD: this.currentCwd,
       },
     });
+    if (nextCwd) {
+      this.currentCwd = nextCwd;
+    }
+    return result;
   }
 }
 
 const DEFAULT_CWD = '/workspace';
 const TRACE_KERNEL_NAME = 'tracekernel';
+const CPP_COMPILER_COMMANDS = new Set(['clang++', 'clang', 'gcc', 'cc', 'g++', 'c++']);
+const TRACEKERNEL_EXEC_COMMAND = 'tracekernel-exec';
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = { id: 'principal', kind: 'principal' };
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = { id: 'system', kind: 'system' };
+
+type VirtualExecutableKind = 'cpp';
+
+interface VirtualExecutableRecord {
+  path: string;
+  kind: VirtualExecutableKind;
+}
 
 function assertNoNul(value: string, label: string): void {
   if (value.includes('\0')) {
@@ -2024,6 +2055,192 @@ function parseSimpleCommandWords(command: string): string[] | null {
   return words.length > 0 ? words : null;
 }
 
+function leadingPersistentCdTarget(command: string): string | undefined | null {
+  let quote: string | null = null;
+  let escaping = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const ch = command[index];
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaping = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+
+    const next = command[index + 1];
+    const isPersistentSeparator = ch === ';' || (ch === '&' && next === '&') || (ch === '|' && next === '|');
+    if (!isPersistentSeparator) continue;
+
+    const words = parseSimpleCommandWords(command.slice(0, index).trim());
+    if (words?.[0] !== 'cd' || words.length > 2) return null;
+    return words[1];
+  }
+
+  return null;
+}
+
+function literalWordValue(word: unknown): string | null {
+  const candidate = word as { type?: unknown; parts?: Array<{ type?: unknown; value?: unknown }> };
+  if (candidate?.type !== 'Word' || !Array.isArray(candidate.parts)) return null;
+  let value = '';
+  for (const part of candidate.parts) {
+    if (part?.type !== 'Literal' || typeof part.value !== 'string') return null;
+    value += part.value;
+  }
+  return value;
+}
+
+function literalWord(value: string): { type: 'Word'; parts: Array<{ type: 'Literal'; value: string }> } {
+  return {
+    type: 'Word',
+    parts: [{ type: 'Literal', value }],
+  };
+}
+
+function rewriteVirtualExecutableInvocationsInAst(
+  ast: unknown,
+  initialCwd: string,
+  workspaceRoot: string,
+  workspaceAlias: string | undefined,
+  executableRecords: ReadonlyMap<string, VirtualExecutableRecord>
+): void {
+  const availableExecutableRecords = new Map(executableRecords);
+
+  const resolveExecutablePath = (cwd: string, executable: string): string | null => {
+    if (!executable.includes('/') && !executable.startsWith('/')) return null;
+    try {
+      return toProjectPath(workspaceRoot, resolveWorkspaceCommandPath(workspaceRoot, cwd, executable, workspaceAlias));
+    } catch {
+      return null;
+    }
+  };
+
+  const commandArgs = (command: { args?: unknown[] }): string[] | null => {
+    const args: string[] = [];
+    for (const arg of command.args ?? []) {
+      const value = literalWordValue(arg);
+      if (value === null) return null;
+      args.push(value);
+    }
+    return args;
+  };
+
+  const transformStatements = (statements: unknown, cwd: string): string => {
+    if (!Array.isArray(statements)) return cwd;
+    let currentCwd = cwd;
+    for (const statement of statements) {
+      currentCwd = transformStatement(statement, currentCwd);
+    }
+    return currentCwd;
+  };
+
+  const transformCommand = (command: unknown, cwd: string): void => {
+    const candidate = command as {
+      type?: unknown;
+      name?: unknown;
+      args?: unknown[];
+      clauses?: Array<{ condition?: unknown; body?: unknown }>;
+      elseBody?: unknown;
+      body?: unknown;
+      items?: Array<{ body?: unknown }>;
+    };
+    switch (candidate?.type) {
+      case 'SimpleCommand': {
+        const name = literalWordValue(candidate.name);
+        if (!name) return;
+        const resolvedExecutablePath = resolveExecutablePath(cwd, name);
+        if (resolvedExecutablePath && availableExecutableRecords.has(resolvedExecutablePath)) {
+          candidate.args = [literalWord(name), ...(candidate.args ?? [])];
+          candidate.name = literalWord(TRACEKERNEL_EXEC_COMMAND);
+        }
+        return;
+      }
+      case 'If':
+        for (const clause of candidate.clauses ?? []) {
+          transformStatements(clause.condition, cwd);
+          transformStatements(clause.body, cwd);
+        }
+        transformStatements(candidate.elseBody, cwd);
+        return;
+      case 'For':
+      case 'While':
+      case 'Until':
+      case 'Subshell':
+      case 'Group':
+        transformStatements(candidate.body, cwd);
+        return;
+      case 'Case':
+        for (const item of candidate.items ?? []) {
+          transformStatements(item.body, cwd);
+        }
+        return;
+      case 'FunctionDef':
+        transformCommand(candidate.body, cwd);
+        return;
+      default:
+        return;
+    }
+  };
+
+  const transformStatement = (statement: unknown, cwd: string): string => {
+    const candidate = statement as {
+      type?: unknown;
+      pipelines?: Array<{ commands?: unknown[] }>;
+      operators?: unknown[];
+    };
+    if (candidate?.type !== 'Statement' || !Array.isArray(candidate.pipelines)) return cwd;
+
+    let currentCwd = cwd;
+    for (const [index, pipeline] of candidate.pipelines.entries()) {
+      for (const command of pipeline.commands ?? []) {
+        transformCommand(command, currentCwd);
+      }
+
+      const simpleCommand = pipeline.commands?.length === 1
+        ? pipeline.commands[0] as { type?: unknown; name?: unknown; args?: unknown[] }
+        : null;
+      const name = simpleCommand?.type === 'SimpleCommand' ? literalWordValue(simpleCommand.name) : null;
+      const args = simpleCommand ? commandArgs(simpleCommand) : null;
+      if (name && args) {
+        if (CPP_COMPILER_COMMANDS.has(name)) {
+          const parsed = parseCppCompileInvocation(args);
+          if (!isCppCompileCommandResult(parsed) && !parsed.showVersion) {
+            const outputPath = resolveExecutablePath(currentCwd, cppOutputPathFromArgs(parsed.args));
+            if (outputPath) availableExecutableRecords.set(outputPath, { path: outputPath, kind: 'cpp' });
+          }
+        } else if (name === 'cd') {
+          const target = args[0] ?? workspaceRoot;
+          const nextOperator = candidate.operators?.[index];
+          if (nextOperator !== '||') {
+            try {
+              currentCwd = resolveWorkspaceCommandPath(workspaceRoot, currentCwd, target, workspaceAlias);
+            } catch {
+              // Keep the static cwd unchanged if the target cannot be represented in this workspace.
+            }
+          }
+        }
+      }
+    }
+    return currentCwd;
+  };
+
+  const script = ast as { type?: unknown; statements?: unknown };
+  if (script?.type === 'Script') {
+    transformStatements(script.statements, initialCwd);
+  }
+}
+
 function normalizeTerminalAbsolutePath(path: string): string {
   assertNoNul(path, 'Terminal path');
   if (!path.startsWith('/')) throw new Error(`Terminal path must be absolute: ${path}`);
@@ -2360,6 +2577,11 @@ function commandEnv(ctx: CommandContext): Record<string, string> {
   return Object.fromEntries(ctx.env.entries());
 }
 
+function commandStdinPipe(ctx: CommandContext) {
+  const stdin = decodeCommandStdin(ctx.stdin);
+  return stdin ? createRuntimeCommandStdinPipeFromText(stdin) : undefined;
+}
+
 export function createPythonProjectCommands(
   runner: PythonProjectCommandRunner,
   workspaceRoot: string = DEFAULT_CWD,
@@ -2432,6 +2654,7 @@ export function createPythonProjectCommands(
       };
     }
 
+    const stdinPipe = source === 'stdin' ? undefined : commandStdinPipe(ctx);
     return applyCommandResultFiles(ctx, workspaceRoot, await runner({
       code,
       source,
@@ -2439,7 +2662,7 @@ export function createPythonProjectCommands(
       args: parsedScript.scriptArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin,
+      ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
     }), onFileChange);
   };
@@ -2523,6 +2746,7 @@ export function createNodeProjectCommands(
       };
     }
 
+    const stdinPipe = source === 'stdin' ? undefined : commandStdinPipe(ctx);
     return applyCommandResultFiles(ctx, workspaceRoot, await runner({
       code,
       source,
@@ -2530,7 +2754,7 @@ export function createNodeProjectCommands(
       args: parsedScript.scriptArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin,
+      ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
       ...(
         parsed.inputType || parsed.requireModules.length > 0
@@ -2572,7 +2796,6 @@ export function createTypeScriptProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin: decodeCommandStdin(ctx.stdin),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
     }), onFileChange);
   };
@@ -2618,7 +2841,6 @@ export function createJavaProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin: decodeCommandStdin(ctx.stdin),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
     }), onFileChange);
   };
@@ -2660,6 +2882,7 @@ export function createJavaProjectCommands(
       jarMainClass = extractStoredJarMainClass(await ctx.fs.readFileBuffer(absoluteJarPath));
     }
 
+    const stdinPipe = commandStdinPipe(ctx);
     return applyCommandResultFiles(ctx, workspaceRoot, await runner({
       code: '',
       source: 'run',
@@ -2667,7 +2890,7 @@ export function createJavaProjectCommands(
       args: programArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin: decodeCommandStdin(ctx.stdin),
+      ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
       options: {
         ...(jarPath ? { jarPath, classpath: jarPath } : parsed.classpath ? { classpath: parsed.classpath } : {}),
@@ -2712,13 +2935,12 @@ export function createCppProjectCommands(
     }
 
     const result = await runner({
-      code: '',
+      code: parsed.args.includes('-') ? decodeCommandStdin(ctx.stdin) : '',
       source: 'compile',
       scriptPath: parsed.args.find((arg) => /\.(?:c|cc|cpp|cxx)$/i.test(arg)) ?? '<compile>',
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin: decodeCommandStdin(ctx.stdin),
       project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
       options: { compilerCommand },
     });
@@ -2729,26 +2951,22 @@ export function createCppProjectCommands(
     return commandResult;
   };
 
-  const runExecutable = (defaultPath: string | null) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
+  const runExecutable = (defaultPath: string) => async (args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> => {
     let expandedArgs: string[];
     try {
       expandedArgs = await expandWorkspaceGlobArgs(args, ctx, workspaceRoot, options.workspaceAlias);
     } catch (error) {
       return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
     }
-    const scriptPath = defaultPath ?? expandedArgs[0];
-    if (!scriptPath) {
-      return { stdout: '', stderr: 'cpp-run: missing executable path\n', exitCode: 2 };
-    }
-    const programArgs = defaultPath === null ? expandedArgs.slice(1) : expandedArgs;
+    const stdinPipe = commandStdinPipe(ctx);
     return applyCommandResultFiles(ctx, workspaceRoot, await runner({
       code: '',
       source: 'run',
-      scriptPath,
-      args: programArgs,
+      scriptPath: defaultPath,
+      args: expandedArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin: decodeCommandStdin(ctx.stdin),
+      ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
     }), options.onFileChange);
   };
@@ -2762,7 +2980,6 @@ export function createCppProjectCommands(
     defineCommand('c++', runCompiler('c++')),
     defineCommand('./a.out', runExecutable('./a.out')),
     defineCommand('a.out', runExecutable('a.out')),
-    defineCommand('cpp-run', runExecutable(null)),
   ];
 }
 
@@ -2796,6 +3013,7 @@ export function createCSharpProjectCommands(
       hiddenFiles
     );
 
+    const stdinPipe = parsed.source === 'run' ? commandStdinPipe(ctx) : undefined;
     const result = await runner({
       code: '',
       source: parsed.source,
@@ -2803,7 +3021,7 @@ export function createCSharpProjectCommands(
       args: parsed.args,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdin: decodeCommandStdin(ctx.stdin),
+      ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project,
       ...(parsed.buildArgs || parsed.noBuild
         ? {
@@ -2835,13 +3053,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonly bash: Bash;
   private readonly fs: KernelObservedFileSystem;
   private readonly entrypoint?: string;
+  private readonly kernelControl?: RuntimeTraceKernelControlOptions;
   private readonly cppRunner?: CppProjectCommandRunner;
-  private readonly cppExecutablePaths = new Set<string>();
+  private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
+  private activeExecutableTransformCwd?: string;
   private readonly readonlyFiles = new Set<string>();
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
   private activeCommandEventHandler?: RuntimeCommandEventHandler;
   private activeCommandActor?: RuntimeWorkspaceActor;
-  private activeCommandStdin = '';
+  private activeCommandStdinPipe?: RuntimeCommandOptions['stdinPipe'];
   private activeDeviceStdout = '';
   private activeDeviceStderr = '';
   private activeRuntimeIo = this.createRuntimeLiveIoController();
@@ -2857,6 +3077,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       this.readonlyFiles.add(path);
     }
     this.entrypoint = options.entrypoint ? this.toWorkspaceRelativePath(options.entrypoint) : undefined;
+    this.kernelControl = options.kernelControl;
     this.cppRunner = options.cppRunner;
     this.kernel = this.createKernel();
     this.fs = new KernelObservedFileSystem(
@@ -2877,8 +3098,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       runner: RuntimeProjectCommandRunner<Request>
     ): RuntimeProjectCommandRunner<Request> => (
       async (request) => {
+        const activeStdinPipe = request.source !== 'compile' && request.source !== 'stdin'
+          ? this.activeCommandStdinPipe
+          : undefined;
+        const stdinPipe = request.stdinPipe ?? activeStdinPipe;
         const result = await runner({
           ...request,
+          ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
           onEvent: (event) => {
             this.handleRuntimeCommandEvent(event);
           },
@@ -2896,7 +3122,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
-        recordExecutablePath: (path) => this.cppExecutablePaths.add(path),
+        recordExecutablePath: (path) => this.registerVirtualExecutable({ path, kind: 'cpp' }),
         entrypoint: this.entrypoint,
         onFileChange: observeFileChange,
         workspaceAlias: this.kernelInfo.workspaceAlias,
@@ -2904,6 +3130,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         readonlyFiles: this.projectSession?.readonlyFiles,
       }) : []),
       ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles) : []),
+      defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
+      defineCommand('tracekernelctl', (args) => this.runTraceKernelCtl(args)),
       ...(options.customCommands ?? []),
     ];
     this.bash = new Bash({
@@ -2916,6 +3144,86 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       javascript: options.javascript as never,
       executionLimits: options.executionLimits as never,
     });
+    if (this.hasVirtualExecutableLoaders()) {
+      this.bash.registerTransformPlugin({
+        name: 'tracekernel-executable-loader',
+        transform: ({ ast }: { ast: unknown }) => {
+          if (this.activeExecutableTransformCwd) {
+            rewriteVirtualExecutableInvocationsInAst(
+              ast,
+              this.activeExecutableTransformCwd,
+              this.cwd,
+              this.kernelInfo.workspaceAlias,
+              this.virtualExecutableRecords
+            );
+          }
+          return { ast };
+        },
+      } as never);
+    }
+  }
+
+  private hasVirtualExecutableLoaders(): boolean {
+    return Boolean(this.cppRunner);
+  }
+
+  private registerVirtualExecutable(record: VirtualExecutableRecord): void {
+    this.virtualExecutableRecords.set(record.path, record);
+  }
+
+  private async runTraceKernelExec(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
+    const executable = args[0];
+    if (!executable) {
+      return { stdout: '', stderr: `${TRACEKERNEL_EXEC_COMMAND}: missing executable path\n`, exitCode: 2 };
+    }
+    let expandedInvocation: { scriptFile: string | null; scriptArgs: string[] };
+    try {
+      expandedInvocation = await expandParsedScriptInvocation(ctx, this.cwd, executable, args.slice(1), this.kernelInfo.workspaceAlias);
+    } catch (error) {
+      return { stdout: '', stderr: `${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+    }
+    if (!expandedInvocation.scriptFile) {
+      return { stdout: '', stderr: `${TRACEKERNEL_EXEC_COMMAND}: missing executable path\n`, exitCode: 2 };
+    }
+    const result = await this.executeVirtualExecutable({
+      executable: expandedInvocation.scriptFile,
+      args: expandedInvocation.scriptArgs,
+      cwd: ctx.cwd,
+      env: commandEnv(ctx),
+      stdinPipe: this.activeCommandStdinPipe,
+      preserveScriptPath: true,
+    });
+    return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
+  }
+
+  private async runTraceKernelCtl(args: string[]): Promise<RuntimeCommandResult> {
+    const command = args[0] ?? 'status';
+    if (command === 'status') {
+      return {
+        stdout: [
+          `${this.kernelInfo.name} ${this.kernelInfo.version}`,
+          `user=${this.kernelInfo.user.username}`,
+          `host=${this.kernelInfo.host.hostname}`,
+          `workspace=${this.kernelInfo.workspaceRoot}`,
+          ...(this.kernelInfo.workspaceAlias ? [`alias=${this.kernelInfo.workspaceAlias}`] : []),
+        ].join('\n') + '\n',
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    if (command === 'reset') {
+      if (args.length > 1) {
+        return { stdout: '', stderr: 'usage: tracekernelctl reset\n', exitCode: 2 };
+      }
+      await this.kernelControl?.reset?.();
+      await this.destroy({ reason: 'tracekernelctl-reset', clearStorage: true });
+      return { stdout: 'tracekernelctl: reset complete\n', stderr: '', exitCode: 0 };
+    }
+    return {
+      stdout: '',
+      stderr: `tracekernelctl: unknown command: ${command}\nusage: tracekernelctl {status|reset}\n`,
+      exitCode: 2,
+    };
   }
 
   async ensureReady(): Promise<void> {
@@ -3099,7 +3407,21 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private readDevice(device: RuntimeKernelDevicePath): string {
-    return runtimeKernelDeviceInputRoute(undefined, device) ? this.activeCommandStdin : '';
+    if (!runtimeKernelDeviceInputRoute(undefined, device)) return '';
+    if (this.activeCommandStdinPipe) {
+      let text = '';
+      while (true) {
+        const chunk = readRuntimeCommandStdinPipeBytes(this.activeCommandStdinPipe);
+        if (chunk.byteLength > 0) {
+          text += decodeUtf8(chunk) ?? Array.from(chunk, (byte) => String.fromCharCode(byte)).join('');
+          continue;
+        }
+        if (runtimeCommandStdinPipeClosed(this.activeCommandStdinPipe)) break;
+        break;
+      }
+      return text;
+    }
+    return '';
   }
 
   private writeDevice(device: RuntimeKernelDevicePath, data: string, actor?: RuntimeWorkspaceActor): void {
@@ -3411,28 +3733,31 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     let commandDeviceStderr = '';
     const previousEventHandler = this.activeCommandEventHandler;
     const previousActor = this.activeCommandActor;
-    const previousStdin = this.activeCommandStdin;
+    const previousStdinPipe = this.activeCommandStdinPipe;
     const previousDeviceStdout = this.activeDeviceStdout;
     const previousDeviceStderr = this.activeDeviceStderr;
     const previousRuntimeIo = this.activeRuntimeIo;
+    const previousExecutableTransformCwd = this.activeExecutableTransformCwd;
+    const commandCwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
+    const stdinPipe = options.stdinPipe;
     this.activeCommandEventHandler = options.onEvent;
     this.activeCommandActor = this.createRuntimeActor();
-    this.activeCommandStdin = options.stdin ?? '';
+    this.activeCommandStdinPipe = stdinPipe;
     this.activeDeviceStdout = '';
     this.activeDeviceStderr = '';
     this.activeRuntimeIo = this.createRuntimeLiveIoController();
+    this.activeExecutableTransformCwd = commandCwd;
     try {
-      const directCppResult = await this.tryRunCppExecutable(command, options);
-      if (directCppResult) {
+      const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe });
+      if (directExecutableResult) {
         await this.flushRuntimeEventQueue();
-        this.emitReturnedOutputEvents(directCppResult);
-        return directCppResult;
+        this.emitReturnedOutputEvents(directExecutableResult);
+        return directExecutableResult;
       }
 
       result = await this.bash.exec(command, {
-        cwd: options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd,
+        cwd: commandCwd,
         env: options.env,
-        stdin: options.stdin,
         signal: options.signal,
         args: options.args,
       });
@@ -3443,10 +3768,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       commandDeviceStderr = this.activeDeviceStderr;
       this.activeCommandEventHandler = previousEventHandler;
       this.activeCommandActor = previousActor;
-      this.activeCommandStdin = previousStdin;
+      this.activeCommandStdinPipe = previousStdinPipe;
       this.activeDeviceStdout = previousDeviceStdout;
       this.activeDeviceStderr = previousDeviceStderr;
       this.activeRuntimeIo = previousRuntimeIo;
+      this.activeExecutableTransformCwd = previousExecutableTransformCwd;
     }
     return {
       stdout: `${result.stdout}${commandDeviceStdout}`,
@@ -3478,7 +3804,6 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           ...(step.env ?? {}),
           ...(options.env ?? {}),
         },
-        stdin: options.stdin ?? step.stdin,
       });
     };
     if (!('steps' in command)) {
@@ -3602,11 +3927,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.destroyed = true;
   }
 
-  private async tryRunCppExecutable(
+  private async tryRunVirtualExecutable(
     command: string,
     options: RuntimeCommandOptions
   ): Promise<RuntimeCommandResult | null> {
-    if (!this.cppRunner || options.args !== undefined) return null;
+    if (!this.hasVirtualExecutableLoaders() || options.args !== undefined) return null;
 
     const words = parseSimpleCommandWords(command);
     if (!words || words.length === 0) return null;
@@ -3621,7 +3946,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       fs: this.bash.fs,
       cwd,
       env: new Map(Object.entries(env)),
-      stdin: options.stdin ?? '',
+      stdin: '',
     } as unknown as CommandContext;
     let expandedInvocation: { scriptFile: string | null; scriptArgs: string[] };
     try {
@@ -3633,17 +3958,43 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const executable = expandedInvocation.scriptFile;
     if (!executable || (!executable.includes('/') && !executable.startsWith('/'))) return null;
 
-    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, cwd, executable, this.kernelInfo.workspaceAlias));
-    if (!this.cppExecutablePaths.has(executablePath)) return null;
-
-    const result = await this.cppRunner({
-      code: '',
-      source: 'run',
-      scriptPath: executable.startsWith('./') ? executable.slice(2) : executable,
+    return this.executeVirtualExecutable({
+      executable,
       args: expandedInvocation.scriptArgs,
       cwd,
       env,
-      stdin: options.stdin ?? '',
+      stdinPipe: options.stdinPipe,
+      preserveScriptPath: false,
+    });
+  }
+
+  private async executeVirtualExecutable(request: {
+    executable: string;
+    args: string[];
+    cwd: string;
+    env: Record<string, string>;
+    stdinPipe?: RuntimeCommandOptions['stdinPipe'];
+    preserveScriptPath: boolean;
+  }): Promise<RuntimeCommandResult | null> {
+    const executablePath = toProjectPath(this.cwd, resolveWorkspaceCommandPath(this.cwd, request.cwd, request.executable, this.kernelInfo.workspaceAlias));
+    const record = this.virtualExecutableRecords.get(executablePath);
+    if (!record) return null;
+
+    if (record.kind !== 'cpp' || !this.cppRunner) {
+      return { stdout: '', stderr: `bash: ${request.executable}: Exec format error\n`, exitCode: 126 };
+    }
+
+    const scriptPath = request.preserveScriptPath
+      ? request.executable
+      : request.executable.startsWith('./') ? request.executable.slice(2) : request.executable;
+    const result = await this.cppRunner({
+      code: '',
+      source: 'run',
+      scriptPath,
+      args: request.args,
+      cwd: request.cwd,
+      env: request.env,
+      ...(request.stdinPipe ? { stdinPipe: { buffer: request.stdinPipe.buffer } } : {}),
       project: await this.snapshot({ includeHidden: true }),
       onEvent: (event) => {
         this.handleRuntimeCommandEvent(event);
