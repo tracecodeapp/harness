@@ -993,6 +993,24 @@ def _tracecode_read_index(var_name, container, indices, index_sources=None):
 
 def _tracecode_write_index(var_name, container, indices, index_sources, value):
     effective_indices = list(indices)
+    parent_value = None
+    parent_indices = effective_indices[:-1]
+    parent_normalized = __tracecode_normalize_indices(parent_indices) if len(parent_indices) > 0 else None
+    if parent_normalized is not None:
+        try:
+            parent_value = __tracecode_read_value(container, parent_indices)
+            __tracecode_record_access(
+                sys._getframe(1),
+                __tracecode_make_access_event(
+                    var_name,
+                    'cell-read' if len(parent_normalized) == 2 else 'indexed-read',
+                    parent_normalized,
+                    index_sources=list(index_sources or [])[:len(parent_normalized)] if isinstance(index_sources, _builtins.list) else None,
+                    value=_serialize(parent_value),
+                ),
+            )
+        except Exception:
+            parent_value = None
     result = __tracecode_write_value(container, effective_indices, value)
     normalized = __tracecode_normalize_indices(effective_indices)
     if normalized is not None:
@@ -1208,11 +1226,11 @@ def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, 
     elif method_name == 'heappop':
         result = __tracecode_heapq.heappop(target, *args, **kwargs)
     else:
-        return getattr(__tracecode_heapq, method_name)(target, *args, **kwargs)
+        result = getattr(__tracecode_heapq, method_name)(target, *args, **kwargs)
     if normalized:
         __tracecode_record_access(
             sys._getframe(1),
-            __tracecode_make_access_event(var_name, 'mutating-call', normalized, method_name, args=__tracecode_serialize_call_args(args, kwargs)),
+            __tracecode_make_access_event(var_name, 'mutating-call', normalized, method_name=method_name, args=__tracecode_serialize_call_args(args, kwargs)),
         )
     else:
         __tracecode_record_access(
@@ -2088,7 +2106,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             isinstance(node.func, ast.Attribute) and
             isinstance(node.func.value, ast.Name) and
             node.func.value.id == 'heapq' and
-            node.func.attr in {'heappush', 'heappop'} and
+            node.func.attr in {'heappush', 'heappop', 'heapify', 'heapreplace', 'heappushpop'} and
             len(node.args) >= 1
         ):
             extracted_heap = _tracecode_extract_mutable_container_target(node.args[0])
@@ -2244,18 +2262,18 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         if isinstance(parent, ast.Call) and getattr(parent, 'func', None) is node:
             return self.generic_visit(node)
 
-        node = self.generic_visit(node)
-        extracted = _tracecode_extract_named_attribute(node)
+        extracted = _tracecode_extract_named_subscript(node)
         if extracted is None or not isinstance(node.ctx, ast.Load):
-            return node
+            return self.generic_visit(node)
 
-        var_name, attr_name = extracted
+        var_name, indices = extracted
         call = ast.Call(
-            func=ast.Name(id='_tracecode_read_attr', ctx=ast.Load()),
+            func=ast.Name(id='_tracecode_read_index', ctx=ast.Load()),
             args=[
                 ast.Constant(value=var_name),
                 ast.Name(id=var_name, ctx=ast.Load()),
-                ast.Constant(value=attr_name),
+                ast.List(elts=[self.visit(index) for index in indices], ctx=ast.Load()),
+                ast.List(elts=[_tracecode_index_source_node(index) for index in indices], ctx=ast.Load()),
             ],
             keywords=[],
         )

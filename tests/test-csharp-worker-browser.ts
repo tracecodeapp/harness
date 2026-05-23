@@ -610,6 +610,108 @@ async function main(): Promise<void> {
       `C# worker script-style case should capture stdout, received ${JSON.stringify(scriptStyle.consoleOutput)}`
     );
 
+    const tracedScriptStyle = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'var values = new List<int> { 2, 3 };',
+        'var outList = new List<int>();',
+        'foreach (var value in values) {',
+        '  outList.Add(value);',
+        '}',
+        'var result = outList.ToArray();',
+      ].join('\n'),
+      '',
+      {},
+      assetBaseUrl,
+      true,
+      { executionStyle: 'function', maxTraceSteps: 1000 }
+    );
+    assertCondition(
+      tracedScriptStyle.success,
+      `C# worker traced script-style case should succeed: ${tracedScriptStyle.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(tracedScriptStyle.output) === JSON.stringify([2, 3]),
+      `C# worker traced script-style case should return top-level result, received ${JSON.stringify(tracedScriptStyle.output)}`
+    );
+    assertCondition(
+      tracedScriptStyle.events?.some((event) => event.kind === 'line' && event.line === 4) === true,
+      `C# worker traced script-style foreach should use user source line 4, received ${JSON.stringify(tracedScriptStyle.events)}`
+    );
+    assertCondition(
+      tracedScriptStyle.events?.some(
+        (event) => event.kind === 'read' && event.line === 4 && event.target?.variable === 'values'
+      ) === true,
+      `C# worker traced script-style foreach should read values on user source line 4, received ${JSON.stringify(tracedScriptStyle.events)}`
+    );
+    assertCondition(
+      tracedScriptStyle.events?.some(
+        (event) => event.kind === 'mutate' && event.line === 5 && event.target?.variable === 'outList' && event.method === 'Add'
+      ) === true,
+      `C# worker traced script-style Add should mutate outList on user source line 5, received ${JSON.stringify(tracedScriptStyle.events)}`
+    );
+    assertCondition(
+      tracedScriptStyle.events?.some(
+        (event) =>
+          event.kind === 'write' &&
+          event.line === 5 &&
+          event.target?.variable === 'outList' &&
+          JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+          event.value === 2
+      ) === true,
+      `C# worker traced script-style Add should write outList[0] on user source line 5, received ${JSON.stringify(tracedScriptStyle.events)}`
+    );
+
+    const tracedScriptSingleLineForeachFieldMutation = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'class Box {',
+        '  public PriorityQueue<int, int> heap = new PriorityQueue<int, int>();',
+        '  public Box(List<int> nums) {',
+        '    foreach (int value in nums) this.heap.Enqueue(value, value);',
+        '    while (this.heap.Count > 1) {',
+        '      this.heap.Dequeue();',
+        '    }',
+        '  }',
+        '}',
+        'var box = new Box(new List<int> { 4, 5 });',
+        'var result = box.heap.Peek();',
+      ].join('\n'),
+      '',
+      {},
+      assetBaseUrl,
+      true,
+      { executionStyle: 'function', maxTraceSteps: 1000 }
+    );
+    assertCondition(
+      tracedScriptSingleLineForeachFieldMutation.success,
+      `C# worker traced script single-line foreach field mutation should succeed: ${tracedScriptSingleLineForeachFieldMutation.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedScriptSingleLineForeachFieldMutation.output === 5,
+      `C# worker traced script single-line foreach field mutation should return 5, received ${JSON.stringify(tracedScriptSingleLineForeachFieldMutation.output)}`
+    );
+    assertCondition(
+      tracedScriptSingleLineForeachFieldMutation.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 5
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['heap'])
+        && event.method === 'Enqueue'
+      ) === true,
+      `C# worker traced script single-line foreach should anchor this.heap.Enqueue to line 5, received ${JSON.stringify(tracedScriptSingleLineForeachFieldMutation.events)}`
+    );
+    assertCondition(
+      tracedScriptSingleLineForeachFieldMutation.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 6
+        && event.method === 'Enqueue'
+      ) !== true,
+      `C# worker traced script single-line foreach should not anchor Enqueue to while line 6, received ${JSON.stringify(tracedScriptSingleLineForeachFieldMutation.events)}`
+    );
+
     const defaultUsings = await runWorkerCase(
       page,
       [
@@ -3583,6 +3685,49 @@ async function main(): Promise<void> {
     assertCondition(
       tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'Peek') !== true,
       `C# worker traced priority-queue Peek should not emit a mutation, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+
+    const tracedPriorityQueueMemberField = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  private sealed class Holder {',
+        '    public PriorityQueue<int, int> heap = new PriorityQueue<int, int>();',
+        '    public void Add(int value) {',
+        '      this.heap.Enqueue(value, value);',
+        '    }',
+        '    public int Peek() { return heap.Peek(); }',
+        '  }',
+        '  public int UseFieldPriorityQueue(int value) {',
+        '    Holder holder = new Holder();',
+        '    holder.Add(value);',
+        '    return holder.Peek();',
+        '  }',
+        '}',
+      ].join('\n'),
+      'UseFieldPriorityQueue',
+      { value: 9 },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedPriorityQueueMemberField.success,
+      `C# worker traced priority-queue member-field case should succeed: ${tracedPriorityQueueMemberField.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedPriorityQueueMemberField.output === 9,
+      `C# worker traced priority-queue member-field case should return 9, received ${JSON.stringify(tracedPriorityQueueMemberField.output)}`
+    );
+    assertCondition(
+      tracedPriorityQueueMemberField.events?.some((event) =>
+        event.kind === 'mutate'
+        && event.line === 6
+        && event.target?.variable === 'this'
+        && JSON.stringify(event.target.path) === JSON.stringify(['heap'])
+        && event.method === 'Enqueue'
+      ) === true,
+      `C# worker traced this.heap.Enqueue should emit a member-field mutate, received ${JSON.stringify(tracedPriorityQueueMemberField.events)}`
     );
 
     const tracedQueueStackPeekReads = await runWorkerCase(

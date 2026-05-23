@@ -70,6 +70,14 @@ function traceAccessEvents(result: { trace?: { events?: RuntimeTraceEvent[] } })
   );
 }
 
+function runtimeRefId(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as { __id__?: unknown; __ref__?: unknown };
+  if (typeof record.__id__ === 'string') return record.__id__;
+  if (typeof record.__ref__ === 'string') return record.__ref__;
+  return undefined;
+}
+
 function traceLineFrames(result: { trace?: { events?: RuntimeTraceEvent[] } }, line: number): RuntimeTraceEvent[][] {
   const frames: RuntimeTraceEvent[][] = [];
   let currentFrame: RuntimeTraceEvent[] | null = null;
@@ -3376,6 +3384,39 @@ class Trie {
     Boolean(trieAliasFrame),
     'Trie tracing should preserve object identity when a local aliases this.root'
   );
+  const typeScriptTrieChildWrite = traceAccessEvents(typeScriptTrieObjectTracing).find((event) =>
+    event.kind === 'write' &&
+    event.target?.variable === 'node' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['children', 'a'])
+  );
+  const typeScriptTrieChildMutate = traceAccessEvents(typeScriptTrieObjectTracing).find((event) =>
+    event.kind === 'mutate' &&
+    event.target?.variable === 'node' &&
+    event.method === 'set' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['children', 'a'])
+  );
+  const typeScriptTrieChildRead = traceAccessEvents(typeScriptTrieObjectTracing).find((event) =>
+    event.kind === 'read' &&
+    event.target?.variable === 'node' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['children', 'a']) &&
+    Boolean(runtimeRefId(event.value))
+  );
+  const typeScriptTrieWriteId = runtimeRefId(typeScriptTrieChildWrite?.value);
+  const typeScriptTrieMutateArgs = Array.isArray(typeScriptTrieChildMutate?.args)
+    ? typeScriptTrieChildMutate.args
+    : [];
+  const typeScriptTrieMutateId = runtimeRefId(typeScriptTrieMutateArgs[1]);
+  const typeScriptTrieReadId = runtimeRefId(typeScriptTrieChildRead?.value);
+  assertCondition(
+    Boolean(typeScriptTrieWriteId) &&
+      typeScriptTrieWriteId === typeScriptTrieMutateId &&
+      typeScriptTrieWriteId === typeScriptTrieReadId,
+    `TypeScript Map-backed trie child refs should agree across write/mutate/read, received ${JSON.stringify({
+      write: typeScriptTrieChildWrite,
+      mutate: typeScriptTrieChildMutate,
+      read: typeScriptTrieChildRead,
+    })}`
+  );
   const javascriptTriePlainObjectAliasTracing = await harness.sendMessage<{
     success: boolean;
     trace: { events?: RuntimeTraceEvent[] };
@@ -3438,6 +3479,105 @@ class WordFilter {
   assertCondition(
     Boolean(javascriptTrieAliasFrame),
     'JavaScript trie tracing should preserve object identity when a local aliases this.root'
+  );
+  const javascriptScriptTrieTracing = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+    trace?: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class TrieNode {
+  constructor() {
+    this.children = new Map();
+    this.is_end = false;
+  }
+}
+
+class Trie {
+  constructor() {
+    this.root = new TrieNode();
+  }
+
+  insert(word) {
+    let node = this.root;
+    for (const char of word) {
+      if (!node.children.has(char)) {
+        node.children.set(char, new TrieNode());
+      }
+      node = node.children.get(char);
+    }
+    node.is_end = true;
+  }
+
+  search(word) {
+    let node = this._find_node(word);
+    return ((node !== null) && node.is_end);
+  }
+
+  startsWith(prefix) {
+    return (this._find_node(prefix) !== null);
+  }
+
+  _find_node(prefix) {
+    let node = this.root;
+    for (const char of prefix) {
+      if (!node.children.has(char)) {
+        return null;
+      }
+      node = node.children.get(char);
+    }
+    return node;
+  }
+}
+
+let trie = new Trie();
+trie.insert("cat");
+trie.insert("car");
+let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    javascriptScriptTrieTracing.success === true,
+    `JavaScript script trie tracing should succeed: ${javascriptScriptTrieTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    JSON.stringify(javascriptScriptTrieTracing.output) === JSON.stringify([true, false, true]),
+    'JavaScript script trie output should preserve behavior'
+  );
+  const javascriptScriptTrieChildWrite = traceAccessEvents(javascriptScriptTrieTracing).find((event) =>
+    event.kind === 'write' &&
+    event.target?.variable === 'node' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['children', 'c'])
+  );
+  const javascriptScriptTrieChildMutate = traceAccessEvents(javascriptScriptTrieTracing).find((event) =>
+    event.kind === 'mutate' &&
+    event.target?.variable === 'node' &&
+    event.method === 'set' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['children', 'c'])
+  );
+  const javascriptScriptTrieChildRead = traceAccessEvents(javascriptScriptTrieTracing).find((event) =>
+    event.kind === 'read' &&
+    event.target?.variable === 'node' &&
+    JSON.stringify(event.target.path) === JSON.stringify(['children', 'c']) &&
+    Boolean(runtimeRefId(event.value))
+  );
+  const javascriptScriptTrieWriteId = runtimeRefId(javascriptScriptTrieChildWrite?.value);
+  const javascriptScriptTrieMutateArgs = Array.isArray(javascriptScriptTrieChildMutate?.args)
+    ? javascriptScriptTrieChildMutate.args
+    : [];
+  const javascriptScriptTrieMutateId = runtimeRefId(javascriptScriptTrieMutateArgs[1]);
+  const javascriptScriptTrieReadId = runtimeRefId(javascriptScriptTrieChildRead?.value);
+  assertCondition(
+    Boolean(javascriptScriptTrieWriteId) &&
+      javascriptScriptTrieWriteId === javascriptScriptTrieMutateId &&
+      javascriptScriptTrieWriteId === javascriptScriptTrieReadId,
+    `JavaScript script trie child refs should agree across write/mutate/read, received ${JSON.stringify({
+      write: javascriptScriptTrieChildWrite,
+      mutate: javascriptScriptTrieChildMutate,
+      read: javascriptScriptTrieChildRead,
+    })}`
   );
   const insertBodySteps = traceLineEvents(typeScriptTrieObjectTracing).filter(
     (event) => event.function === 'insert' && (event.line === 18 || event.line === 19 || event.line === 24)

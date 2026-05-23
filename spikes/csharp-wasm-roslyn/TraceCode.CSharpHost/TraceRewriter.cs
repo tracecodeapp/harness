@@ -2,12 +2,18 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 
 namespace TraceCode.CSharpHost;
 
 public sealed class TraceRewriter : CSharpSyntaxRewriter
 {
+    private static readonly ConditionalWeakTable<SyntaxTree, LineDirectiveMap> LineDirectiveMaps = new();
+    private static readonly Regex LineDirectiveRegex = new(
+        @"^\s*#line\s+(?:(\d+)\b|default\b|hidden\b)",
+        RegexOptions.Compiled
+    );
     private readonly Stack<string> methodNames = new();
     private readonly Stack<string> methodReturnTypes = new();
     private readonly Stack<HashSet<string>> variableScopes = new();
@@ -1355,6 +1361,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         };
         if (line <= fallbackLine && statement is not BlockSyntax)
         {
+            if (line == fallbackLine
+                && statement.SyntaxTree is not null
+                && LineDirectiveMaps.GetValue(statement.SyntaxTree, tree => new LineDirectiveMap(tree.GetText())).HasDirectives)
+            {
+                return fallbackLine;
+            }
+
             int? nextLine = GetNextExecutableLineIfStatementIsNotOnFallbackLine(statement, fallbackLine);
             if (nextLine is > 0)
             {
@@ -2408,8 +2421,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         string method = invocationMemberAccess.Name.Identifier.ValueText;
-        if (method is not ("Add" or "Remove")
-            || method == "Remove" && !IsDeclaredMemberCollectionPath(variable, path))
+        bool isDeclaredMemberCollection = IsDeclaredMemberCollectionPath(variable, path);
+        if (method != "Add"
+            && (!IsIndexedReceiverMutationMethod(method) || !isDeclaredMemberCollection))
         {
             yield break;
         }
@@ -3969,14 +3983,71 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
     private static int GetLine(SyntaxNode node)
     {
-        FileLinePositionSpan span = node.SyntaxTree.GetLineSpan(node.Span);
-        return span.StartLinePosition.Line + 1;
+        return GetSourceMappedLine(node.SyntaxTree, node.Span);
     }
 
     private static int GetLine(SyntaxToken token)
     {
-        FileLinePositionSpan span = token.SyntaxTree!.GetLineSpan(token.Span);
-        return span.StartLinePosition.Line + 1;
+        return GetSourceMappedLine(token.SyntaxTree!, token.Span);
+    }
+
+    private static int GetSourceMappedLine(SyntaxTree syntaxTree, TextSpan span)
+    {
+        FileLinePositionSpan physicalSpan = syntaxTree.GetLineSpan(span);
+        int physicalLine = physicalSpan.StartLinePosition.Line;
+        FileLinePositionSpan mappedSpan = syntaxTree.GetMappedLineSpan(span);
+        if (mappedSpan.StartLinePosition.Line >= 0 && mappedSpan.StartLinePosition.Line != physicalLine)
+        {
+            return mappedSpan.StartLinePosition.Line + 1;
+        }
+
+        return LineDirectiveMaps.GetValue(syntaxTree, tree => new LineDirectiveMap(tree.GetText())).MapLine(physicalLine);
+    }
+
+    private sealed class LineDirectiveMap
+    {
+        private readonly List<(int DirectiveLine, int? MappedLine)> directives = new();
+
+        public bool HasDirectives => directives.Count > 0;
+
+        public LineDirectiveMap(SourceText sourceText)
+        {
+            for (int index = 0; index < sourceText.Lines.Count; index += 1)
+            {
+                string line = sourceText.Lines[index].ToString();
+                Match match = LineDirectiveRegex.Match(line);
+                if (!match.Success)
+                {
+                    continue;
+                }
+
+                int? mappedLine = match.Groups[1].Success
+                    ? int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)
+                    : null;
+                directives.Add((index, mappedLine));
+            }
+        }
+
+        public int MapLine(int physicalLine)
+        {
+            (int DirectiveLine, int? MappedLine)? active = null;
+            foreach ((int directiveLine, int? mappedLine) in directives)
+            {
+                if (directiveLine >= physicalLine)
+                {
+                    break;
+                }
+
+                active = (directiveLine, mappedLine);
+            }
+
+            if (active is null || active.Value.MappedLine is null)
+            {
+                return physicalLine + 1;
+            }
+
+            return active.Value.MappedLine.Value + physicalLine - active.Value.DirectiveLine - 1;
+        }
     }
 
     private static int GetLineOrFallback(SyntaxNode node, int fallbackLine)

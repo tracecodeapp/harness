@@ -38,6 +38,7 @@ type RuntimeTraceEvent = {
   kind?: string;
   line?: number;
   function?: string;
+  method?: string;
   target?: {
     variable?: string;
     path?: unknown[];
@@ -987,6 +988,102 @@ print(json.dumps({
   console.log('PASS: Python runtime records in-place sort mutation provenance');
 }
 
+async function assertHeapqMutationsAreRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `import heapq
+
+class Box:
+    def __init__(self):
+        self.heap = [5, 1, 3]
+        heapq.heapify(self.heap)
+
+    def swap(self, val):
+        heap = self.heap
+        old = heapq.heapreplace(heap, val)
+        return [old, heap[0]]
+
+def inspect():
+    box = Box()
+    return box.swap(4)
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
+  assertCondition(JSON.stringify(parsed.result) === JSON.stringify([1, 3]), 'Python heapq fixture should execute successfully');
+
+  const heapifyLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heapify(self.heap)') - 1;
+  const heapreplaceLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'old = heapq.heapreplace(heap, val)') - 1;
+  const heapifyStep = findTraceStep(parsed.trace, heapifyLine);
+  const heapreplaceStep = findTraceStep(parsed.trace, heapreplaceLine);
+
+  assertCondition(
+    (heapifyStep.accesses ?? []).some((access) => (
+      access.variable === 'self' &&
+      access.kind === 'mutating-call' &&
+      access.method === 'heapify' &&
+      JSON.stringify(access.indices) === JSON.stringify(['heap']) &&
+      JSON.stringify(access.args) === JSON.stringify([])
+    )),
+    `Python heapq.heapify should emit a self.heap mutate access, received ${JSON.stringify(heapifyStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'mutate' &&
+      event.line === heapifyLine &&
+      JSON.stringify(event.target) === JSON.stringify({ variable: 'self', path: ['heap'] }) &&
+      event.method === 'heapify' &&
+      JSON.stringify(event.args) === JSON.stringify([])
+    )),
+    `Python runtime trace should emit a self.heap heapify mutate event, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+  assertCondition(
+    (heapreplaceStep.accesses ?? []).some((access) => (
+      access.variable === 'heap' &&
+      access.kind === 'mutating-call' &&
+      access.method === 'heapreplace' &&
+      JSON.stringify(access.args) === JSON.stringify([4])
+    )),
+    `Python heapq.heapreplace should emit a heap mutate access with args, received ${JSON.stringify(heapreplaceStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'mutate' &&
+      event.line === heapreplaceLine &&
+      JSON.stringify(event.target) === JSON.stringify({ variable: 'heap' }) &&
+      event.method === 'heapreplace' &&
+      JSON.stringify(event.args) === JSON.stringify([4])
+    )),
+    `Python runtime trace should emit a heapreplace mutate event, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records heapq mutation provenance');
+}
+
 async function assertTupleKeyDictProvenanceIsRecorded(): Promise<void> {
   const runtime = await loadRuntimeCore();
   const source = `def inspect():
@@ -1571,6 +1668,114 @@ print(json.dumps({
   );
 
   console.log('PASS: Python runtime records attribute read values before later mutations');
+}
+
+async function assertNestedAttributeReadsAndWritesAreRecorded(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Node:
+    def __init__(self, key):
+        self.key = key
+        self.prev = None
+        self.next = None
+
+class Cache:
+    def __init__(self):
+        self.head = Node("head")
+        self.tail = Node("tail")
+        self.head.next = self.tail
+
+    def attach(self, node):
+        node.next = self.head.next
+        self.head.next.prev = node
+        return node.next.key
+
+def inspect():
+    cache = Cache()
+    node = Node("node")
+    return cache.attach(node)
+`;
+
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+
+  const tracingPayload = runtime.generateTracingCode(
+    deps,
+    source,
+    'inspect',
+    {},
+    'function',
+    { maxTraceSteps: 5000, maxLineEvents: 20000 }
+  );
+
+  const stdout = await runPythonScript(`${tracingPayload.code}
+print(json.dumps({
+    'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
+    'result': _serialize_output(_result)
+}))
+`);
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
+  assertCondition(parsed.result === 'tail', 'Python nested attribute fixture should execute successfully');
+
+  const rhsReadLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'node.next = self.head.next') - 1;
+  const receiverWriteLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'self.head.next.prev = node') - 1;
+  const rhsReadStep = findTraceStep(parsed.trace, rhsReadLine);
+  const receiverWriteStep = findTraceStep(parsed.trace, receiverWriteLine);
+
+  assertCondition(
+    (rhsReadStep.accesses ?? []).some((access) => (
+      access.variable === 'self' &&
+      access.kind === 'cell-read' &&
+      JSON.stringify(access.indices) === JSON.stringify(['head', 'next'])
+    )),
+    `Python nested RHS attribute read should emit self.head.next, received ${JSON.stringify(rhsReadStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === rhsReadLine &&
+      JSON.stringify(event.target) === JSON.stringify({ variable: 'self', path: ['head', 'next'] })
+    )),
+    `Python runtime trace should emit self.head.next read event, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+  assertCondition(
+    (receiverWriteStep.accesses ?? []).some((access) => (
+      access.variable === 'self' &&
+      access.kind === 'cell-read' &&
+      JSON.stringify(access.indices) === JSON.stringify(['head', 'next'])
+    )),
+    `Python nested receiver write should emit self.head.next receiver read, received ${JSON.stringify(receiverWriteStep.accesses)}`
+  );
+  assertCondition(
+    (receiverWriteStep.accesses ?? []).some((access) => (
+      access.variable === 'self' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indices) === JSON.stringify(['head', 'next', 'prev'])
+    )),
+    `Python nested receiver write should emit self.head.next.prev write, received ${JSON.stringify(receiverWriteStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'read' &&
+      event.line === receiverWriteLine &&
+      JSON.stringify(event.target) === JSON.stringify({ variable: 'self', path: ['head', 'next'] })
+    )) &&
+      parsed.runtimeTrace.events.some((event) => (
+        event.kind === 'write' &&
+        event.line === receiverWriteLine &&
+        JSON.stringify(event.target) === JSON.stringify({ variable: 'self', path: ['head', 'next', 'prev'] })
+      )),
+    `Python runtime trace should emit nested receiver read and write events, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+
+  console.log('PASS: Python runtime records nested attribute reads and writes');
 }
 
 async function assertTraceCaptureLimitPreservesOutput(): Promise<void> {
@@ -2386,6 +2591,7 @@ async function main(): Promise<void> {
   await assertChainedAssignmentScalarWritesAreRecorded();
   await assertListComprehensionAssignmentEmitsSingleWriteFrame();
   await assertInPlaceSortMutationIsRecorded();
+  await assertHeapqMutationsAreRecorded();
   await assertTupleKeyDictProvenanceIsRecorded();
   await assertObjectMemberDictMembershipProvenanceIsRecorded();
   await assertComputedDeleteMutationArgsAreRecorded();
@@ -2394,6 +2600,7 @@ async function main(): Promise<void> {
   await assertCustomObjectIdsAreStableAcrossFrames();
   await assertObjectFieldSubscriptReadCarriesValue();
   await assertAttributeReadCarriesPreMutationValue();
+  await assertNestedAttributeReadsAndWritesAreRecorded();
   await assertTraceCaptureLimitPreservesOutput();
   await assertDefaultStoredRuntimeEventBudgetAllowsScriptReturns();
   await assertRuntimeValueSerializationCap();

@@ -649,6 +649,63 @@ if (!nodeFieldReadEvents.some((event) => event.kind === 'read' && event.target?.
   throw new Error('C++ ListNode next->val should emit field read, received ' + JSON.stringify(nodeFieldReadEvents));
 }
 
+const nestedPointerFieldAssignmentTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'struct Node {',
+    '  int val;',
+    '  Node* next;',
+    '  Node* prev;',
+    '  Node(int value) : val(value), next(nullptr), prev(nullptr) {}',
+    '};',
+    'class Solution {',
+    'public:',
+    '  int relink() {',
+    '    Node* head = new Node(1);',
+    '    Node* first = new Node(2);',
+    '    Node* node = new Node(3);',
+    '    head->next = first;',
+    '    node->next = head->next;',
+    '    head->next->prev = node;',
+    '    return node->next->prev->val;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'relink',
+  inputs: {},
+  options: {},
+});
+if (!nestedPointerFieldAssignmentTracing.success || nestedPointerFieldAssignmentTracing.output !== 3) {
+  throw new Error('C++ nested pointer field assignment tracing failed: ' + JSON.stringify(nestedPointerFieldAssignmentTracing));
+}
+const nestedPointerFieldEvents = nestedPointerFieldAssignmentTracing.trace.events;
+if (!nestedPointerFieldEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 14 &&
+  event.target?.variable === 'head' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['next']) &&
+  event.value?.val === 2
+)) {
+  throw new Error('C++ pointer field assignment RHS should emit head->next read, received ' + JSON.stringify(nestedPointerFieldEvents));
+}
+if (!nestedPointerFieldEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 14 &&
+  event.target?.variable === 'node' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['next']) &&
+  event.value?.val === 2
+)) {
+  throw new Error('C++ pointer field assignment should emit node->next write, received ' + JSON.stringify(nestedPointerFieldEvents));
+}
+if (!nestedPointerFieldEvents.some((event) =>
+  event.kind === 'write' &&
+  event.line === 15 &&
+  event.target?.variable === 'head' &&
+  JSON.stringify(event.target.path) === JSON.stringify(['next', 'prev']) &&
+  event.value?.val === 3
+)) {
+  throw new Error('C++ nested pointer field assignment should emit head->next->prev write, received ' + JSON.stringify(nestedPointerFieldEvents));
+}
+
 const stackNodeDeclarationTracing = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
   code: [
     'struct ListNode {',

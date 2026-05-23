@@ -128,6 +128,17 @@ public final class TraceHooks {
     emitTraceWrite(line, name, path.toString(), value);
   }
 
+  public static <T> T readFieldPathAtLine(int line, String name, String[] fields, T value) {
+    StringBuilder path = new StringBuilder("[");
+    for (int index = 0; index < fields.length; index++) {
+      if (index > 0) path.append(",");
+      path.append(jsonString(fields[index]));
+    }
+    path.append("]");
+    emitTraceRead(line, name, path.toString(), value);
+    return value;
+  }
+
   public static void emitArrayWriteAtLine(int line, String name, int index, Object value) {
     emitTraceWrite(line, name, "[" + serializeResult(index) + "]", value);
   }

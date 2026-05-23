@@ -3247,50 +3247,121 @@ function buildOpaqueObjectSnapshotInstrumentation(name, lineNumber, indent = '')
   return `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"snapshot","line":${lineNumber},"target":{"variable":${jsonStringLiteral(name)}},"value":`)}) + tracecode::to_json(${name}) + "}", ${lineNumber});`;
 }
 
-function buildFieldTargetJsonExpression(objectName, fieldName, keyExpression) {
-  if (keyExpression) {
-    const indexSource = cppIndexSourceForExpression(keyExpression);
-    if (indexSource !== 'nullptr') {
-      return `std::string(${cppStringLiteral(`{"variable":${jsonStringLiteral(objectName)},"path":[${jsonStringLiteral(fieldName)},`)}) + tracecode::to_json(${keyExpression}) + ${cppStringLiteral(`],"indexSources":`)} + tracecode::index_sources_json(nullptr, ${indexSource}) + "}"`;
+function cppStringExpression(parts) {
+  let expression = 'std::string()';
+  for (const part of parts) {
+    if (!part) continue;
+    if (typeof part === 'string') {
+      expression += ` + ${cppStringLiteral(part)}`;
+    } else if (part.expression) {
+      expression += ` + ${part.expression}`;
     }
-    return `std::string(${cppStringLiteral(`{"variable":${jsonStringLiteral(objectName)},"path":[${jsonStringLiteral(fieldName)},`)}) + tracecode::to_json(${keyExpression}) + "]}"`;
   }
-  return `std::string(${cppStringLiteral(`{"variable":${jsonStringLiteral(objectName)},"path":[${jsonStringLiteral(fieldName)}]}`)})`;
+  return expression;
+}
+
+function buildFieldPathTargetJsonExpression(objectName, pathParts) {
+  const parts = [`{"variable":${jsonStringLiteral(objectName)},"path":[`];
+  const indexSources = [];
+  let hasIndexSource = false;
+  for (const [index, part] of pathParts.entries()) {
+    if (index > 0) parts.push(',');
+    if (part.fieldName) {
+      parts.push(jsonStringLiteral(part.fieldName));
+      indexSources.push('nullptr');
+      continue;
+    }
+    if (part.keyExpression) {
+      parts.push({ expression: `tracecode::to_json(${part.keyExpression})` });
+      const indexSource = cppIndexSourceForExpression(part.keyExpression);
+      indexSources.push(indexSource);
+      hasIndexSource ||= indexSource !== 'nullptr';
+    }
+  }
+  parts.push(']');
+  if (hasIndexSource && indexSources.length <= 2) {
+    parts.push(',"indexSources":');
+    parts.push({ expression: `tracecode::index_sources_json(${indexSources.join(', ')})` });
+  }
+  parts.push('}');
+  return cppStringExpression(parts);
 }
 
 function parseFieldAccessExpression(expression) {
   const trimmed = expression.trim();
-  const match = trimmed.match(/^([A-Za-z_]\w*)(?:\.|->)([A-Za-z_]\w*)(?:(?:\.|->)[A-Za-z_]\w*)*(?:\s*\[\s*([^\[\]]+?)\s*\])?$/);
-  if (!match) return null;
+  const objectMatch = trimmed.match(/^([A-Za-z_]\w*)/);
+  if (!objectMatch) return null;
+  const objectName = objectMatch[1];
+  const pathParts = [];
+  let cursor = objectName.length;
+  while (cursor < trimmed.length) {
+    while (/\s/.test(trimmed[cursor] || '')) cursor += 1;
+    if (trimmed.startsWith('->', cursor)) {
+      cursor += 2;
+    } else if (trimmed[cursor] === '.') {
+      cursor += 1;
+    } else {
+      break;
+    }
+    while (/\s/.test(trimmed[cursor] || '')) cursor += 1;
+    const fieldMatch = trimmed.slice(cursor).match(/^([A-Za-z_]\w*)/);
+    if (!fieldMatch) return null;
+    const fieldName = fieldMatch[1];
+    pathParts.push({ fieldName });
+    cursor += fieldName.length;
+    while (/\s/.test(trimmed[cursor] || '')) cursor += 1;
+    if (trimmed[cursor] === '[') {
+      const closeIndex = findMatchingSquareBracket(trimmed, cursor);
+      if (closeIndex < 0) return null;
+      const keyExpression = trimmed.slice(cursor + 1, closeIndex).trim();
+      if (!keyExpression) return null;
+      pathParts.push({ keyExpression });
+      cursor = closeIndex + 1;
+    }
+  }
+  while (/\s/.test(trimmed[cursor] || '')) cursor += 1;
+  if (cursor !== trimmed.length || pathParts.length === 0) return null;
   return {
-    objectName: match[1],
-    fieldName: match[2],
-    keyExpression: match[3]?.trim(),
+    objectName,
+    fieldName: pathParts[0]?.fieldName,
+    keyExpression: pathParts.length === 2 && pathParts[1]?.keyExpression ? pathParts[1].keyExpression : undefined,
+    pathParts,
   };
 }
 
 function buildFieldReadInstrumentation(expression, valueExpression, lineNumber, indent = '') {
   const access = parseFieldAccessExpression(expression);
   if (!access) return '';
-  const targetExpression = buildFieldTargetJsonExpression(access.objectName, access.fieldName, access.keyExpression);
+  const targetExpression = buildFieldPathTargetJsonExpression(access.objectName, access.pathParts);
   return [
     `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"read","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${valueExpression}) + "}", ${lineNumber});`,
     buildOpaqueObjectSnapshotInstrumentation(access.objectName, lineNumber, indent),
   ].join('\n');
 }
 
+function parseSimpleAssignmentStatement(line) {
+  const match = line.match(/^(\s*)(.+?)\s*=\s*(.+?)\s*;\s*$/);
+  if (!match) return null;
+  const [, indent, lhsExpression, rhsExpression] = match;
+  const operatorIndex = line.indexOf('=', indent.length + lhsExpression.length);
+  const previous = line.slice(0, operatorIndex).trimEnd().at(-1) || '';
+  const next = line.slice(operatorIndex + 1).trimStart()[0] || '';
+  if (previous === '!' || previous === '<' || previous === '>' || previous === '=' || next === '=') return null;
+  return { indent, lhsExpression, rhsExpression };
+}
+
 function rewriteFieldWriteInstrumentation(line, lineNumber) {
-  const match = line.match(/^(\s*)([A-Za-z_]\w*)((?:\.|->))([A-Za-z_]\w*)(?:\s*\[\s*([^\[\]]+?)\s*\])?\s*=\s*(.+?)\s*;\s*$/);
-  if (!match) return line;
-  const [, indent, objectName, operator, fieldName, keyExpression] = match;
-  const targetExpression = buildFieldTargetJsonExpression(objectName, fieldName, keyExpression?.trim());
-  const valueExpression = keyExpression
-    ? `${objectName}${operator}${fieldName}[${keyExpression.trim()}]`
-    : `${objectName}${operator}${fieldName}`;
+  const assignment = parseSimpleAssignmentStatement(line);
+  if (!assignment) return line;
+  const { indent, lhsExpression } = assignment;
+  const access = parseFieldAccessExpression(lhsExpression);
+  if (!access) return line;
+  const targetExpression = buildFieldPathTargetJsonExpression(access.objectName, access.pathParts);
+  const valueExpression = lhsExpression.trim();
   return [
     line,
     `${indent}tracecode::write_trace_event_json(std::string(${cppStringLiteral(`{"kind":"write","line":${lineNumber},"target":`)}) + ${targetExpression} + ",\\\"value\\\":" + tracecode::to_json(${valueExpression}) + "}", ${lineNumber});`,
-    buildOpaqueObjectSnapshotInstrumentation(objectName, lineNumber, indent),
+    buildOpaqueObjectSnapshotInstrumentation(access.objectName, lineNumber, indent),
   ].join('\n');
 }
 
@@ -3298,9 +3369,44 @@ function isCppPointerVariable(variable) {
   return typeof variable?.type === 'string' && /\*\s*$/.test(variable.type.trim());
 }
 
+function buildPointerFieldReadsForExpression(expression, lineNumber, variables = new Map(), indent = '') {
+  const stripped = stripCppStringsAndComments(expression);
+  const reads = [];
+  const seen = new Set();
+  const fieldAccessPattern = /\b([A-Za-z_]\w*(?:\s*->\s*[A-Za-z_]\w*(?:\s*\[[^\[\]]+?\])?)+)\b/g;
+  for (const match of stripped.matchAll(fieldAccessPattern)) {
+    const accessExpression = match[1].replace(/\s+/g, '');
+    if (!accessExpression || seen.has(accessExpression)) continue;
+    const accessStart = match.index ?? 0;
+    const accessEnd = accessStart + match[0].length;
+    const beforeAccess = stripped.slice(Math.max(0, accessStart - 2), accessStart);
+    if (beforeAccess === '->' || beforeAccess.endsWith('.')) continue;
+    if (nextNonWhitespace(stripped, accessEnd).ch === '(') continue;
+    const access = parseFieldAccessExpression(accessExpression);
+    if (!access || access.objectName === 'this') continue;
+    const objectVariable = variables?.get(access.objectName);
+    if (objectVariable && !isCppPointerVariable(objectVariable)) continue;
+    seen.add(accessExpression);
+    const readInstrumentation = buildFieldReadInstrumentation(accessExpression, accessExpression, lineNumber, indent);
+    if (!readInstrumentation) continue;
+    reads.push(objectVariable && isCppPointerVariable(objectVariable)
+      ? `${indent}if (${access.objectName}) {\n${readInstrumentation}\n${indent}}`
+      : readInstrumentation);
+  }
+  return reads.join('\n');
+}
+
 function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = new Map()) {
   if (!line.includes('->')) return line;
   const firstLine = line.split('\n')[0] ?? line;
+  const assignment = parseSimpleAssignmentStatement(firstLine);
+  if (assignment) {
+    const { indent, lhsExpression, rhsExpression } = assignment;
+    if (parseFieldAccessExpression(lhsExpression)) {
+      const rhsReads = buildPointerFieldReadsForExpression(rhsExpression, lineNumber, variables, indent);
+      if (rhsReads) return `${rhsReads}\n${line}`;
+    }
+  }
   const pointerFieldAssignment = firstLine.match(/^(\s*)([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)(?:\s*\[\s*([^\[\]]+?)\s*\])?\s*;\s*$/);
   if (pointerFieldAssignment) {
     const [, indent, assigneeName, objectName, fieldName, keyExpression] = pointerFieldAssignment;
@@ -3327,10 +3433,12 @@ function rewritePointerFieldReadInstrumentation(line, lineNumber, variables = ne
     const objectName = match[1];
     const fieldName = match[2];
     if (!objectName || !fieldName) continue;
+    const accessStart = match.index ?? 0;
+    const beforeAccess = stripped.slice(Math.max(0, accessStart - 2), accessStart);
+    if (beforeAccess === '->' || beforeAccess.endsWith('.')) continue;
     if (objectName === 'this') continue;
     const objectVariable = variables?.get(objectName);
     if (objectVariable && !isCppPointerVariable(objectVariable)) continue;
-    const accessStart = match.index ?? 0;
     const accessEnd = accessStart + match[0].length;
     const before = stripped.slice(0, accessStart);
     const after = stripped.slice(accessEnd);

@@ -11,6 +11,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class JavaRewriteLibrary {
+  private static final String CALL_ARGS_WITH_NESTED_PARENS = "((?:[^()\\n;]|\\([^()]*\\))+?)";
   private static final Pattern METHOD_START = Pattern.compile(
       "^(\\s*)(?:(?:public|private|protected|static|final|synchronized)\\s+)*(?:[A-Za-z_][A-Za-z0-9_<>, ?]*(?:\\s*\\[\\])*\\s+)+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*(?:throws\\s+[^\\{]+)?\\{\\s*$",
       Pattern.DOTALL);
@@ -34,6 +35,8 @@ public final class JavaRewriteLibrary {
   private static final Pattern STRING_ARRAY_LENGTH_CALL = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[([^;\\]\\[]+)\\]\\.length\\(\\)");
   private static final Pattern LIST_ARRAY_READ = Pattern.compile("\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)\\s*\\[([^;\\]\\[]+)\\]");
   private static final Pattern FIELD_WRITE = Pattern.compile("^(\\s*)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*(.+);\\s*$");
+  private static final Pattern FIELD_PATH_WRITE = Pattern.compile(
+      "^(\\s*)((?:this\\s*\\.\\s*)?[A-Za-z_][A-Za-z0-9_]*(?:\\s*\\.\\s*[A-Za-z_][A-Za-z0-9_]*){2,})\\s*=\\s*(.+);\\s*$");
   private static final Pattern FIELD_READ = Pattern.compile("(?<!\\.)\\b(?!System\\b|TraceHooks\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\b(?!\\s*\\()");
   private static final Pattern FIELD_DECLARATION = Pattern.compile(
       "^\\s*(?:public|private|protected|static|final|transient|volatile|\\s)*([A-Za-z_][A-Za-z0-9_<>?, \\[\\]]*(?:\\s*\\[\\])*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?:=\\s*.+)?;\\s*$");
@@ -71,19 +74,19 @@ public final class JavaRewriteLibrary {
       "^([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]$");
   private static final Pattern MUTATING_CALL_EXPRESSION = Pattern.compile(
       "^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\((.*)\\)$");
-  private static final Pattern MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(((?:[^()\\n;]|\\([^()]*\\))+?)\\)");
-  private static final Pattern MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
-  private static final Pattern MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
+  private static final Pattern MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.get\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
   private static final Pattern QUEUE_PEEK_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.peek\\(\\)");
   private static final Pattern QUEUE_REMOVE_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.(remove|poll)\\(\\)");
   private static final Pattern STACK_DEQUE_POP_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.pop\\(\\)");
   private static final Pattern COLLECTION_CONTAINS_CALL = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\.contains\\(([^()\\n;]+)\\)");
-  private static final Pattern THIS_FIELD_MAP_GET_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
-  private static final Pattern THIS_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
-  private static final Pattern THIS_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
-  private static final Pattern OBJECT_FIELD_MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(([^()\\n;]+)\\)");
-  private static final Pattern OBJECT_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(([^()\\n;]+)\\)");
-  private static final Pattern OBJECT_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(([^()\\n;]+)\\)");
+  private static final Pattern THIS_FIELD_MAP_GET_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern THIS_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern THIS_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("\\bthis\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern OBJECT_FIELD_MAP_GET_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.get\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern OBJECT_FIELD_MAP_GET_OR_DEFAULT_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.getOrDefault\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
+  private static final Pattern OBJECT_FIELD_MAP_CONTAINS_KEY_CALL = Pattern.compile("(?<!\\.)\\b(?!this\\b)([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\.containsKey\\(" + CALL_ARGS_WITH_NESTED_PARENS + "\\)");
   private static final Pattern MATRIX_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]");
   private static final Pattern ARRAY_READ = Pattern.compile("(?<!\\.)\\b([A-Za-z_][A-Za-z0-9_]*)\\s*\\[((?:[^\\]\\[()]|\\([^()]*\\))+)\\]");
 
@@ -447,6 +450,30 @@ public final class JavaRewriteLibrary {
           indent + name + ("++".equals(operator) ? " += 1;" : " -= 1;") + "\n" +
           indent + "TraceHooks.emitScalarWriteAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");\n" +
           indent + "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+    }
+
+    Matcher fieldPathWrite = FIELD_PATH_WRITE.matcher(line);
+    if (fieldPathWrite.matches()) {
+      String indent = fieldPathWrite.group(1);
+      String left = fieldPathWrite.group(2).replaceAll("\\s+", "");
+      String value = rewriteReads(fieldPathWrite.group(3).trim(), sourceLine, frame);
+      java.util.List<String> parts = java.util.Arrays.asList(left.split("\\."));
+      String variable = parts.get(0);
+      int pathStart = 1;
+      if ("this".equals(variable)) {
+        pathStart = 1;
+      }
+      java.util.List<String> receiverPath = parts.subList(pathStart, parts.size() - 1);
+      java.util.List<String> writePath = parts.subList(pathStart, parts.size());
+      String receiverExpression = String.join(".", parts.subList(0, parts.size() - 1));
+      String finalField = parts.get(parts.size() - 1);
+      String receiverRead = "TraceHooks.readFieldPathAtLine(" + sourceLine + ", " + quote(variable) + ", " +
+          stringArrayLiteral(receiverPath) + ", " + receiverExpression + ")";
+      String snapshotExpression = "this".equals(variable) ? "this" : variable;
+      return indent + receiverRead + "." + finalField + " = " + value + "; " +
+          "TraceHooks.emitFieldPathWriteAtLine(" + sourceLine + ", " + quote(variable) + ", " +
+          stringArrayLiteral(writePath) + ", " + left + "); " +
+          "TraceHooks.emitRuntimeSnapshotAtLine(" + sourceLine + ", " + quote(variable) + ", " + snapshotExpression + ");";
     }
 
     Matcher fieldWrite = FIELD_WRITE.matcher(line);
@@ -1922,6 +1949,16 @@ public final class JavaRewriteLibrary {
 
   private static String quote(String value) {
     return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+  }
+
+  private static String stringArrayLiteral(java.util.List<String> values) {
+    StringBuilder out = new StringBuilder("new String[] { ");
+    for (int index = 0; index < values.size(); index++) {
+      if (index > 0) out.append(", ");
+      out.append(quote(values.get(index)));
+    }
+    out.append(" }");
+    return out.toString();
   }
 
   private static boolean isSimpleIdentifierExpression(String value) {

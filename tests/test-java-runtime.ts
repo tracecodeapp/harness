@@ -4936,6 +4936,62 @@ class Solution {
   }
 }`;
 
+    const fieldMapReadCode = `import java.util.*;
+
+class Solution {
+  static class TrieNode {
+    Map<String, TrieNode> children = new HashMap<>();
+  }
+
+  public int walk(String word) {
+    TrieNode node = new TrieNode();
+    for (char ch : word.toCharArray()) {
+      if (!node.children.containsKey(String.valueOf(ch))) {
+        node.children.put(String.valueOf(ch), new TrieNode());
+      }
+      node = node.children.get(String.valueOf(ch));
+    }
+    return node.children.size();
+  }
+}`;
+    const fieldMapReadSource = assertNativeJavaRewriterCompiles(fieldMapReadCode, 'walk');
+    assertCondition(
+      fieldMapReadSource.includes('TraceHooks.containsFieldMapKeyAtLine') &&
+        fieldMapReadSource.includes('TraceHooks.readFieldMapAtLine') &&
+        fieldMapReadSource.includes('String.valueOf(ch)'),
+      `Java field map containsKey/get with computed keys should rewrite to keyed reads, received ${fieldMapReadSource}`
+    );
+    console.log('PASS: java rewriter emits keyed field-map reads for computed containsKey/get keys');
+
+    const fieldPathWriteCode = `class Node {
+  Node next;
+  Node prev;
+}
+
+class Solution {
+  Node head;
+  Node tail;
+
+  public int wire() {
+    this.head = new Node();
+    this.tail = new Node();
+    this.head.next = this.tail;
+    this.tail.prev = this.head;
+    head.next.prev = tail;
+    return 0;
+  }
+}`;
+    const fieldPathWriteSource = assertNativeJavaRewriterCompiles(fieldPathWriteCode, 'wire');
+    assertCondition(
+      fieldPathWriteSource.includes('TraceHooks.readFieldPathAtLine') &&
+        fieldPathWriteSource.includes('TraceHooks.emitFieldPathWriteAtLine') &&
+        fieldPathWriteSource.includes('new String[] { "head", "next" }') &&
+        fieldPathWriteSource.includes('new String[] { "tail", "prev" }') &&
+        fieldPathWriteSource.includes('new String[] { "next", "prev" }'),
+      `Java nested field assignments should rewrite to field-path writes, received ${fieldPathWriteSource}`
+    );
+    console.log('PASS: java rewriter emits field-path writes for nested object assignments');
+
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: treeInputCode,
       functionName: 'solve',

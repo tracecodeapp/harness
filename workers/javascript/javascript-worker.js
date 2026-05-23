@@ -4852,7 +4852,7 @@ function* __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __ind
       kind: __base.length === 2 ? 'cell-read' : 'indexed-read',
       indices: __base,
       pathDepth: __base.length,
-      value: serializeValue(__iterable),
+      value: __iterable,
       ...(Array.isArray(__baseSources) ? { indexSources: __baseSources } : {}),
       ...__traceNormalizeSourceLocation(__location),
     });
@@ -5080,7 +5080,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         indices: __targetPath,
         pathDepth: __path.length + 1,
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
-        value: serializeValue(__args[1]),
+        value: __args[1],
         ...__sourceLocation,
       });
       __traceRecorder.recordAccess({
@@ -5104,7 +5104,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         indices: [...__path, __args[0]],
         pathDepth: __path.length + 1,
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
-        value: serializeValue(__result),
+        value: __result,
         ...__sourceLocation,
       });
       __traceFlushDeferredScalarUpdates(__rawPath);
@@ -5135,7 +5135,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
         indices: __indices,
         pathDepth: __indices.length,
         ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
-        value: serializeValue(__result),
+        value: __result,
         ...__sourceLocation,
       });
       __traceFlushDeferredScalarUpdates(__rawPath);
@@ -5191,7 +5191,7 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
           indices: __writePath,
           pathDepth: __writePath.length,
           ...(Array.isArray(__writeSources) ? { indexSources: __writeSources } : {}),
-          value: serializeValue(__target[__sequenceInsertStartIndex + __offset]),
+          value: __target[__sequenceInsertStartIndex + __offset],
           ...__sourceLocation,
         });
       }
