@@ -2534,6 +2534,39 @@ async function main(): Promise<void> {
       `C# worker traced jagged-array write case should include image[row][col] write, received ${JSON.stringify(tracedJaggedArrayWrite.events)}`
     );
 
+    const tracedNestedPostIncrementArrayWrite = await runWorkerCase(
+      page,
+      [
+        'public class Solution {',
+        '  public int[] MergeOnce(int[] left, int[] right) {',
+        '    int[] merged = new int[left.Length + right.Length];',
+        '    int i = 0, j = 0, k = 0;',
+        '    if (left[i] <= right[j]) merged[k++] = left[i++];',
+        '    else merged[k++] = right[j++];',
+        '    return merged;',
+        '  }',
+        '}',
+      ].join('\n'),
+      'MergeOnce',
+      { left: [1], right: [2] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedNestedPostIncrementArrayWrite.success,
+      `C# worker traced nested post-increment array write should succeed: ${tracedNestedPostIncrementArrayWrite.error ?? 'unknown error'}`
+    );
+    for (const [name, value] of [['i', 1], ['k', 1]] as const) {
+      assertCondition(
+        tracedNestedPostIncrementArrayWrite.events?.some((event) =>
+          event.kind === 'write'
+          && event.line === 5
+          && event.target?.variable === name
+          && event.value === value) === true,
+        `C# worker nested post-increment array write should emit scalar write for ${name}, received ${JSON.stringify(tracedNestedPostIncrementArrayWrite.events)}`
+      );
+    }
+
     const tracedTupleDequeueBinding = await runWorkerCase(
       page,
       [
@@ -3361,6 +3394,58 @@ async function main(): Promise<void> {
     assertCondition(
       tracedExplicitCollections.events?.some((event) => event.kind === 'write' && event.target?.variable === 'seen' && event.target.path?.[0] === 4) === true,
       `C# worker traced explicit collections case should include dictionary keyed write, received ${JSON.stringify(tracedExplicitCollections.events)}`
+    );
+
+    const tracedDictionaryIncrementProvenance = await runWorkerCase(
+      page,
+      [
+        'using System.Collections.Generic;',
+        'public class Solution {',
+        '  public int CountRepeated(int[] nums) {',
+        '    var counts = new Dictionary<int, int>();',
+        '    foreach (var num in nums) {',
+        '      if (counts.ContainsKey(num))',
+        '        counts[num]++;',
+        '      else',
+        '        counts[num] = 1;',
+        '    }',
+        '    return counts[nums[0]];',
+        '  }',
+        '}',
+      ].join('\n'),
+      'CountRepeated',
+      { nums: [1, 1] },
+      assetBaseUrl,
+      true
+    );
+    assertCondition(
+      tracedDictionaryIncrementProvenance.success,
+      `C# worker traced dictionary increment provenance case should succeed: ${tracedDictionaryIncrementProvenance.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      tracedDictionaryIncrementProvenance.output === 2,
+      `C# worker traced dictionary increment provenance case should return 2, received ${JSON.stringify(tracedDictionaryIncrementProvenance.output)}`
+    );
+    assertCondition(
+      tracedDictionaryIncrementProvenance.events?.some((event) =>
+        event.kind === 'read'
+        && event.line === 7
+        && event.target?.variable === 'counts'
+        && event.target.path?.[0] === 1
+        && event.target.indexSources?.[0] === 'num'
+      ) === true,
+      `C# worker traced dictionary increment should include keyed read indexSources, received ${JSON.stringify(tracedDictionaryIncrementProvenance.events)}`
+    );
+    assertCondition(
+      tracedDictionaryIncrementProvenance.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 7
+        && event.target?.variable === 'counts'
+        && event.target.path?.[0] === 1
+        && event.target.indexSources?.[0] === 'num'
+        && event.value === 2
+      ) === true,
+      `C# worker traced dictionary increment should include keyed write indexSources, received ${JSON.stringify(tracedDictionaryIncrementProvenance.events)}`
     );
 
     const tracedInterviewCollections = await runWorkerCase(

@@ -69,6 +69,9 @@ const script = new vm.Script(
   }
 );
 await script.runInContext(context);
+if (typeof sandbox.SharedArrayBuffer !== 'undefined') {
+  throw new Error('C++ runtime smoke should exercise warmup without SharedArrayBuffer');
+}
 
 const initResult = await sandbox.__tracecodeCppTest.handleInit({
   assets: {
@@ -2897,6 +2900,84 @@ if (!lambdaNestedEvents.some((event) => event.kind === 'read' && event.line === 
 }
 if (!lambdaNestedEvents.some((event) => event.kind === 'write' && event.line === 8 && event.target?.variable === 'grid' && JSON.stringify(event.target.indexSources) === JSON.stringify(['r', 'c']))) {
   throw new Error('C++ lambda captured nested vector write should emit indexSources, received ' + JSON.stringify(lambdaNestedEvents));
+}
+
+const inlineComparatorLambdaTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  vector<int> top(vector<int>& nums) {',
+    '    unordered_map<int, int> counts;',
+    '    vector<int> order;',
+    '    for (int num : nums) {',
+    '      if (counts.find(num) == counts.end()) order.push_back(num);',
+    '      counts[num]++;',
+    '    }',
+    '    stable_sort(order.begin(), order.end(), [&](int left, int right) {',
+    '      return counts[left] > counts[right];',
+    '    });',
+    '    return order;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'top',
+  inputs: { nums: [1, 1, 2] },
+  options: {},
+});
+if (!inlineComparatorLambdaTrace.success || JSON.stringify(inlineComparatorLambdaTrace.output) !== JSON.stringify([1, 2])) {
+  throw new Error('C++ inline comparator lambda tracing failed: ' + JSON.stringify(inlineComparatorLambdaTrace));
+}
+const inlineComparatorEvents = inlineComparatorLambdaTrace.trace.events;
+if (!inlineComparatorEvents.some((event) => event.kind === 'read' && event.line === 11 && event.target?.variable === 'counts')) {
+  throw new Error('C++ inline comparator lambda should attribute captured reads to the lambda body line, received ' + JSON.stringify(inlineComparatorEvents));
+}
+if (inlineComparatorEvents.some((event) => event.kind === 'read' && event.line === 6 && event.target?.variable === 'counts')) {
+  throw new Error('C++ inline comparator lambda reads should not inherit the previous range-for line, received ' + JSON.stringify(inlineComparatorEvents));
+}
+
+const indexedElementAliasTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  int overlap(vector<vector<int>>& intervals) {',
+    '    vector<vector<int>> merged;',
+    '    merged.push_back(intervals[0]);',
+    '    int total = 0;',
+    '    for (int i = 1; i < intervals.size(); i++) {',
+    '      const auto& current = intervals[i];',
+    '      if (current[0] <= merged.back()[1]) {',
+    '        total += current[1];',
+    '      }',
+    '    }',
+    '    return total;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'overlap',
+  inputs: { intervals: [[1, 3], [2, 6]] },
+  options: {},
+});
+if (!indexedElementAliasTrace.success || indexedElementAliasTrace.output !== 6) {
+  throw new Error('C++ indexed element alias tracing failed: ' + JSON.stringify(indexedElementAliasTrace));
+}
+const indexedElementAliasEvents = indexedElementAliasTrace.trace.events;
+if (!indexedElementAliasEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 9 &&
+  event.target?.variable === 'intervals' &&
+  JSON.stringify(event.target.path) === JSON.stringify([1, 0]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['i', null])
+)) {
+  throw new Error('C++ const auto& vector element alias should emit source nested read for current[0], received ' + JSON.stringify(indexedElementAliasEvents));
+}
+if (!indexedElementAliasEvents.some((event) =>
+  event.kind === 'read' &&
+  event.line === 10 &&
+  event.target?.variable === 'intervals' &&
+  JSON.stringify(event.target.path) === JSON.stringify([1, 1]) &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['i', null])
+)) {
+  throw new Error('C++ const auto& vector element alias should emit source nested read for current[1], received ' + JSON.stringify(indexedElementAliasEvents));
 }
 
 const indexedRangeForTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

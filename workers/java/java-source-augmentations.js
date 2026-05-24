@@ -688,6 +688,19 @@
     return `${indent}TraceHooks.sortArrayAtLine(${lineNumber}, "${arrayName}", ${arrayName}${suffix});`;
   }
 
+  function rewriteJavaCollectionsSortStatement(line, lineNumber, currentMethod) {
+    const match = String(line).match(/^(\s*)(?:java\.util\.)?Collections\.sort\(([\s\S]*)\);\s*$/);
+    if (!match) return line;
+    const indent = match[1] ?? '';
+    const argsSource = match[2] ?? '';
+    const args = splitTopLevelJavaList(argsSource);
+    if (args.length < 1 || args.length > 2) return line;
+    const listName = String(args[0]).trim();
+    if (!isSimpleIdentifierExpression(listName) || !currentMethod.lists.has(listName)) return line;
+    const comparator = args.length === 2 ? args[1] : 'null';
+    return `${indent}TraceHooks.sortListAtLine(${lineNumber}, "${listName}", ${listName}, ${comparator});`;
+  }
+
   function rewriteJavaArrayLengthReads(line, lineNumber, currentMethod) {
     let nextLine = line;
     for (const name of currentMethod.arrays) {
@@ -799,6 +812,7 @@
         nextLine = rewriteEnhancedForIterationBind(nextLine, lineNumber, currentMethod);
         nextLine = rewriteJavaArraysFillStatement(nextLine, lineNumber, currentMethod);
         nextLine = rewriteJavaArraysSortStatement(nextLine, lineNumber, currentMethod);
+        nextLine = rewriteJavaCollectionsSortStatement(nextLine, lineNumber, currentMethod);
         nextLine = rewriteJavaArrayLengthReads(nextLine, lineNumber, currentMethod);
 
         for (const name of currentMethod.adjacencyLists) {
@@ -878,6 +892,9 @@
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'add', (valueSource) =>
             `TraceHooks.addCollectionAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`
+          );
+          nextLine = replaceJavaReceiverCall(nextLine, name, 'sort', (comparatorSource) =>
+            `TraceHooks.sortListAtLine(${lineNumber}, "${name}", ${name}, ${String(comparatorSource).trim() || 'null'})`
           );
           nextLine = replaceJavaReceiverCall(nextLine, name, 'offer', (valueSource) =>
             `TraceHooks.offerQueueAtLine(${lineNumber}, "${name}", ${name}, ${valueSource})`

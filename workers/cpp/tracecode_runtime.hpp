@@ -4250,34 +4250,46 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   }
 
   void push(const T& value) {
+    auto before = snapshot_values();
+    const int line = trace_event_line();
     values_.push(value);
-    emit_mutate("push", trace_event_line(), mutation_args_json(value));
-    emit_index_writes(trace_event_line());
-    emit_snapshot(trace_event_line());
+    auto after = snapshot_values();
+    emit_mutate("push", line, mutation_args_json(value));
+    emit_index_writes(line, before, after);
+    emit_snapshot(line);
   }
 
   void push(T&& value) {
+    auto before = snapshot_values();
+    const int line = trace_event_line();
     auto args_json = mutation_args_json(value);
     values_.push(std::move(value));
-    emit_mutate("push", trace_event_line(), args_json);
-    emit_index_writes(trace_event_line());
-    emit_snapshot(trace_event_line());
+    auto after = snapshot_values();
+    emit_mutate("push", line, args_json);
+    emit_index_writes(line, before, after);
+    emit_snapshot(line);
   }
 
   template <typename... Args>
   void emplace(Args&&... args) {
+    auto before = snapshot_values();
+    const int line = trace_event_line();
     auto args_json = mutation_args_json(args...);
     values_.emplace(std::forward<Args>(args)...);
-    emit_mutate("emplace", trace_event_line(), args_json);
-    emit_index_writes(trace_event_line());
-    emit_snapshot(trace_event_line());
+    auto after = snapshot_values();
+    emit_mutate("emplace", line, args_json);
+    emit_index_writes(line, before, after);
+    emit_snapshot(line);
   }
 
   void pop() {
+    auto before = snapshot_values();
+    const int line = trace_event_line();
     values_.pop();
-    emit_mutate("pop", trace_event_line());
-    emit_index_writes(trace_event_line());
-    emit_snapshot(trace_event_line());
+    auto after = snapshot_values();
+    emit_mutate("pop", line);
+    emit_index_writes(line, before, after);
+    emit_snapshot(line);
   }
 
   void swap(PriorityQueue<T, Container, Compare>& other) {
@@ -4337,13 +4349,29 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
     if (!trace_) return;
     auto values = snapshot_values();
     for (std::size_t index = 0; index < values.size(); ++index) {
+      emit_index_write_json(index, to_json(values[index]), line);
+    }
+  }
+
+  void emit_index_writes(int line, const std::vector<T>& before, const std::vector<T>& after) const {
+    if (!trace_) return;
+    for (std::size_t index = 0; index < after.size(); ++index) {
+      std::string value_json = to_json(after[index]);
+      if (index < before.size() && to_json(before[index]) == value_json) {
+        continue;
+      }
+      emit_index_write_json(index, value_json, line);
+    }
+  }
+
+  void emit_index_write_json(std::size_t index, const std::string& value_json, int line) const {
+    if (!trace_) return;
       write_trace_event_json(
         std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
         ",\"target\":" + target_json(index) +
-        ",\"value\":" + to_json(values[index]) + "}",
+        ",\"value\":" + value_json + "}",
         line
       );
-    }
   }
 
  private:

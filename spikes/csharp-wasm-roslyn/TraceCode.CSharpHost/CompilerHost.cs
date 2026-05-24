@@ -4059,7 +4059,7 @@ public class TreeNode
             set
             {
                 base[index] = value;
-                TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
+                TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, index, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             }
         }
@@ -4164,7 +4164,7 @@ public class TreeNode
             set
             {
                 base[key] = value;
-                TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, key, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine);
+                TraceCode.CSharpHost.RuntimeTraceSink.IndexedWrite(variable, key, value, TraceCode.CSharpHost.RuntimeTraceSink.CurrentLine, TraceCode.CSharpHost.RuntimeTraceSink.CurrentScopedIndexSources);
                 TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             }
         }

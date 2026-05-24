@@ -324,6 +324,13 @@ public final class TraceHooks {
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
+  public static <T> void sortListAtLine(int line, String name, java.util.List<T> values, java.util.Comparator<? super T> comparator) {
+    values.sort(comparator);
+    emitTraceMutate(line, name, null, "sort", null, "[]");
+    emitCollectionIndexedWritesAtLine(line, name, values);
+    emitRuntimeSnapshotAtLine(line, name, values);
+  }
+
   public static <T> T readObjectFieldAtLine(int line, String name, String field, T value) {
     emitTraceRead(line, name, "[" + jsonString(field) + "]", value);
     return value;

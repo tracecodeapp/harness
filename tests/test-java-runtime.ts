@@ -1057,6 +1057,65 @@ public class Main {
   }
 }
 
+function testJavaListSortHooksEmitIndexedWrites(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-list-sort-hook-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import tracecode.user.TraceHooks;
+import java.util.*;
+
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    List<Integer> nums = new ArrayList<>(Arrays.asList(3, 1, 2));
+    TraceHooks.sortListAtLine(8, "nums", nums, null);
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const trace = javaTraceHooksEventsToRuntimeTrace(output.trim().split('\n'), undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'mutate' &&
+        'variable' in event.target &&
+        event.target.variable === 'nums' &&
+        event.method === 'sort'
+      ) &&
+        trace.events.some((event) =>
+          event.kind === 'write' &&
+          'variable' in event.target &&
+          event.target.variable === 'nums' &&
+          'path' in event.target &&
+          JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+          event.value === 1
+        ),
+      `Java List.sort hooks should emit receiver mutation plus concrete sorted-cell writes, received ${JSON.stringify(trace.events)}`
+    );
+    console.log('PASS: Java List.sort hooks emit concrete indexed writes');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testNativeJavaRewriterRegressionGaps(): void {
   const reflectiveTypeSource = rewriteWithNativeJavaRewriter(`import java.lang.reflect.*;
 
@@ -1610,6 +1669,22 @@ class Solution {
     'Java source augmentation should rewrite Arrays.sort(array, comparator) as an array sort mutation hook'
   );
   assertJavaSourceCompiles(arraysSortSource, 'augmented Java Arrays.sort source');
+
+  const listSortSource = augmentRewrittenJavaForTest(`import java.util.*;
+
+class Solution {
+  List<Integer> solve(List<Integer> nums) {
+    nums.sort((left, right) -> Integer.compare(left, right));
+    Collections.sort(nums);
+    return nums;
+  }
+}`, 'solve');
+  assertCondition(
+    listSortSource.includes('TraceHooks.sortListAtLine(5, "nums", nums, (left, right) -> Integer.compare(left, right))') &&
+      listSortSource.includes('TraceHooks.sortListAtLine(6, "nums", nums, null)'),
+    `Java source augmentation should rewrite List.sort and Collections.sort as list sort mutation hooks, received ${listSortSource}`
+  );
+  assertJavaSourceCompiles(listSortSource, 'augmented Java List.sort source');
 
   const charLiteralBraceSource = augmentRewrittenJavaForTest(`import java.util.*;
 
@@ -2920,6 +2995,7 @@ async function main(): Promise<void> {
   testJavaRuntimeRecursiveCallStacks();
   testJavaRuntimeMutationHooksEmitPostSnapshots();
   testJavaArraySortHooksEmitIndexedWrites();
+  testJavaListSortHooksEmitIndexedWrites();
 
   const workerSource = await loadWorkerSource();
   const augmentationSource = await loadJavaSourceAugmentationSource();

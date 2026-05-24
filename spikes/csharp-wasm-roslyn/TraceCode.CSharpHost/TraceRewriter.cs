@@ -1162,9 +1162,14 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             ),
             line
         );
+        executableStatement = CaptureCollectionParameterMutationArguments(executableStatement, line, out List<StatementSyntax> mutationArgumentCaptureStatements);
         foreach (StatementSyntax readStatement in CreateConstructorConsumptionReadStatements(executableStatement, line))
         {
             yield return readStatement;
+        }
+        foreach (StatementSyntax captureStatement in mutationArgumentCaptureStatements)
+        {
+            yield return captureStatement;
         }
         yield return executableStatement;
 
@@ -2217,6 +2222,15 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                         $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(name)}, {name}, {line});"
                     );
                 }
+                foreach (string unaryName in GetUnaryIdentifierWriteNames(assignment))
+                {
+                    if (ShouldEmitBareIdentifierWrite(unaryName))
+                    {
+                        yield return TraceStatement(
+                            $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(unaryName)}, {unaryName}, {line});"
+                        );
+                    }
+                }
                 yield break;
             }
 
@@ -2229,6 +2243,15 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                     {
                         yield return TraceStatement(
                             $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(name)}, {name}, {line});"
+                        );
+                    }
+                }
+                foreach (string unaryName in GetUnaryIdentifierWriteNames(deconstructionAssignment))
+                {
+                    if (ShouldEmitBareIdentifierWrite(unaryName))
+                    {
+                        yield return TraceStatement(
+                            $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(unaryName)}, {unaryName}, {line});"
                         );
                     }
                 }
@@ -2261,9 +2284,39 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 }
                 yield break;
             }
+
+            foreach (string name in GetUnaryIdentifierWriteNames(expressionStatement.Expression))
+            {
+                if (ShouldEmitBareIdentifierWrite(name))
+                {
+                    yield return TraceStatement(
+                        $"TraceCode.CSharpHost.RuntimeTraceSink.Write({Literal(name)}, {name}, {line});"
+                    );
+                }
+            }
         }
 
         yield break;
+    }
+
+    private static IEnumerable<string> GetUnaryIdentifierWriteNames(SyntaxNode node)
+    {
+        return node
+            .DescendantNodesAndSelf()
+            .Select(syntax => syntax switch
+            {
+                PostfixUnaryExpressionSyntax postfix
+                    when postfix.IsKind(SyntaxKind.PostIncrementExpression) || postfix.IsKind(SyntaxKind.PostDecrementExpression)
+                    => postfix.Operand as IdentifierNameSyntax,
+                PrefixUnaryExpressionSyntax prefix
+                    when prefix.IsKind(SyntaxKind.PreIncrementExpression) || prefix.IsKind(SyntaxKind.PreDecrementExpression)
+                    => prefix.Operand as IdentifierNameSyntax,
+                _ => null,
+            })
+            .Where(identifier => identifier is not null)
+            .Select(identifier => identifier!.Identifier.ValueText)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct();
     }
 
     private IEnumerable<StatementSyntax> CreateConstructorConsumptionReadStatements(StatementSyntax statement, int line)
@@ -2298,6 +2351,41 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
                 );
             }
         }
+    }
+
+    private StatementSyntax CaptureCollectionParameterMutationArguments(
+        StatementSyntax statement,
+        int line,
+        out List<StatementSyntax> captureStatements)
+    {
+        captureStatements = new List<StatementSyntax>();
+        if (statement is not ExpressionStatementSyntax expressionStatement
+            || expressionStatement.Expression is not InvocationExpressionSyntax invocation
+            || invocation.Expression is not MemberAccessExpressionSyntax memberAccess
+            || memberAccess.Expression is not IdentifierNameSyntax receiver
+            || !collectionParameterVariables.Contains(receiver.Identifier.ValueText)
+            || collectionVariables.Contains(receiver.Identifier.ValueText)
+            || !IsIndexedReceiverMutationMethod(memberAccess.Name.Identifier.ValueText)
+            || invocation.ArgumentList.Arguments.Count == 0
+            || invocation.ArgumentList.Arguments.Any(argument => argument.NameColon is not null || argument.RefOrOutKeyword.RawKind != 0))
+        {
+            return statement;
+        }
+
+        SeparatedSyntaxList<ArgumentSyntax> arguments = invocation.ArgumentList.Arguments;
+        var rewrittenArguments = new List<ArgumentSyntax>(arguments.Count);
+        for (int index = 0; index < arguments.Count; index++)
+        {
+            ArgumentSyntax argument = arguments[index];
+            string captureName = $"__tracecode_mutation_arg_{line}_{index}";
+            captureStatements.Add(TraceStatement($"var {captureName} = {argument.Expression};"));
+            rewrittenArguments.Add(argument.WithExpression(SyntaxFactory.IdentifierName(captureName)));
+        }
+
+        InvocationExpressionSyntax rewrittenInvocation = invocation.WithArgumentList(
+            invocation.ArgumentList.WithArguments(SyntaxFactory.SeparatedList(rewrittenArguments))
+        );
+        return expressionStatement.WithExpression(rewrittenInvocation);
     }
 
     private IEnumerable<StatementSyntax> CreateImplicitFieldAliasReadStatements(StatementSyntax statement, int line)
@@ -3002,7 +3090,6 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         }
 
         if (elementAccess.Expression is not IdentifierNameSyntax identifier
-            || collectionVariables.Contains(identifier.Identifier.ValueText)
             || elementAccess.ArgumentList.Arguments.Count != 1)
         {
             return statement;
@@ -3017,6 +3104,13 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         string variableName = identifier.Identifier.ValueText;
         string indexSourcesExpression = CreateIndexSourcesExpression(indexExpression);
+        if (collectionVariables.Contains(variableName))
+        {
+            return TraceStatement(
+                $"TraceCode.Internal.TraceCodeTrace.WithIndexSources({indexSourcesExpression}, () => {{ {expressionStatement.Expression}; return 0; }});"
+            );
+        }
+
         string currentValue = $"TraceCode.Internal.TraceCodeTrace.ArrayRead({arrayExpression}, {indexExpression}, {Literal(variableName)}, {line}, {indexSourcesExpression})";
         return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.ArrayWrite({arrayExpression}, {indexExpression}, {currentValue} {operatorText} 1, {Literal(variableName)}, {line}, {indexSourcesExpression});"
