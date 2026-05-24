@@ -1537,6 +1537,11 @@ public final class JavaRewriteLibrary {
     return normalized.contains("Queue<") || normalized.contains("Deque<") || normalized.contains("PriorityQueue<");
   }
 
+  private static boolean isPriorityQueueType(String type) {
+    if (type == null) return false;
+    return normalizeJavaType(type).contains("PriorityQueue<");
+  }
+
   private static boolean isStackType(String type) {
     if (type == null) return false;
     return normalizeJavaType(type).contains("Stack<");
@@ -1746,6 +1751,9 @@ public final class JavaRewriteLibrary {
   private static String sequenceAppendWriteHook(int sourceLine, String name, String receiverType, String method, String rawArgs, String callArgs) {
     java.util.List<String> rawParts = splitTopLevel(rawArgs);
     if (rawParts.size() != 1 || callArgs.trim().isEmpty()) return "";
+    if (isPriorityQueueType(receiverType) && ("add".equals(method) || "offer".equals(method))) {
+      return " TraceHooks.emitCollectionIndexedWritesAtLine(" + sourceLine + ", " + quote(name) + ", " + name + ");";
+    }
     String normalizedType = receiverType == null ? "" : normalizeJavaType(receiverType);
     boolean backAppend =
         ("add".equals(method) && isListType(receiverType)) ||

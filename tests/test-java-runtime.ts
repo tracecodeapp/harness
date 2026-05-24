@@ -5995,6 +5995,23 @@ public class Main {
     );
     console.log('PASS: java worker emits PriorityQueue concrete heap writes');
 
+    const priorityQueueFieldSource = assertNativeJavaRewriterCompiles(`import java.util.*;
+class MedianFinder {
+  private final PriorityQueue<Integer> lower = new PriorityQueue<>(Collections.reverseOrder());
+  private final PriorityQueue<Integer> upper = new PriorityQueue<>();
+  public Void addNum(int num) {
+    lower.add(num);
+    upper.add(lower.remove());
+    return null;
+  }
+}`);
+    assertCondition(
+      priorityQueueFieldSource.includes('TraceHooks.emitCollectionIndexedWritesAtLine(6, "lower", lower)') &&
+        priorityQueueFieldSource.includes('TraceHooks.removeQueueAtLine(7, "lower", lower)') &&
+        priorityQueueFieldSource.includes('TraceHooks.emitCollectionIndexedWritesAtLine(7, "upper", upper)'),
+      `Java rewriter should emit concrete PriorityQueue writes for field add/remove calls, received ${priorityQueueFieldSource}`
+    );
+
     const stackPopIndexCode = `import java.util.*;
 class Solution {
   int solve(int[] heights) {

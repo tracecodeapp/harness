@@ -673,6 +673,9 @@ public final class TraceHooks {
     emitTraceRead(line, name, "[0]", value);
     value = queue.remove();
     emitTraceMutate(line, name, null, "remove", null, "[]");
+    if (queue instanceof java.util.PriorityQueue<?>) {
+      emitCollectionIndexedWritesAtLine(line, name, queue);
+    }
     emitSnapshot(line, name, serializeResult(queue));
     return value;
   }
@@ -1552,7 +1555,7 @@ public final class TraceHooks {
     }
   }
 
-  private static void emitCollectionIndexedWritesAtLine(int line, String name, java.util.Collection<?> values) {
+  public static void emitCollectionIndexedWritesAtLine(int line, String name, java.util.Collection<?> values) {
     int index = 0;
     for (Object value : values) {
       if (index >= MAX_SERIALIZED_ITEMS) {
