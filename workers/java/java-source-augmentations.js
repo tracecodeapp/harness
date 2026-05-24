@@ -605,6 +605,24 @@
   }
 
   function replaceJavaReceiverCall(source, receiverName, methodName, replacer) {
+    const nativeInstrumentedQueueMethods = new Set([
+      'offer',
+      'push',
+      'addLast',
+      'offerLast',
+      'addFirst',
+      'offerFirst',
+      'poll',
+      'remove',
+      'pop',
+    ]);
+    if (
+      nativeInstrumentedQueueMethods.has(methodName) &&
+      (source.includes('TraceHooks.emitMutatingCallAtLine') ||
+        source.includes('TraceHooks.emitNoArgMutatingCallAtLine'))
+    ) {
+      return source;
+    }
     const callPattern = new RegExp(`\\b${escapeRegExp(receiverName)}\\.${methodName}\\(`, 'g');
     let output = '';
     let cursor = 0;

@@ -1499,6 +1499,30 @@ const slidingWindowEvents = slidingWindowConditionTrace.trace.events;
 if (!slidingWindowEvents.some((event) => event.kind === 'read' && event.target?.variable === 'nums' && event.line === 8)) {
   throw new Error('C++ while-condition indexed read should carry condition line 8, received ' + JSON.stringify(slidingWindowEvents));
 }
+if (slidingWindowEvents.some((event) =>
+  event.kind === 'read' &&
+  event.target?.variable === 'nums' &&
+  (event.target.indexSources || []).some((source) => source === 'q.back()' || source === 'q.front()') &&
+  typeof event.target.path?.[0] === 'object'
+)) {
+  throw new Error('C++ deque-derived indexed reads should materialize concrete target paths, received ' + JSON.stringify(slidingWindowEvents));
+}
+if (!slidingWindowEvents.some((event) =>
+  event.kind === 'read' &&
+  event.target?.variable === 'nums' &&
+  event.target.path?.[0] === 0 &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['q.back()'])
+)) {
+  throw new Error('C++ nums[q.back()] should emit concrete path and q.back provenance, received ' + JSON.stringify(slidingWindowEvents));
+}
+if (!slidingWindowEvents.some((event) =>
+  event.kind === 'read' &&
+  event.target?.variable === 'nums' &&
+  event.target.path?.[0] === 1 &&
+  JSON.stringify(event.target.indexSources) === JSON.stringify(['q.front()'])
+)) {
+  throw new Error('C++ nums[q.front()] should emit concrete path and q.front provenance, received ' + JSON.stringify(slidingWindowEvents));
+}
 if (slidingWindowEvents.some((event) => event.kind === 'read' && event.target?.variable === 'nums' && event.line === 9)) {
   throw new Error('C++ while-condition indexed read leaked body line 9, received ' + JSON.stringify(slidingWindowEvents));
 }

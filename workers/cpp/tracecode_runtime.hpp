@@ -1358,6 +1358,17 @@ inline std::string target_json_key_with_index_source(const std::string& name, co
   return std::string("{\"variable\":") + to_json(name) + ",\"path\":[" + to_json(key) + "],\"indexSources\":" + index_sources_json(source) + "}";
 }
 
+template <typename Index>
+inline auto materialize_trace_index(Index index) {
+  if constexpr (
+      std::is_convertible_v<Index, long long> &&
+      !std::is_same_v<std::decay_t<Index>, std::string>) {
+    return static_cast<long long>(index);
+  } else {
+    return index;
+  }
+}
+
 template <typename Container, typename Index>
 inline decltype(auto) trace_index_read_value(const Container& container, Index index) {
   if constexpr (requires { container.at(index); }) {
@@ -1369,12 +1380,13 @@ inline decltype(auto) trace_index_read_value(const Container& container, Index i
 
 template <typename Container, typename Index>
 inline auto trace_index_read(const Container& container, const std::string& name, Index index, int line, const char* index_source = nullptr) {
-  auto value = trace_index_read_value(container, index);
+  auto concrete_index = materialize_trace_index(index);
+  auto value = trace_index_read_value(container, concrete_index);
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
     trace_event_count() += 1;
     write_trace_event_json_raw(
       std::string("{\"kind\":\"read\",\"line\":") + std::to_string(line) +
-      ",\"target\":" + target_json_key_with_index_source(name, index, index_source) +
+      ",\"target\":" + target_json_key_with_index_source(name, concrete_index, index_source) +
       ",\"value\":" + to_json(value) + "}"
     );
   }

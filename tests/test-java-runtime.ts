@@ -1592,6 +1592,21 @@ class Solution {
     courseScheduleSource.includes('TraceHooks.emitMutatingCallAtLine(10, "queue", "addLast", 0)'),
     'Java source augmentation should preserve runtime args for queue addLast mutations'
   );
+  const nativeWrappedDequeMutationSource = loadSourceAugmentationsForTest().augmentJavaCollectionOperations(`import java.util.*;
+
+class Solution {
+  boolean solve() {
+    Deque<Integer> q = new ArrayDeque<>();
+    int i = 5;
+    { q.offerLast(i); TraceHooks.emitMutatingCallAtLine(6, "q", "offerLast", i); TraceHooks.emitIndexedWriteAtLine(6, "q", new Object[] { ((java.util.Collection) q).size() - 1 }, i, null); TraceHooks.emitRuntimeSnapshotAtLine(6, "q", q); }
+    return true;
+  }
+}`, '');
+  assertCondition(
+    !nativeWrappedDequeMutationSource.includes('TraceHooks.offerDequeLastAtLine') &&
+      nativeWrappedDequeMutationSource.includes('q.offerLast(i); TraceHooks.emitMutatingCallAtLine'),
+    `Java source augmentation should not double-wrap native-instrumented deque mutations, received ${nativeWrappedDequeMutationSource}`
+  );
   const queueRemoveSource = augmentRewrittenJavaForTest(`import java.util.*;
 
 class Solution {
