@@ -966,15 +966,16 @@ async function assertInPlaceSortMutationIsRecorded(): Promise<void> {
   const stdout = await runPythonScript(`${tracingPayload.code}
 print(json.dumps({
     'trace': _trace_data,
+    'runtimeTrace': {
+        'events': _trace_events
+    },
     'result': _serialize_output(_result)
 }))
 `);
-  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; result: unknown };
+  const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
   assertCondition(parsed.result === 0, 'Python in-place sort fixture should execute successfully');
-  const sortStep = findTraceStep(
-    parsed.trace,
-    tracingPayload.userCodeStartLine + userLineNumber(source, 'intervals.sort') - 1
-  );
+  const sortLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'intervals.sort') - 1;
+  const sortStep = findTraceStep(parsed.trace, sortLine);
   assertCondition(
     (sortStep.accesses ?? []).some((access) => (
       access.variable === 'intervals' &&
@@ -983,6 +984,25 @@ print(json.dumps({
       JSON.stringify(access.args) === JSON.stringify(['key=<lambda>'])
     )),
     `Python list.sort should emit a receiver mutation with lambda-safe key args, received ${JSON.stringify(sortStep.accesses)}`
+  );
+  assertCondition(
+    (sortStep.accesses ?? []).some((access) => (
+      access.variable === 'intervals' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      JSON.stringify(access.value) === JSON.stringify([0, 30])
+    )),
+    `Python list.sort should emit concrete writes for sorted cells, received ${JSON.stringify(sortStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'write' &&
+      event.line === sortLine &&
+      event.target?.variable === 'intervals' &&
+      JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+      JSON.stringify(event.value) === JSON.stringify([0, 30])
+    )),
+    `Python runtime trace should emit concrete writes for sorted cells, received ${JSON.stringify(parsed.runtimeTrace.events)}`
   );
 
   console.log('PASS: Python runtime records in-place sort mutation provenance');
@@ -1004,7 +1024,12 @@ class Box:
 
 def inspect():
     box = Box()
-    return box.swap(4)
+    swap_result = box.swap(4)
+    rooms = []
+    heapq.heappush(rooms, 30)
+    heapq.heappush(rooms, 10)
+    popped = heapq.heappop(rooms)
+    return [swap_result, rooms, popped]
 `;
 
   const deps: RuntimeDeps = {
@@ -1034,12 +1059,18 @@ print(json.dumps({
 }))
 `);
   const parsed = JSON.parse(stdout) as { trace: TraceStep[]; runtimeTrace: { events: RuntimeTraceEvent[] }; result: unknown };
-  assertCondition(JSON.stringify(parsed.result) === JSON.stringify([1, 3]), 'Python heapq fixture should execute successfully');
+  assertCondition(JSON.stringify(parsed.result) === JSON.stringify([[1, 3], [30], 10]), 'Python heapq fixture should execute successfully');
 
   const heapifyLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heapify(self.heap)') - 1;
   const heapreplaceLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'old = heapq.heapreplace(heap, val)') - 1;
+  const firstHeappushLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heappush(rooms, 30)') - 1;
+  const secondHeappushLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'heapq.heappush(rooms, 10)') - 1;
+  const heappopLine = tracingPayload.userCodeStartLine + userLineNumber(source, 'popped = heapq.heappop(rooms)') - 1;
   const heapifyStep = findTraceStep(parsed.trace, heapifyLine);
   const heapreplaceStep = findTraceStep(parsed.trace, heapreplaceLine);
+  const firstHeappushStep = findTraceStep(parsed.trace, firstHeappushLine);
+  const secondHeappushStep = findTraceStep(parsed.trace, secondHeappushLine);
+  const heappopStep = findTraceStep(parsed.trace, heappopLine);
 
   assertCondition(
     (heapifyStep.accesses ?? []).some((access) => (
@@ -1079,6 +1110,48 @@ print(json.dumps({
       JSON.stringify(event.args) === JSON.stringify([4])
     )),
     `Python runtime trace should emit a heapreplace mutate event, received ${JSON.stringify(parsed.runtimeTrace.events)}`
+  );
+  assertCondition(
+    (firstHeappushStep.accesses ?? []).some((access) => (
+      access.variable === 'rooms' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      access.value === 30
+    )),
+    `Python heapq.heappush should emit a concrete write for the inserted heap cell, received ${JSON.stringify(firstHeappushStep.accesses)}`
+  );
+  assertCondition(
+    (secondHeappushStep.accesses ?? []).some((access) => (
+      access.variable === 'rooms' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      access.value === 10
+    )) &&
+      (secondHeappushStep.accesses ?? []).some((access) => (
+        access.variable === 'rooms' &&
+        access.kind === 'indexed-write' &&
+        JSON.stringify(access.indices) === JSON.stringify([1]) &&
+        access.value === 30
+      )),
+    `Python heapq.heappush should emit concrete writes for sifted heap cells, received ${JSON.stringify(secondHeappushStep.accesses)}`
+  );
+  assertCondition(
+    (heappopStep.accesses ?? []).some((access) => (
+      access.variable === 'rooms' &&
+      access.kind === 'indexed-write' &&
+      JSON.stringify(access.indices) === JSON.stringify([0]) &&
+      access.value === 30
+    )),
+    `Python heapq.heappop should emit concrete writes for shifted heap cells, received ${JSON.stringify(heappopStep.accesses)}`
+  );
+  assertCondition(
+    parsed.runtimeTrace.events.some((event) => (
+      event.kind === 'write' &&
+      event.line === secondHeappushLine &&
+      JSON.stringify(event.target) === JSON.stringify({ variable: 'rooms', path: [0] }) &&
+      event.value === 10
+    )),
+    `Python runtime trace should emit concrete heapq write events, received ${JSON.stringify(parsed.runtimeTrace.events)}`
   );
 
   console.log('PASS: Python runtime records heapq mutation provenance');

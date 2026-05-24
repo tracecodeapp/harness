@@ -2567,6 +2567,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
         yield return TraceStatement(
             $"TraceCode.Internal.TraceCodeTrace.Mutate({Literal(variable)}, {Literal($"Array.{method}")}, {argsExpression}, {line});"
         );
+        yield return TraceStatement(
+            $"TraceCode.CSharpHost.RuntimeTraceSink.IndexedBulkWrite({Literal(variable)}, {variable}, {line});"
+        );
     }
 
     private static bool IsSystemArrayTypeExpression(ExpressionSyntax expression)

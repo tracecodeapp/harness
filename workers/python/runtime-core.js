@@ -1163,6 +1163,15 @@ def _tracecode_mutating_call(var_name, container, method_name, *args, **kwargs):
                         )
                 except Exception:
                     pass
+        elif method_name in {'sort', 'reverse'} and isinstance(container, _builtins.list):
+            try:
+                for index, value in enumerate(container):
+                    __tracecode_record_access(
+                        sys._getframe(1),
+                        __tracecode_make_access_event(var_name, 'indexed-write', [index], value=_serialize(value)),
+                    )
+            except Exception:
+                pass
     return result
 
 def _tracecode_mutating_index_call(var_name, container, indices, index_sources, method_name, *args, **kwargs):
@@ -1205,6 +1214,15 @@ def _tracecode_mutating_index_call(var_name, container, indices, index_sources, 
                         )
                 except Exception:
                     pass
+        elif normalized is not None and method_name in {'sort', 'reverse'} and isinstance(target, _builtins.list):
+            try:
+                for index, value in enumerate(target):
+                    __tracecode_record_access(
+                        sys._getframe(1),
+                        __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [index], index_sources=list(index_sources or []) + [None], value=_serialize(value)),
+                    )
+            except Exception:
+                pass
     return result
 
 def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, **kwargs):
@@ -1212,6 +1230,10 @@ def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, 
     effective_indices = list(indices or [])
     target = __tracecode_read_value(container, effective_indices) if effective_indices else container
     normalized = __tracecode_normalize_indices(effective_indices)
+    try:
+        before_values = list(target) if isinstance(target, _builtins.list) else None
+    except Exception:
+        before_values = None
     __tracecode_record_access(
         sys._getframe(1),
         __tracecode_make_access_event(
@@ -1237,6 +1259,25 @@ def _tracecode_heapq_mutation(var_name, container, indices, method_name, *args, 
             sys._getframe(1),
             __tracecode_make_access_event(var_name, 'mutating-call', method_name=method_name, args=__tracecode_serialize_call_args(args, kwargs)),
         )
+    try:
+        after_values = list(target) if before_values is not None else None
+        if after_values is not None:
+            path_prefix = list(normalized or [])
+            source_prefix = [None for _ in path_prefix]
+            for index, value in enumerate(after_values):
+                if index >= len(before_values) or before_values[index] != value:
+                    __tracecode_record_access(
+                        sys._getframe(1),
+                        __tracecode_make_access_event(
+                            var_name,
+                            'indexed-write',
+                            path_prefix + [index],
+                            index_sources=source_prefix + [None],
+                            value=_serialize(value),
+                        ),
+                    )
+    except Exception:
+        pass
     return result
 
 def _tracecode_read_attr(var_name, obj, attr_name):

@@ -1942,6 +1942,9 @@ if (!plainArrayEvents.some((event) => event.kind === 'write' && event.target?.va
 if (!plainArrayEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'key' && event.method === 'sort')) {
   throw new Error('C++ std::sort should emit receiver mutation evidence, received ' + JSON.stringify(plainArrayEvents));
 }
+if (!plainArrayEvents.some((event) => event.kind === 'write' && event.line === 8 && event.target?.variable === 'key' && JSON.stringify(event.target.path) === JSON.stringify([0]) && event.value === 'a')) {
+  throw new Error('C++ std::sort should emit concrete sorted-cell writes, received ' + JSON.stringify(plainArrayEvents));
+}
 if (!plainArrayEvents.some((event) => event.kind === 'snapshot' && event.target?.variable === 'key' && event.value === 'aet')) {
   throw new Error('C++ std::sort should snapshot sorted receiver value, received ' + JSON.stringify(plainArrayEvents));
 }
@@ -2759,6 +2762,12 @@ for (const method of ['push', 'emplace', 'pop']) {
   if (!priorityQueueEvents.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === method)) {
     throw new Error('C++ priority_queue tracing should emit ' + method + ' mutation, received ' + JSON.stringify(priorityQueueEvents));
   }
+}
+if (!priorityQueueEvents.some((event) => event.kind === 'write' && event.target?.variable === 'heap' && event.target.path?.[0] === 0 && event.value === 8)) {
+  throw new Error('C++ priority_queue push/emplace should emit concrete heap cell writes, received ' + JSON.stringify(priorityQueueEvents));
+}
+if (!priorityQueueEvents.some((event) => event.kind === 'write' && event.target?.variable === 'heap' && event.target.path?.[0] === 1 && event.value === 5)) {
+  throw new Error('C++ priority_queue sifted cells should emit concrete heap writes, received ' + JSON.stringify(priorityQueueEvents));
 }
 
 const nestedVectorTrace = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({

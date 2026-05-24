@@ -610,6 +610,40 @@ public static class RuntimeTraceSink
         IndexedWrite(variable, path, value, line, sources);
     }
 
+    public static void IndexedBulkWrite(string variable, object? receiver, int line)
+    {
+        if (receiver is Array array)
+        {
+            for (int index = 0; index < array.Length; index++)
+            {
+                IndexedWrite(variable, index, array.GetValue(index), line, new string?[] { null });
+            }
+            return;
+        }
+
+        if (receiver is System.Collections.IList list)
+        {
+            for (int index = 0; index < list.Count; index++)
+            {
+                IndexedWrite(variable, index, list[index], line, new string?[] { null });
+            }
+        }
+    }
+
+    public static void IndexedPriorityQueueWrites(string variable, object? receiver, int line)
+    {
+        object? normalized = NormalizeTraceValue(receiver, 0, new ReferenceTracker());
+        if (normalized is not System.Collections.IList values)
+        {
+            return;
+        }
+
+        for (int index = 0; index < values.Count; index++)
+        {
+            IndexedWrite(variable, index, values[index], line, new string?[] { null });
+        }
+    }
+
     public static void FieldRead(string variable, string field, object? value, int line)
     {
         FieldRead(variable, new object?[] { field }, value, line);

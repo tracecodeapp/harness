@@ -2743,6 +2743,16 @@ async function main(): Promise<void> {
       ) === true,
       `C# worker traced Array.Sort case should include chars mutation, received ${JSON.stringify(tracedArraySort.events)}`
     );
+    assertCondition(
+      tracedArraySort.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 5
+        && event.target?.variable === 'chars'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && event.value === 'a'
+      ) === true,
+      `C# worker traced Array.Sort case should include sorted-cell writes, received ${JSON.stringify(tracedArraySort.events)}`
+    );
 
     const tracedSystemArrayReverse = await runWorkerCase(
       page,
@@ -2776,6 +2786,16 @@ async function main(): Promise<void> {
         && event.method === 'Array.Reverse'
       ) === true,
       `C# worker traced System.Array.Reverse case should include arr mutation, received ${JSON.stringify(tracedSystemArrayReverse.events)}`
+    );
+    assertCondition(
+      tracedSystemArrayReverse.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 4
+        && event.target?.variable === 'arr'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && event.value === 3
+      ) === true,
+      `C# worker traced System.Array.Reverse case should include reversed-cell writes, received ${JSON.stringify(tracedSystemArrayReverse.events)}`
     );
 
     const tracedArraySortLambdaComparer = await runWorkerCase(
@@ -2813,6 +2833,16 @@ async function main(): Promise<void> {
         && JSON.stringify(event.args) === JSON.stringify(['<lambda>'])
       ) === true,
       `C# worker traced Array.Sort lambda comparer case should include lambda-safe mutation args, received ${JSON.stringify(tracedArraySortLambdaComparer.events)}`
+    );
+    assertCondition(
+      tracedArraySortLambdaComparer.events?.some((event) =>
+        event.kind === 'write'
+        && event.line === 6
+        && event.target?.variable === 'sorted'
+        && JSON.stringify(event.target.path) === JSON.stringify([0])
+        && JSON.stringify(event.value) === JSON.stringify([2, 4])
+      ) === true,
+      `C# worker traced Array.Sort lambda comparer case should include sorted-row writes, received ${JSON.stringify(tracedArraySortLambdaComparer.events)}`
     );
 
     const tracedCollections = await runWorkerCase(
@@ -3715,6 +3745,14 @@ async function main(): Promise<void> {
     assertCondition(
       tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'mutate' && event.target?.variable === 'heap' && event.method === 'Enqueue') === true,
       `C# worker traced priority-queue constructor case should include heap Enqueue mutate, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'write' && event.target?.variable === 'heap' && event.target.path?.[0] === 0 && event.value === 4) === true,
+      `C# worker traced priority-queue Enqueue should emit concrete heap writes, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
+    );
+    assertCondition(
+      tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'write' && event.target?.variable === 'heap' && event.target.path?.[0] === 0 && event.value === 5) === true,
+      `C# worker traced priority-queue Dequeue should emit concrete shifted heap writes, received ${JSON.stringify(tracedPriorityQueueConstructors.events)}`
     );
     assertCondition(
       tracedPriorityQueueConstructors.events?.some((event) => event.kind === 'read' && event.target?.variable === 'heap' && event.target.path?.[0] === 0) === true,

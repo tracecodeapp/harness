@@ -1162,7 +1162,7 @@ function normalizeTraceIndexSources(indexSources, maxDepth = 3) {
 }
 
 function isTraceableMutatingMethod(methodName) {
-  return ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(methodName);
+  return ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(methodName);
 }
 
 function readValueAtIndices(container, indices) {
@@ -5066,9 +5066,9 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
   const __sequenceInsertStartIndex = Array.isArray(__target) && (__method === 'push' || __method === 'unshift')
     ? (__method === 'push' ? __target.length : 0)
     : undefined;
-  const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'add', 'insert', 'delete', 'clear'].includes(__method);
+  const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'set', 'add', 'insert', 'delete', 'clear'].includes(__method);
   const __result = __target[__method](...__args);
-  if (['push', 'pop', 'shift', 'unshift', 'splice', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(__method)) {
+  if (['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(__method)) {
     const __isMapLike = __traceIsMapLike(__target);
     const __isNestedMap = __path.length > 0 && __traceIsMapLike(__target);
     if (__isMapLike && __method === 'set') {
@@ -5192,6 +5192,23 @@ function __traceMutatingCall(__varName, __container, __indices, __indexSources, 
           pathDepth: __writePath.length,
           ...(Array.isArray(__writeSources) ? { indexSources: __writeSources } : {}),
           value: __target[__sequenceInsertStartIndex + __offset],
+          ...__sourceLocation,
+        });
+      }
+    } else if (Array.isArray(__target) && (__method === 'sort' || __method === 'reverse')) {
+      for (let __index = 0; __index < __target.length; __index += 1) {
+        const __writePath = [...__path, __index];
+        const __writeSources = __traceNormalizeIndexSources(
+          Array.isArray(__normalizedSources) ? [...__normalizedSources, null] : undefined,
+          __writePath.length
+        );
+        __traceRecorder.recordAccess({
+          variable: __varName,
+          kind: __writePath.length === 2 ? 'cell-write' : 'indexed-write',
+          indices: __writePath,
+          pathDepth: __writePath.length,
+          ...(Array.isArray(__writeSources) ? { indexSources: __writeSources } : {}),
+          value: __target[__index],
           ...__sourceLocation,
         });
       }

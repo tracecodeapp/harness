@@ -4398,14 +4398,18 @@ public class TreeNode
         public new void Enqueue(TElement element, TPriority priority)
         {
             base.Enqueue(element, priority);
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { element }, TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Enqueue", new object?[] { element }, line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedPriorityQueueWrites(variable, this, line);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
         }
 
         public new TElement Dequeue()
         {
             TElement item = base.Dequeue();
-            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>(), TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine);
+            int line = TraceCode.CSharpHost.RuntimeTraceSink.ScopedSourceLine;
+            TraceCode.CSharpHost.RuntimeTraceSink.Mutate(variable, "Dequeue", Array.Empty<object?>(), line);
+            TraceCode.CSharpHost.RuntimeTraceSink.IndexedPriorityQueueWrites(variable, this, line);
             TraceCode.CSharpHost.RuntimeTraceSink.Snapshot(variable, this);
             return item;
         }

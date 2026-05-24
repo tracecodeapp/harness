@@ -1456,6 +1456,21 @@ inline void emit_index_write_value(const std::string& name, const Container& con
 }
 
 template <typename Container>
+inline void emit_index_writes_value(const std::string& name, const Container& container, int line) {
+  if (minimal_trace_enabled()) return;
+  for (std::size_t index = 0; index < container.size(); ++index) {
+    if (!check_trace_budget(line)) return;
+    auto value = trace_index_read_value(container, index);
+    trace_event_count() += 1;
+    write_trace_event_json_raw(
+      std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
+      ",\"target\":" + target_json_key_with_index_source(name, index, nullptr) +
+      ",\"value\":" + to_json(value) + "}"
+    );
+  }
+}
+
+template <typename Container>
 inline void emit_container_mutate_value(const std::string& name, const Container& container, const char* method, int line, const std::string& args_json = "") {
   if (!minimal_trace_enabled() && check_trace_budget(line)) {
     trace_event_count() += 1;
@@ -4237,6 +4252,7 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   void push(const T& value) {
     values_.push(value);
     emit_mutate("push", trace_event_line(), mutation_args_json(value));
+    emit_index_writes(trace_event_line());
     emit_snapshot(trace_event_line());
   }
 
@@ -4244,6 +4260,7 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
     auto args_json = mutation_args_json(value);
     values_.push(std::move(value));
     emit_mutate("push", trace_event_line(), args_json);
+    emit_index_writes(trace_event_line());
     emit_snapshot(trace_event_line());
   }
 
@@ -4252,12 +4269,14 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
     auto args_json = mutation_args_json(args...);
     values_.emplace(std::forward<Args>(args)...);
     emit_mutate("emplace", trace_event_line(), args_json);
+    emit_index_writes(trace_event_line());
     emit_snapshot(trace_event_line());
   }
 
   void pop() {
     values_.pop();
     emit_mutate("pop", trace_event_line());
+    emit_index_writes(trace_event_line());
     emit_snapshot(trace_event_line());
   }
 
@@ -4314,6 +4333,19 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
     );
   }
 
+  void emit_index_writes(int line) const {
+    if (!trace_) return;
+    auto values = snapshot_values();
+    for (std::size_t index = 0; index < values.size(); ++index) {
+      write_trace_event_json(
+        std::string("{\"kind\":\"write\",\"line\":") + std::to_string(line) +
+        ",\"target\":" + target_json(index) +
+        ",\"value\":" + to_json(values[index]) + "}",
+        line
+      );
+    }
+  }
+
  private:
   Base& values_;
   std::string name_;
@@ -4323,6 +4355,11 @@ class PriorityQueue : public std::priority_queue<T, Container, Compare> {
   std::string target_json() const {
     if (path_prefix_json_.empty()) return tracecode::target_json(name_);
     return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "]}";
+  }
+
+  std::string target_json(std::size_t index) const {
+    if (path_prefix_json_.empty()) return tracecode::target_json(name_, index);
+    return std::string("{\"variable\":") + to_json(name_) + ",\"path\":[" + path_prefix_json_ + "," + std::to_string(index) + "]}";
   }
 
   std::string target_json_slot(const char* slot) const {

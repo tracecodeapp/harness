@@ -999,6 +999,64 @@ public class Main {
   }
 }
 
+function testJavaArraySortHooksEmitIndexedWrites(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-sort-hook-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `import tracecode.user.TraceHooks;
+
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    int[] nums = new int[] { 3, 1, 2 };
+    TraceHooks.sortArrayAtLine(7, "nums", nums);
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const trace = javaTraceHooksEventsToRuntimeTrace(output.trim().split('\n'), undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      trace.events.some((event) =>
+        event.kind === 'mutate' &&
+        'variable' in event.target &&
+        event.target.variable === 'nums' &&
+        event.method === 'sort'
+      ) &&
+        trace.events.some((event) =>
+          event.kind === 'write' &&
+          'variable' in event.target &&
+          event.target.variable === 'nums' &&
+          'path' in event.target &&
+          JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+          event.value === 1
+        ),
+      `Java Arrays.sort hooks should emit receiver mutation plus concrete sorted-cell writes, received ${JSON.stringify(trace.events)}`
+    );
+    console.log('PASS: Java Arrays.sort hooks emit concrete indexed writes');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testNativeJavaRewriterRegressionGaps(): void {
   const reflectiveTypeSource = rewriteWithNativeJavaRewriter(`import java.lang.reflect.*;
 
@@ -2861,6 +2919,7 @@ async function main(): Promise<void> {
   testJavaEnhancedForHeaderExpansionDropsStaleBindingSnapshots();
   testJavaRuntimeRecursiveCallStacks();
   testJavaRuntimeMutationHooksEmitPostSnapshots();
+  testJavaArraySortHooksEmitIndexedWrites();
 
   const workerSource = await loadWorkerSource();
   const augmentationSource = await loadJavaSourceAugmentationSource();
@@ -5872,6 +5931,69 @@ public class Main {
       `Java List.set hooks should emit mutate events with evaluated [index,value] args, received ${JSON.stringify(heapSetMutations)}`
     );
     console.log('PASS: java worker emits List.set mutate events with evaluated args');
+
+    const priorityQueueTmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-priority-queue-writes-'));
+    let priorityQueueHookEvents: string[] = [];
+    try {
+      const sourcePath = join(priorityQueueTmpRoot, 'Main.java');
+      const classesPath = join(priorityQueueTmpRoot, 'classes');
+      writeFileSync(
+        sourcePath,
+        `import tracecode.user.TraceHooks;
+import java.util.*;
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    PriorityQueue<Integer> heap = new PriorityQueue<>();
+    TraceHooks.offerQueueAtLine(5, "heap", heap, 4);
+    TraceHooks.offerQueueAtLine(6, "heap", heap, 2);
+    TraceHooks.pollQueueAtLine(7, "heap", heap);
+    for (String event : TraceHooks.drainEvents()) System.out.println(event);
+  }
+}`
+      );
+      execFileSync('mkdir', ['-p', classesPath]);
+      execFileSync('javac', ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath], {
+        cwd: process.cwd(),
+        stdio: 'pipe',
+      });
+      priorityQueueHookEvents = execFileSync('java', ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'Main'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        stdio: 'pipe',
+      }).trim().split(/\r?\n/).filter(Boolean);
+    } finally {
+      rmSync(priorityQueueTmpRoot, { recursive: true, force: true });
+    }
+    const priorityQueueTrace = javaTraceHooksEventsToRuntimeTrace(priorityQueueHookEvents, undefined, {
+      runId: 'java:test',
+      file: 'solution.java',
+    });
+    assertCondition(
+      priorityQueueTrace.events.some((event) =>
+        event.kind === 'write' &&
+        event.target?.variable === 'heap' &&
+        JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+        event.value === 2
+      ) &&
+        priorityQueueTrace.events.some((event) =>
+          event.kind === 'write' &&
+          event.target?.variable === 'heap' &&
+          JSON.stringify(event.target.path) === JSON.stringify([1]) &&
+          event.value === 4
+        ),
+      `Java PriorityQueue offer should emit concrete indexed writes for heap cells, received ${JSON.stringify(priorityQueueTrace.events)}`
+    );
+    assertCondition(
+      priorityQueueTrace.events.some((event) =>
+        event.kind === 'write' &&
+        event.target?.variable === 'heap' &&
+        JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+        event.value === 4
+      ),
+      `Java PriorityQueue poll should emit concrete indexed writes for shifted heap cells, received ${JSON.stringify(priorityQueueTrace.events)}`
+    );
+    console.log('PASS: java worker emits PriorityQueue concrete heap writes');
 
     const stackPopIndexCode = `import java.util.*;
 class Solution {

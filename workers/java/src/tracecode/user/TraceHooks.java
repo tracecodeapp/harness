@@ -285,36 +285,42 @@ public final class TraceHooks {
   public static void sortArrayAtLine(int line, String name, int[] values) {
     java.util.Arrays.sort(values);
     emitTraceMutate(line, name, null, "sort", null, "[]");
+    emitArrayIndexedWritesAtLine(line, name, values);
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
   public static void sortArrayAtLine(int line, String name, long[] values) {
     java.util.Arrays.sort(values);
     emitTraceMutate(line, name, null, "sort", null, "[]");
+    emitArrayIndexedWritesAtLine(line, name, values);
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
   public static void sortArrayAtLine(int line, String name, double[] values) {
     java.util.Arrays.sort(values);
     emitTraceMutate(line, name, null, "sort", null, "[]");
+    emitArrayIndexedWritesAtLine(line, name, values);
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
   public static void sortArrayAtLine(int line, String name, char[] values) {
     java.util.Arrays.sort(values);
     emitTraceMutate(line, name, null, "sort", null, "[]");
+    emitArrayIndexedWritesAtLine(line, name, values);
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
   public static <T> void sortArrayAtLine(int line, String name, T[] values) {
     java.util.Arrays.sort(values);
     emitTraceMutate(line, name, null, "sort", null, "[]");
+    emitArrayIndexedWritesAtLine(line, name, values);
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
   public static <T> void sortArrayAtLine(int line, String name, T[] values, java.util.Comparator<? super T> comparator) {
     java.util.Arrays.sort(values, comparator);
     emitTraceMutate(line, name, null, "sort", null, "[]");
+    emitArrayIndexedWritesAtLine(line, name, values);
     emitRuntimeSnapshotAtLine(line, name, values);
   }
 
@@ -1011,6 +1017,9 @@ public final class TraceHooks {
   public static <T> boolean addCollectionAtLine(int line, String name, java.util.Collection<T> values, T value) {
     boolean changed = values.add(value);
     emitTraceMutate(line, name, null, "add", null, "[" + serializeResult(value) + "]");
+    if (changed && values instanceof java.util.PriorityQueue<?>) {
+      emitCollectionIndexedWritesAtLine(line, name, values);
+    }
     emitRuntimeSnapshotAtLine(line, name, values);
     return changed;
   }
@@ -1018,7 +1027,9 @@ public final class TraceHooks {
   public static <T> boolean offerQueueAtLine(int line, String name, java.util.Queue<T> values, T value) {
     boolean changed = values.offer(value);
     emitTraceMutate(line, name, null, "offer", null, "[" + serializeResult(value) + "]");
-    if (changed) {
+    if (changed && values instanceof java.util.PriorityQueue<?>) {
+      emitCollectionIndexedWritesAtLine(line, name, values);
+    } else if (changed) {
       emitTraceWrite(line, name, "[" + serializeResult(values.size() - 1) + "]", value);
     }
     emitRuntimeSnapshotAtLine(line, name, values);
@@ -1064,6 +1075,9 @@ public final class TraceHooks {
     emitTraceRead(line, name, "[0]", value);
     value = values.poll();
     emitTraceMutate(line, name, null, "poll", null, "[]");
+    if (values instanceof java.util.PriorityQueue<?>) {
+      emitCollectionIndexedWritesAtLine(line, name, values);
+    }
     emitRuntimeSnapshotAtLine(line, name, values);
     return value;
   }
@@ -1529,6 +1543,24 @@ public final class TraceHooks {
     if (indexSourcesJson != null) out.append(",\"indexSources\":").append(indexSourcesJson);
     out.append("},\"value\":").append(serializeResult(value)).append("}");
     emit(out.toString());
+  }
+
+  private static void emitArrayIndexedWritesAtLine(int line, String name, Object values) {
+    int length = java.lang.reflect.Array.getLength(values);
+    for (int index = 0; index < length; index++) {
+      emitTraceWrite(line, name, "[" + serializeResult(index) + "]", java.lang.reflect.Array.get(values, index), null);
+    }
+  }
+
+  private static void emitCollectionIndexedWritesAtLine(int line, String name, java.util.Collection<?> values) {
+    int index = 0;
+    for (Object value : values) {
+      if (index >= MAX_SERIALIZED_ITEMS) {
+        break;
+      }
+      emitTraceWrite(line, name, "[" + serializeResult(index) + "]", value, null);
+      index++;
+    }
   }
 
   private static void emitArrayRowFillAtLine(

@@ -4781,6 +4781,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
       return [
         line,
         `${indent}tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "sort", ${lineNumber}, tracecode::mutation_args_json());`,
+        `${indent}tracecode::emit_index_writes_value(${cppStringLiteral(name)}, ${name}, ${lineNumber});`,
       ].join('\n');
     }
   }

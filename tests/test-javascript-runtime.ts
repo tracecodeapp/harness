@@ -1835,6 +1835,78 @@ function smallest(nums: number[]): number {
   );
   console.log('PASS: execute-with-tracing typescript mutating-call post-line state contract');
 
+  for (const language of ['javascript', 'typescript'] as const) {
+    const bulkIndexedMutationState = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+      trace: { events?: RuntimeTraceEvent[] };
+    }>('execute-with-tracing', {
+      code: language === 'typescript'
+        ? `class Solution {
+  sortAndReverse(nums: number[]): number[] {
+    nums.sort((left, right) => left - right);
+    nums.reverse();
+    return nums;
+  }
+}`
+        : `class Solution {
+  sortAndReverse(nums) {
+    nums.sort((left, right) => left - right);
+    nums.reverse();
+    return nums;
+  }
+}`,
+      functionName: 'sortAndReverse',
+      className: 'Solution',
+      inputs: { nums: [3, 1, 2] },
+      executionStyle: 'solution-method',
+      language,
+    });
+    assertCondition(
+      bulkIndexedMutationState.success === true,
+      `${language} bulk indexed mutation tracing should succeed: ${bulkIndexedMutationState.error ?? 'unknown error'}`
+    );
+    assertCondition(
+      JSON.stringify(bulkIndexedMutationState.output) === JSON.stringify([3, 2, 1]),
+      `${language} bulk indexed mutation tracing should preserve output`
+    );
+    const bulkAccesses = traceAccessEvents(bulkIndexedMutationState);
+    assertCondition(
+      bulkAccesses.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 3 &&
+        event.target?.variable === 'nums' &&
+        event.method === 'sort'
+      ) &&
+        bulkAccesses.some((event) =>
+          event.kind === 'write' &&
+          event.line === 3 &&
+          event.target?.variable === 'nums' &&
+          JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+          event.value === 1
+        ),
+      `${language} sort should emit receiver mutation plus concrete sorted-cell writes, received ${JSON.stringify(bulkAccesses)}`
+    );
+    assertCondition(
+      bulkAccesses.some((event) =>
+        event.kind === 'mutate' &&
+        event.line === 4 &&
+        event.target?.variable === 'nums' &&
+        event.method === 'reverse'
+      ) &&
+        bulkAccesses.some((event) =>
+          event.kind === 'write' &&
+          event.line === 4 &&
+          event.target?.variable === 'nums' &&
+          JSON.stringify(event.target.path) === JSON.stringify([0]) &&
+          event.value === 3
+        ),
+      `${language} reverse should emit receiver mutation plus concrete reversed-cell writes, received ${JSON.stringify(bulkAccesses)}`
+    );
+  }
+  console.log('PASS: execute-with-tracing JS/TS bulk indexed mutations emit concrete cell writes');
+
   const executeTypeScriptSingleLineIfMutationState = await harness.sendMessage<{
     success: boolean;
     trace: { events?: RuntimeTraceEvent[] };
@@ -2094,6 +2166,13 @@ function smallest(nums: number[]): number {
   assertCondition(
     executeTypeScriptSingleLineIfBreakReadLineState.success === true,
     'TypeScript single-line if break read alignment tracing should succeed'
+  );
+  const singleLineIfBreakHeapWrites = traceAccessEvents(executeTypeScriptSingleLineIfBreakReadLineState)
+    .filter((event) => event.kind === 'write' && event.target?.variable === 'heap');
+  assertCondition(
+    singleLineIfBreakHeapWrites.some((event) => JSON.stringify(event.target?.path) === JSON.stringify([0]) && event.value === 2) &&
+      singleLineIfBreakHeapWrites.some((event) => JSON.stringify(event.target?.path) === JSON.stringify([1]) && event.value === 3),
+    `TypeScript array-backed heap pushes should emit concrete indexed writes, received ${JSON.stringify(singleLineIfBreakHeapWrites)}`
   );
   const singleLineIfBreakHeapReadLines = traceAccessEvents(executeTypeScriptSingleLineIfBreakReadLineState)
     .filter((event) =>
