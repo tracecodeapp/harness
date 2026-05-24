@@ -881,6 +881,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
   javascript: [...COMMON_STABLE_COVERAGE, ...PROJECT_IO_COVERAGE, 'project.filesystem.providerLiveInterception'],
   typescript: [
     ...COMMON_STABLE_COVERAGE,
+    'execution.compilation.required',
     'project.workspace.supported',
     'project.workspace.kernelFs',
     'project.workspace.virtualDevices',
@@ -892,6 +893,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'diagnostics.mappedErrorLines',
   ],
   java: [
+    'execution.compilation.required',
     'execution.styles.function',
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
@@ -931,6 +933,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.cycleReferences',
   ],
   csharp: [
+    'execution.compilation.required',
     'execution.styles.function',
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
@@ -975,6 +978,7 @@ const LANGUAGE_CONFORMANCE_COVERAGE: Record<Language, readonly string[]> = {
     'structures.cycleReferences',
   ],
   cpp: [
+    'execution.compilation.required',
     'execution.styles.function',
     'execution.styles.solutionMethod',
     'execution.styles.opsClass',
@@ -1040,6 +1044,11 @@ function createUnsupportedProfile(
     maturity: 'experimental',
     capabilities: {
       execution: {
+        compilation: {
+          required: false,
+          pipeline: 'interpreted',
+          cost: 'none',
+        },
         styles: {
           function: true,
           solutionMethod: false,
@@ -1406,8 +1415,20 @@ async function main(): Promise<void> {
     'Python should advertise runtime-side timeouts'
   );
   assertCondition(
+    !pythonProfile.capabilities.execution.compilation.required &&
+      pythonProfile.capabilities.execution.compilation.pipeline === 'interpreted' &&
+      pythonProfile.capabilities.execution.compilation.cost === 'none',
+    'Python should advertise an interpreted/no-compile execution pipeline'
+  );
+  assertCondition(
     javascriptProfile.capabilities.execution.styles.script,
     'JavaScript should support script mode execution'
+  );
+  assertCondition(
+    !javascriptProfile.capabilities.execution.compilation.required &&
+      javascriptProfile.capabilities.execution.compilation.pipeline === 'interpreted' &&
+      javascriptProfile.capabilities.execution.compilation.cost === 'none',
+    'JavaScript should advertise an interpreted/no-compile execution pipeline'
   );
   assertCondition(
     javascriptProfile.capabilities.structures.listNodeRefs,
@@ -1425,6 +1446,12 @@ async function main(): Promise<void> {
     'JavaScript and Python should expose native-live project I/O support tiers'
   );
   assertCondition(typescriptProfile.capabilities.diagnostics.compileErrors, 'TypeScript should support compile errors');
+  assertCondition(
+    typescriptProfile.capabilities.execution.compilation.required &&
+      typescriptProfile.capabilities.execution.compilation.pipeline === 'transpiled' &&
+      typescriptProfile.capabilities.execution.compilation.cost === 'low',
+    'TypeScript should advertise a low-cost transpilation pipeline'
+  );
   assertCondition(
     typescriptProfile.capabilities.diagnostics.mappedErrorLines,
     'TypeScript should preserve mapped compile error lines'
@@ -1446,6 +1473,12 @@ async function main(): Promise<void> {
     'Python should advertise Pyodide live project I/O interception plus final-diff reconciliation'
   );
   assertCondition(javaProfile.capabilities.execution.styles.function, 'Java should support function execution');
+  assertCondition(
+    javaProfile.capabilities.execution.compilation.required &&
+      javaProfile.capabilities.execution.compilation.pipeline === 'compiled' &&
+      javaProfile.capabilities.execution.compilation.cost === 'high',
+    'Java should advertise a high-cost compiled execution pipeline'
+  );
   assertCondition(javaProfile.capabilities.execution.styles.script, 'Java should support script execution');
   assertCondition(javaProfile.capabilities.execution.styles.interviewMode, 'Java should support interview mode');
   assertCondition(
@@ -1459,6 +1492,12 @@ async function main(): Promise<void> {
     'Java should expose a bridged-live project I/O support tier'
   );
   assertCondition(csharpProfile.capabilities.execution.styles.solutionMethod, 'C# should support solution-method execution');
+  assertCondition(
+    csharpProfile.capabilities.execution.compilation.required &&
+      csharpProfile.capabilities.execution.compilation.pipeline === 'compiled' &&
+      csharpProfile.capabilities.execution.compilation.cost === 'high',
+    'C# should advertise a high-cost compiled execution pipeline'
+  );
   assertCondition(csharpProfile.capabilities.execution.styles.opsClass, 'C# should support ops-class execution');
   assertCondition(csharpProfile.capabilities.execution.styles.interviewMode, 'C# should support interview mode');
   assertCondition(csharpProfile.capabilities.tracing.supported, 'C# should support basic tracing');
@@ -1480,6 +1519,12 @@ async function main(): Promise<void> {
     'C# should expose a bridged-live project I/O support tier'
   );
   assertCondition(cppProfile.capabilities.execution.styles.function, 'C++ should support function execution');
+  assertCondition(
+    cppProfile.capabilities.execution.compilation.required &&
+      cppProfile.capabilities.execution.compilation.pipeline === 'compiled' &&
+      cppProfile.capabilities.execution.compilation.cost === 'high',
+    'C++ should advertise a high-cost compiled execution pipeline'
+  );
   assertCondition(cppProfile.capabilities.execution.styles.solutionMethod, 'C++ should support solution-method execution');
   assertCondition(cppProfile.capabilities.execution.styles.opsClass, 'C++ should support ops-class execution');
   assertCondition(cppProfile.capabilities.execution.styles.script, 'C++ should support script execution');

@@ -418,6 +418,12 @@ Capability domains:
 - `diagnostics`
 - `structures`
 
+The `execution.compilation` capability classifies how code reaches the runtime:
+
+- `required`: whether execution requires a compile/transpile step
+- `pipeline`: `interpreted`, `transpiled`, or `compiled`
+- `cost`: `none`, `low`, or `high`
+
 That lets the package be explicit about partial support and fail closed for unsupported requests.
 
 Current language status:

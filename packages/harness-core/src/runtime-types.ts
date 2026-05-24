@@ -10,6 +10,10 @@ export type RuntimeExecutionStyle = 'function' | 'solution-method' | 'ops-class'
 
 export type RuntimeMaturity = 'experimental' | 'beta' | 'stable';
 
+export type RuntimeExecutionPipeline = 'interpreted' | 'transpiled' | 'compiled';
+
+export type RuntimeCompileCost = 'none' | 'low' | 'high';
+
 export type RuntimeProjectIoTier = 'unsupported' | 'final-diff' | 'bridged-live' | 'native-live';
 
 export type RuntimeProjectIoEnvironment = 'browser' | 'node';
@@ -36,6 +40,11 @@ export interface RuntimeProjectIoCapabilityRow {
 
 export interface RuntimeCapabilities {
   execution: {
+    compilation: {
+      required: boolean;
+      pipeline: RuntimeExecutionPipeline;
+      cost: RuntimeCompileCost;
+    };
     styles: {
       function: boolean;
       solutionMethod: boolean;

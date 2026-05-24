@@ -119,6 +119,11 @@ const PYTHON_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   maturity: 'stable',
   capabilities: {
     execution: {
+      compilation: {
+        required: false,
+        pipeline: 'interpreted',
+        cost: 'none',
+      },
       styles: {
         function: true,
         solutionMethod: true,
@@ -177,6 +182,11 @@ const JAVASCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   maturity: 'stable',
   capabilities: {
     execution: {
+      compilation: {
+        required: false,
+        pipeline: 'interpreted',
+        cost: 'none',
+      },
       styles: {
         function: true,
         solutionMethod: true,
@@ -235,6 +245,11 @@ const TYPESCRIPT_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   maturity: 'stable',
   capabilities: {
     execution: {
+      compilation: {
+        required: true,
+        pipeline: 'transpiled',
+        cost: 'low',
+      },
       styles: {
         function: true,
         solutionMethod: true,
@@ -293,6 +308,11 @@ const JAVA_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   maturity: 'experimental',
   capabilities: {
     execution: {
+      compilation: {
+        required: true,
+        pipeline: 'compiled',
+        cost: 'high',
+      },
       styles: {
         function: true,
         solutionMethod: true,
@@ -357,6 +377,11 @@ const CSHARP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   maturity: 'experimental',
   capabilities: {
     execution: {
+      compilation: {
+        required: true,
+        pipeline: 'compiled',
+        cost: 'high',
+      },
       styles: {
         function: true,
         solutionMethod: true,
@@ -427,6 +452,11 @@ const CPP_RUNTIME_PROFILE: LanguageRuntimeProfile = {
   maturity: 'experimental',
   capabilities: {
     execution: {
+      compilation: {
+        required: true,
+        pipeline: 'compiled',
+        cost: 'high',
+      },
       styles: {
         function: true,
         solutionMethod: true,
