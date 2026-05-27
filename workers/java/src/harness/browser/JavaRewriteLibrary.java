@@ -503,7 +503,7 @@ public final class JavaRewriteLibrary {
       String writeEvent = "";
       if ("add".equals(method) && rawArgs.size() == 1) {
         String value = rewriteReads(rawArgs.get(0), sourceLine, frame);
-        writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+        writeEvent = " if (" + target + " instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + quote(field) + ", " + index + ", ((java.util.List) " + target + ").size() - 1 }, " +
             value + ", null, " + indexSourceArgument(index) + ", null);";
       }
@@ -646,7 +646,7 @@ public final class JavaRewriteLibrary {
       String writeEvent = "";
       if ("add".equals(method) && rawArgs.size() == 1) {
         String value = rewriteReads(rawArgs.get(0), sourceLine, frame);
-        writeEvent = " TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
+        writeEvent = " if (" + temp + " instanceof java.util.List) TraceHooks.emitIndexedWriteAtLine(" + sourceLine + ", " + quote(name) +
             ", new Object[] { " + index + ", ((java.util.List) " + temp + ").size() - 1 }, " +
             value + ", " + indexSourceArgument(rawIndex) + ", null);";
       }

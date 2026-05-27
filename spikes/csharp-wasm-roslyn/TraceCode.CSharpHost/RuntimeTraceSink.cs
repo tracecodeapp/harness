@@ -1562,7 +1562,16 @@ public static class RuntimeTraceSink
         {
             if (!entries.ContainsKey(value))
             {
-                entries[value] = new Entry(typeName, anchor);
+                string? id = null;
+                if (anchor is not null)
+                {
+                    id = GetStableTraceReferenceId(value, typeName);
+                    anchor["__id__"] = id;
+                }
+                entries[value] = new Entry(typeName, anchor)
+                {
+                    Id = id,
+                };
             }
         }
 

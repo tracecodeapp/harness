@@ -491,6 +491,11 @@ Node* json_to_tree_node(const JsonValue& value);
 template <typename Node>
 Node* json_to_list_node(const JsonValue& value);
 
+template <typename T>
+struct JsonObjectAdapter {
+  static constexpr bool available = false;
+};
+
 template <typename Node, typename = void>
 struct json_has_tree_node_shape : std::false_type {};
 template <typename Node>
@@ -635,6 +640,8 @@ T json_to(const JsonValue& value) {
     return D{json_to<typename D::first_type>(value.array_values[0]), json_to<typename D::second_type>(value.array_values[1])};
   } else if constexpr (json_is_std_tuple<D>::value) {
     return json_to_tuple<D>(value, std::make_index_sequence<std::tuple_size_v<D>>{});
+  } else if constexpr (JsonObjectAdapter<D>::available) {
+    return JsonObjectAdapter<D>::from(value);
   } else {
     return D{};
   }
@@ -6430,13 +6437,18 @@ inline void configure_trace_budget(
   minimal_trace_enabled() = minimal_trace;
 }
 
-inline void stop_for_trace_budget(int line, const char* reason = "trace-limit", const char* message = "C++ trace budget exceeded") {
+inline void stop_for_trace_budget(
+  int line,
+  const char* reason = "trace-limit",
+  const char* message = "C++ trace budget exceeded",
+  bool allow_hard_stop = true
+) {
   trace_budget_exceeded() = true;
   if (trace_budget_timeout_reason().empty()) {
     trace_budget_timeout_reason() = reason;
   }
   dropped_trace_event_count() += 1;
-  if (hard_stop_on_trace_budget()) {
+  if (allow_hard_stop && hard_stop_on_trace_budget()) {
     write_trace_event_json_raw(
       std::string("{\"kind\":\"timeout\",\"line\":") + std::to_string(line) +
       ",\"reason\":" + to_json(reason) +
@@ -6453,7 +6465,7 @@ inline bool check_trace_budget(int line) {
     return false;
   }
   if (trace_event_count() >= trace_event_budget()) {
-    stop_for_trace_budget(line);
+    stop_for_trace_budget(line, "trace-limit", "C++ trace budget exceeded");
     return false;
   }
   return true;

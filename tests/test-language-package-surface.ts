@@ -1,8 +1,9 @@
 #!/usr/bin/env npx tsx
 
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 
 interface PackageCheck {
@@ -187,6 +188,36 @@ function assertCondition(condition: boolean, message: string): void {
   }
 }
 
+function resolvePnpmCommand(): string {
+  const executable = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+  const candidates = [
+    executable,
+    process.env.PNPM_HOME ? join(process.env.PNPM_HOME, executable) : undefined,
+    join(homedir(), 'Library', 'pnpm', executable),
+    join(homedir(), '.local', 'share', 'pnpm', executable),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (candidate !== executable && !existsSync(candidate)) continue;
+    const result = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
+    if (result.status === 0) return candidate;
+  }
+
+  throw new Error(
+    [
+      'Unable to find pnpm for package-surface verification.',
+      'Install pnpm, set PNPM_HOME, or add pnpm to PATH.',
+    ].join('\n')
+  );
+}
+
+function spawnFailure(output: ReturnType<typeof spawnSync>, fallback: string): string {
+  return [output.error?.message, output.stderr, output.stdout, fallback]
+    .filter(Boolean)
+    .map(String)
+    .join('\n');
+}
+
 function packageNodeModulesDir(appDir: string, packageName: string): string {
   const [scope, name] = packageName.split('/');
   assertCondition(Boolean(scope) && Boolean(name), `Expected scoped package name, received ${packageName}`);
@@ -194,6 +225,7 @@ function packageNodeModulesDir(appDir: string, packageName: string): string {
 }
 
 async function runWithTempRoot(tempRoot: string): Promise<void> {
+  const pnpmCommand = resolvePnpmCommand();
   const appDir = join(tempRoot, 'app');
   await mkdir(join(appDir, 'node_modules', '@tracecode'), { recursive: true });
   await writeFile(
@@ -207,13 +239,13 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
   );
 
   for (const packageCheck of PACKAGE_CHECKS) {
-    const packOutput = spawnSync('pnpm', ['pack', '--pack-destination', tempRoot], {
+    const packOutput = spawnSync(pnpmCommand, ['pack', '--pack-destination', tempRoot], {
       cwd: join(process.cwd(), packageCheck.dir),
       encoding: 'utf8',
     });
 
     if (packOutput.status !== 0) {
-      throw new Error(packOutput.stderr || packOutput.stdout || `${packageCheck.name} pack failed`);
+      throw new Error(spawnFailure(packOutput, `${packageCheck.name} pack failed`));
     }
 
     const tarballName = String(packOutput.stdout || '')
@@ -861,12 +893,12 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     }),
     'utf8'
   );
-  const install = spawnSync('pnpm', ['install', '--prod', '--ignore-scripts'], {
+  const install = spawnSync(pnpmCommand, ['install', '--prod', '--ignore-scripts'], {
     cwd: appDir,
     encoding: 'utf8',
   });
   if (install.status !== 0) {
-    throw new Error(install.stderr || install.stdout || 'Language package dependency install failed');
+    throw new Error(spawnFailure(install, 'Language package dependency install failed'));
   }
 
   const evalScript = `

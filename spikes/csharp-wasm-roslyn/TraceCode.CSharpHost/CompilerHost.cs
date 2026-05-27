@@ -2469,7 +2469,7 @@ public static class TraceCodeDriver
         }
 
         return solutionClass.Members
-            .OfType<ClassDeclarationSyntax>()
+            .OfType<BaseTypeDeclarationSyntax>()
             .Select(type => type.Identifier.ValueText)
             .ToHashSet(StringComparer.Ordinal);
     }

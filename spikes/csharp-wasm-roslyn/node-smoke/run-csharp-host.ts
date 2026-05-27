@@ -62,6 +62,43 @@ function assertNoVisualizationTokens(value: unknown, label: string): void {
   }
 }
 
+function collectTreeNodeIdValues(value: unknown, ids = new Map<string, Set<unknown>>()): Map<string, Set<unknown>> {
+  const record = asRecord(value);
+  if (!record) {
+    if (Array.isArray(value)) {
+      for (const item of value) collectTreeNodeIdValues(item, ids);
+    }
+    return ids;
+  }
+
+  if (typeof record.__id__ === 'string' && record.__id__.length > 0 && 'val' in record) {
+    const values = ids.get(record.__id__) ?? new Set<unknown>();
+    values.add(record.val);
+    ids.set(record.__id__, values);
+  }
+
+  for (const child of Object.values(record)) {
+    collectTreeNodeIdValues(child, ids);
+  }
+  return ids;
+}
+
+function assertTreeNodeIdsDoNotAliasDifferentValues(value: unknown, label: string): void {
+  const collisions = [...collectTreeNodeIdValues(value).entries()]
+    .filter(([, values]) => values.size > 1)
+    .map(([id, values]) => `${id}=[${[...values].join(',')}]`);
+  assertCondition(
+    collisions.length === 0,
+    `${label} should not reuse a TreeNode __id__ for different node values: ${collisions.join('; ')}`
+  );
+}
+
+function traceArgsContain(args: unknown, index: number, name: string, expected: unknown): boolean {
+  if (Array.isArray(args)) return args[index] === expected;
+  const record = asRecord(args);
+  return record?.[name] === expected;
+}
+
 function findPublishedAssetDir(): string {
   const explicitDir = process.env.CSHARP_WASM_PUBLISH_DIR;
   const projectSource = readFileSync(projectFile, 'utf8');
@@ -279,7 +316,8 @@ async function main(): Promise<void> {
     `Traced lambda helper should return 3, received ${JSON.stringify(tracedLambdaHelper.output)}`
   );
   assertCondition(
-    tracedLambdaHelper.events?.some((event) => event.kind === 'call' && event.function === 'dfs' && event.args?.[0] === 0) === true,
+    tracedLambdaHelper.events?.some((event) =>
+      event.kind === 'call' && event.function === 'dfs' && traceArgsContain(event.args, 0, 'node', 0)) === true,
     `Traced lambda helper should include dfs call args, received ${JSON.stringify(tracedLambdaHelper.events)}`
   );
   assertCondition(
@@ -323,7 +361,8 @@ async function main(): Promise<void> {
     `Traced expression-bodied lambda case should capture Action stdout, received ${JSON.stringify(tracedExpressionLambda.consoleOutput)}`
   );
   assertCondition(
-    tracedExpressionLambda.events?.some((event) => event.kind === 'call' && event.function === 'bump' && event.args?.[0] === 4) === true,
+    tracedExpressionLambda.events?.some((event) =>
+      event.kind === 'call' && event.function === 'bump' && traceArgsContain(event.args, 0, 'x', 4)) === true,
     `Traced expression-bodied lambda case should include bump call args, received ${JSON.stringify(tracedExpressionLambda.events)}`
   );
   assertCondition(
@@ -751,6 +790,34 @@ async function main(): Promise<void> {
   );
   console.log('PASS: C# TwoSum compiled and returned [0,1]');
 
+  const nestedStructMapInput = executeCase(
+    execute,
+    [
+      'using System.Collections.Generic;',
+      'public class Solution {',
+      '  public struct Campaign {',
+      '    public int Cap;',
+      '    public int Bid;',
+      '    public Campaign(int cap, int bid) { Cap = cap; Bid = bid; }',
+      '  }',
+      '  public int Score(Dictionary<string, Campaign> campaigns) {',
+      '    return campaigns["a"].Cap + campaigns["a"].Bid;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'Score',
+    { campaigns: { a: { Cap: 7, Bid: 5 } } }
+  );
+  assertCondition(
+    nestedStructMapInput.success,
+    `Nested struct map input case should succeed: ${nestedStructMapInput.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    nestedStructMapInput.output === 12,
+    `Nested struct map input should return 12, received ${JSON.stringify(nestedStructMapInput.output)}`
+  );
+  console.log('PASS: C# generated driver hydrates nested struct map inputs');
+
   const listNodeInput = executeCase(
     execute,
     [
@@ -934,7 +1001,11 @@ async function main(): Promise<void> {
   );
   assertCondition(listNodeOutput.success, `ListNode output case should succeed: ${listNodeOutput.error ?? 'unknown error'}`);
   assertCondition(
-    JSON.stringify(listNodeOutput.output) === JSON.stringify({ val: 4, next: { val: 5, next: null } }),
+    JSON.stringify(listNodeOutput.output) === JSON.stringify({
+      val: 4,
+      value: 4,
+      next: { val: 5, value: 5, next: null },
+    }),
     `ListNode output case should serialize node fields, received ${JSON.stringify(listNodeOutput.output)}`
   );
   console.log('PASS: C# generated driver serializes ListNode outputs');
@@ -955,8 +1026,9 @@ async function main(): Promise<void> {
   assertCondition(
     JSON.stringify(treeNodeOutput.output) === JSON.stringify({
       val: 4,
-      left: { val: 5, left: null, right: null },
-      right: { val: 6, left: null, right: null },
+      value: 4,
+      left: { val: 5, value: 5, left: null, right: null },
+      right: { val: 6, value: 6, left: null, right: null },
     }),
     `TreeNode output case should serialize node fields, received ${JSON.stringify(treeNodeOutput.output)}`
   );
@@ -1118,7 +1190,8 @@ async function main(): Promise<void> {
   );
   assertCondition(
     tracedTreeNodeAliasOutput.events?.some((event) => {
-      const arg = Array.isArray(event.args) ? asRecord(event.args[0]) : undefined;
+      const objectArgs = asRecord(event.args);
+      const arg = Array.isArray(event.args) ? asRecord(event.args[0]) : asRecord(objectArgs?.root);
       const left = asRecord(arg?.left);
       const right = asRecord(arg?.right);
       return event.kind === 'call'
@@ -1208,11 +1281,13 @@ async function main(): Promise<void> {
     `Traced ListNode values case should include normalized ListNode state, received ${JSON.stringify(tracedListNodeValues.events)}`
   );
   assertCondition(
-    tracedListNodeValues.events?.some((event) =>
-      event.kind === 'call'
-      && event.function === 'HeadValue'
-      && Array.isArray(event.args)
-      && (event.args[0] as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode') === true,
+    tracedListNodeValues.events?.some((event) => {
+      const objectArgs = asRecord(event.args);
+      const arg = Array.isArray(event.args) ? asRecord(event.args[0]) : asRecord(objectArgs?.head);
+      return event.kind === 'call'
+        && event.function === 'HeadValue'
+        && arg?.__type__ === 'ListNode';
+    }) === true,
     `Traced ListNode values case should include normalized call args, received ${JSON.stringify(tracedListNodeValues.events)}`
   );
   assertCondition(
@@ -1287,12 +1362,14 @@ async function main(): Promise<void> {
     `Traced TreeNode values case should succeed: ${tracedTreeNodeValues.error ?? 'unknown error'}`
   );
   assertCondition(
-    tracedTreeNodeValues.events?.some((event) =>
-      event.kind === 'call'
-      && event.function === 'SumTree'
-      && Array.isArray(event.args)
-      && (event.args[0] as { __type__?: string; val?: number } | undefined)?.__type__ === 'TreeNode'
-      && (event.args[0] as { val?: number } | undefined)?.val === 1) === true,
+    tracedTreeNodeValues.events?.some((event) => {
+      const objectArgs = asRecord(event.args);
+      const arg = Array.isArray(event.args) ? asRecord(event.args[0]) : asRecord(objectArgs?.root);
+      return event.kind === 'call'
+        && event.function === 'SumTree'
+        && arg?.__type__ === 'TreeNode'
+        && arg?.val === 1;
+    }) === true,
     `Traced TreeNode values case should include normalized recursive call args, received ${JSON.stringify(tracedTreeNodeValues.events)}`
   );
   assertCondition(
@@ -1320,6 +1397,48 @@ async function main(): Promise<void> {
     `Traced TreeNode values case should include root.val read, received ${JSON.stringify(tracedTreeNodeValues.events)}`
   );
   console.log('PASS: C# tracing normalizes TreeNode call args and field reads during recursion');
+
+  const tracedTreeNodeIndexedQueue = executeCase(
+    execute,
+    [
+      'using System.Collections.Generic;',
+      'public class Solution {',
+      '  public IList<double> AverageOfLevels(TreeNode root) {',
+      '    if (root == null) return new List<double>();',
+      '    var result = new List<double>();',
+      '    var queue = new List<TreeNode>();',
+      '    queue.Add(root);',
+      '    int head = 0;',
+      '    while (head < queue.Count) {',
+      '      int levelSize = queue.Count - head;',
+      '      double levelSum = 0;',
+      '      for (int i = 0; i < levelSize; i++) {',
+      '        TreeNode node = queue[head];',
+      '        head += 1;',
+      '        levelSum += node.val;',
+      '        if (node.left != null) queue.Add(node.left);',
+      '        if (node.right != null) queue.Add(node.right);',
+      '      }',
+      '      result.Add(levelSum / levelSize);',
+      '    }',
+      '    return result;',
+      '  }',
+      '}',
+    ].join('\n'),
+    'AverageOfLevels',
+    { root: [3, 9, 20, null, null, 15, 7] },
+    true,
+    { maxTraceSteps: 10000 }
+  );
+  assertCondition(
+    tracedTreeNodeIndexedQueue.success,
+    `Traced indexed TreeNode queue case should succeed: ${tracedTreeNodeIndexedQueue.error ?? 'unknown error'}`
+  );
+  assertTreeNodeIdsDoNotAliasDifferentValues(
+    tracedTreeNodeIndexedQueue.events,
+    'Traced indexed TreeNode queue events'
+  );
+  console.log('PASS: C# tracing keeps TreeNode ids stable across indexed queue snapshots');
 
   const tracedNestedTreeNodeFields = executeCase(
     execute,

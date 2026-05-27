@@ -48,6 +48,7 @@ interface PendingMessage {
   reject: (error: Error) => void;
   onEvent?: RuntimeCommandEventHandler;
   timeoutId?: ReturnType<typeof setTimeout>;
+  lastProgress?: CppRuntimeProgress;
 }
 
 interface PendingCompilerFrameRequest {
@@ -57,11 +58,18 @@ interface PendingCompilerFrameRequest {
 
 type CppClientTimeoutStage = 'compile-run' | 'trace' | 'interview';
 
+interface CppRuntimeProgress {
+  stage?: string;
+  elapsedMs?: number;
+  tracing?: boolean;
+}
+
 class CppClientTimeoutError extends Error {
   constructor(
     message: string,
     readonly stage: CppClientTimeoutStage,
-    readonly timeoutMs: number
+    readonly timeoutMs: number,
+    readonly progress?: CppRuntimeProgress
   ) {
     super(message);
     this.name = 'CppClientTimeoutError';
@@ -90,13 +98,10 @@ interface WarmupResult {
 }
 
 const INIT_TIMEOUT_MS = 120_000;
-// Browser C++ compile/run includes client-side clang/lld work. STL-heavy
-// solutions can spend most of this wall time compiling before user code runs.
-const EXECUTION_TIMEOUT_MS = 60_000;
-// Trace requests also pay instrumentation and cold compiler costs. Keep the
-// wall-clock budget aligned with init so first-run playground traces do not
-// fail before small STL script samples finish compiling.
-const TRACING_TIMEOUT_MS = 120_000;
+// The outer client timeout is the hard product budget. Compiler and runtime
+// phases report progress separately so timeout diagnostics show where we died.
+const EXECUTION_TIMEOUT_MS = 20_000;
+const TRACING_TIMEOUT_MS = 20_000;
 const INTERVIEW_MODE_TIMEOUT_MS = 30_000;
 const MESSAGE_TIMEOUT_MS = 30_000;
 const WORKER_READY_TIMEOUT_MS = 10_000;
@@ -118,6 +123,8 @@ export class CppWorkerClient {
   private readonly interviewTimeoutMs: number;
   private readonly compilerFrameUrl?: string;
   private readonly externalCompilerUrl?: string;
+  private lastRuntimeProgress: CppRuntimeProgress | null = null;
+  private readonly activeExternalCompileControllers = new Set<AbortController>();
   private readonly activeCompilerFrames = new Set<HTMLIFrameElement>();
   private compilerFrame: HTMLIFrameElement | null = null;
   private compilerFrameReadyPromise: Promise<void> | null = null;
@@ -204,6 +211,12 @@ export class CppWorkerClient {
       if (!pending) return;
       if (type === 'project-event') {
         pending.onEvent?.(payload as RuntimeCommandEvent);
+        return;
+      }
+      if (type === 'runtime-progress') {
+        const progress = payload && typeof payload === 'object' ? (payload as CppRuntimeProgress) : {};
+        pending.lastProgress = progress;
+        this.lastRuntimeProgress = progress;
         return;
       }
       this.pendingMessages.delete(id);
@@ -322,11 +335,14 @@ export class CppWorkerClient {
     timeoutMs: number,
     stage: CppClientTimeoutStage
   ): Promise<T> {
+    this.lastRuntimeProgress = null;
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
+        const progress = this.lastRuntimeProgress;
+        const shouldTerminate = this.shouldTerminateWorkerForTimeout(progress);
         const timeoutLabel =
           stage === 'trace'
             ? 'tracing'
@@ -336,16 +352,21 @@ export class CppWorkerClient {
         const timeoutError = new CppClientTimeoutError(
           `C++ ${timeoutLabel} timed out after ${Math.round(timeoutMs / 1000)} seconds.`,
           stage,
-          timeoutMs
+          timeoutMs,
+          this.lastRuntimeProgress ?? undefined
         );
         logRuntimeDiagnostic('warn', {
           component: 'CppWorkerClient',
           runtime: 'cpp',
           phase: 'execution-timeout',
-          message: 'C++ execution timed out; terminating worker.',
-          detail: { timeoutMs, stage },
+          message: shouldTerminate
+            ? 'C++ execution timed out; terminating worker.'
+            : 'C++ execution timed out before program execution; keeping worker alive for compiler reuse.',
+          detail: { timeoutMs, stage, terminateWorker: shouldTerminate, lastProgress: progress ?? undefined },
         }, { enabled: this.debug });
-        this.terminateAndReset(timeoutError);
+        if (shouldTerminate) {
+          this.terminateAndReset(timeoutError);
+        }
         reject(timeoutError);
       }, timeoutMs);
 
@@ -372,6 +393,12 @@ export class CppWorkerClient {
     );
   }
 
+  private shouldTerminateWorkerForTimeout(progress: CppRuntimeProgress | null): boolean {
+    const stage = progress?.stage;
+    if (!stage) return true;
+    return stage === 'program-run:start' || stage.startsWith('program-run:');
+  }
+
   private timeoutCodeResult(error: unknown): CodeExecutionResult {
     const timeoutError = error instanceof CppClientTimeoutError ? error : null;
     return {
@@ -382,6 +409,24 @@ export class CppWorkerClient {
       timeoutReason: 'client-timeout',
       diagnosticStage: timeoutError?.stage === 'interview' ? 'interview' : 'runtime',
       timings: { totalMs: timeoutError?.timeoutMs ?? this.executionTimeoutMs },
+      diagnostic: timeoutError?.progress
+        ? {
+            schema: 'tracecode.runtime-diagnostic.v1',
+            source: 'harness',
+            component: 'CppWorkerClient',
+            runtime: 'cpp',
+            phase: 'execution-timeout',
+            message: this.shouldTerminateWorkerForTimeout(timeoutError.progress)
+              ? 'C++ execution timed out; terminating worker.'
+              : 'C++ execution timed out before program execution; keeping worker alive for compiler reuse.',
+            detail: {
+              timeoutMs: timeoutError.timeoutMs,
+              stage: timeoutError.stage,
+              terminateWorker: this.shouldTerminateWorkerForTimeout(timeoutError.progress),
+              lastProgress: timeoutError.progress,
+            },
+          }
+        : undefined,
     };
   }
 
@@ -409,6 +454,24 @@ export class CppWorkerClient {
       lineEventCount: 0,
       traceStepCount: 1,
       timings: { totalMs: timeoutError?.timeoutMs ?? this.tracingTimeoutMs },
+      diagnostic: timeoutError?.progress
+        ? {
+            schema: 'tracecode.runtime-diagnostic.v1',
+            source: 'harness',
+            component: 'CppWorkerClient',
+            runtime: 'cpp',
+            phase: 'execution-timeout',
+            message: this.shouldTerminateWorkerForTimeout(timeoutError.progress)
+              ? 'C++ execution timed out; terminating worker.'
+              : 'C++ execution timed out before program execution; keeping worker alive for compiler reuse.',
+            detail: {
+              timeoutMs: timeoutError.timeoutMs,
+              stage: timeoutError.stage,
+              terminateWorker: this.shouldTerminateWorkerForTimeout(timeoutError.progress),
+              lastProgress: timeoutError.progress,
+            },
+          }
+        : undefined,
     };
   }
 
@@ -429,6 +492,10 @@ export class CppWorkerClient {
       pending.reject(reason);
     }
     this.pendingMessages.clear();
+    for (const controller of this.activeExternalCompileControllers) {
+      controller.abort();
+    }
+    this.activeExternalCompileControllers.clear();
     this.clearCompilerFrames();
   }
 
@@ -551,6 +618,8 @@ export class CppWorkerClient {
       return { success: false, error: 'C++ external compiler URL is not configured.' };
     }
 
+    const controller = new AbortController();
+    this.activeExternalCompileControllers.add(controller);
     let response: Response;
     try {
       response = await fetch(this.externalCompilerUrl, {
@@ -560,9 +629,12 @@ export class CppWorkerClient {
           accept: 'application/wasm, application/json',
         },
         body: JSON.stringify(payload ?? {}),
+        signal: controller.signal,
       });
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      this.activeExternalCompileControllers.delete(controller);
     }
 
     const headerNumber = (name: string): number | undefined => {

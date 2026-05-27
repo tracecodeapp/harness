@@ -228,6 +228,26 @@ function isLikelyListNodeValue(value: unknown): value is Record<string, unknown>
   return ctor?.name === 'ListNode';
 }
 
+function inferPlainNodeType(value: object): 'ListNode' | 'TreeNode' | null {
+  const record = value as Record<string, unknown>;
+  if (record.__type__ === 'ListNode' || record.__type__ === 'TreeNode') {
+    return null;
+  }
+  const id = typeof record.__id__ === 'string' ? record.__id__ : '';
+  if (id.startsWith('list-') || id.startsWith('ListNode:')) return 'ListNode';
+  if (id.startsWith('tree-') || id.startsWith('TreeNode:')) return 'TreeNode';
+
+  const hasValue = Object.prototype.hasOwnProperty.call(record, 'val')
+    || Object.prototype.hasOwnProperty.call(record, 'value');
+  const hasTreeLinks = Object.prototype.hasOwnProperty.call(record, 'left')
+    || Object.prototype.hasOwnProperty.call(record, 'right');
+  const hasListLinks = Object.prototype.hasOwnProperty.call(record, 'next')
+    || Object.prototype.hasOwnProperty.call(record, 'prev');
+  if (hasValue && hasTreeLinks) return 'TreeNode';
+  if (hasValue && hasListLinks) return 'ListNode';
+  return null;
+}
+
 function getCustomClassName(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value instanceof Map || value instanceof Set) return null;
@@ -395,6 +415,19 @@ function serializeValue(
     if (seen.has(value as object)) return '<cycle>';
     seen.add(value as object);
     const out: Record<string, unknown> = {};
+    const inferredNodeType = inferPlainNodeType(value as object);
+    if (inferredNodeType) {
+      out.__type__ = inferredNodeType;
+      const explicitId = typeof (value as Record<string, unknown>).__id__ === 'string'
+        ? String((value as Record<string, unknown>).__id__)
+        : '';
+      let nodeId = nodeRefState.ids.get(value as object);
+      if (!nodeId) {
+        nodeId = explicitId.length > 0 ? explicitId : `${inferredNodeType}:${nodeRefState.nextId++}`;
+        nodeRefState.ids.set(value as object, nodeId);
+      }
+      out.__id__ = nodeId;
+    }
     const fields = Object.entries(value as Record<string, unknown>);
     for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
@@ -556,7 +589,133 @@ function normalizeInputs(inputs: Record<string, unknown>): Record<string, unknow
   return hydrated as Record<string, unknown>;
 }
 
-type InputMaterializerKind = 'tree' | 'list';
+type InputMaterializerKind =
+  | 'tree'
+  | 'list'
+  | { kind: 'array'; element: InputMaterializerKind | null }
+  | { kind: 'record'; value: InputMaterializerKind | null }
+  | { kind: 'custom'; typeName: string };
+
+const TYPESCRIPT_BUILTIN_TYPE_NAMES = new Set([
+  'Array',
+  'ReadonlyArray',
+  'Record',
+  'Map',
+  'ReadonlyMap',
+  'Set',
+  'ReadonlySet',
+  'Promise',
+  'Date',
+  'RegExp',
+  'String',
+  'Number',
+  'Boolean',
+  'Object',
+  'Function',
+  'Error',
+  'unknown',
+  'any',
+  'object',
+  'never',
+  'void',
+  'undefined',
+  'null',
+  'string',
+  'number',
+  'boolean',
+  'bigint',
+  'symbol',
+]);
+
+const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `
+function __tracecodeResolveConstructor(__typeName) {
+  if (typeof __typeName !== 'string' || __typeName.length === 0) return undefined;
+  try {
+    return eval(__typeName);
+  } catch (_err) {
+    return undefined;
+  }
+}
+
+function __tracecodeMaterializeCustomObject(value, __targetTypeName, __seen) {
+  if (value === null || value === undefined) return value;
+  if (typeof value !== 'object') return value;
+  if (!__seen) __seen = new WeakMap();
+  const __cached = __seen.get(value);
+  if (__cached) return __cached;
+  if (Array.isArray(value)) {
+    const __out = [];
+    __seen.set(value, __out);
+    for (const __item of value) {
+      __out.push(__tracecodeMaterializeCustomObject(__item, undefined, __seen));
+    }
+    return __out;
+  }
+  if (value.__type__ === 'TreeNode' || value.__type__ === 'ListNode' || value.__ref__) return value;
+  const __typeName = typeof __targetTypeName === 'string'
+    ? __targetTypeName
+    : (typeof value.__type__ === 'string'
+      ? value.__type__
+      : (typeof value.__class__ === 'string' ? value.__class__ : null));
+  if (!__typeName) {
+    __seen.set(value, value);
+    for (const [__key, __child] of Object.entries(value)) {
+      if (__key === '__type__' || __key === '__class__' || __key === '__id__') continue;
+      value[__key] = __tracecodeMaterializeCustomObject(__child, undefined, __seen);
+    }
+    return value;
+  }
+  const __fields = {};
+  __seen.set(value, __fields);
+  if (typeof value.__type__ === 'string') __fields.__type__ = value.__type__;
+  if (typeof value.__class__ === 'string') __fields.__class__ = value.__class__;
+  for (const [__key, __child] of Object.entries(value)) {
+    if (__key === '__type__' || __key === '__class__' || __key === '__id__') continue;
+    __fields[__key] = __tracecodeMaterializeCustomObject(__child, undefined, __seen);
+  }
+  const __ctor = __tracecodeResolveConstructor(__typeName);
+  if (typeof __ctor !== 'function') return __fields;
+  const __args = Object.values(__fields).filter((__value, __index) => {
+    const __key = Object.keys(__fields)[__index];
+    return __key !== '__type__' && __key !== '__class__';
+  });
+  try {
+    const __instance = new __ctor(...__args);
+    Object.assign(__instance, __fields);
+    __seen.set(value, __instance);
+    return __instance;
+  } catch (_err) {
+    const __instance = Object.create(__ctor.prototype);
+    Object.assign(__instance, __fields);
+    __seen.set(value, __instance);
+    return __instance;
+  }
+}
+
+function __tracecodeMaterializeTypedInput(value, __descriptor) {
+  if (!__descriptor) return __tracecodeMaterializeCustomObject(value);
+  if (__descriptor === 'tree' || __descriptor === 'list') return value;
+  if (Array.isArray(value)) {
+    if (__descriptor.kind === 'array') {
+      return value.map((item) => __tracecodeMaterializeTypedInput(item, __descriptor.element));
+    }
+    return value.map((item) => __tracecodeMaterializeTypedInput(item, null));
+  }
+  if (value === null || value === undefined || typeof value !== 'object') return value;
+  if (value.__type__ === 'TreeNode' || value.__type__ === 'ListNode' || value.__ref__) return value;
+  if (__descriptor.kind === 'custom') {
+    return __tracecodeMaterializeCustomObject(value, __descriptor.typeName);
+  }
+  if (__descriptor.kind === 'record') {
+    const __out = {};
+    for (const [__key, __child] of Object.entries(value)) {
+      __out[__key] = __tracecodeMaterializeTypedInput(__child, __descriptor.value);
+    }
+    return __out;
+  }
+  return __tracecodeMaterializeCustomObject(value);
+}
+`;
 
 function buildTreeNodeFromLevelOrder(values: unknown[]): Record<string, unknown> | null {
   if (!Array.isArray(values) || values.length === 0) return null;
@@ -711,10 +870,26 @@ function detectMaterializerKind(
     }
     return null;
   }
+  if (ts.isArrayTypeNode(typeNode)) {
+    return { kind: 'array', element: detectMaterializerKind(ts, typeNode.elementType) };
+  }
   if (ts.isTypeReferenceNode(typeNode)) {
     const typeNameText = typeNode.typeName.getText();
     if (typeNameText === 'TreeNode') return 'tree';
     if (typeNameText === 'ListNode') return 'list';
+    const typeArgs = Array.from(typeNode.typeArguments ?? []);
+    if ((typeNameText === 'Array' || typeNameText === 'ReadonlyArray') && typeArgs.length > 0) {
+      return { kind: 'array', element: detectMaterializerKind(ts, typeArgs[0]) };
+    }
+    if (typeNameText === 'Record' && typeArgs.length >= 2) {
+      return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
+    }
+    if ((typeNameText === 'Map' || typeNameText === 'ReadonlyMap') && typeArgs.length >= 2) {
+      return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
+    }
+    if (!TYPESCRIPT_BUILTIN_TYPE_NAMES.has(typeNameText) && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(typeNameText)) {
+      return { kind: 'custom', typeName: typeNameText };
+    }
     return null;
   }
   return null;
@@ -771,9 +946,29 @@ function applyInputMaterializers(
   const next: Record<string, unknown> = { ...inputs };
   for (const [name, kind] of Object.entries(materializers)) {
     if (!Object.prototype.hasOwnProperty.call(next, name)) continue;
-    next[name] = kind === 'tree' ? materializeTreeInput(next[name]) : materializeListInput(next[name]);
+    next[name] = applyPreRuntimeInputMaterializer(next[name], kind);
   }
   return next;
+}
+
+function applyPreRuntimeInputMaterializer(value: unknown, kind: InputMaterializerKind | null): unknown {
+  if (!kind) return value;
+  if (kind === 'tree') return materializeTreeInput(value);
+  if (kind === 'list') return materializeListInput(value);
+  if (kind.kind === 'array') {
+    return Array.isArray(value)
+      ? value.map((item) => applyPreRuntimeInputMaterializer(item, kind.element))
+      : value;
+  }
+  if (kind.kind === 'record') {
+    if (!isPlainObjectRecord(value)) return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      out[key] = applyPreRuntimeInputMaterializer(child, kind.value);
+    }
+    return out;
+  }
+  return value;
 }
 
 type FunctionLikeNode =
@@ -910,7 +1105,15 @@ async function resolveOrderedInputKeys(
   }
 }
 
-function buildRunner(code: string, executionStyle: RuntimeExecutionStyle, argNames: string[]): DynamicRunner {
+function buildRunner(
+  code: string,
+  executionStyle: RuntimeExecutionStyle,
+  argNames: string[],
+  argumentMaterializers: Array<InputMaterializerKind | null> = []
+): DynamicRunner {
+  const materializedArgExpressions = argNames.map((name, index) =>
+    `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`
+  );
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -918,6 +1121,7 @@ function buildRunner(code: string, executionStyle: RuntimeExecutionStyle, argNam
       ...argNames,
       `"use strict";
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 let __target;
 try {
   __target = eval(__functionName);
@@ -927,7 +1131,7 @@ try {
 if (typeof __target !== 'function') {
   throw new Error('Function "' + __functionName + '" not found');
 }
-return __target(${argNames.join(', ')});`
+return __target(${materializedArgExpressions.join(', ')});`
     ) as DynamicRunner;
   }
 
@@ -938,6 +1142,7 @@ return __target(${argNames.join(', ')});`
       ...argNames,
       `"use strict";
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
 }
@@ -946,7 +1151,7 @@ const __method = __solver[__functionName];
 if (typeof __method !== 'function') {
   throw new Error('Method "Solution.' + __functionName + '" not found');
 }
-return __method.call(__solver, ${argNames.join(', ')});`
+return __method.call(__solver, ${materializedArgExpressions.join(', ')});`
     ) as DynamicRunner;
   }
 
@@ -958,6 +1163,7 @@ return __method.call(__solver, ${argNames.join(', ')});`
       '__arguments',
       `"use strict";
 ${code}
+${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (!Array.isArray(__operations) || !Array.isArray(__arguments)) {
   throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
 }
@@ -984,6 +1190,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
   if (!Array.isArray(__callArgs)) {
     __callArgs = [__callArgs];
   }
+  __callArgs = __callArgs.map((__arg) => __tracecodeMaterializeTypedInput(__arg, null));
   if (__i === 0) {
     __instance = new __targetClass(...__callArgs);
     __out.push(null);
@@ -1057,12 +1264,13 @@ export async function executeJavaScriptCode(
   functionName: string,
   inputs: Record<string, unknown>,
   executionStyle: RuntimeExecutionStyle = 'function',
-  language: 'javascript' | 'typescript' = 'javascript'
+  language: 'javascript' | 'typescript' = 'javascript',
+  resolvedMaterializers?: Record<string, InputMaterializerKind>
 ): Promise<CodeExecutionResult> {
   const consoleOutput: string[] = [];
   const consoleProxy = createConsoleProxy(consoleOutput);
   const normalizedInputs = normalizeInputs(inputs);
-  const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
+  const materializers = resolvedMaterializers ?? await resolveInputMaterializers(code, functionName, executionStyle, language);
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const javascriptLibraryEnvironment = await getJavaScriptLibraryEnvironment();
   const restoreJavaScriptLibraryGlobals = installJavaScriptLibraryGlobals(javascriptLibraryEnvironment);
@@ -1078,7 +1286,8 @@ export async function executeJavaScriptCode(
       const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
       const argNames = inputKeys.map((_, index) => `__arg${index}`);
       const argValues = inputKeys.map((key) => materializedInputs[key]);
-      const runner = buildRunner(code, executionStyle, argNames);
+      const argumentMaterializers = inputKeys.map((key) => materializers[key] ?? null);
+      const runner = buildRunner(code, executionStyle, argNames, argumentMaterializers);
       output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
     }
 
@@ -1143,7 +1352,6 @@ export async function executeTypeScriptCode(
 ): Promise<CodeExecutionResult> {
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, 'typescript');
-  const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
   const transpiledCode = await transpileTypeScript(code);
-  return executeJavaScriptCode(transpiledCode, functionName, materializedInputs, executionStyle, 'typescript');
+  return executeJavaScriptCode(transpiledCode, functionName, normalizedInputs, executionStyle, 'typescript', materializers);
 }

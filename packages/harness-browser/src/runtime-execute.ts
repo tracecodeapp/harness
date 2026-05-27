@@ -66,6 +66,7 @@ export function codeResultToExecuteCase(
     consoleOutput: result.consoleOutput,
     timeoutReason: result.timeoutReason,
     diagnosticStage: result.diagnosticStage,
+    diagnostic: result.diagnostic,
     timings: result.timings,
   };
 }
@@ -87,6 +88,7 @@ export function traceResultToExecuteCase(
     trace: result.trace,
     traceLimitExceeded: result.traceLimitExceeded,
     timeoutReason: result.timeoutReason,
+    diagnostic: result.diagnostic,
     timings: result.timings,
   };
 }

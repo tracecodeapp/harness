@@ -1433,6 +1433,61 @@ result = [head.val, head.value, head.next.val, head.next.value, root.left.val, r
   assertCondition(executeTypeScript.output === 10, 'TypeScript output should equal 10');
   console.log('PASS: execute-code typescript transpilation');
 
+  const executeTypeScriptCustomRecord = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `class Campaign {
+  constructor(public cap: number, public bid: number) {}
+}
+
+class Solution {
+  score(campaigns: Record<string, Campaign>): number {
+    return campaigns.a instanceof Campaign ? campaigns.a.cap + campaigns.a.bid : -1;
+  }
+}`,
+    functionName: 'score',
+    inputs: { campaigns: { a: { bid: 5, cap: 7 } } },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    executeTypeScriptCustomRecord.success === true,
+    `TypeScript custom record hydration should succeed: ${executeTypeScriptCustomRecord.error ?? 'unknown error'}`
+  );
+  assertCondition(executeTypeScriptCustomRecord.output === 12, 'TypeScript annotations should hydrate custom record values');
+  console.log('PASS: execute-code typescript custom record hydration');
+
+  const executeJavaScriptExplicitCustomObject = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `class Campaign {
+  constructor(cap, bid) {
+    this.cap = cap;
+    this.bid = bid;
+  }
+}
+
+class Solution {
+  score(campaigns) {
+    return campaigns.a instanceof Campaign ? campaigns.a.cap + campaigns.a.bid : -1;
+  }
+}`,
+    functionName: 'score',
+    inputs: { campaigns: { a: { __type__: 'Campaign', bid: 5, cap: 7 } } },
+    executionStyle: 'solution-method',
+    language: 'javascript',
+  });
+  assertCondition(
+    executeJavaScriptExplicitCustomObject.success === true,
+    `JavaScript explicit custom object hydration should succeed: ${executeJavaScriptExplicitCustomObject.error ?? 'unknown error'}`
+  );
+  assertCondition(executeJavaScriptExplicitCustomObject.output === 12, 'JavaScript __type__ metadata should hydrate custom objects');
+  console.log('PASS: execute-code javascript explicit custom object hydration');
+
   const executeTypeScriptLibraryImport = await harness.sendMessage<{
     success: boolean;
     output: unknown;
@@ -1479,6 +1534,27 @@ function smallest(nums: number[]): number {
     'Package executor should bind solution-method args by signature order, not object key order'
   );
   console.log('PASS: package executor solution-method arg order contract');
+
+  const packageExecutorCustomRecord = await executeTypeScriptCode(
+    `class Campaign {
+  constructor(public cap: number, public bid: number) {}
+}
+
+class Solution {
+  score(campaigns: Record<string, Campaign>): number {
+    return campaigns.a instanceof Campaign ? campaigns.a.cap + campaigns.a.bid : -1;
+  }
+}`,
+    'score',
+    { campaigns: { a: { bid: 5, cap: 7 } } },
+    'solution-method'
+  );
+  assertCondition(packageExecutorCustomRecord.success === true, 'Package executor custom record case should succeed');
+  assertCondition(
+    packageExecutorCustomRecord.output === 12,
+    'Package executor should use TypeScript annotations to hydrate custom record values'
+  );
+  console.log('PASS: package executor TypeScript custom record hydration');
 
   const packageExecutorLibraryImport = await executeTypeScriptCode(
     `import { MinPriorityQueue } from '@datastructures-js/priority-queue';
@@ -2631,6 +2707,11 @@ function smallest(nums: number[]): number {
   assertCondition(
     Boolean(lateListFrame),
     'TypeScript reverse-list tracing should keep top-level linked-list variables materialized after the first iteration'
+  );
+  assertCondition(
+    (lateListFrame?.value as { __type__?: string; __id__?: string } | undefined)?.__type__ === 'ListNode' &&
+      typeof (lateListFrame?.value as { __id__?: string } | undefined)?.__id__ === 'string',
+    `TypeScript reverse-list tracing should emit typed linked-list node ids, received ${JSON.stringify(lateListFrame?.value)}`
   );
   console.log('PASS: execute-with-tracing typescript reverse-list linked-list materialization contract');
 
@@ -3832,12 +3913,14 @@ let result = [trie.search("car"), trie.search("cap"), trie.startsWith("ca")];`,
       event.target?.variable === 'head' &&
       event.value &&
       typeof event.value === 'object' &&
-      ((event.value as Record<string, unknown>).val !== undefined ||
-        (event.value as Record<string, unknown>).next !== undefined)
+      (event.value as Record<string, unknown>).__type__ === 'ListNode' &&
+      typeof (event.value as Record<string, unknown>).__id__ === 'string' &&
+      (event.value as { next?: { __type__?: string; __id__?: string } }).next?.__type__ === 'ListNode' &&
+      typeof (event.value as { next?: { __id__?: string } }).next?.__id__ === 'string'
   );
   assertCondition(
     hasListSnapshot,
-    'Tracing should emit neutral runtime trace snapshots for linked-list locals'
+    'Tracing should emit neutral runtime trace snapshots with typed linked-list node ids'
   );
   assertNoRuntimeTraceVisualizerPayloadLeak(listKindTracing, 'javascript linked-list tracing');
   console.log('PASS: execute-with-tracing linked-list snapshot contract');

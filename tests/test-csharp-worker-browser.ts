@@ -23,7 +23,7 @@ interface CSharpWorkerResponse {
     function?: string;
     method?: string;
     value?: unknown;
-    args?: unknown[];
+    args?: unknown[] | Record<string, unknown>;
     reason?: string;
     callStack?: Array<{ function?: string; line?: number; args?: unknown[] }>;
     target?: { variable: string; path?: unknown[]; indexSources?: Array<string | null> };
@@ -119,6 +119,31 @@ const TRACE_KERNEL_DEVICES: NonNullable<CSharpProjectWorkerRequest['project']['k
   { path: '/dev/tee', readable: false, writable: true, outputDevice: '/dev/capture' },
   { path: '/dev/custom-in', readable: true, writable: false, inputDevice: '/dev/stdin' },
 ];
+
+let cachedDotnetCommand: string | undefined;
+
+function resolveDotnetCommand(): string {
+  if (cachedDotnetCommand) return cachedDotnetCommand;
+  const executable = process.platform === 'win32' ? 'dotnet.exe' : 'dotnet';
+  const candidates = [
+    process.env.DOTNET_ROOT ? join(process.env.DOTNET_ROOT, executable) : undefined,
+    join(ROOT, '.dotnet', 'csharp-wasm', executable),
+    executable,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (candidate !== executable && !existsSync(candidate)) continue;
+    try {
+      execFileSync(candidate, ['--version'], { stdio: 'pipe' });
+      cachedDotnetCommand = candidate;
+      return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  throw new Error('Unable to find dotnet. Set DOTNET_ROOT, install dotnet, or run scripts/update-csharp-wasm-runtime.sh.');
+}
 
 function assertCondition(condition: boolean, message: string): void {
   if (!condition) {
@@ -267,7 +292,7 @@ function createExternalCSharpDllBase64(): string {
       'namespace ExternalLib; public static class Helper { public static int Value() => 314; }\n',
       'utf8'
     );
-    execFileSync('dotnet', ['build', projectPath, '-c', 'Release', '-v', 'quiet', '--nologo'], { stdio: 'pipe' });
+    execFileSync(resolveDotnetCommand(), ['build', projectPath, '-c', 'Release', '-v', 'quiet', '--nologo'], { stdio: 'pipe' });
     return readFileSync(join(root, 'bin', 'Release', 'net10.0', 'ExternalLib.dll')).toString('base64');
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -4308,7 +4333,9 @@ async function main(): Promise<void> {
       tracedListNodeValues.events?.some((event) =>
         event.kind === 'snapshot'
         && event.target?.variable === 'curr'
-        && (event.value as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode'
+        && (event.value as { __type__?: string; __id__?: string; val?: number; next?: { __id__?: string } } | undefined)?.__type__ === 'ListNode'
+        && typeof (event.value as { __id__?: string } | undefined)?.__id__ === 'string'
+        && typeof (event.value as { next?: { __id__?: string } } | undefined)?.next?.__id__ === 'string'
         && (event.value as { val?: number } | undefined)?.val === 7) === true,
       `C# worker traced ListNode values case should include normalized ListNode snapshot, received ${JSON.stringify(tracedListNodeValues.events)}`
     );
@@ -4317,7 +4344,9 @@ async function main(): Promise<void> {
         event.kind === 'call'
         && event.function === 'HeadValue'
         && !Array.isArray(event.args)
-        && (event.args?.head as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode') === true,
+        && (event.args?.head as { __type__?: string; __id__?: string; next?: { __id__?: string } } | undefined)?.__type__ === 'ListNode'
+        && typeof (event.args?.head as { __id__?: string } | undefined)?.__id__ === 'string'
+        && typeof (event.args?.head as { next?: { __id__?: string } } | undefined)?.next?.__id__ === 'string') === true,
       `C# worker traced ListNode values case should include normalized call args, received ${JSON.stringify(tracedListNodeValues.events)}`
     );
     assertCondition(
@@ -4360,7 +4389,8 @@ async function main(): Promise<void> {
         event.kind === 'read'
         && event.target?.variable === 'curr'
         && event.target.path?.[0] === 'next'
-        && (event.value as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode'
+        && (event.value as { __type__?: string; __id__?: string; val?: number } | undefined)?.__type__ === 'ListNode'
+        && typeof (event.value as { __id__?: string } | undefined)?.__id__ === 'string'
         && (event.value as { val?: number } | undefined)?.val === 2) === true,
       `C# worker traced ListNode field writes case should include curr.next read, received ${JSON.stringify(tracedListNodeFieldWrites.events)}`
     );
@@ -4447,7 +4477,10 @@ async function main(): Promise<void> {
         event.kind === 'call'
         && event.function === 'SumTree'
         && !Array.isArray(event.args)
-        && (event.args?.root as { __type__?: string; val?: number } | undefined)?.__type__ === 'TreeNode'
+        && (event.args?.root as { __type__?: string; __id__?: string; left?: { __id__?: string }; right?: { __id__?: string }; val?: number } | undefined)?.__type__ === 'TreeNode'
+        && typeof (event.args?.root as { __id__?: string } | undefined)?.__id__ === 'string'
+        && typeof (event.args?.root as { left?: { __id__?: string } } | undefined)?.left?.__id__ === 'string'
+        && typeof (event.args?.root as { right?: { __id__?: string } } | undefined)?.right?.__id__ === 'string'
         && (event.args?.root as { val?: number } | undefined)?.val === 1) === true,
       `C# worker traced TreeNode values case should include normalized recursive call args, received ${JSON.stringify(tracedTreeNodeValues.events)}`
     );
@@ -4463,7 +4496,8 @@ async function main(): Promise<void> {
         event.kind === 'read'
         && event.target?.variable === 'root'
         && event.target.path?.[0] === 'left'
-        && (event.value as { __type__?: string; val?: number } | undefined)?.__type__ === 'TreeNode'
+        && (event.value as { __type__?: string; __id__?: string; val?: number } | undefined)?.__type__ === 'TreeNode'
+        && typeof (event.value as { __id__?: string } | undefined)?.__id__ === 'string'
         && (event.value as { val?: number } | undefined)?.val === 2) === true,
       `C# worker traced TreeNode values case should include root.left read, received ${JSON.stringify(tracedTreeNodeValues.events)}`
     );

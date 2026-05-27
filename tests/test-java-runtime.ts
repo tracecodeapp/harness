@@ -227,6 +227,73 @@ public class Main {
   }
 }
 
+function testJavaRuntimeUserObjectSerializationIds(): void {
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-user-object-serialization-'));
+  try {
+    const sourcePath = join(tmpRoot, 'Main.java');
+    const classesPath = join(tmpRoot, 'classes');
+    writeFileSync(
+      sourcePath,
+      `package tracecode.user;
+
+class ListNode {
+  int val;
+  ListNode next;
+
+  ListNode(int val) {
+    this.val = val;
+  }
+}
+
+public class Main {
+  public static void main(String[] args) {
+    TraceHooks.reset();
+    ListNode head = new ListNode(1);
+    head.next = new ListNode(2);
+    System.out.println(TraceHooks.serializeResult(head));
+    System.out.println(TraceHooks.serializeResult(head.next));
+    System.out.println(TraceHooks.serializeResult(head));
+  }
+}
+`,
+      'utf8'
+    );
+    execFileSync('mkdir', ['-p', classesPath]);
+    execFileSync(
+      'javac',
+      ['-cp', join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar'), '-d', classesPath, sourcePath],
+      { cwd: process.cwd(), stdio: 'pipe' }
+    );
+    const output = execFileSync(
+      'java',
+      ['-cp', [classesPath, join(process.cwd(), 'workers', 'vendor', 'java-browser-helper.jar')].join(':'), 'tracecode.user.Main'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: 'pipe' }
+    );
+    const [headJson, nextJson, headAgainJson] = output.trim().split('\n');
+    const head = JSON.parse(headJson) as { __type__?: string; __id__?: string; next?: { __id__?: string; val?: number } };
+    const next = JSON.parse(nextJson) as { __type__?: string; __id__?: string; val?: number; next?: unknown };
+    const headAgain = JSON.parse(headAgainJson) as { __type__?: string; __id__?: string; next?: { __id__?: string } };
+
+    assertCondition(head.__type__ === 'ListNode', `Java ListNode should serialize as a structured object, received ${headJson}`);
+    assertCondition(head.__id__ === 'ListNode:1', `Java ListNode head should receive a stable id, received ${headJson}`);
+    assertCondition(
+      head.next?.__id__ === 'ListNode:2' && head.next.val === 2,
+      `Java nested ListNode should receive its own stable id, received ${headJson}`
+    );
+    assertCondition(
+      next.__id__ === 'ListNode:2' && next.val === 2,
+      `Java repeated ListNode serialization should keep the same id, received ${nextJson}`
+    );
+    assertCondition(
+      headAgain.__id__ === 'ListNode:1' && headAgain.next?.__id__ === 'ListNode:2',
+      `Java repeated head serialization should keep stable ids, received ${headAgainJson}`
+    );
+    console.log('PASS: Java runtime serializes tracecode.user objects with stable ids');
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  }
+}
+
 function testJavaBrowserHelperWorkspaceDirectories(): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-workspace-dirs-'));
   try {
@@ -3003,6 +3070,7 @@ async function main(): Promise<void> {
   testJavaHelperJarDoesNotExposeDeprecatedSpikePackages();
   testNativeJavaRewriterRegressionGaps();
   testJavaRuntimeValueSerializationLimit();
+  testJavaRuntimeUserObjectSerializationIds();
   testJavaBrowserHelperWorkspaceDirectories();
   testJavaProjectEventsRandomAccessKernelReads();
   testJavaRuntimeMultiSnapshotFragments();
@@ -5173,6 +5241,45 @@ class Solution {
       'Java worker should materialize JSON arrays as Java lists when the signature expects Object'
     );
     console.log('PASS: java worker materializes canonical TreeNode/ListNode/Object array inputs');
+
+    const nestedCustomMapInput = await harness.sendMessage<{
+      success: boolean;
+      output?: unknown;
+      error?: string;
+    }>('execute-with-tracing', {
+      code: `import java.util.*;
+
+class Solution {
+  static class Campaign {
+    int cap;
+    int bid;
+
+    Campaign(int cap, int bid) {
+      this.cap = cap;
+      this.bid = bid;
+    }
+  }
+
+  int score(Map<String, Campaign> campaigns) {
+    Campaign campaign = campaigns.get("a");
+    return campaign.cap + campaign.bid;
+  }
+}`,
+      functionName: 'score',
+      inputs: { campaigns: { a: { bid: 5, cap: 7 } } },
+      executionStyle: 'function',
+    });
+    assertCondition(
+      nestedCustomMapInput.success === true,
+      `Java nested custom map input should execute: ${nestedCustomMapInput.error ?? 'unknown error'}`
+    );
+    const nestedCustomMapRewrite = harness.rewriteCalls.at(-1);
+    assertCondition(
+      nestedCustomMapRewrite?.exportsSource.includes('Map<String, Solution.Campaign> campaigns') &&
+        nestedCustomMapRewrite.exportsSource.includes('materializeObject(Solution.Campaign.class'),
+      `Java nested custom map input should qualify and hydrate by expected type, received ${nestedCustomMapRewrite?.exportsSource ?? '<missing>'}`
+    );
+    console.log('PASS: java worker hydrates nested custom map inputs');
 
     const opsNoArgConstructorCode = `class HitCounter {
   HitCounter() {}

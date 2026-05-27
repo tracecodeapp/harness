@@ -28,6 +28,12 @@ function assertCondition(condition: boolean, message: string): void {
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
 function findPublishedAssetDir(): string {
   const explicitDir = process.env.CSHARP_WASM_PUBLISH_DIR;
   const projectSource = readFileSync(projectFile, 'utf8');
@@ -728,7 +734,11 @@ async function main(): Promise<void> {
     );
     assertCondition(listNodeOutput.success, `Browser worker ListNode output case should succeed: ${listNodeOutput.error ?? 'unknown error'}`);
     assertCondition(
-      JSON.stringify(listNodeOutput.output) === JSON.stringify({ val: 4, next: { val: 5, next: null } }),
+      JSON.stringify(listNodeOutput.output) === JSON.stringify({
+        val: 4,
+        value: 4,
+        next: { val: 5, value: 5, next: null },
+      }),
       `Browser worker ListNode output case should serialize node fields, received ${JSON.stringify(listNodeOutput.output)}`
     );
     console.log('PASS: browser worker serialized C# ListNode outputs');
@@ -750,8 +760,9 @@ async function main(): Promise<void> {
     assertCondition(
       JSON.stringify(treeNodeOutput.output) === JSON.stringify({
         val: 4,
-        left: { val: 5, left: null, right: null },
-        right: { val: 6, left: null, right: null },
+        value: 4,
+        left: { val: 5, value: 5, left: null, right: null },
+        right: { val: 6, value: 6, left: null, right: null },
       }),
       `Browser worker TreeNode output case should serialize node fields, received ${JSON.stringify(treeNodeOutput.output)}`
     );
@@ -785,11 +796,13 @@ async function main(): Promise<void> {
       `Browser worker traced ListNode values case should include normalized ListNode state, received ${JSON.stringify(tracedListNodeValues.events)}`
     );
     assertCondition(
-      tracedListNodeValues.events?.some((event) =>
-        event.kind === 'call'
-        && event.function === 'HeadValue'
-        && Array.isArray(event.args)
-        && (event.args[0] as { __type__?: string; val?: number } | undefined)?.__type__ === 'ListNode') === true,
+      tracedListNodeValues.events?.some((event) => {
+        const objectArgs = asRecord(event.args);
+        const arg = Array.isArray(event.args) ? asRecord(event.args[0]) : asRecord(objectArgs?.head);
+        return event.kind === 'call'
+          && event.function === 'HeadValue'
+          && arg?.__type__ === 'ListNode';
+      }) === true,
       `Browser worker traced ListNode values case should include normalized call args, received ${JSON.stringify(tracedListNodeValues.events)}`
     );
     assertCondition(
@@ -866,12 +879,14 @@ async function main(): Promise<void> {
       `Browser worker traced TreeNode values case should succeed: ${tracedTreeNodeValues.error ?? 'unknown error'}`
     );
     assertCondition(
-      tracedTreeNodeValues.events?.some((event) =>
-        event.kind === 'call'
-        && event.function === 'SumTree'
-        && Array.isArray(event.args)
-        && (event.args[0] as { __type__?: string; val?: number } | undefined)?.__type__ === 'TreeNode'
-        && (event.args[0] as { val?: number } | undefined)?.val === 1) === true,
+      tracedTreeNodeValues.events?.some((event) => {
+        const objectArgs = asRecord(event.args);
+        const arg = Array.isArray(event.args) ? asRecord(event.args[0]) : asRecord(objectArgs?.root);
+        return event.kind === 'call'
+          && event.function === 'SumTree'
+          && arg?.__type__ === 'TreeNode'
+          && arg?.val === 1;
+      }) === true,
       `Browser worker traced TreeNode values case should include normalized recursive call args, received ${JSON.stringify(tracedTreeNodeValues.events)}`
     );
     assertCondition(

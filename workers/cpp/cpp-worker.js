@@ -129,6 +129,8 @@ let queue = Promise.resolve();
 let idleTimer = null;
 let idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS;
 let queuedTasks = 0;
+let activeRequestId = null;
+let activeRequestStartedAt = 0;
 let programCache = new Map();
 let programCacheLimit = DEFAULT_CPP_PROGRAM_CACHE_LIMIT;
 let usePrecompiledHeader = false;
@@ -165,6 +167,19 @@ function now() {
 
 function elapsedMs(startedAt) {
   return Math.max(0, Math.round(now() - startedAt));
+}
+
+function emitRequestProgress(stage, detail = undefined) {
+  if (!activeRequestId) return;
+  postMessage({
+    id: activeRequestId,
+    type: 'runtime-progress',
+    payload: {
+      stage,
+      elapsedMs: elapsedMs(activeRequestStartedAt || now()),
+      ...(detail === undefined ? {} : { detail }),
+    },
+  });
 }
 
 function clearIdleTimer() {
@@ -2445,6 +2460,187 @@ function materializedCppType(type, aliases = new Map()) {
   return localCppType(resolveCppType(type, aliases));
 }
 
+function findCppClassBodyRange(source, className) {
+  const cleaned = stripComments(String(source || ''));
+  const escapedName = String(className).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`\\b(class|struct)\\s+${escapedName}\\b`, 'g');
+  let match;
+  while ((match = pattern.exec(cleaned))) {
+    const openBrace = cleaned.indexOf('{', match.index + match[0].length);
+    if (openBrace < 0) continue;
+    const closeBrace = findMatchingBrace(cleaned, openBrace);
+    if (closeBrace > openBrace) {
+      return { kind: match[1], start: openBrace + 1, end: closeBrace, body: cleaned.slice(openBrace + 1, closeBrace) };
+    }
+  }
+  return null;
+}
+
+function cppBraceDepthBefore(source, endIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < endIndex; index += 1) {
+    const ch = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') depth += 1;
+    if (ch === '}') depth = Math.max(0, depth - 1);
+  }
+  return depth;
+}
+
+function parseCppPublicDataFields(typeBody, kind) {
+  const fields = [];
+  let access = kind === 'struct' ? 'public' : 'private';
+  for (const rawStatement of splitTopLevel(typeBody, ';')) {
+    let statement = rawStatement.trim();
+    if (!statement) continue;
+    const accessMatches = [...statement.matchAll(/\b(public|private|protected)\s*:/g)];
+    if (accessMatches.length > 0) {
+      access = accessMatches[accessMatches.length - 1][1];
+      statement = statement.replace(/\b(?:public|private|protected)\s*:/g, '').trim();
+      if (!statement) continue;
+    }
+    if (access !== 'public') continue;
+    if (/[(){}]/.test(statement)) continue;
+    if (/^(?:using|typedef|friend|static|constexpr|consteval|constinit|template)\b/.test(statement)) continue;
+    statement = statement
+      .replace(/\s*=\s*[\s\S]*$/, '')
+      .replace(/\s*([*&]+)\s*([A-Za-z_]\w*)$/, ' $1 $2')
+      .trim();
+    if (!statement || statement.includes(',')) continue;
+    const match = statement.match(/^(.+?)\s+([A-Za-z_]\w*)$/);
+    if (!match) continue;
+    const fieldType = match[1].replace(/\bmutable\b/g, '').trim();
+    const fieldName = match[2].trim();
+    if (!fieldType || !fieldName) continue;
+    fields.push({ type: fieldType, name: fieldName });
+  }
+  return fields;
+}
+
+function cppMemberAccessAt(body, index, initialAccess) {
+  let access = initialAccess;
+  const prefix = body.slice(0, Math.max(0, index));
+  const accessPattern = /\b(public|private|protected)\s*:/g;
+  let match;
+  while ((match = accessPattern.exec(prefix))) {
+    if (cppBraceDepthBefore(body, match.index) === 0) {
+      access = match[1];
+    }
+  }
+  return access;
+}
+
+function collectCppNestedTypes(source, ownerName = 'Solution') {
+  const range = findCppClassBodyRange(source, ownerName);
+  const types = [];
+  if (!range) return types;
+  const body = range.body;
+  const initialAccess = range.kind === 'struct' ? 'public' : 'private';
+  const pattern = /\b(struct|class)\s+([A-Za-z_]\w*)\b[^;{]*\{/g;
+  let match;
+  while ((match = pattern.exec(body))) {
+    if (cppBraceDepthBefore(body, match.index) !== 0) continue;
+    const kind = match[1];
+    const name = match[2];
+    const access = cppMemberAccessAt(body, match.index, initialAccess);
+    const openBrace = body.indexOf('{', match.index + match[0].length - 1);
+    const closeBrace = findMatchingBrace(body, openBrace);
+    if (openBrace < 0 || closeBrace <= openBrace) continue;
+    const typeBody = body.slice(openBrace + 1, closeBrace);
+    types.push({
+      kind,
+      name,
+      access,
+      qualifiedName: `${ownerName}::${name}`,
+      fields: parseCppPublicDataFields(typeBody, kind),
+    });
+    pattern.lastIndex = closeBrace + 1;
+  }
+  return types;
+}
+
+function buildCppDriverTypeContext(source, ownerName = 'Solution') {
+  const nestedTypes = collectCppNestedTypes(source, ownerName);
+  const publicJsonTypes = nestedTypes.filter((type) => type.access === 'public' && type.fields.length > 0);
+  return {
+    ownerName,
+    nestedTypes,
+    nestedTypeNames: new Set(nestedTypes.map((type) => type.name)),
+    customJsonTypes: new Set(publicJsonTypes.map((type) => type.qualifiedName)),
+  };
+}
+
+function qualifyCppTypeForDriver(type, context) {
+  if (!context || !context.nestedTypeNames || context.nestedTypeNames.size === 0) return type;
+  let out = String(type || '');
+  for (const nestedTypeName of context.nestedTypeNames) {
+    const escaped = nestedTypeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(`(?<![:\\w])${escaped}(?![\\w])`, 'g'), `${context.ownerName}::${nestedTypeName}`);
+  }
+  return out;
+}
+
+function qualifyCppSignatureForDriver(signature, context) {
+  if (!context || context.nestedTypeNames.size === 0) return signature;
+  return {
+    ...signature,
+    returnType: qualifyCppTypeForDriver(signature.returnType, context),
+    parameters: signature.parameters.map((parameter) => ({
+      ...parameter,
+      type: qualifyCppTypeForDriver(parameter.type, context),
+    })),
+  };
+}
+
+function buildCppJsonObjectAdapters(context, aliases = new Map()) {
+  const adapterTypes = (context?.nestedTypes ?? []).filter((type) => type.access === 'public' && type.fields.length > 0);
+  if (adapterTypes.length === 0) return '';
+  const adapters = adapterTypes.map((type) => {
+    const fieldReads = type.fields.map((field) => {
+      const fieldType = qualifyCppTypeForDriver(field.type, context);
+      return `      tracecode::json_to<${materializedCppType(fieldType, aliases)}>(field(value, ${cppStringLiteral(field.name)}))`;
+    });
+    const jsonLines = type.fields.flatMap((field, index) => [
+      `    if (${index} > 0) json += ",";`,
+      `    json += tracecode::to_json(std::string(${cppStringLiteral(field.name)}));`,
+      `    json += ":";`,
+      `    json += tracecode::to_json(value.${field.name});`,
+    ]);
+    return `template <>
+struct JsonObjectAdapter<${type.qualifiedName}> {
+  static constexpr bool available = true;
+  static const JsonValue& field(const JsonValue& value, const char* name) {
+    static const JsonValue null_value;
+    const JsonValue* found = object_get(value, name);
+    return found ? *found : null_value;
+  }
+  static ${type.qualifiedName} from(const JsonValue& value) {
+    return ${type.qualifiedName}{
+${fieldReads.join(',\n')}
+    };
+  }
+  static std::string to_json(const ${type.qualifiedName}& value) {
+    std::string json = "{";
+${jsonLines.join('\n')}
+    json += "}";
+    return json;
+  }
+};`;
+  });
+  return `\nnamespace tracecode {\n${adapters.join('\n\n')}\n}\n`;
+}
+
 function cppTraceType(type, aliases = new Map()) {
   const resolved = resolveCppType(type, aliases);
   const withoutQualifiers = resolved
@@ -3029,9 +3225,10 @@ function isDynamicJsonMapKeyType(type, aliases = new Map()) {
   return isPrimitiveCppType(normalized) || normalized === 'string';
 }
 
-function isDynamicJsonInputType(type, aliases = new Map()) {
+function isDynamicJsonInputType(type, aliases = new Map(), customJsonTypes = new Set()) {
   const normalized = normalizeCppType(type, aliases);
   if (normalized === 'any' || normalized === 'JsonValue' || normalized === 'tracecode::JsonValue') return true;
+  if (customJsonTypes.has(materializedCppType(type, aliases)) || customJsonTypes.has(normalized)) return true;
   if (normalized === 'TreeNode' || normalized === 'TreeNode*' || normalized === 'ListNode' || normalized === 'ListNode*') {
     return true;
   }
@@ -3048,11 +3245,11 @@ function isDynamicJsonInputType(type, aliases = new Map()) {
     ) &&
     normalized.endsWith('>')
   ) {
-    return isDynamicJsonInputType(normalized.slice(normalized.indexOf('<') + 1, -1), aliases);
+    return isDynamicJsonInputType(normalized.slice(normalized.indexOf('<') + 1, -1), aliases, customJsonTypes);
   }
   if (normalized.startsWith('array<') && normalized.endsWith('>')) {
     const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
-    return args.length >= 1 && isDynamicJsonInputType(args[0], aliases);
+    return args.length >= 1 && isDynamicJsonInputType(args[0], aliases, customJsonTypes);
   }
   if (
     (
@@ -3062,21 +3259,21 @@ function isDynamicJsonInputType(type, aliases = new Map()) {
     normalized.endsWith('>')
   ) {
     const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
-    return args.length >= 2 && isDynamicJsonMapKeyType(args[0], aliases) && isDynamicJsonInputType(args[1], aliases);
+    return args.length >= 2 && isDynamicJsonMapKeyType(args[0], aliases) && isDynamicJsonInputType(args[1], aliases, customJsonTypes);
   }
   if (normalized.startsWith('pair<') && normalized.endsWith('>')) {
     const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
-    return args.length >= 2 && isDynamicJsonInputType(args[0], aliases) && isDynamicJsonInputType(args[1], aliases);
+    return args.length >= 2 && isDynamicJsonInputType(args[0], aliases, customJsonTypes) && isDynamicJsonInputType(args[1], aliases, customJsonTypes);
   }
   if (normalized.startsWith('tuple<') && normalized.endsWith('>')) {
     const args = splitTopLevelCommaList(normalized.slice(normalized.indexOf('<') + 1, -1));
-    return args.length > 0 && args.every((arg) => isDynamicJsonInputType(arg, aliases));
+    return args.length > 0 && args.every((arg) => isDynamicJsonInputType(arg, aliases, customJsonTypes));
   }
   return false;
 }
 
-function cppDynamicInputExpression(parameter, index, aliases = new Map()) {
-  if (!isDynamicJsonInputType(parameter.type, aliases)) return null;
+function cppDynamicInputExpression(parameter, index, aliases = new Map(), customJsonTypes = new Set()) {
+  if (!isDynamicJsonInputType(parameter.type, aliases, customJsonTypes)) return null;
   const normalized = normalizeCppType(parameter.type, aliases);
   const inputValue = `tracecode::json_input_value(__tc_inputs, ${cppStringLiteral(parameter.name)}, ${index})`;
   if (normalized === 'TreeNode*') {
@@ -5976,6 +6173,10 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
     parameterCount: Object.keys(inputs || {}).length,
     inputNames: Object.keys(inputs || {}),
   });
+  const typeContext = sourceDeclaresSolutionClass(userCode)
+    ? buildCppDriverTypeContext(userCode, 'Solution')
+    : buildCppDriverTypeContext(userCode, functionName);
+  const driverSignature = qualifyCppSignatureForDriver(signature, typeContext);
   const skipTraceParameterNames = new Set(
     signature.parameters
       .filter((parameter) => parameterAddressEscapes(userCode, parameter.name))
@@ -5989,14 +6190,14 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
   const argumentNames = [];
   let usesDynamicInputs = false;
 
-  signature.parameters.forEach((parameter, index) => {
+  driverSignature.parameters.forEach((parameter, index) => {
     const localName = `__tc_arg_${index}`;
     const shouldTraceParameter = traced &&
       !skipTraceParameterNames.has(parameter.name) &&
       isTraceWrappedCppType(parameter.type, aliases) &&
       !hasUnsafeMapProxyAutoReferenceBinding(parameter.type, userCode, parameter.name, aliases);
     const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : materializedCppType(parameter.type, aliases);
-    const dynamicInput = cppDynamicInputExpression(parameter, index, aliases);
+    const dynamicInput = cppDynamicInputExpression(parameter, index, aliases, typeContext.customJsonTypes);
     const value = dynamicInput ?? toCppLiteral(inputValueForParameter(inputs, parameter, index), parameter.type, aliases);
     usesDynamicInputs ||= dynamicInput !== null;
     if (shouldTraceParameter) {
@@ -6009,18 +6210,18 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
 
   const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(functionName)},"args":`;
   const returnEventPrefix = `{"kind":"return","line":${signature.line},"function":${jsonStringLiteral(functionName)},"value":`;
-  const returnsNull = isNullCppReturnType(signature.returnType, aliases);
-  const returnsVoid = normalizeCppType(signature.returnType, aliases) === 'void';
+  const returnsNull = isNullCppReturnType(driverSignature.returnType, aliases);
+  const returnsVoid = normalizeCppType(driverSignature.returnType, aliases) === 'void';
   const noStoredResult = returnsVoid || returnsNull;
-  const voidOutputParameter = returnsVoid && signature.parameters.length > 0 && isSnapshotSerializableCppType(signature.parameters[0].type, aliases)
-    ? signature.parameters[0]
+  const voidOutputParameter = returnsVoid && driverSignature.parameters.length > 0 && isSnapshotSerializableCppType(driverSignature.parameters[0].type, aliases)
+    ? driverSignature.parameters[0]
     : null;
   const traceSetup = traced ? `  ${configureTraceBudgetCall(options)}` : '';
   const signatureSourceLine = userCode.split(/\r?\n/)[signature.line - 1] ?? '';
   const hasSingleLineFunctionBody = signatureSourceLine.includes('{') && signatureSourceLine.includes('}');
   const traceCall = traced && hasSingleLineFunctionBody
     ? [
-        `  std::string __tc_args_json = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, index) => `__tc_arg_${index}`, aliases)} + "}";`,
+        `  std::string __tc_args_json = std::string("{") + ${buildTraceArgsJsonExpression(driverSignature, (_parameter, index) => `__tc_arg_${index}`, aliases)} + "}";`,
         `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(callEventPrefix)}) + __tc_args_json + "}", ${signature.line});`,
         `  tracecode::emit_line(${signature.line}, ${cppStringLiteral(functionName)});`,
       ].join('\n')
@@ -6032,7 +6233,7 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
         : voidOutputParameter
         ? `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${cppJsonExpressionForValue('__tc_arg_0', voidOutputParameter.type, userCode)} + "}", ${signature.line});`
         : `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(`${returnEventPrefix}null}`)}), ${signature.line});`
-      : `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${cppJsonExpressionForValue('__tc_result', signature.returnType, userCode)} + "}", ${signature.line});`
+      : `  tracecode::write_trace_event_json(std::string(${cppStringLiteral(returnEventPrefix)}) + ${cppJsonExpressionForValue('__tc_result', driverSignature.returnType, userCode)} + "}", ${signature.line});`
     : '';
   const resultJsonExpression = noStoredResult
     ? returnsNull
@@ -6040,16 +6241,17 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
       : voidOutputParameter
       ? cppJsonExpressionForValue('__tc_arg_0', voidOutputParameter.type, userCode)
       : '"null"'
-    : cppJsonExpressionForValue('__tc_result', signature.returnType, userCode);
+    : cppJsonExpressionForValue('__tc_result', driverSignature.returnType, userCode);
   const callExpression = `${usesSolutionClass ? `solution.${functionName}` : functionName}(${argumentNames.join(', ')})`;
   const invokeAndStore = noStoredResult ? `  ${callExpression};` : `  auto __tc_result = ${callExpression};`;
 
-return `${buildGeneratedIncludes(userCode, signature)}
+return `${buildGeneratedIncludes(userCode, driverSignature)}
 using namespace std;
 ${buildTracecodeFallbackAliases(userCode)}
 
 #line 1 "${CPP_USER_SOURCE_FILE}"
 ${sourceForDriver}
+${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
 int main() {
@@ -6498,9 +6700,11 @@ function programOutputParseFailureResult(error, program, signature, start, timin
 }
 
 async function runTool(module, fs, args) {
+  emitRequestProgress(`tool:${args[0] || 'unknown'}:start`);
   const result = await runWasi(module, args, fs, {
     filestatSizeOffset: args[0] === 'wasm-ld' ? 24 : 32,
   });
+  emitRequestProgress(`tool:${args[0] || 'unknown'}:complete`, { exitCode: result.exitCode });
   if (result.exitCode !== 0) {
     const message = [result.stderr, result.stdout].filter(Boolean).join('\n').trim();
     const error = new Error(message || `${args[0]} exited with code ${result.exitCode}`);
@@ -7234,6 +7438,7 @@ async function handleProjectCpp(request, messageId) {
 
 async function compileAndRun(source, functionName, inputs, options = {}) {
   const start = now();
+  emitRequestProgress('compile-and-run:start', { tracing: Boolean(options.tracing) });
   if (canUseEphemeralCompilerWorker()) {
     try {
       return await compileAndRunWithExternalCompiler(source, functionName, inputs, start, {
@@ -7250,7 +7455,9 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
   }
 
   const toolchainStartedAt = now();
+  emitRequestProgress('toolchain-load:start', { tracing: Boolean(options.tracing) });
   const toolchain = await loadToolchain();
+  emitRequestProgress('toolchain-load:complete', { tracing: Boolean(options.tracing) });
   const timings = {
     ...(options.timings && typeof options.timings === 'object' ? options.timings : {}),
     toolchainLoadMs: elapsedMs(toolchainStartedAt),
@@ -7273,12 +7480,14 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
         inputNames: Object.keys(inputs || {}),
       });
   const driverStartedAt = now();
+  emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing) });
   const driverSource = scriptRequest
     ? buildScriptDriverSource(source, options)
     : options.executionStyle === 'ops-class'
     ? buildOpsClassDriverSource(source, functionName, inputs || {}, options)
     : buildDriverSource(source, functionName, inputs || {}, options);
   timings.driverBuildMs = elapsedMs(driverStartedAt);
+  emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing) });
 
   fs.addDirectory('/tmp');
   fs.addFile('/tmp/TraceCodeDriver.cpp', driverSource);
@@ -7322,8 +7531,10 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
 
     try {
       const compileStartedAt = now();
+      emitRequestProgress('compile:start', { tracing: Boolean(options.tracing) });
       await runTool(toolchain.clangModule, fs, clangArgs);
       timings.compileMs = elapsedMs(compileStartedAt);
+      emitRequestProgress('compile:complete', { tracing: Boolean(options.tracing), compileMs: timings.compileMs });
     } catch (error) {
       const diagnostics = [error.stderr, error.stdout, error.message].filter(Boolean).join('\n').trim();
       return compileFailureResult(diagnostics, 'C++ compilation failed.', start, {
@@ -7354,8 +7565,10 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
 
     try {
       const linkStartedAt = now();
+      emitRequestProgress('link:start', { tracing: Boolean(options.tracing) });
       await runTool(toolchain.lldModule, fs, lldArgs);
       timings.linkMs = elapsedMs(linkStartedAt);
+      emitRequestProgress('link:complete', { tracing: Boolean(options.tracing), linkMs: timings.linkMs });
     } catch (error) {
       const diagnostics = [error.stderr, error.stdout, error.message].filter(Boolean).join('\n').trim();
       return compileFailureResult(diagnostics, 'C++ linking failed.', start, {
@@ -7366,17 +7579,21 @@ async function compileAndRun(source, functionName, inputs, options = {}) {
     }
 
     const wasmCompileStartedAt = now();
+    emitRequestProgress('wasm-compile:start', { tracing: Boolean(options.tracing) });
     programModule = await WebAssembly.compile(fs.readFile('/tmp/program.wasm'));
     timings.wasmCompileMs = elapsedMs(wasmCompileStartedAt);
+    emitRequestProgress('wasm-compile:complete', { tracing: Boolean(options.tracing), wasmCompileMs: timings.wasmCompileMs });
     storeProgramModule(cacheKey, programModule);
   }
 
   try {
     const runStartedAt = now();
+    emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing) });
     const program = await runWasi(programModule, ['program.wasm'], fs, {
       stdinBytes: staticStdinBytesFromText(JSON.stringify(inputs || {})),
     });
     timings.runMs = elapsedMs(runStartedAt);
+    emitRequestProgress('program-run:complete', { tracing: Boolean(options.tracing), runMs: timings.runMs, exitCode: program.exitCode });
     let parsed;
     try {
       parsed = parseProgramStdout(program.stdout, {
@@ -7460,6 +7677,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
         inputNames: Object.keys(inputs || {}),
       });
   const driverStartedAt = now();
+  emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing), compiler: 'external' });
   const rawDriverSource = scriptRequest
     ? buildScriptDriverSource(source, options)
     : options.executionStyle === 'ops-class'
@@ -7470,6 +7688,7 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     '#include "tracecode_runtime.hpp"'
   );
   timings.driverBuildMs = elapsedMs(driverStartedAt);
+  emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'external' });
 
   const cacheKey = getProgramCacheKey('yowasp-worker', driverSource);
   let programModule = getCachedProgramModule(cacheKey);
@@ -7481,8 +7700,14 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
   } else {
     timings.compileCacheHit = false;
     const compilerStartedAt = now();
+    emitRequestProgress('external-compile:start', { tracing: Boolean(options.tracing) });
     const compileResult = await compileDriverOutsideMainWorker(driverSource);
     timings.externalCompileMs = elapsedMs(compilerStartedAt);
+    emitRequestProgress('external-compile:complete', {
+      tracing: Boolean(options.tracing),
+      externalCompileMs: timings.externalCompileMs,
+      success: Boolean(compileResult.success),
+    });
     timings.compilerWorkerMs = timings.externalCompileMs;
     timings.compileMs = Number.isFinite(Number(compileResult.compileMs))
       ? Number(compileResult.compileMs)
@@ -7515,17 +7740,30 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     }
 
     const wasmCompileStartedAt = now();
+    emitRequestProgress('wasm-compile:start', { tracing: Boolean(options.tracing), compiler: 'external' });
     programModule = await WebAssembly.compile(new Uint8Array(compileResult.programBuffer));
     timings.wasmCompileMs = elapsedMs(wasmCompileStartedAt);
+    emitRequestProgress('wasm-compile:complete', {
+      tracing: Boolean(options.tracing),
+      compiler: 'external',
+      wasmCompileMs: timings.wasmCompileMs,
+    });
     storeProgramModule(cacheKey, programModule);
   }
 
   try {
     const runStartedAt = now();
+    emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing), compiler: 'external' });
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
       stdinBytes: staticStdinBytesFromText(JSON.stringify(inputs || {})),
     });
     timings.runMs = elapsedMs(runStartedAt);
+    emitRequestProgress('program-run:complete', {
+      tracing: Boolean(options.tracing),
+      compiler: 'external',
+      runMs: timings.runMs,
+      exitCode: program.exitCode,
+    });
     let parsed;
     try {
       parsed = parseProgramStdout(program.stdout, {
@@ -7609,6 +7847,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
         inputNames: Object.keys(inputs || {}),
       });
   const driverStartedAt = now();
+  emitRequestProgress('driver-build:start', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
   const rawDriverSource = scriptRequest
     ? buildScriptDriverSource(source, options)
     : options.executionStyle === 'ops-class'
@@ -7619,6 +7858,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
     '#include "tracecode_runtime.hpp"'
   );
   timings.driverBuildMs = elapsedMs(driverStartedAt);
+  emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
   const stdoutChunks = [];
   const stderrChunks = [];
   const collect = (chunks) => (bytes) => {
@@ -7636,6 +7876,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
     let files;
     try {
       const compileStartedAt = now();
+      emitRequestProgress('yowasp-compile:start', { tracing: Boolean(options.tracing) });
       files = await toolchain.runClang(
         ['clang++', 'TraceCodeDriver.cpp', `-std=${CPP_STANDARD}`, '-O0', '-fno-exceptions', `-Wl,-z,stack-size=${CPP_PROGRAM_STACK_SIZE}`, '-o', 'program.wasm'],
         {
@@ -7649,6 +7890,7 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
         }
       );
       timings.compileMs = elapsedMs(compileStartedAt);
+      emitRequestProgress('yowasp-compile:complete', { tracing: Boolean(options.tracing), compileMs: timings.compileMs });
     } catch (error) {
       const stdout = decodeUtf8(concatBytes(stdoutChunks));
       const stderr = decodeUtf8(concatBytes(stderrChunks));
@@ -7676,17 +7918,30 @@ async function compileAndRunWithYowasp(toolchain, source, functionName, inputs, 
     }
 
     const wasmCompileStartedAt = now();
+    emitRequestProgress('wasm-compile:start', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
     programModule = await WebAssembly.compile(programBytes);
     timings.wasmCompileMs = elapsedMs(wasmCompileStartedAt);
+    emitRequestProgress('wasm-compile:complete', {
+      tracing: Boolean(options.tracing),
+      compiler: 'yowasp',
+      wasmCompileMs: timings.wasmCompileMs,
+    });
     storeProgramModule(cacheKey, programModule);
   }
 
   try {
     const runStartedAt = now();
+    emitRequestProgress('program-run:start', { tracing: Boolean(options.tracing), compiler: 'yowasp' });
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
       stdinBytes: staticStdinBytesFromText(JSON.stringify(inputs || {})),
     });
     timings.runMs = elapsedMs(runStartedAt);
+    emitRequestProgress('program-run:complete', {
+      tracing: Boolean(options.tracing),
+      compiler: 'yowasp',
+      runMs: timings.runMs,
+      exitCode: program.exitCode,
+    });
     let parsed;
     try {
       parsed = parseProgramStdout(program.stdout, {
@@ -8011,6 +8266,18 @@ async function handleExecuteCodeInterview(payload) {
       executionStyle: payload?.executionStyle || 'solution-method',
     });
 
+    if (result.traceLimitExceeded && isInterviewTimeoutResult(result)) {
+      return {
+        success: false,
+        output: null,
+        error: 'Time Limit Exceeded',
+        ...(isTraceTimeoutReason(result.timeoutReason) ? { timeoutReason: result.timeoutReason } : {}),
+        diagnosticStage: 'interview',
+        consoleOutput: result.consoleOutput || [],
+        timings: result.timings,
+      };
+    }
+
     if (!result.success) {
       if (isInterviewTimeoutResult(result)) {
         return {
@@ -8074,22 +8341,32 @@ self.onmessage = (event) => {
   queue = queue
     .catch(() => {})
     .then(async () => {
-      const result =
-        type === 'init'
-          ? await handleInit(payload)
-          : type === 'warmup'
-            ? await handleWarmup(payload)
-          : type === 'compile-run'
-            ? await handleCompileRun(payload)
-            : type === 'compile-run-batch'
-              ? await handleCompileRunBatch(payload)
-            : type === 'execute-project-cpp'
-              ? await handleProjectCpp(payload, id)
-            : type === 'execute-with-tracing'
-              ? await handleExecuteWithTracing(payload)
-              : type === 'execute-code-interview'
-                ? await handleExecuteCodeInterview(payload)
-                : await Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
+      activeRequestId = id;
+      activeRequestStartedAt = now();
+      emitRequestProgress('request-start', { type });
+      let result;
+      try {
+        result =
+          type === 'init'
+            ? await handleInit(payload)
+            : type === 'warmup'
+              ? await handleWarmup(payload)
+            : type === 'compile-run'
+              ? await handleCompileRun(payload)
+              : type === 'compile-run-batch'
+                ? await handleCompileRunBatch(payload)
+              : type === 'execute-project-cpp'
+                ? await handleProjectCpp(payload, id)
+              : type === 'execute-with-tracing'
+                ? await handleExecuteWithTracing(payload)
+                : type === 'execute-code-interview'
+                  ? await handleExecuteCodeInterview(payload)
+                  : await Promise.reject(new Error(`Unknown C++ worker message: ${type}`));
+      } finally {
+        emitRequestProgress('request-complete', { type });
+        activeRequestId = null;
+        activeRequestStartedAt = 0;
+      }
 
       postSuccess(id, type, result);
     })

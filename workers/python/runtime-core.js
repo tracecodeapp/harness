@@ -3365,6 +3365,96 @@ def _tracecode_materialize_named_inputs(_names):
         if _name in globals():
             globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
 
+def _tracecode_hydrate_for_annotation(_obj, _annotation):
+    try:
+        import typing as _tracecode_typing
+        import collections.abc as _tracecode_collections_abc
+    except Exception:
+        return _obj
+    if _annotation is None:
+        return _obj
+    if isinstance(_annotation, _builtins.str):
+        _annotation = globals().get(_annotation, _annotation)
+    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
+        return _obj
+    _origin = _tracecode_typing.get_origin(_annotation)
+    _args = _tracecode_typing.get_args(_annotation)
+    if _origin is _tracecode_typing.Union:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
+    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
+        _item_annotation = _args[0] if _args else None
+        if isinstance(_obj, _builtins.list):
+            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation) for _item in _obj]
+            if _origin is _builtins.tuple:
+                return tuple(_items)
+            if _origin is _builtins.set:
+                return set(_items)
+            if _origin is _builtins.frozenset:
+                return frozenset(_items)
+            return _items
+        return _obj
+    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
+        _key_annotation = _args[0] if len(_args) > 0 else None
+        _value_annotation = _args[1] if len(_args) > 1 else None
+        return {
+            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
+            for _key, _value in _obj.items()
+        }
+    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
+        if _annotation.__name__ in ('TreeNode', 'ListNode'):
+            return _obj
+        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
+        try:
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), globals(), locals())
+        except Exception:
+            _ctor_hints = {}
+        _hydrated_fields = {
+            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
+            for key, value in _fields.items()
+        }
+        try:
+            return _annotation(**_hydrated_fields)
+        except Exception:
+            pass
+        try:
+            return _annotation(*_builtins.list(_hydrated_fields.values()))
+        except Exception:
+            pass
+        try:
+            _instance = _annotation.__new__(_annotation)
+            for _key, _value in _hydrated_fields.items():
+                setattr(_instance, _key, _value)
+            return _instance
+        except Exception:
+            return _obj
+    return _obj
+
+def _tracecode_resolve_target_callable(_function_name, _execution_style):
+    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
+        return getattr(Solution, _function_name)
+    if _function_name in globals() and callable(globals()[_function_name]):
+        return globals()[_function_name]
+    if 'Solution' in globals() and hasattr(Solution, _function_name):
+        return getattr(Solution, _function_name)
+    return None
+
+def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
+    try:
+        import typing as _tracecode_typing
+        _callable = _tracecode_resolve_target_callable(_function_name, _execution_style)
+        if _callable is None:
+            return
+        try:
+            _annotations = _tracecode_typing.get_type_hints(_callable, globals(), locals())
+        except Exception:
+            _annotations = getattr(_callable, '__annotations__', {}) or {}
+        for _name in _names:
+            if _name in globals() and _name in _annotations:
+                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+    except Exception:
+        return
+
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:
         if _name in globals():
@@ -3378,6 +3468,7 @@ ${treeConversions}
 ${listConversions}
 
 _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)})
 
 _result = None
 _interview_guard_triggered = False
@@ -3458,6 +3549,96 @@ def _tracecode_materialize_named_inputs(_names):
         if _name in globals():
             globals()[_name] = _tracecode_materialize_custom_input(globals()[_name])
 
+def _tracecode_hydrate_for_annotation(_obj, _annotation):
+    try:
+        import typing as _tracecode_typing
+        import collections.abc as _tracecode_collections_abc
+    except Exception:
+        return _obj
+    if _annotation is None:
+        return _obj
+    if isinstance(_annotation, _builtins.str):
+        _annotation = globals().get(_annotation, _annotation)
+    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
+        return _obj
+    _origin = _tracecode_typing.get_origin(_annotation)
+    _args = _tracecode_typing.get_args(_annotation)
+    if _origin is _tracecode_typing.Union:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
+    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
+        _item_annotation = _args[0] if _args else None
+        if isinstance(_obj, _builtins.list):
+            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation) for _item in _obj]
+            if _origin is _builtins.tuple:
+                return tuple(_items)
+            if _origin is _builtins.set:
+                return set(_items)
+            if _origin is _builtins.frozenset:
+                return frozenset(_items)
+            return _items
+        return _obj
+    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
+        _key_annotation = _args[0] if len(_args) > 0 else None
+        _value_annotation = _args[1] if len(_args) > 1 else None
+        return {
+            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
+            for _key, _value in _obj.items()
+        }
+    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
+        if _annotation.__name__ in ('TreeNode', 'ListNode'):
+            return _obj
+        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
+        try:
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), globals(), locals())
+        except Exception:
+            _ctor_hints = {}
+        _hydrated_fields = {
+            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
+            for key, value in _fields.items()
+        }
+        try:
+            return _annotation(**_hydrated_fields)
+        except Exception:
+            pass
+        try:
+            return _annotation(*_builtins.list(_hydrated_fields.values()))
+        except Exception:
+            pass
+        try:
+            _instance = _annotation.__new__(_annotation)
+            for _key, _value in _hydrated_fields.items():
+                setattr(_instance, _key, _value)
+            return _instance
+        except Exception:
+            return _obj
+    return _obj
+
+def _tracecode_resolve_target_callable(_function_name, _execution_style):
+    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
+        return getattr(Solution, _function_name)
+    if _function_name in globals() and callable(globals()[_function_name]):
+        return globals()[_function_name]
+    if 'Solution' in globals() and hasattr(Solution, _function_name):
+        return getattr(Solution, _function_name)
+    return None
+
+def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
+    try:
+        import typing as _tracecode_typing
+        _callable = _tracecode_resolve_target_callable(_function_name, _execution_style)
+        if _callable is None:
+            return
+        try:
+            _annotations = _tracecode_typing.get_type_hints(_callable, globals(), locals())
+        except Exception:
+            _annotations = getattr(_callable, '__annotations__', {}) or {}
+        for _name in _names:
+            if _name in globals() and _name in _annotations:
+                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+    except Exception:
+        return
+
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:
         if _name in globals():
@@ -3471,6 +3652,7 @@ ${treeConversions}
 ${listConversions}
 
 _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)})
 
 try:
 ${executionCallInTry}

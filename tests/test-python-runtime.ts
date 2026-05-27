@@ -3,7 +3,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import vm from 'node:vm';
 import {
   PYTHON_CLASS_DEFINITIONS,
@@ -62,6 +62,24 @@ type RuntimeCore = {
     executionStyle?: string,
     options?: Record<string, unknown>
   ) => { code: string; userCodeStartLine: number };
+  executeCode: (
+    deps: RuntimeDeps & {
+      INTERVIEW_GUARD_DEFAULTS: {
+        maxLineEvents: number;
+        maxSingleLineHits: number;
+        maxCallDepth: number;
+        maxMemoryBytes: number;
+        memoryCheckEvery: number;
+      };
+      loadPyodideInstance: () => Promise<void>;
+      getPyodide: () => { runPythonAsync: (code: string) => Promise<string> };
+    },
+    code: string,
+    functionName: string,
+    inputs: Record<string, unknown>,
+    executionStyle?: string,
+    options?: Record<string, unknown>
+  ) => Promise<{ success: boolean; output: unknown; error?: string; consoleOutput?: string[] }>;
 };
 
 type RuntimeDeps = {
@@ -2651,6 +2669,62 @@ print(json.dumps({
   console.log('PASS: Python function-style execution falls back to Solution.method');
 }
 
+function runPythonAsyncLikePyodide(code: string): string {
+  let script = code.trimEnd();
+  script = script.replace(
+    /\njson\.dumps\(\{\n([\s\S]*)\n\}\)\s*$/,
+    '\n__tracecode_pyodide_result = json.dumps({\n$1\n})\nprint(__tracecode_pyodide_result)'
+  );
+  script = script.replace(/\n(_json_out)\s*$/, '\nprint($1)');
+  return execFileSync('python3', ['-c', script], { encoding: 'utf8' }).trimEnd();
+}
+
+async function assertExecuteCodeHydratesAnnotatedCustomObjects(): Promise<void> {
+  const runtime = await loadRuntimeCore();
+  const source = `class Campaign:
+    def __init__(self, cap: int, bid: int):
+        self.cap = cap
+        self.bid = bid
+
+class Solution:
+    def score(self, campaigns: dict[str, Campaign]) -> int:
+        campaign = campaigns["a"]
+        return campaign.cap + campaign.bid if isinstance(campaign, Campaign) else -1
+`;
+
+  const deps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    INTERVIEW_GUARD_DEFAULTS: {
+      maxLineEvents: 10000,
+      maxSingleLineHits: 1000,
+      maxCallDepth: 100,
+      maxMemoryBytes: 8 * 1024 * 1024,
+      memoryCheckEvery: 10,
+    },
+    toPythonLiteral,
+    loadPyodideInstance: async () => {},
+    getPyodide: () => ({
+      runPythonAsync: async (code: string) => runPythonAsyncLikePyodide(code),
+    }),
+  };
+
+  const result = await runtime.executeCode(
+    deps,
+    source,
+    'score',
+    { campaigns: { a: { bid: 5, cap: 7 } } },
+    'solution-method'
+  );
+  assertCondition(
+    result.success === true && result.output === 12,
+    `Python executeCode should hydrate annotated custom dict values, received ${JSON.stringify(result)}`
+  );
+  console.log('PASS: Python executeCode hydrates annotated custom object inputs');
+}
+
 async function main(): Promise<void> {
   await assertAccessAttributionUsesExecutedLine();
   await assertIndexedReceiverMutationsAreRecordedAsMutations();
@@ -2685,6 +2759,7 @@ async function main(): Promise<void> {
   await assertRecursiveCallActivationRuntimeEventsAreRecorded();
   await assertBuiltinSumRecordsConsumedCollectionReads();
   await assertFunctionStyleFallsBackToSolutionMethod();
+  await assertExecuteCodeHydratesAnnotatedCustomObjects();
   console.log('\nPython runtime checks passed.');
 }
 

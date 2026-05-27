@@ -149,40 +149,125 @@ type SerializedTreeNode = {
 `;
 
 const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `
-function __tracecodeMaterializeCustomObject(value) {
+function __tracecodeResolveConstructor(__typeName) {
+  if (typeof __typeName !== 'string' || __typeName.length === 0) return undefined;
+  try {
+    return eval(__typeName);
+  } catch (_err) {
+    return undefined;
+  }
+}
+
+function __tracecodeMaterializeCustomObject(value, __targetTypeName, __seen) {
   if (value === null || value === undefined) return value;
-  if (Array.isArray(value)) return value.map((item) => __tracecodeMaterializeCustomObject(item));
   if (typeof value !== 'object') return value;
+  if (!__seen) __seen = new WeakMap();
+  const __cached = __seen.get(value);
+  if (__cached) return __cached;
+  if (Array.isArray(value)) {
+    const __out = [];
+    __seen.set(value, __out);
+    for (const __item of value) {
+      __out.push(__tracecodeMaterializeCustomObject(__item, undefined, __seen));
+    }
+    return __out;
+  }
   if (value.__type__ === 'TreeNode' || value.__type__ === 'ListNode' || value.__ref__) return value;
-  const __typeName = typeof value.__type__ === 'string'
-    ? value.__type__
-    : (typeof value.__class__ === 'string' ? value.__class__ : null);
-  if (!__typeName) return value;
-  const __fields = { __type__: __typeName };
+  const __typeName = typeof __targetTypeName === 'string'
+    ? __targetTypeName
+    : (typeof value.__type__ === 'string'
+      ? value.__type__
+      : (typeof value.__class__ === 'string' ? value.__class__ : null));
+  if (!__typeName) {
+    __seen.set(value, value);
+    for (const [__key, __child] of Object.entries(value)) {
+      if (__key === '__type__' || __key === '__class__' || __key === '__id__') continue;
+      value[__key] = __tracecodeMaterializeCustomObject(__child, undefined, __seen);
+    }
+    return value;
+  }
+  const __fields = {};
+  __seen.set(value, __fields);
+  if (typeof value.__type__ === 'string') __fields.__type__ = value.__type__;
   if (typeof value.__class__ === 'string') __fields.__class__ = value.__class__;
   for (const [__key, __child] of Object.entries(value)) {
     if (__key === '__type__' || __key === '__class__' || __key === '__id__') continue;
-    __fields[__key] = __tracecodeMaterializeCustomObject(__child);
+    __fields[__key] = __tracecodeMaterializeCustomObject(__child, undefined, __seen);
   }
-  let __ctor;
-  try {
-    __ctor = eval(__typeName);
-  } catch (_err) {
-    __ctor = undefined;
-  }
+  const __ctor = __tracecodeResolveConstructor(__typeName);
   if (typeof __ctor !== 'function') return __fields;
-  const __args = Object.entries(__fields)
-    .filter(([__key]) => __key !== '__type__' && __key !== '__class__')
-    .map(([, __value]) => __value);
+  const __args = Object.values(__fields).filter((__value, __index) => {
+    const __key = Object.keys(__fields)[__index];
+    return __key !== '__type__' && __key !== '__class__';
+  });
   try {
-    return new __ctor(...__args);
+    const __instance = new __ctor(...__args);
+    Object.assign(__instance, __fields);
+    __seen.set(value, __instance);
+    return __instance;
   } catch (_err) {
     const __instance = Object.create(__ctor.prototype);
     Object.assign(__instance, __fields);
+    __seen.set(value, __instance);
     return __instance;
   }
 }
+
+function __tracecodeMaterializeTypedInput(value, __descriptor) {
+  if (!__descriptor) return __tracecodeMaterializeCustomObject(value);
+  if (__descriptor === 'tree' || __descriptor === 'list') return value;
+  if (Array.isArray(value)) {
+    if (__descriptor.kind === 'array') {
+      return value.map((item) => __tracecodeMaterializeTypedInput(item, __descriptor.element));
+    }
+    return value.map((item) => __tracecodeMaterializeTypedInput(item, null));
+  }
+  if (value === null || value === undefined || typeof value !== 'object') return value;
+  if (value.__type__ === 'TreeNode' || value.__type__ === 'ListNode' || value.__ref__) return value;
+  if (__descriptor.kind === 'custom') {
+    return __tracecodeMaterializeCustomObject(value, __descriptor.typeName);
+  }
+  if (__descriptor.kind === 'record') {
+    const __out = {};
+    for (const [__key, __child] of Object.entries(value)) {
+      __out[__key] = __tracecodeMaterializeTypedInput(__child, __descriptor.value);
+    }
+    return __out;
+  }
+  return __tracecodeMaterializeCustomObject(value);
+}
 `;
+
+const TYPESCRIPT_BUILTIN_TYPE_NAMES = new Set([
+  'Array',
+  'ReadonlyArray',
+  'Record',
+  'Map',
+  'ReadonlyMap',
+  'Set',
+  'ReadonlySet',
+  'Promise',
+  'Date',
+  'RegExp',
+  'String',
+  'Number',
+  'Boolean',
+  'Object',
+  'Function',
+  'Error',
+  'unknown',
+  'any',
+  'object',
+  'never',
+  'void',
+  'undefined',
+  'null',
+  'string',
+  'number',
+  'boolean',
+  'bigint',
+  'symbol',
+]);
 
 function performanceNow() {
   if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
@@ -227,6 +312,25 @@ function isLikelyListNodeValue(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   if (value.__type__ === 'ListNode') return true;
   return value?.constructor?.name === 'ListNode';
+}
+
+function inferPlainNodeType(value) {
+  if (value.__type__ === 'ListNode' || value.__type__ === 'TreeNode') {
+    return null;
+  }
+  const id = typeof value.__id__ === 'string' ? value.__id__ : '';
+  if (id.startsWith('list-') || id.startsWith('ListNode:')) return 'ListNode';
+  if (id.startsWith('tree-') || id.startsWith('TreeNode:')) return 'TreeNode';
+
+  const hasValue = Object.prototype.hasOwnProperty.call(value, 'val')
+    || Object.prototype.hasOwnProperty.call(value, 'value');
+  const hasTreeLinks = Object.prototype.hasOwnProperty.call(value, 'left')
+    || Object.prototype.hasOwnProperty.call(value, 'right');
+  const hasListLinks = Object.prototype.hasOwnProperty.call(value, 'next')
+    || Object.prototype.hasOwnProperty.call(value, 'prev');
+  if (hasValue && hasTreeLinks) return 'TreeNode';
+  if (hasValue && hasListLinks) return 'ListNode';
+  return null;
 }
 
 function getCustomClassName(value) {
@@ -393,6 +497,17 @@ function serializeValue(
     if (seen.has(value)) return '<cycle>';
     seen.add(value);
     const out = {};
+    const inferredNodeType = inferPlainNodeType(value);
+    if (inferredNodeType) {
+      out.__type__ = inferredNodeType;
+      const explicitId = typeof value.__id__ === 'string' ? value.__id__ : '';
+      let nodeId = nodeRefState.ids.get(value);
+      if (!nodeId) {
+        nodeId = explicitId.length > 0 ? explicitId : `${inferredNodeType}:${nodeRefState.nextId++}`;
+        nodeRefState.ids.set(value, nodeId);
+      }
+      out.__id__ = nodeId;
+    }
     const fields = Object.entries(value);
     for (const [k, v] of fields.slice(0, activeSerializationLimits.maxFields)) {
       out[k] = serializeValue(v, depth + 1, seen, nodeRefState);
@@ -729,10 +844,26 @@ function detectMaterializerKind(ts, typeNode) {
     }
     return null;
   }
+  if (ts.isArrayTypeNode(typeNode)) {
+    return { kind: 'array', element: detectMaterializerKind(ts, typeNode.elementType) };
+  }
   if (ts.isTypeReferenceNode(typeNode)) {
     const typeNameText = typeNode.typeName.getText();
     if (typeNameText === 'TreeNode') return 'tree';
     if (typeNameText === 'ListNode') return 'list';
+    const typeArgs = Array.from(typeNode.typeArguments ?? []);
+    if ((typeNameText === 'Array' || typeNameText === 'ReadonlyArray') && typeArgs.length > 0) {
+      return { kind: 'array', element: detectMaterializerKind(ts, typeArgs[0]) };
+    }
+    if (typeNameText === 'Record' && typeArgs.length >= 2) {
+      return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
+    }
+    if ((typeNameText === 'Map' || typeNameText === 'ReadonlyMap') && typeArgs.length >= 2) {
+      return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
+    }
+    if (!TYPESCRIPT_BUILTIN_TYPE_NAMES.has(typeNameText) && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(typeNameText)) {
+      return { kind: 'custom', typeName: typeNameText };
+    }
     return null;
   }
   return null;
@@ -782,9 +913,29 @@ function applyInputMaterializers(inputs, materializers) {
   if (Object.keys(combined).length === 0) return inputs;
   for (const [name, kind] of Object.entries(combined)) {
     if (!Object.prototype.hasOwnProperty.call(next, name)) continue;
-    next[name] = kind === 'tree' ? materializeTreeInput(next[name]) : materializeListInput(next[name]);
+    next[name] = applyPreRuntimeInputMaterializer(next[name], kind);
   }
   return next;
+}
+
+function applyPreRuntimeInputMaterializer(value, kind) {
+  if (!kind) return value;
+  if (kind === 'tree') return materializeTreeInput(value);
+  if (kind === 'list') return materializeListInput(value);
+  if (kind.kind === 'array') {
+    return Array.isArray(value)
+      ? value.map((item) => applyPreRuntimeInputMaterializer(item, kind.element))
+      : value;
+  }
+  if (kind.kind === 'record') {
+    if (!isPlainObjectRecord(value)) return value;
+    const out = {};
+    for (const [key, child] of Object.entries(value)) {
+      out[key] = applyPreRuntimeInputMaterializer(child, kind.value);
+    }
+    return out;
+  }
+  return value;
 }
 
 function inferFallbackInputMaterializers(inputs) {
@@ -5239,7 +5390,10 @@ return result;`
   );
 }
 
-function buildFunctionExecutionRunner(code, executionStyle, argNames) {
+function buildFunctionExecutionRunner(code, executionStyle, argNames, argumentMaterializers = []) {
+  const materializedArgExpressions = argNames.map((name, index) =>
+    `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`
+  );
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -5258,7 +5412,7 @@ try {
 if (typeof __target !== 'function') {
   throw new Error('Function "' + __functionName + '" not found');
 }
-return __target(${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
+return __target(${materializedArgExpressions.join(', ')});`
     );
   }
 
@@ -5279,7 +5433,7 @@ const __method = __solver[__functionName];
 if (typeof __method !== 'function') {
   throw new Error('Method "Solution.' + __functionName + '" not found');
 }
-return __method.call(__solver, ${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
+return __method.call(__solver, ${materializedArgExpressions.join(', ')});`
     );
   }
 
@@ -5319,7 +5473,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
   if (!Array.isArray(__callArgs)) {
     __callArgs = [__callArgs];
   }
-  __callArgs = __callArgs.map((__arg) => __tracecodeMaterializeCustomObject(__arg));
+  __callArgs = __callArgs.map((__arg) => __tracecodeMaterializeTypedInput(__arg, null));
   if (__i === 0) {
     __instance = new __targetClass(...__callArgs);
     __out.push(null);
@@ -5338,7 +5492,10 @@ return __out;`
   throw new Error(`Execution style "${executionStyle}" is not supported for JavaScript runtime yet.`);
 }
 
-function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH) {
+function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, argumentMaterializers = []) {
+  const materializedArgExpressions = argNames.map((name, index) =>
+    `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`
+  );
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -5360,7 +5517,7 @@ try {
 if (typeof __target !== 'function') {
   throw new Error('Function "' + __functionName + '" not found');
 }
-return __target(${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
+return __target(${materializedArgExpressions.join(', ')});`
     );
   }
 
@@ -5384,7 +5541,7 @@ const __method = __solver[__functionName];
 if (typeof __method !== 'function') {
   throw new Error('Method "Solution.' + __functionName + '" not found');
 }
-return __method.call(__solver, ${argNames.map((name) => `__tracecodeMaterializeCustomObject(${name})`).join(', ')});`
+return __method.call(__solver, ${materializedArgExpressions.join(', ')});`
     );
   }
 
@@ -5427,7 +5584,7 @@ for (let __i = 0; __i < __operations.length; __i++) {
   if (!Array.isArray(__callArgs)) {
     __callArgs = [__callArgs];
   }
-  __callArgs = __callArgs.map((__arg) => __tracecodeMaterializeCustomObject(__arg));
+  __callArgs = __callArgs.map((__arg) => __tracecodeMaterializeTypedInput(__arg, null));
   if (__i === 0) {
     __instance = new __targetClass(...__callArgs);
     __out.push(null);
@@ -5494,7 +5651,8 @@ async function executeCode(payload) {
         const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
         const argValues = inputKeys.map((key) => materializedInputs[key]);
-        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames);
+        const argumentMaterializers = inputKeys.map((key) => materializers[key] ?? null);
+        const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers);
         output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
       }
     } else {
@@ -5652,7 +5810,8 @@ async function executeWithTracing(payload) {
         const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
         const argNames = inputKeys.map((_, index) => `__arg${index}`);
         const argValues = inputKeys.map((key) => materializedInputs[key]);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth);
+        const argumentMaterializers = inputKeys.map((key) => materializers[key] ?? null);
+        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers);
         output = await Promise.resolve(
           runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues)
         );

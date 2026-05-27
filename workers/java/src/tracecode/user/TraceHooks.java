@@ -11,9 +11,11 @@ public final class TraceHooks {
   private static final List<String> EVENTS = new ArrayList<>();
   private static final ThreadLocal<java.util.List<TraceFrame>> CALL_STACK = ThreadLocal.withInitial(java.util.ArrayList::new);
   private static final ThreadLocal<String> LAST_INDEX_SOURCE = new ThreadLocal<>();
+  private static final java.util.IdentityHashMap<Object, String> TRACE_REFERENCE_IDS = new java.util.IdentityHashMap<>();
   private static int maxEvents = DEFAULT_MAX_EVENTS;
   private static boolean traceLimitExceeded = false;
   private static int droppedEventCount = 0;
+  private static int nextTraceReferenceId = 0;
 
   private TraceHooks() {}
 
@@ -41,9 +43,11 @@ public final class TraceHooks {
     EVENTS.clear();
     CALL_STACK.get().clear();
     LAST_INDEX_SOURCE.remove();
+    TRACE_REFERENCE_IDS.clear();
     maxEvents = Math.max(1, nextMaxEvents);
     traceLimitExceeded = false;
     droppedEventCount = 0;
+    nextTraceReferenceId = 0;
   }
 
   public static List<String> drainEvents() {
@@ -440,12 +444,15 @@ public final class TraceHooks {
     if (value instanceof Number || value instanceof Boolean || value instanceof CharSequence || value instanceof Character) return false;
     Package packageInfo = value.getClass().getPackage();
     String packageName = packageInfo == null ? "" : packageInfo.getName();
-    return packageName.startsWith("harness.user.") || packageName.startsWith("tracecode.user.");
+    return packageName.equals("harness.user")
+        || packageName.startsWith("harness.user.")
+        || packageName.equals("tracecode.user")
+        || packageName.startsWith("tracecode.user.");
   }
 
   private static String serializeUserObject(Object value, java.util.IdentityHashMap<Object, String> seen, int depth, boolean capValues) {
     if (seen.containsKey(value)) return "{\"__ref__\":" + jsonString(seen.get(value)) + "}";
-    String nodeId = "ref-" + seen.size();
+    String nodeId = stableTraceReferenceId(value, value.getClass().getSimpleName());
     seen.put(value, nodeId);
     StringBuilder out = new StringBuilder("{");
     out.append("\"__type__\":").append(jsonString(value.getClass().getSimpleName()));
@@ -472,6 +479,14 @@ public final class TraceHooks {
     }
     out.append("}");
     return out.toString();
+  }
+
+  private static String stableTraceReferenceId(Object value, String typeName) {
+    String existing = TRACE_REFERENCE_IDS.get(value);
+    if (existing != null) return existing;
+    String id = typeName + ":" + (++nextTraceReferenceId);
+    TRACE_REFERENCE_IDS.put(value, id);
+    return id;
   }
 
   private static String sanitizeJsonNonFiniteNumbers(String event) {

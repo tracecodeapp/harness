@@ -148,6 +148,24 @@ const cases = [
     expected: [0, 1],
   },
   {
+    name: 'nested custom unordered_map input',
+    code: [
+      'class Solution {',
+      'public:',
+      '  struct Campaign {',
+      '    int cap;',
+      '    int bid;',
+      '  };',
+      '  int score(unordered_map<string, Campaign>& campaigns) {',
+      '    return campaigns["a"].cap + campaigns["a"].bid;',
+      '  }',
+      '};',
+    ].join('\n'),
+    functionName: 'score',
+    inputs: { campaigns: { a: { bid: 5, cap: 7 } } },
+    expected: 12,
+  },
+  {
     name: 'string result',
     code: 'class Solution { public: string greet(string name) { return "hi " + name; } };',
     functionName: 'greet',
@@ -408,6 +426,63 @@ for (const testCase of cases) {
       );
     }
   }
+}
+
+const nestedCustomMapTracingResult = await sandbox.__tracecodeCppTest.handleExecuteWithTracing({
+  code: [
+    'class Solution {',
+    'public:',
+    '  struct Campaign {',
+    '    int cap;',
+    '    int bid;',
+    '  };',
+    '  unordered_map<string, long long> allocateImpressions(',
+    '    unordered_map<string, Campaign>& campaigns,',
+    '    long long total_impressions,',
+    '    unordered_map<string, long long>& min_quota',
+    '  ) {',
+    '    unordered_map<string, long long> result;',
+    '    long long used = 0;',
+    '    for (auto& [id, quota] : min_quota) {',
+    '      auto it = campaigns.find(id);',
+    '      if (it == campaigns.end()) return {};',
+    '      if (quota > it->second.cap) return {};',
+    '      used += quota;',
+    '      if (used > total_impressions) return {};',
+    '      if (quota > 0) result[id] = quota;',
+    '    }',
+    '    long long remaining = total_impressions - used;',
+    '    vector<pair<string, Campaign>> items;',
+    '    for (auto& entry : campaigns) items.push_back(entry);',
+    '    sort(items.begin(), items.end(), [](const auto& a, const auto& b) {',
+    '      if (a.second.bid != b.second.bid) return a.second.bid > b.second.bid;',
+    '      return a.first < b.first;',
+    '    });',
+    '    for (auto& [id, campaign] : items) {',
+    '      if (remaining == 0) break;',
+    '      long long alreadyAllocated = result.count(id) ? result[id] : 0;',
+    '      long long available = campaign.cap - alreadyAllocated;',
+    '      long long add = min(available, remaining);',
+    '      if (add > 0) { result[id] += add; remaining -= add; }',
+    '    }',
+    '    return result;',
+    '  }',
+    '};',
+  ].join('\n'),
+  functionName: 'allocateImpressions',
+  inputs: {
+    campaigns: { A: { cap: 3, bid: 5 }, B: { cap: 3, bid: 10 } },
+    total_impressions: 4,
+    min_quota: { A: 1, B: 1 },
+  },
+  options: {},
+});
+if (
+  !nestedCustomMapTracingResult.success ||
+  nestedCustomMapTracingResult.output?.A !== 1 ||
+  nestedCustomMapTracingResult.output?.B !== 3
+) {
+  throw new Error('C++ tracing should hydrate nested custom map inputs without adapter ordering failures, received ' + JSON.stringify(nestedCustomMapTracingResult));
 }
 
 const runtimeCrashDiagnostics = await sandbox.__tracecodeCppTest.handleCompileRun({

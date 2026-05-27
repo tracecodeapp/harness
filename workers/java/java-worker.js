@@ -590,6 +590,40 @@ function dynamicJavaInputExpression(typeSource, inputPath) {
   return null;
 }
 
+function isPrimitiveJavaScalarType(typeSource) {
+  return [
+    'byte',
+    'Byte',
+    'short',
+    'Short',
+    'int',
+    'Integer',
+    'long',
+    'Long',
+    'float',
+    'Float',
+    'double',
+    'Double',
+    'boolean',
+    'Boolean',
+    'char',
+    'Character',
+    'String',
+    'Object',
+  ].includes(normalizedJavaInputType(typeSource));
+}
+
+function isCustomJavaObjectType(typeSource) {
+  const normalized = normalizedJavaInputType(typeSource);
+  if (!normalized || normalized.includes('<') || normalized.endsWith('[]')) return false;
+  if (isPrimitiveJavaScalarType(normalized)) return false;
+  if (['ListNode', 'TreeNode', 'java.lang.String'].includes(normalized)) return false;
+  if (/^(?:java\.util\.)?(?:List|ArrayList|LinkedList|Map|HashMap|LinkedHashMap|Set|HashSet|Deque|Queue)$/.test(normalized)) {
+    return false;
+  }
+  return /^[A-Za-z_$][A-Za-z0-9_$.]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(normalized);
+}
+
 function toJavaTypedArrayLiteral(value, expectedType) {
   const normalized = stripGenericType(expectedType);
   if (!normalized.endsWith('[]')) {
@@ -813,6 +847,9 @@ function buildJavaExpression(value, expectedType) {
   if (isRecord(value) && normalizedType === 'ListNode') return listExpression(value);
   if (isRecord(value) && normalizedType === 'TreeNode') return treeExpression(value);
   if (isRecord(value) && normalizedType?.startsWith('Map<')) return toJavaMapLiteral(value, normalizedType);
+  if (isRecord(value) && normalizedType && isCustomJavaObjectType(normalizedType)) {
+    return `((${normalizedType}) materializeObject(${normalizedType}.class, ${toJavaObjectFieldsExpression(value)}))`;
+  }
   if (isRecord(value) && customObjectTypeName(value)) {
     return `((${normalizedType ?? customObjectTypeName(value)}) ${toJavaDynamicObjectExpression(value)})`;
   }
@@ -1041,6 +1078,11 @@ function buildHelperMethods(features) {
     if ((targetType == char.class || targetType == Character.class) && value instanceof String && ((String) value).length() == 1) {
       return ((String) value).charAt(0);
     }
+    if (value instanceof java.util.LinkedHashMap<?, ?> && !java.util.Map.class.isAssignableFrom(targetType)) {
+      @SuppressWarnings("unchecked")
+      java.util.LinkedHashMap<String, Object> fields = (java.util.LinkedHashMap<String, Object>) value;
+      return materializeObject(targetType, fields);
+    }
     return value;
   }`);
   }
@@ -1152,7 +1194,7 @@ function buildHelperMethods(features) {
   }
 `);
   }
-  if (features.hasCustomObject) {
+  if (features.hasList || features.hasCustomObject) {
     members.push(`
 
   private static java.util.LinkedHashMap<String, Object> objectFields(Object[][] entries) {
@@ -1163,9 +1205,49 @@ function buildHelperMethods(features) {
     return fields;
   }
 
+  private static Class<?> resolveMaterializedClass(String typeName) throws ClassNotFoundException {
+    String packageName = new Object() {}.getClass().getPackageName();
+    java.util.List<String> candidates = new java.util.ArrayList<>();
+    candidates.add(packageName + "." + typeName);
+    if (typeName.indexOf('.') > 0) {
+      candidates.add(packageName + "." + typeName.replace('.', '$'));
+    } else {
+      candidates.add(packageName + ".Solution$" + typeName);
+    }
+    ClassNotFoundException lastError = null;
+    for (String candidate : candidates) {
+      try {
+        return Class.forName(candidate);
+      } catch (ClassNotFoundException error) {
+        lastError = error;
+      }
+    }
+    throw lastError == null ? new ClassNotFoundException(typeName) : lastError;
+  }
+
   private static Object materializeObject(String typeName, java.util.LinkedHashMap<String, Object> fields) {
     try {
-      Class<?> cls = Class.forName(new Object() {}.getClass().getPackageName() + "." + typeName);
+      return materializeObject(resolveMaterializedClass(typeName), fields);
+    } catch (Exception error) {
+      throw new RuntimeException("Unable to materialize " + typeName, error);
+    }
+  }
+
+  private static void assignMaterializedFields(Class<?> cls, Object instance, java.util.LinkedHashMap<String, Object> fields) {
+    for (java.util.Map.Entry<String, Object> entry : fields.entrySet()) {
+      try {
+        java.lang.reflect.Field field = cls.getDeclaredField(entry.getKey());
+        field.setAccessible(true);
+        field.set(instance, coerceMaterializedValue(entry.getValue(), field.getType()));
+      } catch (NoSuchFieldException ignored) {
+      } catch (IllegalAccessException error) {
+        throw new RuntimeException("Unable to assign field " + entry.getKey() + " on " + cls.getName(), error);
+      }
+    }
+  }
+
+  private static Object materializeObject(Class<?> cls, java.util.LinkedHashMap<String, Object> fields) {
+    try {
       Object[] values = fields.values().toArray();
       for (java.lang.reflect.Constructor<?> ctor : cls.getDeclaredConstructors()) {
         if (ctor.getParameterCount() != values.length) {
@@ -1178,7 +1260,9 @@ function buildHelperMethods(features) {
             args[i] = coerceMaterializedValue(values[i], parameterTypes[i]);
           }
           ctor.setAccessible(true);
-          return ctor.newInstance(args);
+          Object instance = ctor.newInstance(args);
+          assignMaterializedFields(cls, instance, fields);
+          return instance;
         } catch (Exception ignored) {
         }
       }
@@ -1190,14 +1274,7 @@ function buildHelperMethods(features) {
           Class<?>[] parameterTypes = ctor.getParameterTypes();
           ctor.setAccessible(true);
           Object instance = ctor.newInstance(coerceMaterializedValue(values[0], parameterTypes[0]));
-          for (java.util.Map.Entry<String, Object> entry : fields.entrySet()) {
-            try {
-              java.lang.reflect.Field field = cls.getDeclaredField(entry.getKey());
-              field.setAccessible(true);
-              field.set(instance, coerceMaterializedValue(entry.getValue(), field.getType()));
-            } catch (NoSuchFieldException ignored) {
-            }
-          }
+          assignMaterializedFields(cls, instance, fields);
           return instance;
         } catch (Exception ignored) {
         }
@@ -1205,14 +1282,10 @@ function buildHelperMethods(features) {
       java.lang.reflect.Constructor<?> noArg = cls.getDeclaredConstructor();
       noArg.setAccessible(true);
       Object instance = noArg.newInstance();
-      for (java.util.Map.Entry<String, Object> entry : fields.entrySet()) {
-        java.lang.reflect.Field field = cls.getDeclaredField(entry.getKey());
-        field.setAccessible(true);
-        field.set(instance, coerceMaterializedValue(entry.getValue(), field.getType()));
-      }
+      assignMaterializedFields(cls, instance, fields);
       return instance;
     } catch (Exception error) {
-      throw new RuntimeException("Unable to materialize " + typeName, error);
+      throw new RuntimeException("Unable to materialize " + cls.getName(), error);
     }
   }
 
@@ -1224,6 +1297,61 @@ function buildHelperMethods(features) {
 function sourceDeclaresJavaClass(source, className) {
   const escapedName = String(className).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\bclass\\s+${escapedName}\\b`).test(String(source ?? ''));
+}
+
+function findJavaClassBodyRange(source, className) {
+  const escapedName = String(className).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`\\b(?:class|interface|enum|record)\\s+${escapedName}\\b`, 'g');
+  let match;
+  while ((match = pattern.exec(source))) {
+    const openBrace = source.indexOf('{', match.index + match[0].length);
+    if (openBrace < 0) continue;
+    const closeBrace = findMatchingBrace(source, openBrace);
+    if (closeBrace > openBrace) {
+      return { start: openBrace + 1, end: closeBrace };
+    }
+  }
+  return null;
+}
+
+function collectJavaNestedTypes(source, ownerClassName = 'Solution') {
+  const range = findJavaClassBodyRange(source, ownerClassName);
+  const nested = new Set();
+  if (!range) return nested;
+
+  const body = source.slice(range.start, range.end);
+  let depth = 0;
+  scanJavaCode(body, 0, body.length, (index, ch) => {
+    if (depth === 0) {
+      const declaration = body.slice(index).match(/^\s*(?:(?:public|private|protected|static|final|abstract|sealed|non-sealed|strictfp)\s+)*(?:class|interface|enum|record)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/);
+      if (declaration?.[1]) {
+        nested.add(declaration[1]);
+      }
+    }
+    if (ch === '{') depth += 1;
+    if (ch === '}') depth = Math.max(0, depth - 1);
+    return undefined;
+  });
+  return nested;
+}
+
+function qualifyJavaNestedTypeReferences(typeSource, nestedTypeNames, ownerClassName = 'Solution') {
+  let out = String(typeSource ?? 'Object');
+  for (const nestedTypeName of nestedTypeNames) {
+    const escaped = nestedTypeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(
+      new RegExp(`(?<![\\w.])${escaped}(?![\\w])`, 'g'),
+      `${ownerClassName}.${nestedTypeName}`
+    );
+  }
+  return out;
+}
+
+function qualifyJavaParameters(parameters, nestedTypeNames, ownerClassName = 'Solution') {
+  return parameters.map((parameter) => ({
+    ...parameter,
+    type: qualifyJavaNestedTypeReferences(parameter.type, nestedTypeNames, ownerClassName),
+  }));
 }
 
 function buildNodePreludeSource(source, options = {}) {
@@ -2776,8 +2904,12 @@ function dynamicInputByKey(dynamicInputs) {
 }
 
 function buildExportsSource(source, functionName, executionStyle, input, options = {}) {
+  const nestedTypeOwner = executionStyle === 'ops-class' ? functionName : 'Solution';
+  const nestedTypeNames = collectJavaNestedTypes(source, nestedTypeOwner);
   const features = {
     ...detectFeatures(source, input, options),
+    hasCustomObject: detectFeatures(source, input, options).hasCustomObject ||
+      (containsPlainObjectLiteral(input) && nestedTypeNames.size > 0),
     skipInputMaterializers: options.scriptMode === true,
   };
   const helperMethods = buildHelperMethods(features);
@@ -2794,7 +2926,11 @@ function buildExportsSource(source, functionName, executionStyle, input, options
       firstOperation === '__init__' ||
       firstOperation === 'init' ||
       (firstOperation !== null && extractMethodReturnType(source, firstOperation) === null);
-    const constructorParameters = extractMethodParametersForArguments(source, functionName, argumentsList[0]);
+    const constructorParameters = qualifyJavaParameters(
+      extractMethodParametersForArguments(source, functionName, argumentsList[0]),
+      nestedTypeNames,
+      nestedTypeOwner
+    );
     const constructorArgs = hasConstructorOperation
       ? inputArgumentsForParameters(argumentsList[0], constructorParameters)
       : [];
@@ -2811,7 +2947,11 @@ function buildExportsSource(source, functionName, executionStyle, input, options
         return;
       }
       const operationName = String(operation);
-      const parameters = extractMethodParametersForArguments(source, operationName, argumentsList[index]);
+      const parameters = qualifyJavaParameters(
+        extractMethodParametersForArguments(source, operationName, argumentsList[index]),
+        nestedTypeNames,
+        nestedTypeOwner
+      );
       const args = inputArgumentsForParameters(argumentsList[index], parameters);
       const invocationArgs = args.map((arg, argIndex) => buildJavaExpression(arg, parameters[argIndex]?.type)).join(', ');
       const returnType = extractMethodReturnType(source, operationName);
@@ -2834,8 +2974,8 @@ ${lines.join('\n')}
 `;
   }
 
-  const parameters = extractMethodParameters(source, functionName);
-  const returnType = extractMethodReturnType(source, functionName);
+  const parameters = qualifyJavaParameters(extractMethodParameters(source, functionName), nestedTypeNames, nestedTypeOwner);
+  const returnType = qualifyJavaNestedTypeReferences(extractMethodReturnType(source, functionName), nestedTypeNames, nestedTypeOwner);
   const invocationKeys = parameters.length > 0 ? parameters.map((parameter) => parameter.name) : Object.keys(input);
   const usedLocalNames = new Set(['solution', ...invocationKeys]);
   const resultLocalName = uniqueJavaIdentifier('__tracecode_result', usedLocalNames);

@@ -65,6 +65,7 @@ export interface CodeExecutionResult {
     | 'driver-compile'
     | 'trace-driver-compile'
     | 'driver-link';
+  diagnostic?: unknown;
   timings?: RuntimeExecutionTimings;
 }
 
@@ -97,6 +98,7 @@ export interface ExecutionResult {
     | 'client-timeout';
   lineEventCount?: number;
   traceStepCount?: number;
+  diagnostic?: unknown;
   timings?: RuntimeExecutionTimings;
 }
 

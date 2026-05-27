@@ -165,6 +165,7 @@ export interface RuntimeExecuteCaseResult {
   traceLimitExceeded?: boolean;
   timeoutReason?: CodeExecutionResult['timeoutReason'];
   diagnosticStage?: CodeExecutionResult['diagnosticStage'];
+  diagnostic?: unknown;
   timings?: RuntimeExecutionTimings;
 }
 
