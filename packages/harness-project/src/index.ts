@@ -5,6 +5,8 @@ import {
 } from 'just-bash/browser';
 import {
   applyRuntimeCommandResultFiles,
+  canCreateRuntimeCommandStdinPipe,
+  createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
@@ -80,6 +82,11 @@ import type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectTerminalPrompt,
+  RuntimeProjectTerminalEvent,
+  RuntimeProjectTerminalEventHandler,
+  RuntimeProjectTerminalInputState,
+  RuntimeProjectTerminalInputStateReason,
+  RuntimeProjectTerminalRunOptions,
   RuntimeProjectTerminalSession,
   RuntimeProjectTerminalSessionOptions,
   RuntimeProjectSession,
@@ -207,6 +214,12 @@ export interface CreateRuntimeWorkspaceOptions {
 export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
   private currentCwd: string;
   private readonly env: Record<string, string>;
+  private currentInputState: RuntimeProjectTerminalInputState;
+  private activeStdinPipe: RuntimeCommandOptions['stdinPipe'] | null = null;
+  private activeTerminalEventHandler?: RuntimeProjectTerminalEventHandler;
+  private activeStdinPrompt = '';
+  private activeCommand = '';
+  private readonly onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 
   constructor(
     private readonly options: {
@@ -220,6 +233,8 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   ) {
     this.currentCwd = sessionOptions.cwd ?? options.workspaceRoot;
     this.env = { ...(sessionOptions.env ?? {}) };
+    this.onTerminalEvent = sessionOptions.onTerminalEvent;
+    this.currentInputState = this.createInputState('command');
   }
 
   get cwd(): string {
@@ -239,56 +254,136 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     };
   }
 
-  async run(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
+  get inputState(): RuntimeProjectTerminalInputState {
+    return this.currentInputState;
+  }
+
+  writeStdin(data: string): boolean {
+    if (!this.activeStdinPipe || this.currentInputState.mode !== 'stdin') return false;
+    this.activeStdinPipe.write(data);
+    this.activeStdinPrompt = '';
+    this.setInputState('busy', 'stdin-submit');
+    return true;
+  }
+
+  private createInputState(
+    mode: RuntimeProjectTerminalInputState['mode'],
+    label = this.prompt.text,
+    command = this.activeCommand
+  ): RuntimeProjectTerminalInputState {
+    return {
+      mode,
+      prompt: this.prompt,
+      label,
+      hidden: mode === 'busy',
+      disabled: mode === 'busy',
+      ...(command ? { command } : {}),
+    };
+  }
+
+  private emitTerminalEvent(reason: RuntimeProjectTerminalInputStateReason): void {
+    const event = { type: 'input-state' as const, reason, state: this.currentInputState };
+    this.onTerminalEvent?.(event);
+    this.activeTerminalEventHandler?.(event);
+  }
+
+  private setInputState(
+    mode: RuntimeProjectTerminalInputState['mode'],
+    reason: RuntimeProjectTerminalInputStateReason,
+    label = this.prompt.text
+  ): RuntimeProjectTerminalInputState {
+    this.currentInputState = this.createInputState(mode, label);
+    this.emitTerminalEvent(reason);
+    return this.currentInputState;
+  }
+
+  async run(command: string, options: RuntimeProjectTerminalRunOptions = {}): Promise<RuntimeCommandResult> {
     const trimmed = command.trim();
     if (!trimmed) return { stdout: '', stderr: '', exitCode: 0 };
 
+    const previousStdinPipe = this.activeStdinPipe;
+    const previousTerminalEventHandler = this.activeTerminalEventHandler;
+    const previousStdinPrompt = this.activeStdinPrompt;
+    const previousCommand = this.activeCommand;
+    const ownedStdinPipe = options.stdinPipe
+      ? undefined
+      : canCreateRuntimeCommandStdinPipe()
+        ? createRuntimeCommandStdinPipe()
+        : undefined;
+    const commandStdinPipe = options.stdinPipe ?? ownedStdinPipe;
+    this.activeStdinPipe = commandStdinPipe ?? null;
+    this.activeTerminalEventHandler = options.onTerminalEvent;
+    this.activeStdinPrompt = '';
+    this.activeCommand = trimmed;
+    this.setInputState('busy', 'command-start');
+
     const words = parseSimpleCommandWords(trimmed);
-    if (words?.[0] === 'cd') {
-      if (words.length > 2) {
-        return { stdout: '', stderr: 'cd: too many arguments\n', exitCode: 1 };
+    try {
+      if (words?.[0] === 'cd') {
+        if (words.length > 2) {
+          return { stdout: '', stderr: 'cd: too many arguments\n', exitCode: 1 };
+        }
+        try {
+          this.currentCwd = await this.options.resolveCwd(this.currentCwd, words[1] ?? this.options.workspaceRoot);
+          return { stdout: '', stderr: '', exitCode: 0 };
+        } catch (error) {
+          return { stdout: '', stderr: `cd: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+        }
       }
-      try {
-        this.currentCwd = await this.options.resolveCwd(this.currentCwd, words[1] ?? this.options.workspaceRoot);
-        return { stdout: '', stderr: '', exitCode: 0 };
-      } catch (error) {
-        return { stdout: '', stderr: `cd: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+
+      if (words?.[0] === 'pwd' && words.length === 1) {
+        return { stdout: `${this.currentCwd}\n`, stderr: '', exitCode: 0 };
       }
-    }
 
-    if (words?.[0] === 'pwd' && words.length === 1) {
-      return { stdout: `${this.currentCwd}\n`, stderr: '', exitCode: 0 };
-    }
-
-    let nextCwd: string | null = null;
-    const leadingCdTarget = leadingPersistentCdTarget(trimmed);
-    if (leadingCdTarget !== null) {
-      try {
-        nextCwd = await this.options.resolveCwd(this.currentCwd, leadingCdTarget ?? this.options.workspaceRoot);
-      } catch {
-        nextCwd = null;
+      let nextCwd: string | null = null;
+      const leadingCdTarget = leadingPersistentCdTarget(trimmed);
+      if (leadingCdTarget !== null) {
+        try {
+          nextCwd = await this.options.resolveCwd(this.currentCwd, leadingCdTarget ?? this.options.workspaceRoot);
+        } catch {
+          nextCwd = null;
+        }
       }
-    }
 
-    const result = await this.options.runCommand(trimmed, {
-      ...options,
-      cwd: this.currentCwd,
-      env: {
-        ...this.env,
-        ...(options.env ?? {}),
-        PWD: this.currentCwd,
-      },
-      onEvent: options.onEvent
-        ? (event) => {
-            if (event.type === 'status' && !this.options.isVerbose()) return;
-            options.onEvent?.(event);
-          }
-        : undefined,
-    });
-    if (nextCwd) {
-      this.currentCwd = nextCwd;
+      const handleCommandEvent = (event: RuntimeCommandEvent): void => {
+        if (event.type === 'status' && !this.options.isVerbose()) return;
+        if (
+          event.type === 'output' &&
+          event.stream === 'stdout' &&
+          this.activeStdinPipe &&
+          !event.data.endsWith('\n')
+        ) {
+          this.activeStdinPrompt += event.data;
+          const inputState = this.setInputState('stdin', 'stdin-prompt', this.activeStdinPrompt);
+          options.onEvent?.({ ...event, terminal: { role: 'stdin-prompt', inputState } });
+          return;
+        }
+        options.onEvent?.(event);
+      };
+
+      const result = await this.options.runCommand(trimmed, {
+        ...options,
+        stdinPipe: commandStdinPipe,
+        cwd: this.currentCwd,
+        env: {
+          ...this.env,
+          ...(options.env ?? {}),
+          PWD: this.currentCwd,
+        },
+        onEvent: handleCommandEvent,
+      });
+      if (nextCwd) {
+        this.currentCwd = nextCwd;
+      }
+      return result;
+    } finally {
+      ownedStdinPipe?.close();
+      this.activeStdinPipe = previousStdinPipe;
+      this.activeTerminalEventHandler = previousTerminalEventHandler;
+      this.activeStdinPrompt = previousStdinPrompt;
+      this.activeCommand = previousCommand;
+      this.setInputState('command', 'command-finish');
     }
-    return result;
   }
 }
 
@@ -5182,6 +5277,11 @@ export type {
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectTerminalPrompt,
+  RuntimeProjectTerminalEvent,
+  RuntimeProjectTerminalEventHandler,
+  RuntimeProjectTerminalInputState,
+  RuntimeProjectTerminalInputStateReason,
+  RuntimeProjectTerminalRunOptions,
   RuntimeProjectTerminalSession,
   RuntimeProjectTerminalSessionOptions,
   RuntimeProjectSession,

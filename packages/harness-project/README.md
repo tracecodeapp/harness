@@ -59,3 +59,39 @@ All language runners use the same project request shape: source, script path,
 argv, cwd, environment, stdin, and a `RuntimeProjectSnapshot` containing the
 current files, empty directories, optional entrypoint, `workspaceRoot`, and
 optional `workspaceAlias`.
+
+## Terminal Sessions
+
+Apps that render an interactive terminal should use
+`workspace.createTerminalSession(...)` instead of inferring prompt and stdin
+state from raw stdout.
+
+```ts
+const terminal = workspace.createTerminalSession({
+  onTerminalEvent: (event) => {
+    if (event.type === 'input-state') {
+      renderInput(event.state);
+    }
+  },
+});
+
+await terminal.run('node main.js', {
+  onEvent: (event) => {
+    if (event.type === 'output' && event.terminal?.role === 'stdin-prompt') {
+      return;
+    }
+    renderCommandEvent(event);
+  },
+});
+
+if (terminal.inputState.mode === 'stdin') {
+  terminal.writeStdin(`${value}\n`);
+}
+```
+
+The session exposes `terminal.prompt`, `terminal.inputState`, `terminal.run(...)`,
+and `terminal.writeStdin(...)`. It owns the live stdin pipe for terminal runs and
+emits input-state transitions for command, busy, and stdin modes.
+
+See [Project Terminal Sessions](../../docs/project-terminal-session.md) for the
+full consumer contract.

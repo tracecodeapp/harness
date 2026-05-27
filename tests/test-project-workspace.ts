@@ -14,6 +14,7 @@ import {
   type RuntimeCommandOptions,
   type RuntimeCommandResult,
   type RuntimeCommandEvent,
+  type RuntimeProjectTerminalEvent,
   type RuntimeWorkspace,
   type RuntimeWorkspaceEvent,
   createRuntimeWorkspace,
@@ -7918,8 +7919,15 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
       { path: 'main.txt', contents: 'root\n' },
       { path: 'src/app.txt', contents: 'src\n' },
       { path: 'main.js', contents: 'console.log("node-ok");\n' },
+      { path: 'ask.js', contents: 'process.stdout.write("Name: ");\n' },
     ],
     nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('ask.js')) {
+        request.onEvent?.({ type: 'output', stream: 'stdout', data: 'Name: ' });
+        const stdin = readTestRequestStdin(request).trim();
+        request.onEvent?.({ type: 'output', stream: 'stdout', data: `answer=${stdin}\n` });
+        return { stdout: `Name: answer=${stdin}\n`, stderr: '', exitCode: 0 };
+      }
       request.onEvent?.({ type: 'status', phase: 'process-start', message: 'Starting browser Node' });
       return { stdout: 'node-ok\n', stderr: '', exitCode: 0 };
     },
@@ -7986,6 +7994,33 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     !quietEvents.some((event) => event.type === 'status') &&
       quietEvents.some((event) => event.type === 'output' && event.data === 'node-ok\n'),
     `terminal sessions should hide status events by default while preserving output: ${JSON.stringify(quietEvents)}`
+  );
+
+  const terminalEvents: RuntimeProjectTerminalEvent[] = [];
+  const stdinCommandEvents: RuntimeCommandEvent[] = [];
+  const stdinSession = workspace.createTerminalSession({
+    onTerminalEvent: (event) => {
+      terminalEvents.push(event);
+      if (event.reason === 'stdin-prompt') {
+        stdinSession.writeStdin('Ada\n');
+      }
+    },
+  });
+  const stdinNode = await stdinSession.run('node ask.js', {
+    onEvent: (event) => stdinCommandEvents.push(event),
+  });
+  assertCondition(stdinNode.exitCode === 0 && stdinNode.stdout === 'Name: answer=Ada\n', `terminal stdin run should complete: ${JSON.stringify(stdinNode)}`);
+  assertCondition(
+    terminalEvents.map((event) => event.reason).join(',') === 'command-start,stdin-prompt,stdin-submit,command-finish',
+    `terminal sessions should publish formal input-state transitions: ${JSON.stringify(terminalEvents)}`
+  );
+  assertCondition(
+    stdinCommandEvents.some((event) => event.type === 'output' && event.terminal?.role === 'stdin-prompt'),
+    `terminal stdin prompt output should carry terminal metadata: ${JSON.stringify(stdinCommandEvents)}`
+  );
+  assertCondition(
+    stdinSession.inputState.mode === 'command' && stdinSession.inputState.label === 'obi@tracevm weather-api %',
+    `terminal input state should return to command prompt after stdin run: ${JSON.stringify(stdinSession.inputState)}`
   );
 
   const directEvents: RuntimeCommandEvent[] = [];

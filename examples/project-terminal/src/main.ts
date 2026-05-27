@@ -1,13 +1,9 @@
 import './styles.css';
 
-import {
-  canCreateRuntimeCommandStdinPipe,
-  createRuntimeCommandStdinPipe,
-} from '@tracecode/harness/core';
 import type {
   RuntimeCommandEvent,
   RuntimeCommandResult,
-  RuntimeCommandStdinPipe,
+  RuntimeProjectTerminalInputState,
   RuntimeWorkspaceEvent,
 } from '@tracecode/harness/core';
 
@@ -219,29 +215,21 @@ public class TicketTriage {
     }
   });
 
-  const terminalSession = workspace.createTerminalSession();
-  const updatePrompt = (): void => {
-    prompt.textContent = terminalSession.prompt.text;
-  };
-
-  let activeStdinPipe: RuntimeCommandStdinPipe | null = null;
-  let activeProcessPrompt = '';
-
-  const showProcessInput = (label: string): void => {
-    if (!activeStdinPipe) return;
-    activeProcessPrompt = label;
-    prompt.textContent = label;
+  const applyTerminalInputState = (state: RuntimeProjectTerminalInputState): void => {
+    prompt.textContent = state.label;
     input.value = '';
-    input.disabled = false;
-    form.hidden = false;
-    input.focus();
+    input.disabled = state.disabled;
+    form.hidden = state.hidden;
+    if (!state.disabled && !state.hidden) {
+      input.focus();
+    }
   };
 
-  const hideProcessInput = (): void => {
-    input.value = '';
-    input.disabled = true;
-    form.hidden = true;
-  };
+  const terminalSession = workspace.createTerminalSession({
+    onTerminalEvent: (event) => {
+      applyTerminalInputState(event.state);
+    },
+  });
 
   const runTerminalCommand = async (
     command: string,
@@ -252,10 +240,6 @@ public class TicketTriage {
     input.disabled = true;
     form.hidden = true;
     if (echoCommand) appendCommandLine(command);
-    const stdinPipe = canCreateRuntimeCommandStdinPipe()
-      ? createRuntimeCommandStdinPipe()
-      : undefined;
-    activeStdinPipe = stdinPipe ?? null;
 
     try {
       if (command === 'clear') {
@@ -273,7 +257,6 @@ public class TicketTriage {
       const streamedOutput = { stdout: '', stderr: '' };
       const result = await terminalSession.run(command, {
         ...options,
-        stdinPipe,
         onEvent: (event: RuntimeCommandEvent) => {
           if (event.type === 'status') {
             appendLine(`[${event.phase}] ${event.message}`, 'status');
@@ -281,8 +264,7 @@ public class TicketTriage {
           }
           if (event.type === 'output') {
             streamedOutput[event.stream] += event.data;
-            if (event.stream === 'stdout' && stdinPipe && !event.data.endsWith('\n')) {
-              showProcessInput(`${activeProcessPrompt}${event.data}`);
+            if (event.terminal?.role === 'stdin-prompt') {
               return;
             }
             appendBlock(event.data, event.stream);
@@ -308,15 +290,7 @@ public class TicketTriage {
       appendLine(message, 'stderr');
       return { stdout: '', stderr: `${message}\n`, exitCode: 1 };
     } finally {
-      stdinPipe?.close();
-      if (activeStdinPipe === stdinPipe) {
-        activeStdinPipe = null;
-      }
-      activeProcessPrompt = '';
-      updatePrompt();
-      form.hidden = false;
-      input.disabled = false;
-      input.focus();
+      applyTerminalInputState(terminalSession.inputState);
     }
   };
 
@@ -348,7 +322,7 @@ public class TicketTriage {
     import.meta.hot.dispose(disposeTerminal);
   }
 
-  updatePrompt();
+  applyTerminalInputState(terminalSession.inputState);
   appendLine('Try: ls, cat README.txt');
   appendLine('C++: cd cpp && clang++ -std=c++17 report.cpp -o ../report');
   appendLine('     ../report');
@@ -361,12 +335,10 @@ public class TicketTriage {
   const commandHistory: string[] = [];
   let historyIndex = 0;
   const submitTerminalCommand = (): void => {
-    if (activeStdinPipe) {
+    if (terminalSession.inputState.mode === 'stdin') {
       const value = input.value;
-      appendLine(`${activeProcessPrompt}${value}`, 'stdin');
-      activeProcessPrompt = '';
-      activeStdinPipe.write(`${value}\n`);
-      hideProcessInput();
+      appendLine(`${terminalSession.inputState.label}${value}`, 'stdin');
+      terminalSession.writeStdin(`${value}\n`);
       return;
     }
 
@@ -393,7 +365,7 @@ public class TicketTriage {
       submitTerminalCommand();
       return;
     }
-    if (activeStdinPipe) return;
+    if (terminalSession.inputState.mode !== 'command') return;
     if (event.key === 'ArrowUp') {
       event.preventDefault();
       if (commandHistory.length === 0) return;

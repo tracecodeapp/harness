@@ -144,14 +144,8 @@ The package publishes built ESM and CommonJS entrypoints plus `.d.ts` files.
   Re-exports the documented public surface.
 - `@tracecode/harness/browser`
   Browser harness factory, capability guards, and language profiles.
-- `@tracecode/harness/browser/project`
-  Browser project/workspace factory backed by the same project command contract.
 - `@tracecode/harness/core`
   Shared runtime contracts, result types, and trace helpers.
-- `@tracecode/harness/project`
-  Shared project/workspace primitives backed by `just-bash`.
-- `@tracecode/harness/project-node`
-  Native Node project/workspace factory for local Python, Node, Java, C#, and C++ commands.
 - `@tracecode/harness/python`
   Python runtime helpers, worker client, and snippet artifacts.
 - `@tracecode/harness/javascript`
@@ -163,7 +157,8 @@ The package publishes built ESM and CommonJS entrypoints plus `.d.ts` files.
 - `@tracecode/harness/cpp`
   C++ runtime client and worker client.
 
-The same surfaces are available as standalone language packages:
+The same core, browser, and language surfaces are available as standalone
+packages:
 
 - `@tracecode/harness-core`
 - `@tracecode/harness-browser`
@@ -172,94 +167,14 @@ The same surfaces are available as standalone language packages:
 - `@tracecode/harness-java`
 - `@tracecode/harness-csharp`
 - `@tracecode/harness-cpp`
-- `@tracecode/harness-project`
 
 The browser entrypoint is intentionally narrow. Low-level worker constructors, language gates, and isolation helpers are internal implementation details, not public SDK surface.
-Project mode is exposed through explicit `/project` subpaths so ordinary single-file consumers do not import the `just-bash` workspace layer by accident.
-
-## Project Mode / Tracekernel
-
-Project mode is the multi-file workspace layer for browser IDEs, interview
-workspaces, and local project execution. It runs shell-like commands over a
-tracekernel workspace, streams stdout/stderr and file mutations as events, and
-keeps browser and native runners behind one shared
-`RuntimeProjectCommandRequest` shape.
-
-Tracekernel gives the workspace a stable system shape: configurable user and
-host identity, a canonical `/home/<user>/<project>` root, virtual `/dev` and
-`/proc` files, readonly/hidden session fixtures, and browser storage hooks. The
-shell/parser layer is provided by `just-bash`; language execution is delegated
-to the browser or native runtime runner for each command.
-
-Browser project workspace:
-
-```ts
-import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';
-
-const workspace = await createBrowserProjectWorkspace({
-  assetBaseUrl: '/workers',
-  kernel: {
-    user: { id: 'auth-user-123', username: 'ada' },
-    host: { hostname: 'tracevm' },
-    workspace: { id: 'weather-api-1', name: 'weather-api' },
-  },
-  files: [
-    { path: 'src/main.py', contents: 'from lib.msg import message\nprint(message())\n' },
-    { path: 'src/lib/msg.py', contents: 'def message():\n    return "hello"\n' },
-  ],
-});
-
-const result = await workspace.runCommand('python3 src/main.py');
-console.log(workspace.cwd); // /home/ada/weather-api
-console.log(await workspace.readFile('/proc/self/mountinfo'));
-
-workspace.dispose();
-```
-
-Native Node project workspace:
-
-```ts
-import { createNativeProjectWorkspace } from '@tracecode/harness/project-node';
-
-const workspace = await createNativeProjectWorkspace({
-  files: [
-    { path: 'Main.java', contents: 'class Main { public static void main(String[] args) { System.out.println("hello"); } }\n' },
-  ],
-});
-
-await workspace.runCommand('javac Main.java');
-const result = await workspace.runCommand('java Main');
-
-workspace.dispose();
-```
-
-The workspace API is the same in both environments:
-
-- `writeFile`, `writeFiles`, `appendFile`, `readFile`, `readDir`, `exists`, `stat`
-- `mkdir`, `copyFile`, `moveFile`, `deleteFile`, `remove`
-- `runCommand(command, { cwd, env, stdin, signal })`
-- `snapshot({ entrypoint })`
-- `dispose()`
-
-Supported project commands include:
-
-- Python: `python`, `python3`, `py`, including file, `-m`, `-c`, stdin, `PYTHONPATH`, and workspace file changes
-- JavaScript/Node: `node`, including CommonJS, transformed ESM, `NODE_PATH`, `require`, static imports, `import.meta.url`, and workspace file changes
-- Java: `javac` and `java`, including classpaths, source paths, argfiles, jars, packages, and explicit unsupported stubs for browser-only gaps such as preview/assertion flags
-- C#: `dotnet run` and build-style project execution, including project files, multiple source files, properties, unsafe blocks, resources, `HintPath`, and `ProjectReference`
-- C/C++: `clang`, `clang++`, `gcc`, `g++`, executable runs, object files, archives, include/library paths, and `CPATH`/`C_INCLUDE_PATH`/`CPLUS_INCLUDE_PATH`/`LIBRARY_PATH`
-
-The `workspace.kernel` API exposes tracekernel identity and virtual system
-files. `/proc/kernel/info` returns the configured kernel info,
-`/proc/self/mountinfo` describes the workspace, alias, `/dev`, and `/proc`
-mounts, and `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, and `/dev/tty` connect
-to streaming command I/O. `workspace.watch(...)` and per-command `onEvent`
-receive stdout/stderr chunks and live/final file mutation events with actor
-metadata.
-
-Project snapshots preserve generated/deleted files and empty directories so a browser app can keep an in-memory project synchronized with command results.
-
-For a fuller browser IDE reference, see [examples/project-ide](./examples/project-ide).
+Project/workspace mode is an additive surface exposed through explicit
+`/project` subpaths so ordinary single-file consumers do not import the
+`just-bash` workspace layer by accident. Its standalone package is
+`@tracecode/harness-project`; see
+[Advanced: Project Workspaces](#advanced-project-workspaces) when you need
+shell-style multi-file execution.
 
 ## Browser API
 
@@ -445,6 +360,65 @@ Current C# scope:
 - supported: named `function` execution, script-style `function` execution with an empty function name and top-level `result`, `interviewMode` execution with sanitized timeout responses, `solution-method` execution for `public class Solution`, `ops-class` execution with JS/TS/Java-style operation-output arrays, generated drivers including `void` methods, `ListNode`/`TreeNode` prelude classes and JSON hydration including linked `__id__`/`__ref__` cycle refs, neutral graph-like map/list serialization, stdout capture, runtime errors, mapped Roslyn compile diagnostics, soft loop timeouts, trace budgets (`maxTraceSteps`, `maxLineEvents`, `maxSingleLineHits`, `maxStoredEvents`, `minimalTrace`), call-stack attachment for traced frames, `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/array return-value serialization, block-bodied and expression-bodied method tracing, block-bodied and expression-bodied lambda tracing, basic line/call/return-value/simple-write tracing, one-dimensional array indexed read/write tracing including simple compound writes, and `List<T>`/`Dictionary<K,V>`/`HashSet<T>`/`Queue<T>`/`PriorityQueue<TElement,TPriority>`/`Stack<T>` wrapper tracing for `var`, explicit local declarations, target-typed `new()`, collection initializers, common collection constructors, comparer constructor overloads, and priority-queue capacity/comparer constructors
 - not yet supported in tracing/snippet mode: NuGet packages, async/threading APIs, expression-tree lambda rewriting, or full expression/value tracing fidelity
 - project mode additionally supports project files, multiple source files, unsafe builds, resources, `HintPath`, and `ProjectReference` for compile/run execution
+
+## Advanced: Project Workspaces
+
+Project/workspace mode is for apps that need shell-style multi-file execution:
+browser IDEs, interview workspaces, terminal demos, and local project runners.
+It is built on a Tracekernel workspace and exposed separately from the primary
+single-file browser harness.
+
+The project surface lives behind explicit entrypoints:
+
+- `@tracecode/harness/browser/project`
+  Browser project/workspace factory.
+- `@tracecode/harness/project`
+  Shared workspace primitives backed by `just-bash`.
+- `@tracecode/harness/project-node`
+  Native Node project/workspace factory for local Python, Node, Java, C#, and C++ commands.
+- `@tracecode/harness-project`
+  Standalone package for consumers that install project mode separately.
+
+Browser project workspace:
+
+```ts
+import { createBrowserProjectWorkspace } from '@tracecode/harness/browser/project';
+
+const workspace = await createBrowserProjectWorkspace({
+  assetBaseUrl: '/workers',
+  kernel: {
+    user: { username: 'ada' },
+    host: { hostname: 'tracevm' },
+    workspace: { name: 'weather-api' },
+  },
+  files: [
+    { path: 'src/main.py', contents: 'print("hello")\n' },
+  ],
+});
+
+const result = await workspace.runCommand('python3 src/main.py');
+
+workspace.dispose();
+```
+
+The workspace API includes file operations, `runCommand(...)`,
+`snapshot(...)`, streaming command events, and live file mutation events. Project
+commands are routed through the same command request shape across browser and
+native runners for Python, JavaScript/Node, Java, C#, and C/C++.
+
+Tracekernel provides the workspace system model for this mode: configurable user
+and host identity, a canonical `/home/<user>/<project>` root, optional
+`/workspace` alias, virtual `/dev` and `/proc` files, readonly/hidden session
+fixtures, and browser storage hooks. Most consumers only need this through the
+workspace and terminal APIs.
+
+For terminal UIs, use `workspace.createTerminalSession(...)` instead of
+building prompt/stdin heuristics around raw command output. See
+[Project Terminal Sessions](./docs/project-terminal-session.md).
+
+For fuller references, see [packages/harness-project](./packages/harness-project),
+[examples/project-ide](./examples/project-ide), and
+[examples/project-terminal](./examples/project-terminal).
 
 ## Example Consumer
 

@@ -344,7 +344,13 @@ export interface RuntimeCommandOutputEvent {
   device?: RuntimeKernelDevicePath;
   sourceDevice?: RuntimeKernelDevicePath;
   data: string;
+  terminal?: RuntimeCommandOutputTerminalMetadata;
   actor?: RuntimeWorkspaceActor;
+}
+
+export interface RuntimeCommandOutputTerminalMetadata {
+  role: 'stdin-prompt';
+  inputState: RuntimeProjectTerminalInputState;
 }
 
 export interface RuntimeCommandStatusEvent {
@@ -698,15 +704,50 @@ export interface RuntimeProjectTerminalPrompt {
   text: string;
 }
 
+export type RuntimeProjectTerminalInputMode = 'command' | 'busy' | 'stdin';
+
+export type RuntimeProjectTerminalInputStateReason =
+  | 'initial'
+  | 'command-start'
+  | 'stdin-prompt'
+  | 'stdin-submit'
+  | 'command-finish';
+
+export interface RuntimeProjectTerminalInputState {
+  mode: RuntimeProjectTerminalInputMode;
+  prompt: RuntimeProjectTerminalPrompt;
+  label: string;
+  hidden: boolean;
+  disabled: boolean;
+  command?: string;
+}
+
+export interface RuntimeProjectTerminalInputStateEvent {
+  type: 'input-state';
+  reason: RuntimeProjectTerminalInputStateReason;
+  state: RuntimeProjectTerminalInputState;
+}
+
+export type RuntimeProjectTerminalEvent = RuntimeProjectTerminalInputStateEvent;
+
+export type RuntimeProjectTerminalEventHandler = (event: RuntimeProjectTerminalEvent) => void;
+
 export interface RuntimeProjectTerminalSession {
   readonly cwd: string;
   readonly prompt: RuntimeProjectTerminalPrompt;
-  run(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
+  readonly inputState: RuntimeProjectTerminalInputState;
+  writeStdin(data: string): boolean;
+  run(command: string, options?: RuntimeProjectTerminalRunOptions): Promise<RuntimeCommandResult>;
 }
 
 export interface RuntimeProjectTerminalSessionOptions {
   cwd?: string;
   env?: Record<string, string>;
+  onTerminalEvent?: RuntimeProjectTerminalEventHandler;
+}
+
+export interface RuntimeProjectTerminalRunOptions extends RuntimeCommandOptions {
+  onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 }
 
 export type RuntimeProjectCommandSource = 'argument' | 'file' | 'stdin';
