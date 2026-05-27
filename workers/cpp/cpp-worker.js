@@ -2517,7 +2517,7 @@ function parseCppPublicDataFields(typeBody, kind) {
       .replace(/\s*=\s*[\s\S]*$/, '')
       .replace(/\s*([*&]+)\s*([A-Za-z_]\w*)$/, ' $1 $2')
       .trim();
-    if (!statement || statement.includes(',')) continue;
+    if (!statement || splitTopLevelCommaList(statement).length > 1) continue;
     const match = statement.match(/^(.+?)\s+([A-Za-z_]\w*)$/);
     if (!match) continue;
     const fieldType = match[1].replace(/\bmutable\b/g, '').trim();
@@ -2570,12 +2570,91 @@ function collectCppNestedTypes(source, ownerName = 'Solution') {
   return types;
 }
 
-function buildCppDriverTypeContext(source, ownerName = 'Solution') {
+function collectCppTopLevelTypes(source) {
+  const cleaned = stripComments(String(source || ''));
+  const types = [];
+  const pattern = /\b(struct|class)\s+([A-Za-z_]\w*)\b[^;{]*\{/g;
+  let match;
+  while ((match = pattern.exec(cleaned))) {
+    if (cppBraceDepthBefore(cleaned, match.index) !== 0) continue;
+    const kind = match[1];
+    const name = match[2];
+    const openBrace = cleaned.indexOf('{', match.index + match[0].length - 1);
+    const closeBrace = findMatchingBrace(cleaned, openBrace);
+    if (openBrace < 0 || closeBrace <= openBrace) continue;
+    pattern.lastIndex = closeBrace + 1;
+    if (name === 'Solution') continue;
+    const typeBody = cleaned.slice(openBrace + 1, closeBrace);
+    types.push({
+      kind,
+      name,
+      access: 'public',
+      qualifiedName: name,
+      fields: parseCppPublicDataFields(typeBody, kind),
+    });
+  }
+  return types;
+}
+
+function collectCppSignatureCustomTypeNames(signature, aliases = new Map()) {
+  const names = new Set();
+  const visit = (type) => {
+    const normalized = materializedCppType(type, aliases).replace(/\s+/g, '').replace(/\bstd::/g, '');
+    if (!normalized || isPrimitiveCppType(normalized) || normalized === 'void' || normalized === 'nullptr_t') return;
+    if (normalized.endsWith('*')) return;
+    const templateStart = normalized.indexOf('<');
+    if (templateStart >= 0 && normalized.endsWith('>')) {
+      for (const arg of splitTopLevelCommaList(normalized.slice(templateStart + 1, -1))) {
+        visit(arg);
+      }
+      return;
+    }
+    if (/^[A-Za-z_]\w*(?:::[A-Za-z_]\w*)?$/.test(normalized)) {
+      names.add(normalized);
+      names.add(normalized.split('::').pop());
+    }
+  };
+  visit(signature.returnType);
+  for (const parameter of signature.parameters || []) {
+    visit(parameter.type);
+  }
+  return names;
+}
+
+function buildCppDriverTypeContext(source, ownerName = 'Solution', signature = null, aliases = new Map()) {
+  const signatureCustomTypeNames = signature ? collectCppSignatureCustomTypeNames(signature, aliases) : null;
+  const signatureUsesType = (type) =>
+    !signatureCustomTypeNames ||
+    signatureCustomTypeNames.has(type.name) ||
+    signatureCustomTypeNames.has(type.qualifiedName);
+  const topLevelTypes = collectCppTopLevelTypes(source);
   const nestedTypes = collectCppNestedTypes(source, ownerName);
-  const publicJsonTypes = nestedTypes.filter((type) => type.access === 'public' && type.fields.length > 0);
+  const availableTypes = [...topLevelTypes, ...nestedTypes];
+  if (signatureCustomTypeNames) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const type of availableTypes) {
+        if (!signatureCustomTypeNames.has(type.name) && !signatureCustomTypeNames.has(type.qualifiedName)) continue;
+        for (const field of type.fields) {
+          const fieldNames = collectCppSignatureCustomTypeNames({ returnType: field.type, parameters: [] }, aliases);
+          for (const name of fieldNames) {
+            if (!signatureCustomTypeNames.has(name)) {
+              signatureCustomTypeNames.add(name);
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+  }
+  const jsonTypes = availableTypes.filter(signatureUsesType);
+  const publicJsonTypes = jsonTypes.filter((type) => type.access === 'public' && type.fields.length > 0);
   return {
     ownerName,
+    topLevelTypes,
     nestedTypes,
+    jsonTypes,
     nestedTypeNames: new Set(nestedTypes.map((type) => type.name)),
     customJsonTypes: new Set(publicJsonTypes.map((type) => type.qualifiedName)),
   };
@@ -2591,25 +2670,29 @@ function qualifyCppTypeForDriver(type, context) {
   return out;
 }
 
-function qualifyCppSignatureForDriver(signature, context) {
+function qualifyCppSignatureForDriver(signature, context, aliases = new Map()) {
   if (!context || context.nestedTypeNames.size === 0) return signature;
   return {
     ...signature,
-    returnType: qualifyCppTypeForDriver(signature.returnType, context),
+    returnType: qualifyCppTypeForDriver(resolveCppType(signature.returnType, aliases), context),
     parameters: signature.parameters.map((parameter) => ({
       ...parameter,
-      type: qualifyCppTypeForDriver(parameter.type, context),
+      type: qualifyCppTypeForDriver(resolveCppType(parameter.type, aliases), context),
     })),
   };
 }
 
 function buildCppJsonObjectAdapters(context, aliases = new Map()) {
-  const adapterTypes = (context?.nestedTypes ?? []).filter((type) => type.access === 'public' && type.fields.length > 0);
+  const adapterTypes = (context?.jsonTypes ?? context?.nestedTypes ?? []).filter((type) => type.access === 'public' && type.fields.length > 0);
   if (adapterTypes.length === 0) return '';
   const adapters = adapterTypes.map((type) => {
-    const fieldReads = type.fields.map((field) => {
+    const fieldReads = type.fields.flatMap((field) => {
       const fieldType = qualifyCppTypeForDriver(field.type, context);
-      return `      tracecode::json_to<${materializedCppType(fieldType, aliases)}>(field(value, ${cppStringLiteral(field.name)}))`;
+      return [
+        `    if (const JsonValue* found = object_get(value, ${cppStringLiteral(field.name)})) {`,
+        `      out.${field.name} = tracecode::json_to<${materializedCppType(fieldType, aliases)}>(*found);`,
+        '    }',
+      ];
     });
     const jsonLines = type.fields.flatMap((field, index) => [
       `    if (${index} > 0) json += ",";`,
@@ -2626,9 +2709,9 @@ struct JsonObjectAdapter<${type.qualifiedName}> {
     return found ? *found : null_value;
   }
   static ${type.qualifiedName} from(const JsonValue& value) {
-    return ${type.qualifiedName}{
-${fieldReads.join(',\n')}
-    };
+    ${type.qualifiedName} out{};
+${fieldReads.join('\n')}
+    return out;
   }
   static std::string to_json(const ${type.qualifiedName}& value) {
     std::string json = "{";
@@ -4089,12 +4172,8 @@ function escapeRegExp(value) {
 
 function rewriteTraceContainerParameters(line, signature, aliases = new Map(), source = '') {
   let rewritten = line;
-  const skipNames = signature.skipTraceParameterNames || new Set();
   for (const parameter of signature.parameters) {
-    if (skipNames.has(parameter.name)) continue;
-    if (!isTraceWrappedCppType(parameter.type, aliases)) continue;
-    if (/\bconst\b/.test(parameter.type)) continue;
-    if (hasUnsafeMapProxyAutoReferenceBinding(parameter.type, source, parameter.name, aliases)) continue;
+    if (!shouldTraceWrapCppParameter(parameter, signature, aliases, source)) continue;
     const baseParameterType = parameter.type.replace(/[&]/g, '').trim();
     const typePattern = escapeRegExp(baseParameterType).replace(/\\\s+/g, '\\s+');
     const pattern = new RegExp(`${typePattern}\\s*&?\\s+${escapeRegExp(parameter.name)}\\b`);
@@ -4114,6 +4193,15 @@ function rewriteTraceContainerParameters(line, signature, aliases = new Map(), s
     }
   }
   return rewritten;
+}
+
+function shouldTraceWrapCppParameter(parameter, signature, aliases = new Map(), source = '') {
+  const skipNames = signature?.skipTraceParameterNames || new Set();
+  if (skipNames.has(parameter.name)) return false;
+  if (!isTraceWrappedCppType(parameter.type, aliases)) return false;
+  if (/\bconst\b/.test(parameter.type)) return false;
+  if (hasUnsafeMapProxyAutoReferenceBinding(parameter.type, source, parameter.name, aliases)) return false;
+  return true;
 }
 
 function rewriteControlConditionSource(control, lineNumber, accessVariables = new Map(), aliases = new Map()) {
@@ -4734,9 +4822,15 @@ function isKeyedIndexSourceInstrumentableCppType(type, aliases = new Map()) {
   return isUnorderedMapCppType(type, aliases) || isMapCppType(type, aliases);
 }
 
+function isKeyedIndexSourceInstrumentableVariable(variable, aliases = new Map()) {
+  if (!variable || !isKeyedIndexSourceInstrumentableCppType(variable.type, aliases)) return false;
+  if (variable.parameter && !variable.traceWrapped) return false;
+  return true;
+}
+
 function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new Map(), lineNumber = 0) {
   const candidateNames = [...(variables || []).entries()]
-    .filter(([, variable]) => isKeyedIndexSourceInstrumentableCppType(variable.type, aliases))
+    .filter(([, variable]) => isKeyedIndexSourceInstrumentableVariable(variable, aliases))
     .map(([name]) => name)
     .sort((left, right) => right.length - left.length);
   if (candidateNames.length === 0) return line;
@@ -5179,7 +5273,7 @@ function detectMapIteratorAlias(line, variables, aliases = new Map(), scopeDepth
   if (!match) return null;
   const [, iteratorName, containerName, keySource] = match;
   const variable = variables?.get(containerName);
-  if (!variable || !isKeyedIndexSourceInstrumentableCppType(variable.type, aliases)) return null;
+  if (!isKeyedIndexSourceInstrumentableVariable(variable, aliases)) return null;
   const keyExpression = splitTopLevelCommaList(keySource)[0]?.trim();
   return {
     name: iteratorName,
@@ -5526,9 +5620,7 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
     const argNames = [];
     signature.parameters.forEach((parameter, argIndex) => {
       const localName = `__tc_op_${index}_arg_${argIndex}`;
-      const shouldTraceParameter = options.tracing === true &&
-        isTraceWrappedCppType(parameter.type, aliases) &&
-        !hasUnsafeMapProxyAutoReferenceBinding(parameter.type, userCode, parameter.name, aliases);
+      const shouldTraceParameter = options.tracing === true && shouldTraceWrapCppParameter(parameter, signature, aliases, userCode);
       const declarationType = shouldTraceParameter
         ? cppTraceType(parameter.type, aliases)
         : localCppType(parameter.type);
@@ -6099,6 +6191,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
               type: parameter.type,
               scopeDepth: 1,
               parameter: true,
+              traceWrapped: shouldTraceWrapCppParameter(parameter, nextSignature, aliases, source),
               lambdaParameter: Boolean(nextSignature.lambda),
             });
           }
@@ -6174,9 +6267,9 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
     inputNames: Object.keys(inputs || {}),
   });
   const typeContext = sourceDeclaresSolutionClass(userCode)
-    ? buildCppDriverTypeContext(userCode, 'Solution')
-    : buildCppDriverTypeContext(userCode, functionName);
-  const driverSignature = qualifyCppSignatureForDriver(signature, typeContext);
+    ? buildCppDriverTypeContext(userCode, 'Solution', signature, aliases)
+    : buildCppDriverTypeContext(userCode, functionName, signature, aliases);
+  const driverSignature = qualifyCppSignatureForDriver(signature, typeContext, aliases);
   const skipTraceParameterNames = new Set(
     signature.parameters
       .filter((parameter) => parameterAddressEscapes(userCode, parameter.name))
@@ -6192,10 +6285,7 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
 
   driverSignature.parameters.forEach((parameter, index) => {
     const localName = `__tc_arg_${index}`;
-    const shouldTraceParameter = traced &&
-      !skipTraceParameterNames.has(parameter.name) &&
-      isTraceWrappedCppType(parameter.type, aliases) &&
-      !hasUnsafeMapProxyAutoReferenceBinding(parameter.type, userCode, parameter.name, aliases);
+    const shouldTraceParameter = traced && shouldTraceWrapCppParameter(parameter, signature, aliases, userCode);
     const declarationType = shouldTraceParameter ? cppTraceType(parameter.type, aliases) : materializedCppType(parameter.type, aliases);
     const dynamicInput = cppDynamicInputExpression(parameter, index, aliases, typeContext.customJsonTypes);
     const value = dynamicInput ?? toCppLiteral(inputValueForParameter(inputs, parameter, index), parameter.type, aliases);
@@ -6211,7 +6301,7 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
   const callEventPrefix = `{"kind":"call","line":${signature.line},"function":${jsonStringLiteral(functionName)},"args":`;
   const returnEventPrefix = `{"kind":"return","line":${signature.line},"function":${jsonStringLiteral(functionName)},"value":`;
   const returnsNull = isNullCppReturnType(driverSignature.returnType, aliases);
-  const returnsVoid = normalizeCppType(driverSignature.returnType, aliases) === 'void';
+  const returnsVoid = normalizeCppType(localCppType(driverSignature.returnType), aliases) === 'void';
   const noStoredResult = returnsVoid || returnsNull;
   const voidOutputParameter = returnsVoid && driverSignature.parameters.length > 0 && isSnapshotSerializableCppType(driverSignature.parameters[0].type, aliases)
     ? driverSignature.parameters[0]

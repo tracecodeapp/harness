@@ -1215,7 +1215,11 @@ std::enable_if_t<
   !json_has_tree_node_shape<T>::value &&
   !json_has_list_node_shape<T>::value,
   std::string>
-to_json(const T&) {
+to_json(const T& value) {
+  using D = std::decay_t<T>;
+  if constexpr (JsonObjectAdapter<D>::available) {
+    return JsonObjectAdapter<D>::to_json(value);
+  }
   return "{}";
 }
 
