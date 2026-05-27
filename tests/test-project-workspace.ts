@@ -7917,7 +7917,12 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     files: [
       { path: 'main.txt', contents: 'root\n' },
       { path: 'src/app.txt', contents: 'src\n' },
+      { path: 'main.js', contents: 'console.log("node-ok");\n' },
     ],
+    nodeRunner: async (request) => {
+      request.onEvent?.({ type: 'status', phase: 'process-start', message: 'Starting browser Node' });
+      return { stdout: 'node-ok\n', stderr: '', exitCode: 0 };
+    },
   });
   await workspace.mkdir('src/nested');
 
@@ -7973,6 +7978,42 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   const escape = await session.run('cd ../../../..');
   assertCondition(escape.exitCode !== 0, 'terminal cd should reject home escapes');
   assertCondition(session.cwd === '/home/obi/weather-api/src/nested', 'failed terminal cd should preserve cwd');
+
+  const quietEvents: RuntimeCommandEvent[] = [];
+  const quietNode = await session.run('node /workspace/main.js', { onEvent: (event) => quietEvents.push(event) });
+  assertCondition(quietNode.exitCode === 0 && quietNode.stdout === 'node-ok\n', `quiet terminal Node should still run: ${JSON.stringify(quietNode)}`);
+  assertCondition(
+    !quietEvents.some((event) => event.type === 'status') &&
+      quietEvents.some((event) => event.type === 'output' && event.data === 'node-ok\n'),
+    `terminal sessions should hide status events by default while preserving output: ${JSON.stringify(quietEvents)}`
+  );
+
+  const directEvents: RuntimeCommandEvent[] = [];
+  await workspace.runCommand('node /workspace/main.js', { onEvent: (event) => directEvents.push(event) });
+  assertCondition(
+    directEvents.some((event) => event.type === 'status' && event.message === 'Starting browser Node'),
+    `workspace runCommand should keep status events for programmatic callers: ${JSON.stringify(directEvents)}`
+  );
+
+  const verboseOn = await session.run('tracekernelctl verbose');
+  assertCondition(verboseOn.stdout === 'tracekernelctl: verbose on\n', `tracekernelctl verbose should toggle on: ${JSON.stringify(verboseOn)}`);
+  const verboseEvents: RuntimeCommandEvent[] = [];
+  await session.run('node /workspace/main.js', { onEvent: (event) => verboseEvents.push(event) });
+  assertCondition(
+    verboseEvents.some((event) => event.type === 'status' && event.message === 'Starting browser Node'),
+    `terminal sessions should show status events after tracekernelctl verbose: ${JSON.stringify(verboseEvents)}`
+  );
+
+  const verboseStatus = await session.run('tracekernelctl status');
+  assertCondition(verboseStatus.stdout.includes('verbose=on'), `tracekernelctl status should expose verbose mode: ${JSON.stringify(verboseStatus)}`);
+  const verboseOff = await session.run('tracekernelctl verbose off');
+  assertCondition(verboseOff.stdout === 'tracekernelctl: verbose off\n', `tracekernelctl verbose off should disable status output: ${JSON.stringify(verboseOff)}`);
+  const quietAgainEvents: RuntimeCommandEvent[] = [];
+  await session.run('node /workspace/main.js', { onEvent: (event) => quietAgainEvents.push(event) });
+  assertCondition(
+    !quietAgainEvents.some((event) => event.type === 'status'),
+    `terminal sessions should hide status events after verbose off: ${JSON.stringify(quietAgainEvents)}`
+  );
 
   workspace.dispose();
 }
@@ -8234,6 +8275,7 @@ async function testPackageManagerProjectCommands(): Promise<void> {
         };
       }
       if (path.endsWith('scripts/test.js')) {
+        request.onEvent?.({ type: 'status', phase: 'process-start', message: 'Starting browser Node' });
         return {
           stdout: `test:${request.env.npm_lifecycle_event}:${request.env.npm_package_name}:${request.cwd}\n`,
           stderr: '',
@@ -8364,10 +8406,25 @@ async function testPackageManagerProjectCommands(): Promise<void> {
     `npm run without a script should list available scripts: ${JSON.stringify(listedScripts)}`
   );
 
-  const npmTest = await workspace.runCommand('npm test');
+  const npmTestEvents: RuntimeCommandEvent[] = [];
+  const npmTest = await workspace.runCommand('npm test', { onEvent: (event) => npmTestEvents.push(event) });
   assertCondition(
     npmTest.exitCode === 0 && npmTest.stdout === '\n> weather-app@1.2.3 test\n> node scripts/test.js\n\ntest:test:weather-app:/home/user/npm-project\n',
     `npm test should route to the test script: ${JSON.stringify(npmTest)}`
+  );
+  const npmTestBannerIndex = npmTestEvents.findIndex((event) =>
+    event.type === 'output' &&
+    event.stream === 'stdout' &&
+    event.data.includes('> weather-app@1.2.3 test')
+  );
+  const npmTestStartIndex = npmTestEvents.findIndex((event) =>
+    event.type === 'status' &&
+    event.phase === 'process-start' &&
+    event.message === 'Starting browser Node'
+  );
+  assertCondition(
+    npmTestBannerIndex !== -1 && npmTestStartIndex !== -1 && npmTestBannerIndex < npmTestStartIndex,
+    `npm run should stream the script banner before nested command events: ${JSON.stringify(npmTestEvents)}`
   );
 
   const exec = await workspace.runCommand('npm exec weather-cli inspect');

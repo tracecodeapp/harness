@@ -349,7 +349,6 @@ public class TicketTriage {
   }
 
   updatePrompt();
-  appendLine('Project workspace ready.');
   appendLine('Try: ls, cat README.txt');
   appendLine('C++: cd cpp && clang++ -std=c++17 report.cpp -o ../report');
   appendLine('     ../report');

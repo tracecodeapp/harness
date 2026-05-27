@@ -1550,7 +1550,6 @@ int main(int argc, char** argv) {
   updatePrompt();
   await renderFileTree();
   await openFile(activeFilePath);
-  appendLine('Project workspace ready.');
   appendLine('Try: python3 main.py, node index.js, javac Main.java && java Main, or mvp js');
   input.disabled = false;
   input.focus();

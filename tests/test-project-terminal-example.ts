@@ -27,7 +27,7 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     await page.goto(previewUrl, { waitUntil: 'networkidle' });
     await page.waitForSelector('#dev-terminal-input', { timeout: 180_000 });
     await page.waitForFunction(
-      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('Project workspace ready.') === true,
+      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('Try: ls, cat README.txt') === true,
       undefined,
       { timeout: 180_000 }
     );
@@ -42,8 +42,17 @@ async function runProjectTerminalSmoke(previewUrl: string): Promise<void> {
     assertCondition(
       initial.output.includes('C++: cd cpp && clang++ -std=c++17 report.cpp -o ../report') &&
         initial.output.includes('     ../report') &&
+        !initial.output.includes('Project workspace ready.') &&
         !initial.output.includes('../report, ./report'),
       `project terminal should print copyable compile/run commands on separate lines: ${JSON.stringify(initial.output)}`
+    );
+
+    await page.fill('#dev-terminal-input', 'tracekernelctl verbose on');
+    await page.press('#dev-terminal-input', 'Enter');
+    await page.waitForFunction(
+      () => document.querySelector('#dev-terminal-output')?.textContent?.includes('tracekernelctl: verbose on') === true,
+      undefined,
+      { timeout: 180_000 }
     );
 
     await page.evaluate(() => {

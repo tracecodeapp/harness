@@ -214,6 +214,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       kernelInfo: RuntimeKernelInfo;
       resolveCwd: (currentCwd: string, target: string) => Promise<string>;
       runCommand: (command: string, options?: RuntimeCommandOptions) => Promise<RuntimeCommandResult>;
+      isVerbose: () => boolean;
     },
     sessionOptions: RuntimeProjectTerminalSessionOptions = {}
   ) {
@@ -277,6 +278,12 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         ...(options.env ?? {}),
         PWD: this.currentCwd,
       },
+      onEvent: options.onEvent
+        ? (event) => {
+            if (event.type === 'status' && !this.options.isVerbose()) return;
+            options.onEvent?.(event);
+          }
+        : undefined,
     });
     if (nextCwd) {
       this.currentCwd = nextCwd;
@@ -2620,6 +2627,7 @@ interface NormalizedRuntimePackageManagerConfig {
 }
 
 type PackageManagerCommandName = RuntimePackageManagerName | 'npx';
+type PackageManagerOutputEmitter = (stream: RuntimeCommandEventStream, data: string) => void;
 
 interface ParsedPackageManagerInvocation {
   kind: 'version' | 'run' | 'exec' | 'install' | 'list' | 'unsupported';
@@ -3151,7 +3159,8 @@ async function runPackageScript(
   scriptArgs: readonly string[],
   options: NormalizedRuntimePackageManagerConfig,
   ifPresent: boolean,
-  silent: boolean
+  silent: boolean,
+  emitOutput?: PackageManagerOutputEmitter
 ): Promise<RuntimeCommandResult> {
   const scripts = packageScripts(manifest);
   const events = lifecycleScriptNames(scriptName, scripts);
@@ -3173,7 +3182,9 @@ async function runPackageScript(
     const script = scripts[eventName]!;
     const command = appendScriptArgs(script, eventName === scriptName ? scriptArgs : []);
     if (!silent) {
-      stdout += npmScriptBanner(manifest, eventName, command);
+      const banner = npmScriptBanner(manifest, eventName, command);
+      stdout += banner;
+      emitOutput?.('stdout', banner);
     }
     const result = await ctx.exec(command, {
       cwd: manifest.directory,
@@ -3310,7 +3321,8 @@ async function runPackageManagerCommand(
   workspaceAlias: string | undefined,
   kernel: RuntimeKernelInfo | undefined,
   readonlyFiles: readonly string[] | undefined,
-  onFileChange: RuntimeFileChangeObserver | undefined
+  onFileChange: RuntimeFileChangeObserver | undefined,
+  emitOutput?: PackageManagerOutputEmitter
 ): Promise<RuntimeCommandResult> {
   const manager: RuntimePackageManagerName = commandName === 'npx' ? 'npm' : commandName;
   const invocation = parsePackageManagerInvocation(commandName, args);
@@ -3328,7 +3340,7 @@ async function runPackageManagerCommand(
   switch (invocation.kind) {
     case 'run':
       if (!invocation.scriptName) return listPackageScripts(manifest);
-      return runPackageScript(manager, ctx, workspaceRoot, manifest, invocation.scriptName, invocation.scriptArgs, options, invocation.ifPresent, invocation.silent);
+      return runPackageScript(manager, ctx, workspaceRoot, manifest, invocation.scriptName, invocation.scriptArgs, options, invocation.ifPresent, invocation.silent, emitOutput);
     case 'exec':
       return runPackageExec(manager, ctx, workspaceRoot, manifest, invocation.execCommand, invocation.execArgs, options);
     case 'install':
@@ -3348,17 +3360,18 @@ export function createPackageManagerProjectCommands(
   onFileChange?: RuntimeFileChangeObserver,
   workspaceAlias?: string,
   kernel?: RuntimeKernelInfo,
-  readonlyFiles?: readonly string[]
+  readonlyFiles?: readonly string[],
+  emitOutput?: PackageManagerOutputEmitter
 ): ProjectWorkspaceCommand[] {
   const normalized = normalizePackageManagerConfig(config, true);
   if (!normalized) return [];
   const commands: ProjectWorkspaceCommand[] = normalized.managers.map((manager) =>
     defineCommand(manager, (args, ctx) =>
-      runPackageManagerCommand(manager, args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, onFileChange))
+      runPackageManagerCommand(manager, args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, onFileChange, emitOutput))
   );
   if (normalized.managers.includes('npm')) {
     commands.push(defineCommand('npx', (args, ctx) =>
-      runPackageManagerCommand('npx', args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, onFileChange)));
+      runPackageManagerCommand('npx', args, ctx, workspaceRoot, normalized, entrypoint, workspaceAlias, kernel, readonlyFiles, onFileChange, emitOutput)));
   }
   return commands;
 }
@@ -3849,6 +3862,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private readonlySuspendDepth = 0;
   private nextCommandId = 1;
   private destroyed = false;
+  private terminalVerbose = false;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
@@ -3901,11 +3915,19 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       options.packageManager,
       Boolean(options.nodeRunner || options.typescriptRunner)
     );
+    const emitPackageManagerOutput: PackageManagerOutputEmitter = (stream, data) => {
+      this.emitLocalRuntimeEvent({
+        type: 'output',
+        stream,
+        device: stream === 'stdout' ? '/dev/stdout' : '/dev/stderr',
+        data,
+      });
+    };
     const customCommands = [
       ...(options.pythonRunner ? createPythonProjectCommands(withEvents(options.pythonRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.nodeRunner ? createNodeProjectCommands(withEvents(options.nodeRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.typescriptRunner ? createTypeScriptProjectCommands(withEvents(options.typescriptRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
-      ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
+      ...(packageManagerConfig ? createPackageManagerProjectCommands(packageManagerConfig, this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, emitPackageManagerOutput) : []),
       ...(options.javaRunner ? createJavaProjectCommands(withEvents(options.javaRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles) : []),
       ...(options.cppRunner ? createCppProjectCommands(withEvents(options.cppRunner), this.cwd, {
         recordExecutablePath: (path) => this.registerVirtualExecutable({ path, kind: 'cpp' }),
@@ -3991,11 +4013,28 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           `user=${this.kernelInfo.user.username}`,
           `host=${this.kernelInfo.host.hostname}`,
           `workspace=${this.kernelInfo.workspaceRoot}`,
+          `verbose=${this.terminalVerbose ? 'on' : 'off'}`,
           ...(this.kernelInfo.workspaceAlias ? [`alias=${this.kernelInfo.workspaceAlias}`] : []),
         ].join('\n') + '\n',
         stderr: '',
         exitCode: 0,
       };
+    }
+    if (command === 'verbose') {
+      if (args.length > 2) {
+        return { stdout: '', stderr: 'usage: tracekernelctl verbose [on|off|status]\n', exitCode: 2 };
+      }
+      const mode = args[1];
+      if (mode === undefined) {
+        this.terminalVerbose = !this.terminalVerbose;
+      } else if (mode === 'on' || mode === 'true' || mode === '1' || mode === 'enable' || mode === 'enabled') {
+        this.terminalVerbose = true;
+      } else if (mode === 'off' || mode === 'false' || mode === '0' || mode === 'disable' || mode === 'disabled') {
+        this.terminalVerbose = false;
+      } else if (mode !== 'status') {
+        return { stdout: '', stderr: 'usage: tracekernelctl verbose [on|off|status]\n', exitCode: 2 };
+      }
+      return { stdout: `tracekernelctl: verbose ${this.terminalVerbose ? 'on' : 'off'}\n`, stderr: '', exitCode: 0 };
     }
     if (command === 'reset') {
       if (args.length > 1) {
@@ -4007,7 +4046,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     return {
       stdout: '',
-      stderr: `tracekernelctl: unknown command: ${command}\nusage: tracekernelctl {status|reset}\n`,
+      stderr: `tracekernelctl: unknown command: ${command}\nusage: tracekernelctl {status|reset|verbose [on|off|status]}\n`,
       exitCode: 2,
     };
   }
@@ -4654,6 +4693,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         kernelInfo: this.kernelInfo,
         resolveCwd: (currentCwd, target) => this.resolveTerminalCwd(currentCwd, target),
         runCommand: (command, commandOptions) => this.runCommand(command, commandOptions),
+        isVerbose: () => this.terminalVerbose,
       },
       {
         ...options,
