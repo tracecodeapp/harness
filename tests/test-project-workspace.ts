@@ -8212,6 +8212,216 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
   workspace.dispose();
 }
 
+async function testPackageManagerProjectCommands(): Promise<void> {
+  const nodeRequests: JavaScriptProjectCommandRequest[] = [];
+  const installRequests: Array<{ manager: string; command: string; cwd: string; manifestName: unknown }> = [];
+  const workspace = await createRuntimeWorkspace({
+    nodeRunner: async (request) => {
+      nodeRequests.push(request);
+      const path = request.scriptPath.replace(/\\/g, '/');
+      if (path.endsWith('scripts/lifecycle.js')) {
+        return {
+          stdout: `life:${request.env.npm_lifecycle_event}:${request.args[0]}:${request.env.npm_package_name}:${request.cwd}:${request.env.INIT_CWD}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (path.endsWith('node_modules/@tracecode/weather-cli/bin/cli.js')) {
+        return {
+          stdout: `bin:${request.env.npm_lifecycle_event ?? ''}:${request.env.npm_lifecycle_script ?? ''}:${request.args.join(',')}:${request.env.PATH.includes('node_modules/.bin')}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (path.endsWith('scripts/test.js')) {
+        return {
+          stdout: `test:${request.env.npm_lifecycle_event}:${request.env.npm_package_name}:${request.cwd}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      if (path.endsWith('packages/api/api.js')) {
+        return {
+          stdout: `api:${request.env.npm_lifecycle_event}:${request.env.npm_package_name}:${request.cwd}\n`,
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      return { stdout: `node:${path}:${request.args.join(',')}\n`, stderr: '', exitCode: 0 };
+    },
+    packageManager: {
+      dependencyProvider: {
+        async install(request) {
+          installRequests.push({
+            manager: request.manager,
+            command: request.command,
+            cwd: request.cwd,
+            manifestName: request.manifest.json.name,
+          });
+          return {
+            stdout: 'installed\n',
+            stderr: '',
+            exitCode: 0,
+            files: [
+              {
+                path: 'node_modules/@tracecode/weather-cli/package.json',
+                contents: JSON.stringify({
+                  name: '@tracecode/weather-cli',
+                  version: '1.0.0',
+                  bin: {
+                    'weather-cli': 'bin/cli.js',
+                  },
+                }, null, 2),
+              },
+              {
+                path: 'node_modules/@tracecode/weather-cli/bin/cli.js',
+                contents: 'console.log("weather-cli");\n',
+              },
+            ],
+          };
+        },
+      },
+    },
+    projectSession: {
+      id: 'npm-session',
+      projectSlug: 'npm-project',
+      files: [
+        {
+          path: 'package.json',
+          contents: JSON.stringify({
+            name: 'weather-app',
+            version: '1.2.3',
+            workspaces: ['packages/*'],
+            scripts: {
+              prebuild: 'node scripts/lifecycle.js pre',
+              build: 'weather-cli build',
+              postbuild: 'node scripts/lifecycle.js post',
+              test: 'node scripts/test.js',
+            },
+            dependencies: {
+              '@tracecode/weather-cli': '1.0.0',
+            },
+          }, null, 2),
+        },
+        { path: 'scripts/lifecycle.js', contents: '' },
+        { path: 'scripts/test.js', contents: '' },
+        {
+          path: 'packages/api/package.json',
+          contents: JSON.stringify({
+            name: '@tracecode/api',
+            version: '0.1.0',
+            scripts: {
+              test: 'node api.js',
+            },
+          }, null, 2),
+        },
+        { path: 'packages/api/api.js', contents: '' },
+      ],
+    },
+  });
+
+  const install = await workspace.runCommand('npm install');
+  assertCondition(install.exitCode === 0 && install.stdout === 'installed\n', `npm install should delegate to dependency provider: ${JSON.stringify(install)}`);
+  assertCondition(
+    installRequests.length === 1 &&
+      installRequests[0]?.manager === 'npm' &&
+      installRequests[0]?.command === 'install' &&
+      installRequests[0]?.manifestName === 'weather-app',
+    `package dependency provider should receive normalized install request: ${JSON.stringify(installRequests)}`
+  );
+  assertCondition(await workspace.exists('node_modules/.bin/weather-cli'), 'package install should materialize local package bin shims');
+
+  const build = await workspace.runCommand('npm run build -- --prod');
+  assertCondition(
+    build.exitCode === 0 &&
+      build.stdout === [
+        '',
+        '> weather-app@1.2.3 prebuild',
+        '> node scripts/lifecycle.js pre',
+        '',
+        'life:prebuild:pre:weather-app:/home/user/npm-project:/home/user/npm-project',
+        '',
+        '> weather-app@1.2.3 build',
+        '> weather-cli build --prod',
+        '',
+        'bin:build:weather-cli build:build,--prod:true',
+        '',
+        '> weather-app@1.2.3 postbuild',
+        '> node scripts/lifecycle.js post',
+        '',
+        'life:postbuild:post:weather-app:/home/user/npm-project:/home/user/npm-project',
+        '',
+      ].join('\n'),
+    `npm run should execute lifecycle scripts, local bins, and forwarded args: ${JSON.stringify(build)}`
+  );
+
+  const listedScripts = await workspace.runCommand('npm run');
+  assertCondition(
+    listedScripts.stdout.includes('Lifecycle scripts included in weather-app@1.2.3:') &&
+      listedScripts.stdout.includes('  test\n    node scripts/test.js') &&
+      listedScripts.stdout.includes('available via `npm run`:') &&
+      listedScripts.stdout.includes('  build\n    weather-cli build'),
+    `npm run without a script should list available scripts: ${JSON.stringify(listedScripts)}`
+  );
+
+  const npmTest = await workspace.runCommand('npm test');
+  assertCondition(
+    npmTest.exitCode === 0 && npmTest.stdout === '\n> weather-app@1.2.3 test\n> node scripts/test.js\n\ntest:test:weather-app:/home/user/npm-project\n',
+    `npm test should route to the test script: ${JSON.stringify(npmTest)}`
+  );
+
+  const exec = await workspace.runCommand('npm exec weather-cli inspect');
+  assertCondition(
+    exec.exitCode === 0 && exec.stdout === 'bin:npx:"weather-cli":inspect:true\n',
+    `npm exec should resolve local package bins through project PATH: ${JSON.stringify(exec)}`
+  );
+
+  const npxVersion = await workspace.runCommand('npx --version');
+  assertCondition(
+    npxVersion.exitCode === 0 && npxVersion.stdout === '11.12.1\n',
+    `npx --version should report the configured npm version: ${JSON.stringify(npxVersion)}`
+  );
+
+  const npxExec = await workspace.runCommand('npx weather-cli inspect');
+  assertCondition(
+    npxExec.exitCode === 0 && npxExec.stdout === 'bin:npx:"weather-cli":inspect:true\n',
+    `npx should resolve local package bins through project PATH: ${JSON.stringify(npxExec)}`
+  );
+
+  const workspaceScript = await workspace.runCommand('npm --workspace @tracecode/api test');
+  assertCondition(
+    workspaceScript.exitCode === 0 &&
+      workspaceScript.stdout === '\n> @tracecode/api@0.1.0 test\n> node api.js\n\napi:test:@tracecode/api:/home/user/npm-project/packages/api\n',
+    `npm --workspace should resolve workspace package manifests by name: ${JSON.stringify(workspaceScript)}`
+  );
+
+  const prefixScript = await workspace.runCommand('npm --prefix packages/api test');
+  assertCondition(
+    prefixScript.exitCode === 0 &&
+      prefixScript.stdout === '\n> @tracecode/api@0.1.0 test\n> node api.js\n\napi:test:@tracecode/api:/home/user/npm-project/packages/api\n',
+    `npm --prefix should run scripts from the selected package directory: ${JSON.stringify(prefixScript)}`
+  );
+
+  const missingIfPresent = await workspace.runCommand('npm run missing --if-present');
+  assertCondition(
+    missingIfPresent.exitCode === 0 && missingIfPresent.stdout === '' && missingIfPresent.stderr === '',
+    `npm --if-present should allow missing scripts: ${JSON.stringify(missingIfPresent)}`
+  );
+
+  workspace.dispose();
+
+  const disabledInstallWorkspace = await createRuntimeWorkspace({
+    nodeRunner: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+    files: [{ path: 'package.json', contents: '{"scripts":{"test":"node test.js"}}\n' }],
+  });
+  const disabledInstall = await disabledInstallWorkspace.runCommand('npm install');
+  assertCondition(
+    disabledInstall.exitCode === 1 && disabledInstall.stderr.includes('disabled in tracekernel'),
+    `npm install without a dependency provider should fail closed: ${JSON.stringify(disabledInstall)}`
+  );
+  disabledInstallWorkspace.dispose();
+}
+
 async function testTypeScriptProjectCommands(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     typescriptRunner: createTypeScriptProjectRunner(),
@@ -9165,6 +9375,7 @@ async function main(): Promise<void> {
   await testWorkspaceKernelEvents();
   await testWorkspaceTerminalSessionCwd();
   await testProjectSessionMetadataAndCommands();
+  await testPackageManagerProjectCommands();
   await testTypeScriptProjectCommands();
   await testHardLanguageTakehomeMvpGate();
   await testProjectSessionLifecycle();
