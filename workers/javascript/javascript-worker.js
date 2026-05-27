@@ -349,6 +349,23 @@ function inferPlainNodeType(value) {
   return null;
 }
 
+function hasNodeValueField(value) {
+  return Object.prototype.hasOwnProperty.call(value, 'val')
+    || Object.prototype.hasOwnProperty.call(value, 'value');
+}
+
+function forcedNodeTypeForValue(value, forcedNodeType) {
+  if (!forcedNodeType || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return hasNodeValueField(value) ? forcedNodeType : null;
+}
+
+function nodeTypeFromKnownNodeId(nodeId) {
+  if (typeof nodeId !== 'string') return null;
+  if (nodeId.startsWith('TreeNode:') || nodeId.startsWith('tree-')) return 'TreeNode';
+  if (nodeId.startsWith('ListNode:') || nodeId.startsWith('list-')) return 'ListNode';
+  return null;
+}
+
 function getCustomClassName(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value instanceof Map || value instanceof Set) return null;
@@ -382,7 +399,9 @@ function serializeValue(
   value,
   depth = 0,
   seen = new WeakSet(),
-  nodeRefState = { ids: new Map(), nextId: 1 }
+  nodeRefState = { ids: new Map(), nextId: 1 },
+  forcedNodeType = null,
+  materializeExistingNode = false
 ) {
   if (depth > RUNTIME_VALUE_MAX_DEPTH) return '<max depth>';
   if (value === null || value === undefined) return value;
@@ -439,14 +458,24 @@ function serializeValue(
     return result;
   }
   if (valueType === 'object') {
-    if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) {
+    const forcedType = forcedNodeTypeForValue(value, forcedNodeType);
+    const inferredNodeTypeForValue = inferPlainNodeType(value);
+    const explicitNodeType = isLikelyTreeNodeValue(value)
+      ? 'TreeNode'
+      : (isLikelyListNodeValue(value) ? 'ListNode' : null);
+    const nodeType = explicitNodeType ?? forcedType ?? inferredNodeTypeForValue;
+    if (nodeType) {
       const existingId = nodeRefState.ids.get(value);
-      if (existingId) {
+      if (existingId && (!materializeExistingNode || seen.has(value))) {
         return { __ref__: existingId };
       }
-      const isTree = isLikelyTreeNodeValue(value);
-      const nodeId = `ref-${nodeRefState.nextId++}`;
-      nodeRefState.ids.set(value, nodeId);
+      const isTree = nodeType === 'TreeNode';
+      const explicitId = typeof value.__id__ === 'string' ? value.__id__ : '';
+      const nodeId = existingId ?? (explicitId.length > 0
+        ? explicitId
+        : (explicitNodeType ? `ref-${nodeRefState.nextId++}` : `${nodeType}:${nodeRefState.nextId++}`));
+      if (!existingId) nodeRefState.ids.set(value, nodeId);
+      seen.add(value);
 
       const out =
         isTree
@@ -454,16 +483,16 @@ function serializeValue(
               __type__: 'TreeNode',
               __id__: nodeId,
               val: serializeValue(value.val ?? value.value ?? null, depth + 1, seen, nodeRefState),
-              left: serializeValue(value.left ?? null, depth + 1, seen, nodeRefState),
-              right: serializeValue(value.right ?? null, depth + 1, seen, nodeRefState),
+              left: serializeValue(value.left ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
+              right: serializeValue(value.right ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
             }
           : {
               __type__: 'ListNode',
               __id__: nodeId,
               val: serializeValue(value.val ?? value.value ?? null, depth + 1, seen, nodeRefState),
-              next: serializeValue(value.next ?? null, depth + 1, seen, nodeRefState),
+              next: serializeValue(value.next ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode),
               ...(Object.prototype.hasOwnProperty.call(value, 'prev')
-                ? { prev: serializeValue(value.prev ?? null, depth + 1, seen, nodeRefState) }
+                ? { prev: serializeValue(value.prev ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode) }
                 : {}),
             };
       const skipped =
@@ -478,7 +507,13 @@ function serializeValue(
         out.__truncated__ = true;
         out.remaining = fields.length - activeSerializationLimits.maxFields;
       }
+      seen.delete(value);
       return out;
+    }
+
+    const existingNodeId = hasNodeValueField(value) ? nodeRefState.ids.get(value) : undefined;
+    if (existingNodeId) {
+      return { __ref__: existingNodeId };
     }
 
     const customClassName = getCustomClassName(value);
@@ -559,13 +594,22 @@ function serializeTopLevelValue(value, nodeRefState) {
     return serializeValue(value, 0, new WeakSet(), nodeRefState);
   }
 
-  if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) {
+  const knownNodeId = nodeRefState.ids.get(value);
+  const explicitNodeType = isLikelyTreeNodeValue(value)
+    ? 'TreeNode'
+    : (isLikelyListNodeValue(value) ? 'ListNode' : null);
+  const topLevelNodeType = explicitNodeType ?? inferPlainNodeType(value) ?? nodeTypeFromKnownNodeId(knownNodeId);
+
+  if (topLevelNodeType) {
     const objectValue = value;
     const nodeValue = value;
-    const isTree = isLikelyTreeNodeValue(value);
-    let nodeId = nodeRefState.ids.get(objectValue);
+    const isTree = topLevelNodeType === 'TreeNode';
+    let nodeId = knownNodeId;
     if (!nodeId) {
-      nodeId = `ref-${nodeRefState.nextId++}`;
+      const explicitId = typeof nodeValue.__id__ === 'string' ? nodeValue.__id__ : '';
+      nodeId = explicitId.length > 0
+        ? explicitId
+        : (explicitNodeType ? `ref-${nodeRefState.nextId++}` : `${topLevelNodeType}:${nodeRefState.nextId++}`);
       nodeRefState.ids.set(objectValue, nodeId);
     }
 
@@ -575,16 +619,16 @@ function serializeTopLevelValue(value, nodeRefState) {
             __type__: 'TreeNode',
             __id__: nodeId,
             val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, 1, new WeakSet(), nodeRefState),
-            left: serializeValue(nodeValue.left ?? null, 1, new WeakSet(), nodeRefState),
-            right: serializeValue(nodeValue.right ?? null, 1, new WeakSet(), nodeRefState),
+            left: serializeValue(nodeValue.left ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'TreeNode', true),
+            right: serializeValue(nodeValue.right ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'TreeNode', true),
           }
         : {
             __type__: 'ListNode',
             __id__: nodeId,
             val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, 1, new WeakSet(), nodeRefState),
-            next: serializeValue(nodeValue.next ?? null, 1, new WeakSet(), nodeRefState),
+            next: serializeValue(nodeValue.next ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'ListNode', true),
             ...('prev' in nodeValue
-              ? { prev: serializeValue(nodeValue.prev ?? null, 1, new WeakSet(), nodeRefState) }
+              ? { prev: serializeValue(nodeValue.prev ?? null, 1, new WeakSet([objectValue]), nodeRefState, 'ListNode', true) }
               : {}),
           };
     const skipped = isTree

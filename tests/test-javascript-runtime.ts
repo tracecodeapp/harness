@@ -78,6 +78,17 @@ function runtimeRefId(value: unknown): string | undefined {
   return undefined;
 }
 
+function isAnonymousValueOnlyNode(value: unknown, expectedValue: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.val === expectedValue &&
+    typeof record.__id__ !== 'string' &&
+    typeof record.__ref__ !== 'string' &&
+    typeof record.__type__ !== 'string'
+  );
+}
+
 function traceLineFrames(result: { trace?: { events?: RuntimeTraceEvent[] } }, line: number): RuntimeTraceEvent[][] {
   const frames: RuntimeTraceEvent[][] = [];
   let currentFrame: RuntimeTraceEvent[] | null = null;
@@ -2504,6 +2515,56 @@ function smallest(nums: number[]): number {
   );
   assertNoRuntimeTraceVisualizerPayloadLeak(executeTypeScriptTreeInputTracing, 'typescript tree-input tracing');
   console.log('PASS: execute-with-tracing typescript tree input materialization contract');
+
+  const executeTypeScriptPlainLeafTreeTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+    trace: { events?: RuntimeTraceEvent[] };
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  maxPathSum(root: TreeNode | null): number {
+    const dfs = (node: TreeNode | null): number => {
+      if (!node) return 0;
+      const leftGain = dfs(node.left);
+      const rightGain = dfs(node.right);
+      return node.val + Math.max(leftGain, rightGain);
+    };
+    return dfs(root);
+  }
+}`,
+    functionName: 'maxPathSum',
+    executionStyle: 'solution-method',
+    language: 'typescript',
+    inputs: {
+      root: { val: 1, left: { val: 2 }, right: { val: 3 } },
+    },
+  });
+  assertCondition(
+    executeTypeScriptPlainLeafTreeTracing.success === true,
+    `TypeScript plain-leaf tree tracing should succeed: ${executeTypeScriptPlainLeafTreeTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    executeTypeScriptPlainLeafTreeTracing.output === 4,
+    'TypeScript plain-leaf tree tracing should preserve execution semantics'
+  );
+  const rootTreeSnapshot = traceSnapshotEvents(executeTypeScriptPlainLeafTreeTracing).find(
+    (event) => event.target?.variable === 'root' && event.value && typeof event.value === 'object'
+  )?.value as { left?: unknown; right?: unknown } | undefined;
+  assertCondition(
+    Boolean(runtimeRefId(rootTreeSnapshot?.left)) && Boolean(runtimeRefId(rootTreeSnapshot?.right)),
+    `TypeScript plain tree leaf snapshots should receive stable child node ids, received ${JSON.stringify(rootTreeSnapshot)}`
+  );
+  const anonymousRecursiveChildArg = traceEvents(executeTypeScriptPlainLeafTreeTracing).some((event) => {
+    if (event.kind !== 'call' || event.function !== 'dfs') return false;
+    const node = (event.args as { node?: unknown } | undefined)?.node;
+    return isAnonymousValueOnlyNode(node, 2) || isAnonymousValueOnlyNode(node, 3);
+  });
+  assertCondition(
+    !anonymousRecursiveChildArg,
+    'TypeScript recursive tree call args should preserve plain leaf node identity instead of emitting anonymous {val} objects'
+  );
+  console.log('PASS: execute-with-tracing typescript plain tree leaf identity contract');
 
   const executeJavaScriptDestructuringPropertySwapTracing = await harness.sendMessage<{
     success: boolean;

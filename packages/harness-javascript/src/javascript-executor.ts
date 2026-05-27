@@ -248,6 +248,19 @@ function inferPlainNodeType(value: object): 'ListNode' | 'TreeNode' | null {
   return null;
 }
 
+type ForcedNodeType = 'ListNode' | 'TreeNode';
+
+function hasNodeValueField(value: object): boolean {
+  const record = value as Record<string, unknown>;
+  return Object.prototype.hasOwnProperty.call(record, 'val')
+    || Object.prototype.hasOwnProperty.call(record, 'value');
+}
+
+function forcedNodeTypeForValue(value: unknown, forcedNodeType: ForcedNodeType | null): ForcedNodeType | null {
+  if (!forcedNodeType || !value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return hasNodeValueField(value) ? forcedNodeType : null;
+}
+
 function getCustomClassName(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value instanceof Map || value instanceof Set) return null;
@@ -284,7 +297,9 @@ function serializeValue(
   value: unknown,
   depth = 0,
   seen = new WeakSet<object>(),
-  nodeRefState: { ids: Map<object, string>; nextId: number } = { ids: new Map<object, string>(), nextId: 1 }
+  nodeRefState: { ids: Map<object, string>; nextId: number } = { ids: new Map<object, string>(), nextId: 1 },
+  forcedNodeType: ForcedNodeType | null = null,
+  materializeExistingNode = false
 ): unknown {
   if (depth > RUNTIME_VALUE_MAX_DEPTH) return '<max depth>';
   if (value === null || value === undefined) return value;
@@ -338,33 +353,43 @@ function serializeValue(
   }
 
   if (typeof value === 'object') {
-    if (isLikelyTreeNodeValue(value) || isLikelyListNodeValue(value)) {
+    const forcedType = forcedNodeTypeForValue(value, forcedNodeType);
+    const inferredNodeTypeForValue = inferPlainNodeType(value);
+    const explicitNodeType = isLikelyTreeNodeValue(value)
+      ? 'TreeNode'
+      : (isLikelyListNodeValue(value) ? 'ListNode' : null);
+    const nodeType = explicitNodeType ?? forcedType ?? inferredNodeTypeForValue;
+    if (nodeType) {
       const objectValue = value as object;
       const nodeValue = value as Record<string, unknown>;
       const existingId = nodeRefState.ids.get(objectValue);
-      if (existingId) {
+      if (existingId && (!materializeExistingNode || seen.has(objectValue))) {
         return { __ref__: existingId };
       }
 
-      const isTree = isLikelyTreeNodeValue(value);
-      const nodeId = `ref-${nodeRefState.nextId++}`;
-      nodeRefState.ids.set(objectValue, nodeId);
+      const isTree = nodeType === 'TreeNode';
+      const explicitId = typeof nodeValue.__id__ === 'string' ? nodeValue.__id__ : '';
+      const nodeId = existingId ?? (explicitId.length > 0
+        ? explicitId
+        : (explicitNodeType ? `ref-${nodeRefState.nextId++}` : `${nodeType}:${nodeRefState.nextId++}`));
+      if (!existingId) nodeRefState.ids.set(objectValue, nodeId);
+      seen.add(objectValue);
 
       const out: Record<string, unknown> = isTree
         ? {
             __type__: 'TreeNode',
             __id__: nodeId,
             val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
-            left: serializeValue(nodeValue.left ?? null, depth + 1, seen, nodeRefState),
-            right: serializeValue(nodeValue.right ?? null, depth + 1, seen, nodeRefState),
+            left: serializeValue(nodeValue.left ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
+            right: serializeValue(nodeValue.right ?? null, depth + 1, seen, nodeRefState, 'TreeNode', materializeExistingNode),
           }
         : {
             __type__: 'ListNode',
             __id__: nodeId,
             val: serializeValue(nodeValue.val ?? nodeValue.value ?? null, depth + 1, seen, nodeRefState),
-            next: serializeValue(nodeValue.next ?? null, depth + 1, seen, nodeRefState),
+            next: serializeValue(nodeValue.next ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode),
             ...('prev' in nodeValue
-              ? { prev: serializeValue(nodeValue.prev ?? null, depth + 1, seen, nodeRefState) }
+              ? { prev: serializeValue(nodeValue.prev ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode) }
               : {}),
           };
 
@@ -379,7 +404,13 @@ function serializeValue(
         out.__truncated__ = true;
         out.remaining = fields.length - activeSerializationLimits.maxFields;
       }
+      seen.delete(objectValue);
       return out;
+    }
+
+    const existingNodeId = hasNodeValueField(value) ? nodeRefState.ids.get(value as object) : undefined;
+    if (existingNodeId) {
+      return { __ref__: existingNodeId };
     }
 
     const customClassName = getCustomClassName(value);
