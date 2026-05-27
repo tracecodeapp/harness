@@ -71,6 +71,7 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'THIRD_PARTY_NOTICES.md',
     'workers/python/pyodide-worker.js',
     'workers/javascript/javascript-worker.js',
+    'workers/javascript/javascript-project-worker.js',
     'workers/java/java-worker.js',
     'workers/java/java-source-augmentations.js',
     'workers/csharp/csharp-worker.js',

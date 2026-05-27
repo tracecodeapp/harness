@@ -553,6 +553,24 @@ body {
   flex: 1;
 }
 
+.dev-stop-command {
+  height: 24px;
+  border: 1px solid #7f3d45;
+  background: #3a1f24;
+  color: #ffd7db;
+  padding: 0 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-stop-command:disabled {
+  border-color: #3f454e;
+  background: transparent;
+  color: #6f7682;
+  cursor: default;
+}
+
 .dev-workspace-name {
   color: #9ca6b5;
   font-family: var(--font-mono);

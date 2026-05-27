@@ -143,6 +143,7 @@ export interface RuntimePackageInstallRequest {
   env: Record<string, string>;
   manifest: RuntimePackageManifest;
   project: RuntimeProjectSnapshot;
+  signal?: AbortSignal;
 }
 
 export interface RuntimePackageDependencyProvider {
@@ -3399,6 +3400,7 @@ async function runPackageInstall(
     env: commandEnv(ctx),
     manifest,
     project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
   }), onFileChange);
   if (result.exitCode === 0 && options.autoLinkBins) {
     await ensurePackageBinShims(ctx, workspaceRoot, manifest.directory);
@@ -3553,6 +3555,7 @@ export function createPythonProjectCommands(
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), onFileChange);
   };
 
@@ -3645,6 +3648,7 @@ export function createNodeProjectCommands(
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
       ...(
         parsed.inputType || parsed.requireModules.length > 0
           ? {
@@ -3686,6 +3690,7 @@ export function createTypeScriptProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), onFileChange);
   };
 
@@ -3731,6 +3736,7 @@ export function createJavaProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), onFileChange);
   };
 
@@ -3781,6 +3787,7 @@ export function createJavaProjectCommands(
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, entrypoint, workspaceAlias, kernel, readonlyFiles),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
       options: {
         ...(jarPath ? { jarPath, classpath: jarPath } : parsed.classpath ? { classpath: parsed.classpath } : {}),
         ...(jarMainClass ? { jarMainClass } : {}),
@@ -3831,6 +3838,7 @@ export function createCppProjectCommands(
       cwd: ctx.cwd,
       env: commandEnv(ctx),
       project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
       options: { compilerCommand },
     });
     const commandResult = await applyCommandResultFiles(ctx, workspaceRoot, result, options.onFileChange);
@@ -3857,6 +3865,7 @@ export function createCppProjectCommands(
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project: await snapshotCommandContext(ctx, workspaceRoot, options.entrypoint, options.workspaceAlias, options.kernel, options.readonlyFiles),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
     }), options.onFileChange);
   };
 
@@ -3912,6 +3921,7 @@ export function createCSharpProjectCommands(
       env: commandEnv(ctx),
       ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
       project,
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
       ...(parsed.buildArgs || parsed.noBuild
         ? {
             options: {

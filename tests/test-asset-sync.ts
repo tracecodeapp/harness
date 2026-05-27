@@ -31,6 +31,7 @@ async function main(): Promise<void> {
     'pyodide/runtime-core.js',
     'shared/runtime-kernel-policy-classic.js',
     'javascript-worker.js',
+    'javascript-project-worker.js',
     'java-worker.js',
     'cpp-worker.js',
     'shared/runtime-kernel-policy.js',
@@ -66,6 +67,10 @@ async function main(): Promise<void> {
   const rootEntries = await readdir(targetDir);
   assertCondition(rootEntries.includes('pyodide-worker.js'), 'Asset sync should flatten the Python worker into the target root');
   assertCondition(rootEntries.includes('javascript-worker.js'), 'Asset sync should flatten the JavaScript worker into the target root');
+  assertCondition(
+    rootEntries.includes('javascript-project-worker.js'),
+    'Asset sync should flatten the JavaScript project worker into the target root'
+  );
   assertCondition(rootEntries.includes('java-worker.js'), 'Asset sync should flatten the Java worker into the target root');
   assertCondition(rootEntries.includes('csharp-worker.js'), 'Asset sync should flatten the C# worker into the target root');
   assertCondition(rootEntries.includes('cpp-worker.js'), 'Asset sync should flatten the C++ worker into the target root');
@@ -100,6 +105,10 @@ async function main(): Promise<void> {
   const filteredEntries = await readdir(filteredTargetDir);
   assertCondition(!filteredEntries.includes('java-worker.js'), 'Filtered Python sync should not copy Java assets');
   assertCondition(!filteredEntries.includes('javascript-worker.js'), 'Filtered Python sync should not copy JavaScript assets');
+  assertCondition(
+    !filteredEntries.includes('javascript-project-worker.js'),
+    'Filtered Python sync should not copy JavaScript project assets'
+  );
 
   console.log('PASS: asset sync CLI copies canonical and language-filtered worker assets');
 }

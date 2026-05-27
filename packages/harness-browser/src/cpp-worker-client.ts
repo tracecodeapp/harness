@@ -51,6 +51,10 @@ interface PendingMessage {
   lastProgress?: CppRuntimeProgress;
 }
 
+function createExecutionAbortError(): Error {
+  return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
+}
+
 interface PendingCompilerFrameRequest {
   resolve: (value: Record<string, unknown>) => void;
   timeoutId: ReturnType<typeof setTimeout>;
@@ -333,14 +337,36 @@ export class CppWorkerClient {
   private async executeWithTimeout<T>(
     executor: () => Promise<T>,
     timeoutMs: number,
-    stage: CppClientTimeoutStage
+    stage: CppClientTimeoutStage,
+    signal?: AbortSignal
   ): Promise<T> {
     this.lastRuntimeProgress = null;
+    if (signal?.aborted) {
+      const abortError = createExecutionAbortError();
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
     return new Promise<T>((resolve, reject) => {
       let settled = false;
+      const cleanup = () => {
+        globalThis.clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => {
+        const abortError = createExecutionAbortError();
+        this.terminateAndReset(abortError);
+        settleReject(abortError);
+      };
       const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
+        signal?.removeEventListener('abort', onAbort);
         const progress = this.lastRuntimeProgress;
         const shouldTerminate = this.shouldTerminateWorkerForTimeout(progress);
         const timeoutLabel =
@@ -370,18 +396,17 @@ export class CppWorkerClient {
         reject(timeoutError);
       }, timeoutMs);
 
+      signal?.addEventListener('abort', onAbort, { once: true });
+
       executor()
         .then((result) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timeoutId);
+          cleanup();
           resolve(result);
         })
         .catch((error) => {
-          if (settled) return;
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          reject(error);
+          settleReject(error instanceof Error ? error : new Error(String(error)));
         });
     });
   }
@@ -907,22 +932,36 @@ export class CppWorkerClient {
   async executeProjectCpp(
     request: CppProjectCommandRequest,
     timeoutMs = this.executionTimeoutMs,
-    onEvent?: RuntimeCommandEventHandler
+    onEvent?: RuntimeCommandEventHandler,
+    signal: AbortSignal | undefined = request.signal
   ): Promise<CppProjectCommandResult> {
-    await this.init();
+    if (signal?.aborted) {
+      const abortError = createExecutionAbortError();
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
+    const abortInit = () => this.terminateAndReset(createExecutionAbortError());
+    signal?.addEventListener('abort', abortInit, { once: true });
+    try {
+      await this.init();
+    } finally {
+      signal?.removeEventListener('abort', abortInit);
+    }
+    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
     return this.executeWithTimeout(
       () =>
         this.sendMessage<CppProjectCommandResult>(
           'execute-project-cpp',
           {
-            ...request,
+            ...workerRequest,
             ...this.workerOptionsPayload(),
           },
           timeoutMs + 5_000,
           onEvent
         ),
       timeoutMs,
-      'compile-run'
+      'compile-run',
+      signal
     );
   }
 

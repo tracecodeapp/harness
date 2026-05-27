@@ -34,7 +34,8 @@ export interface PyodidePythonProjectWorkerClient {
   executeProjectPython(
     request: PythonProjectCommandRequest,
     timeoutMs?: number,
-    onEvent?: RuntimeCommandEventHandler
+    onEvent?: RuntimeCommandEventHandler,
+    signal?: AbortSignal
   ): Promise<PythonProjectCommandResult>;
 }
 
@@ -58,7 +59,7 @@ export function createBrowserPythonProjectRunner(
       finishPhase: 'process-exit',
       finishMessage: 'Finished Python browser project command',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectPython(workerRequest, options.timeoutMs, onEvent),
+      run: (workerRequest, onEvent) => workerClient.executeProjectPython(workerRequest, options.timeoutMs, onEvent, workerRequest.signal),
     });
 }
 

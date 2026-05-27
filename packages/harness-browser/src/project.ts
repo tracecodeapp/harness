@@ -198,6 +198,7 @@ export async function createBrowserProjectWorkspace(
     }),
     nodeRunner: createBrowserJavaScriptProjectRunner({
       timeoutMs: nodeProjectTimeoutMs,
+      workerUrl: assets.javascriptProjectWorker,
       ...nodeProject,
       applyFileChange: applyWorkerFileChange,
     }),

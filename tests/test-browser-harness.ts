@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import { createBrowserHarness, resolveBrowserHarnessAssets } from '../packages/harness-browser/src';
+import { createBrowserProjectWorkspace } from '../packages/harness-browser/src/project';
 import { CppWorkerClient } from '../packages/harness-browser/src/cpp-worker-client';
 import { createRuntimeCommandStdinPipeFromText } from '../packages/harness-core/src/runtime-project';
 
@@ -177,11 +178,16 @@ async function main(): Promise<void> {
       defaultAssets.typescriptCompiler === '/workers/vendor/typescript.js',
       'Default TypeScript compiler path should resolve'
     );
+    assertCondition(
+      defaultAssets.javascriptProjectWorker === '/workers/javascript-project-worker.js',
+      'Default JavaScript project worker path should resolve'
+    );
 
     const customAssets = resolveBrowserHarnessAssets({
       assetBaseUrl: '/sdk-assets',
       assets: {
         javascriptWorker: 'workers/js-runtime.js',
+        javascriptProjectWorker: 'workers/js-project-runtime.js',
         pythonWorker: 'https://cdn.example.com/python-worker.js',
         csharpAssetBaseUrl: 'runtimes/csharp',
         cppClangWasm: 'https://cdn.example.com/cpp/clang.wasm',
@@ -196,8 +202,40 @@ async function main(): Promise<void> {
     assertCondition(customAssets.cppCompilerWorker === '/sdk-assets/workers/cpp-compiler-worker.js', 'Relative custom C++ compiler worker should join assetBaseUrl');
     assertCondition(customAssets.cppCompilerBundle === 'https://cdn.example.com/cpp/bundle.js', 'Explicit C++ compiler bundle URLs should be preserved');
     assertCondition(customAssets.javascriptWorker === '/sdk-assets/workers/js-runtime.js', 'Relative custom assets should join assetBaseUrl');
+    assertCondition(
+      customAssets.javascriptProjectWorker === '/sdk-assets/workers/js-project-runtime.js',
+      'Relative custom JavaScript project assets should join assetBaseUrl'
+    );
     assertCondition(customAssets.csharpAssetBaseUrl === '/sdk-assets/runtimes/csharp', 'Relative C# asset base should join assetBaseUrl');
     console.log('PASS: browser harness asset resolution');
+
+    const browserProjectWorkspace = await createBrowserProjectWorkspace({
+      assetBaseUrl: '/project-assets',
+      files: [{ path: 'index.js', contents: 'console.log("browser-project-node")\n' }],
+      nodeProjectTimeoutMs: 1000,
+    });
+    try {
+      const projectNodeResult = await browserProjectWorkspace.runCommand('node index.js');
+      const projectWorker = workerInstances.findLast((worker) =>
+        String(worker.url).startsWith('/project-assets/javascript-project-worker.js')
+      );
+      assertCondition(projectNodeResult.exitCode === 0, 'Browser project Node command should complete through worker');
+      assertCondition(
+        projectNodeResult.stdout === 'execute-project-javascript:index.js\n',
+        'Browser project Node worker response should be returned'
+      );
+      assertCondition(
+        projectWorker?.messages.at(-1)?.type === 'execute-project-javascript',
+        'Browser project Node command should use the JavaScript project worker'
+      );
+      assertCondition(
+        !('signal' in ((projectWorker?.messages.at(-1)?.payload ?? {}) as Record<string, unknown>)),
+        'Browser project Node worker payload should omit non-cloneable abort signals'
+      );
+    } finally {
+      browserProjectWorkspace.dispose();
+    }
+    console.log('PASS: browser project workspace routes Node commands through worker');
 
     const harnessA = createBrowserHarness({ assetBaseUrl: '/instance-a' });
     const harnessB = createBrowserHarness({ assetBaseUrl: '/instance-b', debug: true });

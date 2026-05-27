@@ -32,7 +32,8 @@ export function createBrowserCppProjectRunner(
     executeProjectCpp(
       request: CppProjectCommandRequest,
       timeoutMs?: number,
-      onEvent?: RuntimeCommandEventHandler
+      onEvent?: RuntimeCommandEventHandler,
+      signal?: AbortSignal
     ): Promise<CppProjectCommandResult>;
   },
   options: BrowserCppProjectRunnerOptions = {}
@@ -48,7 +49,7 @@ export function createBrowserCppProjectRunner(
       finishMessage: request.source === 'compile' ? 'Finished C++ browser compile' : 'Finished C++ browser executable',
       finishDetail: (result) => ({ source: request.source, exitCode: result.exitCode }),
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectCpp(workerRequest, timeoutMs, onEvent),
+      run: (workerRequest, onEvent) => workerClient.executeProjectCpp(workerRequest, timeoutMs, onEvent, workerRequest.signal),
     });
   };
 }

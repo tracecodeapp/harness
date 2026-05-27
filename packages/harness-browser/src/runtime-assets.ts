@@ -5,6 +5,7 @@ export interface BrowserHarnessAssets {
   pythonRuntimeCore: string;
   pythonSnippets: string;
   javascriptWorker: string;
+  javascriptProjectWorker: string;
   javaWorker: string;
   csharpWorker: string;
   csharpAssetBaseUrl: string;
@@ -26,6 +27,7 @@ export const DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS: Readonly<BrowserHarne
   pythonRuntimeCore: 'pyodide/runtime-core.js',
   pythonSnippets: 'generated-python-harness-snippets.js',
   javascriptWorker: 'javascript-worker.js',
+  javascriptProjectWorker: 'javascript-project-worker.js',
   javaWorker: 'java-worker.js',
   csharpWorker: 'csharp-worker.js',
   csharpAssetBaseUrl: 'vendor/csharp',
@@ -88,6 +90,10 @@ export function resolveBrowserHarnessAssets(options: {
     javascriptWorker: resolveAssetPath(
       assetBaseUrl,
       assets.javascriptWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javascriptWorker
+    ),
+    javascriptProjectWorker: resolveAssetPath(
+      assetBaseUrl,
+      assets.javascriptProjectWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javascriptProjectWorker
     ),
     javaWorker: resolveAssetPath(assetBaseUrl, assets.javaWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.javaWorker),
     csharpWorker: resolveAssetPath(assetBaseUrl, assets.csharpWorker ?? DEFAULT_BROWSER_HARNESS_ASSET_RELATIVE_PATHS.csharpWorker),

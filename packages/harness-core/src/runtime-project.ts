@@ -764,6 +764,7 @@ export interface RuntimeProjectCommandRequest<
   stdinPipe?: RuntimeCommandStdinSharedBuffer;
   project: RuntimeProjectSnapshot;
   options?: Record<string, unknown>;
+  signal?: AbortSignal;
   onEvent?: RuntimeCommandEventHandler;
 }
 

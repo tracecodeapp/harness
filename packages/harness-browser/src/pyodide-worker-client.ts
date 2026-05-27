@@ -32,6 +32,10 @@ interface PendingMessage {
   timeoutId?: ReturnType<typeof globalThis.setTimeout>;
 }
 
+function createExecutionAbortError(): Error {
+  return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
+}
+
 interface WorkerMessage {
   id?: MessageId;
   type: string;
@@ -309,14 +313,36 @@ export class PythonWorkerClient {
    */
   private async executeWithTimeout<T>(
     executor: () => Promise<T>,
-    timeoutMs: number = EXECUTION_TIMEOUT_MS
+    timeoutMs: number = EXECUTION_TIMEOUT_MS,
+    signal?: AbortSignal
   ): Promise<T> {
+    if (signal?.aborted) {
+      const abortError = createExecutionAbortError();
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
     return new Promise<T>((resolve, reject) => {
       let settled = false;
+      const cleanup = () => {
+        globalThis.clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const settleReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => {
+        const abortError = createExecutionAbortError();
+        this.terminateAndReset(abortError);
+        settleReject(abortError);
+      };
       
       const timeoutId = globalThis.setTimeout(() => {
         if (settled) return;
         settled = true;
+        signal?.removeEventListener('abort', onAbort);
         
         // Terminate the stuck worker and clear state
         logRuntimeDiagnostic('warn', {
@@ -331,19 +357,18 @@ export class PythonWorkerClient {
         const seconds = Math.round(timeoutMs / 1000);
         reject(new Error(`Execution timed out (possible infinite loop). Code execution was stopped after ${seconds} seconds.`));
       }, timeoutMs);
+
+      signal?.addEventListener('abort', onAbort, { once: true });
       
       executor()
         .then((result) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timeoutId);
+          cleanup();
           resolve(result);
         })
         .catch((error) => {
-          if (settled) return;
-          settled = true;
-          globalThis.clearTimeout(timeoutId);
-          reject(error);
+          settleReject(error instanceof Error ? error : new Error(String(error)));
         });
     });
   }
@@ -614,17 +639,31 @@ export class PythonWorkerClient {
   async executeProjectPython(
     request: PythonProjectCommandRequest,
     timeoutMs: number = PROJECT_EXECUTION_TIMEOUT_MS,
-    onEvent?: RuntimeCommandEventHandler
+    onEvent?: RuntimeCommandEventHandler,
+    signal: AbortSignal | undefined = request.signal
   ): Promise<PythonProjectCommandResult> {
-    await this.init();
+    if (signal?.aborted) {
+      const abortError = createExecutionAbortError();
+      this.terminateAndReset(abortError);
+      throw abortError;
+    }
+    const abortInit = () => this.terminateAndReset(createExecutionAbortError());
+    signal?.addEventListener('abort', abortInit, { once: true });
+    try {
+      await this.init();
+    } finally {
+      signal?.removeEventListener('abort', abortInit);
+    }
+    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
     return this.executeWithTimeout(
       () => this.sendMessage<PythonProjectCommandResult>(
         'execute-project-python',
-        request,
+        workerRequest,
         timeoutMs + 5000,
         onEvent
       ),
-      timeoutMs
+      timeoutMs,
+      signal
     );
   }
 

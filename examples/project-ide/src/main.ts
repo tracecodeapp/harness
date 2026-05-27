@@ -94,6 +94,7 @@ async function bootDevTerminal(): Promise<void> {
           </div>
         </div>
         <div class="dev-menu-spacer"></div>
+        <button class="dev-stop-command" id="dev-stop-command" type="button" disabled>Stop</button>
         <span class="dev-workspace-name">tracekernel / weather-api</span>
         <span class="dev-terminal-status" id="dev-terminal-status">tracekernel booting</span>
       </header>
@@ -149,6 +150,7 @@ async function bootDevTerminal(): Promise<void> {
 
   const output = document.querySelector<HTMLDivElement>('#dev-terminal-output')!;
   const status = document.querySelector<HTMLSpanElement>('#dev-terminal-status')!;
+  const stopCommandButton = document.querySelector<HTMLButtonElement>('#dev-stop-command')!;
   const form = document.querySelector<HTMLFormElement>('#dev-terminal-form')!;
   const input = document.querySelector<HTMLInputElement>('#dev-terminal-input')!;
   const prompt = document.querySelector<HTMLSpanElement>('#dev-terminal-prompt')!;
@@ -1077,6 +1079,7 @@ int main(int argc, char** argv) {
   };
 
   let activeFilePath = 'main.py';
+  let activeCommandController: AbortController | null = null;
   const collapsedDirectories = new Set<string>();
   let suppressEditorChange = false;
   let saveTimer: number | undefined;
@@ -1291,6 +1294,9 @@ int main(int argc, char** argv) {
     input.value = '';
     input.disabled = true;
     status.textContent = 'tracekernel running';
+    const commandController = new AbortController();
+    activeCommandController = commandController;
+    stopCommandButton.disabled = false;
     appendCommandLine(command);
 
     try {
@@ -1319,6 +1325,7 @@ int main(int argc, char** argv) {
 
       const streamedOutput = { stdout: '', stderr: '' };
       const result = await terminalSession.run(command, {
+        signal: commandController.signal,
         onEvent: (event: RuntimeCommandEvent) => {
           if (event.type === 'status') {
             appendLine(`[${event.phase}] ${event.message}`, 'status');
@@ -1350,6 +1357,10 @@ int main(int argc, char** argv) {
     } catch (error) {
       appendLine(error instanceof Error ? error.message : String(error), 'stderr');
     } finally {
+      if (activeCommandController === commandController) {
+        activeCommandController = null;
+        stopCommandButton.disabled = true;
+      }
       await renderFileTree();
       updatePrompt();
       status.textContent = 'tracekernel ready';
@@ -1452,11 +1463,15 @@ int main(int argc, char** argv) {
     input.value = '';
     input.disabled = true;
     status.textContent = 'tracekernel running';
+    const commandController = new AbortController();
+    activeCommandController = commandController;
+    stopCommandButton.disabled = false;
     const projectCommand = workspace.projectSession?.commands[name];
     appendCommandLine(projectCommand ? commandLabel(projectCommand) : name);
     try {
       const streamedOutput = { stdout: '', stderr: '' };
       const result = await workspace.runProjectCommand(name, {
+        signal: commandController.signal,
         onEvent: (event: RuntimeCommandEvent) => {
           if (event.type === 'output') {
             streamedOutput[event.stream] += event.data;
@@ -1475,12 +1490,19 @@ int main(int argc, char** argv) {
     } catch (error) {
       appendLine(error instanceof Error ? error.message : String(error), 'stderr');
     } finally {
+      if (activeCommandController === commandController) {
+        activeCommandController = null;
+        stopCommandButton.disabled = true;
+      }
       status.textContent = 'tracekernel ready';
       input.disabled = false;
       input.focus();
       updatePrompt();
     }
   };
+  stopCommandButton.addEventListener('click', () => {
+    activeCommandController?.abort();
+  });
   const renderProjectCommandActions = (): void => {
     const commands = visibleProjectCommands();
     const commandNames = Object.keys(commands).sort((left, right) => {

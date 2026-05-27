@@ -40,6 +40,11 @@ const ASSET_COPY_PLAN = [
     languages: ['javascript'],
   },
   {
+    source: ['workers', 'javascript', 'javascript-project-worker.js'],
+    target: ['javascript-project-worker.js'],
+    languages: ['javascript'],
+  },
+  {
     source: ['workers', 'java', 'java-worker.js'],
     target: ['java-worker.js'],
     languages: ['java'],

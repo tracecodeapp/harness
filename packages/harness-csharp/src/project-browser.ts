@@ -51,7 +51,8 @@ export function createBrowserCSharpProjectRunner(
     executeProjectCSharp(
       request: CSharpProjectCommandRequest,
       timeoutMs?: number,
-      onEvent?: RuntimeCommandEventHandler
+      onEvent?: RuntimeCommandEventHandler,
+      signal?: AbortSignal
     ): Promise<CSharpProjectCommandResult>;
   },
   options: BrowserCSharpProjectRunnerOptions = {}
@@ -69,7 +70,7 @@ export function createBrowserCSharpProjectRunner(
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage: request.source === 'compile' ? 'Finished C# browser compile' : 'Finished C# browser run',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectCSharp(workerRequest, timeoutMs, onEvent),
+      run: (workerRequest, onEvent) => workerClient.executeProjectCSharp(workerRequest, timeoutMs, onEvent, workerRequest.signal),
     });
   };
 }

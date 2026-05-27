@@ -60,7 +60,8 @@ export function createBrowserJavaProjectRunner(
     executeProjectJava(
       request: JavaProjectCommandRequest,
       timeoutMs?: number,
-      onEvent?: RuntimeCommandEventHandler
+      onEvent?: RuntimeCommandEventHandler,
+      signal?: AbortSignal
     ): Promise<JavaProjectCommandResult>;
   },
   options: BrowserJavaProjectRunnerOptions = {}
@@ -85,7 +86,7 @@ export function createBrowserJavaProjectRunner(
       finishPhase: request.source === 'compile' ? 'compile-end' : 'process-exit',
       finishMessage: request.source === 'compile' ? 'Finished Java browser compile' : 'Finished Java browser run',
       applyFileChange: options.applyFileChange,
-      run: (workerRequest, onEvent) => workerClient.executeProjectJava(workerRequest, timeoutMs, onEvent),
+      run: (workerRequest, onEvent) => workerClient.executeProjectJava(workerRequest, timeoutMs, onEvent, workerRequest.signal),
     });
   };
 }

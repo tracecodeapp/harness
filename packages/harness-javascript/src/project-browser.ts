@@ -16,6 +16,7 @@ import {
   RuntimeProjectLiveIoController,
   createRuntimeProjectIoBridge,
   readRuntimeCommandStdinPipeBytes,
+  runRuntimeProjectWorkerBridge,
   runtimeCommandStdinPipeClosed,
   runtimeCommandStdinPipeRemainingBytes,
 } from '../../harness-core/src/runtime-project';
@@ -99,6 +100,7 @@ export interface BrowserJavaScriptProjectRunnerOptions {
   applyFileChange?: (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => Promise<boolean | void>;
   allowDynamicEval?: boolean;
   timeoutMs?: number;
+  workerUrl?: string;
 }
 
 export interface BrowserTypeScriptProjectRunnerOptions {
@@ -1600,9 +1602,174 @@ function requireModulesForRequest(request: JavaScriptProjectCommandRequest): str
     : [];
 }
 
+interface BrowserJavaScriptProjectWorkerMessage {
+  id?: string;
+  type: string;
+  payload?: unknown;
+}
+
+interface BrowserJavaScriptProjectPendingMessage {
+  resolve: (value: RuntimeCommandResult) => void;
+  reject: (error: Error) => void;
+  onEvent?: (event: RuntimeCommandEvent) => void;
+}
+
+function createBrowserJavaScriptProjectAbortError(): Error {
+  return Object.assign(new Error('Execution aborted'), { name: 'AbortError' });
+}
+
+class BrowserJavaScriptProjectWorkerClient {
+  private worker: Worker | null = null;
+  private messageId = 0;
+  private readonly pendingMessages = new Map<string, BrowserJavaScriptProjectPendingMessage>();
+
+  constructor(private readonly workerUrl: string) {}
+
+  executeProject(
+    request: JavaScriptProjectCommandRequest,
+    timeoutMs: number,
+    onEvent?: (event: RuntimeCommandEvent) => void
+  ): Promise<RuntimeCommandResult> {
+    const signal = request.signal;
+    if (signal?.aborted) {
+      const abortError = createBrowserJavaScriptProjectAbortError();
+      this.terminateAndReset(abortError);
+      return Promise.reject(abortError);
+    }
+    const { signal: _signal, onEvent: _requestOnEvent, ...workerRequest } = request;
+    return this.executeWithTimeout(
+      () => this.sendMessage('execute-project-javascript', workerRequest, onEvent),
+      timeoutMs,
+      signal
+    );
+  }
+
+  terminate(): void {
+    this.terminateAndReset();
+  }
+
+  private getWorker(): Worker {
+    if (this.worker) return this.worker;
+    this.worker = new Worker(this.workerUrl, { type: 'module' });
+    this.worker.onmessage = (event: MessageEvent<BrowserJavaScriptProjectWorkerMessage>) => {
+      const { id, type, payload } = event.data;
+      if (!id) return;
+      const pending = this.pendingMessages.get(id);
+      if (!pending) return;
+      if (type === 'project-event') {
+        pending.onEvent?.(payload as RuntimeCommandEvent);
+        return;
+      }
+      this.pendingMessages.delete(id);
+      if (type === 'error') {
+        const errorMessage = payload && typeof payload === 'object' && 'error' in payload
+          ? String((payload as { error?: unknown }).error ?? 'JavaScript project worker failed')
+          : 'JavaScript project worker failed';
+        pending.reject(new Error(errorMessage));
+        return;
+      }
+      pending.resolve(payload as RuntimeCommandResult);
+    };
+    this.worker.onerror = (event) => {
+      this.terminateAndReset(new Error(event.message || 'JavaScript project worker error'));
+    };
+    return this.worker;
+  }
+
+  private sendMessage(
+    type: string,
+    payload: unknown,
+    onEvent?: (event: RuntimeCommandEvent) => void
+  ): Promise<RuntimeCommandResult> {
+    const worker = this.getWorker();
+    const id = String(++this.messageId);
+    return new Promise<RuntimeCommandResult>((resolve, reject) => {
+      this.pendingMessages.set(id, { resolve, reject, ...(onEvent ? { onEvent } : {}) });
+      worker.postMessage({ id, type, payload });
+    });
+  }
+
+  private executeWithTimeout(
+    executor: () => Promise<RuntimeCommandResult>,
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<RuntimeCommandResult> {
+    return new Promise<RuntimeCommandResult>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => {
+        const abortError = createBrowserJavaScriptProjectAbortError();
+        this.terminateAndReset(abortError);
+        rejectOnce(abortError);
+      };
+      const timeoutId = setTimeout(() => {
+        const timeoutError = new Error(`node: execution timed out after ${timeoutMs}ms`);
+        this.terminateAndReset(timeoutError);
+        rejectOnce(timeoutError);
+      }, timeoutMs);
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      executor().then((result) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      }, (error) => {
+        rejectOnce(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+  }
+
+  private terminateAndReset(reason: Error = new Error('JavaScript project worker was terminated')): void {
+    this.worker?.terminate();
+    this.worker = null;
+    for (const [, pending] of this.pendingMessages) {
+      pending.reject(reason);
+    }
+    this.pendingMessages.clear();
+  }
+}
+
+function createWorkerBackedBrowserJavaScriptProjectRunner(
+  options: BrowserJavaScriptProjectRunnerOptions & { workerUrl: string }
+): JavaScriptProjectCommandRunner {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const client = new BrowserJavaScriptProjectWorkerClient(options.workerUrl);
+  return (request) =>
+    runRuntimeProjectWorkerBridge({
+      request,
+      startPhase: 'process-start',
+      startMessage: 'Starting browser Node',
+      startDetail: {
+        command: 'node',
+        args: processArgvForRequest(request).slice(2),
+        cwd: request.cwd,
+      },
+      finishPhase: 'process-exit',
+      finishMessage: 'Browser Node exited',
+      applyFileChange: options.applyFileChange,
+      run: (workerRequest, onEvent) => client.executeProject(workerRequest, timeoutMs, onEvent),
+    });
+}
+
 export function createBrowserJavaScriptProjectRunner(
   options: BrowserJavaScriptProjectRunnerOptions = {}
 ): JavaScriptProjectCommandRunner {
+  if (options.workerUrl && typeof Worker !== 'undefined') {
+    return createWorkerBackedBrowserJavaScriptProjectRunner({
+      ...options,
+      workerUrl: options.workerUrl,
+    });
+  }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (request) => {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -1628,7 +1795,7 @@ export function createBrowserJavaScriptProjectRunner(
   };
 }
 
-async function runBrowserJavaScriptProjectRequest(
+export async function runBrowserJavaScriptProjectRequest(
   request: JavaScriptProjectCommandRequest,
   options: BrowserJavaScriptProjectRunnerOptions,
   executionState: BrowserJavaScriptProjectExecutionState
