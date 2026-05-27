@@ -140,14 +140,9 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
 
         methodNames.Push(methodNode.Identifier.ValueText);
         methodReturnTypes.Push(methodNode.ReturnType.ToString());
-        variableScopes.Push(new HashSet<string>(
-            methodNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
-            StringComparer.Ordinal
-        ));
-        declaredLocalVariables.Push(new HashSet<string>(
-            methodNode.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText),
-            StringComparer.Ordinal
-        ));
+        List<string> parameterNames = GetTraceableParameterNames(methodNode.ParameterList.Parameters).ToList();
+        variableScopes.Push(new HashSet<string>(parameterNames, StringComparer.Ordinal));
+        declaredLocalVariables.Push(new HashSet<string>(parameterNames, StringComparer.Ordinal));
         stringBuilderScopes.Push(GetStringBuilderParameterNames(methodNode).ToHashSet(StringComparer.Ordinal));
         List<string> collectionParameters = GetCollectionParameterNames(methodNode).ToList();
         foreach (string collectionParameter in collectionParameters)
@@ -599,6 +594,7 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
     private static IEnumerable<string> GetTraceableParameterNames(IEnumerable<ParameterSyntax> parameters)
     {
         return parameters
+            .Where(parameter => !parameter.Modifiers.Any(SyntaxKind.OutKeyword))
             .Select(parameter => parameter.Identifier.ValueText)
             .Where(name => !string.IsNullOrWhiteSpace(name) && !string.Equals(name, "_", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal);
@@ -2704,7 +2700,8 @@ public sealed class TraceRewriter : CSharpSyntaxRewriter
             && !identifier.Ancestors().Any(ancestor =>
                 ancestor is ParenthesizedLambdaExpressionSyntax
                     or SimpleLambdaExpressionSyntax
-                    or AnonymousMethodExpressionSyntax);
+                    or AnonymousMethodExpressionSyntax
+                    or TypeOfExpressionSyntax);
     }
 
     private IEnumerable<string> GetConstructorConsumptionReadNames(StatementSyntax statement)

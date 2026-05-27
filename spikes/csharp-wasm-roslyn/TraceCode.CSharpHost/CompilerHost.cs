@@ -2431,15 +2431,28 @@ public static class TraceCodeDriver
         {
             string parameterName = parameter.Identifier.ValueText;
             string parameterType = GetDriverParameterType(parameter, nestedSolutionTypeNames);
-            return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index});";
+            if (parameter.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.OutKeyword)))
+            {
+                return $"        {parameterType} {parameterName} = default!;";
+            }
+
+            if (parameter.Default is not null)
+            {
+                return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Has({JsonSerializer.Serialize(parameterName)}, {index}) ? TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index})! : {parameter.Default.Value};";
+            }
+
+            return $"        {parameterType} {parameterName} = TraceCode.Internal.TraceCodeJsonInput.Read<{parameterType}>({JsonSerializer.Serialize(parameterName)}, {index})!;";
         }).ToList();
         string readStatements = string.Join("\n", parameterReads);
-        string arguments = string.Join(", ", method.ParameterList.Parameters.Select(parameter => parameter.Identifier.ValueText));
-        string invocation = $"solution.{methodName}({arguments})";
+        string arguments = string.Join(", ", method.ParameterList.Parameters.Select(DriverArgumentExpression));
+        bool isStatic = method.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.StaticKeyword));
+        string invocation = isStatic ? $"Solution.{methodName}({arguments})" : $"solution.{methodName}({arguments})";
+        string solutionDeclaration = isStatic ? string.Empty : "        var solution = new Solution();\n";
         string? firstParameterName = method.ParameterList.Parameters.FirstOrDefault()?.Identifier.ValueText;
         bool returnsMutatedFirstParameter = returnsVoid
             && firstParameterName is not null
-            && MutatesParameter(method, firstParameterName);
+            && (method.ParameterList.Parameters.First().Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.RefKeyword) || modifier.IsKind(SyntaxKind.OutKeyword))
+                || MutatesParameter(method, firstParameterName));
         string driverBody = returnsVoid
             ? returnsMutatedFirstParameter
                 ? $"{invocation};\n        return {firstParameterName};"
@@ -2453,12 +2466,29 @@ public static class TraceCodeDriver
 {
     public static object? Run()
     {
-        var solution = new Solution();
-{{readStatements}}
+{{solutionDeclaration}}{{readStatements}}
         {{driverBody}}
     }
 }
 """;
+    }
+
+    private static string DriverArgumentExpression(ParameterSyntax parameter)
+    {
+        string name = parameter.Identifier.ValueText;
+        if (parameter.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.RefKeyword)))
+        {
+            return "ref " + name;
+        }
+        if (parameter.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.OutKeyword)))
+        {
+            return "out " + name;
+        }
+        if (parameter.Modifiers.Any(modifier => modifier.IsKind(SyntaxKind.InKeyword)))
+        {
+            return "in " + name;
+        }
+        return name;
     }
 
     private static ISet<string> GetNestedSolutionTypeNames(MethodDeclarationSyntax method)
@@ -2491,29 +2521,59 @@ public static class TraceCodeDriver
 
     private static bool MutatesParameter(MethodDeclarationSyntax method, string parameterName)
     {
+        HashSet<string> aliases = method
+            .DescendantNodes()
+            .OfType<ForEachStatementSyntax>()
+            .Where(statement => IsExpressionRootedAtParameter(statement.Expression, parameterName))
+            .Select(statement => statement.Identifier.ValueText)
+            .ToHashSet(StringComparer.Ordinal);
+        aliases.Add(parameterName);
+
         bool hasElementAssignment = method
             .DescendantNodes()
             .OfType<AssignmentExpressionSyntax>()
-            .Any(assignment => IsParameterElementAccess(assignment.Left, parameterName));
+            .Any(assignment => aliases.Any(alias => IsExpressionRootedAtParameter(assignment.Left, alias)));
         if (hasElementAssignment)
+        {
+            return true;
+        }
+
+        bool hasIncrementOrDecrement = method
+            .DescendantNodes()
+            .Any(node =>
+                node is PrefixUnaryExpressionSyntax prefix && aliases.Any(alias => IsExpressionRootedAtParameter(prefix.Operand, alias))
+                || node is PostfixUnaryExpressionSyntax postfix && aliases.Any(alias => IsExpressionRootedAtParameter(postfix.Operand, alias))
+            );
+        if (hasIncrementOrDecrement)
         {
             return true;
         }
 
         return method
             .DescendantNodes()
-            .Any(node =>
-                node is PrefixUnaryExpressionSyntax prefix && IsParameterElementAccess(prefix.Operand, parameterName)
-                || node is PostfixUnaryExpressionSyntax postfix && IsParameterElementAccess(postfix.Operand, parameterName)
-            );
+            .OfType<InvocationExpressionSyntax>()
+            .Any(invocation =>
+                invocation.Expression is MemberAccessExpressionSyntax memberAccess
+                && aliases.Any(alias => IsExpressionRootedAtParameter(memberAccess.Expression, alias)));
     }
 
-    private static bool IsParameterElementAccess(ExpressionSyntax expression, string parameterName)
+    private static bool IsExpressionRootedAtParameter(ExpressionSyntax expression, string parameterName)
     {
         ExpressionSyntax current = expression;
-        while (current is ElementAccessExpressionSyntax elementAccess)
+        while (true)
         {
-            current = elementAccess.Expression;
+            ExpressionSyntax next = current switch
+            {
+                ElementAccessExpressionSyntax elementAccess => elementAccess.Expression,
+                MemberAccessExpressionSyntax memberAccess => memberAccess.Expression,
+                ParenthesizedExpressionSyntax parenthesized => parenthesized.Expression,
+                _ => current,
+            };
+            if (ReferenceEquals(next, current))
+            {
+                break;
+            }
+            current = next;
         }
 
         return current is IdentifierNameSyntax identifier
@@ -2783,6 +2843,21 @@ public class TreeNode
             }
 
             throw new InvalidOperationException($"Missing input value for parameter \"{name}\".");
+        }
+
+        public static bool Has(string name, int index)
+        {
+            if (Root.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException("TraceCode C# inputs must be a JSON object.");
+            }
+
+            if (Root.TryGetProperty(name, out _))
+            {
+                return true;
+            }
+
+            return index >= 0 && index < Keys.Length && Root.TryGetProperty(Keys[index], out _);
         }
 
         public static object? Convert(JsonElement value, Type targetType)
@@ -3102,6 +3177,11 @@ public class TreeNode
             if (parameterless is not null)
             {
                 return parameterless.Invoke(null);
+            }
+
+            if (targetType.IsValueType)
+            {
+                return Activator.CreateInstance(targetType)!;
             }
 
             throw new InvalidOperationException($"Cannot hydrate input object of type {targetType.FullName}.");
@@ -4734,10 +4814,6 @@ public class TreeNode
 
         var result = new Dictionary<string, object?>();
         references.Track(value, type.Name, result);
-        if (type.Name is not ("ListNode" or "TreeNode"))
-        {
-            result["__type__"] = type.Name;
-        }
         AddOutputFieldMembers(result, value, type, depth, references);
         AddOutputPropertyMembers(result, value, type, depth, references);
         return result.Count > 0 ? result : value;

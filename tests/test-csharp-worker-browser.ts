@@ -3150,11 +3150,10 @@ async function main(): Promise<void> {
     );
     assertCondition(
       JSON.stringify(customNodeOutput.output) === JSON.stringify({
-        __type__: 'Node',
         val: 4,
-        children: [{ __type__: 'Node', val: 5, children: [] }],
+        children: [{ val: 5, children: [] }],
       }),
-      `C# worker custom Node output case should include object type, received ${JSON.stringify(customNodeOutput.output)}`
+      `C# worker custom Node output case should serialize public fields, received ${JSON.stringify(customNodeOutput.output)}`
     );
 
     const nestedObjectListInput = await runWorkerCase(

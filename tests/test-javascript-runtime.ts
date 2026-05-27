@@ -1093,6 +1093,23 @@ function solve() {
   assertCondition(execute.consoleOutput?.[0] === 'sum 5', 'Console output capture should preserve value order');
   console.log('PASS: execute-code function style');
 
+  const executeJavaScriptModuleExport = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: 'export function solve(values) { return values.filter(Boolean).length; }',
+    functionName: 'solve',
+    inputs: { values: [0, 1, '', 'x', false, true, null] },
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    executeJavaScriptModuleExport.success === true,
+    `JavaScript named export function should execute: ${executeJavaScriptModuleExport.error ?? 'unknown error'}`
+  );
+  assertCondition(executeJavaScriptModuleExport.output === 3, 'JavaScript named export output should match');
+
   const executeSanitizedRuntimeHints = await harness.sendMessage<{
     success: boolean;
     error?: string;
@@ -1155,6 +1172,28 @@ const result = sum([2, 1, 5, 1, 3, 2]);`,
   );
   assertCondition(executeScriptConstResult.output === 14, 'Script const result output should equal 14');
   console.log('PASS: execute-code script mode const result declaration');
+
+  const executeScriptStdin = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `const fs = require("fs");
+const input = fs.readFileSync(0, "utf8").trim();
+const nums = input.length === 0 ? [] : input.split(/\\s+/).map(Number);
+console.log(nums.reduce((sum, value) => sum + value, 0));`,
+    inputs: { stdin: '4 5 -2 10\n' },
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    executeScriptStdin.success === true,
+    `Script stdin execution should support fs.readFileSync(0): ${executeScriptStdin.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    executeScriptStdin.output === '17\n',
+    `Script stdin output should mirror stdout text, received ${JSON.stringify(executeScriptStdin.output)}`
+  );
 
   const executeRuntimePreludeNodes = await harness.sendMessage<{
     success: boolean;
@@ -1432,6 +1471,49 @@ result = [head.val, head.value, head.next.val, head.next.value, root.left.val, r
   assertCondition(executeTypeScript.success === true, 'TypeScript execution should succeed');
   assertCondition(executeTypeScript.output === 10, 'TypeScript output should equal 10');
   console.log('PASS: execute-code typescript transpilation');
+
+  const executeJavaScriptStaticSolutionMethod = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-code', {
+    code: `class Solution {
+  static join(left, right) {
+    return left + ":" + right;
+  }
+}`,
+    functionName: 'join',
+    inputs: { left: 'a', right: 'b' },
+    executionStyle: 'solution-method',
+    language: 'javascript',
+  });
+  assertCondition(
+    executeJavaScriptStaticSolutionMethod.success === true,
+    `JavaScript static Solution method should execute: ${executeJavaScriptStaticSolutionMethod.error ?? 'unknown error'}`
+  );
+  assertCondition(executeJavaScriptStaticSolutionMethod.output === 'a:b', 'JavaScript static Solution method output should match');
+
+  const traceTypeScriptStaticSolutionMethod = await harness.sendMessage<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `class Solution {
+  static join(left: string, right: string): string {
+    return left + ":" + right;
+  }
+}`,
+    functionName: 'join',
+    inputs: { right: 'b', left: 'a' },
+    executionStyle: 'solution-method',
+    language: 'typescript',
+  });
+  assertCondition(
+    traceTypeScriptStaticSolutionMethod.success === true,
+    `TypeScript static Solution method tracing should execute: ${traceTypeScriptStaticSolutionMethod.error ?? 'unknown error'}`
+  );
+  assertCondition(traceTypeScriptStaticSolutionMethod.output === 'a:b', 'TypeScript static Solution tracing output should match');
+  console.log('PASS: execute-code solution-method supports static Solution methods');
 
   const executeTypeScriptCustomRecord = await harness.sendMessage<{
     success: boolean;
@@ -3359,6 +3441,28 @@ const result = sum([2, 1, 5, 1, 3, 2]);`,
     'Script const result tracing should include module events'
   );
   console.log('PASS: execute-with-tracing script mode const result declaration');
+
+  const scriptStdinTracing = await harness.sendMessage<{
+    success: boolean;
+    output?: unknown;
+    error?: string;
+  }>('execute-with-tracing', {
+    code: `const fs = require("fs");
+const input = fs.readFileSync(0, "utf8").trim();
+const nums = input.length === 0 ? [] : input.split(/\\s+/).map(Number);
+console.log(nums.reduce((sum, value) => sum + value, 0));`,
+    inputs: { stdin: '4 5 -2 10\n' },
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    scriptStdinTracing.success === true,
+    `Script stdin tracing should support fs.readFileSync(0): ${scriptStdinTracing.error ?? 'unknown error'}`
+  );
+  assertCondition(
+    scriptStdinTracing.output === '17\n',
+    `Script stdin tracing output should mirror stdout text, received ${JSON.stringify(scriptStdinTracing.output)}`
+  );
 
   const recursiveTreeTracing = await harness.sendMessage<{
     success: boolean;

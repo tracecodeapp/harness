@@ -234,7 +234,23 @@ function __tracecodeMaterializeTypedInput(value, __descriptor) {
     }
     return __out;
   }
+  if (__descriptor.kind === 'map') {
+    const __entries = value instanceof Map
+      ? Array.from(value.entries())
+      : Array.isArray(value)
+        ? value
+        : Object.entries(value).map(([__key, __child]) => [__key, __child]);
+    return new Map(__entries.map(([__key, __child]) => [
+      __key,
+      __tracecodeMaterializeTypedInput(__child, __descriptor.value)
+    ]));
+  }
   return __tracecodeMaterializeCustomObject(value);
+}
+
+function __tracecodeRestArgs(value) {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
 }
 `;
 
@@ -859,7 +875,7 @@ function detectMaterializerKind(ts, typeNode) {
       return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
     }
     if ((typeNameText === 'Map' || typeNameText === 'ReadonlyMap') && typeArgs.length >= 2) {
-      return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
+      return { kind: 'map', value: detectMaterializerKind(ts, typeArgs[1]) };
     }
     if (!TYPESCRIPT_BUILTIN_TYPE_NAMES.has(typeNameText) && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(typeNameText)) {
       return { kind: 'custom', typeName: typeNameText };
@@ -935,6 +951,16 @@ function applyPreRuntimeInputMaterializer(value, kind) {
     }
     return out;
   }
+  if (kind.kind === 'map') {
+    const entries = Array.isArray(value)
+      ? value
+      : isPlainObjectRecord(value)
+        ? Object.entries(value)
+        : null;
+    return entries
+      ? new Map(entries.map(([key, child]) => [key, applyPreRuntimeInputMaterializer(child, kind.value)]))
+      : value;
+  }
   return value;
 }
 
@@ -957,8 +983,8 @@ function inferFallbackInputMaterializers(inputs) {
   return inferred;
 }
 
-function collectSimpleParameterNames(ts, functionLikeNode) {
-  const names = [];
+function collectParameterDescriptors(ts, functionLikeNode) {
+  const descriptors = [];
 
   for (const parameter of functionLikeNode.parameters ?? []) {
     if (!ts.isIdentifier(parameter.name)) {
@@ -967,10 +993,10 @@ function collectSimpleParameterNames(ts, functionLikeNode) {
     if (parameter.name.text === 'this') {
       continue;
     }
-    names.push(parameter.name.text);
+    descriptors.push({ key: parameter.name.text, rest: Boolean(parameter.dotDotDotToken) });
   }
 
-  return names;
+  return descriptors;
 }
 
 function getPropertyNameText(ts, name) {
@@ -1120,26 +1146,27 @@ function extractClassBodyForSignatureScan(code, className) {
   return code.slice(openBraceIndex + 1, closeBraceIndex);
 }
 
-function parseSimpleJavaScriptParameterNames(parameterText) {
-  const names = [];
+function parseSimpleJavaScriptParameterDescriptors(parameterText) {
+  const descriptors = [];
   const rawParameters = String(parameterText ?? '').split(',');
 
   for (const rawParameter of rawParameters) {
     const trimmed = rawParameter.trim();
     if (!trimmed) continue;
     const withoutDefault = trimmed.split('=')[0].trim();
-    const name = withoutDefault.startsWith('...') ? withoutDefault.slice(3).trim() : withoutDefault;
+    const rest = withoutDefault.startsWith('...');
+    const name = rest ? withoutDefault.slice(3).trim() : withoutDefault;
     if (name === 'this') continue;
     if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
       return null;
     }
-    names.push(name);
+    descriptors.push({ key: name, rest });
   }
 
-  return names;
+  return descriptors;
 }
 
-function extractSimpleJavaScriptParameterNames(code, functionName, executionStyle) {
+function extractSimpleJavaScriptParameterDescriptors(code, functionName, executionStyle) {
   const strippedCode = stripJavaScriptTriviaForSignatureScan(code);
   const escapedName = escapeRegExp(functionName);
   const exportPrefix = String.raw`(?:export\s+default\s+|export\s+)?`;
@@ -1154,10 +1181,10 @@ function extractSimpleJavaScriptParameterNames(code, functionName, executionStyl
       ? extractClassBodyForSignatureScan(strippedCode, 'Solution') ?? strippedCode
       : strippedCode;
   const methodPatterns = [
-    new RegExp(String.raw`(?:^|[;{}\s])(?:async\s+)?${escapedName}\s*\(([^)]*)\)\s*\{`, 'm'),
-    new RegExp(String.raw`(?:^|[;{}\s])${escapedName}\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>`, 'm'),
-    new RegExp(String.raw`(?:^|[;{}\s])${escapedName}\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>`, 'm'),
-    new RegExp(String.raw`(?:^|[;{}\s])${escapedName}\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][\w$]*)?\s*\(([^)]*)\)`, 'm'),
+    new RegExp(String.raw`(?:^|[;{}\s])(?:static\s+)?(?:async\s+)?${escapedName}\s*\(([^)]*)\)\s*\{`, 'm'),
+    new RegExp(String.raw`(?:^|[;{}\s])(?:static\s+)?${escapedName}\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>`, 'm'),
+    new RegExp(String.raw`(?:^|[;{}\s])(?:static\s+)?${escapedName}\s*=\s*(?:async\s+)?([A-Za-z_$][\w$]*)\s*=>`, 'm'),
+    new RegExp(String.raw`(?:^|[;{}\s])(?:static\s+)?${escapedName}\s*=\s*(?:async\s+)?function(?:\s+[A-Za-z_$][\w$]*)?\s*\(([^)]*)\)`, 'm'),
   ];
   const patterns = executionStyle === 'solution-method' ? methodPatterns : functionPatterns;
   const scanCode = executionStyle === 'solution-method' ? methodBody : strippedCode;
@@ -1165,42 +1192,43 @@ function extractSimpleJavaScriptParameterNames(code, functionName, executionStyl
   for (const pattern of patterns) {
     const match = pattern.exec(scanCode);
     if (!match) continue;
-    return parseSimpleJavaScriptParameterNames(match[1] ?? '');
+    return parseSimpleJavaScriptParameterDescriptors(match[1] ?? '');
   }
 
   return null;
 }
 
-function orderInputKeysByParameterNames(parameterNames, inputs, fallbackKeys) {
-  if (!parameterNames || parameterNames.length === 0) {
-    return fallbackKeys;
+function orderInputArgumentsByParameterDescriptors(parameterDescriptors, inputs, fallbackKeys) {
+  if (!parameterDescriptors || parameterDescriptors.length === 0) {
+    return fallbackKeys.map((key) => ({ key, rest: false }));
   }
 
-  const matchedKeys = parameterNames.filter((name) => Object.prototype.hasOwnProperty.call(inputs, name));
-  if (matchedKeys.length === 0) {
-    return fallbackKeys;
+  const matched = parameterDescriptors.filter((parameter) => Object.prototype.hasOwnProperty.call(inputs, parameter.key));
+  if (matched.length === 0) {
+    return fallbackKeys.map((key) => ({ key, rest: false }));
   }
 
+  const matchedKeys = matched.map((parameter) => parameter.key);
   const extras = fallbackKeys.filter((key) => !matchedKeys.includes(key));
-  return [...matchedKeys, ...extras];
+  return [...matched, ...extras.map((key) => ({ key, rest: false }))];
 }
 
-async function resolveOrderedInputKeys(code, functionName, inputs, executionStyle, language = 'javascript') {
+async function resolveOrderedInputArguments(code, functionName, inputs, executionStyle, language = 'javascript') {
   const fallbackKeys = Object.keys(inputs ?? {});
-  if (!functionName || executionStyle === 'ops-class' || fallbackKeys.length <= 1) {
-    return fallbackKeys;
+  if (!functionName || executionStyle === 'ops-class') {
+    return fallbackKeys.map((key) => ({ key, rest: false }));
   }
 
   if (language !== 'typescript') {
-    const parameterNames = extractSimpleJavaScriptParameterNames(code, functionName, executionStyle);
-    return orderInputKeysByParameterNames(parameterNames, inputs, fallbackKeys);
+    const parameterDescriptors = extractSimpleJavaScriptParameterDescriptors(code, functionName, executionStyle);
+    return orderInputArgumentsByParameterDescriptors(parameterDescriptors, inputs, fallbackKeys);
   }
 
   try {
     await ensureTypeScriptCompiler();
     const ts = getTypeScriptCompiler();
     if (!ts) {
-      return fallbackKeys;
+      return fallbackKeys.map((key) => ({ key, rest: false }));
     }
 
     const sourceFile = ts.createSourceFile(
@@ -1212,13 +1240,13 @@ async function resolveOrderedInputKeys(code, functionName, inputs, executionStyl
     );
     const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
     if (!target) {
-      return fallbackKeys;
+      return fallbackKeys.map((key) => ({ key, rest: false }));
     }
 
-    const parameterNames = collectSimpleParameterNames(ts, target);
-    return orderInputKeysByParameterNames(parameterNames, inputs, fallbackKeys);
+    const parameterDescriptors = collectParameterDescriptors(ts, target);
+    return orderInputArgumentsByParameterDescriptors(parameterDescriptors, inputs, fallbackKeys);
   } catch (_error) {
-    return fallbackKeys;
+    return fallbackKeys.map((key) => ({ key, rest: false }));
   }
 }
 
@@ -2236,7 +2264,7 @@ function findFunctionStartLine(code, functionName, executionStyle) {
   const declarationPattern = new RegExp(`\\bfunction\\s+${escapedName}\\s*\\(`);
   const assignmentPattern = new RegExp(`\\b(?:const|let|var)\\s+${escapedName}\\s*=`);
   const classPattern = new RegExp(`\\bclass\\s+${escapedName}\\b`);
-  const methodPattern = new RegExp(`\\b${escapedName}\\s*\\(`);
+  const methodPattern = new RegExp(`\\b(?:static\\s+)?${escapedName}\\s*\\(`);
   const lines = code.split('\n');
 
   for (let index = 0; index < lines.length; index += 1) {
@@ -2514,6 +2542,13 @@ function transpileTypeScript(sourceCode) {
   return transpiled.outputText;
 }
 
+function stripJavaScriptModuleExports(sourceCode) {
+  return String(sourceCode ?? '')
+    .replace(/(^|\n)([ \t]*)export\s+default\s+(?=(?:async\s+)?function\b|class\b)/g, '$1$2')
+    .replace(/(^|\n)([ \t]*)export\s+(?=(?:async\s+)?function\b|class\b|const\b|let\b|var\b)/g, '$1$2')
+    .replace(/(^|\n)[ \t]*export\s*\{[^}]*\};?[ \t]*(?=\n|$)/g, '$1');
+}
+
 async function prepareExecutableCode(sourceCode, language) {
   ensureJavaScriptLibraries();
   if (language === 'typescript') {
@@ -2521,7 +2556,7 @@ async function prepareExecutableCode(sourceCode, language) {
     return transpileTypeScript(sourceCode);
   }
 
-  return sourceCode;
+  return stripJavaScriptModuleExports(sourceCode);
 }
 
 function addBindingNames(ts, nameNode, names) {
@@ -4757,7 +4792,20 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
 function buildScriptExecutionRunner(code) {
   return new Function(
     'console',
+    '__tracecodeStdin',
     `${JAVASCRIPT_RUNTIME_PRELUDE}
+const require = (__moduleName) => {
+  if (__moduleName === 'fs') {
+    return {
+      readFileSync(__fd) {
+        if (__fd === 0 || __fd === '0') return String(__tracecodeStdin ?? '');
+        throw new Error('Only fs.readFileSync(0) is supported in script-mode fixtures');
+      }
+    };
+  }
+  throw new Error('Module "' + __moduleName + '" is not available in this runtime');
+};
+try { delete globalThis.result; } catch (_err) {}
 ${code}
 if (typeof result === 'undefined') {
   return null;
@@ -5380,8 +5428,21 @@ function buildScriptTracingRunner(code, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DE
     'console',
     '__traceRecorder',
     '__traceCtx',
+    '__tracecodeStdin',
     `${JAVASCRIPT_RUNTIME_PRELUDE}
 ${getTracingRuntimeHelpersSource(maxPathDepth)}
+const require = (__moduleName) => {
+  if (__moduleName === 'fs') {
+    return {
+      readFileSync(__fd) {
+        if (__fd === 0 || __fd === '0') return String(__tracecodeStdin ?? '');
+        throw new Error('Only fs.readFileSync(0) is supported in script-mode fixtures');
+      }
+    };
+  }
+  throw new Error('Module "' + __moduleName + '" is not available in this runtime');
+};
+try { delete globalThis.result; } catch (_err) {}
 ${code}
 if (typeof result === 'undefined') {
   return null;
@@ -5391,9 +5452,10 @@ return result;`
 }
 
 function buildFunctionExecutionRunner(code, executionStyle, argNames, argumentMaterializers = []) {
-  const materializedArgExpressions = argNames.map((name, index) =>
-    `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`
-  );
+  const materializedArgExpressions = argNames.map((name, index) => {
+    const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
+    return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
+  });
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -5428,12 +5490,21 @@ ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
 }
+const __prototypeMethod = Solution.prototype && Solution.prototype[__functionName];
+if (typeof __prototypeMethod === 'function') {
+  const __solver = new Solution();
+  return __prototypeMethod.call(__solver, ${materializedArgExpressions.join(', ')});
+}
+const __staticMethod = Solution[__functionName];
+if (typeof __staticMethod === 'function') {
+  return __staticMethod.call(Solution, ${materializedArgExpressions.join(', ')});
+}
 const __solver = new Solution();
 const __method = __solver[__functionName];
-if (typeof __method !== 'function') {
-  throw new Error('Method "Solution.' + __functionName + '" not found');
+if (typeof __method === 'function') {
+  return __method.call(__solver, ${materializedArgExpressions.join(', ')});
 }
-return __method.call(__solver, ${materializedArgExpressions.join(', ')});`
+throw new Error('Method "Solution.' + __functionName + '" not found');`
     );
   }
 
@@ -5493,9 +5564,10 @@ return __out;`
 }
 
 function buildFunctionTracingRunner(code, executionStyle, argNames, maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH, argumentMaterializers = []) {
-  const materializedArgExpressions = argNames.map((name, index) =>
-    `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`
-  );
+  const materializedArgExpressions = argNames.map((name, index) => {
+    const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
+    return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
+  });
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -5536,12 +5608,21 @@ ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
 }
+const __prototypeMethod = Solution.prototype && Solution.prototype[__functionName];
+if (typeof __prototypeMethod === 'function') {
+  const __solver = new Solution();
+  return __prototypeMethod.call(__solver, ${materializedArgExpressions.join(', ')});
+}
+const __staticMethod = Solution[__functionName];
+if (typeof __staticMethod === 'function') {
+  return __staticMethod.call(Solution, ${materializedArgExpressions.join(', ')});
+}
 const __solver = new Solution();
 const __method = __solver[__functionName];
-if (typeof __method !== 'function') {
-  throw new Error('Method "Solution.' + __functionName + '" not found');
+if (typeof __method === 'function') {
+  return __method.call(__solver, ${materializedArgExpressions.join(', ')});
 }
-return __method.call(__solver, ${materializedArgExpressions.join(', ')});`
+throw new Error('Method "Solution.' + __functionName + '" not found');`
     );
   }
 
@@ -5648,10 +5729,10 @@ async function executeCode(payload) {
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, []);
         output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
       } else {
-        const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
-        const argNames = inputKeys.map((_, index) => `__arg${index}`);
-        const argValues = inputKeys.map((key) => materializedInputs[key]);
-        const argumentMaterializers = inputKeys.map((key) => materializers[key] ?? null);
+        const inputArguments = await resolveOrderedInputArguments(code, functionName, materializedInputs, executionStyle, language);
+        const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
+        const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
+        const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
         const runner = buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers);
         output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
       }
@@ -5659,8 +5740,12 @@ async function executeCode(payload) {
       if (executionStyle !== 'function') {
         throw new Error('Script-mode execution only supports executionStyle="function".');
       }
+      const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
       const runner = buildScriptExecutionRunner(executableCode);
-      output = await Promise.resolve(runner(consoleProxy));
+      output = await Promise.resolve(runner(consoleProxy, scriptStdin));
+      if (scriptStdin !== undefined && output === null) {
+        output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
+      }
     }
 
     return {
@@ -5807,10 +5892,10 @@ async function executeWithTracing(payload) {
           )
         );
       } else {
-        const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
-        const argNames = inputKeys.map((_, index) => `__arg${index}`);
-        const argValues = inputKeys.map((key) => materializedInputs[key]);
-        const argumentMaterializers = inputKeys.map((key) => materializers[key] ?? null);
+        const inputArguments = await resolveOrderedInputArguments(code, functionName, materializedInputs, executionStyle, language);
+        const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
+        const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
+        const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
         const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers);
         output = await Promise.resolve(
           runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, functionName, ...argValues)
@@ -5820,10 +5905,14 @@ async function executeWithTracing(payload) {
       if (executionStyle !== 'function') {
         throw new Error('Script-mode execution only supports executionStyle="function".');
       }
+      const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
       const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth);
       output = await Promise.resolve(
-        runner(consoleProxy, traceRecorder, { functionName: traceFunctionName })
+        runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, scriptStdin)
       );
+      if (scriptStdin !== undefined && output === null) {
+        output = consoleOutput.length > 0 ? `${consoleOutput.join('\n')}\n` : '';
+      }
     }
 
     const serializedTraceOutput = serializeValue(output);

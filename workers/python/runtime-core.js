@@ -113,7 +113,7 @@ _call_stack = []
 _pending_accesses = {}
 _last_trace_index_by_frame = {}
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_read_value', '__tracecode_write_value', '__tracecode_delete_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_write_index', '_tracecode_write_scalar', '_tracecode_delete_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_source_string_node', '_tracecode_collect_user_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -125,6 +125,8 @@ _internal_locals = {
     '_line_hit_count', '_max_single_line_hits', '_infinite_loop_line',
     '_MAX_SERIALIZE_DEPTH', '_trace_failed', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
+    '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_hydrate_for_annotation',
+    '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry',
     '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token',
     '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result',
     '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step',
@@ -2626,13 +2628,7 @@ pow = _builtins.pow
   const executionCode = functionName
     ? executionStyle === 'solution-method'
       ? [
-        `    if 'Solution' in globals() and hasattr(Solution, '${functionName}'):`,
-        `        _solver = Solution()`,
-        `        _result = getattr(_solver, '${functionName}')(${argList})`,
-        `    elif '${functionName}' in globals() and callable(globals()['${functionName}']):`,
-        `        _result = globals()['${functionName}'](${argList})`,
-        `    else:`,
-        `        raise NameError(\"Implement Solution.${functionName}(...)\")`,
+        `    _result = _tracecode_invoke_entry(${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)}, ${traceInputNamesLiteral})`,
       ].join('\n')
       : executionStyle === 'ops-class'
         ? [
@@ -2663,13 +2659,7 @@ pow = _builtins.pow
           `    _result = _out`,
         ].join('\n')
         : [
-          `    if '${functionName}' in globals() and callable(globals()['${functionName}']):`,
-          `        _result = globals()['${functionName}'](${argList})`,
-          `    elif 'Solution' in globals() and hasattr(Solution, '${functionName}'):`,
-          `        _solver = Solution()`,
-          `        _result = getattr(_solver, '${functionName}')(${argList})`,
-          `    else:`,
-          `        raise NameError(\"Implement ${functionName}(...) or Solution.${functionName}(...)\")`,
+          `    _result = _tracecode_invoke_entry(${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)}, ${traceInputNamesLiteral})`,
         ].join('\n')
     : [
       `    exec(__tracecode_compiled, _globals_dict)`,
@@ -2734,6 +2724,160 @@ def _tracecode_materialize_named_inputs(_names):
 def _tracecode_materialize_input(obj):
     return _tracecode_materialize_custom_input(obj)
 
+def _tracecode_hydrate_for_annotation(_obj, _annotation):
+    try:
+        import typing as _tracecode_typing
+        import collections.abc as _tracecode_collections_abc
+    except Exception:
+        return _obj
+    if _annotation is None:
+        return _obj
+    if isinstance(_annotation, _builtins.str):
+        _annotation = globals().get(_annotation, _annotation)
+    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
+        return _obj
+    _origin = _tracecode_typing.get_origin(_annotation)
+    _args = _tracecode_typing.get_args(_annotation)
+    if _origin is _tracecode_typing.Union:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
+    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
+        _item_annotation = _args[0] if _args else None
+        if isinstance(_obj, _builtins.list):
+            _items = [_tracecode_hydrate_for_annotation(_item, _item_annotation) for _item in _obj]
+            if _origin is _builtins.tuple:
+                return tuple(_items)
+            if _origin is _builtins.set:
+                return set(_items)
+            if _origin is _builtins.frozenset:
+                return frozenset(_items)
+            return _items
+        return _obj
+    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
+        _key_annotation = _args[0] if len(_args) > 0 else None
+        _value_annotation = _args[1] if len(_args) > 1 else None
+        return {
+            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
+            for _key, _value in _obj.items()
+        }
+    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
+        if _annotation.__name__ in ('TreeNode', 'ListNode'):
+            return _obj
+        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
+        try:
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), globals(), locals())
+        except Exception:
+            _ctor_hints = {}
+        _hydrated_fields = {
+            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
+            for key, value in _fields.items()
+        }
+        try:
+            return _annotation(**_hydrated_fields)
+        except Exception:
+            pass
+        try:
+            return _annotation(*_builtins.list(_hydrated_fields.values()))
+        except Exception:
+            pass
+        try:
+            _instance = _annotation.__new__(_annotation)
+            for _key, _value in _hydrated_fields.items():
+                setattr(_instance, _key, _value)
+            return _instance
+        except Exception:
+            return _obj
+    return _obj
+
+def _tracecode_resolve_target_callable(_function_name, _execution_style):
+    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
+        return getattr(Solution, _function_name)
+    if _function_name in globals() and callable(globals()[_function_name]):
+        return globals()[_function_name]
+    if 'Solution' in globals() and hasattr(Solution, _function_name):
+        return getattr(Solution, _function_name)
+    return None
+
+def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style):
+    try:
+        import typing as _tracecode_typing
+        _callable = _tracecode_resolve_target_callable(_function_name, _execution_style)
+        if _callable is None:
+            return
+        try:
+            _annotations = _tracecode_typing.get_type_hints(_callable, globals(), locals())
+        except Exception:
+            _annotations = getattr(_callable, '__annotations__', {}) or {}
+        for _name in _names:
+            if _name in globals() and _name in _annotations:
+                globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
+    except Exception:
+        return
+
+def _tracecode_resolve_entry_callable(_function_name, _execution_style):
+    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
+        _solver = Solution()
+        return getattr(_solver, _function_name)
+    if _function_name in globals() and callable(globals()[_function_name]):
+        return globals()[_function_name]
+    if 'Solution' in globals() and hasattr(Solution, _function_name):
+        _solver = Solution()
+        return getattr(_solver, _function_name)
+    return None
+
+def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
+    _tracecode_previous_tracer = sys.gettrace()
+    sys.settrace(None)
+    _fallback_kwargs = None
+    try:
+        import inspect as _tracecode_inspect
+        _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
+        if _callable is None:
+            raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
+        _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
+        try:
+            _signature = _tracecode_inspect.signature(_callable)
+        except Exception:
+            _fallback_kwargs = _values
+            _args = []
+            _kwargs = {}
+        else:
+            _args = []
+            _kwargs = {}
+            _has_varargs = any(
+                _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+                for _parameter in _signature.parameters.values()
+            )
+            for _parameter in _signature.parameters.values():
+                if _parameter.name in ('self', 'cls'):
+                    continue
+                _kind = _parameter.kind
+                if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+                    if _parameter.name in _values:
+                        _raw = _values[_parameter.name]
+                        if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                            _args.extend(_raw)
+                        else:
+                            _args.append(_raw)
+                    continue
+                if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+                    if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                        _kwargs.update(_values[_parameter.name])
+                    continue
+                if _parameter.name not in _values:
+                    continue
+                if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+                    _args.append(_values[_parameter.name])
+                elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+                    _args.append(_values[_parameter.name])
+                else:
+                    _kwargs[_parameter.name] = _values[_parameter.name]
+    finally:
+        sys.settrace(_tracecode_previous_tracer)
+    if _fallback_kwargs is not None:
+        return _callable(**_fallback_kwargs)
+    return _callable(*_args, **_kwargs)
+
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:
         if _name in globals():
@@ -2748,6 +2892,7 @@ ${listConversions}
 
 ${preloadUserDefinitions}
 _tracecode_materialize_named_inputs(${traceInputNamesLiteral})
+_tracecode_hydrate_annotated_inputs(${traceInputNamesLiteral}, ${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)})
 
 if _SCRIPT_MODE:
     _SCRIPT_PRE_USER_GLOBALS = set(globals().keys()) - _TRACE_INPUT_NAMES
@@ -3151,13 +3296,7 @@ async function executeCode(deps, code, functionName, inputs, executionStyle = 'f
     const inplaceCandidatesLiteral = JSON.stringify(inplaceCandidates);
     const traceInputNamesLiteral = JSON.stringify(Object.keys(inputs));
     const executionCall = executionStyle === 'solution-method'
-      ? `if 'Solution' in globals() and hasattr(Solution, '${functionName}'):
-    _solver = Solution()
-    _result = getattr(_solver, '${functionName}')(${inputArgs})
-elif '${functionName}' in globals() and callable(globals()['${functionName}']):
-    _result = globals()['${functionName}'](${inputArgs})
-else:
-    raise NameError("Implement Solution.${functionName}(...)")`
+      ? `_result = _tracecode_invoke_entry(${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)}, ${traceInputNamesLiteral})`
       : executionStyle === 'ops-class'
         ? `_ops = operations if 'operations' in locals() else (ops if 'ops' in locals() else None)
 _args = arguments if 'arguments' in locals() else (args if 'args' in locals() else None)
@@ -3183,13 +3322,7 @@ for _i, _op in enumerate(_ops):
         _method = getattr(_instance, _op)
         _out.append(_method(*_call_args))
 _result = _out`
-        : `if '${functionName}' in globals() and callable(globals()['${functionName}']):
-    _result = globals()['${functionName}'](${inputArgs})
-elif 'Solution' in globals() and hasattr(Solution, '${functionName}'):
-    _solver = Solution()
-    _result = getattr(_solver, '${functionName}')(${inputArgs})
-else:
-    raise NameError("Implement ${functionName}(...) or Solution.${functionName}(...)")`;
+        : `_result = _tracecode_invoke_entry(${JSON.stringify(functionName)}, ${JSON.stringify(executionStyle)}, ${traceInputNamesLiteral})`;
     const executionCallInTry = executionCall
       .split('\n')
       .map((line) => (line ? `    ${line}` : line))
@@ -3455,6 +3588,70 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
     except Exception:
         return
 
+def _tracecode_resolve_entry_callable(_function_name, _execution_style):
+    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
+        _solver = Solution()
+        return getattr(_solver, _function_name)
+    if _function_name in globals() and callable(globals()[_function_name]):
+        return globals()[_function_name]
+    if 'Solution' in globals() and hasattr(Solution, _function_name):
+        _solver = Solution()
+        return getattr(_solver, _function_name)
+    return None
+
+def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
+    _tracecode_previous_tracer = sys.gettrace()
+    sys.settrace(None)
+    _fallback_kwargs = None
+    try:
+        import inspect as _tracecode_inspect
+        _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
+        if _callable is None:
+            raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
+        _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
+        try:
+            _signature = _tracecode_inspect.signature(_callable)
+        except Exception:
+            _fallback_kwargs = _values
+            _args = []
+            _kwargs = {}
+        else:
+            _args = []
+            _kwargs = {}
+            _has_varargs = any(
+                _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+                for _parameter in _signature.parameters.values()
+            )
+            for _parameter in _signature.parameters.values():
+                if _parameter.name in ('self', 'cls'):
+                    continue
+                _kind = _parameter.kind
+                if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+                    if _parameter.name in _values:
+                        _raw = _values[_parameter.name]
+                        if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                            _args.extend(_raw)
+                        else:
+                            _args.append(_raw)
+                    continue
+                if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+                    if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                        _kwargs.update(_values[_parameter.name])
+                    continue
+                if _parameter.name not in _values:
+                    continue
+                if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+                    _args.append(_values[_parameter.name])
+                elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+                    _args.append(_values[_parameter.name])
+                else:
+                    _kwargs[_parameter.name] = _values[_parameter.name]
+    finally:
+        sys.settrace(_tracecode_previous_tracer)
+    if _fallback_kwargs is not None:
+        return _callable(**_fallback_kwargs)
+    return _callable(*_args, **_kwargs)
+
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:
         if _name in globals():
@@ -3638,6 +3835,70 @@ def _tracecode_hydrate_annotated_inputs(_names, _function_name, _execution_style
                 globals()[_name] = _tracecode_hydrate_for_annotation(globals()[_name], _annotations[_name])
     except Exception:
         return
+
+def _tracecode_resolve_entry_callable(_function_name, _execution_style):
+    if _execution_style == 'solution-method' and 'Solution' in globals() and hasattr(Solution, _function_name):
+        _solver = Solution()
+        return getattr(_solver, _function_name)
+    if _function_name in globals() and callable(globals()[_function_name]):
+        return globals()[_function_name]
+    if 'Solution' in globals() and hasattr(Solution, _function_name):
+        _solver = Solution()
+        return getattr(_solver, _function_name)
+    return None
+
+def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
+    _tracecode_previous_tracer = sys.gettrace()
+    sys.settrace(None)
+    _fallback_kwargs = None
+    try:
+        import inspect as _tracecode_inspect
+        _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
+        if _callable is None:
+            raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
+        _values = {_name: globals()[_name] for _name in _input_names if _name in globals()}
+        try:
+            _signature = _tracecode_inspect.signature(_callable)
+        except Exception:
+            _fallback_kwargs = _values
+            _args = []
+            _kwargs = {}
+        else:
+            _args = []
+            _kwargs = {}
+            _has_varargs = any(
+                _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
+                for _parameter in _signature.parameters.values()
+            )
+            for _parameter in _signature.parameters.values():
+                if _parameter.name in ('self', 'cls'):
+                    continue
+                _kind = _parameter.kind
+                if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
+                    if _parameter.name in _values:
+                        _raw = _values[_parameter.name]
+                        if isinstance(_raw, (_builtins.list, _builtins.tuple)):
+                            _args.extend(_raw)
+                        else:
+                            _args.append(_raw)
+                    continue
+                if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
+                    if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
+                        _kwargs.update(_values[_parameter.name])
+                    continue
+                if _parameter.name not in _values:
+                    continue
+                if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
+                    _args.append(_values[_parameter.name])
+                elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
+                    _args.append(_values[_parameter.name])
+                else:
+                    _kwargs[_parameter.name] = _values[_parameter.name]
+    finally:
+        sys.settrace(_tracecode_previous_tracer)
+    if _fallback_kwargs is not None:
+        return _callable(**_fallback_kwargs)
+    return _callable(*_args, **_kwargs)
 
 def _resolve_inplace_result():
     for _name in ${inplaceCandidatesLiteral}:

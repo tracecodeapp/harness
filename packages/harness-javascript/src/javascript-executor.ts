@@ -593,8 +593,14 @@ type InputMaterializerKind =
   | 'tree'
   | 'list'
   | { kind: 'array'; element: InputMaterializerKind | null }
+  | { kind: 'map'; value: InputMaterializerKind | null }
   | { kind: 'record'; value: InputMaterializerKind | null }
   | { kind: 'custom'; typeName: string };
+
+interface RuntimeArgumentDescriptor {
+  key: string;
+  rest: boolean;
+}
 
 const TYPESCRIPT_BUILTIN_TYPE_NAMES = new Set([
   'Array',
@@ -713,7 +719,23 @@ function __tracecodeMaterializeTypedInput(value, __descriptor) {
     }
     return __out;
   }
+  if (__descriptor.kind === 'map') {
+    const __entries = value instanceof Map
+      ? Array.from(value.entries())
+      : Array.isArray(value)
+      ? value
+      : Object.entries(value).map(([__key, __child]) => [__key, __child]);
+    return new Map(__entries.map(([__key, __child]) => [
+      __key,
+      __tracecodeMaterializeTypedInput(__child, __descriptor.value)
+    ]));
+  }
   return __tracecodeMaterializeCustomObject(value);
+}
+
+function __tracecodeRestArgs(value) {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
 }
 `;
 
@@ -885,7 +907,7 @@ function detectMaterializerKind(
       return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
     }
     if ((typeNameText === 'Map' || typeNameText === 'ReadonlyMap') && typeArgs.length >= 2) {
-      return { kind: 'record', value: detectMaterializerKind(ts, typeArgs[1]) };
+      return { kind: 'map', value: detectMaterializerKind(ts, typeArgs[1]) };
     }
     if (!TYPESCRIPT_BUILTIN_TYPE_NAMES.has(typeNameText) && /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(typeNameText)) {
       return { kind: 'custom', typeName: typeNameText };
@@ -968,6 +990,16 @@ function applyPreRuntimeInputMaterializer(value: unknown, kind: InputMaterialize
     }
     return out;
   }
+  if (kind.kind === 'map') {
+    const entries = Array.isArray(value)
+      ? value
+      : isPlainObjectRecord(value)
+        ? Object.entries(value)
+        : null;
+    return entries
+      ? new Map(entries.map(([key, child]) => [key, applyPreRuntimeInputMaterializer(child, kind.value)]))
+      : value;
+  }
   return value;
 }
 
@@ -977,11 +1009,11 @@ type FunctionLikeNode =
   | import('typescript').ArrowFunction
   | import('typescript').MethodDeclaration;
 
-function collectSimpleParameterNames(
+function collectParameterDescriptors(
   ts: TypeScriptModule,
   functionLikeNode: FunctionLikeNode
-): string[] | null {
-  const names: string[] = [];
+): RuntimeArgumentDescriptor[] | null {
+  const descriptors: RuntimeArgumentDescriptor[] = [];
 
   for (const parameter of functionLikeNode.parameters ?? []) {
     if (!ts.isIdentifier(parameter.name)) {
@@ -990,10 +1022,10 @@ function collectSimpleParameterNames(
     if (parameter.name.text === 'this') {
       continue;
     }
-    names.push(parameter.name.text);
+    descriptors.push({ key: parameter.name.text, rest: Boolean(parameter.dotDotDotToken) });
   }
 
-  return names;
+  return descriptors;
 }
 
 function getPropertyNameText(ts: TypeScriptModule, name: import('typescript').PropertyName | undefined): string | null {
@@ -1062,16 +1094,37 @@ function findFunctionLikeNode(
   return found;
 }
 
-async function resolveOrderedInputKeys(
+function orderInputArgumentsByParameterDescriptors(
+  parameterDescriptors: RuntimeArgumentDescriptor[] | null,
+  inputs: Record<string, unknown>,
+  fallbackKeys: string[]
+): RuntimeArgumentDescriptor[] {
+  if (!parameterDescriptors || parameterDescriptors.length === 0) {
+    return fallbackKeys.map((key) => ({ key, rest: false }));
+  }
+
+  const matched = parameterDescriptors.filter((parameter) => Object.prototype.hasOwnProperty.call(inputs, parameter.key));
+  if (matched.length === 0) {
+    return fallbackKeys.map((key) => ({ key, rest: false }));
+  }
+
+  const matchedKeys = matched.map((parameter) => parameter.key);
+  const extras = fallbackKeys
+    .filter((key) => !matchedKeys.includes(key))
+    .map((key) => ({ key, rest: false }));
+  return [...matched, ...extras];
+}
+
+async function resolveOrderedInputArguments(
   code: string,
   functionName: string,
   inputs: Record<string, unknown>,
   executionStyle: RuntimeExecutionStyle,
   language: 'javascript' | 'typescript' = 'javascript'
-): Promise<string[]> {
+): Promise<RuntimeArgumentDescriptor[]> {
   const fallbackKeys = Object.keys(inputs);
-  if (!functionName || executionStyle === 'ops-class' || fallbackKeys.length <= 1) {
-    return fallbackKeys;
+  if (!functionName || executionStyle === 'ops-class') {
+    return fallbackKeys.map((key) => ({ key, rest: false }));
   }
 
   try {
@@ -1085,23 +1138,12 @@ async function resolveOrderedInputKeys(
     );
     const target = findFunctionLikeNode(ts, sourceFile, functionName, executionStyle);
     if (!target) {
-      return fallbackKeys;
+      return fallbackKeys.map((key) => ({ key, rest: false }));
     }
 
-    const parameterNames = collectSimpleParameterNames(ts, target);
-    if (!parameterNames || parameterNames.length === 0) {
-      return fallbackKeys;
-    }
-
-    const matchedKeys = parameterNames.filter((name) => Object.prototype.hasOwnProperty.call(inputs, name));
-    if (matchedKeys.length === 0) {
-      return fallbackKeys;
-    }
-
-    const extras = fallbackKeys.filter((key) => !matchedKeys.includes(key));
-    return [...matchedKeys, ...extras];
+    return orderInputArgumentsByParameterDescriptors(collectParameterDescriptors(ts, target), inputs, fallbackKeys);
   } catch {
-    return fallbackKeys;
+    return fallbackKeys.map((key) => ({ key, rest: false }));
   }
 }
 
@@ -1111,9 +1153,10 @@ function buildRunner(
   argNames: string[],
   argumentMaterializers: Array<InputMaterializerKind | null> = []
 ): DynamicRunner {
-  const materializedArgExpressions = argNames.map((name, index) =>
-    `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`
-  );
+  const materializedArgExpressions = argNames.map((name, index) => {
+    const materialized = `__tracecodeMaterializeTypedInput(${name}, ${JSON.stringify(argumentMaterializers[index] ?? null)})`;
+    return name.endsWith('__tracecodeRest') ? `...__tracecodeRestArgs(${materialized})` : materialized;
+  });
   if (executionStyle === 'function') {
     return new Function(
       'console',
@@ -1146,12 +1189,21 @@ ${CUSTOM_OBJECT_MATERIALIZER_SOURCE}
 if (typeof Solution !== 'function') {
   throw new Error('Class "Solution" not found');
 }
+const __prototypeMethod = Solution.prototype && Solution.prototype[__functionName];
+if (typeof __prototypeMethod === 'function') {
+  const __solver = new Solution();
+  return __prototypeMethod.call(__solver, ${materializedArgExpressions.join(', ')});
+}
+const __staticMethod = Solution[__functionName];
+if (typeof __staticMethod === 'function') {
+  return __staticMethod.call(Solution, ${materializedArgExpressions.join(', ')});
+}
 const __solver = new Solution();
 const __method = __solver[__functionName];
-if (typeof __method !== 'function') {
-  throw new Error('Method "Solution.' + __functionName + '" not found');
+if (typeof __method === 'function') {
+  return __method.call(__solver, ${materializedArgExpressions.join(', ')});
 }
-return __method.call(__solver, ${materializedArgExpressions.join(', ')});`
+throw new Error('Method "Solution.' + __functionName + '" not found');`
     ) as DynamicRunner;
   }
 
@@ -1259,6 +1311,13 @@ async function transpileTypeScript(code: string): Promise<string> {
   return transpiled.outputText;
 }
 
+function stripJavaScriptModuleExports(code: string): string {
+  return String(code ?? '')
+    .replace(/(^|\n)([ \t]*)export\s+default\s+(?=(?:async\s+)?function\b|class\b)/g, '$1$2')
+    .replace(/(^|\n)([ \t]*)export\s+(?=(?:async\s+)?function\b|class\b|const\b|let\b|var\b)/g, '$1$2')
+    .replace(/(^|\n)[ \t]*export\s*\{[^}]*\};?[ \t]*(?=\n|$)/g, '$1');
+}
+
 export async function executeJavaScriptCode(
   code: string,
   functionName: string,
@@ -1272,6 +1331,7 @@ export async function executeJavaScriptCode(
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = resolvedMaterializers ?? await resolveInputMaterializers(code, functionName, executionStyle, language);
   const materializedInputs = applyInputMaterializers(normalizedInputs, materializers);
+  const executableCode = language === 'javascript' ? stripJavaScriptModuleExports(code) : code;
   const javascriptLibraryEnvironment = await getJavaScriptLibraryEnvironment();
   const restoreJavaScriptLibraryGlobals = installJavaScriptLibraryGlobals(javascriptLibraryEnvironment);
 
@@ -1280,14 +1340,14 @@ export async function executeJavaScriptCode(
 
     if (executionStyle === 'ops-class') {
       const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-      const runner = buildRunner(code, executionStyle, []);
+      const runner = buildRunner(executableCode, executionStyle, []);
       output = await Promise.resolve(runner(consoleProxy, functionName, operations, argumentsList));
     } else {
-      const inputKeys = await resolveOrderedInputKeys(code, functionName, materializedInputs, executionStyle, language);
-      const argNames = inputKeys.map((_, index) => `__arg${index}`);
-      const argValues = inputKeys.map((key) => materializedInputs[key]);
-      const argumentMaterializers = inputKeys.map((key) => materializers[key] ?? null);
-      const runner = buildRunner(code, executionStyle, argNames, argumentMaterializers);
+      const inputArguments = await resolveOrderedInputArguments(executableCode, functionName, materializedInputs, executionStyle, language);
+      const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
+      const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
+      const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
+      const runner = buildRunner(executableCode, executionStyle, argNames, argumentMaterializers);
       output = await Promise.resolve(runner(consoleProxy, functionName, ...argValues));
     }
 
