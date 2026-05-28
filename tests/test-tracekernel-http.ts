@@ -115,6 +115,45 @@ async function main(): Promise<void> {
           '',
         ].join('\n'),
       },
+      {
+        path: 'mock-fetch-client.js',
+        contents: [
+          '(async () => {',
+          '  const response = await fetch("http://localhost:3400/from-fetch", {',
+          '    method: "POST",',
+          '    headers: { "x-client": "fetch" },',
+          '    body: "fetch-body",',
+          '  });',
+          '  console.log(response.status + ":" + response.headers.get("content-type"));',
+          '  console.log(JSON.stringify(await response.json()));',
+          '})().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'mock-http-client.js',
+        contents: [
+          'const http = require("node:http");',
+          'const req = http.request({',
+          '  hostname: "localhost",',
+          '  port: 3400,',
+          '  path: "/from-http",',
+          '  method: "POST",',
+          '  headers: { "x-client": "node-http" },',
+          '}, (res) => {',
+          '  let body = "";',
+          '  res.setEncoding("utf8");',
+          '  res.on("data", (chunk) => { body += chunk; });',
+          '  res.on("end", () => {',
+          '    console.log(res.statusCode + ":" + res.headers["content-type"]);',
+          '    console.log(body.trim());',
+          '  });',
+          '});',
+          'req.write("http-body");',
+          'req.end();',
+          '',
+        ].join('\n'),
+      },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
     nodeRunner: createBrowserJavaScriptProjectRunner(),
@@ -173,6 +212,67 @@ async function main(): Promise<void> {
       nodeClient.stdout.includes('set-cookie|a=1|set-cookie|b=2'),
       `node http client rawHeaders should preserve repeated response headers: ${nodeClient.stdout}`
     );
+
+    const mockRequests: Array<{ method: string; path: string; body?: string; headers?: Record<string, string> }> = [];
+    const mockServer = workspace.http.listen({ host: '127.0.0.1', port: 3400 }, async (request) => {
+      mockRequests.push({
+        method: request.method,
+        path: request.path,
+        ...(request.body !== undefined ? { body: request.body } : {}),
+        ...(request.headers ? { headers: request.headers } : {}),
+      });
+      return {
+        status: request.path === '/from-curl' ? 201 : 202,
+        headers: { 'content-type': 'application/json' },
+        rawHeaders: [['content-type', 'application/json']],
+        body: JSON.stringify({
+          method: request.method,
+          path: request.path,
+          body: request.body ?? '',
+          client: request.headers?.['x-client'] ?? '',
+        }) + '\n',
+      };
+    });
+    assertCondition(mockServer.info.pid === 0, `consumer-owned listener should be system-owned: ${JSON.stringify(mockServer.info)}`);
+    const mockListeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+    assertCondition(
+      mockListeners.includes(`${mockServer.info.id}\t0\thttp\t127.0.0.1\t3400\t`),
+      `consumer-owned listener should be visible in /proc: ${mockListeners}`
+    );
+
+    const fetchToMock = await workspace.runCommand('node mock-fetch-client.js');
+    assertCondition(fetchToMock.exitCode === 0, `project fetch should call consumer-owned listener: ${JSON.stringify(fetchToMock)}`);
+    assertCondition(
+      fetchToMock.stdout === '202:application/json\n{"method":"POST","path":"/from-fetch","body":"fetch-body","client":"fetch"}\n',
+      `project fetch should receive consumer-owned listener response: ${fetchToMock.stdout}`
+    );
+
+    const httpToMock = await workspace.runCommand('node mock-http-client.js');
+    assertCondition(httpToMock.exitCode === 0, `project node:http should call consumer-owned listener: ${JSON.stringify(httpToMock)}`);
+    assertCondition(
+      httpToMock.stdout === '202:application/json\n{"method":"POST","path":"/from-http","body":"http-body","client":"node-http"}\n',
+      `project node:http should receive consumer-owned listener response: ${httpToMock.stdout}`
+    );
+
+    const curlToMock = await workspace.runCommand('curl -s --json \'{"id":1}\' http://localhost:3400/from-curl');
+    assertCondition(curlToMock.exitCode === 0, `project curl should call consumer-owned listener: ${JSON.stringify(curlToMock)}`);
+    assertCondition(
+      curlToMock.stdout === '{"method":"POST","path":"/from-curl","body":"{\\"id\\":1}","client":""}\n',
+      `project curl should receive consumer-owned listener response: ${curlToMock.stdout}`
+    );
+    assertCondition(
+      mockRequests.map((request) => request.path).join(',') === '/from-fetch,/from-http,/from-curl',
+      `consumer-owned listener should receive project requests in order: ${JSON.stringify(mockRequests)}`
+    );
+
+    mockServer.close();
+    const afterMockCloseListeners = await workspace.readFile('/proc/tracekernel/net/listeners');
+    assertCondition(
+      !afterMockCloseListeners.includes('\thttp\t127.0.0.1\t3400\t'),
+      `consumer-owned listener close should remove /proc entry: ${afterMockCloseListeners}`
+    );
+    const afterMockCloseCurl = await workspace.runCommand('curl -s http://localhost:3400/from-curl');
+    assertCondition(afterMockCloseCurl.exitCode === 7, `closed consumer-owned listener should refuse connections: ${JSON.stringify(afterMockCloseCurl)}`);
 
     const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3300\t'));
     const serverPid = listenerRow?.split('\t')[1];

@@ -657,6 +657,11 @@ interface RuntimeKernelHttpListenerRecord {
   handler: RuntimeKernelHttpHandler;
 }
 
+interface RuntimeKernelHttpListenerOwner {
+  pid: number;
+  idPrefix: string;
+}
+
 interface RuntimeKernelHttpRequestRecord {
   seq: number;
   time: string;
@@ -5891,6 +5896,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.http = {
       request: (requestOptions) => this.requestHttp(requestOptions),
       json: (requestOptions) => this.requestHttpJson(requestOptions),
+      listen: (listenOptions, handler) => this.listenHttp(listenOptions, handler),
     };
     this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
     this.cwd = this.kernelInfo.workspaceRoot;
@@ -6080,6 +6086,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
+  private listenHttp(
+    options: RuntimeKernelHttpListenOptions,
+    handler: RuntimeKernelHttpHandler
+  ): RuntimeKernelHttpListenerHandle {
+    this.assertNotDestroyed();
+    return this.registerHttpListener(options, handler, {
+      pid: 0,
+      idPrefix: 'http-system',
+    });
+  }
+
   private async requestHttp(options: RuntimeWorkspaceHttpRequestOptions): Promise<RuntimeKernelHttpResponse> {
     this.assertNotDestroyed();
     let url: URL;
@@ -6189,10 +6206,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private registerHttpListener(
     options: RuntimeKernelHttpListenOptions,
-    handler: RuntimeKernelHttpHandler
+    handler: RuntimeKernelHttpHandler,
+    owner?: RuntimeKernelHttpListenerOwner
   ): RuntimeKernelHttpListenerHandle {
     const context = this.currentCommandContext();
-    if (!context) {
+    const listenerOwner = owner ?? (context
+      ? { pid: context.process.pid, idPrefix: 'http' }
+      : undefined);
+    if (!listenerOwner) {
       throw Object.assign(new Error('EINVAL: listen requires an active tracekernel process'), { code: 'EINVAL' });
     }
     const protocol = options.protocol ?? 'http';
@@ -6203,15 +6224,15 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       throw Object.assign(new Error(`EADDRINUSE: address already in use ${host}:${port}`), { code: 'EADDRINUSE' });
     }
     const info: RuntimeKernelHttpListenerInfo = {
-      id: `http-${this.nextHttpListenerSeq++}`,
-      pid: context.process.pid,
+      id: `${listenerOwner.idPrefix}-${this.nextHttpListenerSeq++}`,
+      pid: listenerOwner.pid,
       host,
       port,
       protocol,
       startedAt: new Date().toISOString(),
     };
     this.httpListeners.set(key, { info, handler });
-    this.recordKernelEvent('net-listen', context.process.pid, { id: info.id, protocol, host, port });
+    this.recordKernelEvent('net-listen', listenerOwner.pid, { id: info.id, protocol, host, port });
     let closed = false;
     return {
       id: info.id,
@@ -8344,6 +8365,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     await this.withSuspendedReadonlyPolicy(() =>
       this.fs.withBaseMutation([this.cwd], (fs) => fs.rm(this.cwd, { force: true, recursive: true }), 'recursive-delete')
     );
+    this.httpListeners.clear();
     this.processTable.clear();
     this.zombieProcessTable.clear();
     this.processWaiters.clear();
@@ -8459,6 +8481,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   dispose(): void {
+    this.httpListeners.clear();
     this.eventWatchers.clear();
     // Native/just-bash workspaces currently own no external resources.
   }

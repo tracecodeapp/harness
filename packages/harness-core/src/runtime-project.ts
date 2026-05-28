@@ -178,6 +178,7 @@ export interface RuntimeWorkspaceHttpJsonResponse<T = unknown> extends RuntimeKe
 export interface RuntimeWorkspaceHttpClient {
   request(options: RuntimeWorkspaceHttpRequestOptions): Promise<RuntimeKernelHttpResponse>;
   json<T = unknown>(options: RuntimeWorkspaceHttpJsonRequestOptions): Promise<RuntimeWorkspaceHttpJsonResponse<T>>;
+  listen(options: RuntimeKernelHttpListenOptions, handler: RuntimeKernelHttpHandler): RuntimeKernelHttpListenerHandle;
 }
 
 export interface RuntimeKernelHttpListenerHandle {

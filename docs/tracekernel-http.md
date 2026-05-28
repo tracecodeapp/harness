@@ -97,6 +97,26 @@ so consumers can inspect repeated headers without parsing display output.
 JSON `accept` and `content-type` defaults, stringifies the request body, and
 returns the original response plus `text` and parsed `json` fields.
 
+Consumers can also create mock or grading endpoints with
+`workspace.http.listen(...)`. These listeners are owned by the simulated kernel
+with pid `0`, show up in `/proc/tracekernel/net/listeners`, and can be reached
+by project code through the same `curl`, `fetch`, Node `http`, and Python HTTP
+paths as process-owned listeners.
+
+```ts
+const mockApi = workspace.http.listen({
+  host: '127.0.0.1',
+  port: 8080,
+}, async (request) => ({
+  status: 200,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ method: request.method, path: request.path }) + '\n',
+}));
+
+await workspace.runCommand('node client.js');
+mockApi.close();
+```
+
 Node project code can also act as an in-workspace client through `node:http`:
 
 ```js
