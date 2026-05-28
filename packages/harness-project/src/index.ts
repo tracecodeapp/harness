@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   Bash,
   defineCommand,
@@ -12,6 +13,7 @@ import {
   readRuntimeCommandStdinPipeBytes,
   runtimeCommandStdinPipeClosed,
   RuntimeProjectLiveIoController,
+  runtimeFileChangePath,
   runRuntimeProjectWorkerBridge,
 } from '../../harness-core/src/runtime-project';
 import {
@@ -50,13 +52,20 @@ import {
   type RuntimeKernelVirtualStat,
 } from '../../harness-core/src/runtime-kernel';
 import type {
+  BashOptions,
+  Command,
   CommandContext,
+  CustomCommand,
   FileContent,
   IFileSystem,
 } from 'just-bash/browser';
 import packageJson from '../package.json' with { type: 'json' };
 import type {
   RuntimeCommandOptions,
+  RuntimeCommandCompletion,
+  RuntimeCommandCompletionMatch,
+  RuntimeCommandCompletionOptions,
+  RuntimeCommandError,
   RuntimeCommandResult,
   RuntimeCommandEvent,
   RuntimeCommandEventHandler,
@@ -79,6 +88,7 @@ import type {
   RuntimeKernelWorkspaceConfig,
   RuntimeKernelWorkspaceInfo,
   RuntimeTraceKernelConfig,
+  RuntimeTraceKernelSchedulerConfig,
   RuntimeProjectCommandRequest,
   RuntimeProjectCommandRunner,
   RuntimeProjectTerminalPrompt,
@@ -220,6 +230,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   private activeTerminalEventHandler?: RuntimeProjectTerminalEventHandler;
   private activeStdinPrompt = '';
   private activeCommand = '';
+  private activeRun = false;
   private readonly onTerminalEvent?: RuntimeProjectTerminalEventHandler;
 
   constructor(
@@ -301,6 +312,90 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   async run(command: string, options: RuntimeProjectTerminalRunOptions = {}): Promise<RuntimeCommandResult> {
     const trimmed = command.trim();
     if (!trimmed) return { stdout: '', stderr: '', exitCode: 0 };
+    if (this.activeRun) {
+      return {
+        stdout: '',
+        stderr: 'terminal: foreground command already running\n',
+        exitCode: 16,
+        error: {
+          code: 'EBUSY',
+          errno: 16,
+          syscall: 'run',
+          path: this.currentCwd,
+          message: `EBUSY: terminal foreground command already running, ${this.currentCwd}`,
+        },
+      };
+    }
+
+    const commandList = parseTerminalCommandList(trimmed);
+    if (commandList.some((segment) => segment.background)) {
+      return this.runTerminalCommandList(trimmed, commandList, options);
+    }
+
+    return this.runForegroundTerminalSubmission(trimmed, options);
+  }
+
+  private async runTerminalCommandList(
+    submittedCommand: string,
+    segments: readonly TerminalCommandListSegment[],
+    options: RuntimeProjectTerminalRunOptions
+  ): Promise<RuntimeCommandResult> {
+    this.activeRun = true;
+
+    const previousStdinPipe = this.activeStdinPipe;
+    const previousTerminalEventHandler = this.activeTerminalEventHandler;
+    const previousStdinPrompt = this.activeStdinPrompt;
+    const previousCommand = this.activeCommand;
+    const ownedStdinPipe = options.stdinPipe
+      ? undefined
+      : canCreateRuntimeCommandStdinPipe()
+        ? createRuntimeCommandStdinPipe()
+        : undefined;
+    const commandStdinPipe = options.stdinPipe ?? ownedStdinPipe;
+    this.activeStdinPipe = commandStdinPipe ?? null;
+    this.activeTerminalEventHandler = options.onTerminalEvent;
+    this.activeStdinPrompt = '';
+    this.activeCommand = submittedCommand;
+    this.setInputState('busy', 'command-start');
+
+    try {
+      let stdout = '';
+      let stderr = '';
+      let exitCode = 0;
+      let error: RuntimeCommandError | undefined;
+      for (const segment of segments) {
+        if (segment.background) {
+          this.startTerminalBackgroundCommand(segment.command, options, this.currentCwd);
+          continue;
+        }
+        const result = await this.runForegroundTerminalCommand(segment.command, options, commandStdinPipe);
+        stdout += result.stdout;
+        stderr += result.stderr;
+        exitCode = result.exitCode;
+        error = result.error;
+      }
+      return {
+        stdout,
+        stderr,
+        exitCode,
+        ...(error ? { error } : {}),
+      };
+    } finally {
+      ownedStdinPipe?.close();
+      this.activeStdinPipe = previousStdinPipe;
+      this.activeTerminalEventHandler = previousTerminalEventHandler;
+      this.activeStdinPrompt = previousStdinPrompt;
+      this.activeCommand = previousCommand;
+      this.activeRun = false;
+      this.setInputState('command', 'command-finish');
+    }
+  }
+
+  private async runForegroundTerminalSubmission(
+    trimmed: string,
+    options: RuntimeProjectTerminalRunOptions
+  ): Promise<RuntimeCommandResult> {
+    this.activeRun = true;
 
     const previousStdinPipe = this.activeStdinPipe;
     const previousTerminalEventHandler = this.activeTerminalEventHandler;
@@ -318,73 +413,113 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     this.activeCommand = trimmed;
     this.setInputState('busy', 'command-start');
 
-    const words = parseSimpleCommandWords(trimmed);
     try {
-      if (words?.[0] === 'cd') {
-        if (words.length > 2) {
-          return { stdout: '', stderr: 'cd: too many arguments\n', exitCode: 1 };
-        }
-        try {
-          this.currentCwd = await this.options.resolveCwd(this.currentCwd, words[1] ?? this.options.workspaceRoot);
-          return { stdout: '', stderr: '', exitCode: 0 };
-        } catch (error) {
-          return { stdout: '', stderr: `cd: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
-        }
-      }
-
-      if (words?.[0] === 'pwd' && words.length === 1) {
-        return { stdout: `${this.currentCwd}\n`, stderr: '', exitCode: 0 };
-      }
-
-      let nextCwd: string | null = null;
-      const leadingCdTarget = leadingPersistentCdTarget(trimmed);
-      if (leadingCdTarget !== null) {
-        try {
-          nextCwd = await this.options.resolveCwd(this.currentCwd, leadingCdTarget ?? this.options.workspaceRoot);
-        } catch {
-          nextCwd = null;
-        }
-      }
-
-      const handleCommandEvent = (event: RuntimeCommandEvent): void => {
-        if (event.type === 'status' && !this.options.isVerbose()) return;
-        if (
-          event.type === 'output' &&
-          event.stream === 'stdout' &&
-          this.activeStdinPipe &&
-          !event.data.endsWith('\n')
-        ) {
-          this.activeStdinPrompt += event.data;
-          const inputState = this.setInputState('stdin', 'stdin-prompt', this.activeStdinPrompt);
-          options.onEvent?.({ ...event, terminal: { role: 'stdin-prompt', inputState } });
-          return;
-        }
-        options.onEvent?.(event);
-      };
-
-      const result = await this.options.runCommand(trimmed, {
-        ...options,
-        stdinPipe: commandStdinPipe,
-        cwd: this.currentCwd,
-        env: {
-          ...this.env,
-          ...(options.env ?? {}),
-          PWD: this.currentCwd,
-        },
-        onEvent: handleCommandEvent,
-      });
-      if (nextCwd) {
-        this.currentCwd = nextCwd;
-      }
-      return result;
+      return await this.runForegroundTerminalCommand(trimmed, options, commandStdinPipe);
     } finally {
       ownedStdinPipe?.close();
       this.activeStdinPipe = previousStdinPipe;
       this.activeTerminalEventHandler = previousTerminalEventHandler;
       this.activeStdinPrompt = previousStdinPrompt;
       this.activeCommand = previousCommand;
+      this.activeRun = false;
       this.setInputState('command', 'command-finish');
     }
+  }
+
+  private async runForegroundTerminalCommand(
+    trimmed: string,
+    options: RuntimeProjectTerminalRunOptions,
+    commandStdinPipe: RuntimeCommandOptions['stdinPipe']
+  ): Promise<RuntimeCommandResult> {
+    const words = parseSimpleCommandWords(trimmed);
+    if (words?.[0] === 'cd') {
+      if (words.length > 2) {
+        return { stdout: '', stderr: 'cd: too many arguments\n', exitCode: 1 };
+      }
+      try {
+        this.currentCwd = await this.options.resolveCwd(this.currentCwd, words[1] ?? this.options.workspaceRoot);
+        return { stdout: '', stderr: '', exitCode: 0 };
+      } catch (error) {
+        return { stdout: '', stderr: `cd: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
+      }
+    }
+
+    if (words?.[0] === 'pwd' && words.length === 1) {
+      return { stdout: `${this.currentCwd}\n`, stderr: '', exitCode: 0 };
+    }
+
+    let nextCwd: string | null = null;
+    const leadingCdTarget = leadingPersistentCdTarget(trimmed);
+    if (leadingCdTarget !== null) {
+      try {
+        nextCwd = await this.options.resolveCwd(this.currentCwd, leadingCdTarget ?? this.options.workspaceRoot);
+      } catch {
+        nextCwd = null;
+      }
+    }
+
+    const handleCommandEvent = (event: RuntimeCommandEvent): void => {
+      if (event.type === 'status' && !this.options.isVerbose()) return;
+      if (
+        event.type === 'output' &&
+        event.stream === 'stdout' &&
+        this.activeStdinPipe &&
+        !event.data.endsWith('\n')
+      ) {
+        this.activeStdinPrompt += event.data;
+        const inputState = this.setInputState('stdin', 'stdin-prompt', this.activeStdinPrompt);
+        options.onEvent?.({ ...event, terminal: { role: 'stdin-prompt', inputState } });
+        return;
+      }
+      options.onEvent?.(event);
+    };
+
+    const result = await this.options.runCommand(trimmed, {
+      ...options,
+      stdinPipe: commandStdinPipe,
+      presentation: 'terminal',
+      foreground: true,
+      cwd: this.currentCwd,
+      env: {
+        ...this.env,
+        ...(options.env ?? {}),
+        PWD: this.currentCwd,
+      },
+      onEvent: handleCommandEvent,
+    });
+    if (nextCwd) {
+      this.currentCwd = nextCwd;
+    }
+    return result;
+  }
+
+  private startTerminalBackgroundCommand(
+    command: string,
+    options: RuntimeProjectTerminalRunOptions,
+    cwd: string
+  ): void {
+    const handleBackgroundEvent = (event: RuntimeCommandEvent): void => {
+      if (event.type === 'status' && !this.options.isVerbose()) return;
+      options.onEvent?.(event);
+    };
+    const backgroundRun = this.options.runCommand(command, {
+      ...options,
+      stdinPipe: undefined,
+      presentation: 'terminal',
+      foreground: false,
+      retainOnExit: true,
+      cwd,
+      env: {
+        ...this.env,
+        ...(options.env ?? {}),
+        PWD: cwd,
+      },
+      onEvent: handleBackgroundEvent,
+    });
+    void backgroundRun.catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      options.onEvent?.({ type: 'output', stream: 'stderr', data: `${message}\n` });
+    });
   }
 }
 
@@ -392,10 +527,123 @@ const DEFAULT_CWD = '/workspace';
 const TRACE_KERNEL_NAME = 'tracekernel';
 const CPP_COMPILER_COMMANDS = new Set(['clang++', 'clang', 'gcc', 'cc', 'g++', 'c++']);
 const TRACEKERNEL_EXEC_COMMAND = 'tracekernel-exec';
+const TRACEKERNEL_SHELL_COMMAND_PREFIX = 'tracekernel-shell-';
+const TRACEKERNEL_SHELL_COMMAND_REWRITES = new Map([
+  ['bg', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`],
+  ['fg', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`],
+  ['jobs', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`],
+  ['kill', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`],
+  ['ps', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`],
+  ['wait', `${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`],
+]);
 const PRINCIPAL_ACTOR: RuntimeWorkspaceActor = { id: 'principal', kind: 'principal' };
 const SYSTEM_ACTOR: RuntimeWorkspaceActor = { id: 'system', kind: 'system' };
+const TRACEKERNEL_EVENT_LOG_LIMIT = 256;
+const TRACEKERNEL_ZOMBIE_RETENTION_MS = 30_000;
+const TRACEKERNEL_SIGNAL_NUMBERS = new Map<string, number>([
+  ['SIGHUP', 1],
+  ['SIGINT', 2],
+  ['SIGQUIT', 3],
+  ['SIGKILL', 9],
+  ['SIGTERM', 15],
+]);
+const TRACEKERNEL_SIGNAL_NAMES_BY_NUMBER = new Map([...TRACEKERNEL_SIGNAL_NUMBERS.entries()].map(([name, number]) => [number, name]));
 
 type VirtualExecutableKind = 'cpp';
+
+interface RuntimeCommandExecutionContext {
+  readonly eventHandler?: RuntimeCommandEventHandler;
+  readonly actor: RuntimeWorkspaceActor;
+  readonly process: RuntimeKernelProcessRecord;
+  readonly stdinPipe?: RuntimeCommandOptions['stdinPipe'];
+  readonly runtimeIo: RuntimeProjectLiveIoController;
+  readonly generationBaseline: RuntimeFileSystemGenerationSnapshot;
+  readonly mutatedGenerationPaths: Set<string>;
+  kernelError?: RuntimeCommandError;
+  executableTransformCwd?: string;
+  deviceStdout: string;
+  deviceStderr: string;
+}
+
+type RuntimeFileSystemGenerationSnapshot = ReadonlyMap<string, number>;
+interface RuntimeFileSystemCommandGenerationContext {
+  readonly baseline: RuntimeFileSystemGenerationSnapshot;
+  readonly mutatedPaths: Set<string>;
+  readonly pid: number;
+  readonly signal: AbortSignal;
+  setError(error: RuntimeCommandError): void;
+}
+
+interface RuntimeFileSystemSyscallEvent {
+  type:
+    | 'fs-syscall-start'
+    | 'fs-syscall-commit'
+    | 'fs-syscall-abort'
+    | 'fs-transaction-start'
+    | 'fs-transaction-commit'
+    | 'fs-transaction-abort';
+  pid?: number;
+  detail: Record<string, unknown>;
+}
+
+type RuntimeKernelProcessState = 'queued' | 'running' | 'signaled' | 'zombie' | 'exited';
+type RuntimeKernelTtyName = RuntimeKernelDevicePath | '?';
+
+interface RuntimeKernelProcessRecord {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly pgid: number;
+  readonly sid: number;
+  readonly fds: readonly RuntimeKernelFileDescriptorRecord[];
+  tty: RuntimeKernelTtyName;
+  readonly command: string;
+  readonly cwd: string;
+  readonly actor: RuntimeWorkspaceActor;
+  readonly startedAt: string;
+  readonly abortController?: AbortController;
+  state: RuntimeKernelProcessState;
+  signal?: string;
+  signalCode?: number;
+  foreground: boolean;
+  exitCode?: number;
+  endedAt?: string;
+}
+
+interface RuntimeKernelFileDescriptorRecord {
+  fd: number;
+  target: RuntimeKernelDevicePath;
+  flags: 'r' | 'w' | 'rw';
+}
+
+interface RuntimeDynamicProcEntry {
+  name: string;
+  kind: 'file' | 'directory';
+}
+
+interface RuntimeDynamicProcProvider {
+  readFile(path: string): string | null;
+  readDir(path: string): RuntimeDynamicProcEntry[] | null;
+  entryKind(path: string): 'file' | 'directory' | null;
+  stat(path: string): RuntimeKernelVirtualStat | null;
+}
+
+interface RuntimeKernelZombieRecord {
+  process: RuntimeKernelProcessRecord;
+  expiresAtMs: number;
+}
+
+interface RuntimeKernelEventRecord {
+  seq: number;
+  time: string;
+  type: string;
+  pid?: number;
+  detail?: Record<string, unknown>;
+}
+
+interface RuntimeLazyCommand {
+  name: string;
+  load: () => Promise<Command>;
+}
 
 interface VirtualExecutableRecord {
   path: string;
@@ -406,6 +654,27 @@ function assertNoNul(value: string, label: string): void {
   if (value.includes('\0')) {
     throw new Error(`${label} must not contain NUL bytes.`);
   }
+}
+
+function normalizeTraceKernelSignal(value: string | undefined): { name: string; code: number } | null {
+  const raw = (value ?? 'SIGTERM').trim().toUpperCase();
+  if (!raw) return null;
+  if (/^[0-9]+$/.test(raw)) {
+    const code = Number(raw);
+    const name = TRACEKERNEL_SIGNAL_NAMES_BY_NUMBER.get(code);
+    return name ? { name, code } : null;
+  }
+  const name = raw.startsWith('SIG') ? raw : `SIG${raw}`;
+  const code = TRACEKERNEL_SIGNAL_NUMBERS.get(name);
+  return code === undefined ? null : { name, code };
+}
+
+function isRuntimeCommand(command: CustomCommand): command is Command {
+  return typeof (command as Command).execute === 'function';
+}
+
+function isRuntimeLazyCommand(command: CustomCommand): command is RuntimeLazyCommand {
+  return typeof (command as RuntimeLazyCommand).load === 'function';
 }
 
 export function normalizeRuntimeProjectPath(path: string): string {
@@ -509,6 +778,19 @@ function createTraceKernelInfo(config: RuntimeTraceKernelConfig | undefined, cwd
     cwd: workspaceRoot,
     workspaceRoot,
     ...(workspaceAlias ? { workspaceAlias } : {}),
+  };
+}
+
+function normalizeRuntimeSchedulerConfig(config: RuntimeTraceKernelSchedulerConfig | undefined): RuntimeCommandSchedulerOptions {
+  const maxConcurrentCommands = Number.isFinite(config?.maxConcurrentCommands)
+    ? Math.max(1, Math.floor(config?.maxConcurrentCommands ?? 0))
+    : 32;
+  const maxQueuedCommands = config?.maxQueuedCommands === undefined || !Number.isFinite(config.maxQueuedCommands)
+    ? undefined
+    : Math.max(0, Math.floor(config.maxQueuedCommands));
+  return {
+    maxConcurrentCommands,
+    ...(maxQueuedCommands !== undefined ? { maxQueuedCommands } : {}),
   };
 }
 
@@ -850,6 +1132,566 @@ function dirname(path: string): string {
   return path.slice(0, index);
 }
 
+function commandInputTokenBounds(input: string, cursor: number): { start: number; end: number } {
+  let start = Math.max(0, Math.min(cursor, input.length));
+  while (start > 0 && !/\s/.test(input[start - 1] ?? '')) start -= 1;
+
+  let end = Math.max(0, Math.min(cursor, input.length));
+  while (end < input.length && !/\s/.test(input[end] ?? '')) end += 1;
+
+  return { start, end };
+}
+
+function longestCommonPrefix(values: readonly string[]): string {
+  if (values.length === 0) return '';
+  let prefix = values[0] ?? '';
+  for (const value of values.slice(1)) {
+    while (prefix && !value.startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+    }
+  }
+  return prefix;
+}
+
+type RuntimeFileSystemLockMode = 'shared' | 'exclusive';
+
+interface RuntimeFileSystemLockRequest {
+  path: string;
+  mode: RuntimeFileSystemLockMode;
+  reason: string;
+}
+
+interface RuntimeFileSystemLockQueueEntry {
+  mode: RuntimeFileSystemLockMode;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+  signal?: AbortSignal;
+  abortListener?: () => void;
+}
+
+interface RuntimeFileSystemLockState {
+  readers: number;
+  writer: boolean;
+  queue: RuntimeFileSystemLockQueueEntry[];
+}
+
+class RuntimeFileSystemLockCoordinator {
+  private readonly states = new Map<string, RuntimeFileSystemLockState>();
+
+  snapshot(): Array<{
+    path: string;
+    active: boolean;
+    waiting: number;
+    readers: number;
+    writer: boolean;
+    waitingReaders: number;
+    waitingWriters: number;
+  }> {
+    return [...this.states.entries()]
+      .filter(([, state]) => state.readers > 0 || state.writer || state.queue.length > 0)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([path, state]) => ({
+        path,
+        active: state.readers > 0 || state.writer,
+        waiting: state.queue.length,
+        readers: state.readers,
+        writer: state.writer,
+        waitingReaders: state.queue.filter((entry) => entry.mode === 'shared').length,
+        waitingWriters: state.queue.filter((entry) => entry.mode === 'exclusive').length,
+      }));
+  }
+
+  async withLocks<T>(
+    requests: readonly RuntimeFileSystemLockRequest[],
+    fn: () => Promise<T>,
+    signal?: AbortSignal
+  ): Promise<T> {
+    const lockRequests = this.normalizeRequests(requests);
+    if (lockRequests.length === 0) return fn();
+    if (signal?.aborted) {
+      throw new RuntimeKernelInterruptedError('flock', lockRequests.map((request) => request.path).join(','));
+    }
+
+    const releases: Array<() => void> = [];
+    try {
+      for (const request of lockRequests) {
+        releases.push(await this.acquire(request, signal));
+      }
+      return await fn();
+    } finally {
+      for (const release of releases.reverse()) {
+        release();
+      }
+    }
+  }
+
+  async withExclusiveLocks<T>(paths: readonly string[], fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.withLocks(
+      paths.map((path) => ({ path, mode: 'exclusive', reason: 'exclusive' })),
+      fn,
+      signal
+    );
+  }
+
+  private normalizeRequests(requests: readonly RuntimeFileSystemLockRequest[]): RuntimeFileSystemLockRequest[] {
+    const merged = new Map<string, RuntimeFileSystemLockRequest>();
+    for (const request of requests) {
+      const path = normalizeFsLockPath(request.path);
+      if (!path) continue;
+      const existing = merged.get(path);
+      if (!existing || existing.mode === 'shared' && request.mode === 'exclusive') {
+        merged.set(path, { ...request, path });
+      }
+    }
+    return [...merged.values()].sort((left, right) => left.path.localeCompare(right.path));
+  }
+
+  private acquire(request: RuntimeFileSystemLockRequest, signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) {
+      return Promise.reject(new RuntimeKernelInterruptedError('flock', request.path));
+    }
+    const state = this.stateFor(request.path);
+    if (this.canAcquireImmediately(state, request.mode)) {
+      this.activate(state, request.mode);
+      return Promise.resolve(() => this.release(request.path, request.mode));
+    }
+
+    return new Promise((resolve, reject) => {
+      const entry: RuntimeFileSystemLockQueueEntry = {
+        mode: request.mode,
+        resolve: () => {
+          this.activate(state, request.mode);
+          resolve(() => this.release(request.path, request.mode));
+        },
+        reject,
+      };
+      if (signal) {
+        entry.signal = signal;
+        entry.abortListener = () => {
+          this.removeQueueEntry(request.path, entry);
+          reject(new RuntimeKernelInterruptedError('flock', request.path));
+        };
+        signal.addEventListener('abort', entry.abortListener, { once: true });
+      }
+      state.queue.push(entry);
+    });
+  }
+
+  private stateFor(path: string): RuntimeFileSystemLockState {
+    const existing = this.states.get(path);
+    if (existing) return existing;
+    const state: RuntimeFileSystemLockState = { readers: 0, writer: false, queue: [] };
+    this.states.set(path, state);
+    return state;
+  }
+
+  private canAcquireImmediately(state: RuntimeFileSystemLockState, mode: RuntimeFileSystemLockMode): boolean {
+    if (mode === 'shared') {
+      return !state.writer && !state.queue.some((entry) => entry.mode === 'exclusive');
+    }
+    return !state.writer && state.readers === 0;
+  }
+
+  private activate(state: RuntimeFileSystemLockState, mode: RuntimeFileSystemLockMode): void {
+    if (mode === 'shared') state.readers += 1;
+    else state.writer = true;
+  }
+
+  private release(path: string, mode: RuntimeFileSystemLockMode): void {
+    const state = this.states.get(path);
+    if (!state) return;
+    if (mode === 'shared') state.readers = Math.max(0, state.readers - 1);
+    else state.writer = false;
+    this.drain(path, state);
+    if (state.readers === 0 && !state.writer && state.queue.length === 0) {
+      this.states.delete(path);
+    }
+  }
+
+  private drain(path: string, state: RuntimeFileSystemLockState): void {
+    if (state.writer || state.readers > 0 || state.queue.length === 0) return;
+    const first = state.queue[0];
+    if (!first) return;
+    if (first.mode === 'exclusive') {
+      state.queue.shift();
+      this.cleanupQueueEntry(first);
+      first.resolve();
+      return;
+    }
+    const exclusiveIndex = state.queue.findIndex((entry) => entry.mode === 'exclusive');
+    const grantedReaders = state.queue.splice(0, exclusiveIndex === -1 ? state.queue.length : exclusiveIndex);
+    for (const reader of grantedReaders) {
+      this.cleanupQueueEntry(reader);
+      reader.resolve();
+    }
+  }
+
+  private removeQueueEntry(path: string, entry: RuntimeFileSystemLockQueueEntry): void {
+    const state = this.states.get(path);
+    if (!state) return;
+    const index = state.queue.indexOf(entry);
+    if (index >= 0) state.queue.splice(index, 1);
+    this.cleanupQueueEntry(entry);
+    if (state.readers === 0 && !state.writer) {
+      this.drain(path, state);
+    }
+    if (state.readers === 0 && !state.writer && state.queue.length === 0) {
+      this.states.delete(path);
+    }
+  }
+
+  private cleanupQueueEntry(entry: RuntimeFileSystemLockQueueEntry): void {
+    if (entry.signal && entry.abortListener) {
+      entry.signal.removeEventListener('abort', entry.abortListener);
+    }
+    entry.abortListener = undefined;
+    entry.signal = undefined;
+  }
+}
+
+class RuntimeFileGenerationConflictError extends Error {
+  readonly code = 'ESTALE';
+  readonly errno = 116;
+  readonly syscall = 'write';
+
+  constructor(
+    readonly path: string,
+    readonly expectedGeneration: number,
+    readonly actualGeneration: number
+  ) {
+    super(`ESTALE: stale file handle, write '${path}'`);
+  }
+
+  toCommandError(): RuntimeCommandError {
+    return {
+      code: this.code,
+      errno: this.errno,
+      syscall: this.syscall,
+      path: this.path,
+      message: this.message,
+      detail: {
+        expectedGeneration: this.expectedGeneration,
+        actualGeneration: this.actualGeneration,
+      },
+    };
+  }
+}
+
+class RuntimeKernelInterruptedError extends Error {
+  readonly code = 'EINTR';
+  readonly errno = 4;
+
+  constructor(
+    readonly syscall: string,
+    readonly path: string
+  ) {
+    super(`EINTR: interrupted system call, ${syscall} '${path}'`);
+  }
+}
+
+class RuntimeKernelAdmissionRejectedError extends Error {
+  readonly code = 'EAGAIN';
+  readonly errno = 11;
+  readonly syscall = 'sched';
+
+  constructor(
+    readonly path: string,
+    message = `EAGAIN: resource temporarily unavailable, ${path}`
+  ) {
+    super(message);
+  }
+
+  toCommandError(): RuntimeCommandError {
+    return {
+      code: this.code,
+      errno: this.errno,
+      syscall: this.syscall,
+      path: this.path,
+      message: this.message,
+    };
+  }
+}
+
+interface RuntimeCommandSchedulerOptions {
+  maxConcurrentCommands: number;
+  maxQueuedCommands?: number;
+}
+
+interface RuntimeCommandSchedulerJob {
+  pid: number;
+  command: string;
+  signal?: AbortSignal;
+}
+
+interface RuntimeCommandSchedulerQueueEntry {
+  readonly job: RuntimeCommandSchedulerJob;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  abortListener?: () => void;
+}
+
+interface RuntimeCommandSchedulerSnapshot {
+  running: number;
+  queued: number;
+  maxConcurrentCommands: number;
+  maxQueuedCommands: number | null;
+}
+
+class RuntimeCommandScheduler {
+  private barrier = Promise.resolve();
+  private runningCommands = 0;
+  private readonly queue: RuntimeCommandSchedulerQueueEntry[] = [];
+  private readonly activeCommands = new Set<Promise<unknown>>();
+
+  constructor(private readonly options: RuntimeCommandSchedulerOptions) {}
+
+  snapshot(): RuntimeCommandSchedulerSnapshot {
+    return {
+      running: this.runningCommands,
+      queued: this.queue.length,
+      maxConcurrentCommands: this.options.maxConcurrentCommands,
+      maxQueuedCommands: this.options.maxQueuedCommands ?? null,
+    };
+  }
+
+  runCommand<T>(job: RuntimeCommandSchedulerJob, fn: () => Promise<T>): Promise<T> {
+    const waitForBarrier = this.barrier.catch(() => undefined);
+    const command = waitForBarrier
+      .then(() => this.acquire(job))
+      .then(async () => {
+        try {
+          return await fn();
+        } finally {
+          this.release();
+        }
+      });
+    this.activeCommands.add(command);
+    command.then(() => {
+      this.activeCommands.delete(command);
+    }, () => {
+      this.activeCommands.delete(command);
+    });
+    return command;
+  }
+
+  runBarrier<T>(fn: () => Promise<T>): Promise<T> {
+    const previousBarrier = this.barrier.catch(() => undefined);
+    const commandsBeforeBarrier = [...this.activeCommands];
+    const barrier = previousBarrier.then(async () => {
+      await Promise.allSettled(commandsBeforeBarrier);
+      return fn();
+    });
+    this.barrier = barrier.then(() => undefined, () => undefined);
+    return barrier;
+  }
+
+  private acquire(job: RuntimeCommandSchedulerJob): Promise<void> {
+    if (job.signal?.aborted) {
+      return Promise.reject(new RuntimeKernelInterruptedError('sched', String(job.pid)));
+    }
+    if (this.runningCommands < this.options.maxConcurrentCommands) {
+      this.runningCommands += 1;
+      return Promise.resolve();
+    }
+    if (this.options.maxQueuedCommands !== undefined && this.queue.length >= this.options.maxQueuedCommands) {
+      return Promise.reject(new RuntimeKernelAdmissionRejectedError(String(job.pid), `EAGAIN: command scheduler queue full, ${job.command}`));
+    }
+
+    return new Promise((resolve, reject) => {
+      const entry: RuntimeCommandSchedulerQueueEntry = {
+        job,
+        resolve: () => {
+          this.runningCommands += 1;
+          resolve();
+        },
+        reject,
+      };
+      if (job.signal) {
+        entry.abortListener = () => {
+          this.removeQueueEntry(entry);
+          reject(new RuntimeKernelInterruptedError('sched', String(job.pid)));
+        };
+        job.signal.addEventListener('abort', entry.abortListener, { once: true });
+      }
+      this.queue.push(entry);
+    });
+  }
+
+  private release(): void {
+    this.runningCommands = Math.max(0, this.runningCommands - 1);
+    this.drain();
+  }
+
+  private drain(): void {
+    while (this.runningCommands < this.options.maxConcurrentCommands && this.queue.length > 0) {
+      const entry = this.queue.shift();
+      if (!entry) return;
+      if (entry.abortListener) entry.job.signal?.removeEventListener('abort', entry.abortListener);
+      if (entry.job.signal?.aborted) {
+        entry.reject(new RuntimeKernelInterruptedError('sched', String(entry.job.pid)));
+        continue;
+      }
+      entry.resolve();
+    }
+  }
+
+  private removeQueueEntry(entry: RuntimeCommandSchedulerQueueEntry): void {
+    const index = this.queue.indexOf(entry);
+    if (index >= 0) this.queue.splice(index, 1);
+    if (entry.abortListener) entry.job.signal?.removeEventListener('abort', entry.abortListener);
+  }
+}
+
+function normalizeFsLockPath(path: string): string {
+  const normalized = path.startsWith('/')
+    ? normalizeTerminalAbsolutePath(path)
+    : path.replace(/\\/g, '/').replace(/\/+$/g, '');
+  return normalized.length > 1 && normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
+}
+
+function fsMutationLockPaths(workspaceRoot: string, absolutePath: string): string[] {
+  const normalizedPath = normalizeFsLockPath(absolutePath);
+  const normalizedRoot = normalizeFsLockPath(workspaceRoot);
+  if (!isWithinWorkspace(normalizedRoot, normalizedPath)) return [normalizedPath];
+
+  const paths = [normalizedPath];
+  let current = dirname(normalizedPath);
+  while (current !== normalizedRoot && isWithinWorkspace(normalizedRoot, current)) {
+    paths.push(current);
+    current = dirname(current);
+  }
+  return paths;
+}
+
+type RuntimeFileSystemMutationKind =
+  | 'file-write'
+  | 'file-create'
+  | 'directory-create'
+  | 'delete'
+  | 'recursive-delete'
+  | 'copy'
+  | 'rename'
+  | 'subtree';
+
+function fsAncestorLockRequests(
+  workspaceRoot: string,
+  absolutePath: string,
+  mode: RuntimeFileSystemLockMode,
+  reason: string
+): RuntimeFileSystemLockRequest[] {
+  const normalizedPath = normalizeFsLockPath(absolutePath);
+  const normalizedRoot = normalizeFsLockPath(workspaceRoot);
+  if (!isWithinWorkspace(normalizedRoot, normalizedPath)) return [];
+  const requests: RuntimeFileSystemLockRequest[] = [];
+  let current = dirname(normalizedPath);
+  while (isWithinWorkspace(normalizedRoot, current)) {
+    requests.push({ path: current, mode, reason });
+    if (current === normalizedRoot) break;
+    current = dirname(current);
+  }
+  return requests;
+}
+
+function fsParentStructureLockRequests(
+  workspaceRoot: string,
+  absolutePath: string,
+  reason: string
+): RuntimeFileSystemLockRequest[] {
+  const parent = dirname(normalizeFsLockPath(absolutePath));
+  return [
+    ...fsAncestorLockRequests(workspaceRoot, parent, 'shared', reason),
+    { path: parent, mode: 'exclusive', reason },
+  ];
+}
+
+function fsFileMutationLockRequests(
+  workspaceRoot: string,
+  absolutePath: string,
+  reason: string
+): RuntimeFileSystemLockRequest[] {
+  const normalizedPath = normalizeFsLockPath(absolutePath);
+  return [
+    ...fsAncestorLockRequests(workspaceRoot, normalizedPath, 'shared', reason),
+    { path: normalizedPath, mode: 'exclusive', reason },
+  ];
+}
+
+function fsMutationLockRequests(
+  workspaceRoot: string,
+  paths: readonly string[],
+  kind: RuntimeFileSystemMutationKind
+): RuntimeFileSystemLockRequest[] {
+  if (kind === 'rename') {
+    const [source, destination] = paths;
+    if (!source || !destination) return [];
+    return [
+      ...fsParentStructureLockRequests(workspaceRoot, source, 'rename-source-parent'),
+      ...fsParentStructureLockRequests(workspaceRoot, destination, 'rename-destination-parent'),
+      { path: source, mode: 'exclusive', reason: 'rename-source' },
+      { path: destination, mode: 'exclusive', reason: 'rename-destination' },
+    ];
+  }
+  if (kind === 'copy') {
+    const [source, destination] = paths;
+    if (!source || !destination) return [];
+    return [
+      ...fsAncestorLockRequests(workspaceRoot, source, 'shared', 'copy-source'),
+      { path: source, mode: 'shared', reason: 'copy-source' },
+      ...fsParentStructureLockRequests(workspaceRoot, destination, 'copy-destination-parent'),
+      { path: destination, mode: 'exclusive', reason: 'copy-destination' },
+    ];
+  }
+  return paths.flatMap((path) => {
+    if (kind === 'file-write') return fsFileMutationLockRequests(workspaceRoot, path, kind);
+    if (kind === 'file-create') {
+      return [
+        ...fsParentStructureLockRequests(workspaceRoot, path, 'file-create-parent'),
+        { path, mode: 'exclusive', reason: 'file-create' },
+      ];
+    }
+    if (kind === 'directory-create' || kind === 'delete' || kind === 'recursive-delete') {
+      return [
+        ...fsParentStructureLockRequests(workspaceRoot, path, kind),
+        { path, mode: 'exclusive', reason: kind },
+      ];
+    }
+    return [
+      ...fsAncestorLockRequests(workspaceRoot, path, 'shared', kind),
+      { path, mode: 'exclusive', reason: kind },
+    ];
+  });
+}
+
+function fsMutationGenerationPaths(
+  workspaceRoot: string,
+  paths: readonly string[],
+  kind: RuntimeFileSystemMutationKind
+): string[] {
+  const normalizedPaths = paths.map(normalizeFsLockPath);
+  const parentPath = (path: string): string | null => {
+    const normalizedRoot = normalizeFsLockPath(workspaceRoot);
+    const parent = dirname(path);
+    return isWithinWorkspace(normalizedRoot, parent) ? parent : null;
+  };
+  const withParents = (selectedPaths: readonly string[]): string[] => [
+    ...selectedPaths,
+    ...selectedPaths.map(parentPath).filter((path): path is string => Boolean(path)),
+  ];
+  if (kind === 'file-write') return normalizedPaths;
+  if (kind === 'copy') {
+    const destination = normalizedPaths[1];
+    return destination ? withParents([destination]) : [];
+  }
+  if (kind === 'rename') {
+    const [source, destination] = normalizedPaths;
+    return source && destination ? withParents([source, destination]) : [];
+  }
+  if (kind === 'file-create' || kind === 'directory-create' || kind === 'delete' || kind === 'recursive-delete') {
+    return withParents(normalizedPaths);
+  }
+  return normalizedPaths.flatMap((path) => fsMutationLockPaths(workspaceRoot, path));
+}
+
 function isWithinWorkspace(cwd: string, absolutePath: string): boolean {
   return absolutePath === cwd || absolutePath.startsWith(`${cwd}/`);
 }
@@ -921,6 +1763,39 @@ async function collectSnapshotFiles(
   }
 }
 
+async function collectKernelProcSnapshotFiles(
+  fs: CommandContext['fs'],
+  path: string,
+  files: RuntimeFile[],
+  seen = new Set<string>()
+): Promise<void> {
+  if (seen.has(path)) return;
+  seen.add(path);
+  const stat = await fs.stat(path).catch(() => null);
+  if (!stat) return;
+  if (stat.isFile) {
+    files.push({ path, contents: await fs.readFile(path) });
+    return;
+  }
+  if (!stat.isDirectory) return;
+  const entries = await fs.readdir(path).catch(() => []);
+  for (const entry of [...entries].sort((left, right) => left.localeCompare(right))) {
+    await collectKernelProcSnapshotFiles(fs, `${path}/${entry}`, files, seen);
+  }
+}
+
+async function snapshotRuntimeKernelVirtualFiles(
+  fs: CommandContext['fs'],
+  info: RuntimeKernelInfo
+): Promise<RuntimeFile[]> {
+  const files: RuntimeFile[] = [];
+  await collectKernelProcSnapshotFiles(fs, '/proc', files);
+  if (files.length === 0) return runtimeKernelVirtualFiles(info);
+  const byPath = new Map(runtimeKernelVirtualFiles(info).map((file) => [file.path, file]));
+  for (const file of files) byPath.set(file.path, file);
+  return [...byPath.values()].sort((left, right) => left.path.localeCompare(right.path));
+}
+
 async function snapshotCommandContext(
   ctx: CommandContext,
   workspaceRoot: string,
@@ -934,13 +1809,14 @@ async function snapshotCommandContext(
   await collectSnapshotFiles(ctx.fs, workspaceRoot, workspaceRoot, files, directories);
   files.sort((left, right) => left.path.localeCompare(right.path));
   directories.sort((left, right) => left.localeCompare(right));
+  const kernelFiles = kernel ? await snapshotRuntimeKernelVirtualFiles(ctx.fs, kernel) : undefined;
   return {
     cwd: workspaceRoot,
     workspaceRoot,
     ...(workspaceAlias ? { workspaceAlias } : {}),
     ...(kernel ? { kernel } : {}),
     ...(kernel ? { kernelDevices: runtimeKernelVirtualDevices() } : {}),
-    ...(kernel ? { kernelFiles: runtimeKernelVirtualFiles(kernel) } : {}),
+    ...(kernelFiles ? { kernelFiles } : {}),
     files,
     ...(directories.length > 0 ? { directories } : {}),
     ...(readonlyFiles && readonlyFiles.length > 0 ? { readonlyFiles: [...readonlyFiles] } : {}),
@@ -1008,6 +1884,30 @@ function filterReadonlySnapshotDeletions(
 
 type RuntimeFileChangeObserver = (change: RuntimeFileChange, phase: RuntimeFileMutationPhase) => void;
 
+interface RuntimeFinalDiffPreparedChange {
+  change: RuntimeFileChange;
+  absolutePath: string;
+  kind: RuntimeFileSystemMutationKind;
+  apply(base: IFileSystem): Promise<void>;
+}
+
+type RuntimeFileSystemRollbackEntry =
+  | { kind: 'missing'; path: string }
+  | { kind: 'file'; path: string; contents: Uint8Array }
+  | { kind: 'symlink'; path: string; target: string }
+  | {
+      kind: 'directory';
+      path: string;
+      directories: string[];
+      files: Array<{ path: string; contents: Uint8Array }>;
+      symlinks: Array<{ path: string; target: string }>;
+    };
+
+interface RuntimeFileSystemRollbackState {
+  entries: RuntimeFileSystemRollbackEntry[];
+  createdAncestors: string[];
+}
+
 function isKernelReadonlyError(error: unknown): boolean {
   return (error as { code?: unknown }).code === 'EROFS'
     && error instanceof Error
@@ -1016,7 +1916,43 @@ function isKernelReadonlyError(error: unknown): boolean {
 
 function kernelCommandFailure(error: unknown): RuntimeCommandResult {
   const message = error instanceof Error ? error.message : String(error);
-  return { stdout: '', stderr: message ? `${message}\n` : 'Runtime command failed.\n', exitCode: 1 };
+  const commandError = runtimeCommandError(error);
+  return {
+    stdout: '',
+    stderr: message ? `${message}\n` : 'EIO: input/output error\n',
+    exitCode: commandError?.errno ?? 1,
+    ...(commandError ? { error: commandError } : {}),
+  };
+}
+
+function isRuntimeFileGenerationConflict(error: unknown): boolean {
+  return error instanceof RuntimeFileGenerationConflictError || (error as { code?: unknown }).code === 'ESTALE';
+}
+
+function runtimeCommandError(error: unknown): RuntimeCommandError | undefined {
+  if (error instanceof RuntimeFileGenerationConflictError) return error.toCommandError();
+  if (error instanceof RuntimeKernelInterruptedError) {
+    return {
+      code: error.code,
+      errno: error.errno,
+      syscall: error.syscall,
+      path: error.path,
+      message: error.message,
+    };
+  }
+  const code = (error as { code?: unknown }).code;
+  if (typeof code !== 'string') return undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  const errno = (error as { errno?: unknown }).errno;
+  const syscall = (error as { syscall?: unknown }).syscall;
+  const path = (error as { path?: unknown }).path;
+  return {
+    code,
+    message,
+    ...(typeof errno === 'number' ? { errno } : {}),
+    ...(typeof syscall === 'string' ? { syscall } : {}),
+    ...(typeof path === 'string' ? { path } : {}),
+  };
 }
 
 async function applyCommandResultFiles(
@@ -1026,8 +1962,21 @@ async function applyCommandResultFiles(
   onFileChange?: RuntimeFileChangeObserver
 ): Promise<RuntimeCommandResult> {
   try {
+    if (ctx.fs instanceof KernelObservedFileSystem && result.files?.length) {
+      const committed = await ctx.fs.applyFinalDiffTransaction(result.files, (file) =>
+        prepareFinalDiffChange(workspaceRoot, file)
+      );
+      for (const file of committed) {
+        onFileChange?.(file, 'final-diff');
+      }
+      const { files: _files, ...commandResult } = result;
+      return commandResult;
+    }
     return await applyRuntimeCommandResultFiles(result, async (file, phase) => {
       await withSuspendedFsNotifications(ctx.fs, async () => {
+        if (ctx.fs instanceof KernelObservedFileSystem) {
+          ctx.fs.assertFileChangeGenerationFresh(file, phase);
+        }
         const absolutePath = toWorkspacePath(workspaceRoot, file.path);
         if (isRuntimeDirectoryChange(file)) {
           if (file.deleted === true) {
@@ -1054,9 +2003,51 @@ async function applyCommandResultFiles(
       });
     });
   } catch (error) {
-    if (isKernelReadonlyError(error)) return kernelCommandFailure(error);
+    if (isKernelReadonlyError(error) || isRuntimeFileGenerationConflict(error)) {
+      if (ctx.fs instanceof KernelObservedFileSystem) ctx.fs.recordCommandError(error);
+      return kernelCommandFailure(error);
+    }
     throw error;
   }
+}
+
+function prepareFinalDiffChange(workspaceRoot: string, file: RuntimeFileChange): RuntimeFinalDiffPreparedChange {
+  const absolutePath = isRuntimeDirectoryChange(file)
+    ? toWorkspaceEntryPath(workspaceRoot, file.path)
+    : (file as RuntimeFileDeletion).deleted === true
+      ? toWorkspacePath(workspaceRoot, file.path)
+      : toWorkspacePath(workspaceRoot, (file as RuntimeFile).path);
+  const kind: RuntimeFileSystemMutationKind = isRuntimeDirectoryChange(file)
+    ? file.deleted === true ? 'recursive-delete' : 'directory-create'
+    : (file as RuntimeFileDeletion).deleted === true
+      ? 'delete'
+      : 'file-write';
+  return {
+    change: file,
+    absolutePath,
+    kind,
+    apply: async (fs) => {
+      if (isRuntimeDirectoryChange(file)) {
+        if (file.deleted === true) {
+          await fs.rm(absolutePath, { force: true, recursive: true });
+        } else {
+          await fs.mkdir(absolutePath, { recursive: true });
+        }
+        return;
+      }
+      if ((file as RuntimeFileDeletion).deleted === true) {
+        await fs.rm(absolutePath, { force: true });
+        return;
+      }
+      const changedFile = file as RuntimeFile;
+      await fs.mkdir(dirname(absolutePath), { recursive: true });
+      if ((changedFile.encoding ?? 'utf8') === 'base64') {
+        await fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
+      } else {
+        await fs.writeFile(absolutePath, changedFile.contents);
+      }
+    },
+  };
 }
 
 async function withSuspendedFsNotifications<T>(fs: CommandContext['fs'], fn: () => Promise<T>): Promise<T> {
@@ -1070,14 +2061,7 @@ async function applyWorkspaceCommandResultFiles(
   workspace: JustBashRuntimeWorkspace,
   result: RuntimeCommandResult
 ): Promise<RuntimeCommandResult> {
-  try {
-    return await applyRuntimeCommandResultFiles(result, async (file, phase) => {
-      await workspace.applyKernelFileChange(file, phase);
-    });
-  } catch (error) {
-    if (isKernelReadonlyError(error)) return kernelCommandFailure(error);
-    throw error;
-  }
+  return workspace.applyFinalDiffResultFiles(result);
 }
 
 function assertSupportedEncoding(encoding: RuntimeFileEncoding | undefined): RuntimeFileEncoding {
@@ -1118,13 +2102,6 @@ function textToByteString(text: string): string {
   return byteString;
 }
 
-function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
-  const bytes = new Uint8Array(left.byteLength + right.byteLength);
-  bytes.set(left, 0);
-  bytes.set(right, left.byteLength);
-  return bytes;
-}
-
 function decodeUtf8(bytes: Uint8Array): string | null {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -1140,6 +2117,12 @@ function contentToText(content: FileContent): string {
 
 function contentToBytes(content: FileContent): Uint8Array {
   return typeof content === 'string' ? new TextEncoder().encode(content) : content;
+}
+
+function contentToBytesForRuntimeFile(file: RuntimeFile): Uint8Array {
+  return (file.encoding ?? 'utf8') === 'base64'
+    ? bytesFromBase64(file.contents)
+    : new TextEncoder().encode(file.contents);
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -1158,14 +2141,23 @@ type FsCpOptions = Parameters<IFileSystem['cp']>[2];
 
 class KernelObservedFileSystem implements IFileSystem {
   private suspendDepth = 0;
+  private nextGeneration = 1;
+  private nextInode = 10_000;
+  private readonly generations = new Map<string, number>();
+  private readonly inodes = new Map<string, number>();
 
   constructor(
     private readonly base: IFileSystem,
+    private readonly locks: RuntimeFileSystemLockCoordinator,
     private readonly workspaceRoot: () => string,
     private readonly workspaceAlias: () => string | undefined,
     private readonly kernelInfo: () => RuntimeKernelInfo,
     private readonly assertWritable: (absolutePath: string, operation: string) => void,
     private readonly assertSubtreeWritable: (absolutePath: string, operation: string) => void,
+    private readonly generationBaseline: () => RuntimeFileSystemGenerationSnapshot | undefined,
+    private readonly commandGenerationContext: () => RuntimeFileSystemCommandGenerationContext | undefined,
+    private readonly onSyscallEvent: (event: RuntimeFileSystemSyscallEvent) => void,
+    private readonly dynamicProc: RuntimeDynamicProcProvider,
     private readonly onFileChange: (change: RuntimeFileChange) => void,
     private readonly readDevice: (device: RuntimeKernelDevicePath) => string,
     private readonly writeDevice: (device: RuntimeKernelDevicePath, data: string) => void
@@ -1178,17 +2170,487 @@ class KernelObservedFileSystem implements IFileSystem {
     });
   }
 
+  snapshotGenerations(): RuntimeFileSystemGenerationSnapshot {
+    return new Map(this.generations);
+  }
+
+  inodeForPath(path: string): number {
+    const normalizedPath = normalizeFsLockPath(this.mapPath(path));
+    const existing = this.inodes.get(normalizedPath);
+    if (existing !== undefined) return existing;
+    const inode = this.nextInode++;
+    this.inodes.set(normalizedPath, inode);
+    return inode;
+  }
+
+  moveInode(source: string, destination: string): void {
+    const normalizedSource = normalizeFsLockPath(this.mapPath(source));
+    const normalizedDestination = normalizeFsLockPath(this.mapPath(destination));
+    const inode = this.inodes.get(normalizedSource) ?? this.inodeForPath(normalizedSource);
+    this.inodes.delete(normalizedSource);
+    this.inodes.set(normalizedDestination, inode);
+  }
+
+  forgetInodePath(path: string): void {
+    this.inodes.delete(normalizeFsLockPath(this.mapPath(path)));
+  }
+
+  renderInodes(): string {
+    const rows = [...this.inodes.entries()]
+      .filter(([path]) => isWithinWorkspace(this.workspaceRoot(), path))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([path, inode]) => `${inode}\t${toProjectPath(this.workspaceRoot(), path)}`);
+    return ['ino\tpath', ...rows].join('\n') + '\n';
+  }
+
+  assertFileChangeGenerationFresh(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): void {
+    if (phase !== 'final-diff') return;
+    const baseline = this.generationBaseline();
+    if (!baseline) return;
+    const path = this.mapPath(runtimeFileChangePath(change));
+    const kind = this.finalDiffMutationKind(change, path);
+    this.assertCommandMutationFresh([path], kind);
+  }
+
+  async applyFinalDiffTransaction(
+    changes: readonly RuntimeFileChange[],
+    prepare: (change: RuntimeFileChange) => RuntimeFinalDiffPreparedChange
+  ): Promise<RuntimeFileChange[]> {
+    if (changes.length === 0) return [];
+    const prepared = changes.map((change) => {
+      const preparedChange = prepare(change);
+      return {
+        ...preparedChange,
+        kind: this.finalDiffMutationKind(preparedChange.change, preparedChange.absolutePath),
+      };
+    });
+    const generationContext = this.commandGenerationContext();
+    const normalizedPaths = prepared.map((change) => normalizeFsLockPath(change.absolutePath));
+    const detail = {
+      kind: 'final-diff-transaction',
+      paths: normalizedPaths.map((path) => isWithinWorkspace(this.workspaceRoot(), path) ? toProjectPath(this.workspaceRoot(), path) : path),
+      absolutePaths: normalizedPaths,
+      changes: prepared.length,
+    };
+    let rolledBack = false;
+    this.onSyscallEvent({ type: 'fs-transaction-start', pid: generationContext?.pid, detail });
+    try {
+      return await this.locks.withLocks(
+        prepared.flatMap((change) => this.mutationLockRequests([change.absolutePath], change.kind)),
+        async () => {
+          for (const change of prepared) {
+            this.assertCommandMutationFresh([change.absolutePath], change.kind);
+            await this.validateFinalDiffPreparedChange(change);
+          }
+          const rollback = await this.snapshotRollbackState(prepared.map((change) => change.absolutePath));
+          const committed: RuntimeFileChange[] = [];
+          try {
+            await this.suspendNotifications(async () => {
+              for (const change of prepared) {
+                await change.apply(this.base);
+                committed.push(change.change);
+              }
+            });
+          } catch (error) {
+            await this.restoreRollbackState(rollback);
+            rolledBack = true;
+            throw error;
+          }
+          await this.recordFinalDiffInodeMutations(prepared, rollback);
+          for (const change of prepared) {
+            this.recordMutation([change.absolutePath], change.kind);
+          }
+          this.onSyscallEvent({ type: 'fs-transaction-commit', pid: generationContext?.pid, detail });
+          return committed;
+        },
+        generationContext?.signal
+      );
+    } catch (error) {
+      const commandError = runtimeCommandError(error);
+      this.recordCommandError(error);
+      this.onSyscallEvent({
+        type: 'fs-transaction-abort',
+        pid: generationContext?.pid,
+        detail: {
+          ...detail,
+          rolledBack,
+          ...(commandError
+            ? { error: { code: commandError.code, message: commandError.message, ...(commandError.errno !== undefined ? { errno: commandError.errno } : {}), ...(commandError.syscall ? { syscall: commandError.syscall } : {}), ...(commandError.path ? { path: commandError.path } : {}) } }
+            : { error: { message: error instanceof Error ? error.message : String(error) } }),
+        },
+      });
+      throw error;
+    }
+  }
+
+  recordCommandError(error: unknown): void {
+    const commandError = runtimeCommandError(error);
+    if (commandError) this.commandGenerationContext()?.setError(commandError);
+  }
+
+  private mutationGenerationPaths(
+    paths: readonly string[],
+    kind: RuntimeFileSystemMutationKind
+  ): string[] {
+    return fsMutationGenerationPaths(this.workspaceRoot(), paths, kind);
+  }
+
+  private mutationLockRequests(
+    paths: readonly string[],
+    kind: RuntimeFileSystemMutationKind
+  ): RuntimeFileSystemLockRequest[] {
+    return fsMutationLockRequests(this.workspaceRoot(), paths.map((path) => normalizeFsLockPath(path)), kind);
+  }
+
+  private finalDiffMutationKind(change: RuntimeFileChange, absolutePath: string): RuntimeFileSystemMutationKind {
+    if (isRuntimeDirectoryChange(change)) return change.deleted === true ? 'recursive-delete' : 'directory-create';
+    if ((change as RuntimeFileDeletion).deleted === true) return 'delete';
+    return this.currentGeneration(absolutePath) > 0 ? 'file-write' : 'file-create';
+  }
+
+  private async validateFinalDiffPreparedChange(change: RuntimeFinalDiffPreparedChange): Promise<void> {
+    if (isRuntimeDirectoryChange(change.change)) {
+      if (change.change.deleted === true) {
+        this.assertSubtreeWritable(change.absolutePath, 'delete');
+      } else {
+        this.assertWritable(change.absolutePath, 'mkdir');
+      }
+      return;
+    }
+    if ((change.change as RuntimeFileDeletion).deleted === true) {
+      this.assertWritable(change.absolutePath, 'delete');
+      return;
+    }
+    try {
+      this.assertWritable(change.absolutePath, 'write');
+    } catch (error) {
+      const changedFile = change.change as RuntimeFile;
+      if ((error as { code?: unknown }).code === 'EROFS' && await this.fileContentEquals(change.absolutePath, contentToBytesForRuntimeFile(changedFile))) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async snapshotRollbackState(paths: readonly string[]): Promise<RuntimeFileSystemRollbackState> {
+    const workspaceRoot = this.workspaceRoot();
+    const normalizedPaths = [...new Set(paths.map((path) => normalizeFsLockPath(path)))]
+      .filter((path) => isWithinWorkspace(workspaceRoot, path))
+      .sort((left, right) => left.localeCompare(right));
+    const targetPaths = normalizedPaths.filter((path, index) =>
+      !normalizedPaths.slice(0, index).some((candidate) => path.startsWith(`${candidate}/`))
+    );
+    const entries: RuntimeFileSystemRollbackEntry[] = [];
+    const createdAncestors = new Set<string>();
+    for (const path of targetPaths) {
+      entries.push(await this.snapshotRollbackEntry(path));
+      for (const directoryPath of await this.collectMissingDirectories(dirname(path))) {
+        createdAncestors.add(directoryPath);
+      }
+    }
+    return {
+      entries,
+      createdAncestors: [...createdAncestors].sort((left, right) => right.length - left.length),
+    };
+  }
+
+  private async snapshotRollbackEntry(path: string): Promise<RuntimeFileSystemRollbackEntry> {
+    if (!(await this.base.exists(path))) return { kind: 'missing', path };
+    const stat = await this.base.lstat(path);
+    if ((stat as { isSymbolicLink?: boolean }).isSymbolicLink) {
+      return { kind: 'symlink', path, target: await this.base.readlink(path) };
+    }
+    if (stat.isFile) {
+      return { kind: 'file', path, contents: new Uint8Array(await this.base.readFileBuffer(path)) };
+    }
+    if (!stat.isDirectory) return { kind: 'missing', path };
+    const directories: string[] = [];
+    const files: Array<{ path: string; contents: Uint8Array }> = [];
+    const symlinks: Array<{ path: string; target: string }> = [];
+    await this.collectRollbackDirectory(path, directories, files, symlinks);
+    return { kind: 'directory', path, directories, files, symlinks };
+  }
+
+  private async collectRollbackDirectory(
+    path: string,
+    directories: string[],
+    files: Array<{ path: string; contents: Uint8Array }>,
+    symlinks: Array<{ path: string; target: string }>
+  ): Promise<void> {
+    const stat = await this.base.lstat(path);
+    if ((stat as { isSymbolicLink?: boolean }).isSymbolicLink) {
+      symlinks.push({ path, target: await this.base.readlink(path) });
+      return;
+    }
+    if (stat.isFile) {
+      files.push({ path, contents: new Uint8Array(await this.base.readFileBuffer(path)) });
+      return;
+    }
+    if (!stat.isDirectory) return;
+    if (path !== this.workspaceRoot()) directories.push(path);
+    for (const entry of await this.base.readdir(path)) {
+      await this.collectRollbackDirectory(`${path}/${entry}`, directories, files, symlinks);
+    }
+  }
+
+  private async restoreRollbackState(state: RuntimeFileSystemRollbackState): Promise<void> {
+    for (const entry of state.entries) {
+      await this.removeRollbackPath(entry.path);
+      if (entry.kind === 'missing') continue;
+      if (entry.kind === 'file') {
+        await this.base.mkdir(dirname(entry.path), { recursive: true });
+        await this.base.writeFile(entry.path, entry.contents);
+        continue;
+      }
+      if (entry.kind === 'symlink') {
+        await this.base.mkdir(dirname(entry.path), { recursive: true });
+        await this.base.symlink(entry.target, entry.path);
+        continue;
+      }
+      await this.base.mkdir(entry.path, { recursive: true });
+      for (const directoryPath of [...entry.directories].sort((left, right) => left.length - right.length)) {
+        await this.base.mkdir(directoryPath, { recursive: true });
+      }
+      for (const file of entry.files) {
+        await this.base.mkdir(dirname(file.path), { recursive: true });
+        await this.base.writeFile(file.path, file.contents);
+      }
+      for (const symlink of entry.symlinks) {
+        await this.base.mkdir(dirname(symlink.path), { recursive: true });
+        await this.base.symlink(symlink.target, symlink.path);
+      }
+    }
+    for (const directoryPath of state.createdAncestors) {
+      await this.removeDirectoryIfEmpty(directoryPath);
+    }
+  }
+
+  private async removeRollbackPath(path: string): Promise<void> {
+    if (path === this.workspaceRoot()) {
+      for (const entry of await this.base.readdir(path).catch(() => [])) {
+        await this.base.rm(`${path}/${entry}`, { force: true, recursive: true });
+      }
+      return;
+    }
+    await this.base.rm(path, { force: true, recursive: true });
+  }
+
+  private async recordFinalDiffInodeMutations(
+    changes: readonly RuntimeFinalDiffPreparedChange[],
+    rollback: RuntimeFileSystemRollbackState
+  ): Promise<void> {
+    const deletedPaths = new Set<string>();
+    for (const directoryPath of rollback.createdAncestors) {
+      if (await this.base.exists(directoryPath).catch(() => false)) this.inodeForPath(directoryPath);
+    }
+    for (const change of changes) {
+      if (isRuntimeDirectoryChange(change.change)) {
+        if (change.change.deleted === true) {
+          for (const path of this.rollbackSnapshotPathsFor(change.absolutePath, rollback)) {
+            deletedPaths.add(path);
+          }
+        } else {
+          for (const directoryPath of await this.collectExistingDirectories(change.absolutePath)) {
+            this.inodeForPath(directoryPath);
+          }
+        }
+        continue;
+      }
+      if ((change.change as RuntimeFileDeletion).deleted === true) {
+        for (const path of this.rollbackSnapshotPathsFor(change.absolutePath, rollback)) {
+          deletedPaths.add(path);
+        }
+        continue;
+      }
+      this.inodeForPath(change.absolutePath);
+    }
+    if (deletedPaths.size > 0) this.forgetInodes([...deletedPaths]);
+  }
+
+  private rollbackSnapshotPathsFor(path: string, rollback: RuntimeFileSystemRollbackState): string[] {
+    const normalizedPath = normalizeFsLockPath(path);
+    const entry = rollback.entries.find((candidate) =>
+      normalizedPath === candidate.path || normalizedPath.startsWith(`${candidate.path}/`)
+    );
+    if (!entry || entry.kind === 'missing') return [normalizedPath];
+    if (entry.kind === 'file' || entry.kind === 'symlink') {
+      return normalizedPath === entry.path ? [entry.path] : [normalizedPath];
+    }
+    const paths = [
+      entry.path,
+      ...entry.directories,
+      ...entry.files.map((file) => file.path),
+      ...entry.symlinks.map((symlink) => symlink.path),
+    ];
+    return paths.filter((candidate) =>
+      candidate === normalizedPath || candidate.startsWith(`${normalizedPath}/`)
+    );
+  }
+
+  private async removeDirectoryIfEmpty(path: string): Promise<void> {
+    if (path === this.workspaceRoot() || !(await this.base.exists(path))) return;
+    const stat = await this.base.stat(path);
+    if (!stat.isDirectory) return;
+    if ((await this.base.readdir(path)).length > 0) return;
+    await this.base.rm(path, { force: true, recursive: true });
+  }
+
+  private withReadLocks<T>(paths: readonly string[], reason: string, fn: () => Promise<T>): Promise<T> {
+    const generationContext = this.commandGenerationContext();
+    return this.locks.withLocks(
+      paths.map((path) => ({ path: normalizeFsLockPath(path), mode: 'shared', reason })),
+      fn,
+      generationContext?.signal
+    ).catch((error) => {
+      this.recordCommandError(error);
+      throw error;
+    });
+  }
+
+  private withMutationLocks<T>(
+    paths: readonly string[],
+    kind: RuntimeFileSystemMutationKind,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const generationContext = this.commandGenerationContext();
+    const normalizedPaths = paths.map((path) => normalizeFsLockPath(path));
+    const detail = {
+      kind,
+      paths: normalizedPaths.map((path) => isWithinWorkspace(this.workspaceRoot(), path) ? toProjectPath(this.workspaceRoot(), path) : path),
+      absolutePaths: normalizedPaths,
+    };
+    this.onSyscallEvent({ type: 'fs-syscall-start', pid: generationContext?.pid, detail });
+    return this.locks.withLocks(this.mutationLockRequests(paths, kind), async () => {
+      this.assertCommandMutationFresh(paths, kind);
+      return fn();
+    }, generationContext?.signal).then((result) => {
+      this.onSyscallEvent({ type: 'fs-syscall-commit', pid: generationContext?.pid, detail });
+      return result;
+    }).catch((error) => {
+      const commandError = runtimeCommandError(error);
+      this.recordCommandError(error);
+      this.onSyscallEvent({
+        type: 'fs-syscall-abort',
+        pid: generationContext?.pid,
+        detail: {
+          ...detail,
+          ...(commandError
+            ? { error: { code: commandError.code, message: commandError.message, ...(commandError.errno !== undefined ? { errno: commandError.errno } : {}), ...(commandError.syscall ? { syscall: commandError.syscall } : {}), ...(commandError.path ? { path: commandError.path } : {}) } }
+            : { error: { message: error instanceof Error ? error.message : String(error) } }),
+        },
+      });
+      throw error;
+    });
+  }
+
+  withBaseMutation<T>(
+    paths: readonly string[],
+    fn: (base: IFileSystem) => Promise<T>,
+    kind: RuntimeFileSystemMutationKind = 'file-write'
+  ): Promise<T> {
+    return this.withMutationLocks(paths, kind, async () => {
+      const result = await fn(this.base);
+      this.recordMutation(paths, kind);
+      return result;
+    });
+  }
+
+  private currentGeneration(path: string): number {
+    return this.generations.get(normalizeFsLockPath(path)) ?? 0;
+  }
+
+  private recordMutation(
+    paths: readonly string[],
+    kind: RuntimeFileSystemMutationKind = 'file-write'
+  ): void {
+    const generationPaths = [...new Set(this.mutationGenerationPaths(paths, kind))];
+    if (generationPaths.length === 0) return;
+    const generation = this.nextGeneration++;
+    for (const path of generationPaths) {
+      this.generations.set(path, generation);
+    }
+    this.recordCommandMutation(generationPaths);
+  }
+
+  private forgetInodes(paths: readonly string[]): void {
+    for (const path of paths) {
+      this.inodes.delete(normalizeFsLockPath(path));
+    }
+  }
+
+  private moveInodeSubtree(source: string, destination: string, paths: readonly string[]): void {
+    const existingInodes = new Map<number, number>();
+    for (const path of paths) {
+      const inode = this.inodes.get(normalizeFsLockPath(path)) ?? this.inodeForPath(path);
+      existingInodes.set(paths.indexOf(path), inode);
+    }
+    for (const [index, inode] of existingInodes) {
+      const oldPath = paths[index]!;
+      const newPath = oldPath === source ? destination : `${destination}/${oldPath.slice(source.length + 1)}`;
+      this.inodes.delete(normalizeFsLockPath(oldPath));
+      this.inodes.set(normalizeFsLockPath(newPath), inode);
+    }
+  }
+
+  private assertCommandMutationFresh(
+    paths: readonly string[],
+    kind: RuntimeFileSystemMutationKind
+  ): void {
+    const generationContext = this.commandGenerationContext();
+    if (!generationContext) return;
+    const generationPaths = [...new Set(this.mutationGenerationPaths(paths, kind))];
+    for (const path of generationPaths.map(normalizeFsLockPath)) {
+      if (generationContext.mutatedPaths.has(path)) continue;
+      const expectedGeneration = generationContext.baseline.get(path) ?? 0;
+      const actualGeneration = this.currentGeneration(path);
+      if (actualGeneration !== expectedGeneration) {
+        const displayPath = path === normalizeFsLockPath(this.workspaceRoot()) && paths[0]
+          ? normalizeFsLockPath(paths[0])
+          : path;
+        throw new RuntimeFileGenerationConflictError(
+          isWithinWorkspace(this.workspaceRoot(), displayPath) ? toProjectPath(this.workspaceRoot(), displayPath) : displayPath,
+          expectedGeneration,
+          actualGeneration
+        );
+      }
+    }
+  }
+
+  private recordCommandMutation(paths: readonly string[]): void {
+    const generationContext = this.commandGenerationContext();
+    if (!generationContext) return;
+    for (const path of paths) {
+      generationContext.mutatedPaths.add(normalizeFsLockPath(path));
+    }
+  }
+
+  private readDynamicProcFile(path: string, options?: FsReadFileOptions): string | null {
+    const procPath = normalizeRuntimeProcPath(this.mapPath(path));
+    if (!procPath) return null;
+    if ((options as { encoding?: unknown } | undefined)?.encoding === 'base64') {
+      throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
+    }
+    return this.dynamicProc.readFile(procPath);
+  }
+
   readFile(path: string, options?: FsReadFileOptions): Promise<string> {
+    const dynamicProcFile = this.readDynamicProcFile(path, options);
+    if (dynamicProcFile !== null) return Promise.resolve(dynamicProcFile);
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'device-file') return Promise.resolve(this.readDeviceFile(readTarget.path, options));
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') return Promise.resolve(this.readProcFile(readTarget.path, options));
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
-    return this.base.readFile(this.mapPath(path), options);
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'read-file', () => this.base.readFile(mappedPath, options));
   }
 
   readFileBytes?(path: string): Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never> {
+    const dynamicProcFile = this.readDynamicProcFile(path);
+    if (dynamicProcFile !== null) {
+      return Promise.resolve(textToByteString(dynamicProcFile)) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+    }
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'device-file') {
       return Promise.resolve(textToByteString(this.readDeviceFile(readTarget.path))) as unknown as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
@@ -1200,17 +2662,23 @@ class KernelObservedFileSystem implements IFileSystem {
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
     if (!this.base.readFileBytes) return Promise.reject(new Error('readFileBytes is not supported by this filesystem.'));
-    return this.base.readFileBytes(this.mapPath(path)) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>;
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'read-file', () =>
+      this.base.readFileBytes!(mappedPath) as Promise<ReturnType<NonNullable<IFileSystem['readFileBytes']>> extends Promise<infer T> ? T : never>
+    );
   }
 
   readFileBuffer(path: string): Promise<Uint8Array> {
+    const dynamicProcFile = this.readDynamicProcFile(path);
+    if (dynamicProcFile !== null) return Promise.resolve(new TextEncoder().encode(dynamicProcFile));
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'device-file') return Promise.resolve(new TextEncoder().encode(this.readDeviceFile(readTarget.path)));
     if (readTarget.kind === 'device-directory') return Promise.reject(new Error(`Kernel device path is a directory: ${path}`));
     if (readTarget.kind === 'proc-file') return Promise.resolve(new TextEncoder().encode(this.readProcFile(readTarget.path)));
     if (readTarget.kind === 'proc-directory') return Promise.reject(new Error(`Kernel proc path is a directory: ${path}`));
     if (readTarget.kind === 'error') return Promise.reject(throwKernelReadTargetError(path, readTarget));
-    return this.base.readFileBuffer(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'read-file', () => this.base.readFileBuffer(mappedPath));
   }
 
   async writeFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
@@ -1221,14 +2689,19 @@ class KernelObservedFileSystem implements IFileSystem {
       return;
     }
     const mappedPath = this.mapPath(path);
-    try {
-      this.assertWritable(mappedPath, 'write');
-    } catch (error) {
-      if ((error as { code?: unknown }).code === 'EROFS' && await this.fileContentEquals(mappedPath, content)) return;
-      throw error;
-    }
-    await this.base.writeFile(mappedPath, content, options);
-    await this.emitFileWrite(mappedPath);
+    const mutationKind: RuntimeFileSystemMutationKind = await this.base.exists(mappedPath) ? 'file-write' : 'file-create';
+    await this.withMutationLocks([mappedPath], mutationKind, async () => {
+      try {
+        this.assertWritable(mappedPath, 'write');
+      } catch (error) {
+        if ((error as { code?: unknown }).code === 'EROFS' && await this.fileContentEquals(mappedPath, content)) return;
+        throw error;
+      }
+      await this.base.writeFile(mappedPath, content, options);
+      this.inodeForPath(mappedPath);
+      this.recordMutation([mappedPath], mutationKind);
+      await this.emitFileWrite(mappedPath);
+    });
   }
 
   async appendFile(path: string, content: FileContent, options?: FsWriteFileOptions): Promise<void> {
@@ -1239,12 +2712,18 @@ class KernelObservedFileSystem implements IFileSystem {
       return;
     }
     const mappedPath = this.mapPath(path);
-    this.assertWritable(mappedPath, 'append');
-    await this.base.appendFile(mappedPath, content, options);
-    await this.emitFileWrite(mappedPath);
+    const mutationKind: RuntimeFileSystemMutationKind = await this.base.exists(mappedPath) ? 'file-write' : 'file-create';
+    await this.withMutationLocks([mappedPath], mutationKind, async () => {
+      this.assertWritable(mappedPath, 'append');
+      await this.base.appendFile(mappedPath, content, options);
+      this.inodeForPath(mappedPath);
+      this.recordMutation([mappedPath], mutationKind);
+      await this.emitFileWrite(mappedPath);
+    });
   }
 
   exists(path: string): Promise<boolean> {
+    if (this.dynamicProc.entryKind(this.mapPath(path)) !== null) return Promise.resolve(true);
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return Promise.resolve(true);
     if (accessTarget.kind === 'denied') return Promise.resolve(false);
@@ -1252,10 +2731,16 @@ class KernelObservedFileSystem implements IFileSystem {
   }
 
   stat(path: string): Promise<Awaited<ReturnType<IFileSystem['stat']>>> {
+    const dynamicStat = this.dynamicProc.stat(this.mapPath(path));
+    if (dynamicStat) return Promise.resolve(this.virtualStat(dynamicStat));
     const statTarget = kernelStatTarget(path, this.kernelInfo());
     if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
     if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
-    return this.base.stat(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'stat', () => this.base.stat(mappedPath)).then((stat) => {
+      if (isWithinWorkspace(this.workspaceRoot(), mappedPath)) this.inodeForPath(mappedPath);
+      return stat;
+    });
   }
 
   async mkdir(path: string, options?: FsMkdirOptions): Promise<void> {
@@ -1266,15 +2751,23 @@ class KernelObservedFileSystem implements IFileSystem {
         : `Kernel device namespace is read-only: ${path}`
     ));
     const mappedPath = this.mapPath(path);
-    const createdDirectories = await this.collectMissingDirectories(mappedPath);
-    this.assertWritable(mappedPath, 'mkdir');
-    await this.base.mkdir(mappedPath, options);
-    for (const directoryPath of createdDirectories) {
-      this.emitDirectoryCreate(directoryPath);
-    }
+    await this.withMutationLocks([mappedPath], 'directory-create', async () => {
+      const createdDirectories = await this.collectMissingDirectories(mappedPath);
+      this.assertWritable(mappedPath, 'mkdir');
+      await this.base.mkdir(mappedPath, options);
+      for (const directoryPath of createdDirectories) {
+        this.inodeForPath(directoryPath);
+      }
+      if (createdDirectories.length > 0) this.recordMutation(createdDirectories, 'directory-create');
+      for (const directoryPath of createdDirectories) {
+        this.emitDirectoryCreate(directoryPath);
+      }
+    });
   }
 
   readdir(path: string): Promise<string[]> {
+    const dynamicEntries = this.dynamicProc.readDir(this.mapPath(path));
+    if (dynamicEntries) return Promise.resolve(dynamicEntries.map((entry) => entry.name));
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return Promise.resolve(directoryTarget.entries.map((entry) => entry.name));
     if (directoryTarget.kind === 'error') {
@@ -1284,10 +2777,20 @@ class KernelObservedFileSystem implements IFileSystem {
           : `Kernel virtual path not found: ${path}`
       ));
     }
-    return this.base.readdir(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'readdir', () => this.base.readdir(mappedPath));
   }
 
   readdirWithFileTypes?(path: string): Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>> {
+    const dynamicEntries = this.dynamicProc.readDir(this.mapPath(path));
+    if (dynamicEntries) {
+      return Promise.resolve(dynamicEntries.map((entry) => ({
+        name: entry.name,
+        isFile: entry.kind === 'file',
+        isDirectory: entry.kind === 'directory',
+        isSymbolicLink: false,
+      }))) as Promise<Awaited<ReturnType<NonNullable<IFileSystem['readdirWithFileTypes']>>>>;
+    }
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') {
       return Promise.resolve(directoryTarget.entries.map((entry) => ({
@@ -1305,24 +2808,29 @@ class KernelObservedFileSystem implements IFileSystem {
       ));
     }
     if (!this.base.readdirWithFileTypes) return Promise.reject(new Error('readdirWithFileTypes is not supported by this filesystem.'));
-    return this.base.readdirWithFileTypes(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'readdir', () => this.base.readdirWithFileTypes!(mappedPath));
   }
 
   async rm(path: string, options?: FsRmOptions): Promise<void> {
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const mappedPath = this.mapPath(path);
-    const deletedFiles = await this.collectExistingFiles(mappedPath);
-    const deletedDirectories = await this.collectExistingDirectories(mappedPath);
-    this.assertWritable(mappedPath, 'remove');
-    this.assertWritableFiles(deletedFiles, 'remove');
-    await this.base.rm(mappedPath, options);
-    for (const deletedPath of deletedFiles) {
-      this.emitFileDelete(deletedPath);
-    }
-    for (const deletedPath of deletedDirectories) {
-      this.emitDirectoryDelete(deletedPath);
-    }
+    await this.withMutationLocks([mappedPath], options?.recursive ? 'recursive-delete' : 'delete', async () => {
+      const deletedFiles = await this.collectExistingFiles(mappedPath);
+      const deletedDirectories = await this.collectExistingDirectories(mappedPath);
+      this.assertWritable(mappedPath, 'remove');
+      this.assertWritableFiles(deletedFiles, 'remove');
+      await this.base.rm(mappedPath, options);
+      this.forgetInodes([mappedPath, ...deletedFiles, ...deletedDirectories]);
+      this.recordMutation([mappedPath, ...deletedFiles, ...deletedDirectories], options?.recursive ? 'recursive-delete' : 'delete');
+      for (const deletedPath of deletedFiles) {
+        this.emitFileDelete(deletedPath);
+      }
+      for (const deletedPath of deletedDirectories) {
+        this.emitDirectoryDelete(deletedPath);
+      }
+    });
   }
 
   async cp(src: string, dest: string, options?: FsCpOptions): Promise<void> {
@@ -1342,10 +2850,14 @@ class KernelObservedFileSystem implements IFileSystem {
     }
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
-    this.assertWritable(mappedDestination, 'copy');
-    await this.base.cp(mappedSource, mappedDestination, options);
-    await this.emitExistingDirectories(mappedDestination);
-    await this.emitExistingFiles(mappedDestination);
+    await this.withMutationLocks([mappedSource, mappedDestination], 'copy', async () => {
+      this.assertWritable(mappedDestination, 'copy');
+      await this.base.cp(mappedSource, mappedDestination, options);
+      this.inodeForPath(mappedDestination);
+      this.recordMutation([mappedSource, mappedDestination], 'copy');
+      await this.emitExistingDirectories(mappedDestination);
+      await this.emitExistingFiles(mappedDestination);
+    });
   }
 
   private async copyFileLike(
@@ -1359,9 +2871,13 @@ class KernelObservedFileSystem implements IFileSystem {
       return;
     }
     const mappedDestination = this.mapPath(dest);
-    this.assertWritable(mappedDestination, 'copy');
-    await this.base.writeFile(mappedDestination, sourceBytes);
-    await this.emitFileWrite(mappedDestination);
+    await this.withMutationLocks([mappedDestination], 'file-create', async () => {
+      this.assertWritable(mappedDestination, 'copy');
+      await this.base.writeFile(mappedDestination, sourceBytes);
+      this.inodeForPath(mappedDestination);
+      this.recordMutation([mappedDestination], 'file-create');
+      await this.emitFileWrite(mappedDestination);
+    });
   }
 
   private async readKernelCopySource(
@@ -1395,20 +2911,28 @@ class KernelObservedFileSystem implements IFileSystem {
     if (destinationMutationTarget.kind === 'error') throwKernelMutationTargetError(dest, destinationMutationTarget, 'Kernel device namespace is read-only.');
     const mappedSource = this.mapPath(src);
     const mappedDestination = this.mapPath(dest);
-    const deletedFiles = await this.collectExistingFiles(mappedSource);
-    const deletedDirectories = await this.collectExistingDirectories(mappedSource);
-    this.assertWritableFiles(deletedFiles, 'move');
-    this.assertWritable(mappedDestination, 'move');
-    this.assertSubtreeWritable(mappedDestination, 'move');
-    await this.base.mv(mappedSource, mappedDestination);
-    await this.emitExistingDirectories(mappedDestination);
-    await this.emitExistingFiles(mappedDestination);
-    for (const deletedPath of deletedFiles) {
-      this.emitFileDelete(deletedPath);
-    }
-    for (const deletedPath of deletedDirectories) {
-      this.emitDirectoryDelete(deletedPath);
-    }
+    await this.withMutationLocks([mappedSource, mappedDestination], 'rename', async () => {
+      const deletedFiles = await this.collectExistingFiles(mappedSource);
+      const deletedDirectories = await this.collectExistingDirectories(mappedSource);
+      const movedPaths = [...deletedDirectories, ...deletedFiles];
+      this.assertWritableFiles(deletedFiles, 'move');
+      this.assertWritable(mappedDestination, 'move');
+      this.assertSubtreeWritable(mappedDestination, 'move');
+      await this.base.mv(mappedSource, mappedDestination);
+      this.moveInodeSubtree(mappedSource, mappedDestination, movedPaths.length > 0 ? movedPaths : [mappedSource]);
+      this.recordMutation([mappedSource, mappedDestination], 'rename');
+      if (deletedFiles.length > 0 || deletedDirectories.length > 0) {
+        this.recordMutation([...deletedFiles, ...deletedDirectories], 'recursive-delete');
+      }
+      await this.emitExistingDirectories(mappedDestination);
+      await this.emitExistingFiles(mappedDestination);
+      for (const deletedPath of deletedFiles) {
+        this.emitFileDelete(deletedPath);
+      }
+      for (const deletedPath of deletedDirectories) {
+        this.emitDirectoryDelete(deletedPath);
+      }
+    });
   }
 
   resolvePath(base: string, path: string): string {
@@ -1437,37 +2961,49 @@ class KernelObservedFileSystem implements IFileSystem {
     if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
     if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
     const mappedPath = this.mapPath(path);
-    this.assertWritable(mappedPath, 'chmod');
-    return this.base.chmod(mappedPath, mode);
+    return this.withMutationLocks([mappedPath], 'file-write', async () => {
+      this.assertWritable(mappedPath, 'chmod');
+      await this.base.chmod(mappedPath, mode);
+      this.recordMutation([mappedPath], 'file-write');
+    });
   }
 
   symlink(target: string, linkPath: string): Promise<void> {
     const symlinkTarget = kernelSymlinkTarget(linkPath);
     if (symlinkTarget.kind === 'error') throwKernelMutationTargetError(linkPath, symlinkTarget);
     const mappedPath = this.mapPath(linkPath);
-    this.assertWritable(mappedPath, 'symlink');
-    return this.base.symlink(target, mappedPath);
+    return this.withMutationLocks([mappedPath], 'file-create', async () => {
+      this.assertWritable(mappedPath, 'symlink');
+      await this.base.symlink(target, mappedPath);
+      this.recordMutation([mappedPath], 'file-create');
+    });
   }
 
   link(existingPath: string, newPath: string): Promise<void> {
     const linkTarget = kernelLinkTarget(existingPath, newPath);
     if (linkTarget.kind === 'error') throwKernelMutationTargetError(linkTarget.side === 'source' ? existingPath : newPath, linkTarget);
     const mappedNewPath = this.mapPath(newPath);
-    this.assertWritable(mappedNewPath, 'link');
-    return this.base.link(this.mapPath(existingPath), mappedNewPath);
+    const mappedExistingPath = this.mapPath(existingPath);
+    return this.withMutationLocks([mappedExistingPath, mappedNewPath], 'copy', async () => {
+      this.assertWritable(mappedNewPath, 'link');
+      await this.base.link(mappedExistingPath, mappedNewPath);
+      this.recordMutation([mappedExistingPath, mappedNewPath], 'copy');
+    });
   }
 
   readlink(path: string): Promise<string> {
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind !== 'workspace') return Promise.reject(new Error(`Kernel virtual path is not a symbolic link: ${path}`));
-    return this.base.readlink(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'readlink', () => this.base.readlink(mappedPath));
   }
 
   lstat(path: string): Promise<Awaited<ReturnType<IFileSystem['lstat']>>> {
     const statTarget = kernelStatTarget(path, this.kernelInfo());
     if (statTarget.kind === 'stat') return Promise.resolve(this.virtualStat(statTarget.stat));
     if (statTarget.kind === 'error') return Promise.reject(new Error(`Kernel virtual path not found: ${path}`));
-    return this.base.lstat(this.mapPath(path));
+    const mappedPath = this.mapPath(path);
+    return this.withReadLocks([mappedPath], 'stat', () => this.base.lstat(mappedPath));
   }
 
   realpath(path: string): Promise<string> {
@@ -1480,7 +3016,11 @@ class KernelObservedFileSystem implements IFileSystem {
     const metadataTarget = kernelMetadataTarget(path);
     if (metadataTarget.kind === 'ignored-device') return Promise.resolve();
     if (metadataTarget.kind === 'error') throwKernelMetadataTargetError(path, metadataTarget);
-    return this.base.utimes(this.mapPath(path), atime, mtime);
+    const mappedPath = this.mapPath(path);
+    return this.withMutationLocks([mappedPath], 'file-write', async () => {
+      await this.base.utimes(mappedPath, atime, mtime);
+      this.recordMutation([mappedPath], 'file-write');
+    });
   }
 
   private mapPath(path: string): string {
@@ -2223,6 +3763,56 @@ function leadingPersistentCdTarget(command: string): string | undefined | null {
   return null;
 }
 
+interface TerminalCommandListSegment {
+  command: string;
+  background: boolean;
+}
+
+function parseTerminalCommandList(command: string): TerminalCommandListSegment[] {
+  const segments: TerminalCommandListSegment[] = [];
+  let quote: string | null = null;
+  let escaping = false;
+  let segmentStart = 0;
+
+  const pushSegment = (end: number, background: boolean): void => {
+    const segment = command.slice(segmentStart, end).trim();
+    if (segment) segments.push({ command: segment, background });
+    segmentStart = end + 1;
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const ch = command[index];
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaping = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ';') {
+      pushSegment(index, false);
+      continue;
+    }
+    if (ch === '&') {
+      if (command[index - 1] === '&' || command[index + 1] === '&') continue;
+      pushSegment(index, true);
+    }
+  }
+
+  const trailingSegment = command.slice(segmentStart).trim();
+  if (trailingSegment) segments.push({ command: trailingSegment, background: false });
+  return segments.length > 0 ? segments : [{ command, background: false }];
+}
+
 function literalWordValue(word: unknown): string | null {
   const candidate = word as { type?: unknown; parts?: Array<{ type?: unknown; value?: unknown }> };
   if (candidate?.type !== 'Word' || !Array.isArray(candidate.parts)) return null;
@@ -2239,6 +3829,72 @@ function literalWord(value: string): { type: 'Word'; parts: Array<{ type: 'Liter
     type: 'Word',
     parts: [{ type: 'Literal', value }],
   };
+}
+
+function rewriteKernelShellCommandInvocationsInAst(ast: unknown): void {
+  const transformStatements = (statements: unknown): void => {
+    if (!Array.isArray(statements)) return;
+    for (const statement of statements) transformStatement(statement);
+  };
+
+  const transformCommand = (command: unknown): void => {
+    const candidate = command as {
+      type?: unknown;
+      name?: unknown;
+      clauses?: Array<{ condition?: unknown; body?: unknown }>;
+      elseBody?: unknown;
+      body?: unknown;
+      items?: Array<{ body?: unknown }>;
+    };
+    switch (candidate?.type) {
+      case 'SimpleCommand': {
+        const name = literalWordValue(candidate.name);
+        const rewrite = name ? TRACEKERNEL_SHELL_COMMAND_REWRITES.get(name) : undefined;
+        if (rewrite) candidate.name = literalWord(rewrite);
+        return;
+      }
+      case 'If':
+        for (const clause of candidate.clauses ?? []) {
+          transformStatements(clause.condition);
+          transformStatements(clause.body);
+        }
+        transformStatements(candidate.elseBody);
+        return;
+      case 'For':
+      case 'While':
+      case 'Until':
+      case 'Subshell':
+      case 'Group':
+        transformStatements(candidate.body);
+        return;
+      case 'Case':
+        for (const item of candidate.items ?? []) {
+          transformStatements(item.body);
+        }
+        return;
+      case 'FunctionDef':
+        transformCommand(candidate.body);
+        return;
+      default:
+        return;
+    }
+  };
+
+  const transformStatement = (statement: unknown): void => {
+    const candidate = statement as {
+      type?: unknown;
+      pipelines?: Array<{ commands?: unknown[] }>;
+    };
+    if (candidate?.type !== 'Statement' || !Array.isArray(candidate.pipelines)) return;
+    for (const pipeline of candidate.pipelines) {
+      for (const command of pipeline.commands ?? []) {
+        transformCommand(command);
+      }
+    }
+  };
+
+  const script = ast as { type?: unknown; statements?: unknown };
+  if (script?.type === 'Script') transformStatements(script.statements);
 }
 
 function rewriteVirtualExecutableInvocationsInAst(
@@ -3950,27 +5606,32 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   readonly cwd: string;
   readonly kernelInfo: RuntimeKernelInfo;
   private readonly bash: Bash;
+  private readonly bashOptions: BashOptions;
   private readonly fs: KernelObservedFileSystem;
+  private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
+  private readonly commandScheduler: RuntimeCommandScheduler;
   private readonly entrypoint?: string;
   private readonly kernelControl?: RuntimeTraceKernelControlOptions;
   private readonly cppRunner?: CppProjectCommandRunner;
   private readonly virtualExecutableRecords = new Map<string, VirtualExecutableRecord>();
-  private activeExecutableTransformCwd?: string;
+  private readonly commandExecutionContexts = new AsyncLocalStorage<RuntimeCommandExecutionContext>();
+  private readonly processTable = new Map<number, RuntimeKernelProcessRecord>();
+  private readonly zombieProcessTable = new Map<number, RuntimeKernelZombieRecord>();
+  private readonly processWaiters = new Map<number, Array<(process: RuntimeKernelProcessRecord) => void>>();
+  private readonly anyProcessWaiters: Array<(process: RuntimeKernelProcessRecord) => void> = [];
+  private readonly kernelEventLog: RuntimeKernelEventRecord[] = [];
   private readonly readonlyFiles = new Set<string>();
   private readonly eventWatchers = new Set<RuntimeWorkspaceEventHandler>();
-  private activeCommandEventHandler?: RuntimeCommandEventHandler;
-  private activeCommandActor?: RuntimeWorkspaceActor;
-  private activeCommandStdinPipe?: RuntimeCommandOptions['stdinPipe'];
-  private activeDeviceStdout = '';
-  private activeDeviceStderr = '';
-  private activeRuntimeIo = this.createRuntimeLiveIoController();
   private readonlySuspendDepth = 0;
   private nextCommandId = 1;
+  private nextPid = 100;
+  private nextKernelEventSeq = 1;
   private destroyed = false;
   private terminalVerbose = false;
 
   constructor(options: CreateRuntimeWorkspaceOptions = {}) {
     this.kernelInfo = createTraceKernelInfo(options.kernel, options.cwd);
+    this.commandScheduler = new RuntimeCommandScheduler(normalizeRuntimeSchedulerConfig(options.kernel?.scheduler));
     this.cwd = this.kernelInfo.workspaceRoot;
     this.projectSession = options.projectSession ? createProjectSessionInfo(options.projectSession, this.kernelInfo) : undefined;
     for (const path of this.projectSession?.readonlyFiles ?? []) {
@@ -3982,13 +5643,31 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.kernel = this.createKernel();
     this.fs = new KernelObservedFileSystem(
       new InMemoryFs(),
+      this.fsLocks,
       () => this.cwd,
       () => this.kernelInfo.workspaceAlias,
       () => this.kernelInfo,
       (absolutePath, operation) => this.assertWorkspacePathWritable(absolutePath, operation),
       (absolutePath, operation) => this.assertWorkspaceSubtreeWritable(absolutePath, operation),
+      () => this.currentCommandContext()?.generationBaseline,
+      () => {
+        const context = this.currentCommandContext();
+        return context
+          ? {
+              baseline: context.generationBaseline,
+              mutatedPaths: context.mutatedGenerationPaths,
+              pid: context.process.pid,
+              signal: context.process.abortController!.signal,
+              setError: (error) => {
+                context.kernelError = error;
+              },
+            }
+          : undefined;
+      },
+      (event) => this.recordKernelEvent(event.type, event.pid, event.detail),
+      this.createDynamicProcProvider(),
       (change) => {
-        if (!this.activeCommandActor) return;
+        if (!this.currentCommandContext()) return;
         this.emitLocalRuntimeEvent({ type: 'file-change', change, phase: 'live' });
       },
       (device) => this.readDevice(device),
@@ -3998,19 +5677,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       runner: RuntimeProjectCommandRunner<Request>
     ): RuntimeProjectCommandRunner<Request> => (
       async (request) => {
+        const commandContext = this.currentCommandContext();
         const activeStdinPipe = request.source !== 'compile' && request.source !== 'stdin'
-          ? this.activeCommandStdinPipe
+          ? commandContext?.stdinPipe
           : undefined;
         const stdinPipe = request.stdinPipe ?? activeStdinPipe;
+        const signal = commandContext?.process.abortController?.signal ?? request.signal;
         const result = await runner({
           ...request,
           ...(stdinPipe ? { stdinPipe: { buffer: stdinPipe.buffer } } : {}),
+          ...(signal ? { signal } : {}),
           onEvent: (event) => {
             this.handleRuntimeCommandEvent(event);
           },
         } as Request);
         await this.flushRuntimeEventQueue();
-        return this.activeRuntimeIo.filterAppliedResultFiles(result);
+        return this.currentRuntimeIo()?.filterAppliedResultFiles(result) ?? result;
       }
     );
     const observeFileChange: RuntimeFileChangeObserver = (change, phase) => {
@@ -4044,10 +5726,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       }) : []),
       ...(options.csharpRunner ? createCSharpProjectCommands(withEvents(options.csharpRunner), this.cwd, this.entrypoint, observeFileChange, this.kernelInfo.workspaceAlias, this.kernelInfo, this.projectSession?.readonlyFiles, this.projectSession?.hiddenFiles) : []),
       defineCommand(TRACEKERNEL_EXEC_COMMAND, (args, ctx) => this.runTraceKernelExec(args, ctx)),
+      defineCommand('bg', async (args) => this.runKernelJobPlacement(args, 'bg')),
+      defineCommand('fg', async (args) => this.runKernelJobPlacement(args, 'fg')),
+      defineCommand('kill', async (args) => this.runKernelKill(args, 'kill')),
+      defineCommand('jobs', async (args) => this.runKernelJobs(args)),
+      defineCommand('ps', async (args) => this.runKernelPs(args)),
       defineCommand('tracekernelctl', (args) => this.runTraceKernelCtl(args)),
+      defineCommand('wait', (args) => this.runKernelWait(args, 'wait')),
       ...(options.customCommands ?? []),
-    ];
-    this.bash = new Bash({
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}bg`, async (args) => this.runKernelJobPlacement(args, 'bg')),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}fg`, async (args) => this.runKernelJobPlacement(args, 'fg')),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}kill`, async (args) => this.runKernelKill(args, 'kill')),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}jobs`, async (args) => this.runKernelJobs(args)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}ps`, async (args) => this.runKernelPs(args)),
+      defineCommand(`${TRACEKERNEL_SHELL_COMMAND_PREFIX}wait`, (args) => this.runKernelWait(args, 'wait')),
+    ].map((command) => this.withKernelCommandSignal(command as CustomCommand));
+    this.bashOptions = {
       fs: this.fs,
       cwd: this.cwd,
       env: options.env,
@@ -4056,24 +5750,477 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       python: options.python,
       javascript: options.javascript as never,
       executionLimits: options.executionLimits as never,
-    });
-    if (this.hasVirtualExecutableLoaders()) {
-      this.bash.registerTransformPlugin({
-        name: 'tracekernel-executable-loader',
-        transform: ({ ast }: { ast: unknown }) => {
-          if (this.activeExecutableTransformCwd) {
-            rewriteVirtualExecutableInvocationsInAst(
-              ast,
-              this.activeExecutableTransformCwd,
-              this.cwd,
-              this.kernelInfo.workspaceAlias,
-              this.virtualExecutableRecords
-            );
-          }
-          return { ast };
-        },
-      } as never);
+    };
+    this.bash = this.createBash();
+  }
+
+  private withKernelCommandSignal(command: CustomCommand): CustomCommand {
+    if (isRuntimeCommand(command)) {
+      return {
+        ...command,
+        execute: (args, ctx) => command.execute(args, this.withCurrentKernelSignal(ctx)),
+      };
     }
+    if (isRuntimeLazyCommand(command)) {
+      return {
+        ...command,
+        load: async () => this.withKernelCommandSignal(await command.load()) as Command,
+      };
+    }
+    return command;
+  }
+
+  private withCurrentKernelSignal(ctx: CommandContext): CommandContext {
+    const signal = this.currentCommandContext()?.process.abortController?.signal;
+    return signal && signal !== ctx.signal ? { ...ctx, signal } : ctx;
+  }
+
+  private createBash(): Bash {
+    const bash = new Bash(this.bashOptions);
+    bash.registerTransformPlugin({
+      name: 'tracekernel-command-rewrite',
+      transform: ({ ast }: { ast: unknown }) => {
+        rewriteKernelShellCommandInvocationsInAst(ast);
+        const executableTransformCwd = this.currentCommandContext()?.executableTransformCwd;
+        if (this.hasVirtualExecutableLoaders() && executableTransformCwd) {
+          rewriteVirtualExecutableInvocationsInAst(
+            ast,
+            executableTransformCwd,
+            this.cwd,
+            this.kernelInfo.workspaceAlias,
+            this.virtualExecutableRecords
+          );
+        }
+        return { ast };
+      },
+    } as never);
+    return bash;
+  }
+
+  private currentCommandContext(): RuntimeCommandExecutionContext | undefined {
+    return this.commandExecutionContexts.getStore();
+  }
+
+  private currentCommandActor(): RuntimeWorkspaceActor | undefined {
+    return this.currentCommandContext()?.actor;
+  }
+
+  private currentRuntimeIo(): RuntimeProjectLiveIoController | undefined {
+    return this.currentCommandContext()?.runtimeIo;
+  }
+
+  recordKernelCommandError(error: unknown): void {
+    const commandError = runtimeCommandError(error);
+    const context = this.currentCommandContext();
+    if (commandError && context) context.kernelError = commandError;
+  }
+
+  private createDynamicProcProvider(): RuntimeDynamicProcProvider {
+    return {
+      readFile: (path) => this.readDynamicProcFile(path),
+      readDir: (path) => this.readDynamicProcDir(path),
+      entryKind: (path) => this.dynamicProcEntryKind(path),
+      stat: (path) => this.dynamicProcStat(path),
+    };
+  }
+
+  private principalProcessRecord(): RuntimeKernelProcessRecord {
+    return {
+      pid: 1,
+      ppid: 0,
+      pgid: 1,
+      sid: 1,
+      fds: this.standardProcessFileDescriptors(),
+      tty: '/dev/tty',
+      command: 'tracekernel',
+      cwd: this.cwd,
+      actor: SYSTEM_ACTOR,
+      startedAt: this.projectSession?.lifecycle.createdAt ?? new Date(0).toISOString(),
+      state: 'running',
+      foreground: true,
+    };
+  }
+
+  private currentProcSelfRecord(): RuntimeKernelProcessRecord {
+    return this.currentCommandContext()?.process ?? this.principalProcessRecord();
+  }
+
+  private standardProcessFileDescriptors(): readonly RuntimeKernelFileDescriptorRecord[] {
+    return [
+      { fd: 0, target: '/dev/stdin', flags: 'r' },
+      { fd: 1, target: '/dev/stdout', flags: 'w' },
+      { fd: 2, target: '/dev/stderr', flags: 'w' },
+    ];
+  }
+
+  private purgeZombieProcessTable(nowMs = Date.now()): void {
+    for (const [pid, zombie] of this.zombieProcessTable) {
+      if (zombie.expiresAtMs <= nowMs) this.zombieProcessTable.delete(pid);
+    }
+  }
+
+  private findProcessRecord(pid: number): RuntimeKernelProcessRecord | undefined {
+    this.purgeZombieProcessTable();
+    return this.processTable.get(pid) ?? this.zombieProcessTable.get(pid)?.process;
+  }
+
+  private activeProcessRecords(): RuntimeKernelProcessRecord[] {
+    this.purgeZombieProcessTable();
+    return [
+      ...this.processTable.values(),
+      ...[...this.zombieProcessTable.values()].map((zombie) => zombie.process),
+    ]
+      .filter((process) => process.state !== 'exited')
+      .sort((left, right) => left.pid - right.pid);
+  }
+
+  private recordKernelEvent(type: string, pid?: number, detail?: Record<string, unknown>): void {
+    this.kernelEventLog.push({
+      seq: this.nextKernelEventSeq++,
+      time: new Date().toISOString(),
+      type,
+      ...(pid !== undefined ? { pid } : {}),
+      ...(detail ? { detail } : {}),
+    });
+    if (this.kernelEventLog.length > TRACEKERNEL_EVENT_LOG_LIMIT) {
+      this.kernelEventLog.splice(0, this.kernelEventLog.length - TRACEKERNEL_EVENT_LOG_LIMIT);
+    }
+  }
+
+  private firstZombieProcessRecord(): RuntimeKernelProcessRecord | undefined {
+    this.purgeZombieProcessTable();
+    return [...this.zombieProcessTable.values()]
+      .map((zombie) => zombie.process)
+      .sort((left, right) => left.pid - right.pid)[0];
+  }
+
+  private signalCommandError(process: RuntimeKernelProcessRecord): RuntimeCommandError | undefined {
+    if (!process.signal) return undefined;
+    const message = `EINTR: interrupted system call, wait4 '${process.pid}'`;
+    return {
+      code: 'EINTR',
+      errno: 4,
+      syscall: 'wait4',
+      path: String(process.pid),
+      message,
+      detail: {
+        pid: process.pid,
+        signal: process.signal,
+        ...(process.signalCode !== undefined ? { signalCode: process.signalCode } : {}),
+      },
+    };
+  }
+
+  private signalCommandResult(process: RuntimeKernelProcessRecord): RuntimeCommandResult {
+    const error = this.signalCommandError(process);
+    return {
+      stdout: '',
+      stderr: error ? `${error.message}\n` : '',
+      exitCode: 128 + (process.signalCode ?? 15),
+      ...(error ? { error } : {}),
+    };
+  }
+
+  private signalProcess(process: RuntimeKernelProcessRecord, signalName = 'SIGTERM'): boolean {
+    const signal = normalizeTraceKernelSignal(signalName);
+    if (!signal || process.state === 'exited') return false;
+    process.signal = signal.name;
+    process.signalCode = signal.code;
+    process.state = 'signaled';
+    this.recordKernelEvent('process-signal', process.pid, { signal: signal.name, signalCode: signal.code });
+    if (!process.abortController?.signal.aborted) {
+      process.abortController?.abort({ signal: signal.name, signalCode: signal.code, pid: process.pid });
+    }
+    return true;
+  }
+
+  private signalProcessGroup(pgid: number, signalName = 'SIGTERM'): number {
+    const currentPid = this.currentCommandContext()?.process.pid;
+    let signaled = 0;
+    for (const process of this.activeProcessRecords()) {
+      if (process.pgid !== pgid || process.pid === currentPid || process.pid === 1 || process.state === 'exited') continue;
+      if (this.signalProcess(process, signalName)) signaled += 1;
+    }
+    if (signaled > 0) this.recordKernelEvent('process-group-signal', undefined, { pgid, signal: normalizeTraceKernelSignal(signalName)?.name, count: signaled });
+    return signaled;
+  }
+
+  private setProcessGroupForeground(pgid: number, foreground: boolean): void {
+    for (const process of this.activeProcessRecords()) {
+      if (process.pgid !== pgid || process.pid === 1 || process.state === 'exited') continue;
+      process.foreground = foreground;
+      process.tty = foreground ? '/dev/tty' : '?';
+    }
+  }
+
+  private async reapZombieProcess(pid?: number, commandName = 'tracekernelctl'): Promise<RuntimeCommandResult> {
+    const process = await this.waitForZombieProcess(pid);
+    if (!process) {
+      return { stdout: '', stderr: `${commandName}: no child process${pid === undefined ? '' : `: ${pid}`}\n`, exitCode: 10 };
+    }
+    this.zombieProcessTable.delete(process.pid);
+    process.state = 'exited';
+    this.recordKernelEvent('process-reap', process.pid, { exitCode: process.exitCode ?? 0, signal: process.signal });
+    return {
+      stdout: [
+        `pid\t${process.pid}`,
+        `exitCode\t${process.exitCode ?? 0}`,
+        ...(process.signal ? [`signal\t${process.signal}`] : []),
+        ...(process.signalCode !== undefined ? [`signalCode\t${process.signalCode}`] : []),
+      ].join('\n') + '\n',
+      stderr: '',
+      exitCode: process.exitCode ?? 0,
+    };
+  }
+
+  private waitForZombieProcess(pid?: number): Promise<RuntimeKernelProcessRecord | undefined> {
+    this.purgeZombieProcessTable();
+    const currentPid = this.currentCommandContext()?.process.pid;
+    const zombie = pid === undefined ? this.firstZombieProcessRecord() : this.zombieProcessTable.get(pid)?.process;
+    if (zombie?.state === 'zombie') return Promise.resolve(zombie);
+    if (pid !== undefined && (pid === currentPid || !this.processTable.has(pid))) return Promise.resolve(undefined);
+    if (pid === undefined && ![...this.processTable.keys()].some((activePid) => activePid !== currentPid)) {
+      return Promise.resolve(undefined);
+    }
+
+    return new Promise((resolve) => {
+      if (pid === undefined) {
+        this.anyProcessWaiters.push(resolve);
+        return;
+      }
+      const waiters = this.processWaiters.get(pid) ?? [];
+      waiters.push(resolve);
+      this.processWaiters.set(pid, waiters);
+    });
+  }
+
+  private notifyZombieProcess(process: RuntimeKernelProcessRecord): void {
+    const waiters = this.processWaiters.get(process.pid) ?? [];
+    this.processWaiters.delete(process.pid);
+    const anyWaiters = this.anyProcessWaiters.splice(0);
+    for (const waiter of [...waiters, ...anyWaiters]) {
+      waiter(process);
+    }
+  }
+
+  private attachExternalSignal(process: RuntimeKernelProcessRecord, signal: AbortSignal | undefined): (() => void) | undefined {
+    if (!signal) return undefined;
+    const abort = () => {
+      this.signalProcess(process, 'SIGTERM');
+    };
+    if (signal.aborted) {
+      abort();
+      return undefined;
+    }
+    signal.addEventListener('abort', abort, { once: true });
+    return () => signal.removeEventListener('abort', abort);
+  }
+
+  private readDynamicProcFile(path: string): string | null {
+    const procPath = normalizeRuntimeProcPath(path);
+    if (!procPath) return null;
+    if (procPath === '/proc/self/status') return this.renderProcStatus(this.currentProcSelfRecord());
+    if (procPath === '/proc/self/cmdline') return `${this.currentProcSelfRecord().command}\0`;
+    {
+      const selfFd = procPath.match(/^\/proc\/self\/fd\/([0-9]+)$/);
+      if (selfFd) return this.renderProcFd(this.currentProcSelfRecord(), Number(selfFd[1]));
+      const selfFdInfo = procPath.match(/^\/proc\/self\/fdinfo\/([0-9]+)$/);
+      if (selfFdInfo) return this.renderProcFdInfo(this.currentProcSelfRecord(), Number(selfFdInfo[1]));
+    }
+    if (procPath === '/proc/tracekernel/events') return this.renderProcEvents();
+    if (procPath === '/proc/tracekernel/inodes') return this.fs.renderInodes();
+    if (procPath === '/proc/tracekernel/locks') return this.renderProcLocks();
+    if (procPath === '/proc/tracekernel/processes') return this.renderProcProcesses();
+    if (procPath === '/proc/tracekernel/sched') return this.renderProcScheduler();
+
+    const match = procPath.match(/^\/proc\/([1-9][0-9]*)\/(status|cmdline|fd\/[0-9]+|fdinfo\/[0-9]+)$/);
+    if (!match) return null;
+    const process = this.findProcessRecord(Number(match[1]));
+    if (!process || process.state === 'exited') return null;
+    const file = match[2];
+    if (file === 'status') return this.renderProcStatus(process);
+    if (file === 'cmdline') return `${process.command}\0`;
+    const fd = Number(file.split('/')[1]);
+    return file.startsWith('fdinfo/') ? this.renderProcFdInfo(process, fd) : this.renderProcFd(process, fd);
+  }
+
+  private readDynamicProcDir(path: string): RuntimeDynamicProcEntry[] | null {
+    const procPath = normalizeRuntimeProcPath(path);
+    if (!procPath) return null;
+    if (procPath === '/proc') {
+      return [
+        { name: 'kernel', kind: 'directory' },
+        { name: 'self', kind: 'directory' },
+        { name: 'tracekernel', kind: 'directory' },
+        ...this.activeProcessRecords().map((process) => ({ name: String(process.pid), kind: 'directory' as const })),
+      ];
+    }
+    if (procPath === '/proc/self') {
+      return [
+        { name: 'cmdline', kind: 'file' },
+        { name: 'fd', kind: 'directory' },
+        { name: 'fdinfo', kind: 'directory' },
+        { name: 'mountinfo', kind: 'file' },
+        { name: 'status', kind: 'file' },
+      ];
+    }
+    if (procPath === '/proc/self/fd') {
+      return this.currentProcSelfRecord().fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+    }
+    if (procPath === '/proc/self/fdinfo') {
+      return this.currentProcSelfRecord().fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+    }
+    if (procPath === '/proc/tracekernel') {
+      return [
+        { name: 'events', kind: 'file' },
+        { name: 'inodes', kind: 'file' },
+        { name: 'locks', kind: 'file' },
+        { name: 'processes', kind: 'file' },
+        { name: 'sched', kind: 'file' },
+      ];
+    }
+    const fdDirMatch = procPath.match(/^\/proc\/([1-9][0-9]*)\/(fd|fdinfo)$/);
+    if (fdDirMatch) {
+      const process = this.findProcessRecord(Number(fdDirMatch[1]));
+      if (!process || process.state === 'exited') return null;
+      return process.fds.map((fd) => ({ name: String(fd.fd), kind: 'file' as const }));
+    }
+    const match = procPath.match(/^\/proc\/([1-9][0-9]*)$/);
+    if (!match) return null;
+    const process = this.findProcessRecord(Number(match[1]));
+    if (!process || process.state === 'exited') return null;
+    return [
+      { name: 'cmdline', kind: 'file' },
+      { name: 'fd', kind: 'directory' },
+      { name: 'fdinfo', kind: 'directory' },
+      { name: 'status', kind: 'file' },
+    ];
+  }
+
+  private dynamicProcEntryKind(path: string): 'file' | 'directory' | null {
+    const procPath = normalizeRuntimeProcPath(path);
+    if (!procPath) return null;
+    if (this.readDynamicProcDir(procPath)) return 'directory';
+    return this.readDynamicProcFile(procPath) !== null ? 'file' : null;
+  }
+
+  private dynamicProcStat(path: string): RuntimeKernelVirtualStat | null {
+    const kind = this.dynamicProcEntryKind(path);
+    if (!kind) return null;
+    const content = kind === 'file' ? this.readDynamicProcFile(path) ?? '' : '';
+    return {
+      isFile: kind === 'file',
+      isDirectory: kind === 'directory',
+      isCharacterDevice: false,
+      mode: kind === 'directory' ? 0o555 : 0o444,
+      size: new TextEncoder().encode(content).byteLength,
+    };
+  }
+
+  private renderProcStatus(process: RuntimeKernelProcessRecord): string {
+    const state =
+      process.state === 'queued'
+        ? 'S (queued)'
+        : process.state === 'running'
+        ? 'R (running)'
+        : process.state === 'signaled'
+          ? 'X (signaled)'
+          : process.state === 'zombie'
+            ? 'Z (zombie)'
+            : 'X (dead)';
+    return [
+      `Name:\t${process.command.split(/\s+/, 1)[0] || 'tracekernel'}`,
+      `State:\t${state}`,
+      `Pid:\t${process.pid}`,
+      `PPid:\t${process.ppid}`,
+      `PGid:\t${process.pgid}`,
+      `Sid:\t${process.sid}`,
+      `FDSize:\t${process.fds.length}`,
+      `Tty:\t${process.tty}`,
+      `Foreground:\t${process.foreground ? 1 : 0}`,
+      'Uid:\t1000\t1000\t1000\t1000',
+      'Gid:\t1000\t1000\t1000\t1000',
+      `Cwd:\t${process.cwd}`,
+      `Command:\t${process.command}`,
+      `Actor:\t${process.actor.kind}:${process.actor.id}`,
+      ...(process.signal ? [`Signal:\t${process.signal}`] : []),
+      ...(process.signalCode !== undefined ? [`SignalCode:\t${process.signalCode}`] : []),
+      `Started:\t${process.startedAt}`,
+      ...(process.endedAt ? [`Ended:\t${process.endedAt}`] : []),
+      ...(process.exitCode !== undefined ? [`ExitCode:\t${process.exitCode}`] : []),
+    ].join('\n') + '\n';
+  }
+
+  private renderProcFd(process: RuntimeKernelProcessRecord, fd: number): string | null {
+    return process.fds.find((entry) => entry.fd === fd)?.target.concat('\n') ?? null;
+  }
+
+  private renderProcFdInfo(process: RuntimeKernelProcessRecord, fd: number): string | null {
+    const descriptor = process.fds.find((entry) => entry.fd === fd);
+    if (!descriptor) return null;
+    return [
+      `pos:\t0`,
+      `flags:\t${descriptor.flags}`,
+      `mnt_id:\tdev`,
+      `target:\t${descriptor.target}`,
+    ].join('\n') + '\n';
+  }
+
+  private renderProcProcesses(): string {
+    const rows = this.activeProcessRecords().map((process) =>
+      [
+        process.pid,
+        process.ppid,
+        process.pgid,
+        process.sid,
+        process.state,
+        process.tty,
+        process.foreground ? 1 : 0,
+        process.cwd,
+        process.command,
+      ].join('\t')
+    );
+    return ['pid\tppid\tpgid\tsid\tstate\ttty\tfg\tcwd\tcmd', ...rows].join('\n') + '\n';
+  }
+
+  private renderProcEvents(): string {
+    const rows = this.kernelEventLog.map((event) =>
+      [
+        event.seq,
+        event.time,
+        event.type,
+        event.pid ?? '',
+        event.detail ? JSON.stringify(event.detail) : '',
+      ].join('\t')
+    );
+    return ['seq\ttime\ttype\tpid\tdetail', ...rows].join('\n') + '\n';
+  }
+
+  private renderProcLocks(): string {
+    const rows = this.fsLocks.snapshot().map((lock) =>
+      `${lock.path}\t${lock.active ? 1 : 0}\t${lock.waiting}\t${lock.readers}\t${lock.writer ? 1 : 0}\t${lock.waitingReaders}\t${lock.waitingWriters}`
+    );
+    return ['path\tactive\twaiting\treaders\twriter\twaiting_readers\twaiting_writers', ...rows].join('\n') + '\n';
+  }
+
+  private renderProcScheduler(): string {
+    const active = this.activeProcessRecords();
+    const scheduler = this.commandScheduler.snapshot();
+    const queued = active.filter((process) => process.state === 'queued').length;
+    const running = active.filter((process) => process.state === 'running').length;
+    const zombies = active.filter((process) => process.state === 'zombie').length;
+    return [
+      `tasks\t${active.length}`,
+      `queued\t${queued}`,
+      `running\t${running}`,
+      `zombies\t${zombies}`,
+      `admitted\t${scheduler.running}`,
+      `waiting\t${scheduler.queued}`,
+      `max_concurrent\t${scheduler.maxConcurrentCommands}`,
+      `max_queued\t${scheduler.maxQueuedCommands ?? 'unlimited'}`,
+      `next_pid\t${this.nextPid}`,
+      ...active.map((process) => `task\t${process.pid}\t${process.state}\t${process.command}`),
+    ].join('\n') + '\n';
   }
 
   private hasVirtualExecutableLoaders(): boolean {
@@ -4103,7 +6250,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       args: expandedInvocation.scriptArgs,
       cwd: ctx.cwd,
       env: commandEnv(ctx),
-      stdinPipe: this.activeCommandStdinPipe,
+      stdinPipe: this.currentCommandContext()?.stdinPipe,
       preserveScriptPath: true,
     });
     return result ?? { stdout: '', stderr: `bash: ${expandedInvocation.scriptFile}: Exec format error\n`, exitCode: 126 };
@@ -4112,6 +6259,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   private async runTraceKernelCtl(args: string[]): Promise<RuntimeCommandResult> {
     const command = args[0] ?? 'status';
     if (command === 'status') {
+      const scheduler = this.commandScheduler.snapshot();
       return {
         stdout: [
           `${this.kernelInfo.name} ${this.kernelInfo.version}`,
@@ -4119,6 +6267,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
           `host=${this.kernelInfo.host.hostname}`,
           `workspace=${this.kernelInfo.workspaceRoot}`,
           `verbose=${this.terminalVerbose ? 'on' : 'off'}`,
+          `scheduler.maxConcurrent=${scheduler.maxConcurrentCommands}`,
+          `scheduler.running=${scheduler.running}`,
+          `scheduler.queued=${scheduler.queued}`,
+          `scheduler.maxQueued=${scheduler.maxQueuedCommands ?? 'unlimited'}`,
           ...(this.kernelInfo.workspaceAlias ? [`alias=${this.kernelInfo.workspaceAlias}`] : []),
         ].join('\n') + '\n',
         stderr: '',
@@ -4146,19 +6298,189 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         return { stdout: '', stderr: 'usage: tracekernelctl reset\n', exitCode: 2 };
       }
       await this.kernelControl?.reset?.();
-      await this.destroy({ reason: 'tracekernelctl-reset', clearStorage: true });
+      await this.destroyNow({ reason: 'tracekernelctl-reset', clearStorage: true });
       return { stdout: 'tracekernelctl: reset complete\n', stderr: '', exitCode: 0 };
+    }
+    if (command === 'kill') {
+      if (args.length < 2 || args.length > 3) {
+        return { stdout: '', stderr: 'usage: tracekernelctl kill <pid> [signal]\n', exitCode: 2 };
+      }
+      const target = Number(args[1]);
+      if (!Number.isInteger(target) || target === 0) {
+        return { stdout: '', stderr: `tracekernelctl: invalid pid: ${args[1]}\n`, exitCode: 22 };
+      }
+      const signal = normalizeTraceKernelSignal(args[2]);
+      if (!signal) {
+        return { stdout: '', stderr: `tracekernelctl: invalid signal: ${args[2] ?? ''}\n`, exitCode: 22 };
+      }
+      if (target < 0) {
+        const pgid = Math.abs(target);
+        const count = this.signalProcessGroup(pgid, signal.name);
+        if (count === 0) return { stdout: '', stderr: `tracekernelctl: no such process group: ${pgid}\n`, exitCode: 3 };
+        return { stdout: `tracekernelctl: sent ${signal.name} to process group ${pgid} (${count} process${count === 1 ? '' : 'es'})\n`, stderr: '', exitCode: 0 };
+      }
+      const process = this.findProcessRecord(target);
+      if (!process || process.state === 'exited') {
+        return { stdout: '', stderr: `tracekernelctl: no such process: ${target}\n`, exitCode: 3 };
+      }
+      if (!this.signalProcess(process, signal.name)) {
+        return { stdout: '', stderr: `tracekernelctl: no such process: ${target}\n`, exitCode: 3 };
+      }
+      return { stdout: `tracekernelctl: sent ${signal.name} to ${target}\n`, stderr: '', exitCode: 0 };
+    }
+    if (command === 'wait') {
+      if (args.length > 2) {
+        return { stdout: '', stderr: 'usage: tracekernelctl wait [pid]\n', exitCode: 2 };
+      }
+      if (args[1] === undefined) {
+        return this.reapZombieProcess(undefined, 'tracekernelctl');
+      }
+      const pid = Number(args[1]);
+      if (!Number.isInteger(pid) || pid <= 0) {
+        return { stdout: '', stderr: `tracekernelctl: invalid pid: ${args[1]}\n`, exitCode: 22 };
+      }
+      return this.reapZombieProcess(pid, 'tracekernelctl');
     }
     return {
       stdout: '',
-      stderr: `tracekernelctl: unknown command: ${command}\nusage: tracekernelctl {status|reset|verbose [on|off|status]}\n`,
+      stderr: `tracekernelctl: unknown command: ${command}\nusage: tracekernelctl {status|reset|verbose [on|off|status]|kill <pid> [signal]|wait <pid>}\n`,
       exitCode: 2,
     };
   }
 
+  private runKernelPs(args: string[]): RuntimeCommandResult {
+    const supported = new Set(['', '-e', '-f', '-ef', 'aux']);
+    const mode = args.join('');
+    if (!supported.has(mode)) {
+      return { stdout: '', stderr: 'usage: ps [-e|-f|-ef|aux]\n', exitCode: 2 };
+    }
+    const rows = [this.principalProcessRecord(), ...this.activeProcessRecords()].map((process) =>
+      [
+        String(process.pid).padStart(5, ' '),
+        String(process.ppid).padStart(5, ' '),
+        String(process.pgid).padStart(5, ' '),
+        String(process.sid).padStart(5, ' '),
+        process.state.padEnd(8, ' '),
+        process.foreground ? '+' : '-',
+        process.tty.padEnd(8, ' '),
+        process.command,
+      ].join(' ')
+    );
+    return {
+      stdout: ['  PID  PPID  PGID   SID STAT     FG TTY      CMD', ...rows].join('\n') + '\n',
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelJobs(args: string[]): RuntimeCommandResult {
+    if (args.length > 1 || (args[0] !== undefined && args[0] !== '-l')) {
+      return { stdout: '', stderr: 'usage: jobs [-l]\n', exitCode: 2 };
+    }
+    const currentPid = this.currentCommandContext()?.process.pid;
+    const rows = this.kernelJobRecords(currentPid)
+      .map((process, index) => {
+        const marker = process.foreground ? '+' : '-';
+        const status = process.state === 'running' ? 'Running' : process.state === 'zombie' ? 'Done' : process.state;
+        const placement = process.foreground ? 'foreground' : 'background';
+        return args[0] === '-l'
+          ? `[${index + 1}]${marker} ${process.pid}\t${status}\t${placement}\t${process.tty}\t${process.command}`
+          : `[${index + 1}]${marker} ${status}\t${process.command}`;
+      });
+    return { stdout: rows.length > 0 ? `${rows.join('\n')}\n` : '', stderr: '', exitCode: 0 };
+  }
+
+  private kernelJobRecords(currentPid = this.currentCommandContext()?.process.pid): RuntimeKernelProcessRecord[] {
+    return this.activeProcessRecords().filter((process) => process.pid !== currentPid && process.pid !== 1);
+  }
+
+  private resolveKernelJobTarget(target: string | undefined): RuntimeKernelProcessRecord | undefined {
+    const jobs = this.kernelJobRecords();
+    if (target === undefined) return jobs[0];
+    const jobMatch = target.match(/^%([1-9][0-9]*)$/);
+    if (jobMatch) return jobs[Number(jobMatch[1]) - 1];
+    const pid = Number(target);
+    if (!Number.isInteger(pid) || pid <= 0) return undefined;
+    const process = this.findProcessRecord(pid);
+    if (!process || process.pid === 1 || process.pid === this.currentCommandContext()?.process.pid || process.state === 'exited') {
+      return undefined;
+    }
+    return process;
+  }
+
+  private runKernelJobPlacement(args: string[], commandName: 'bg' | 'fg'): RuntimeCommandResult {
+    if (args.length > 1) {
+      return { stdout: '', stderr: `usage: ${commandName} [pid|%job]\n`, exitCode: 2 };
+    }
+    const process = this.resolveKernelJobTarget(args[0]);
+    if (!process) {
+      return { stdout: '', stderr: `${commandName}: no such job${args[0] === undefined ? '' : `: ${args[0]}`}\n`, exitCode: 10 };
+    }
+    const foreground = commandName === 'fg';
+    this.setProcessGroupForeground(process.pgid, foreground);
+    this.recordKernelEvent(foreground ? 'process-foreground' : 'process-background', process.pid, {
+      command: process.command,
+      pgid: process.pgid,
+      tty: foreground ? '/dev/tty' : '?',
+    });
+    return {
+      stdout: `${commandName}: ${process.pid}\tpgid=${process.pgid}\t${foreground ? 'foreground' : 'background'}\t${process.command}\n`,
+      stderr: '',
+      exitCode: 0,
+    };
+  }
+
+  private runKernelKill(args: string[], commandName: string): RuntimeCommandResult {
+    if (args.length === 0) {
+      return { stdout: '', stderr: `usage: ${commandName} [-SIGNAL] <pid>...\n`, exitCode: 2 };
+    }
+    let signalName = 'SIGTERM';
+    let pidArgs = args[0] === '--' ? args.slice(1) : args;
+    const first = pidArgs[0] ?? '';
+    if (first.startsWith('-') && first.length > 1 && !/^-?[0-9]+$/.test(first)) {
+      signalName = first.slice(1);
+      pidArgs = pidArgs.slice(1);
+    }
+    const signal = normalizeTraceKernelSignal(signalName);
+    if (!signal) return { stdout: '', stderr: `${commandName}: invalid signal: ${signalName}\n`, exitCode: 22 };
+    if (pidArgs.length === 0) return { stdout: '', stderr: `usage: ${commandName} [-SIGNAL] <pid>...\n`, exitCode: 2 };
+
+    for (const pidArg of pidArgs) {
+      const target = Number(pidArg);
+      if (!Number.isInteger(target) || target === 0) {
+        return { stdout: '', stderr: `${commandName}: invalid pid: ${pidArg}\n`, exitCode: 22 };
+      }
+      if (target < 0) {
+        const pgid = Math.abs(target);
+        if (this.signalProcessGroup(pgid, signal.name) === 0) {
+          return { stdout: '', stderr: `${commandName}: no such process group: ${pgid}\n`, exitCode: 3 };
+        }
+        continue;
+      }
+      const process = this.findProcessRecord(target);
+      if (!process || process.state === 'exited') {
+        return { stdout: '', stderr: `${commandName}: no such process: ${target}\n`, exitCode: 3 };
+      }
+      this.signalProcess(process, signal.name);
+    }
+    return { stdout: '', stderr: '', exitCode: 0 };
+  }
+
+  private runKernelWait(args: string[], commandName: string): Promise<RuntimeCommandResult> {
+    if (args.length > 1) {
+      return Promise.resolve({ stdout: '', stderr: `usage: ${commandName} [pid]\n`, exitCode: 2 });
+    }
+    if (args[0] === undefined) return this.reapZombieProcess(undefined, commandName);
+    const pid = Number(args[0]);
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return Promise.resolve({ stdout: '', stderr: `${commandName}: invalid pid: ${args[0]}\n`, exitCode: 22 });
+    }
+    return this.reapZombieProcess(pid, commandName);
+  }
+
   async ensureReady(): Promise<void> {
     this.assertNotDestroyed();
-    await this.bash.fs.mkdir(this.cwd, { recursive: true });
+    await this.fs.withBaseMutation([this.cwd], (fs) => fs.mkdir(this.cwd, { recursive: true }), 'directory-create');
   }
 
   async writeFile(path: string, contents: string, encoding?: RuntimeFileEncoding): Promise<void> {
@@ -4313,6 +6635,137 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     return absolutePath;
   }
 
+  private commandPathCompletionTarget(
+    token: string,
+    cwd: string
+  ): { listPath: string; partial: string; replacementPrefix: string } {
+    if (token === '~' || token.startsWith('~/')) {
+      const afterHome = token === '~' ? '' : token.slice(2);
+      const slashIndex = afterHome.lastIndexOf('/');
+      if (slashIndex >= 0) {
+        const parent = afterHome.slice(0, slashIndex);
+        return {
+          listPath: parent ? this.resolveTerminalNavigationPath(this.kernelInfo.home, parent) : this.kernelInfo.home,
+          partial: afterHome.slice(slashIndex + 1),
+          replacementPrefix: `~/${parent ? `${parent}/` : ''}`,
+        };
+      }
+      return { listPath: this.kernelInfo.home, partial: afterHome, replacementPrefix: '~/' };
+    }
+
+    const slashIndex = token.lastIndexOf('/');
+    if (slashIndex >= 0) {
+      const parent = token.slice(0, slashIndex);
+      return {
+        listPath: this.resolveTerminalNavigationPath(cwd, parent || '/'),
+        partial: token.slice(slashIndex + 1),
+        replacementPrefix: token.slice(0, slashIndex + 1),
+      };
+    }
+
+    return { listPath: cwd, partial: token, replacementPrefix: '' };
+  }
+
+  private async listTerminalDirectory(path: string): Promise<string[]> {
+    const dynamicEntries = this.readDynamicProcDir(path);
+    if (dynamicEntries) return dynamicEntries.map((entry) => entry.name).sort();
+    const directoryTarget = kernelDirectoryTarget(path);
+    if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name).sort();
+    if (directoryTarget.kind === 'error') {
+      throw new Error(
+        directoryTarget.reason === 'not-directory'
+          ? `Kernel virtual path is not a directory: ${path}`
+          : `Kernel virtual path not found: ${path}`
+      );
+    }
+
+    const entries = await this.bash.fs.readdir(path);
+    return [...entries]
+      .filter((entry) => {
+        if (!isWithinWorkspace(this.cwd, path)) return true;
+        const directoryPath = path === this.cwd ? '' : toProjectPath(this.cwd, path);
+        const entryPath = directoryPath ? `${directoryPath}/${entry}` : entry;
+        return !this.isProjectPathHidden(entryPath);
+      })
+      .sort((left, right) => left.localeCompare(right));
+  }
+
+  private async terminalPathIsDirectory(path: string): Promise<boolean> {
+    const dynamicKind = this.dynamicProcEntryKind(path);
+    if (dynamicKind) return dynamicKind === 'directory';
+    const statTarget = kernelStatTarget(path, this.kernelInfo);
+    if (statTarget.kind === 'stat') return statTarget.stat.isDirectory;
+    if (statTarget.kind === 'error') return false;
+    try {
+      return (await this.bash.fs.stat(path)).isDirectory;
+    } catch {
+      return false;
+    }
+  }
+
+  async completeCommand(
+    input: string,
+    cursor: number,
+    options: RuntimeCommandCompletionOptions = {}
+  ): Promise<RuntimeCommandCompletion | null> {
+    this.assertNotDestroyed();
+    const cwd = options.cwd
+      ? this.resolveTerminalNavigationPath(this.cwd, options.cwd)
+      : this.cwd;
+    const boundedCursor = Math.max(0, Math.min(cursor, input.length));
+    const { start, end } = commandInputTokenBounds(input, boundedCursor);
+    const token = input.slice(start, boundedCursor);
+    if (!token || token.includes('"') || token.includes("'")) return null;
+
+    let target: { listPath: string; partial: string; replacementPrefix: string };
+    try {
+      target = this.commandPathCompletionTarget(token, cwd);
+    } catch {
+      return null;
+    }
+
+    let entries: string[];
+    try {
+      entries = await this.listTerminalDirectory(target.listPath);
+    } catch {
+      return null;
+    }
+
+    const matchingNames = entries.filter((entry) => entry.startsWith(target.partial));
+    if (matchingNames.length === 0) return null;
+    const matches: RuntimeCommandCompletionMatch[] = await Promise.all(
+      matchingNames.map(async (name) => ({
+        name,
+        kind: await this.terminalPathIsDirectory(normalizeTerminalAbsolutePath(`${target.listPath}/${name}`))
+          ? 'directory'
+          : 'file',
+      }))
+    );
+    const completedName = matchingNames.length === 1 ? matchingNames[0] : longestCommonPrefix(matchingNames);
+    if (!completedName || (matchingNames.length > 1 && completedName === target.partial)) {
+      return {
+        input,
+        cursor: boundedCursor,
+        matches,
+        replacementChanged: false,
+      };
+    }
+
+    const completedPath = normalizeTerminalAbsolutePath(`${target.listPath}/${completedName}`);
+    const suffix = matchingNames.length === 1 && await this.terminalPathIsDirectory(completedPath)
+      ? '/'
+      : matchingNames.length === 1 ? ' ' : '';
+    const replacement = `${target.replacementPrefix}${completedName}${suffix}`;
+    const nextInput = `${input.slice(0, start)}${replacement}${input.slice(end)}`;
+    const nextCursor = start + replacement.length;
+    return {
+      input: nextInput,
+      cursor: nextCursor,
+      matches,
+      replacementChanged: nextInput !== input || nextCursor !== boundedCursor,
+    };
+  }
+
   private readProcFile(path: string, encoding?: RuntimeFileEncoding): string | null {
     const procPath = normalizeProcPath(path);
     if (procPath === null) return null;
@@ -4320,6 +6773,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
     }
     try {
+      const dynamicFile = this.readDynamicProcFile(procPath);
+      if (dynamicFile !== null) return dynamicFile;
       return readRuntimeProcFile(procPath, this.kernelInfo);
     } catch (error) {
       if ((error as { code?: unknown }).code === 'ENOENT') throw new Error(`Kernel proc path not found: ${path}`);
@@ -4338,15 +6793,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private readDevice(device: RuntimeKernelDevicePath): string {
     if (!runtimeKernelDeviceInputRoute(undefined, device)) return '';
-    if (this.activeCommandStdinPipe) {
+    const stdinPipe = this.currentCommandContext()?.stdinPipe;
+    if (stdinPipe) {
       let text = '';
       while (true) {
-        const chunk = readRuntimeCommandStdinPipeBytes(this.activeCommandStdinPipe);
+        const chunk = readRuntimeCommandStdinPipeBytes(stdinPipe);
         if (chunk.byteLength > 0) {
           text += decodeUtf8(chunk) ?? Array.from(chunk, (byte) => String.fromCharCode(byte)).join('');
           continue;
         }
-        if (runtimeCommandStdinPipeClosed(this.activeCommandStdinPipe)) break;
+        if (runtimeCommandStdinPipeClosed(stdinPipe)) break;
         break;
       }
       return text;
@@ -4360,9 +6816,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       if (runtimeDeviceOutputTarget(device) === '/dev/null') return;
       throw new Error(`Kernel device is read-only: ${device}`);
     }
-    if (this.activeCommandActor) {
-      if (route.stream === 'stdout') this.activeDeviceStdout += data;
-      if (route.stream === 'stderr') this.activeDeviceStderr += data;
+    const commandContext = this.currentCommandContext();
+    if (commandContext) {
+      if (route.stream === 'stdout') commandContext.deviceStdout += data;
+      if (route.stream === 'stderr') commandContext.deviceStderr += data;
     }
     this.emitLocalRuntimeEvent({
       type: 'output',
@@ -4397,24 +6854,22 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     const normalizedEncoding = assertSupportedEncoding(encoding);
     const absolutePath = this.toWorkspacePath(path);
-    this.assertWorkspacePathWritable(absolutePath, 'write');
-    await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
-
-    if (normalizedEncoding === 'base64') {
-      await this.bash.fs.writeFile(absolutePath, bytesFromBase64(contents));
-      this.emitLocalRuntimeEvent({
-        type: 'file-change',
-        change: { path: toProjectPath(this.cwd, absolutePath), contents, encoding: 'base64' },
-        phase,
-        actor,
-      });
-      return;
-    }
-
-    await this.bash.fs.writeFile(absolutePath, contents);
+    const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
+    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      this.assertWorkspacePathWritable(absolutePath, 'write');
+      await fs.mkdir(dirname(absolutePath), { recursive: true });
+      await fs.writeFile(
+        absolutePath,
+        normalizedEncoding === 'base64' ? bytesFromBase64(contents) : contents
+      );
+    }, mutationKind);
     this.emitLocalRuntimeEvent({
       type: 'file-change',
-      change: { path: toProjectPath(this.cwd, absolutePath), contents },
+      change: {
+        path: toProjectPath(this.cwd, absolutePath),
+        contents,
+        ...(normalizedEncoding === 'base64' ? { encoding: 'base64' as const } : {}),
+      },
       phase,
       actor,
     });
@@ -4442,16 +6897,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       return;
     }
     const absolutePath = this.toWorkspacePath(path);
-    this.assertWorkspacePathWritable(absolutePath, 'append');
-    await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
+    const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
     const nextBytes = normalizedEncoding === 'base64'
       ? bytesFromBase64(contents)
       : new TextEncoder().encode(contents);
-    const previousBytes = await this.bash.fs.exists(absolutePath)
-      ? await this.bash.fs.readFileBuffer(absolutePath)
-      : new Uint8Array();
-    const bytes = concatBytes(previousBytes, nextBytes);
-    await this.bash.fs.writeFile(absolutePath, bytes);
+    const bytes = await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      this.assertWorkspacePathWritable(absolutePath, 'append');
+      await fs.mkdir(dirname(absolutePath), { recursive: true });
+      await fs.appendFile(absolutePath, nextBytes);
+      return fs.readFileBuffer(absolutePath);
+    }, mutationKind);
     this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: normalizedEncoding === 'base64'
@@ -4464,6 +6919,8 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async readFile(path: string, encoding?: RuntimeFileEncoding): Promise<string> {
     this.assertNotDestroyed();
+    const dynamicProcFile = this.readProcFile(path, encoding);
+    if (dynamicProcFile !== null) return dynamicProcFile;
     const readTarget = kernelReadTarget(path);
     if (readTarget.kind === 'proc-file') {
       if (encoding === 'base64') throw new Error(`Kernel proc path does not support base64 reads: ${path}`);
@@ -4487,6 +6944,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async exists(path: string): Promise<boolean> {
     this.assertNotDestroyed();
+    if (this.dynamicProcEntryKind(path) !== null) return true;
     const accessTarget = kernelAccessTarget(path);
     if (accessTarget.kind === 'allowed') return true;
     if (accessTarget.kind === 'denied') return false;
@@ -4495,18 +6953,37 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
     this.assertNotDestroyed();
+    const dynamicStat = this.dynamicProcStat(path);
+    if (dynamicStat) return { isFile: dynamicStat.isFile, isDirectory: dynamicStat.isDirectory, mode: dynamicStat.mode, size: dynamicStat.size, mtimeMs: 0, nlink: dynamicStat.isDirectory ? 2 : 1 };
     const statTarget = kernelStatTarget(path, this.kernelInfo);
-    if (statTarget.kind === 'stat') return { isFile: statTarget.stat.isFile, isDirectory: statTarget.stat.isDirectory };
+    if (statTarget.kind === 'stat') {
+      return {
+        isFile: statTarget.stat.isFile,
+        isDirectory: statTarget.stat.isDirectory,
+        mode: statTarget.stat.mode,
+        size: statTarget.stat.size,
+        mtimeMs: 0,
+        nlink: statTarget.stat.isDirectory ? 2 : 1,
+      };
+    }
     if (statTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);
-    const stat = await this.bash.fs.stat(this.toWorkspaceEntryPath(path));
+    const absolutePath = this.toWorkspaceEntryPath(path);
+    const stat = await this.bash.fs.stat(absolutePath);
     return {
       isFile: stat.isFile,
       isDirectory: stat.isDirectory,
+      mode: stat.mode,
+      size: stat.size,
+      mtimeMs: stat.mtime instanceof Date ? stat.mtime.getTime() : undefined,
+      nlink: typeof (stat as { nlink?: unknown }).nlink === 'number' ? (stat as { nlink?: number }).nlink : 1,
+      ino: this.fs.inodeForPath(absolutePath),
     };
   }
 
   async readDir(path = '.'): Promise<string[]> {
     this.assertNotDestroyed();
+    const dynamicEntries = this.readDynamicProcDir(path);
+    if (dynamicEntries) return dynamicEntries.map((entry) => entry.name);
     const directoryTarget = kernelDirectoryTarget(path);
     if (directoryTarget.kind === 'directory') return directoryTarget.entries.map((entry) => entry.name);
     if (directoryTarget.kind === 'error') {
@@ -4532,8 +7009,11 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const mkdirTarget = kernelMkdirTarget(path);
     if (mkdirTarget.kind === 'error') throwKernelMutationTargetError(path, mkdirTarget);
     const absolutePath = this.toWorkspaceEntryPath(path);
-    const createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
-    await this.bash.fs.mkdir(absolutePath, { recursive: true });
+    let createdDirectories: string[] = [];
+    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      createdDirectories = await this.collectMissingWorkspaceDirectories(absolutePath);
+      await fs.mkdir(absolutePath, { recursive: true });
+    }, 'directory-create');
     for (const relativePath of createdDirectories) {
       this.emitLocalRuntimeEvent({
         type: 'file-change',
@@ -4562,10 +7042,17 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     }
     const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
     const absoluteSourcePath = this.toWorkspacePath(sourcePath);
-    this.assertWorkspacePathWritable(absoluteDestinationPath, 'copy');
-    const sourceBytes = await this.bash.fs.readFileBuffer(absoluteSourcePath);
-    await this.bash.fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
-    await this.bash.fs.writeFile(absoluteDestinationPath, sourceBytes);
+    const sourceBytes = await this.fs.withBaseMutation(
+      [absoluteSourcePath, absoluteDestinationPath],
+      async (fs) => {
+        this.assertWorkspacePathWritable(absoluteDestinationPath, 'copy');
+        const bytes = await fs.readFileBuffer(absoluteSourcePath);
+        await fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
+        await fs.writeFile(absoluteDestinationPath, bytes);
+        return bytes;
+      },
+      'copy'
+    );
     this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: toProjectPath(this.cwd, absoluteDestinationPath), contents: base64FromBytes(sourceBytes), encoding: 'base64' },
@@ -4607,11 +7094,25 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.assertWorkspaceUsableForMutation('move');
     const renameTarget = kernelRenameTarget(sourcePath, destinationPath);
     if (renameTarget.kind === 'error') throw new Error('Kernel virtual paths are read-only for move operations.');
-    this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(sourcePath), 'move');
-    this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(destinationPath), 'move');
-    this.assertWorkspacePathWritable(this.toWorkspacePath(destinationPath), 'move');
-    await this.copyFile(sourcePath, destinationPath);
-    await this.bash.fs.rm(this.toWorkspacePath(sourcePath), { force: true });
+    const absoluteSourcePath = this.toWorkspacePath(sourcePath);
+    const absoluteDestinationPath = this.toWorkspacePath(destinationPath);
+    let sourceBytes = new Uint8Array() as Awaited<ReturnType<IFileSystem['readFileBuffer']>>;
+    await this.fs.withBaseMutation([absoluteSourcePath, absoluteDestinationPath], async (fs) => {
+      this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(sourcePath), 'move');
+      this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(destinationPath), 'move');
+      this.assertWorkspacePathWritable(absoluteDestinationPath, 'move');
+      sourceBytes = await fs.readFileBuffer(absoluteSourcePath);
+      await fs.mkdir(dirname(absoluteDestinationPath), { recursive: true });
+      await fs.writeFile(absoluteDestinationPath, sourceBytes);
+      await fs.rm(absoluteSourcePath, { force: true });
+    }, 'rename');
+    this.fs.moveInode(absoluteSourcePath, absoluteDestinationPath);
+    this.emitLocalRuntimeEvent({
+      type: 'file-change',
+      change: { path: toProjectPath(this.cwd, absoluteDestinationPath), contents: base64FromBytes(sourceBytes), encoding: 'base64' },
+      phase: 'live',
+      actor: PRINCIPAL_ACTOR,
+    });
     this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: this.toWorkspaceRelativePath(sourcePath), deleted: true },
@@ -4625,8 +7126,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const absolutePath = this.toWorkspacePath(path);
-    this.assertWorkspacePathWritable(absolutePath, 'delete');
-    await this.bash.fs.rm(absolutePath, { force: true });
+    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      this.assertWorkspacePathWritable(absolutePath, 'delete');
+      await fs.rm(absolutePath, { force: true });
+    }, 'delete');
     this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: this.toWorkspaceRelativePath(path), deleted: true },
@@ -4639,12 +7142,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     this.assertWorkspaceUsableForMutation('remove');
     const removeTarget = kernelRemoveTarget(path);
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
-    const deletedChanges = await this.collectDeletedChangesForRemove(path, options);
-    this.assertWorkspaceSubtreeWritable(this.toWorkspaceEntryPath(path), 'remove');
-    await this.bash.fs.rm(this.toWorkspaceEntryPath(path), {
-      force: options.force ?? true,
-      recursive: options.recursive,
-    });
+    let deletedChanges: RuntimeFileChange[] = [];
+    const absolutePath = this.toWorkspaceEntryPath(path);
+    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      deletedChanges = await this.collectDeletedChangesForRemove(path, options, fs);
+      this.assertWorkspaceSubtreeWritable(absolutePath, 'remove');
+      await fs.rm(absolutePath, {
+        force: options.force ?? true,
+        recursive: options.recursive,
+      });
+    }, options.recursive ? 'recursive-delete' : 'delete');
     for (const change of deletedChanges) {
       this.emitLocalRuntimeEvent({
         type: 'file-change',
@@ -4658,57 +7165,164 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async runCommand(command: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
     const unusable = this.assertWorkspaceUsableForRun(command);
     if (unusable) return unusable;
-    let result: { stdout: string; stderr: string; exitCode: number };
-    let commandDeviceStdout = '';
-    let commandDeviceStderr = '';
-    const previousEventHandler = this.activeCommandEventHandler;
-    const previousActor = this.activeCommandActor;
-    const previousStdinPipe = this.activeCommandStdinPipe;
-    const previousDeviceStdout = this.activeDeviceStdout;
-    const previousDeviceStderr = this.activeDeviceStderr;
-    const previousRuntimeIo = this.activeRuntimeIo;
-    const previousExecutableTransformCwd = this.activeExecutableTransformCwd;
     const commandCwd = options.cwd ? this.resolveCommandCwd(options.cwd) : this.cwd;
     const stdinPipe = options.stdinPipe;
-    this.activeCommandEventHandler = options.onEvent;
-    this.activeCommandActor = this.createRuntimeActor();
-    this.activeCommandStdinPipe = stdinPipe;
-    this.activeDeviceStdout = '';
-    this.activeDeviceStderr = '';
-    this.activeRuntimeIo = this.createRuntimeLiveIoController();
-    this.activeExecutableTransformCwd = commandCwd;
-    try {
-      const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe });
-      if (directExecutableResult) {
-        await this.flushRuntimeEventQueue();
-        this.emitReturnedOutputEvents(directExecutableResult);
-        return directExecutableResult;
-      }
-
-      result = await this.bash.exec(command, {
-        cwd: commandCwd,
-        env: options.env,
-        signal: options.signal,
-        args: options.args,
-      });
-      await this.flushRuntimeEventQueue();
-      this.emitReturnedOutputEvents(result);
-    } finally {
-      commandDeviceStdout = this.activeDeviceStdout;
-      commandDeviceStderr = this.activeDeviceStderr;
-      this.activeCommandEventHandler = previousEventHandler;
-      this.activeCommandActor = previousActor;
-      this.activeCommandStdinPipe = previousStdinPipe;
-      this.activeDeviceStdout = previousDeviceStdout;
-      this.activeDeviceStderr = previousDeviceStderr;
-      this.activeRuntimeIo = previousRuntimeIo;
-      this.activeExecutableTransformCwd = previousExecutableTransformCwd;
-    }
-    return {
-      stdout: `${result.stdout}${commandDeviceStdout}`,
-      stderr: `${result.stderr}${commandDeviceStderr}`,
-      exitCode: result.exitCode,
+    const actor = this.createRuntimeActor();
+    const abortController = new AbortController();
+    const parentProcess = this.currentCommandContext()?.process;
+    const pid = this.nextPid++;
+    const terminalPresentation = options.presentation === 'terminal';
+    const foreground = options.foreground ?? terminalPresentation;
+    const process: RuntimeKernelProcessRecord = {
+      pid,
+      ppid: parentProcess?.pid ?? 1,
+      pgid: parentProcess?.pgid ?? pid,
+      sid: parentProcess?.sid ?? 1,
+      fds: this.standardProcessFileDescriptors(),
+      tty: terminalPresentation ? '/dev/tty' : '?',
+      command,
+      cwd: commandCwd,
+      actor,
+      startedAt: new Date().toISOString(),
+      abortController,
+      state: 'queued',
+      foreground,
     };
+    const commandContext: RuntimeCommandExecutionContext = {
+      eventHandler: this.createCommandEventHandler(options),
+      actor,
+      process,
+      stdinPipe,
+      runtimeIo: this.createRuntimeLiveIoController(actor),
+      generationBaseline: this.fs.snapshotGenerations(),
+      mutatedGenerationPaths: new Set(),
+      executableTransformCwd: commandCwd,
+      deviceStdout: '',
+      deviceStderr: '',
+    };
+    this.processTable.set(process.pid, process);
+    this.recordKernelEvent('process-queue', process.pid, {
+      ppid: process.ppid,
+      pgid: process.pgid,
+      sid: process.sid,
+      command,
+      cwd: commandCwd,
+    });
+    const cleanupExternalSignal = this.attachExternalSignal(process, options.signal);
+    let processExitCode = 1;
+    return this.commandScheduler.runCommand({ pid: process.pid, command, signal: abortController.signal }, () => this.commandExecutionContexts.run(commandContext, async () => {
+      try {
+        if (process.signal) {
+          const result = this.signalCommandResult(process);
+          processExitCode = result.exitCode;
+          this.emitReturnedOutputEvents(result);
+          return result;
+        }
+        process.state = 'running';
+        const schedulerSnapshot = this.commandScheduler.snapshot();
+        this.recordKernelEvent('process-admit', process.pid, {
+          running: schedulerSnapshot.running,
+          queued: schedulerSnapshot.queued,
+          maxConcurrentCommands: schedulerSnapshot.maxConcurrentCommands,
+          maxQueuedCommands: schedulerSnapshot.maxQueuedCommands ?? 'unlimited',
+        });
+        this.recordKernelEvent('process-start', process.pid, {
+          ppid: process.ppid,
+          pgid: process.pgid,
+          sid: process.sid,
+          command,
+          cwd: commandCwd,
+        });
+        const directExecutableResult = await this.tryRunVirtualExecutable(command, { ...options, stdinPipe, signal: abortController.signal });
+        if (directExecutableResult) {
+          await this.flushRuntimeEventQueue();
+          this.emitReturnedOutputEvents(directExecutableResult);
+          processExitCode = directExecutableResult.exitCode;
+          return {
+            ...directExecutableResult,
+            ...(!directExecutableResult.error && process.signal ? { error: this.signalCommandError(process) } : {}),
+          };
+        }
+
+        const result = await this.createBash().exec(command, {
+          cwd: commandCwd,
+          env: options.env,
+          signal: abortController.signal,
+          args: options.args,
+        });
+        await this.flushRuntimeEventQueue();
+        this.emitReturnedOutputEvents(result);
+        processExitCode = result.exitCode;
+        if (commandContext.kernelError?.code === 'EINTR' && process.signal) {
+          const signalResult = this.signalCommandResult(process);
+          processExitCode = signalResult.exitCode;
+          return signalResult;
+        }
+        return {
+          stdout: `${result.stdout}${commandContext.deviceStdout}`,
+          stderr: `${result.stderr}${commandContext.deviceStderr}`,
+          exitCode: result.exitCode,
+          ...(commandContext.kernelError ? { error: commandContext.kernelError } : {}),
+          ...(!commandContext.kernelError && (result as RuntimeCommandResult).error ? { error: (result as RuntimeCommandResult).error } : {}),
+          ...(!commandContext.kernelError && !(result as RuntimeCommandResult).error && process.signal ? { error: this.signalCommandError(process) } : {}),
+        };
+      } catch (error) {
+        if (!process.signal && abortController.signal.aborted) {
+          this.signalProcess(process, 'SIGTERM');
+        }
+        if (process.signal) {
+          const result = this.signalCommandResult(process);
+          processExitCode = result.exitCode;
+          await this.flushRuntimeEventQueue();
+          this.emitReturnedOutputEvents(result);
+          return result;
+        }
+        throw error;
+      }
+    })).catch((error) => {
+      if (process.signal) {
+        const result = this.signalCommandResult(process);
+        processExitCode = result.exitCode;
+        this.emitReturnedOutputEvents(result);
+        return result;
+      }
+      if (error instanceof RuntimeKernelAdmissionRejectedError) {
+        const commandError = error.toCommandError();
+        processExitCode = error.errno;
+        this.recordKernelEvent('process-reject', process.pid, {
+          command,
+          code: commandError.code,
+          message: commandError.message,
+          running: this.commandScheduler.snapshot().running,
+          queued: this.commandScheduler.snapshot().queued,
+        });
+        return {
+          stdout: '',
+          stderr: `${error.message}\n`,
+          exitCode: error.errno,
+          error: commandError,
+        };
+      }
+      throw error;
+    }).finally(() => {
+      cleanupExternalSignal?.();
+      const retainProcessOnExit = process.signal || options.retainOnExit === true;
+      process.state = retainProcessOnExit ? 'zombie' : 'exited';
+      process.exitCode = processExitCode;
+      process.endedAt = new Date().toISOString();
+      this.processTable.delete(process.pid);
+      if (retainProcessOnExit) {
+        this.zombieProcessTable.set(process.pid, { process, expiresAtMs: Date.now() + TRACEKERNEL_ZOMBIE_RETENTION_MS });
+        this.recordKernelEvent('process-zombie', process.pid, {
+          exitCode: process.exitCode,
+          signal: process.signal,
+          signalCode: process.signalCode,
+        });
+        this.notifyZombieProcess(process);
+      } else {
+        this.recordKernelEvent('process-exit', process.pid, { exitCode: process.exitCode });
+      }
+    });
   }
 
   async runProjectCommand(name: string, options: RuntimeCommandOptions = {}): Promise<RuntimeCommandResult> {
@@ -4743,7 +7357,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     let stdout = '';
     let stderr = '';
     for (const [stepIndex, step] of command.steps.entries()) {
-      options.onEvent?.({
+      this.emitCommandOptionEvent(options, {
         type: 'status',
         phase: 'project-step-start',
         message: `Starting project command step ${stepIndex + 1}/${command.steps.length}`,
@@ -4760,7 +7374,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       stdout += result.stdout;
       stderr += result.stderr;
       if (result.files) files.push(...result.files);
-      options.onEvent?.({
+      this.emitCommandOptionEvent(options, {
         type: 'status',
         phase: 'project-step-end',
         message: `Finished project command step ${stepIndex + 1}/${command.steps.length}`,
@@ -4836,6 +7450,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   async destroy(options: { reason?: string; clearStorage?: boolean } = {}): Promise<void> {
+    await this.commandScheduler.runBarrier(() => this.destroyNow(options));
+  }
+
+  private async destroyNow(options: { reason?: string; clearStorage?: boolean } = {}): Promise<void> {
     if (this.destroyed) return;
     if (this.projectSession) {
       this.projectSession.lifecycle.destroyedAt = new Date().toISOString();
@@ -4853,8 +7471,13 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     });
     this.eventWatchers.clear();
     await this.withSuspendedReadonlyPolicy(() =>
-      this.bash.fs.rm(this.cwd, { force: true, recursive: true })
+      this.fs.withBaseMutation([this.cwd], (fs) => fs.rm(this.cwd, { force: true, recursive: true }), 'recursive-delete')
     );
+    this.processTable.clear();
+    this.zombieProcessTable.clear();
+    this.processWaiters.clear();
+    this.anyProcessWaiters.splice(0);
+    this.recordKernelEvent('kernel-destroy', 1, { reason: options.reason ?? 'destroy', clearStorage: options.clearStorage === true });
     this.destroyed = true;
   }
 
@@ -4934,7 +7557,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     await this.flushRuntimeEventQueue();
     return applyWorkspaceCommandResultFiles(
       this,
-      this.activeRuntimeIo.filterAppliedResultFiles(result)
+      this.currentRuntimeIo()?.filterAppliedResultFiles(result) ?? result
     );
   }
 
@@ -4945,13 +7568,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     await this.collectFiles(this.cwd, files, directories);
     files.sort((left, right) => left.path.localeCompare(right.path));
     directories.sort((left, right) => left.localeCompare(right));
+    const kernelFiles = await snapshotRuntimeKernelVirtualFiles(this.bash.fs, this.kernelInfo);
     const snapshot: RuntimeProjectSnapshot = {
       cwd: this.cwd,
       workspaceRoot: this.cwd,
       ...(this.kernelInfo.workspaceAlias ? { workspaceAlias: this.kernelInfo.workspaceAlias } : {}),
       kernel: this.kernelInfo,
       kernelDevices: runtimeKernelVirtualDevices(),
-      kernelFiles: runtimeKernelVirtualFiles(this.kernelInfo),
+      kernelFiles,
       files,
       ...(directories.length > 0 ? { directories } : {}),
       ...(this.projectSession?.readonlyFiles.length ? { readonlyFiles: [...this.projectSession.readonlyFiles] } : {}),
@@ -4978,9 +7602,35 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async applyKernelFileChange(
     change: RuntimeFileChange,
     phase: RuntimeFileMutationPhase = 'final-diff',
-    actor: RuntimeWorkspaceActor = this.activeCommandActor ?? SYSTEM_ACTOR
+    actor: RuntimeWorkspaceActor = this.currentCommandActor() ?? SYSTEM_ACTOR
   ): Promise<void> {
     await this.kernel.applyFileChange(change, actor, phase);
+  }
+
+  async applyFinalDiffResultFiles(result: RuntimeCommandResult): Promise<RuntimeCommandResult> {
+    try {
+      if (!result.files?.length) return result;
+      const actor = this.currentCommandActor() ?? SYSTEM_ACTOR;
+      const committed = await this.fs.applyFinalDiffTransaction(result.files, (file) =>
+        prepareFinalDiffChange(this.cwd, file)
+      );
+      for (const file of committed) {
+        this.emitLocalRuntimeEvent({
+          type: 'file-change',
+          change: file,
+          phase: 'final-diff',
+          actor,
+        });
+      }
+      const { files: _files, ...commandResult } = result;
+      return commandResult;
+    } catch (error) {
+      if (isKernelReadonlyError(error) || isRuntimeFileGenerationConflict(error)) {
+        this.recordKernelCommandError(error);
+        return kernelCommandFailure(error);
+      }
+      throw error;
+    }
   }
 
   private createKernel(): RuntimeWorkspaceKernel {
@@ -4989,7 +7639,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       readFile: (path, _actor, encoding) => this.readFile(path, encoding),
       writeFile: (path, contents, actor = PRINCIPAL_ACTOR, encoding) => this.writeFileAs(path, contents, actor, encoding, 'live'),
       deleteFile: (path, actor = PRINCIPAL_ACTOR) => this.deleteFileAs(path, actor, 'live'),
-      applyFileChange: async (change, actor = this.activeCommandActor ?? SYSTEM_ACTOR, phase = 'final-diff') => {
+      applyFileChange: async (change, actor = this.currentCommandActor() ?? SYSTEM_ACTOR, phase = 'final-diff') => {
         await withSuspendedFsNotifications(this.bash.fs, async () => {
           await this.applyFileChangeAs(change, actor, phase);
         });
@@ -5017,8 +7667,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (removeTarget.kind === 'error') throwKernelMutationTargetError(path, removeTarget);
     const relativePath = this.toWorkspaceRelativePath(path);
     const absolutePath = this.toWorkspacePath(path);
-    this.assertWorkspacePathWritable(absolutePath, 'delete');
-    await this.bash.fs.rm(absolutePath, { force: true });
+    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      this.assertWorkspacePathWritable(absolutePath, 'delete');
+      await fs.rm(absolutePath, { force: true });
+    }, 'delete');
     this.emitLocalRuntimeEvent({
       type: 'file-change',
       change: { path: relativePath, deleted: true },
@@ -5040,25 +7692,49 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     };
   }
 
-  private createRuntimeLiveIoController(): RuntimeProjectLiveIoController {
+  private createRuntimeLiveIoController(actor?: RuntimeWorkspaceActor): RuntimeProjectLiveIoController {
     return new RuntimeProjectLiveIoController({
-      actor: this.activeCommandActor ?? SYSTEM_ACTOR,
+      actor: actor ?? SYSTEM_ACTOR,
       applyFileChange: (change, phase) => this.applyRuntimeFileChangeSilently(change, phase),
       onEvent: (event) => this.emitRuntimeEvent(event),
     });
   }
 
+  private shouldEmitCommandOptionEvent(options: RuntimeCommandOptions, event: RuntimeCommandEvent): boolean {
+    return options.presentation !== 'terminal' || event.type !== 'status' || this.terminalVerbose;
+  }
+
+  private createCommandEventHandler(options: RuntimeCommandOptions): RuntimeCommandEventHandler | undefined {
+    if (!options.onEvent) return undefined;
+    return (event) => {
+      if (this.shouldEmitCommandOptionEvent(options, event)) {
+        options.onEvent?.(event);
+      }
+    };
+  }
+
+  private emitCommandOptionEvent(options: RuntimeCommandOptions, event: RuntimeCommandEvent): void {
+    if (this.shouldEmitCommandOptionEvent(options, event)) {
+      options.onEvent?.(event);
+    }
+  }
+
   private handleRuntimeCommandEvent(event: RuntimeCommandEvent): void {
-    this.activeRuntimeIo.handleRuntimeEvent(event);
+    const runtimeIo = this.currentRuntimeIo();
+    if (runtimeIo) {
+      runtimeIo.handleRuntimeEvent(event);
+      return;
+    }
+    this.emitRuntimeEvent(event);
   }
 
   private async flushRuntimeEventQueue(): Promise<void> {
-    await this.activeRuntimeIo.flush();
+    await this.currentRuntimeIo()?.flush();
   }
 
   private async applyRuntimeFileChangeSilently(change: RuntimeFileChange, phase: RuntimeFileMutationPhase): Promise<void> {
     await withSuspendedFsNotifications(this.bash.fs, async () => {
-      await this.applyFileChangeToWorkspace(change, this.activeCommandActor ?? SYSTEM_ACTOR, phase, false);
+      await this.applyFileChangeToWorkspace(change, this.currentCommandActor() ?? SYSTEM_ACTOR, phase, false);
     });
   }
 
@@ -5076,12 +7752,14 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     const relativePath = this.toWorkspaceRelativePath(change.path);
     if (isRuntimeDirectoryChange(change)) {
       const absolutePath = this.toWorkspaceEntryPath(change.path);
-      if (change.deleted === true) {
-        this.assertWorkspaceSubtreeWritable(absolutePath, 'delete');
-        await this.bash.fs.rm(absolutePath, { force: true, recursive: true });
-      } else {
-        await this.bash.fs.mkdir(absolutePath, { recursive: true });
-      }
+      await this.fs.withBaseMutation([absolutePath], async (fs) => {
+        if (change.deleted === true) {
+          this.assertWorkspaceSubtreeWritable(absolutePath, 'delete');
+          await fs.rm(absolutePath, { force: true, recursive: true });
+        } else {
+          await fs.mkdir(absolutePath, { recursive: true });
+        }
+      }, change.deleted === true ? 'recursive-delete' : 'directory-create');
       if (emit) {
         this.emitLocalRuntimeEvent({
           type: 'file-change',
@@ -5095,8 +7773,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
     if ((change as RuntimeFileDeletion).deleted === true) {
       const absolutePath = this.toWorkspacePath(change.path);
-      this.assertWorkspacePathWritable(absolutePath, 'delete');
-      await this.bash.fs.rm(absolutePath, { force: true });
+      await this.fs.withBaseMutation([absolutePath], async (fs) => {
+        this.assertWorkspacePathWritable(absolutePath, 'delete');
+        await fs.rm(absolutePath, { force: true });
+      }, 'delete');
       if (emit) {
         this.emitLocalRuntimeEvent({
           type: 'file-change',
@@ -5114,13 +7794,16 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
     if (this.isWorkspacePathReadOnly(absolutePath) && await this.runtimeFileChangeContentEquals(absolutePath, changedFile, normalizedEncoding)) {
       return;
     }
-    this.assertWorkspacePathWritable(absolutePath, 'write');
-    await this.bash.fs.mkdir(dirname(absolutePath), { recursive: true });
-    if (normalizedEncoding === 'base64') {
-      await this.bash.fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
-    } else {
-      await this.bash.fs.writeFile(absolutePath, changedFile.contents);
-    }
+    const mutationKind: RuntimeFileSystemMutationKind = await this.bash.fs.exists(absolutePath) ? 'file-write' : 'file-create';
+    await this.fs.withBaseMutation([absolutePath], async (fs) => {
+      this.assertWorkspacePathWritable(absolutePath, 'write');
+      await fs.mkdir(dirname(absolutePath), { recursive: true });
+      if (normalizedEncoding === 'base64') {
+        await fs.writeFile(absolutePath, bytesFromBase64(changedFile.contents));
+      } else {
+        await fs.writeFile(absolutePath, changedFile.contents);
+      }
+    }, mutationKind);
     if (emit) {
       this.emitLocalRuntimeEvent({
         type: 'file-change',
@@ -5148,24 +7831,26 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   }
 
   private emitLocalRuntimeEvent(event: RuntimeCommandEvent): void {
-    if (this.activeCommandActor) {
-      this.activeRuntimeIo.emit(event);
+    const runtimeIo = this.currentRuntimeIo();
+    if (runtimeIo) {
+      runtimeIo.emit(event);
       return;
     }
     this.emitRuntimeEvent(event);
   }
 
   private emitRuntimeEvent(event: RuntimeCommandEvent): void {
-    const actor = 'actor' in event && event.actor ? event.actor : this.activeCommandActor;
+    const commandContext = this.currentCommandContext();
+    const actor = 'actor' in event && event.actor ? event.actor : commandContext?.actor;
     const enriched = this.enrichRuntimeEvent(event, actor);
-    this.activeCommandEventHandler?.(enriched);
+    commandContext?.eventHandler?.(enriched);
     for (const watcher of this.eventWatchers) {
       watcher(enriched);
     }
   }
 
   private emitReturnedOutputEvents(result: Pick<RuntimeCommandResult, 'stdout' | 'stderr'>): void {
-    this.activeRuntimeIo.emitMissingFinalOutput(result, (stream, data) => {
+    this.currentRuntimeIo()?.emitMissingFinalOutput(result, (stream, data) => {
       this.emitLocalRuntimeEvent({
         type: 'output',
         stream,
@@ -5210,17 +7895,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
 
   private async collectDeletedChangesForRemove(
     path: string,
-    options: RuntimeWorkspaceRemoveOptions
+    options: RuntimeWorkspaceRemoveOptions,
+    fs: IFileSystem = this.bash.fs
   ): Promise<RuntimeFileChange[]> {
     const absolutePath = this.toWorkspaceEntryPath(path);
-    if (!(await this.bash.fs.exists(absolutePath))) return [];
-    const stat = await this.bash.fs.stat(absolutePath);
+    if (!(await fs.exists(absolutePath))) return [];
+    const stat = await fs.stat(absolutePath);
     if (stat.isFile) return [{ path: toProjectPath(this.cwd, absolutePath), deleted: true }];
     if (!stat.isDirectory || !options.recursive) return [];
 
     const files: RuntimeFile[] = [];
     const directories: string[] = [];
-    await collectSnapshotFiles(this.bash.fs, this.cwd, absolutePath, files, directories);
+    await collectSnapshotFiles(fs, this.cwd, absolutePath, files, directories);
     const directoryPath = toProjectDirectoryPath(this.cwd, absolutePath);
     const deletedDirectories = [
       ...directories,
@@ -5281,6 +7967,7 @@ export type {
   RuntimeKernelUserInfo,
   RuntimeKernelWorkspaceConfig,
   RuntimeKernelWorkspaceInfo,
+  RuntimeTraceKernelSchedulerConfig,
   RuntimeKernelDevicePath,
   RuntimeFileMutationPhase,
   RuntimeTraceKernelConfig,

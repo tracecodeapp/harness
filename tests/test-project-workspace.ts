@@ -23,6 +23,7 @@ import {
 import {
   createRuntimeCommandStdinPipe,
   createRuntimeCommandStdinPipeFromText,
+  type RuntimeFile,
   RuntimeProjectEventQueue,
   readRuntimeCommandStdinPipeBytes,
 } from '../packages/harness-core/src/runtime-project';
@@ -300,6 +301,14 @@ async function assertRejectsAsync(fn: () => Promise<unknown>, message: string): 
   throw new Error(message);
 }
 
+async function processPidForCommand(workspace: RuntimeWorkspace, command: string): Promise<string> {
+  const processes = await workspace.readFile('/proc/tracekernel/processes');
+  const processLine = processes.split('\n').find((line) => line.endsWith(`\t${command}`));
+  const pid = processLine?.split('\t')[0] ?? '';
+  assertCondition(/^[0-9]+$/.test(pid), `expected active pid for ${command}: ${JSON.stringify(processes)}`);
+  return pid;
+}
+
 async function testWorkspaceFilesAndCommands(): Promise<void> {
   const workspace = await createRuntimeWorkspace({
     files: [
@@ -343,7 +352,7 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
   assertCondition(await workspace.exists('src/nested'), 'exists should detect workspace directories');
   assertCondition(!(await workspace.exists('src/missing.txt')), 'exists should return false for missing workspace paths');
   const fileStat = await workspace.stat('src/hello.txt');
-  assertCondition(fileStat.isFile && !fileStat.isDirectory, 'stat should identify relative workspace files');
+  assertCondition(fileStat.isFile && !fileStat.isDirectory && typeof fileStat.ino === 'number' && fileStat.ino > 0, 'stat should identify relative workspace files and expose an inode');
   const absoluteFileStat = await workspace.stat('/workspace/src/hello.txt');
   assertCondition(absoluteFileStat.isFile && !absoluteFileStat.isDirectory, 'stat should identify absolute virtual workspace files');
   const directoryStat = await workspace.stat('src/nested');
@@ -396,6 +405,7 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
   );
   await workspace.copyFile('src/hello.txt', 'src/copied/hello-copy.txt');
   assertCondition(await workspace.readFile('src/copied/hello-copy.txt') === 'hello\n', 'copyFile should copy text files');
+  const copiedStat = await workspace.stat('src/copied/hello-copy.txt');
   await workspace.copyFile('/workspace/src/binary.bin', '/workspace/src/copied/binary-copy.bin');
   assertCondition(
     (await workspace.readFile('src/copied/binary-copy.bin', 'base64')) === Buffer.from([0, 1, 2, 255, 3, 4]).toString('base64'),
@@ -403,6 +413,17 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
   );
   await workspace.moveFile('src/copied/hello-copy.txt', 'src/moved/hello-moved.txt');
   assertCondition(await workspace.readFile('src/moved/hello-moved.txt') === 'hello\n', 'moveFile should move text files');
+  const movedStat = await workspace.stat('src/moved/hello-moved.txt');
+  assertCondition(
+    copiedStat.ino === movedStat.ino,
+    `moveFile should preserve kernel inode identity across rename: ${JSON.stringify({ copiedStat, movedStat })}`
+  );
+  const inodeTable = await workspace.readFile('/proc/tracekernel/inodes');
+  assertCondition(
+    inodeTable.includes(`${movedStat.ino}\tsrc/moved/hello-moved.txt`) &&
+      !inodeTable.includes(`${copiedStat.ino}\tsrc/copied/hello-copy.txt`),
+    `kernel inode proc table should reflect renamed paths: ${JSON.stringify(inodeTable)}`
+  );
   assertCondition(!(await workspace.exists('src/copied/hello-copy.txt')), 'moveFile should remove the source file');
   await workspace.moveFile('/workspace/src/copied/binary-copy.bin', '/workspace/src/moved/binary-moved.bin');
   assertCondition(
@@ -534,6 +555,1879 @@ async function testWorkspaceFilesAndCommands(): Promise<void> {
   workspace.dispose();
   const afterDispose = await workspace.runCommand('cat src/hello.txt');
   assertCondition(afterDispose.exitCode === 0, 'native just-bash workspace dispose should be a safe no-op');
+}
+
+async function testWorkspaceConcurrentAppendFile(): Promise<void> {
+  const workspace = await createRuntimeWorkspace();
+  const writes = Array.from({ length: 50 }, (_, index) => `line-${index}\n`);
+  await Promise.all(writes.map((line) => workspace.appendFile('logs/output.txt', line)));
+
+  const content = await workspace.readFile('logs/output.txt');
+  const lines = content.trim().split('\n').sort((left, right) => left.localeCompare(right));
+  assertCondition(
+    lines.length === writes.length &&
+      lines.join(',') === writes.map((line) => line.trim()).sort((left, right) => left.localeCompare(right)).join(','),
+    `concurrent appendFile calls should preserve every write: ${JSON.stringify(content)}`
+  );
+}
+
+async function testWorkspaceConcurrentFilesystemMutations(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'source.txt', contents: 'copy-source\n' },
+      { path: 'moves/source-a.txt', contents: 'move-a\n' },
+      { path: 'moves/source-b.txt', contents: 'move-b\n' },
+    ],
+  });
+
+  await Promise.all(Array.from({ length: 25 }, () => workspace.mkdir('same/deep/path')));
+  assertCondition(await workspace.exists('same/deep/path'), 'concurrent mkdir calls should leave the directory present');
+
+  const writeCandidates = Array.from({ length: 30 }, (_, index) => `write-${index}\n`);
+  await Promise.all(writeCandidates.map((contents) => workspace.writeFile('same/file.txt', contents)));
+  const finalWrite = await workspace.readFile('same/file.txt');
+  assertCondition(writeCandidates.includes(finalWrite), `concurrent writeFile should leave one complete write: ${JSON.stringify(finalWrite)}`);
+
+  await Promise.all(Array.from({ length: 10 }, () => workspace.copyFile('source.txt', 'copies/source-copy.txt')));
+  assertCondition(
+    await workspace.readFile('copies/source-copy.txt') === 'copy-source\n',
+    'concurrent copyFile calls to the same destination should preserve complete copied contents'
+  );
+
+  await Promise.all([
+    workspace.moveFile('moves/source-a.txt', 'moves/dest-a.txt'),
+    workspace.moveFile('moves/source-b.txt', 'moves/dest-b.txt'),
+  ]);
+  assertCondition(
+    await workspace.readFile('moves/dest-a.txt') === 'move-a\n' &&
+      await workspace.readFile('moves/dest-b.txt') === 'move-b\n' &&
+      !(await workspace.exists('moves/source-a.txt')) &&
+      !(await workspace.exists('moves/source-b.txt')),
+    'concurrent moveFile calls for distinct files should preserve moved contents'
+  );
+
+  for (let index = 0; index < 20; index += 1) {
+    await Promise.all([
+      workspace.writeFile('volatile/child.txt', `child-${index}\n`),
+      workspace.remove('volatile', { recursive: true }),
+    ]);
+    if (await workspace.exists('volatile/child.txt')) {
+      assertCondition(
+        await workspace.readFile('volatile/child.txt') === `child-${index}\n`,
+        'concurrent write/remove should leave either no file or the complete written file'
+      );
+    }
+  }
+
+  const kernelCandidates = Array.from({ length: 20 }, (_, index) => `kernel-${index}\n`);
+  await Promise.all(kernelCandidates.map((contents) =>
+    workspace.kernel.applyFileChange({ path: 'kernel/generated.txt', contents })
+  ));
+  const finalKernelWrite = await workspace.readFile('kernel/generated.txt');
+  assertCondition(
+    kernelCandidates.includes(finalKernelWrite),
+    `concurrent kernel file changes should leave one complete write: ${JSON.stringify(finalKernelWrite)}`
+  );
+}
+
+async function testWorkspaceConcurrentRunCommandSerialization(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'a.js', contents: 'console.log("a")\n' },
+      { path: 'b.js', contents: 'console.log("b")\n' },
+    ],
+    nodeRunner: async (request) => {
+      const label = request.scriptPath.endsWith('a.js') ? 'a' : 'b';
+      request.onEvent?.({ type: 'output', stream: 'stdout', data: `${label}:start\n` });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      request.onEvent?.({ type: 'output', stream: 'stdout', data: `${label}:end\n` });
+      return { stdout: `${label}:start\n${label}:end\n`, stderr: '', exitCode: 0 };
+    },
+  });
+
+  const commandEvents: Record<string, string[]> = { a: [], b: [] };
+  const [a, b] = await Promise.all([
+    workspace.runCommand('node a.js', {
+      onEvent: (event) => {
+        if (event.type === 'output') commandEvents.a.push(event.data);
+      },
+    }),
+    workspace.runCommand('node b.js', {
+      onEvent: (event) => {
+        if (event.type === 'output') commandEvents.b.push(event.data);
+      },
+    }),
+  ]);
+
+  assertCondition(a.stdout === 'a:start\na:end\n', `first concurrent command should receive its own result: ${JSON.stringify(a)}`);
+  assertCondition(b.stdout === 'b:start\nb:end\n', `second concurrent command should receive its own result: ${JSON.stringify(b)}`);
+  assertCondition(
+    commandEvents.a.join('') === 'a:start\na:end\n' &&
+      commandEvents.b.join('') === 'b:start\nb:end\n',
+    `concurrent command output events should not cross streams: ${JSON.stringify(commandEvents)}`
+  );
+}
+
+async function testWorkspaceRunCommandsCanOverlap(): Promise<void> {
+  let releaseCommands!: () => void;
+  const commandsReleased = new Promise<void>((resolve) => {
+    releaseCommands = resolve;
+  });
+  let bothStarted!: () => void;
+  const bothStartedPromise = new Promise<void>((resolve) => {
+    bothStarted = resolve;
+  });
+  const started = new Set<string>();
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'a.js', contents: 'console.log("a")\n' },
+      { path: 'b.js', contents: 'console.log("b")\n' },
+    ],
+    nodeRunner: async (request) => {
+      const label = request.scriptPath.endsWith('a.js') ? 'a' : 'b';
+      started.add(label);
+      if (started.size === 2) bothStarted();
+      await commandsReleased;
+      return { stdout: `${label}:done\n`, stderr: '', exitCode: 0 };
+    },
+  });
+
+  const commands = Promise.all([
+    workspace.runCommand('node a.js'),
+    workspace.runCommand('node b.js'),
+  ]);
+  const overlapped = await Promise.race([
+    bothStartedPromise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+  releaseCommands();
+  const [a, b] = await commands;
+
+  assertCondition(overlapped, `concurrent commands should be allowed to overlap: ${JSON.stringify([...started])}`);
+  assertCondition(
+    a.stdout === 'a:done\n' && b.stdout === 'b:done\n',
+    `overlapping commands should still receive isolated results: ${JSON.stringify({ a, b })}`
+  );
+}
+
+async function testWorkspaceSchedulerQueuesBeyondConcurrencyLimit(): Promise<void> {
+  let releaseA!: () => void;
+  const aReleased = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+  let releaseB!: () => void;
+  const bReleased = new Promise<void>((resolve) => {
+    releaseB = resolve;
+  });
+  let aStarted!: () => void;
+  const aStartedPromise = new Promise<void>((resolve) => {
+    aStarted = resolve;
+  });
+  let bStarted!: () => void;
+  const bStartedPromise = new Promise<void>((resolve) => {
+    bStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    kernel: { scheduler: { maxConcurrentCommands: 1 } },
+    files: [
+      { path: 'a.js', contents: 'console.log("a")\n' },
+      { path: 'b.js', contents: 'console.log("b")\n' },
+    ],
+    nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('a.js')) {
+        aStarted();
+        await aReleased;
+        return { stdout: 'a:done\n', stderr: '', exitCode: 0 };
+      }
+      bStarted();
+      await bReleased;
+      return { stdout: 'b:done\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const commandA = workspace.runCommand('node a.js');
+  await aStartedPromise;
+  const commandB = workspace.runCommand('node b.js');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const beforeReleaseSched = await workspace.readFile('/proc/tracekernel/sched');
+  const beforeReleaseProcesses = await workspace.readFile('/proc/tracekernel/processes');
+  const queuedLine = beforeReleaseProcesses.split('\n').find((line) => line.endsWith('\tnode b.js'));
+  const queuedPid = queuedLine?.split('\t')[0] ?? '';
+  assertCondition(
+    beforeReleaseSched.includes('queued\t1\n') &&
+      beforeReleaseSched.includes('running\t1\n') &&
+      beforeReleaseSched.includes('max_concurrent\t1\n') &&
+      beforeReleaseSched.includes(`task\t${queuedPid}\tqueued\tnode b.js`) &&
+      queuedLine?.includes('\tqueued\t'),
+    `scheduler should queue commands beyond configured concurrency: ${JSON.stringify({ beforeReleaseSched, beforeReleaseProcesses })}`
+  );
+  const queuedStatus = await workspace.readFile(`/proc/${queuedPid}/status`);
+  assertCondition(
+    queuedStatus.includes('State:\tS (queued)\n') &&
+      queuedStatus.includes('Command:\tnode b.js\n'),
+    `queued commands should have proc status before admission: ${JSON.stringify(queuedStatus)}`
+  );
+
+  releaseA();
+  await bStartedPromise;
+  const afterAdmitSched = await workspace.readFile('/proc/tracekernel/sched');
+  assertCondition(
+    afterAdmitSched.includes('queued\t0\n') &&
+      afterAdmitSched.includes('running\t1\n') &&
+      afterAdmitSched.includes(`task\t${queuedPid}\trunning\tnode b.js`),
+    `scheduler should admit queued command when capacity is released: ${JSON.stringify(afterAdmitSched)}`
+  );
+  releaseB();
+  const [a, b] = await Promise.all([commandA, commandB]);
+  assertCondition(
+    a.stdout === 'a:done\n' && b.stdout === 'b:done\n',
+    `scheduler should preserve command results after queue admission: ${JSON.stringify({ a, b })}`
+  );
+  const events = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(
+    events.includes(`process-queue\t${queuedPid}\t`) &&
+      events.includes(`process-admit\t${queuedPid}\t`) &&
+      events.includes(`process-start\t${queuedPid}\t`),
+    `scheduler events should expose queue, admission, and start lifecycle: ${JSON.stringify(events)}`
+  );
+}
+
+async function testWorkspaceSchedulerRejectsBeyondQueueLimit(): Promise<void> {
+  let releaseA!: () => void;
+  const aReleased = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+  let aStarted!: () => void;
+  const aStartedPromise = new Promise<void>((resolve) => {
+    aStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    kernel: { scheduler: { maxConcurrentCommands: 1, maxQueuedCommands: 1 } },
+    files: [
+      { path: 'a.js', contents: 'console.log("a")\n' },
+      { path: 'b.js', contents: 'console.log("b")\n' },
+      { path: 'c.js', contents: 'console.log("c")\n' },
+    ],
+    nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('a.js')) {
+        aStarted();
+        await aReleased;
+        return { stdout: 'a:done\n', stderr: '', exitCode: 0 };
+      }
+      return { stdout: `${request.scriptPath}:done\n`, stderr: '', exitCode: 0 };
+    },
+  });
+
+  const commandA = workspace.runCommand('node a.js');
+  await aStartedPromise;
+  const commandB = workspace.runCommand('node b.js');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const commandC = await workspace.runCommand('node c.js');
+
+  assertCondition(
+    commandC.exitCode === 11 &&
+      commandC.error?.code === 'EAGAIN' &&
+      commandC.error.syscall === 'sched',
+    `scheduler should reject commands beyond the configured queue limit: ${JSON.stringify(commandC)}`
+  );
+  const sched = await workspace.readFile('/proc/tracekernel/sched');
+  assertCondition(
+    sched.includes('queued\t1\n') &&
+      sched.includes('running\t1\n') &&
+      sched.includes('max_queued\t1\n'),
+    `scheduler diagnostics should expose configured queue pressure: ${JSON.stringify(sched)}`
+  );
+  const events = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(events.includes('process-reject'), `scheduler rejection should be visible in kernel events: ${JSON.stringify(events)}`);
+
+  releaseA();
+  const [a, b] = await Promise.all([commandA, commandB]);
+  assertCondition(a.exitCode === 0 && b.exitCode === 0, `admitted commands should still complete after rejection: ${JSON.stringify({ a, b })}`);
+}
+
+async function testWorkspaceSchedulerQueueSlotReleasedAfterCancellation(): Promise<void> {
+  let releaseA!: () => void;
+  const aReleased = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+  let releaseC!: () => void;
+  const cReleased = new Promise<void>((resolve) => {
+    releaseC = resolve;
+  });
+  let aStarted!: () => void;
+  const aStartedPromise = new Promise<void>((resolve) => {
+    aStarted = resolve;
+  });
+  let cStarted!: () => void;
+  const cStartedPromise = new Promise<void>((resolve) => {
+    cStarted = resolve;
+  });
+  const controllerB = new AbortController();
+
+  const workspace = await createRuntimeWorkspace({
+    kernel: { scheduler: { maxConcurrentCommands: 1, maxQueuedCommands: 1 } },
+    files: [
+      { path: 'a.js', contents: 'console.log("a")\n' },
+      { path: 'b.js', contents: 'console.log("b")\n' },
+      { path: 'c.js', contents: 'console.log("c")\n' },
+    ],
+    nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('a.js')) {
+        aStarted();
+        await aReleased;
+        return { stdout: 'a:done\n', stderr: '', exitCode: 0 };
+      }
+      if (request.scriptPath.endsWith('c.js')) {
+        cStarted();
+        await cReleased;
+        return { stdout: 'c:done\n', stderr: '', exitCode: 0 };
+      }
+      return { stdout: 'b:done\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const commandA = workspace.runCommand('node a.js');
+  await aStartedPromise;
+  const commandB = workspace.runCommand('node b.js', { signal: controllerB.signal });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  controllerB.abort();
+  const b = await commandB;
+  const commandC = workspace.runCommand('node c.js');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const sched = await workspace.readFile('/proc/tracekernel/sched');
+
+  assertCondition(
+    b.exitCode === 143 &&
+      b.error?.code === 'EINTR',
+    `queued command cancellation should return a kernel interruption: ${JSON.stringify(b)}`
+  );
+  assertCondition(
+    sched.includes('queued\t1\n') &&
+      sched.includes('running\t1\n') &&
+      sched.includes('task\t') &&
+      sched.includes('\tqueued\tnode c.js'),
+    `canceled queued command should release its queue slot for a later command: ${JSON.stringify(sched)}`
+  );
+  releaseA();
+  await cStartedPromise;
+  releaseC();
+  const [a, c] = await Promise.all([commandA, commandC]);
+  assertCondition(a.exitCode === 0 && c.exitCode === 0, `commands around queue cancellation should complete: ${JSON.stringify({ a, c })}`);
+}
+
+async function testWorkspaceProcProcessState(): Promise<void> {
+  const selfStatus = await (await createRuntimeWorkspace()).runCommand('cat /proc/self/status');
+  assertCondition(
+    selfStatus.exitCode === 0 &&
+      /^Pid:\t[0-9]+$/m.test(selfStatus.stdout) &&
+      selfStatus.stdout.includes('State:\tR (running)\n') &&
+      selfStatus.stdout.includes('FDSize:\t3\n') &&
+      selfStatus.stdout.includes('Tty:\t?\n') &&
+      selfStatus.stdout.includes('Foreground:\t0\n') &&
+      selfStatus.stdout.includes('Command:\tcat /proc/self/status\n'),
+    `commands should observe their process through /proc/self/status: ${JSON.stringify(selfStatus)}`
+  );
+  const terminalSelfStatus = await (await createRuntimeWorkspace()).runCommand('cat /proc/self/status', { presentation: 'terminal' });
+  assertCondition(
+    terminalSelfStatus.exitCode === 0 &&
+      terminalSelfStatus.stdout.includes('Tty:\t/dev/tty\n') &&
+      terminalSelfStatus.stdout.includes('Foreground:\t1\n'),
+    `terminal-presented commands should own the foreground tty in /proc/self/status: ${JSON.stringify(terminalSelfStatus)}`
+  );
+  const selfFdInfo = await (await createRuntimeWorkspace()).runCommand('cat /proc/self/fdinfo/1');
+  assertCondition(
+    selfFdInfo.exitCode === 0 &&
+      selfFdInfo.stdout.includes('flags:\tw\n') &&
+      selfFdInfo.stdout.includes('target:\t/dev/stdout\n'),
+    `commands should observe their fd table through /proc/self/fdinfo: ${JSON.stringify(selfFdInfo)}`
+  );
+
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'slow.js', contents: 'console.log("slow")\n' }],
+    nodeRunner: async () => {
+      commandStarted();
+      await commandReleased;
+      return { stdout: 'slow:done\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const command = workspace.runCommand('node slow.js');
+  await commandStartedPromise;
+
+  const processes = await workspace.readFile('/proc/tracekernel/processes');
+  const processLine = processes.split('\n').find((line) => line.endsWith('\tnode slow.js'));
+  assertCondition(Boolean(processLine), `kernel process table should show active commands: ${JSON.stringify(processes)}`);
+  const pid = processLine?.split('\t')[0] ?? '';
+  assertCondition(/^[0-9]+$/.test(pid), `active process line should expose a numeric pid: ${JSON.stringify(processLine)}`);
+
+  const procEntries = await workspace.readDir('/proc');
+  assertCondition(
+    procEntries.includes('tracekernel') && procEntries.includes(pid),
+    `kernel /proc should expose tracekernel and active pid directories: ${JSON.stringify(procEntries)}`
+  );
+  const status = await workspace.readFile(`/proc/${pid}/status`);
+  assertCondition(
+    status.includes(`Pid:\t${pid}\n`) &&
+      status.includes('PPid:\t1\n') &&
+      status.includes(`PGid:\t${pid}\n`) &&
+      status.includes('Sid:\t1\n') &&
+      status.includes('FDSize:\t3\n') &&
+      status.includes('Tty:\t?\n') &&
+      status.includes('Foreground:\t0\n') &&
+      status.includes('State:\tR (running)\n') &&
+      status.includes('Command:\tnode slow.js\n'),
+    `kernel /proc/<pid>/status should expose active process state: ${JSON.stringify(status)}`
+  );
+  const fdEntries = await workspace.readDir(`/proc/${pid}/fd`);
+  assertCondition(fdEntries.join(',') === '0,1,2', `kernel /proc/<pid>/fd should expose process descriptors: ${JSON.stringify(fdEntries)}`);
+  const stdoutFdInfo = await workspace.readFile(`/proc/${pid}/fdinfo/1`);
+  assertCondition(
+    stdoutFdInfo.includes('flags:\tw\n') && stdoutFdInfo.includes('target:\t/dev/stdout\n'),
+    `kernel /proc/<pid>/fdinfo should expose descriptor metadata: ${JSON.stringify(stdoutFdInfo)}`
+  );
+  const sched = await workspace.readFile('/proc/tracekernel/sched');
+  assertCondition(
+    sched.includes('running\t1\n') && sched.includes(`task\t${pid}\trunning\tnode slow.js`),
+    `kernel scheduler proc file should expose active task state: ${JSON.stringify(sched)}`
+  );
+  const locks = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locks.startsWith('path\tactive\twaiting\treaders\twriter\twaiting_readers\twaiting_writers\n'),
+    `kernel locks proc file should expose lock diagnostics: ${JSON.stringify(locks)}`
+  );
+
+  releaseCommand();
+  const result = await command;
+  assertCondition(result.stdout === 'slow:done\n', `slow command should complete: ${JSON.stringify(result)}`);
+  const afterProcesses = await workspace.readFile('/proc/tracekernel/processes');
+  assertCondition(
+    !afterProcesses.includes(`\t${pid}\t`) && !afterProcesses.includes('node slow.js'),
+    `kernel process table should drop exited commands: ${JSON.stringify(afterProcesses)}`
+  );
+  await assertRejectsAsync(
+    () => workspace.readFile(`/proc/${pid}/status`),
+    'exited process proc entries should disappear'
+  );
+}
+
+async function testWorkspaceTraceKernelKillProcess(): Promise<void> {
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  let signalDelivered!: () => void;
+  const signalDeliveredPromise = new Promise<void>((resolve) => {
+    signalDelivered = resolve;
+  });
+  let releaseAfterSignal!: () => void;
+  const releaseAfterSignalPromise = new Promise<void>((resolve) => {
+    releaseAfterSignal = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'sleep.js', contents: 'setInterval(() => {}, 1000)\n' }],
+    nodeRunner: async (request) => {
+      commandStarted();
+      if (!request.signal) {
+        return { stdout: '', stderr: 'missing signal\n', exitCode: 1 };
+      }
+      return new Promise<RuntimeCommandResult>((resolve) => {
+        request.signal?.addEventListener('abort', () => {
+          signalDelivered();
+          void releaseAfterSignalPromise.then(() => {
+            resolve({ stdout: '', stderr: '', exitCode: 143 });
+          });
+        }, { once: true });
+      });
+    },
+  });
+
+  const command = workspace.runCommand('node sleep.js');
+  await commandStartedPromise;
+  const processes = await workspace.readFile('/proc/tracekernel/processes');
+  const processLine = processes.split('\n').find((line) => line.endsWith('\tnode sleep.js'));
+  const pid = processLine?.split('\t')[0] ?? '';
+  assertCondition(/^[0-9]+$/.test(pid), `kill test should find active process pid: ${JSON.stringify(processes)}`);
+
+  const kill = await workspace.runCommand(`tracekernelctl kill ${pid} TERM`);
+  assertCondition(
+    kill.exitCode === 0 && kill.stdout === `tracekernelctl: sent SIGTERM to ${pid}\n`,
+    `tracekernelctl kill should deliver SIGTERM: ${JSON.stringify(kill)}`
+  );
+  await signalDeliveredPromise;
+  const status = await workspace.readFile(`/proc/${pid}/status`);
+  assertCondition(
+    status.includes('State:\tX (signaled)\n') &&
+      status.includes('Signal:\tSIGTERM\n') &&
+      status.includes('SignalCode:\t15\n'),
+    `signaled process should expose signal state through proc: ${JSON.stringify(status)}`
+  );
+  const sched = await workspace.readFile('/proc/tracekernel/sched');
+  assertCondition(
+    sched.includes(`task\t${pid}\tsignaled\tnode sleep.js`),
+    `scheduler proc file should show signaled task: ${JSON.stringify(sched)}`
+  );
+
+  releaseAfterSignal();
+  const result = await command;
+  assertCondition(
+    result.exitCode === 143 &&
+      result.error?.code === 'EINTR' &&
+      result.error.syscall === 'wait4' &&
+      result.error.path === pid,
+    `killed command should return structured kernel interruption: ${JSON.stringify(result)}`
+  );
+  const zombieStatus = await workspace.readFile(`/proc/${pid}/status`);
+  assertCondition(
+    zombieStatus.includes('State:\tZ (zombie)\n') &&
+      zombieStatus.includes('ExitCode:\t143\n') &&
+      zombieStatus.includes('Signal:\tSIGTERM\n'),
+    `exited signaled process should remain as an unreaped zombie: ${JSON.stringify(zombieStatus)}`
+  );
+  const zombieSched = await workspace.readFile('/proc/tracekernel/sched');
+  assertCondition(
+    zombieSched.includes('zombies\t1\n') &&
+      zombieSched.includes(`task\t${pid}\tzombie\tnode sleep.js`),
+    `scheduler proc file should expose unreaped zombies: ${JSON.stringify(zombieSched)}`
+  );
+  const wait = await workspace.runCommand(`tracekernelctl wait ${pid}`);
+  assertCondition(
+    wait.exitCode === 143 &&
+      wait.stdout.includes(`pid\t${pid}\n`) &&
+      wait.stdout.includes('exitCode\t143\n') &&
+      wait.stdout.includes('signal\tSIGTERM\n'),
+    `tracekernelctl wait should reap zombie process state: ${JSON.stringify(wait)}`
+  );
+  const events = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(
+    events.includes(`process-start\t${pid}\t`) &&
+      events.includes(`process-signal\t${pid}\t`) &&
+      events.includes(`process-zombie\t${pid}\t`) &&
+      events.includes(`process-reap\t${pid}\t`),
+    `kernel event proc file should expose structured process lifecycle events: ${JSON.stringify(events)}`
+  );
+  await assertRejectsAsync(
+    () => workspace.readFile(`/proc/${pid}/status`),
+    'reaped process proc entries should disappear'
+  );
+}
+
+async function testWorkspaceTraceKernelKillPropagatesToNativeNodeRunner(): Promise<void> {
+  let observedReady!: () => void;
+  const readyPromise = new Promise<void>((resolve) => {
+    observedReady = resolve;
+  });
+  let stdout = '';
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'slow-native.js', contents: 'console.log("ready"); setInterval(() => {}, 1000);\n' },
+    ],
+    nodeRunner: createNativeJavaScriptProjectRunner({ timeoutMs: 30_000 }),
+  });
+
+  const command = workspace.runCommand('node slow-native.js', {
+    onEvent: (event) => {
+      if (event.type !== 'output' || event.stream !== 'stdout') return;
+      stdout += event.data;
+      if (stdout.includes('ready')) observedReady();
+    },
+  });
+  await readyPromise;
+  const pid = await processPidForCommand(workspace, 'node slow-native.js');
+  const kill = await workspace.runCommand(`tracekernelctl kill ${pid} TERM`);
+  const result = await Promise.race([
+    command,
+    new Promise<RuntimeCommandResult>((resolve) =>
+      setTimeout(() => resolve({ stdout: '', stderr: 'native runner did not stop after SIGTERM\n', exitCode: 124 }), 2_000)
+    ),
+  ]);
+
+  assertCondition(kill.exitCode === 0, `tracekernelctl kill should signal native node command: ${JSON.stringify(kill)}`);
+  assertCondition(
+    result.exitCode === 143 &&
+      result.error?.code === 'EINTR' &&
+      result.error.detail?.signal === 'SIGTERM',
+    `native node runner should stop promptly when the kernel process is signaled: ${JSON.stringify(result)}`
+  );
+  const events = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(
+    events.includes(`process-signal\t${pid}\t`) &&
+      events.includes(`process-zombie\t${pid}\t`),
+    `kernel events should show native process signal and zombie lifecycle: ${JSON.stringify(events)}`
+  );
+}
+
+async function testWorkspaceTraceKernelKillProcessGroup(): Promise<void> {
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  let signalDelivered!: () => void;
+  const signalDeliveredPromise = new Promise<void>((resolve) => {
+    signalDelivered = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'group-process.js', contents: 'setInterval(() => {}, 1000)\n' }],
+    nodeRunner: async (request) => {
+      commandStarted();
+      return new Promise<RuntimeCommandResult>((resolve) => {
+        request.signal?.addEventListener('abort', () => {
+          signalDelivered();
+          resolve({ stdout: '', stderr: '', exitCode: 143 });
+        }, { once: true });
+      });
+    },
+  });
+
+  const command = workspace.runCommand('node group-process.js');
+  await commandStartedPromise;
+  const pid = await processPidForCommand(workspace, 'node group-process.js');
+  const kill = await workspace.runCommand(`tracekernelctl kill -${pid} TERM`);
+  await signalDeliveredPromise;
+  const result = await command;
+
+  assertCondition(
+    kill.exitCode === 0 &&
+      kill.stdout === `tracekernelctl: sent SIGTERM to process group ${pid} (1 process)\n`,
+    `tracekernelctl should support negative pgid signal targets: ${JSON.stringify(kill)}`
+  );
+  assertCondition(result.exitCode === 143 && result.error?.detail?.signal === 'SIGTERM', `process-group kill should interrupt the target command: ${JSON.stringify(result)}`);
+  const events = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(events.includes('process-group-signal'), `process-group signal should be visible in kernel events: ${JSON.stringify(events)}`);
+  await workspace.runCommand(`tracekernelctl wait ${pid}`);
+}
+
+async function testWorkspaceTraceKernelWaitBlocksUntilZombie(): Promise<void> {
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  let signalDelivered!: () => void;
+  const signalDeliveredPromise = new Promise<void>((resolve) => {
+    signalDelivered = resolve;
+  });
+  let releaseAfterSignal!: () => void;
+  const releaseAfterSignalPromise = new Promise<void>((resolve) => {
+    releaseAfterSignal = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'wait.js', contents: 'setInterval(() => {}, 1000)\n' }],
+    nodeRunner: async (request) => {
+      commandStarted();
+      return new Promise<RuntimeCommandResult>((resolve) => {
+        request.signal?.addEventListener('abort', () => {
+          signalDelivered();
+          void releaseAfterSignalPromise.then(() => {
+            resolve({ stdout: '', stderr: '', exitCode: 130 });
+          });
+        }, { once: true });
+      });
+    },
+  });
+
+  const command = workspace.runCommand('node wait.js');
+  await commandStartedPromise;
+  const processes = await workspace.readFile('/proc/tracekernel/processes');
+  const processLine = processes.split('\n').find((line) => line.endsWith('\tnode wait.js'));
+  const pid = processLine?.split('\t')[0] ?? '';
+  assertCondition(/^[0-9]+$/.test(pid), `blocking wait test should find active process pid: ${JSON.stringify(processes)}`);
+
+  const kill = await workspace.runCommand(`tracekernelctl kill ${pid} INT`);
+  assertCondition(kill.exitCode === 0, `tracekernelctl kill INT should succeed: ${JSON.stringify(kill)}`);
+  await signalDeliveredPromise;
+
+  let waitSettled = false;
+  const wait = workspace.runCommand(`wait ${pid}`).then((result) => {
+    waitSettled = true;
+    return result;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertCondition(!waitSettled, 'wait <pid> should block while the signaled process is still unwinding');
+
+  releaseAfterSignal();
+  const result = await command;
+  const waitResult = await wait;
+  assertCondition(result.exitCode === 130, `signaled command should finish before wait reaps it: ${JSON.stringify(result)}`);
+  assertCondition(
+    waitResult.exitCode === 130 &&
+      waitResult.stdout.includes(`pid\t${pid}\n`) &&
+      waitResult.stdout.includes('signal\tSIGINT\n'),
+    `blocking wait should reap the requested zombie through the kernel command surface: ${JSON.stringify(waitResult)}`
+  );
+
+  const noChild = await workspace.runCommand('wait');
+  assertCondition(
+    noChild.exitCode === 10 && noChild.stderr === 'wait: no child process\n',
+    `wait without children should fail like waitpid ECHILD: ${JSON.stringify(noChild)}`
+  );
+}
+
+async function testWorkspaceQueuedCommandCancellation(): Promise<void> {
+  let releaseActive!: () => void;
+  const activeReleased = new Promise<void>((resolve) => {
+    releaseActive = resolve;
+  });
+  let activeStarted!: () => void;
+  const activeStartedPromise = new Promise<void>((resolve) => {
+    activeStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    kernel: { scheduler: { maxConcurrentCommands: 1 } },
+    files: [
+      { path: 'active.js', contents: 'console.log("active")\n' },
+      { path: 'queued.js', contents: 'console.log("queued")\n' },
+    ],
+    nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('active.js')) {
+        activeStarted();
+        await activeReleased;
+        return { stdout: 'active:done\n', stderr: '', exitCode: 0 };
+      }
+      return { stdout: 'queued:ran\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const active = workspace.runCommand('node active.js');
+  await activeStartedPromise;
+  const queuedAbort = new AbortController();
+  const queued = workspace.runCommand('node queued.js', { signal: queuedAbort.signal });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const queuedPid = await processPidForCommand(workspace, 'node queued.js');
+  const queuedStatus = await workspace.readFile(`/proc/${queuedPid}/status`);
+  assertCondition(
+    queuedStatus.includes('State:\tS (queued)\n'),
+    `queued command should be visible as queued before cancellation: ${JSON.stringify(queuedStatus)}`
+  );
+
+  queuedAbort.abort();
+  const queuedResult = await queued;
+  assertCondition(
+    queuedResult.exitCode === 143 &&
+      queuedResult.error?.code === 'EINTR' &&
+      queuedResult.error.syscall === 'wait4' &&
+      queuedResult.error.path === queuedPid,
+    `queued command cancellation should return structured EINTR: ${JSON.stringify(queuedResult)}`
+  );
+  const schedAfterAbort = await workspace.readFile('/proc/tracekernel/sched');
+  assertCondition(
+    schedAfterAbort.includes('queued\t0\n') &&
+      schedAfterAbort.includes('waiting\t0\n'),
+    `scheduler should not leak queued work after cancellation: ${JSON.stringify(schedAfterAbort)}`
+  );
+  releaseActive();
+  const activeResult = await active;
+  assertCondition(activeResult.exitCode === 0, `active command should finish after queued cancellation: ${JSON.stringify(activeResult)}`);
+  const wait = await workspace.runCommand(`wait ${queuedPid}`);
+  assertCondition(wait.exitCode === 143 && wait.stdout.includes('signal\tSIGTERM\n'), `queued canceled command should be reapable: ${JSON.stringify(wait)}`);
+}
+
+async function testWorkspaceVfsLockWaitCancellation(): Promise<void> {
+  let releaseLock!: () => void;
+  const lockReleased = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  let lockHeld!: () => void;
+  const lockHeldPromise = new Promise<void>((resolve) => {
+    lockHeld = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'locked.txt', contents: 'initial\n' }],
+    customCommands: [{
+      name: 'hold-lock',
+      execute: async (_args: string[], ctx: { fs: unknown }) => {
+        await (ctx.fs as { withBaseMutation: Function }).withBaseMutation(
+          ['/workspace/locked.txt'],
+          async () => {
+            lockHeld();
+            await lockReleased;
+          },
+          'file-write'
+        );
+        return { stdout: 'held\n', stderr: '', exitCode: 0 };
+      },
+    }],
+  });
+
+  const holder = workspace.runCommand('hold-lock');
+  await lockHeldPromise;
+  const reader = workspace.runCommand('cat locked.txt');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const readerPid = await processPidForCommand(workspace, 'cat locked.txt');
+  const locksWhileWaiting = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locksWhileWaiting.includes('/workspace/locked.txt\t1\t1\t0\t1\t1\t0'),
+    `VFS lock diagnostics should show a waiting reader behind the writer: ${JSON.stringify(locksWhileWaiting)}`
+  );
+
+  const kill = await workspace.runCommand(`tracekernelctl kill ${readerPid} TERM`);
+  assertCondition(kill.exitCode === 0, `kill should signal lock waiter: ${JSON.stringify(kill)}`);
+  const readerResult = await reader;
+  assertCondition(
+    readerResult.exitCode === 143 &&
+      readerResult.error?.code === 'EINTR' &&
+      readerResult.error.path === readerPid,
+    `canceling a VFS lock waiter should return structured EINTR: ${JSON.stringify(readerResult)}`
+  );
+  const locksAfterCancel = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locksAfterCancel.includes('/workspace/locked.txt\t1\t0\t0\t1\t0\t0'),
+    `VFS lock waiter cancellation should remove the queued reader and leave only the holder: ${JSON.stringify(locksAfterCancel)}`
+  );
+
+  releaseLock();
+  const holderResult = await holder;
+  assertCondition(holderResult.exitCode === 0, `lock holder should finish: ${JSON.stringify(holderResult)}`);
+  const locksAfterRelease = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locksAfterRelease.startsWith('path\tactive\twaiting\treaders\twriter\twaiting_readers\twaiting_writers\n') &&
+      !locksAfterRelease.includes('/workspace/locked.txt'),
+    `VFS locks should be idle after holder release: ${JSON.stringify(locksAfterRelease)}`
+  );
+}
+
+async function testWorkspaceVfsLockHolderCancellationReleasesWaiters(): Promise<void> {
+  let holderSignalDelivered!: () => void;
+  const holderSignalDeliveredPromise = new Promise<void>((resolve) => {
+    holderSignalDelivered = resolve;
+  });
+  let lockHeld!: () => void;
+  const lockHeldPromise = new Promise<void>((resolve) => {
+    lockHeld = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'held.txt', contents: 'initial\n' }],
+    customCommands: [{
+      name: 'hold-until-signal',
+      execute: async (_args: string[], ctx: { fs: unknown; signal?: AbortSignal }) => {
+        await (ctx.fs as { withBaseMutation: Function }).withBaseMutation(
+          ['/workspace/held.txt'],
+          async () => {
+            lockHeld();
+            await new Promise<void>((resolve) => {
+              ctx.signal?.addEventListener('abort', () => {
+                holderSignalDelivered();
+                resolve();
+              }, { once: true });
+            });
+          },
+          'file-write'
+        );
+        return { stdout: '', stderr: '', exitCode: 143 };
+      },
+    }],
+  });
+
+  const holder = workspace.runCommand('hold-until-signal');
+  await lockHeldPromise;
+  const waiter = workspace.runCommand('cat held.txt');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const holderPid = await processPidForCommand(workspace, 'hold-until-signal');
+  const waiterPid = await processPidForCommand(workspace, 'cat held.txt');
+  const locksBeforeKill = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locksBeforeKill.includes('/workspace/held.txt\t1\t1\t0\t1\t1\t0'),
+    `holder should block reader before cancellation: ${JSON.stringify(locksBeforeKill)}`
+  );
+
+  const kill = await workspace.runCommand(`tracekernelctl kill ${holderPid} TERM`);
+  assertCondition(kill.exitCode === 0, `kill should signal lock holder: ${JSON.stringify(kill)}`);
+  await holderSignalDeliveredPromise;
+  const [holderResult, waiterResult] = await Promise.all([holder, waiter]);
+  assertCondition(
+    holderResult.exitCode === 143 &&
+      holderResult.error?.code === 'EINTR',
+    `canceling a lock holder should return structured EINTR: ${JSON.stringify(holderResult)}`
+  );
+  assertCondition(
+    waiterResult.exitCode === 0 && waiterResult.stdout === 'initial\n',
+    `waiter should proceed after canceled holder releases the VFS lock: ${JSON.stringify({ waiterPid, waiterResult })}`
+  );
+  const locksAfterRelease = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    !locksAfterRelease.includes('/workspace/held.txt'),
+    `canceling a lock holder should not leak active locks or waiters: ${JSON.stringify(locksAfterRelease)}`
+  );
+}
+
+async function testWorkspaceFinalDiffLockWaitCancellation(): Promise<void> {
+  let releaseLock!: () => void;
+  const lockReleased = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  let lockHeld!: () => void;
+  const lockHeldPromise = new Promise<void>((resolve) => {
+    lockHeld = resolve;
+  });
+  let releaseRunner!: () => void;
+  const runnerReleased = new Promise<void>((resolve) => {
+    releaseRunner = resolve;
+  });
+  let runnerStarted!: () => void;
+  const runnerStartedPromise = new Promise<void>((resolve) => {
+    runnerStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'final.txt', contents: 'initial\n' },
+      { path: 'mutate.js', contents: 'console.log("mutate")\n' },
+    ],
+    customCommands: [{
+      name: 'hold-final-lock',
+      execute: async (_args: string[], ctx: { fs: unknown }) => {
+        await (ctx.fs as { withBaseMutation: Function }).withBaseMutation(
+          ['/workspace/final.txt'],
+          async () => {
+            lockHeld();
+            await lockReleased;
+          },
+          'file-write'
+        );
+        return { stdout: 'held\n', stderr: '', exitCode: 0 };
+      },
+    }],
+    nodeRunner: async () => {
+      runnerStarted();
+      await runnerReleased;
+      return {
+        stdout: 'mutate:done\n',
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'final.txt', contents: 'mutated\n' }],
+      };
+    },
+  });
+
+  const abort = new AbortController();
+  const mutate = workspace.runCommand('node mutate.js', { signal: abort.signal });
+  await runnerStartedPromise;
+  const holder = workspace.runCommand('hold-final-lock');
+  await lockHeldPromise;
+  releaseRunner();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const mutatePid = await processPidForCommand(workspace, 'node mutate.js');
+  const locksWhileWaiting = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locksWhileWaiting.includes('/workspace/final.txt\t1\t1\t0\t1\t0\t1'),
+    `final-diff writer should wait behind existing writer lock: ${JSON.stringify(locksWhileWaiting)}`
+  );
+
+  abort.abort();
+  const mutateResult = await mutate;
+  assertCondition(
+    mutateResult.exitCode === 143 &&
+      mutateResult.error?.code === 'EINTR' &&
+      mutateResult.error.path === mutatePid,
+    `canceling a final-diff lock waiter should return structured EINTR: ${JSON.stringify(mutateResult)}`
+  );
+  releaseLock();
+  const holderResult = await holder;
+  assertCondition(holderResult.exitCode === 0, `final lock holder should finish: ${JSON.stringify(holderResult)}`);
+  assertCondition(
+    await workspace.readFile('final.txt') === 'initial\n',
+    'canceled final-diff should not mutate the file after lock wait cancellation'
+  );
+  const locksAfterRelease = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    !locksAfterRelease.includes('/workspace/final.txt'),
+    `final-diff lock cancellation should not leak locks: ${JSON.stringify(locksAfterRelease)}`
+  );
+}
+
+async function testWorkspaceLiveFilesystemSyscallEventsAndCancellation(): Promise<void> {
+  let releaseLock!: () => void;
+  const lockReleased = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  let lockHeld!: () => void;
+  const lockHeldPromise = new Promise<void>((resolve) => {
+    lockHeld = resolve;
+  });
+  let earlyLiveEvent!: () => void;
+  const earlyLiveEventPromise = new Promise<void>((resolve) => {
+    earlyLiveEvent = resolve;
+  });
+
+  const liveEvents: RuntimeWorkspaceEvent[] = [];
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'live-syscall.js', contents: 'console.log("live")\n' },
+      { path: 'early-live.txt', contents: 'before\n' },
+      { path: 'blocked-live.txt', contents: 'initial\n' },
+    ],
+    customCommands: [{
+      name: 'hold-blocked-live',
+      execute: async (_args: string[], ctx: { fs: unknown }) => {
+        await (ctx.fs as { withBaseMutation: Function }).withBaseMutation(
+          ['/workspace/blocked-live.txt'],
+          async () => {
+            lockHeld();
+            await lockReleased;
+          },
+          'file-write'
+        );
+        return { stdout: 'held\n', stderr: '', exitCode: 0 };
+      },
+    }],
+    nodeRunner: async (request) => {
+      request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'early-live.txt', contents: 'early\n' } });
+      await lockHeldPromise;
+      request.onEvent?.({ type: 'file-change', phase: 'live', change: { path: 'blocked-live.txt', contents: 'blocked\n' } });
+      return { stdout: 'live-syscall\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const abort = new AbortController();
+  const command = workspace.runCommand('node live-syscall.js', {
+    signal: abort.signal,
+    onEvent: (event) => {
+      liveEvents.push(event);
+      if (event.type === 'file-change' && event.phase === 'live' && event.change.path === 'early-live.txt') {
+        earlyLiveEvent();
+      }
+    },
+  });
+  await earlyLiveEventPromise;
+  const holder = workspace.runCommand('hold-blocked-live');
+  await lockHeldPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const commandPid = await processPidForCommand(workspace, 'node live-syscall.js');
+  const locksWhileWaiting = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locksWhileWaiting.includes('/workspace/blocked-live.txt\t1\t1\t0\t1\t'),
+    `live file-change should wait behind the held write lock: ${JSON.stringify(locksWhileWaiting)}`
+  );
+
+  abort.abort();
+  const result = await command;
+  assertCondition(
+    result.exitCode === 143 &&
+      result.error?.code === 'EINTR' &&
+      result.error.path === commandPid,
+    `canceling a live filesystem syscall waiter should return structured EINTR: ${JSON.stringify(result)}`
+  );
+  releaseLock();
+  const holderResult = await holder;
+  assertCondition(holderResult.exitCode === 0, `live syscall lock holder should finish: ${JSON.stringify(holderResult)}`);
+  assertCondition(
+    await workspace.readFile('early-live.txt') === 'early\n' &&
+      await workspace.readFile('blocked-live.txt') === 'initial\n',
+    'earlier successful live syscalls should remain visible while the interrupted syscall should not commit'
+  );
+  assertCondition(
+    liveEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'early-live.txt') &&
+      !liveEvents.some((event) => event.type === 'file-change' && event.phase === 'live' && event.change.path === 'blocked-live.txt'),
+    `failed live syscall should not emit its live file-change event: ${JSON.stringify(liveEvents)}`
+  );
+  const kernelEvents = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(
+    kernelEvents.includes('fs-syscall-start') &&
+      kernelEvents.includes('fs-syscall-commit') &&
+      kernelEvents.includes('fs-syscall-abort') &&
+      kernelEvents.includes('early-live.txt') &&
+      kernelEvents.includes('blocked-live.txt'),
+    `kernel events should expose live syscall start/commit/abort lifecycle: ${JSON.stringify(kernelEvents)}`
+  );
+  const locksAfterRelease = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    !locksAfterRelease.includes('/workspace/blocked-live.txt'),
+    `live syscall cancellation should not leak locks: ${JSON.stringify(locksAfterRelease)}`
+  );
+}
+
+async function testWorkspaceShellProcessUtilities(): Promise<void> {
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  let signalDelivered!: () => void;
+  const signalDeliveredPromise = new Promise<void>((resolve) => {
+    signalDelivered = resolve;
+  });
+  let releaseAfterSignal!: () => void;
+  const releaseAfterSignalPromise = new Promise<void>((resolve) => {
+    releaseAfterSignal = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'shell-process.js', contents: 'setInterval(() => {}, 1000)\n' }],
+    nodeRunner: async (request) => {
+      commandStarted();
+      return new Promise<RuntimeCommandResult>((resolve) => {
+        request.signal?.addEventListener('abort', () => {
+          signalDelivered();
+          void releaseAfterSignalPromise.then(() => {
+            resolve({ stdout: '', stderr: '', exitCode: 143 });
+          });
+        }, { once: true });
+      });
+    },
+  });
+
+  const command = workspace.runCommand('node shell-process.js');
+  await commandStartedPromise;
+  const processes = await workspace.readFile('/proc/tracekernel/processes');
+  const processLine = processes.split('\n').find((line) => line.endsWith('\tnode shell-process.js'));
+  const pid = processLine?.split('\t')[0] ?? '';
+  assertCondition(/^[0-9]+$/.test(pid), `shell utility test should find active process pid: ${JSON.stringify(processes)}`);
+
+  const ps = await workspace.runCommand('ps -ef');
+  assertCondition(
+    ps.exitCode === 0 &&
+      ps.stdout.includes('PID  PPID  PGID') &&
+      ps.stdout.includes('TTY') &&
+      ps.stdout.includes(`?        node shell-process.js`),
+    `ps should expose kernel process table: ${JSON.stringify(ps)}`
+  );
+  const jobs = await workspace.runCommand('jobs -l');
+  assertCondition(
+    jobs.exitCode === 0 && jobs.stdout.includes(`${pid}\tRunning\tbackground\t?\tnode shell-process.js`),
+    `jobs -l should expose active kernel jobs with foreground and tty metadata: ${JSON.stringify(jobs)}`
+  );
+  const fg = await workspace.runCommand(`fg ${pid}`);
+  assertCondition(
+    fg.exitCode === 0 && fg.stdout === `fg: ${pid}\tpgid=${pid}\tforeground\tnode shell-process.js\n`,
+    `fg should move a kernel job into the foreground: ${JSON.stringify(fg)}`
+  );
+  const foregroundStatus = await workspace.readFile(`/proc/${pid}/status`);
+  assertCondition(
+    foregroundStatus.includes('Tty:\t/dev/tty\n') && foregroundStatus.includes('Foreground:\t1\n'),
+    `fg should update proc foreground metadata: ${JSON.stringify(foregroundStatus)}`
+  );
+  const bg = await workspace.runCommand('bg %1');
+  assertCondition(
+    bg.exitCode === 0 && bg.stdout === `bg: ${pid}\tpgid=${pid}\tbackground\tnode shell-process.js\n`,
+    `bg should move a kernel job back into the background: ${JSON.stringify(bg)}`
+  );
+  const backgroundJobs = await workspace.runCommand('jobs -l');
+  assertCondition(
+    backgroundJobs.exitCode === 0 && backgroundJobs.stdout.includes(`${pid}\tRunning\tbackground\t?\tnode shell-process.js`),
+    `jobs -l should reflect bg foreground metadata changes: ${JSON.stringify(backgroundJobs)}`
+  );
+  const kill = await workspace.runCommand(`kill -TERM ${pid}`);
+  assertCondition(kill.exitCode === 0, `kill should signal kernel process: ${JSON.stringify(kill)}`);
+  await signalDeliveredPromise;
+  releaseAfterSignal();
+  const result = await command;
+  assertCondition(result.exitCode === 143, `killed shell utility process should exit with signal code: ${JSON.stringify(result)}`);
+  const wait = await workspace.runCommand(`wait ${pid}`);
+  assertCondition(
+    wait.exitCode === 143 && wait.stdout.includes(`pid\t${pid}\n`) && wait.stdout.includes('signal\tSIGTERM\n'),
+    `wait should reap kernel zombie state after shell kill: ${JSON.stringify(wait)}`
+  );
+}
+
+async function testWorkspaceDestroyWaitsForActiveCommand(): Promise<void> {
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'slow.js', contents: 'console.log("slow")\n' }],
+    nodeRunner: async (request) => {
+      request.onEvent?.({ type: 'output', stream: 'stdout', data: 'slow:start\n' });
+      commandStarted();
+      await commandReleased;
+      request.onEvent?.({ type: 'output', stream: 'stdout', data: 'slow:end\n' });
+      return { stdout: 'slow:start\nslow:end\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const command = workspace.runCommand('node slow.js');
+  await commandStartedPromise;
+
+  let destroySettled = false;
+  const destroy = workspace.destroy({ reason: 'test' }).then(() => {
+    destroySettled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assertCondition(!destroySettled, 'destroy should wait for an active command before clearing the workspace');
+
+  releaseCommand();
+  const result = await command;
+  await destroy;
+  assertCondition(
+    result.stdout === 'slow:start\nslow:end\n' && destroySettled,
+    `destroy should allow the active command to finish before completing: ${JSON.stringify(result)}`
+  );
+  const afterDestroy = await workspace.runCommand('pwd');
+  assertCondition(
+    afterDestroy.exitCode !== 0 && afterDestroy.stderr.includes('destroyed'),
+    `commands after destroy should be rejected: ${JSON.stringify(afterDestroy)}`
+  );
+}
+
+async function testWorkspaceConcurrentMutationDoesNotEnterCommandEvents(): Promise<void> {
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'slow.js', contents: 'console.log("slow")\n' }],
+    nodeRunner: async (request) => {
+      request.onEvent?.({ type: 'output', stream: 'stdout', data: 'slow:start\n' });
+      commandStarted();
+      await commandReleased;
+      request.onEvent?.({ type: 'output', stream: 'stdout', data: 'slow:end\n' });
+      return { stdout: 'slow:start\nslow:end\n', stderr: '', exitCode: 0 };
+    },
+  });
+
+  const watchedEvents: RuntimeCommandEvent[] = [];
+  workspace.watch((event) => watchedEvents.push(event));
+  const commandEvents: RuntimeCommandEvent[] = [];
+  const command = workspace.runCommand('node slow.js', {
+    onEvent: (event) => commandEvents.push(event),
+  });
+  await commandStartedPromise;
+
+  await workspace.writeFile('external.txt', 'external\n');
+  assertCondition(
+    !commandEvents.some((event) => event.type === 'file-change' && event.change.path === 'external.txt'),
+    `external workspace writes should not enter active command events: ${JSON.stringify(commandEvents)}`
+  );
+  assertCondition(
+    watchedEvents.some((event) =>
+      event.type === 'file-change' &&
+        event.change.path === 'external.txt' &&
+        event.actor?.kind === 'principal'
+    ),
+    `external workspace writes should remain principal workspace events: ${JSON.stringify(watchedEvents)}`
+  );
+
+  releaseCommand();
+  const result = await command;
+  assertCondition(result.stdout === 'slow:start\nslow:end\n', `slow command should still complete: ${JSON.stringify(result)}`);
+}
+
+async function testWorkspaceStaleFinalDiffIsRejected(): Promise<void> {
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'stale.js', contents: 'console.log("stale")\n' },
+      { path: 'target.txt', contents: 'original\n' },
+    ],
+    nodeRunner: async () => {
+      commandStarted();
+      await commandReleased;
+      return {
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'target.txt', contents: 'runner\n' }],
+      };
+    },
+  });
+
+  const command = workspace.runCommand('node stale.js');
+  await commandStartedPromise;
+  await workspace.writeFile('target.txt', 'external\n');
+  releaseCommand();
+
+  const result = await command;
+  assertCondition(
+    result.exitCode === 116 &&
+      result.stderr === "ESTALE: stale file handle, write 'target.txt'\n" &&
+      result.error?.code === 'ESTALE' &&
+      result.error.syscall === 'write' &&
+      result.error.path === 'target.txt',
+    `stale final diff should fail instead of overwriting a newer file: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    await workspace.readFile('target.txt') === 'external\n',
+    'stale final diff should leave the newer file contents intact'
+  );
+}
+
+async function testWorkspaceConcurrentStaleFinalDiffStress(): Promise<void> {
+  const commandCount = 10;
+  let releaseCommands!: () => void;
+  const commandsReleased = new Promise<void>((resolve) => {
+    releaseCommands = resolve;
+  });
+  let allStarted!: () => void;
+  const allStartedPromise = new Promise<void>((resolve) => {
+    allStarted = resolve;
+  });
+  const started = new Set<string>();
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'shared.txt', contents: 'initial\n' },
+      ...Array.from({ length: commandCount }, (_, index) => ({
+        path: `stress-${index}.js`,
+        contents: `console.log("stress-${index}")\n`,
+      })),
+    ],
+    nodeRunner: async (request) => {
+      const label = request.scriptPath.replace(/\.js$/, '');
+      started.add(label);
+      if (started.size === commandCount) allStarted();
+      await commandsReleased;
+      return {
+        stdout: `${label}\n`,
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'shared.txt', contents: `${label}\n` }],
+      };
+    },
+  });
+
+  const commands = Array.from({ length: commandCount }, (_, index) => workspace.runCommand(`node stress-${index}.js`));
+  const overlapped = await Promise.race([
+    allStartedPromise.then(() => true),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+  ]);
+  releaseCommands();
+  const results = await Promise.all(commands);
+
+  const successes = results.filter((result) => result.exitCode === 0);
+  const staleFailures = results.filter((result) =>
+    result.exitCode === 116 &&
+      result.error?.code === 'ESTALE' &&
+      result.error.syscall === 'write' &&
+      result.error.path === 'shared.txt'
+  );
+  const finalContents = await workspace.readFile('shared.txt');
+  assertCondition(overlapped, `stale stress commands should overlap before final diff application: ${JSON.stringify([...started])}`);
+  assertCondition(
+    successes.length === 1 && staleFailures.length === commandCount - 1,
+    `exactly one concurrent final diff should win and the rest should fail ESTALE: ${JSON.stringify(results)}`
+  );
+  assertCondition(
+    successes.some((result) => result.stdout === finalContents),
+    `winning final diff should determine the final complete file contents: ${JSON.stringify({ finalContents, results })}`
+  );
+  const locks = await workspace.readFile('/proc/tracekernel/locks');
+  assertCondition(
+    locks.startsWith('path\tactive\twaiting\treaders\twriter\twaiting_readers\twaiting_writers\n') && !locks.includes('\t1\t'),
+    `kernel lock diagnostics should be idle after stale stress completes: ${JSON.stringify(locks)}`
+  );
+}
+
+async function testWorkspaceFinalDiffTransactionRejectsWithoutPartialCommit(): Promise<void> {
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  const events: RuntimeWorkspaceEvent[] = [];
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'first.txt', contents: 'first:initial\n' },
+      { path: 'second.txt', contents: 'second:initial\n' },
+      { path: 'multi-stale.js', contents: 'console.log("multi")\n' },
+    ],
+    nodeRunner: async () => {
+      commandStarted();
+      await commandReleased;
+      return {
+        stdout: 'multi:done\n',
+        stderr: '',
+        exitCode: 0,
+        files: [
+          { path: 'first.txt', contents: 'first:command\n' },
+          { path: 'second.txt', contents: 'second:command\n' },
+        ],
+      };
+    },
+  });
+  const unsubscribe = workspace.watch((event) => events.push(event));
+
+  const command = workspace.runCommand('node multi-stale.js');
+  await commandStartedPromise;
+  await workspace.writeFile('second.txt', 'second:external\n');
+  releaseCommand();
+  const result = await command;
+  unsubscribe();
+
+  assertCondition(
+    result.exitCode === 116 &&
+      result.error?.code === 'ESTALE',
+    `multi-file stale final diff should reject the whole transaction: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    await workspace.readFile('first.txt') === 'first:initial\n' &&
+      await workspace.readFile('second.txt') === 'second:external\n',
+    'stale multi-file final diff should leave all transaction files unchanged'
+  );
+  assertCondition(
+    !events.some((event) => event.type === 'file-change' && event.phase === 'final-diff' && event.change.path === 'first.txt') &&
+      !events.some((event) => event.type === 'file-change' && event.phase === 'final-diff' && event.change.path === 'second.txt'),
+    `rejected final-diff transaction should not emit partial final-diff events: ${JSON.stringify(events)}`
+  );
+  const kernelEvents = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(
+    kernelEvents.includes('fs-transaction-start') &&
+      kernelEvents.includes('fs-transaction-abort') &&
+      !kernelEvents.includes('fs-transaction-commit'),
+    `stale final-diff transaction should expose transaction abort events: ${JSON.stringify(kernelEvents)}`
+  );
+}
+
+async function testWorkspaceFinalDiffDirectoryDeleteTransactionIsAtomic(): Promise<void> {
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  const events: RuntimeWorkspaceEvent[] = [];
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'target.txt', contents: 'target:initial\n' },
+      { path: 'tree/original.txt', contents: 'tree:initial\n' },
+      { path: 'dir-stale.js', contents: 'console.log("dir")\n' },
+    ],
+    nodeRunner: async () => {
+      commandStarted();
+      await commandReleased;
+      return {
+        stdout: 'dir:done\n',
+        stderr: '',
+        exitCode: 0,
+        files: [
+          { path: 'target.txt', contents: 'target:command\n' },
+          { path: 'tree', directory: true, deleted: true },
+        ],
+      };
+    },
+  });
+  const unsubscribe = workspace.watch((event) => events.push(event));
+
+  const command = workspace.runCommand('node dir-stale.js');
+  await commandStartedPromise;
+  await workspace.mkdir('tree/new-child');
+  releaseCommand();
+  const result = await command;
+  unsubscribe();
+
+  assertCondition(
+    result.exitCode === 116 &&
+      result.error?.code === 'ESTALE',
+    `stale directory delete final diff should reject the whole transaction: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    await workspace.readFile('target.txt') === 'target:initial\n' &&
+      await workspace.exists('tree/original.txt') &&
+      await workspace.exists('tree/new-child'),
+    'stale directory delete transaction should leave file write and directory tree unchanged'
+  );
+  assertCondition(
+    !events.some((event) => event.type === 'file-change' && event.phase === 'final-diff'),
+    `rejected directory final-diff transaction should not emit final-diff events: ${JSON.stringify(events)}`
+  );
+}
+
+async function testWorkspaceAdapterFinalDiffTransactionsRejectStaleBatches(): Promise<void> {
+  type WorkspaceOptions = NonNullable<Parameters<typeof createRuntimeWorkspace>[0]>;
+  const cases: Array<{
+    name: string;
+    command: string;
+    files: RuntimeFile[];
+    options(started: () => void, released: Promise<void>): WorkspaceOptions;
+  }> = [
+    {
+      name: 'python',
+      command: 'python3 main.py',
+      files: [{ path: 'main.py', contents: 'print("python")\n' }],
+      options: (started, released) => ({
+        pythonRunner: async () => {
+          started();
+          await released;
+          return {
+            stdout: 'python\n',
+            stderr: '',
+            exitCode: 0,
+            files: [
+              { path: 'first.txt', contents: 'python:first\n' },
+              { path: 'second.txt', contents: 'python:second\n' },
+            ],
+          };
+        },
+      }),
+    },
+    {
+      name: 'node',
+      command: 'node main.js',
+      files: [{ path: 'main.js', contents: 'console.log("node")\n' }],
+      options: (started, released) => ({
+        nodeRunner: async () => {
+          started();
+          await released;
+          return {
+            stdout: 'node\n',
+            stderr: '',
+            exitCode: 0,
+            files: [
+              { path: 'first.txt', contents: 'node:first\n' },
+              { path: 'second.txt', contents: 'node:second\n' },
+            ],
+          };
+        },
+      }),
+    },
+    {
+      name: 'java',
+      command: 'javac Main.java',
+      files: [{ path: 'Main.java', contents: 'class Main {}\n' }],
+      options: (started, released) => ({
+        javaRunner: async () => {
+          started();
+          await released;
+          return {
+            stdout: 'java\n',
+            stderr: '',
+            exitCode: 0,
+            files: [
+              { path: 'first.txt', contents: 'java:first\n' },
+              { path: 'second.txt', contents: 'java:second\n' },
+            ],
+          };
+        },
+      }),
+    },
+    {
+      name: 'cpp',
+      command: 'clang++ main.cpp -o app',
+      files: [{ path: 'main.cpp', contents: 'int main() { return 0; }\n' }],
+      options: (started, released) => ({
+        cppRunner: async () => {
+          started();
+          await released;
+          return {
+            stdout: 'cpp\n',
+            stderr: '',
+            exitCode: 0,
+            files: [
+              { path: 'first.txt', contents: 'cpp:first\n' },
+              { path: 'second.txt', contents: 'cpp:second\n' },
+            ],
+          };
+        },
+      }),
+    },
+    {
+      name: 'csharp',
+      command: 'dotnet build App.csproj',
+      files: [{ path: 'App.csproj', contents: '<Project Sdk="Microsoft.NET.Sdk"></Project>\n' }],
+      options: (started, released) => ({
+        csharpRunner: async () => {
+          started();
+          await released;
+          return {
+            stdout: 'csharp\n',
+            stderr: '',
+            exitCode: 0,
+            files: [
+              { path: 'first.txt', contents: 'csharp:first\n' },
+              { path: 'second.txt', contents: 'csharp:second\n' },
+            ],
+          };
+        },
+      }),
+    },
+  ];
+
+  for (const testCase of cases) {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const workspace = await createRuntimeWorkspace({
+      files: [
+        { path: 'first.txt', contents: 'first:initial\n' },
+        { path: 'second.txt', contents: 'second:initial\n' },
+        ...testCase.files,
+      ],
+      ...testCase.options(started, released),
+    });
+
+    const command = workspace.runCommand(testCase.command);
+    await startedPromise;
+    await workspace.writeFile('second.txt', `${testCase.name}:external\n`);
+    release();
+    const result = await command;
+
+    assertCondition(
+      result.exitCode === 116 &&
+        result.error?.code === 'ESTALE',
+      `${testCase.name} adapter should reject stale returned final-diff batches: ${JSON.stringify(result)}`
+    );
+    assertCondition(
+      await workspace.readFile('first.txt') === 'first:initial\n' &&
+        await workspace.readFile('second.txt') === `${testCase.name}:external\n`,
+      `${testCase.name} adapter stale final diff should not partially commit`
+    );
+  }
+}
+
+async function testWorkspaceFinalDiffTransactionRollsBackUnexpectedApplyFailure(): Promise<void> {
+  const events: RuntimeWorkspaceEvent[] = [];
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'first.txt', contents: 'first:initial\n' },
+      { path: 'second.txt', contents: 'second:initial\n' },
+    ],
+  });
+  const unsubscribe = workspace.watch((event) => events.push(event));
+  const throwingFile = {
+    path: 'second.txt',
+    get contents(): string {
+      throw new Error('synthetic final-diff apply failure');
+    },
+  };
+  let failed = false;
+
+  try {
+    await (workspace as RuntimeWorkspace & {
+      applyFinalDiffResultFiles(result: RuntimeCommandResult): Promise<RuntimeCommandResult>;
+    }).applyFinalDiffResultFiles({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      files: [
+        { path: 'first.txt', contents: 'first:changed\n' },
+        throwingFile as unknown as { path: string; contents: string },
+      ],
+    });
+  } catch (error) {
+    failed = error instanceof Error && error.message === 'synthetic final-diff apply failure';
+  } finally {
+    unsubscribe();
+  }
+
+  assertCondition(failed, 'synthetic final-diff apply failure should propagate to the caller');
+  assertCondition(
+    await workspace.readFile('first.txt') === 'first:initial\n' &&
+      await workspace.readFile('second.txt') === 'second:initial\n',
+    'unexpected final-diff apply failure should roll back already-applied paths'
+  );
+  assertCondition(
+    !events.some((event) => event.type === 'file-change' && event.phase === 'final-diff'),
+    `rolled-back final-diff transaction should not emit final-diff file-change events: ${JSON.stringify(events)}`
+  );
+  const kernelEvents = await workspace.readFile('/proc/tracekernel/events');
+  assertCondition(
+    kernelEvents.includes('fs-transaction-abort') && kernelEvents.includes('"rolledBack":true'),
+    `rolled-back final-diff transaction should expose rollback in kernel events: ${JSON.stringify(kernelEvents)}`
+  );
+}
+
+async function testWorkspaceFinalDiffUpdatesKernelInodeTable(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'old.txt', contents: 'old\n' },
+      { path: 'tree/child.txt', contents: 'child\n' },
+      { path: 'inode-final-diff.js', contents: 'console.log("inode")\n' },
+    ],
+    nodeRunner: async () => ({
+      stdout: 'inode\n',
+      stderr: '',
+      exitCode: 0,
+      files: [
+        { path: 'old.txt', deleted: true },
+        { path: 'tree', directory: true, deleted: true },
+        { path: 'new-dir/new.txt', contents: 'new\n' },
+      ],
+    }),
+  });
+  const oldStat = await workspace.stat('old.txt');
+  const childStat = await workspace.stat('tree/child.txt');
+  const result = await workspace.runCommand('node inode-final-diff.js');
+  const inodeTable = await workspace.readFile('/proc/tracekernel/inodes');
+
+  assertCondition(result.exitCode === 0, `final-diff inode command should succeed: ${JSON.stringify(result)}`);
+  assertCondition(
+    inodeTable.includes('\tnew-dir/new.txt') &&
+      !inodeTable.includes(`${oldStat.ino}\told.txt`) &&
+      !inodeTable.includes(`${childStat.ino}\ttree/child.txt`),
+    `final-diff commits should update the kernel inode table: ${JSON.stringify(inodeTable)}`
+  );
+}
+
+async function testWorkspaceMetadataIsConsistentAcrossLiveAndFinalDiffWrites(): Promise<void> {
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'metadata-final.js', contents: 'console.log("metadata")\n' },
+    ],
+    nodeRunner: async () => ({
+      stdout: 'metadata\n',
+      stderr: '',
+      exitCode: 0,
+      files: [{ path: 'final-metadata.txt', contents: 'final\n' }],
+    }),
+  });
+
+  await workspace.writeFile('live-metadata.txt', 'live\n');
+  const finalResult = await workspace.runCommand('node metadata-final.js');
+  const liveStat = await workspace.stat('live-metadata.txt');
+  const finalStat = await workspace.stat('final-metadata.txt');
+  const procStat = await workspace.stat('/proc/kernel/info');
+
+  assertCondition(finalResult.exitCode === 0, `metadata final-diff command should succeed: ${JSON.stringify(finalResult)}`);
+  for (const [label, stat] of [['live', liveStat], ['final', finalStat]] as const) {
+    assertCondition(
+      stat.isFile &&
+        !stat.isDirectory &&
+        stat.size === `${label}\n`.length &&
+        typeof stat.ino === 'number' &&
+        typeof stat.mode === 'number' &&
+        typeof stat.mtimeMs === 'number' &&
+        stat.nlink === 1,
+      `${label} workspace stat should expose stable metadata: ${JSON.stringify(stat)}`
+    );
+  }
+  assertCondition(
+    procStat.isFile &&
+      procStat.mode === 0o444 &&
+      procStat.mtimeMs === 0 &&
+      procStat.nlink === 1,
+    `virtual proc stat should expose deterministic metadata: ${JSON.stringify(procStat)}`
+  );
+}
+
+async function testWorkspaceConcurrentIndependentFinalDiffWrites(): Promise<void> {
+  let releaseCommands!: () => void;
+  const commandsReleased = new Promise<void>((resolve) => {
+    releaseCommands = resolve;
+  });
+  let bothStarted!: () => void;
+  const bothStartedPromise = new Promise<void>((resolve) => {
+    bothStarted = resolve;
+  });
+  const started = new Set<string>();
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'same-dir/a.txt', contents: 'a:initial\n' },
+      { path: 'same-dir/b.txt', contents: 'b:initial\n' },
+      { path: 'write-a.js', contents: 'console.log("a")\n' },
+      { path: 'write-b.js', contents: 'console.log("b")\n' },
+    ],
+    nodeRunner: async (request) => {
+      const label = request.scriptPath.endsWith('write-a.js') ? 'a' : 'b';
+      started.add(label);
+      if (started.size === 2) bothStarted();
+      await commandsReleased;
+      return {
+        stdout: `${label}:done\n`,
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: `same-dir/${label}.txt`, contents: `${label}:updated\n` }],
+      };
+    },
+  });
+
+  const commands = Promise.all([
+    workspace.runCommand('node write-a.js'),
+    workspace.runCommand('node write-b.js'),
+  ]);
+  await bothStartedPromise;
+  releaseCommands();
+  const [a, b] = await commands;
+
+  assertCondition(
+    a.exitCode === 0 && b.exitCode === 0,
+    `independent final-diff writes in the same directory should both commit: ${JSON.stringify({ a, b })}`
+  );
+  assertCondition(
+    await workspace.readFile('same-dir/a.txt') === 'a:updated\n' &&
+      await workspace.readFile('same-dir/b.txt') === 'b:updated\n',
+    'independent final-diff writes should update their own files'
+  );
+}
+
+async function testWorkspaceRenameConflictsWithStaleFinalDiffWrite(): Promise<void> {
+  let releaseCommand!: () => void;
+  const commandReleased = new Promise<void>((resolve) => {
+    releaseCommand = resolve;
+  });
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'target.txt', contents: 'initial\n' },
+      { path: 'rename-race.js', contents: 'console.log("race")\n' },
+    ],
+    nodeRunner: async () => {
+      commandStarted();
+      await commandReleased;
+      return {
+        stdout: 'race:done\n',
+        stderr: '',
+        exitCode: 0,
+        files: [{ path: 'target.txt', contents: 'command\n' }],
+      };
+    },
+  });
+
+  const command = workspace.runCommand('node rename-race.js');
+  await commandStartedPromise;
+  await workspace.moveFile('target.txt', 'renamed.txt');
+  releaseCommand();
+  const result = await command;
+
+  assertCondition(
+    result.exitCode === 116 &&
+      result.error?.code === 'ESTALE',
+    `rename should invalidate a stale final-diff write to the old path: ${JSON.stringify(result)}`
+  );
+  assertCondition(
+    await workspace.readFile('renamed.txt') === 'initial\n' &&
+      !(await workspace.exists('target.txt')),
+    'stale final-diff write should not resurrect a renamed file'
+  );
 }
 
 async function testPythonCommandAdapter(): Promise<void> {
@@ -2739,16 +4633,17 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   const linkResult = await workspace.runCommand([
     'node',
     '-e',
-    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, value) => error ? reject(error) : resolve(value))); fs.writeFileSync(\\"link-source.txt\\", \\"linked\\\\n\\"); fs.linkSync(\\"link-source.txt\\", \\"link-sync.txt\\"); await call((done) => fs.link(\\"link-source.txt\\", \\"link-callback.txt\\", done)); await fsp.link(\\"link-source.txt\\", \\"link-async.txt\\"); for (const op of [\\"readlink\\", \\"symlink\\", \\"symlink-dev\\", \\"link-proc\\"]) { try { if (op === \\"readlink\\") fs.readlinkSync(\\"link-source.txt\\"); else if (op === \\"symlink\\") fs.symlinkSync(\\"link-source.txt\\", \\"link-symlink.txt\\"); else if (op === \\"symlink-dev\\") await fsp.symlink(\\"link-source.txt\\", \\"/dev/stdout\\"); else await fsp.link(\\"/proc/kernel/info\\", \\"link-proc.txt\\"); console.log(op + \\":ok\\"); } catch (error) { console.log(op + \\":\\" + error.code); } } console.log(fs.readFileSync(\\"link-sync.txt\\", \\"utf8\\") + fs.readFileSync(\\"link-callback.txt\\", \\"utf8\\") + await fsp.readFile(\\"link-async.txt\\", \\"utf8\\"));"',
+    '"const fs = require(\\"node:fs\\"); const fsp = require(\\"node:fs/promises\\"); const call = (fn) => new Promise((resolve, reject) => fn((error, value) => error ? reject(error) : resolve(value))); fs.writeFileSync(\\"link-source.txt\\", \\"linked\\\\n\\"); fs.linkSync(\\"link-source.txt\\", \\"link-sync.txt\\"); await call((done) => fs.link(\\"link-source.txt\\", \\"link-callback.txt\\", done)); await fsp.link(\\"link-source.txt\\", \\"link-async.txt\\"); for (const op of [\\"readlink\\", \\"symlink\\", \\"symlink-dev\\", \\"link-proc\\"]) { try { if (op === \\"readlink\\") fs.readlinkSync(\\"link-source.txt\\"); else if (op === \\"symlink\\") fs.symlinkSync(\\"link-source.txt\\", \\"link-symlink.txt\\"); else if (op === \\"symlink-dev\\") await fsp.symlink(\\"link-source.txt\\", \\"/dev/stdout\\"); else await fsp.link(\\"/proc/kernel/info\\", \\"link-proc.txt\\"); console.log(op + \\":ok\\"); } catch (error) { console.log(op + \\":\\" + error.code); } } console.log(fs.readFileSync(\\"link-sync.txt\\", \\"utf8\\") + fs.readFileSync(\\"link-callback.txt\\", \\"utf8\\") + await fsp.readFile(\\"link-async.txt\\", \\"utf8\\")); fs.writeFileSync(\\"link-sync.txt\\", \\"mutated\\\\n\\"); const sourceStat = fs.statSync(\\"link-source.txt\\"); const callbackStat = fs.statSync(\\"link-callback.txt\\"); console.log(sourceStat.nlink + \\":\\" + callbackStat.nlink + \\":\\" + (sourceStat.ino === callbackStat.ino)); console.log(fs.readFileSync(\\"link-source.txt\\", \\"utf8\\") + fs.readFileSync(\\"link-async.txt\\", \\"utf8\\")); fs.unlinkSync(\\"link-source.txt\\"); console.log(fs.existsSync(\\"link-source.txt\\") + \\":\\" + fs.statSync(\\"link-sync.txt\\").nlink + \\":\\" + fs.readFileSync(\\"link-callback.txt\\", \\"utf8\\"));"',
   ].join(' '), { onEvent: (event) => linkEvents.push(event) });
   assertCondition(linkResult.exitCode === 0, `browser node link workflow should succeed: ${linkResult.stderr}`);
   assertCondition(
-    linkResult.stdout === 'readlink:EINVAL\nsymlink:ENOSYS\nsymlink-dev:EROFS\nlink-proc:EROFS\nlinked\nlinked\nlinked\n\n',
+    linkResult.stdout === 'readlink:EINVAL\nsymlink:ENOSYS\nsymlink-dev:EROFS\nlink-proc:EROFS\nlinked\nlinked\nlinked\n\n4:4:true\nmutated\nmutated\n\nfalse:3:mutated\n\n',
     `browser node link/readlink/symlink APIs should have stable kernel-aligned semantics: ${linkResult.stdout}`
   );
-  assertCondition(await workspace.readFile('link-sync.txt') === 'linked\n', 'browser node linkSync should persist linked file contents');
-  assertCondition(await workspace.readFile('link-callback.txt') === 'linked\n', 'browser node callback link should persist linked file contents');
-  assertCondition(await workspace.readFile('link-async.txt') === 'linked\n', 'browser node fs.promises.link should persist linked file contents');
+  await assertRejectsAsync(() => workspace.readFile('link-source.txt'), 'browser node unlink should remove only one hard-link name');
+  assertCondition(await workspace.readFile('link-sync.txt') === 'mutated\n', 'browser node hard-link writes should persist through linked names');
+  assertCondition(await workspace.readFile('link-callback.txt') === 'mutated\n', 'browser node callback hard link should share linked file contents');
+  assertCondition(await workspace.readFile('link-async.txt') === 'mutated\n', 'browser node fs.promises hard link should share linked file contents');
   assertCondition(
     linkEvents.some((event) =>
       event.type === 'file-change' &&
@@ -3047,6 +4942,19 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
     `browser node fd readFile/writeFile workflow stdout should match: ${fdFileResult.stdout}`
   );
   assertCondition(await workspace.readFile('fd-file.txt') === 'one\ntwo\nthree\n', 'browser node fd readFile/writeFile APIs should persist through kernel FS');
+
+  const fdUnlinkResult = await workspace.runCommand([
+    'node',
+    '-e',
+    '"const fs = require(\\"node:fs\\"); fs.writeFileSync(\\"unlink-open.txt\\", \\"before\\"); const fd = fs.openSync(\\"unlink-open.txt\\", \\"r+\\"); fs.unlinkSync(\\"unlink-open.txt\\"); console.log(fs.existsSync(\\"unlink-open.txt\\")); console.log(fs.readFileSync(fd, \\"utf8\\")); fs.writeSync(fd, \\"after\\", 0); const after = Buffer.alloc(6); fs.readSync(fd, after, 0, 6, 0); console.log(after.toString()); console.log(fs.fstatSync(fd).size); fs.closeSync(fd); try { fs.readFileSync(\\"unlink-open.txt\\"); } catch (error) { console.log(error.code); } fs.writeFileSync(\\"rename-open.txt\\", \\"old\\"); const renamed = fs.openSync(\\"rename-open.txt\\", \\"r+\\"); fs.renameSync(\\"rename-open.txt\\", \\"renamed-open.txt\\"); fs.writeSync(renamed, \\"new\\", 0); fs.closeSync(renamed); console.log(fs.readFileSync(\\"renamed-open.txt\\", \\"utf8\\"));"',
+  ].join(' '));
+  assertCondition(fdUnlinkResult.exitCode === 0, `browser node open fd unlink/rename workflow should succeed: ${fdUnlinkResult.stderr}`);
+  assertCondition(
+    fdUnlinkResult.stdout === 'false\nbefore\naftere\n6\nENOENT\nnew\n',
+    `browser node open descriptors should survive unlink and follow rename: ${fdUnlinkResult.stdout}`
+  );
+  await assertRejectsAsync(() => workspace.readFile('unlink-open.txt'), 'browser node unlink should remove pathname while open fd survives');
+  assertCondition(await workspace.readFile('renamed-open.txt') === 'new', 'browser node writes through a renamed open fd should persist at the new path');
 
   const fileHandleEvents: RuntimeCommandEvent[] = [];
   const fileHandleResult = await workspace.runCommand([
@@ -3731,6 +5639,40 @@ async function testBrowserJavaScriptProjectRunner(): Promise<void> {
   assertCondition(
     builtinResult.stdout === 'browser\n/tmp\ntrue\n1\n/workspace/lib/math.js\n',
     `browser node os/url builtins should expose desktop-shaped APIs: ${builtinResult.stdout}`
+  );
+}
+
+async function testBrowserJavaScriptProjectRunnerAbortSignal(): Promise<void> {
+  let commandStarted!: () => void;
+  const commandStartedPromise = new Promise<void>((resolve) => {
+    commandStarted = resolve;
+  });
+  const controller = new AbortController();
+  const workspace = await createRuntimeWorkspace({
+    files: [{ path: 'abort-browser.js', contents: 'await new Promise(() => {});\n' }],
+    nodeRunner: createBrowserJavaScriptProjectRunner(),
+  });
+
+  const command = workspace.runCommand('node abort-browser.js', {
+    signal: controller.signal,
+    onEvent: (event) => {
+      if (event.type === 'status' && event.phase === 'process-start') commandStarted();
+    },
+  });
+  await commandStartedPromise;
+  controller.abort();
+  const result = await Promise.race([
+    command,
+    new Promise<RuntimeCommandResult>((resolve) =>
+      setTimeout(() => resolve({ stdout: '', stderr: 'browser node did not stop after abort\n', exitCode: 124 }), 1_000)
+    ),
+  ]);
+
+  assertCondition(
+    result.exitCode === 143 &&
+      result.error?.code === 'EINTR' &&
+      result.error.detail?.signal === 'SIGTERM',
+    `browser node runner should convert aborts into kernel signal results: ${JSON.stringify(result)}`
   );
 }
 
@@ -6786,8 +8728,11 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
           'const procInfo = JSON.parse(fs.readFileSync("/proc/kernel/info", "utf8"));',
           'console.log(`${procInfo.user.username}:${procInfo.host.hostname}:${procInfo.workspace.root}`);',
           'console.log(fs.readFileSync("/proc/kernel/version", "utf8").trim());',
-          'console.log(fs.readdirSync("/proc").join(","));',
+          'const procEntries = fs.readdirSync("/proc");',
+          'console.log(`${procEntries.includes("kernel")}:${procEntries.includes("self")}:${procEntries.includes("tracekernel")}`);',
           'console.log(fs.readdirSync("/proc/kernel", { withFileTypes: true }).map((entry) => `${entry.name}:${entry.isFile()}`).join(","));',
+          'console.log(fs.readdirSync("/proc/tracekernel").join(","));',
+          'console.log(fs.readFileSync("/proc/tracekernel/processes", "utf8").includes("node /home/ada/weather-api/index.js"));',
           'console.log(`${fs.statSync("/proc").isDirectory()}:${fs.statSync("/proc/kernel/info").isFile()}`);',
           'console.log(`${fs.existsSync("/proc/self/mountinfo")}:${fs.existsSync("/proc/missing")}`);',
           'try { fs.accessSync("/proc/kernel/info", fs.constants.W_OK); } catch (error) { console.log(error.code); }',
@@ -6877,8 +8822,22 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
 
     const procInfo = JSON.parse(await workspace.readFile('/proc/kernel/info')) as typeof workspace.kernel.info;
     assertCondition(procInfo.workspace.root === '/home/ada/weather-api', 'browser workspace /proc should expose canonical workspace root');
-    assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self', 'browser workspace /proc should list virtual namespaces');
+    assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self,tracekernel', 'browser workspace /proc should list virtual namespaces');
     assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'browser workspace /proc/kernel should list info and version');
+    assertCondition(
+      (await workspace.readDir('/proc/tracekernel')).join(',') === 'events,inodes,locks,processes,sched',
+      'browser workspace /proc/tracekernel should expose dynamic kernel diagnostics'
+    );
+    const browserPs = await workspace.runCommand('ps -ef');
+    assertCondition(
+      browserPs.exitCode === 0 && browserPs.stdout.includes('tracekernel') && browserPs.stdout.includes('ps -ef'),
+      `browser workspace ps should use the shared kernel process table: ${JSON.stringify(browserPs)}`
+    );
+    const browserKernelEvents = await workspace.readFile('/proc/tracekernel/events');
+    assertCondition(
+      browserKernelEvents.includes('process-start') && browserKernelEvents.includes('process-exit'),
+      `browser workspace proc events should expose command lifecycle: ${JSON.stringify(browserKernelEvents)}`
+    );
 
     const outputEvents: RuntimeCommandEvent[] = [];
     const stdout = await workspace.runCommand('printf "browser-out\\n" > /dev/stdout', {
@@ -6922,8 +8881,10 @@ async function testBrowserProjectWorkspaceTraceKernelConfig(): Promise<void> {
         '42',
         'ada:tracevm-browser:/home/ada/weather-api',
         'tracekernel 0.7.0-beta6',
-        'kernel,self',
+        'true:true:true',
         'info:true,version:true',
+        'events,inodes,locks,processes,sched',
+        'true',
         'true:true',
         'true:false',
         'EACCES',
@@ -7933,6 +9894,8 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     },
   });
   await workspace.mkdir('src/nested');
+  await workspace.writeFile('src/server.ts', '');
+  await workspace.writeFile('src/service.ts', '');
 
   const session = workspace.createTerminalSession();
   assertCondition(session.cwd === '/home/obi/weather-api', `terminal session should start at workspace root: ${session.cwd}`);
@@ -7971,6 +9934,12 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   assertCondition(homePwd.stdout === '/home/obi\n', `terminal pwd should allow home cwd: ${JSON.stringify(homePwd)}`);
   const homeLs = await session.run('ls');
   assertCondition(homeLs.stdout.includes('weather-api'), `terminal ls from home should show workspace directory: ${JSON.stringify(homeLs)}`);
+  const homeCompletion = await workspace.completeCommand('cd we', 'cd we'.length, { cwd: session.cwd });
+  assertCondition(
+    homeCompletion?.input === 'cd weather-api/' &&
+      homeCompletion.cursor === 'cd weather-api/'.length,
+    `workspace command completion should see terminal home cwd entries: ${JSON.stringify(homeCompletion)}`
+  );
   const homeWrite = await session.run('mkdir outside-project');
   assertCondition(
     homeWrite.exitCode !== 0 &&
@@ -7979,6 +9948,30 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   );
   const cdBackToWorkspace = await session.run('cd weather-api');
   assertCondition(cdBackToWorkspace.exitCode === 0 && session.cwd === '/home/obi/weather-api', `terminal should return from home to workspace: ${session.cwd}`);
+  const workspaceCompletion = await workspace.completeCommand('cd sr', 'cd sr'.length, { cwd: session.cwd });
+  assertCondition(
+    workspaceCompletion?.input === 'cd src/' &&
+      workspaceCompletion.cursor === 'cd src/'.length &&
+      workspaceCompletion.matches.length === 1 &&
+      workspaceCompletion.matches[0]?.kind === 'directory',
+    `workspace command completion should complete project directory entries: ${JSON.stringify(workspaceCompletion)}`
+  );
+  const partialFileCompletion = await workspace.completeCommand('cat src/se', 'cat src/se'.length, { cwd: session.cwd });
+  assertCondition(
+    partialFileCompletion?.input === 'cat src/serv' &&
+      partialFileCompletion.cursor === 'cat src/serv'.length &&
+      partialFileCompletion.replacementChanged &&
+      partialFileCompletion.matches.map((match) => `${match.name}:${match.kind}`).join(',') === 'server.ts:file,service.ts:file',
+    `workspace command completion should extend ambiguous file prefixes: ${JSON.stringify(partialFileCompletion)}`
+  );
+  const unchangedFileCompletion = await workspace.completeCommand('cat src/serv', 'cat src/serv'.length, { cwd: session.cwd });
+  assertCondition(
+    unchangedFileCompletion?.input === 'cat src/serv' &&
+      unchangedFileCompletion.cursor === 'cat src/serv'.length &&
+      !unchangedFileCompletion.replacementChanged &&
+      unchangedFileCompletion.matches.map((match) => match.name).join(',') === 'server.ts,service.ts',
+    `workspace command completion should expose ambiguous choices when the prefix cannot advance: ${JSON.stringify(unchangedFileCompletion)}`
+  );
   const aliasCd = await session.run('cd /workspace/src/nested');
   assertCondition(aliasCd.exitCode === 0, `terminal cd should accept workspace alias: ${aliasCd.stderr}`);
   assertCondition(session.cwd === '/home/obi/weather-api/src/nested', `terminal alias cd should canonicalize cwd: ${session.cwd}`);
@@ -8022,6 +10015,177 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
     stdinSession.inputState.mode === 'command' && stdinSession.inputState.label === 'obi@tracevm weather-api %',
     `terminal input state should return to command prompt after stdin run: ${JSON.stringify(stdinSession.inputState)}`
   );
+
+  let releaseTerminalCommand!: () => void;
+  const terminalCommandReleased = new Promise<void>((resolve) => {
+    releaseTerminalCommand = resolve;
+  });
+  let terminalCommandStarted!: () => void;
+  const terminalCommandStartedPromise = new Promise<void>((resolve) => {
+    terminalCommandStarted = resolve;
+  });
+  const terminalConcurrencyWorkspace = await createRuntimeWorkspace({
+    files: [{ path: 'slow-terminal.js', contents: 'console.log("slow")\n' }],
+    nodeRunner: async () => {
+      terminalCommandStarted();
+      await terminalCommandReleased;
+      return { stdout: 'slow:done\n', stderr: '', exitCode: 0 };
+    },
+  });
+  const oneCommandSession = terminalConcurrencyWorkspace.createTerminalSession();
+  const firstTerminalRun = oneCommandSession.run('node slow-terminal.js');
+  await terminalCommandStartedPromise;
+  const foregroundTerminalPid = await processPidForCommand(terminalConcurrencyWorkspace, 'node slow-terminal.js');
+  const foregroundTerminalStatus = await terminalConcurrencyWorkspace.readFile(`/proc/${foregroundTerminalPid}/status`);
+  assertCondition(
+    foregroundTerminalStatus.includes('Tty:\t/dev/tty\n') &&
+      foregroundTerminalStatus.includes('Foreground:\t1\n'),
+    `foreground terminal session command should own the terminal tty: ${JSON.stringify(foregroundTerminalStatus)}`
+  );
+  const sameSessionSecondRun = await oneCommandSession.run('pwd');
+  assertCondition(
+    sameSessionSecondRun.exitCode === 16 &&
+      sameSessionSecondRun.error?.code === 'EBUSY' &&
+      oneCommandSession.inputState.mode === 'busy',
+    `same terminal session should reject overlapping foreground commands and stay busy: ${JSON.stringify({ sameSessionSecondRun, inputState: oneCommandSession.inputState })}`
+  );
+  const parallelSession = terminalConcurrencyWorkspace.createTerminalSession();
+  const parallelPwd = await parallelSession.run('pwd');
+  assertCondition(
+    parallelPwd.exitCode === 0 && parallelPwd.stdout === '/workspace\n',
+    `a separate terminal session should run while another session is busy: ${JSON.stringify(parallelPwd)}`
+  );
+  releaseTerminalCommand();
+  const firstTerminalResult = await firstTerminalRun;
+  assertCondition(
+    firstTerminalResult.exitCode === 0 &&
+      firstTerminalResult.stdout === 'slow:done\n' &&
+      oneCommandSession.inputState.mode === 'command',
+    `busy terminal session should return to command mode after its command completes: ${JSON.stringify({ firstTerminalResult, inputState: oneCommandSession.inputState })}`
+  );
+
+  let releaseBackgroundTerminalCommand!: () => void;
+  const backgroundTerminalCommandReleased = new Promise<void>((resolve) => {
+    releaseBackgroundTerminalCommand = resolve;
+  });
+  let backgroundTerminalCommandStarted!: () => void;
+  const backgroundTerminalCommandStartedPromise = new Promise<void>((resolve) => {
+    backgroundTerminalCommandStarted = resolve;
+  });
+  const terminalBackgroundWorkspace = await createRuntimeWorkspace({
+    files: [{ path: 'background-terminal.js', contents: 'console.log("background")\n' }],
+    nodeRunner: async () => {
+      backgroundTerminalCommandStarted();
+      await backgroundTerminalCommandReleased;
+      return { stdout: 'background:done\n', stderr: '', exitCode: 0 };
+    },
+  });
+  const backgroundSession = terminalBackgroundWorkspace.createTerminalSession();
+  const backgroundStart = await backgroundSession.run('node background-terminal.js &');
+  assertCondition(
+    backgroundStart.exitCode === 0 && backgroundSession.inputState.mode === 'command',
+    `terminal background command should return the prompt immediately: ${JSON.stringify({ backgroundStart, inputState: backgroundSession.inputState })}`
+  );
+  await backgroundTerminalCommandStartedPromise;
+  const backgroundPwd = await backgroundSession.run('pwd');
+  assertCondition(
+    backgroundPwd.exitCode === 0 && backgroundPwd.stdout === '/workspace\n',
+    `terminal session should accept a new foreground command while a background job runs: ${JSON.stringify(backgroundPwd)}`
+  );
+  const backgroundPid = await processPidForCommand(terminalBackgroundWorkspace, 'node background-terminal.js');
+  const backgroundStatus = await terminalBackgroundWorkspace.readFile(`/proc/${backgroundPid}/status`);
+  assertCondition(
+    backgroundStatus.includes('Tty:\t/dev/tty\n') &&
+      backgroundStatus.includes('Foreground:\t0\n'),
+    `terminal background job should keep the terminal tty without owning the foreground: ${JSON.stringify(backgroundStatus)}`
+  );
+  const backgroundJobs = await backgroundSession.run('jobs -l');
+  assertCondition(
+    backgroundJobs.exitCode === 0 &&
+      backgroundJobs.stdout.includes(`[1]- ${backgroundPid}\tRunning\tbackground\t/dev/tty\tnode background-terminal.js\n`),
+    `terminal jobs should list active background jobs: ${JSON.stringify(backgroundJobs)}`
+  );
+  releaseBackgroundTerminalCommand();
+  const backgroundWait = await backgroundSession.run(`wait ${backgroundPid}`);
+  assertCondition(backgroundWait.exitCode === 0, `terminal wait should reap background job: ${JSON.stringify(backgroundWait)}`);
+
+  let releaseSemicolonBackgroundCommand!: () => void;
+  const semicolonBackgroundCommandReleased = new Promise<void>((resolve) => {
+    releaseSemicolonBackgroundCommand = resolve;
+  });
+  let semicolonBackgroundCommandStarted!: () => void;
+  const semicolonBackgroundCommandStartedPromise = new Promise<void>((resolve) => {
+    semicolonBackgroundCommandStarted = resolve;
+  });
+  const terminalSemicolonWorkspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'first-terminal.js', contents: 'console.log("first")\n' },
+      { path: 'background-terminal.js', contents: 'console.log("background")\n' },
+    ],
+    nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('first-terminal.js')) {
+        return { stdout: 'first:done\n', stderr: '', exitCode: 0 };
+      }
+      semicolonBackgroundCommandStarted();
+      await semicolonBackgroundCommandReleased;
+      return { stdout: 'background:done\n', stderr: '', exitCode: 0 };
+    },
+  });
+  const semicolonSession = terminalSemicolonWorkspace.createTerminalSession();
+  const semicolonBackgroundStart = await semicolonSession.run('node first-terminal.js ; node background-terminal.js &');
+  assertCondition(
+    semicolonBackgroundStart.exitCode === 0 &&
+      semicolonBackgroundStart.stdout === 'first:done\n' &&
+      semicolonSession.inputState.mode === 'command',
+    `terminal semicolon list should background only the command terminated by &: ${JSON.stringify({ semicolonBackgroundStart, inputState: semicolonSession.inputState })}`
+  );
+  await semicolonBackgroundCommandStartedPromise;
+  const semicolonBackgroundPid = await processPidForCommand(terminalSemicolonWorkspace, 'node background-terminal.js');
+  releaseSemicolonBackgroundCommand();
+  const semicolonBackgroundWait = await semicolonSession.run(`wait ${semicolonBackgroundPid}`);
+  assertCondition(semicolonBackgroundWait.exitCode === 0, `terminal wait should reap semicolon background job: ${JSON.stringify(semicolonBackgroundWait)}`);
+
+  let releaseAndBackgroundCommand!: () => void;
+  const andBackgroundCommandReleased = new Promise<void>((resolve) => {
+    releaseAndBackgroundCommand = resolve;
+  });
+  let andBackgroundCommandStarted!: () => void;
+  const andBackgroundCommandStartedPromise = new Promise<void>((resolve) => {
+    andBackgroundCommandStarted = resolve;
+  });
+  const terminalAndWorkspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'first-terminal.js', contents: 'console.log("first")\n' },
+      { path: 'background-terminal.js', contents: 'console.log("background")\n' },
+    ],
+    nodeRunner: async (request) => {
+      if (request.scriptPath.endsWith('first-terminal.js')) {
+        return { stdout: 'first:done\n', stderr: '', exitCode: 0 };
+      }
+      andBackgroundCommandStarted();
+      await andBackgroundCommandReleased;
+      return { stdout: 'background:done\n', stderr: '', exitCode: 0 };
+    },
+  });
+  const andSession = terminalAndWorkspace.createTerminalSession();
+  const andBackgroundStart = await andSession.run('node first-terminal.js && node background-terminal.js &');
+  assertCondition(
+    andBackgroundStart.exitCode === 0 &&
+      andBackgroundStart.stdout === '' &&
+      andSession.inputState.mode === 'command',
+    `terminal && list should background the whole and-or command: ${JSON.stringify({ andBackgroundStart, inputState: andSession.inputState })}`
+  );
+  await andBackgroundCommandStartedPromise;
+  const andBackgroundPid = await processPidForCommand(terminalAndWorkspace, 'node first-terminal.js && node background-terminal.js');
+  const andBackgroundJobs = await andSession.run('jobs -l');
+  assertCondition(
+    andBackgroundJobs.exitCode === 0 &&
+      andBackgroundJobs.stdout.includes(`[1]- ${andBackgroundPid}\tRunning\tbackground\t/dev/tty\tnode first-terminal.js && node background-terminal.js\n`),
+    `terminal jobs should preserve && as part of the background job command: ${JSON.stringify(andBackgroundJobs)}`
+  );
+  releaseAndBackgroundCommand();
+  const andBackgroundWait = await andSession.run(`wait ${andBackgroundPid}`);
+  assertCondition(andBackgroundWait.exitCode === 0, `terminal wait should reap && background job: ${JSON.stringify(andBackgroundWait)}`);
 
   const directEvents: RuntimeCommandEvent[] = [];
   await workspace.runCommand('node /workspace/main.js', { onEvent: (event) => directEvents.push(event) });
@@ -8225,6 +10389,28 @@ async function testProjectSessionMetadataAndCommands(): Promise<void> {
       stepStatuses[2]?.detail?.cwd === '/home/user/weather-api',
     `project session step status details should expose command/cwd metadata: ${JSON.stringify(stepStatuses)}`
   );
+  const terminalStepEvents: RuntimeCommandEvent[] = [];
+  const terminalCheck = await workspace.runProjectCommand('check', {
+    presentation: 'terminal',
+    onEvent: (event) => terminalStepEvents.push(event),
+  });
+  assertCondition(
+    terminalCheck.stdout === check.stdout &&
+      !terminalStepEvents.some((event) => event.type === 'status') &&
+      terminalStepEvents.some((event) => event.type === 'output' && event.stream === 'stdout'),
+    `terminal project command presentation should hide status events while preserving output: ${JSON.stringify(terminalStepEvents)}`
+  );
+  await workspace.runCommand('tracekernelctl verbose on');
+  const verboseTerminalStepEvents: RuntimeCommandEvent[] = [];
+  await workspace.runProjectCommand('check', {
+    presentation: 'terminal',
+    onEvent: (event) => verboseTerminalStepEvents.push(event),
+  });
+  assertCondition(
+    verboseTerminalStepEvents.some((event) => event.type === 'status' && event.phase === 'project-step-start'),
+    `terminal project command presentation should honor tracekernel verbose mode: ${JSON.stringify(verboseTerminalStepEvents)}`
+  );
+  await workspace.runCommand('tracekernelctl verbose off');
 
   const persist = await workspace.runProjectCommand('persist');
   assertCondition(
@@ -9117,7 +11303,7 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   assertCondition(await workspace.exists('/proc/kernel/version'), 'kernel /proc version should exist');
   const procVersionStat = await workspace.stat('/proc/kernel/version');
   assertCondition(procVersionStat.isFile && !procVersionStat.isDirectory, 'kernel /proc version should stat as file');
-  assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self', 'kernel /proc should list virtual namespaces');
+  assertCondition((await workspace.readDir('/proc')).join(',') === 'kernel,self,tracekernel', 'kernel /proc should list virtual namespaces');
   assertCondition((await workspace.readDir('/proc/kernel')).join(',') === 'info,version', 'kernel /proc/kernel should list info and version');
   await assertRejectsAsync(() => workspace.writeFile('/proc/kernel/info', '{}\n'), 'kernel /proc should be read-only');
 
@@ -9388,6 +11574,36 @@ function testPathValidation(): void {
 async function main(): Promise<void> {
   testPathValidation();
   await testWorkspaceFilesAndCommands();
+  await testWorkspaceConcurrentAppendFile();
+  await testWorkspaceConcurrentFilesystemMutations();
+  await testWorkspaceConcurrentRunCommandSerialization();
+  await testWorkspaceRunCommandsCanOverlap();
+  await testWorkspaceSchedulerQueuesBeyondConcurrencyLimit();
+  await testWorkspaceSchedulerRejectsBeyondQueueLimit();
+  await testWorkspaceSchedulerQueueSlotReleasedAfterCancellation();
+  await testWorkspaceProcProcessState();
+  await testWorkspaceTraceKernelKillProcess();
+  await testWorkspaceTraceKernelKillPropagatesToNativeNodeRunner();
+  await testWorkspaceTraceKernelKillProcessGroup();
+  await testWorkspaceTraceKernelWaitBlocksUntilZombie();
+  await testWorkspaceQueuedCommandCancellation();
+  await testWorkspaceVfsLockWaitCancellation();
+  await testWorkspaceVfsLockHolderCancellationReleasesWaiters();
+  await testWorkspaceFinalDiffLockWaitCancellation();
+  await testWorkspaceLiveFilesystemSyscallEventsAndCancellation();
+  await testWorkspaceShellProcessUtilities();
+  await testWorkspaceDestroyWaitsForActiveCommand();
+  await testWorkspaceConcurrentMutationDoesNotEnterCommandEvents();
+  await testWorkspaceStaleFinalDiffIsRejected();
+  await testWorkspaceConcurrentStaleFinalDiffStress();
+  await testWorkspaceFinalDiffTransactionRejectsWithoutPartialCommit();
+  await testWorkspaceFinalDiffDirectoryDeleteTransactionIsAtomic();
+  await testWorkspaceAdapterFinalDiffTransactionsRejectStaleBatches();
+  await testWorkspaceFinalDiffTransactionRollsBackUnexpectedApplyFailure();
+  await testWorkspaceFinalDiffUpdatesKernelInodeTable();
+  await testWorkspaceMetadataIsConsistentAcrossLiveAndFinalDiffWrites();
+  await testWorkspaceConcurrentIndependentFinalDiffWrites();
+  await testWorkspaceRenameConflictsWithStaleFinalDiffWrite();
   await testPythonCommandAdapter();
   await testNodeCommandAdapter();
   await testPythonNodeCommandAdapterGlobScripts();
@@ -9415,6 +11631,7 @@ async function main(): Promise<void> {
   await testBrowserJavaScriptProjectRunnerKernelDeviceInventory();
   await testProjectJavaScriptRunnersPreserveEmptyDirectories();
   await testBrowserJavaScriptProjectRunner();
+  await testBrowserJavaScriptProjectRunnerAbortSignal();
   await testBrowserJavaScriptProjectRunnerCwd();
   await testBrowserJavaScriptProjectRunnerStdin();
   await testBrowserJavaScriptProjectRunnerLiveIoEvents();

@@ -54,12 +54,18 @@ export interface RuntimeKernelWorkspaceConfig {
   startedAt?: string | Date;
 }
 
+export interface RuntimeTraceKernelSchedulerConfig {
+  maxConcurrentCommands?: number;
+  maxQueuedCommands?: number;
+}
+
 export interface RuntimeTraceKernelConfig {
   version?: string;
   user?: RuntimeKernelUserConfig;
   host?: RuntimeKernelHostConfig;
   workspace?: RuntimeKernelWorkspaceConfig;
   workspaceAlias?: string | false;
+  scheduler?: RuntimeTraceKernelSchedulerConfig;
 }
 
 export interface RuntimeKernelUserInfo {
@@ -190,7 +196,26 @@ export interface RuntimeCommandOptions {
   stdinPipe?: RuntimeCommandStdinPipe;
   signal?: AbortSignal;
   args?: string[];
+  presentation?: 'programmatic' | 'terminal';
+  foreground?: boolean;
+  retainOnExit?: boolean;
   onEvent?: RuntimeCommandEventHandler;
+}
+
+export interface RuntimeCommandCompletionMatch {
+  name: string;
+  kind: 'file' | 'directory';
+}
+
+export interface RuntimeCommandCompletion {
+  input: string;
+  cursor: number;
+  matches: RuntimeCommandCompletionMatch[];
+  replacementChanged: boolean;
+}
+
+export interface RuntimeCommandCompletionOptions {
+  cwd?: string;
 }
 
 export interface RuntimeCommandStdinSharedBuffer {
@@ -324,6 +349,38 @@ export interface RuntimeCommandResult {
   stderr: string;
   exitCode: number;
   files?: RuntimeFileChange[];
+  error?: RuntimeCommandError;
+}
+
+const RUNTIME_SIGNAL_EXIT_CODES = new Map<string, number>([
+  ['SIGHUP', 1],
+  ['SIGINT', 2],
+  ['SIGQUIT', 3],
+  ['SIGKILL', 9],
+  ['SIGTERM', 15],
+]);
+
+export function runtimeAbortSignalName(signal: AbortSignal | undefined, fallback = 'SIGTERM'): string {
+  const reason = signal?.reason as { signal?: unknown } | undefined;
+  const raw = typeof reason?.signal === 'string' && reason.signal.trim()
+    ? reason.signal.trim()
+    : fallback;
+  const normalized = raw.toUpperCase().startsWith('SIG') ? raw.toUpperCase() : `SIG${raw.toUpperCase()}`;
+  return RUNTIME_SIGNAL_EXIT_CODES.has(normalized) ? normalized : fallback;
+}
+
+export function runtimeSignalExitCode(signalName: string): number {
+  const normalized = signalName.toUpperCase().startsWith('SIG') ? signalName.toUpperCase() : `SIG${signalName.toUpperCase()}`;
+  return 128 + (RUNTIME_SIGNAL_EXIT_CODES.get(normalized) ?? RUNTIME_SIGNAL_EXIT_CODES.get('SIGTERM')!);
+}
+
+export interface RuntimeCommandError {
+  code: string;
+  message: string;
+  errno?: number;
+  syscall?: string;
+  path?: string;
+  detail?: Record<string, unknown>;
 }
 
 export type RuntimeCommandEventStream = 'stdout' | 'stderr';
@@ -465,6 +522,10 @@ export function filterRuntimeCommandResultFiles(
 
 function runtimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isRuntimeAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 export class RuntimeProjectOutputTracker {
@@ -651,13 +712,19 @@ export async function runRuntimeProjectWorkerBridge<
     await liveIo.flush();
   } catch (error) {
     const message = runtimeErrorMessage(error);
+    const aborted = isRuntimeAbortError(error) || options.request.signal?.aborted;
+    const signalName = aborted ? runtimeAbortSignalName(options.request.signal) : undefined;
     const failedResult = {
       stdout: '',
-      stderr: message ? `${message}\n` : 'Runtime project worker failed.\n',
-      exitCode: 1,
+      stderr: message ? `${message}\n` : aborted ? 'Execution aborted\n' : 'Runtime project worker failed.\n',
+      exitCode: signalName ? runtimeSignalExitCode(signalName) : 1,
     } as Result;
     liveIo.emitMissingFinalOutput(failedResult, (stream, data) => io.output(stream, data));
-    io.status(options.finishPhase, options.finishMessage, { exitCode: failedResult.exitCode, error: message });
+    io.status(options.finishPhase, options.finishMessage, {
+      exitCode: failedResult.exitCode,
+      error: message,
+      ...(signalName ? { signal: signalName } : {}),
+    });
     return failedResult;
   }
   const commandResult = liveIo.filterAppliedResultFiles(result);
@@ -689,6 +756,11 @@ export interface RuntimeWorkspaceKernel {
 export interface RuntimeWorkspaceStat {
   isFile: boolean;
   isDirectory: boolean;
+  ino?: number;
+  mode?: number;
+  size?: number;
+  mtimeMs?: number;
+  nlink?: number;
 }
 
 export interface RuntimeWorkspaceRemoveOptions {
@@ -791,6 +863,7 @@ export interface RuntimeWorkspace {
   isReadOnly(path: string): boolean;
   runCommand(command: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
   runProjectCommand(name: string, options?: RuntimeCommandOptions): Promise<RuntimeCommandResult>;
+  completeCommand(input: string, cursor: number, options?: RuntimeCommandCompletionOptions): Promise<RuntimeCommandCompletion | null>;
   createTerminalSession(options?: RuntimeProjectTerminalSessionOptions): RuntimeProjectTerminalSession;
   checkExpiration(now?: Date | string | number): Promise<RuntimeProjectSessionLifecycle | null>;
   destroy(options?: { reason?: string; clearStorage?: boolean }): Promise<void>;
