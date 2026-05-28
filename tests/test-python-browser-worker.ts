@@ -972,6 +972,7 @@ async function main(): Promise<void> {
           method: request.method,
           path: request.path,
           body: request.body || '',
+          client: request.headers['x-test'] || request.headers['content-type'] || '',
         }) + '\\n',
       }));
       const outboundHttpRun = await send('execute-project-python', {
@@ -1814,9 +1815,9 @@ async function main(): Promise<void> {
     assertCondition(results.outboundHttpRun.exitCode === 0, `Python outbound HTTP shims should succeed: ${results.outboundHttpRun.stderr}`);
     assertCondition(
       results.outboundHttpRun.stdout === [
-        'urllib:200:{"method":"GET","path":"/urllib?x=1","body":""}',
-        'http.client:201:{"method":"POST","path":"/client","body":"payload"}',
-        'requests:201:{"method":"POST","path":"/requests","body":"{\\"ok\\":true}"}',
+        'urllib:200:{"method":"GET","path":"/urllib?x=1","body":"","client":""}',
+        'http.client:201:{"method":"POST","path":"/client","body":"payload","client":"yes"}',
+        'requests:201:{"method":"POST","path":"/requests","body":"{\\"ok\\":true}","client":"application/json"}',
         '',
       ].join('\n'),
       `Python outbound HTTP shims should dispatch through TraceKernel: ${JSON.stringify(results.outboundHttpRun.stdout)}`

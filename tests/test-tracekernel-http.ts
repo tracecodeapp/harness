@@ -154,6 +154,27 @@ async function main(): Promise<void> {
           '',
         ].join('\n'),
       },
+      {
+        path: 'conflict-server.js',
+        contents: [
+          'const http = require("node:http");',
+          'try {',
+          '  http.createServer((req, res) => res.end("unexpected\\n")).listen(3500, "127.0.0.1");',
+          '  console.log("unexpected");',
+          '} catch (error) {',
+          '  console.log(error.code);',
+          '}',
+          '',
+        ].join('\n'),
+      },
+      {
+        path: 'project-listener.js',
+        contents: [
+          'const http = require("node:http");',
+          'http.createServer((req, res) => res.end("project\\n")).listen(3501, "127.0.0.1");',
+          '',
+        ].join('\n'),
+      },
     ],
     kernel: { scheduler: { maxConcurrentCommands: 4 } },
     nodeRunner: createBrowserJavaScriptProjectRunner(),
@@ -273,6 +294,64 @@ async function main(): Promise<void> {
     );
     const afterMockCloseCurl = await workspace.runCommand('curl -s http://localhost:3400/from-curl');
     assertCondition(afterMockCloseCurl.exitCode === 7, `closed consumer-owned listener should refuse connections: ${JSON.stringify(afterMockCloseCurl)}`);
+
+    const ephemeralMock = workspace.http.listen({ host: '127.0.0.1', port: 0 }, () => ({
+      status: 200,
+      headers: { 'content-type': 'text/plain' },
+      body: 'ephemeral\n',
+    }));
+    assertCondition(ephemeralMock.info.pid === 0, `ephemeral consumer listener should be system-owned: ${JSON.stringify(ephemeralMock.info)}`);
+    assertCondition(ephemeralMock.info.port >= 49152, `consumer listen(0) should allocate an ephemeral port: ${JSON.stringify(ephemeralMock.info)}`);
+    const ephemeralCurl = await workspace.runCommand(`curl -s http://localhost:${ephemeralMock.info.port}/`);
+    assertCondition(ephemeralCurl.exitCode === 0, `consumer ephemeral listener should be reachable: ${JSON.stringify(ephemeralCurl)}`);
+    assertCondition(ephemeralCurl.stdout === 'ephemeral\n', `consumer ephemeral listener should answer requests: ${ephemeralCurl.stdout}`);
+    ephemeralMock.close();
+
+    const conflictMock = workspace.http.listen({ host: '127.0.0.1', port: 3500 }, () => ({
+      status: 200,
+      body: 'mock\n',
+    }));
+    const conflictProject = await workspace.runCommand('node conflict-server.js');
+    assertCondition(conflictProject.exitCode === 0, `project bind conflict command should finish: ${JSON.stringify(conflictProject)}`);
+    assertCondition(conflictProject.stdout === 'EADDRINUSE\n', `consumer listener should conflict with project bind: ${conflictProject.stdout}`);
+    conflictMock.close();
+
+    const projectStart = await terminal.run('node project-listener.js &');
+    assertCondition(projectStart.exitCode === 0, `project conflict listener should start: ${JSON.stringify(projectStart)}`);
+    const projectConflictListeners = await waitForListener(workspace, 3501);
+    let consumerConflictError = '';
+    try {
+      workspace.http.listen({ host: '127.0.0.1', port: 3501 }, () => ({ status: 200, body: 'unexpected\n' }));
+    } catch (error) {
+      consumerConflictError = error instanceof Error ? error.message : String(error);
+    }
+    assertCondition(
+      consumerConflictError.includes('EADDRINUSE'),
+      `project listener should conflict with consumer bind: ${consumerConflictError}`
+    );
+    const projectConflictRow = projectConflictListeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3501\t'));
+    const projectConflictPid = projectConflictRow?.split('\t')[1];
+    assertCondition(projectConflictPid !== undefined, `project conflict listener row should include pid: ${projectConflictListeners}`);
+    const projectConflictKilled = await workspace.runCommand(`kill ${projectConflictPid}`);
+    assertCondition(projectConflictKilled.exitCode === 0, `project conflict listener should be killable: ${JSON.stringify(projectConflictKilled)}`);
+    await workspace.runCommand(`wait ${projectConflictPid}`);
+
+    const failingMock = workspace.http.listen({ host: '127.0.0.1', port: 3502 }, () => {
+      throw new Error('mock exploded');
+    });
+    const failingResponse = await workspace.http.request({ url: 'http://localhost:3502/fail' });
+    assertCondition(failingResponse.status === 500, `consumer listener exceptions should return 500: ${JSON.stringify(failingResponse)}`);
+    assertCondition(failingResponse.body === 'mock exploded\n', `consumer listener exception body should include message: ${JSON.stringify(failingResponse)}`);
+    failingMock.close();
+
+    const disposableMock = workspace.http.listen({ host: '127.0.0.1', port: 3503 }, () => ({
+      status: 200,
+      body: 'disposed?\n',
+    }));
+    assertCondition(disposableMock.info.pid === 0, `disposable listener should be system-owned: ${JSON.stringify(disposableMock.info)}`);
+    workspace.dispose();
+    const afterDispose = await workspace.http.request({ url: 'http://localhost:3503/' });
+    assertCondition(afterDispose.status === 0, `dispose should clear consumer-owned listeners: ${JSON.stringify(afterDispose)}`);
 
     const listenerRow = listeners.split('\n').find((line) => line.includes('\thttp\t127.0.0.1\t3300\t'));
     const serverPid = listenerRow?.split('\t')[1];
