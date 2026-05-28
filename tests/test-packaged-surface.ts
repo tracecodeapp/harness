@@ -56,6 +56,8 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     'dist/project-node.d.ts',
     'dist/zlib-browser-shim.js',
     'dist/zlib-browser-shim.cjs',
+    'dist/async-hooks-browser-shim.js',
+    'dist/async-hooks-browser-shim.cjs',
     'dist/core.js',
     'dist/core.cjs',
     'dist/python.js',

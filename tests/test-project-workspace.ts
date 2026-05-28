@@ -6137,6 +6137,63 @@ async function testTraceKernelHttpPythonRunnerBridge(): Promise<void> {
   await workspace.runCommand(`wait ${serverPid}`);
 }
 
+async function testTraceKernelHttpPythonRunnerClientBridge(): Promise<void> {
+  const receivedRequests: Array<{ method: string; path: string; body?: string }> = [];
+  const workspace = await createRuntimeWorkspace({
+    files: [
+      { path: 'client.py', contents: 'print("client")\n' },
+    ],
+    pythonRunner: async (request) => {
+      const response = await request.kernelHttp?.dispatch({
+        method: 'POST',
+        url: 'http://localhost:3210/from-python-runner',
+        path: '/from-python-runner',
+        headers: { 'content-type': 'application/json', 'x-client': 'python-runner' },
+        rawHeaders: [['content-type', 'application/json'], ['x-client', 'python-runner']],
+        body: JSON.stringify({ scriptPath: request.scriptPath }),
+      });
+      return {
+        stdout: `${response?.status}:${response?.body ?? ''}`,
+        stderr: '',
+        exitCode: response?.status === 202 ? 0 : 1,
+      };
+    },
+  });
+  const mockServer = workspace.http.listen({ host: '127.0.0.1', port: 3210 }, (request) => {
+    receivedRequests.push({
+      method: request.method,
+      path: request.path,
+      ...(request.body !== undefined ? { body: request.body } : {}),
+    });
+    return {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        method: request.method,
+        path: request.path,
+        body: request.body ?? '',
+        client: request.headers?.['x-client'] ?? '',
+      }) + '\n',
+    };
+  });
+
+  const result = await workspace.runCommand('python3 client.py');
+  assertCondition(result.exitCode === 0, `Python project runner should call consumer-owned listener: ${JSON.stringify(result)}`);
+  assertCondition(
+    result.stdout === '202:{"method":"POST","path":"/from-python-runner","body":"{\\"scriptPath\\":\\"client.py\\"}","client":"python-runner"}\n',
+    `Python project runner should receive consumer-owned listener response: ${result.stdout}`
+  );
+  assertCondition(
+    receivedRequests.length === 1 &&
+      receivedRequests[0]?.method === 'POST' &&
+      receivedRequests[0]?.path === '/from-python-runner' &&
+      receivedRequests[0]?.body === '{"scriptPath":"client.py"}',
+    `consumer-owned listener should receive Python runner request: ${JSON.stringify(receivedRequests)}`
+  );
+  mockServer.close();
+  workspace.dispose();
+}
+
 async function testBrowserJavaScriptProjectRunnerAbortSignal(): Promise<void> {
   let commandStarted!: () => void;
   const commandStartedPromise = new Promise<void>((resolve) => {
@@ -12154,6 +12211,7 @@ async function main(): Promise<void> {
   await testTraceKernelHttpNodeServerWorkerBridge();
   await testTraceKernelHttpBindSemantics();
   await testTraceKernelHttpPythonRunnerBridge();
+  await testTraceKernelHttpPythonRunnerClientBridge();
   await testBrowserJavaScriptProjectRunnerAbortSignal();
   await testBrowserJavaScriptProjectRunnerCwd();
   await testBrowserJavaScriptProjectRunnerStdin();

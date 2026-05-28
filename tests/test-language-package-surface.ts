@@ -40,6 +40,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/project.d.ts',
       'dist/zlib-browser-shim.js',
       'dist/zlib-browser-shim.cjs',
+      'dist/async-hooks-browser-shim.js',
+      'dist/async-hooks-browser-shim.cjs',
       'dist/index.d.ts',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
@@ -55,6 +57,8 @@ const PACKAGE_CHECKS: PackageCheck[] = [
       'dist/index.d.ts',
       'dist/zlib-browser-shim.js',
       'dist/zlib-browser-shim.cjs',
+      'dist/async-hooks-browser-shim.js',
+      'dist/async-hooks-browser-shim.cjs',
       'LICENSE',
       'THIRD_PARTY_NOTICES.md',
     ],
@@ -331,6 +335,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
         projectDeclarations.includes('RuntimeProjectLiveIoController') &&
           projectDeclarations.includes('RuntimeProjectLiveIoControllerOptions'),
         '@tracecode/harness-project declarations should re-export the shared live project I/O controller'
+      );
+      assertCondition(
+        projectDeclarations.includes('RuntimeWorkspaceHttpClient') &&
+          projectDeclarations.includes('listen(options: RuntimeKernelHttpListenOptions'),
+        '@tracecode/harness-project declarations should expose the workspace HTTP listener API'
       );
       assertCondition(
         projectDist.includes('function isRuntimeDirectoryChange(') &&
@@ -960,6 +969,36 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
       if (output.stdout !== 'surface-out\\n' || !outputEvents.some((event) => event.type === 'output' && event.device === '/dev/stdout')) {
         throw new Error('@tracecode/harness-project /dev/stdout event smoke failed: ' + JSON.stringify({ output, outputEvents }));
       }
+      if (
+        typeof projectWorkspace.http.request !== 'function' ||
+        typeof projectWorkspace.http.json !== 'function' ||
+        typeof projectWorkspace.http.listen !== 'function'
+      ) {
+        throw new Error('@tracecode/harness-project workspace HTTP client surface missing');
+      }
+      const mockHttp = projectWorkspace.http.listen({ host: '127.0.0.1', port: 0 }, (request) => ({
+        status: 209,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: request.method, path: request.path, body: request.body || '' }) + '\\n',
+      }));
+      const httpRequest = await projectWorkspace.http.request({
+        method: 'POST',
+        url: 'http://localhost:' + mockHttp.info.port + '/surface',
+        headers: { 'content-type': 'text/plain' },
+        body: 'payload',
+      });
+      if (httpRequest.status !== 209 || httpRequest.body !== '{"method":"POST","path":"/surface","body":"payload"}\\n') {
+        throw new Error('@tracecode/harness-project workspace HTTP request/listen smoke failed: ' + JSON.stringify(httpRequest));
+      }
+      const httpJson = await projectWorkspace.http.json({
+        method: 'POST',
+        url: 'http://localhost:' + mockHttp.info.port + '/json',
+        body: { ok: true },
+      });
+      if (httpJson.status !== 209 || httpJson.json.body !== '{"ok":true}') {
+        throw new Error('@tracecode/harness-project workspace HTTP json smoke failed: ' + JSON.stringify(httpJson));
+      }
+      mockHttp.close();
       const pythonMain = await import('@tracecode/harness-python');
       if (
         typeof pythonMain.createNativePythonProjectRunner !== 'function' ||
