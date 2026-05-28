@@ -9934,6 +9934,22 @@ async function testWorkspaceTerminalSessionCwd(): Promise<void> {
   assertCondition(homePwd.stdout === '/home/obi\n', `terminal pwd should allow home cwd: ${JSON.stringify(homePwd)}`);
   const homeLs = await session.run('ls');
   assertCondition(homeLs.stdout.includes('weather-api'), `terminal ls from home should show workspace directory: ${JSON.stringify(homeLs)}`);
+  const homeLongLs = await session.run('ls -l');
+  assertCondition(
+    /^drwxr-xr-x\s+1\s+obi\s+obi\s+\s*0\s+.+\s+weather-api\/$/m.test(homeLongLs.stdout),
+    `terminal ls -l should show user ownership for workspace directories: ${JSON.stringify(homeLongLs)}`
+  );
+  const rootLongLs = await session.run('ls -l /');
+  assertCondition(
+    /^drwxr-xr-x\s+1\s+root\s+root\s+\s*0\s+.+\s+home\/$/m.test(rootLongLs.stdout),
+    `terminal ls -l / should show root ownership for kernel root directories: ${JSON.stringify(rootLongLs)}`
+  );
+  const procLongLs = await session.run('ls -l /proc');
+  assertCondition(
+    /^dr-xr-xr-x\s+1\s+root\s+root\s+\s*0\s+.+\s+kernel\/$/m.test(procLongLs.stdout) &&
+      /^dr-xr-xr-x\s+1\s+root\s+root\s+\s*0\s+.+\s+self\/$/m.test(procLongLs.stdout),
+    `terminal ls -l /proc should show read-only root-owned proc directories: ${JSON.stringify(procLongLs)}`
+  );
   const homeCompletion = await workspace.completeCommand('cd we', 'cd we'.length, { cwd: session.cwd });
   assertCondition(
     homeCompletion?.input === 'cd weather-api/' &&
@@ -11299,7 +11315,15 @@ async function testTraceKernelInfoConfig(): Promise<void> {
   assertCondition(kernelVersion === `tracekernel ${workspace.kernel.info.version}\n`, 'kernel /proc version should expose kernel version');
   assertCondition(await workspace.exists('/proc/kernel/info'), 'kernel /proc info should exist');
   const procInfoStat = await workspace.stat('/proc/kernel/info');
-  assertCondition(procInfoStat.isFile && !procInfoStat.isDirectory, 'kernel /proc info should stat as file');
+  assertCondition(
+    procInfoStat.isFile &&
+      !procInfoStat.isDirectory &&
+      procInfoStat.uid === 0 &&
+      procInfoStat.gid === 0 &&
+      procInfoStat.owner === 'root' &&
+      procInfoStat.group === 'root',
+    'kernel /proc info should stat as a root-owned file'
+  );
   assertCondition(await workspace.exists('/proc/kernel/version'), 'kernel /proc version should exist');
   const procVersionStat = await workspace.stat('/proc/kernel/version');
   assertCondition(procVersionStat.isFile && !procVersionStat.isDirectory, 'kernel /proc version should stat as file');

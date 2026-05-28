@@ -3138,6 +3138,11 @@ class KernelObservedFileSystem implements IFileSystem {
       mode: stat.mode,
       size: stat.size,
       mtime: new Date(0),
+      ...(stat.uid !== undefined ? { uid: stat.uid } : {}),
+      ...(stat.gid !== undefined ? { gid: stat.gid } : {}),
+      ...(stat.owner !== undefined ? { owner: stat.owner } : {}),
+      ...(stat.group !== undefined ? { group: stat.group } : {}),
+      ...(stat.isCharacterDevice ? { isCharacterDevice: true } : {}),
     };
   }
 }
@@ -4053,6 +4058,212 @@ function terminalCwdLabel(workspaceRoot: string, cwd: string, home: string): str
   if (cwd === home) return '~';
   const cwdName = cwd.split('/').filter(Boolean).at(-1);
   return cwdName || '/';
+}
+
+interface RuntimeLsOptions {
+  showAll: boolean;
+  showAlmostAll: boolean;
+  longFormat: boolean;
+  humanReadable: boolean;
+  recursive: boolean;
+  reverse: boolean;
+  sortBySize: boolean;
+  sortByTime: boolean;
+  classify: boolean;
+  directoryOnly: boolean;
+  positional: string[];
+}
+
+interface RuntimeLsStat {
+  isFile: boolean;
+  isDirectory: boolean;
+  isSymbolicLink?: boolean;
+  isCharacterDevice?: boolean;
+  mode?: number;
+  size?: number;
+  mtime?: Date;
+  mtimeMs?: number;
+  nlink?: number;
+  uid?: number;
+  gid?: number;
+  owner?: string;
+  group?: string;
+}
+
+interface RuntimeLsEntry {
+  name: string;
+  path: string;
+  stat: RuntimeLsStat;
+}
+
+function parseRuntimeLsArgs(args: readonly string[]): RuntimeLsOptions | RuntimeCommandResult {
+  const options: RuntimeLsOptions = {
+    showAll: false,
+    showAlmostAll: false,
+    longFormat: false,
+    humanReadable: false,
+    recursive: false,
+    reverse: false,
+    sortBySize: false,
+    sortByTime: false,
+    classify: false,
+    directoryOnly: false,
+    positional: [],
+  };
+  let parsingFlags = true;
+  for (const arg of args) {
+    if (parsingFlags && arg === '--') {
+      parsingFlags = false;
+      continue;
+    }
+    if (parsingFlags && arg === '--help') {
+      return {
+        stdout: [
+          'Usage: ls [OPTION]... [FILE]...',
+          '  -a, --all            do not ignore entries starting with .',
+          '  -A, --almost-all     do not list implied . and ..',
+          '  -d, --directory      list directories themselves',
+          '  -F, --classify       append indicator (one of */@)',
+          '  -h, --human-readable with -l, print human-readable sizes',
+          '  -l                   use a long listing format',
+          '  -r, --reverse        reverse order while sorting',
+          '  -R, --recursive      list subdirectories recursively',
+          '  -S                   sort by file size, largest first',
+          '  -t                   sort by modification time, newest first',
+          '  -1                   list one file per line',
+        ].join('\n') + '\n',
+        stderr: '',
+        exitCode: 0,
+      };
+    }
+    if (parsingFlags && arg.startsWith('--') && arg.length > 2) {
+      const long = arg.slice(2);
+      if (long === 'all') options.showAll = true;
+      else if (long === 'almost-all') options.showAlmostAll = true;
+      else if (long === 'directory') options.directoryOnly = true;
+      else if (long === 'classify') options.classify = true;
+      else if (long === 'human-readable') options.humanReadable = true;
+      else if (long === 'recursive') options.recursive = true;
+      else if (long === 'reverse') options.reverse = true;
+      else return { stdout: '', stderr: `ls: unrecognized option '--${long}'\n`, exitCode: 2 };
+      continue;
+    }
+    if (parsingFlags && arg.startsWith('-') && arg.length > 1) {
+      for (const flag of arg.slice(1)) {
+        if (flag === 'a') options.showAll = true;
+        else if (flag === 'A') options.showAlmostAll = true;
+        else if (flag === 'd') options.directoryOnly = true;
+        else if (flag === 'F') options.classify = true;
+        else if (flag === 'h') options.humanReadable = true;
+        else if (flag === 'l') options.longFormat = true;
+        else if (flag === 'r') options.reverse = true;
+        else if (flag === 'R') options.recursive = true;
+        else if (flag === 'S') options.sortBySize = true;
+        else if (flag === 't') options.sortByTime = true;
+        else if (flag === '1') {
+          // One-entry-per-line is already the only layout this harness exposes.
+        } else {
+          return { stdout: '', stderr: `ls: invalid option -- '${flag}'\n`, exitCode: 2 };
+        }
+      }
+      continue;
+    }
+    options.positional.push(arg);
+  }
+  if (options.positional.length === 0) options.positional.push('.');
+  return options;
+}
+
+function runtimeLsMode(stat: RuntimeLsStat): string {
+  const type = stat.isDirectory ? 'd' : stat.isSymbolicLink ? 'l' : stat.isCharacterDevice ? 'c' : '-';
+  const mode = stat.mode ?? (stat.isDirectory ? 0o755 : 0o644);
+  const bits = [
+    0o400, 0o200, 0o100,
+    0o040, 0o020, 0o010,
+    0o004, 0o002, 0o001,
+  ];
+  const chars: string[] = bits.map((bit, index) => {
+    const value = (mode & bit) !== 0;
+    if (index % 3 === 0) return value ? 'r' : '-';
+    if (index % 3 === 1) return value ? 'w' : '-';
+    return value ? 'x' : '-';
+  });
+  if ((mode & 0o4000) !== 0) chars[2] = chars[2] === 'x' ? 's' : 'S';
+  if ((mode & 0o2000) !== 0) chars[5] = chars[5] === 'x' ? 's' : 'S';
+  if ((mode & 0o1000) !== 0) chars[8] = chars[8] === 'x' ? 't' : 'T';
+  return `${type}${chars.join('')}`;
+}
+
+function runtimeLsHumanSize(size: number): string {
+  if (size < 1024) return String(size);
+  if (size < 1024 * 1024) {
+    const kib = size / 1024;
+    return kib < 10 ? `${kib.toFixed(1)}K` : `${Math.round(kib)}K`;
+  }
+  if (size < 1024 * 1024 * 1024) {
+    const mib = size / (1024 * 1024);
+    return mib < 10 ? `${mib.toFixed(1)}M` : `${Math.round(mib)}M`;
+  }
+  const gib = size / (1024 * 1024 * 1024);
+  return gib < 10 ? `${gib.toFixed(1)}G` : `${Math.round(gib)}G`;
+}
+
+function runtimeLsDate(date: Date): string {
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const month = months[date.getMonth()] ?? 'Jan';
+  const day = String(date.getDate()).padStart(2, ' ');
+  const now = new Date();
+  const sixMonthsAgo = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
+  if (date > sixMonthsAgo) {
+    return `${month} ${day} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  }
+  return `${month} ${day}  ${date.getFullYear()}`;
+}
+
+function runtimeLsIndicator(stat: RuntimeLsStat): string {
+  if (stat.isDirectory) return '/';
+  if (stat.isSymbolicLink) return '@';
+  return ((stat.mode ?? 0) & 0o111) !== 0 ? '*' : '';
+}
+
+function runtimeLsIdentity(path: string, stat: RuntimeLsStat, info: RuntimeKernelInfo): { owner: string; group: string; uid: number; gid: number } {
+  if (typeof stat.owner === 'string' || typeof stat.group === 'string' || typeof stat.uid === 'number' || typeof stat.gid === 'number') {
+    return {
+      owner: stat.owner ?? (stat.uid === 0 ? 'root' : info.user.username),
+      group: stat.group ?? (stat.gid === 0 ? 'root' : info.user.username),
+      uid: stat.uid ?? (stat.owner === 'root' ? 0 : 1000),
+      gid: stat.gid ?? (stat.group === 'root' ? 0 : 1000),
+    };
+  }
+  const normalized = normalizeTerminalAbsolutePath(path);
+  if (
+    normalized === '/' ||
+    normalized === '/home' ||
+    normalized === '/dev' ||
+    normalized.startsWith('/dev/') ||
+    normalized === '/proc' ||
+    normalized.startsWith('/proc/')
+  ) {
+    return { owner: 'root', group: 'root', uid: 0, gid: 0 };
+  }
+  return { owner: info.user.username, group: info.user.username, uid: 1000, gid: 1000 };
+}
+
+function runtimeLsFormatLine(path: string, name: string, stat: RuntimeLsStat, options: RuntimeLsOptions, info: RuntimeKernelInfo): string {
+  const identity = runtimeLsIdentity(path, stat, info);
+  const size = stat.size ?? 0;
+  const renderedSize = options.humanReadable ? runtimeLsHumanSize(size).padStart(5) : String(size).padStart(5);
+  const mtime = stat.mtime ?? new Date(stat.mtimeMs ?? 0);
+  const suffix = options.classify ? runtimeLsIndicator(stat) : stat.isDirectory ? '/' : '';
+  return [
+    runtimeLsMode(stat),
+    String(stat.nlink ?? 1),
+    identity.owner,
+    identity.group,
+    renderedSize,
+    runtimeLsDate(mtime),
+    `${name}${suffix}`,
+  ].join(' ') + '\n';
 }
 
 function hasWorkspaceGlob(value: string): boolean {
@@ -5730,6 +5941,7 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       defineCommand('fg', async (args) => this.runKernelJobPlacement(args, 'fg')),
       defineCommand('kill', async (args) => this.runKernelKill(args, 'kill')),
       defineCommand('jobs', async (args) => this.runKernelJobs(args)),
+      defineCommand('ls', async (args, ctx) => this.runKernelAwareLs(args, ctx)),
       defineCommand('ps', async (args) => this.runKernelPs(args)),
       defineCommand('tracekernelctl', (args) => this.runTraceKernelCtl(args)),
       defineCommand('wait', (args) => this.runKernelWait(args, 'wait')),
@@ -6114,6 +6326,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       isCharacterDevice: false,
       mode: kind === 'directory' ? 0o555 : 0o444,
       size: new TextEncoder().encode(content).byteLength,
+      uid: 0,
+      gid: 0,
+      owner: 'root',
+      group: 'root',
     };
   }
 
@@ -6346,6 +6562,96 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
       stderr: `tracekernelctl: unknown command: ${command}\nusage: tracekernelctl {status|reset|verbose [on|off|status]|kill <pid> [signal]|wait <pid>}\n`,
       exitCode: 2,
     };
+  }
+
+  private async runKernelAwareLs(args: string[], ctx: CommandContext): Promise<RuntimeCommandResult> {
+    const parsed = parseRuntimeLsArgs(args);
+    if ('exitCode' in parsed) return parsed;
+    const options = parsed;
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+    const multipleTargets = options.positional.length > 1;
+
+    const statPath = async (path: string): Promise<RuntimeLsStat> => ctx.fs.stat(path) as Promise<RuntimeLsStat>;
+    const lstatPath = async (path: string): Promise<RuntimeLsStat> => ctx.fs.lstat(path) as Promise<RuntimeLsStat>;
+    const sortedEntries = (entries: RuntimeLsEntry[]): RuntimeLsEntry[] => {
+      entries.sort((left, right) => {
+        if (options.sortBySize) return (right.stat.size ?? 0) - (left.stat.size ?? 0) || left.name.localeCompare(right.name);
+        if (options.sortByTime) {
+          const rightTime = right.stat.mtime instanceof Date ? right.stat.mtime.getTime() : right.stat.mtimeMs ?? 0;
+          const leftTime = left.stat.mtime instanceof Date ? left.stat.mtime.getTime() : left.stat.mtimeMs ?? 0;
+          return rightTime - leftTime || left.name.localeCompare(right.name);
+        }
+        return left.name.localeCompare(right.name);
+      });
+      if (options.reverse) entries.reverse();
+      return entries;
+    };
+
+    const renderEntry = async (path: string, name: string): Promise<string> => {
+      const stat = await lstatPath(path);
+      if (options.longFormat) return runtimeLsFormatLine(path, name, stat, options, this.kernelInfo);
+      return `${name}${options.classify ? runtimeLsIndicator(stat) : ''}\n`;
+    };
+
+    const renderDirectory = async (input: string, absolutePath: string, includeHeader: boolean, recursive: boolean): Promise<void> => {
+      if (includeHeader) stdout += `${input}:\n`;
+      let names = await ctx.fs.readdir(absolutePath);
+      if (!options.showAll && !options.showAlmostAll) names = names.filter((name) => !name.startsWith('.'));
+      if (options.showAll) names = ['.', '..', ...names];
+      const entries: RuntimeLsEntry[] = [];
+      for (const name of names) {
+        if (options.showAlmostAll && (name === '.' || name === '..')) continue;
+        const childPath = name === '.'
+          ? absolutePath
+          : name === '..'
+            ? dirname(absolutePath)
+            : absolutePath === '/'
+              ? `/${name}`
+              : `${absolutePath}/${name}`;
+        try {
+          entries.push({ name, path: childPath, stat: await statPath(childPath) });
+        } catch {
+          // Match ls' best-effort behavior when an entry disappears during listing.
+        }
+      }
+      sortedEntries(entries);
+      if (options.longFormat) stdout += `total ${entries.length}\n`;
+      for (const entry of entries) {
+        stdout += options.longFormat
+          ? runtimeLsFormatLine(entry.path, entry.name, entry.stat, options, this.kernelInfo)
+          : `${entry.name}${options.classify ? runtimeLsIndicator(entry.stat) : ''}\n`;
+      }
+      if (!recursive) return;
+      const childDirectories = entries.filter((entry) =>
+        entry.stat.isDirectory &&
+        entry.name !== '.' &&
+        entry.name !== '..'
+      );
+      for (const entry of childDirectories) {
+        stdout += '\n';
+        const childInput = input === '/' ? `/${entry.name}` : `${input.replace(/\/+$/, '')}/${entry.name}`;
+        await renderDirectory(childInput, entry.path, true, true);
+      }
+    };
+
+    for (const [index, input] of options.positional.entries()) {
+      if (index > 0 && stdout && !stdout.endsWith('\n\n')) stdout += '\n';
+      const absolutePath = ctx.fs.resolvePath(ctx.cwd, input);
+      try {
+        const stat = await statPath(absolutePath);
+        if (options.directoryOnly || !stat.isDirectory) {
+          stdout += await renderEntry(absolutePath, input);
+          continue;
+        }
+        await renderDirectory(input, absolutePath, multipleTargets || options.recursive, options.recursive);
+      } catch {
+        stderr += `ls: cannot access '${input}': No such file or directory\n`;
+        exitCode = 2;
+      }
+    }
+    return { stdout, stderr, exitCode };
   }
 
   private runKernelPs(args: string[]): RuntimeCommandResult {
@@ -6954,7 +7260,18 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
   async stat(path: string): Promise<RuntimeWorkspaceStat> {
     this.assertNotDestroyed();
     const dynamicStat = this.dynamicProcStat(path);
-    if (dynamicStat) return { isFile: dynamicStat.isFile, isDirectory: dynamicStat.isDirectory, mode: dynamicStat.mode, size: dynamicStat.size, mtimeMs: 0, nlink: dynamicStat.isDirectory ? 2 : 1 };
+    if (dynamicStat) return {
+      isFile: dynamicStat.isFile,
+      isDirectory: dynamicStat.isDirectory,
+      mode: dynamicStat.mode,
+      size: dynamicStat.size,
+      mtimeMs: 0,
+      nlink: dynamicStat.isDirectory ? 2 : 1,
+      uid: dynamicStat.uid,
+      gid: dynamicStat.gid,
+      owner: dynamicStat.owner,
+      group: dynamicStat.group,
+    };
     const statTarget = kernelStatTarget(path, this.kernelInfo);
     if (statTarget.kind === 'stat') {
       return {
@@ -6964,6 +7281,10 @@ export class JustBashRuntimeWorkspace implements RuntimeWorkspace {
         size: statTarget.stat.size,
         mtimeMs: 0,
         nlink: statTarget.stat.isDirectory ? 2 : 1,
+        uid: statTarget.stat.uid,
+        gid: statTarget.stat.gid,
+        owner: statTarget.stat.owner,
+        group: statTarget.stat.group,
       };
     }
     if (statTarget.kind === 'error') throw new Error(`Kernel virtual path not found: ${path}`);

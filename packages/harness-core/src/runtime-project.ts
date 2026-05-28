@@ -761,6 +761,10 @@ export interface RuntimeWorkspaceStat {
   size?: number;
   mtimeMs?: number;
   nlink?: number;
+  uid?: number;
+  gid?: number;
+  owner?: string;
+  group?: string;
 }
 
 export interface RuntimeWorkspaceRemoveOptions {

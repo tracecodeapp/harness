@@ -14,6 +14,10 @@ export interface RuntimeKernelVirtualStat {
   isCharacterDevice: boolean;
   mode: number;
   size: number;
+  uid?: number;
+  gid?: number;
+  owner?: string;
+  group?: string;
 }
 export type RuntimeKernelWriteTarget =
   | { kind: 'workspace' }
@@ -357,6 +361,10 @@ export function runtimeDeviceStat(
     isCharacterDevice: !isDirectory,
     mode: isDirectory ? 0o755 : 0o666,
     size: 0,
+    uid: 0,
+    gid: 0,
+    owner: 'root',
+    group: 'root',
   };
 }
 
@@ -1076,5 +1084,9 @@ export function runtimeProcStat(path: string, info: RuntimeKernelInfo): RuntimeK
     isCharacterDevice: false,
     mode: isDirectory ? 0o555 : 0o444,
     size: isDirectory ? 0 : new TextEncoder().encode(readRuntimeProcFile(path, info)).byteLength,
+    uid: 0,
+    gid: 0,
+    owner: 'root',
+    group: 'root',
   };
 }
